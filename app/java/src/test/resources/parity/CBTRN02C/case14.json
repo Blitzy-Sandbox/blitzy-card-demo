@@ -1,0 +1,119 @@
+{
+  "program": "CBTRN02C",
+  "caseId": "case14",
+  "description": "The failure ladder of 2500-WRITE-REJECT-REC :450-464. case02's seed, so the first transaction is rejected with reason 100 - and the WRITE at :451 is arranged to report a status other than '00'. :450 had already moved 8 into APPL-RESULT, so the ELSE at :454 moves 12, 88 APPL-AOK is false at :457, and :460-463 run: DISPLAY 'ERROR WRITING TO REJECTS FILE', then 9910-DISPLAY-IO-STATUS, then 9999-ABEND-PROGRAM. The status is the permanent-error one a backend refusal reports, whose first character is '9', so 9910 takes its :715-721 arm - the extended one that renders the feedback byte as three digits - and the line reads FILE STATUS IS: NNNN9000. CALL 'CEE3ABD' at :711 does not return, so the six CLOSE paragraphs, both count lines and the closing banner are never reached and RETURN-CODE is 12 rather than the 4 a rejected transaction would otherwise have produced. DALYREJS holds nothing: the record whose write was refused was never stored, and app/jcl/POSTTRAN.jcl:34 declares DISP=(NEW,CATLG,DELETE), whose third positional deletes the generation outright when the step ends abnormally.",
+  "unitKind": "BATCH_JOB",
+  "inputs": {
+    "DALYTRAN": {
+      "fixture": "dailytran.txt",
+      "fromRow": 0,
+      "rowCount": 1
+    },
+    "XREFFILE": {
+      "fixture": "cardxref.txt",
+      "fromRow": 0,
+      "rowCount": 1
+    },
+    "ACCTFILE": {
+      "fixture": "acctdata.txt",
+      "fromRow": 6,
+      "rowCount": 1
+    },
+    "TCATBALF": {
+      "fixture": "tcatbal.txt",
+      "fromRow": 6,
+      "rowCount": 1
+    },
+    "TRANFILE": {
+      "empty": true,
+      "recordLength": 350,
+      "copybook": "CVTRA05Y"
+    }
+  },
+  "expectedWrites": [],
+  "expectedFinalState": [
+    {
+      "dataset": "DALYTRAN",
+      "rowIndex": 0,
+      "expectedBytes": "0000000000683580010001POS TERM  Purchase at Abshire-Lowe                                                                            0000005047G800000000Abshire-Lowe                                      North Enoshaven                                   72112     48594526128770652022-06-10 19:27:53.000000                                              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 0,
+      "expectedBytes": "050002445376574000000005000000000050              "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 0,
+      "expectedBytes": "00000000007Y00000001930{00000020650{00000002640{2012-10-122024-12-132024-12-1300000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "TCATBALF",
+      "rowIndex": 0,
+      "expectedBytes": "000000000070100010000000000{0000000000000000000000"
+    }
+  ],
+  "expectedReturnCode": 12,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "START OF EXECUTION OF PROGRAM CBTRN02C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ERROR WRITING TO REJECTS FILE"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "FILE STATUS IS: NNNN9000"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ABENDING PROGRAM"
+    }
+  ],
+  "normalisations": [
+    {
+      "dataset": "XREFFILE",
+      "kind": "CARDXREF_FILLER_PAD_36_TO_50"
+    }
+  ],
+  "expectedDatasets": [
+    {
+      "dataset": "DALYREJS",
+      "channel": "WRITES",
+      "rowCount": 0,
+      "recordLength": 430
+    },
+    {
+      "dataset": "DALYTRAN",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 350
+    },
+    {
+      "dataset": "XREFFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 50
+    },
+    {
+      "dataset": "ACCTFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 300
+    },
+    {
+      "dataset": "TCATBALF",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 50
+    },
+    {
+      "dataset": "TRANFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 0,
+      "recordLength": 350
+    }
+  ]
+}

@@ -1,7 +1,7 @@
 {
   "program": "COUSR01C",
   "caseId": "case11",
-  "description": "COUSR01C applies NO case normalisation, and that is an asymmetry rather than an oversight: app/cbl/COSGN00C.cbl:132 and :135 wrap both USERIDI and PASSWDI in FUNCTION UPPER-CASE before comparing them, while COUSR01C contains the intrinsic zero times and simply MOVEs each field at :154-158. So a lower-case id, a mixed-case password, a lower-case type and lower-case names are all stored exactly as typed. Three independent assertions here break if an upper-casing 'tidy-up' is ever added: the eighty-byte record image, the confirmation text at :255-258 which reads back the stored id, and the row's POSITION in the key-sequenced final state - 'newusr01' begins with x'6E' and sorts after every seeded key, where 'NEWUSR01' begins with x'4E' and would sort into the middle. Do not harmonise this with sign-on.",
+  "description": "COUSR01C applies NO case normalisation, and that is an asymmetry rather than an oversight: app/cbl/COSGN00C.cbl:132 and :135 wrap both USERIDI and PASSWDI in FUNCTION UPPER-CASE before comparing them, while COUSR01C contains the intrinsic zero times and simply MOVEs each field at app/cbl/COUSR01C.cbl:154-158. A lower-case id, a mixed-case password, lower-case names and a lower-case type are therefore stored exactly as typed, and three independent observables move the moment an upper-casing 'tidy-up' is added to harmonise this screen with sign-on: the eighty-byte record image, the confirmation text at :255-258 which reads the id back out of the stored record, and the row's POSITION in the key-sequenced final state - 'newusr01' begins x'6E' and sorts after every seeded key, where 'NEWUSR01' begins x'4E' and would sort between ADMIN005 and USER0001. Do not harmonise this with sign-on. THE ORDERED EVALUATE, READ FROM ITS OTHER END. This case enters WHEN OTHER at :148-150 of the same ordered EVALUATE TRUE at :117-151 whose five blank-field arms case02 through case06 drive one at a time in source order, and whose first-match-wins rule case07 pins with four fields blank at once. Here all five arrive populated at their declared widths, so every arm must stay SILENT: WHEN OTHER moves -1 into FNAMEL at :149 and CONTINUEs at :150 without raising WS-ERR-FLG, which is the only way the guard IF NOT ERR-FLG-ON at :153 is true and the write at :159 is reached at all. A translation that replaced the ordered EVALUATE with independent if statements, a set of bean-validation annotations, or a collected error list would report a blank-field message here and suppress the write - and it would do so while every individual message text remained correct, which is why this expectation is stated as exactly one message and exactly one write rather than as a message lookup. ONE SEND, ONE MESSAGE, TWO WIDTHS. The NORMAL arm at :251-259 is the only send on this path, so the one confirmation is pinned on both channels it occupies: 'User ' (5) + SEC-USR-ID DELIMITED BY SPACE (8, because 'newusr01' fills X(08); case12 pins the short-id form) + ' has been added ...' (19) = 32 characters, into WS-MESSAGE PIC X(80) (:38) as 32 + 48 spaces, then MOVE WS-MESSAGE TO ERRMSGO at :188 narrows it to ERRMSGO PIC X(78) (app/cpy-bms/COUSR01.CPY:90) as 32 + 46 spaces, losing the two trailing bytes. INITIALIZE-ALL-FIELDS runs FIRST at :252, and because app/cpy-bms/COUSR01.CPY:91 declares 01 COUSR1AO REDEFINES COUSR1AI, blanking the five xxxI items blanks the five xxxO items with them - so the send carries five blank fields at 20/20/8/8/1 even though the write carried the typed values. SEC-USER-DATA is WORKING-STORAGE (app/cpy/CSUSR01Y.cpy:17), survives that blanking, and is what :256 reads the id back out of. THE RECORD AND THE COUNTS. app/cpy/CSUSR01Y.cpy:17-23 declares SEC-USR-ID X(08) + SEC-USR-FNAME X(20) + SEC-USR-LNAME X(20) + SEC-USR-PWD X(08) + SEC-USR-TYPE X(01) + SEC-USR-FILLER X(23) = 80, which is the LENGTH OF SEC-USER-DATA the write at :240-248 sends; the FILLER is assigned by nothing in this program and is still emitted, space-filled. The password is pinned plaintext at eight characters exactly as :21 of that copybook declares it and COSGN00C compares it - hashing would be a behaviour change. USRSEC is asserted at dataset level as well as row by row: one row on the WRITES channel and eleven on FINAL_STATE, both eighty bytes, so a second write or a lost insert is a finding even when every pinned row still matches. The eleven are the ten cards of app/jcl/DUSRSECJ.jcl:35-44 - fifty-seven characters there against the eighty of :48's LRECL, which the declared normalisation pads - plus this insert, last in key sequence. WHAT IS NOT HERE. COUSR01C copies neither CSSETATY nor CSSTRPFY and its COPY DFHATTR at :57 is commented out, so there is no '*' marker and no per-field colour anywhere on this screen; the only attribute it ever sets is DFHGREEN on ERRMSGC at :254, pinned here because the differ compares a send's attributes in both directions, and absent from every error case, which pin the default colour instead. No XCTL occurs - that is case16 - so :107-110's EXEC CICS RETURN TRANSID(WS-TRANID) terminates the transaction, the sixteen commarea fields travel back in the payload with no server-side state, and nextProgram, nextMapset and nextMap name this same screen. The header is repainted by POPULATE-HEADER-INFO at :214-233 rather than echoed: CU01, COUSR01C, the two app/cpy/COTTL01Y.cpy:18-23 literals - the 'Credit Card Demo Application (CCDA)' line there is commented out - and 07/19/22 with 23:12:34 from the clock pinned across all twenty cases of this folder, which is the source's own footer instant at :298. US-ASCII is named explicitly rather than left to a platform default. PROVENANCE. Every expected value above is STATICALLY DERIVED by structured reading of app/cbl/COUSR01C.cbl:117-151, :153-160, :184-196, :214-233, :240-248, :251-259 and :287-295, cross-checked against app/cpy-bms/COUSR01.CPY's xxxI PICTURE widths (20/20/8/8/1 and ERRMSGO X(78)) and its :91 REDEFINES, app/cpy/CSUSR01Y.cpy:17-23, app/cpy/COTTL01Y.cpy:18-23, app/cpy/COCOM01Y.cpy:19-44 and the app/jcl/DUSRSECJ.jcl:35-44 seed rows. None of it was captured from a live COBOL execution, which AAP 0.7.6 proves impossible in this environment with eight independently verified blockers - no z/OS runtime, GnuCOBOL's indexed file handler disabled, no Language Environment CEE services, no CICS emulator, and DFHAID, DFHBMSCA and DFHATTR absent from the repository among them. The first-match-wins behaviour of EVALUATE asserted here is a language rule rather than an inference from this particular source.",
   "unitKind": "CONTROLLER_POJO",
   "inputs": {
     "USRSEC": {
@@ -19,6 +19,7 @@
       ]
     }
   },
+  "jobParameters": {},
   "screenRequest": {
     "eibcalen": 160,
     "aid": "DFHENTER",
@@ -184,6 +185,20 @@
     {
       "dataset": "USRSEC",
       "kind": "USRSEC_FILLER_PAD_57_TO_80"
+    }
+  ],
+  "expectedDatasets": [
+    {
+      "dataset": "USRSEC",
+      "channel": "WRITES",
+      "rowCount": 1,
+      "recordLength": 80
+    },
+    {
+      "dataset": "USRSEC",
+      "channel": "FINAL_STATE",
+      "rowCount": 11,
+      "recordLength": 80
     }
   ]
 }

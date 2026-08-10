@@ -1,0 +1,139 @@
+{
+  "program": "CBTRN02C",
+  "caseId": "case19",
+  "description": "Create then rewrite, within one run and on one key - the transition the guard at :481 exists for. TCATBALF is seeded empty and the two dailytran rows of case09 both address key (26,01,0001). The first record's READ at :474 reports '23', so the not-found line is displayed once and 2700-A creates the record at +281.77 with its 22 reserved bytes left as spaces, INITIALIZE having skipped the FILLER. The second record's READ then reports '00' - the row the first record wrote is there to be found - so WS-CREATE-TRANCAT-REC stays 'N', 2700-B REWRITEs, and the balance accumulates to 655.43 while the FILLER stays whatever the READ transferred, which is the spaces the create left. Exactly ONE not-found line is displayed for two transactions on the same key, and TCATBALF ends with one row rather than two: a translation that always created, or always rewrote, would fail on the line count or on the row count before it failed on a byte.",
+  "unitKind": "BATCH_JOB",
+  "inputs": {
+    "DALYTRAN": {
+      "rows": [
+        "0000000009101861010001POS TERM  Purchase at Guann LLC                                                                               0000002817G800000000Guann LLC                                         South Lynn                                        51508-916680405804103486802022-06-10 19:27:53.000000                                              ",
+        "0000000017874199010001POS TERM  Purchase at Legros Group                                                                            0000003736F800000000Legros Group                                      Carmeloborough                                    34849-512780405804103486802022-06-10 19:27:53.000000                                              "
+      ]
+    },
+    "XREFFILE": {
+      "fixture": "cardxref.txt",
+      "fromRow": 40,
+      "rowCount": 1
+    },
+    "ACCTFILE": {
+      "fixture": "acctdata.txt",
+      "fromRow": 25,
+      "rowCount": 1
+    },
+    "TCATBALF": {
+      "empty": true,
+      "recordLength": 50,
+      "copybook": "CVTRA01Y"
+    },
+    "TRANFILE": {
+      "empty": true,
+      "recordLength": 350,
+      "copybook": "CVTRA05Y"
+    }
+  },
+  "expectedWrites": [],
+  "expectedFinalState": [
+    {
+      "dataset": "DALYTRAN",
+      "rowIndex": 0,
+      "expectedBytes": "0000000009101861010001POS TERM  Purchase at Guann LLC                                                                               0000002817G800000000Guann LLC                                         South Lynn                                        51508-916680405804103486802022-06-10 19:27:53.000000                                              "
+    },
+    {
+      "dataset": "DALYTRAN",
+      "rowIndex": 1,
+      "expectedBytes": "0000000017874199010001POS TERM  Purchase at Legros Group                                                                            0000003736F800000000Legros Group                                      Carmeloborough                                    34849-512780405804103486802022-06-10 19:27:53.000000                                              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 0,
+      "expectedBytes": "804058041034868000000002600000000026              "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 0,
+      "expectedBytes": "00000000026Y00000007014C00000021810{00000013750{2009-04-202024-12-192024-12-1900000006554C00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "TCATBALF",
+      "rowIndex": 0,
+      "expectedBytes": "000000000260100010000006554C                      "
+    },
+    {
+      "dataset": "TRANFILE",
+      "rowIndex": 0,
+      "expectedBytes": "0000000009101861010001POS TERM  Purchase at Guann LLC                                                                               0000002817G800000000Guann LLC                                         South Lynn                                        51508-916680405804103486802022-06-10 19:27:53.0000002022-07-19-23.12.34.000000                    "
+    },
+    {
+      "dataset": "TRANFILE",
+      "rowIndex": 1,
+      "expectedBytes": "0000000017874199010001POS TERM  Purchase at Legros Group                                                                            0000003736F800000000Legros Group                                      Carmeloborough                                    34849-512780405804103486802022-06-10 19:27:53.0000002022-07-19-23.12.34.000000                    "
+    }
+  ],
+  "expectedReturnCode": 0,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "START OF EXECUTION OF PROGRAM CBTRN02C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "TCATBAL record not found for key : 00000000026010001.. Creating."
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "TRANSACTIONS PROCESSED :000000002"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "TRANSACTIONS REJECTED  :000000000"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "END OF EXECUTION OF PROGRAM CBTRN02C"
+    }
+  ],
+  "normalisations": [
+    {
+      "dataset": "XREFFILE",
+      "kind": "CARDXREF_FILLER_PAD_36_TO_50"
+    }
+  ],
+  "expectedDatasets": [
+    {
+      "dataset": "DALYREJS",
+      "channel": "WRITES",
+      "rowCount": 0,
+      "recordLength": 430
+    },
+    {
+      "dataset": "DALYTRAN",
+      "channel": "FINAL_STATE",
+      "rowCount": 2,
+      "recordLength": 350
+    },
+    {
+      "dataset": "XREFFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 50
+    },
+    {
+      "dataset": "ACCTFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 300
+    },
+    {
+      "dataset": "TCATBALF",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 50
+    },
+    {
+      "dataset": "TRANFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 2,
+      "recordLength": 350
+    }
+  ]
+}

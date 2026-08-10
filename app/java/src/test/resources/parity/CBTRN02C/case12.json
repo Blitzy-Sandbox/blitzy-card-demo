@@ -1,0 +1,125 @@
+{
+  "program": "CBTRN02C",
+  "caseId": "case12",
+  "description": "One cent over: ACCT-CREDIT-LIMIT 504.76 against WS-TEMP-BAL 504.77. :407 is false by a single cent, so :410-412 store 102 and the transaction is rejected - and because ACCT-EXPIRAION-DATE is the fixture's own 2024-12-13, :414 passes and the 102 stands rather than being overwritten as it is in case06. Neither the category balance nor the account is touched: a rejected transaction reaches no writing paragraph at all, since :211 sends it to 2500 instead of 2000.",
+  "unitKind": "BATCH_JOB",
+  "inputs": {
+    "DALYTRAN": {
+      "fixture": "dailytran.txt",
+      "fromRow": 0,
+      "rowCount": 1
+    },
+    "XREFFILE": {
+      "fixture": "cardxref.txt",
+      "fromRow": 20,
+      "rowCount": 1
+    },
+    "ACCTFILE": {
+      "rows": [
+        "00000000007Y00000001930{00000005047F00000002640{2012-10-122024-12-132024-12-1300000000000{00000000000{A000000000                                                                                                                                                                                            "
+      ]
+    },
+    "TCATBALF": {
+      "fixture": "tcatbal.txt",
+      "fromRow": 6,
+      "rowCount": 1
+    },
+    "TRANFILE": {
+      "empty": true,
+      "recordLength": 350,
+      "copybook": "CVTRA05Y"
+    }
+  },
+  "expectedWrites": [
+    {
+      "dataset": "DALYREJS",
+      "rowIndex": 0,
+      "expectedBytes": "0000000000683580010001POS TERM  Purchase at Abshire-Lowe                                                                            0000005047G800000000Abshire-Lowe                                      North Enoshaven                                   72112     48594526128770652022-06-10 19:27:53.000000                                              0102OVERLIMIT TRANSACTION                                                       "
+    }
+  ],
+  "expectedFinalState": [
+    {
+      "dataset": "DALYTRAN",
+      "rowIndex": 0,
+      "expectedBytes": "0000000000683580010001POS TERM  Purchase at Abshire-Lowe                                                                            0000005047G800000000Abshire-Lowe                                      North Enoshaven                                   72112     48594526128770652022-06-10 19:27:53.000000                                              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 0,
+      "expectedBytes": "485945261287706500000000700000000007              "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 0,
+      "expectedBytes": "00000000007Y00000001930{00000005047F00000002640{2012-10-122024-12-132024-12-1300000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "TCATBALF",
+      "rowIndex": 0,
+      "expectedBytes": "000000000070100010000000000{0000000000000000000000"
+    }
+  ],
+  "expectedReturnCode": 4,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "START OF EXECUTION OF PROGRAM CBTRN02C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "TRANSACTIONS PROCESSED :000000001"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "TRANSACTIONS REJECTED  :000000001"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "END OF EXECUTION OF PROGRAM CBTRN02C"
+    }
+  ],
+  "normalisations": [
+    {
+      "dataset": "XREFFILE",
+      "kind": "CARDXREF_FILLER_PAD_36_TO_50"
+    }
+  ],
+  "expectedDatasets": [
+    {
+      "dataset": "DALYREJS",
+      "channel": "WRITES",
+      "rowCount": 1,
+      "recordLength": 430
+    },
+    {
+      "dataset": "DALYTRAN",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 350
+    },
+    {
+      "dataset": "XREFFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 50
+    },
+    {
+      "dataset": "ACCTFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 300
+    },
+    {
+      "dataset": "TCATBALF",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 50
+    },
+    {
+      "dataset": "TRANFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 0,
+      "recordLength": 350
+    }
+  ]
+}

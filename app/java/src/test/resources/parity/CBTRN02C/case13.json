@@ -1,0 +1,124 @@
+{
+  "program": "CBTRN02C",
+  "caseId": "case13",
+  "description": "The subtraction in COMPUTE WS-TEMP-BAL, with both cycle amounts non-zero and a negative transaction. dailytran row 1 at -919.00 against account 20 seeded from acctdata row 19 with ACCT-CURR-CYC-CREDIT 100.00 and ACCT-CURR-CYC-DEBIT 50.00: :403-405 give 100.00 - 50.00 + -919.00 = -869.00, so all three terms of the formula participate and the minus sign in front of the debit is load-bearing - swapping it would give -969.00. The result is far below the limit, so the transaction posts, ACCT-CURR-CYC-DEBIT becomes 50.00 + -919.00 = -869.00 because :551 ADDs a negative rather than subtracting, and ACCT-CURR-BAL becomes -550.00. TCATBALF is seeded with key (20,03,0001) at +250.00 so the REWRITE arm is the one that runs and its ADD crosses zero: 250.00 + -919.00 = -669.00, a negative stored in a PIC S9(09)V99 span whose overpunch carries the sign.",
+  "unitKind": "BATCH_JOB",
+  "inputs": {
+    "DALYTRAN": {
+      "fixture": "dailytran.txt",
+      "fromRow": 1,
+      "rowCount": 1
+    },
+    "XREFFILE": {
+      "fixture": "cardxref.txt",
+      "fromRow": 3,
+      "rowCount": 1
+    },
+    "ACCTFILE": {
+      "rows": [
+        "00000000020Y00000003690{00000037670{00000010400{2014-02-272024-03-132024-03-1300000001000{00000000500{A000000000                                                                                                                                                                                            "
+      ]
+    },
+    "TCATBALF": {
+      "rows": [
+        "000000000200300010000002500{0000000000000000000000"
+      ]
+    },
+    "TRANFILE": {
+      "empty": true,
+      "recordLength": 350,
+      "copybook": "CVTRA05Y"
+    }
+  },
+  "expectedWrites": [],
+  "expectedFinalState": [
+    {
+      "dataset": "DALYTRAN",
+      "rowIndex": 0,
+      "expectedBytes": "0000000001774260030001OPERATOR  Return item at Nitzsche, Nicolas and Lowe                                                           0000009190}800000000Nitzsche, Nicolas and Lowe                        Fidelshire                                        53378     09279871086362322022-06-10 19:27:53.000000                                              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 0,
+      "expectedBytes": "092798710863623200000002000000000020              "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 0,
+      "expectedBytes": "00000000020Y00000005500}00000037670{00000010400{2014-02-272024-03-132024-03-1300000001000{00000008690}A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "TCATBALF",
+      "rowIndex": 0,
+      "expectedBytes": "000000000200300010000006690}0000000000000000000000"
+    },
+    {
+      "dataset": "TRANFILE",
+      "rowIndex": 0,
+      "expectedBytes": "0000000001774260030001OPERATOR  Return item at Nitzsche, Nicolas and Lowe                                                           0000009190}800000000Nitzsche, Nicolas and Lowe                        Fidelshire                                        53378     09279871086362322022-06-10 19:27:53.0000002022-07-19-23.12.34.000000                    "
+    }
+  ],
+  "expectedReturnCode": 0,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "START OF EXECUTION OF PROGRAM CBTRN02C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "TRANSACTIONS PROCESSED :000000001"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "TRANSACTIONS REJECTED  :000000000"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "END OF EXECUTION OF PROGRAM CBTRN02C"
+    }
+  ],
+  "normalisations": [
+    {
+      "dataset": "XREFFILE",
+      "kind": "CARDXREF_FILLER_PAD_36_TO_50"
+    }
+  ],
+  "expectedDatasets": [
+    {
+      "dataset": "DALYREJS",
+      "channel": "WRITES",
+      "rowCount": 0,
+      "recordLength": 430
+    },
+    {
+      "dataset": "DALYTRAN",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 350
+    },
+    {
+      "dataset": "XREFFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 50
+    },
+    {
+      "dataset": "ACCTFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 300
+    },
+    {
+      "dataset": "TCATBALF",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 50
+    },
+    {
+      "dataset": "TRANFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 350
+    }
+  ]
+}

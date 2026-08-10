@@ -1,0 +1,120 @@
+{
+  "program": "CBTRN02C",
+  "caseId": "case03",
+  "description": "Stage two rejects: reason 101 'ACCOUNT RECORD NOT FOUND'. The card resolves - cardxref row 20 gives XREF-ACCT-ID 00000000007 - but ACCTFILE is seeded empty, so the READ at :395 reports INVALID KEY and :397-399 store 101 and its text. Nothing downstream of the read runs, so COMPUTE WS-TEMP-BAL at :403 is never evaluated and neither the credit-limit test at :407 nor the expiration test at :414 is reached - which is why the reject carries 101 and not 102 even though an account with no credit limit at all could hardly authorise 504.77. Note that reason 101's text is the same 24 characters reason 109 uses at :557; the codes differ and the texts do not, and both are reproduced exactly as the source spells them.",
+  "unitKind": "BATCH_JOB",
+  "inputs": {
+    "DALYTRAN": {
+      "fixture": "dailytran.txt",
+      "fromRow": 0,
+      "rowCount": 1
+    },
+    "XREFFILE": {
+      "fixture": "cardxref.txt",
+      "fromRow": 20,
+      "rowCount": 1
+    },
+    "ACCTFILE": {
+      "empty": true,
+      "recordLength": 300,
+      "copybook": "CVACT01Y"
+    },
+    "TCATBALF": {
+      "fixture": "tcatbal.txt",
+      "fromRow": 6,
+      "rowCount": 1
+    },
+    "TRANFILE": {
+      "empty": true,
+      "recordLength": 350,
+      "copybook": "CVTRA05Y"
+    }
+  },
+  "expectedWrites": [
+    {
+      "dataset": "DALYREJS",
+      "rowIndex": 0,
+      "expectedBytes": "0000000000683580010001POS TERM  Purchase at Abshire-Lowe                                                                            0000005047G800000000Abshire-Lowe                                      North Enoshaven                                   72112     48594526128770652022-06-10 19:27:53.000000                                              0101ACCOUNT RECORD NOT FOUND                                                    "
+    }
+  ],
+  "expectedFinalState": [
+    {
+      "dataset": "DALYTRAN",
+      "rowIndex": 0,
+      "expectedBytes": "0000000000683580010001POS TERM  Purchase at Abshire-Lowe                                                                            0000005047G800000000Abshire-Lowe                                      North Enoshaven                                   72112     48594526128770652022-06-10 19:27:53.000000                                              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 0,
+      "expectedBytes": "485945261287706500000000700000000007              "
+    },
+    {
+      "dataset": "TCATBALF",
+      "rowIndex": 0,
+      "expectedBytes": "000000000070100010000000000{0000000000000000000000"
+    }
+  ],
+  "expectedReturnCode": 4,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "START OF EXECUTION OF PROGRAM CBTRN02C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "TRANSACTIONS PROCESSED :000000001"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "TRANSACTIONS REJECTED  :000000001"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "END OF EXECUTION OF PROGRAM CBTRN02C"
+    }
+  ],
+  "normalisations": [
+    {
+      "dataset": "XREFFILE",
+      "kind": "CARDXREF_FILLER_PAD_36_TO_50"
+    }
+  ],
+  "expectedDatasets": [
+    {
+      "dataset": "DALYREJS",
+      "channel": "WRITES",
+      "rowCount": 1,
+      "recordLength": 430
+    },
+    {
+      "dataset": "DALYTRAN",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 350
+    },
+    {
+      "dataset": "XREFFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 50
+    },
+    {
+      "dataset": "ACCTFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 0,
+      "recordLength": 300
+    },
+    {
+      "dataset": "TCATBALF",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 50
+    },
+    {
+      "dataset": "TRANFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 0,
+      "recordLength": 350
+    }
+  ]
+}

@@ -1,0 +1,60 @@
+{
+  "program": "COMEN01C",
+  "caseId": "case04",
+  "description": "PROCESS-ENTER-KEY dispatching option 1 for a regular user: the first entry of app/cpy/COMEN02Y.cpy, 'Account View' targeting COACTVWC with authorisation column 'U'. The three-term guard at app/cbl/COMEN01C.cbl:127-129 passes, the ungated filter at 136-137 evaluates and is false because the entry is 'U' and not 'A', and lines 147, 148 and 151 then set CDEMO-FROM-TRANID to 'CM00', CDEMO-FROM-PROGRAM to 'COMEN01C' and CDEMO-PGM-CONTEXT back to zero before the XCTL at 152-155 transfers WITH the communication area. Lines 149 and 150 are commented out in the source, so CDEMO-USER-ID and CDEMO-USER-TYPE cross unchanged. An XCTL never returns, so no map is sent, no message is emitted and the coming-soon text at 159-163 is unreachable here.",
+  "unitKind": "SERVICE",
+  "inputs": {},
+  "screenRequest": {
+    "eibcalen": 160,
+    "aid": "DFHENTER",
+    "pinnedClock": "2022-07-19T23:12:33",
+    "charset": "US-ASCII",
+    "commarea": {
+      "CDEMO-FROM-TRANID": "CC00",
+      "CDEMO-FROM-PROGRAM": "COSGN00C",
+      "CDEMO-TO-PROGRAM": "COMEN01C",
+      "CDEMO-USER-ID": "USER0001",
+      "CDEMO-USER-TYPE": "U",
+      "CDEMO-PGM-CONTEXT": "1"
+    },
+    "mapFields": {
+      "OPTIONI": "01"
+    },
+    "forcedOutcomes": {}
+  },
+  "expectedResponse": {
+    "nextProgram": "COACTVWC",
+    "nextMapset": "COMEN01",
+    "nextMap": "COMEN1A",
+    "navigation": {
+      "CDEMO-FROM-TRANID": "CM00",
+      "CDEMO-FROM-PROGRAM": "COMEN01C",
+      "CDEMO-TO-TRANID": "    ",
+      "CDEMO-TO-PROGRAM": "COMEN01C",
+      "CDEMO-USER-ID": "USER0001",
+      "CDEMO-USER-TYPE": "U",
+      "CDEMO-PGM-CONTEXT": "0",
+      "CDEMO-CUST-ID": "000000000",
+      "CDEMO-CUST-FNAME": "                         ",
+      "CDEMO-CUST-MNAME": "                         ",
+      "CDEMO-CUST-LNAME": "                         ",
+      "CDEMO-ACCT-ID": "00000000000",
+      "CDEMO-ACCT-STATUS": " ",
+      "CDEMO-CARD-NUM": "0000000000000000",
+      "CDEMO-LAST-MAP": "       ",
+      "CDEMO-LAST-MAPSET": "       "
+    },
+    "sends": [],
+    "termination": "XCTL"
+  },
+  "expectedWrites": [],
+  "expectedFinalState": [],
+  "expectedReturnCode": 0,
+  "expectedMessages": [
+    {
+      "channel": "WS_MESSAGE_80",
+      "text": "                                                                                "
+    }
+  ],
+  "normalisations": []
+}

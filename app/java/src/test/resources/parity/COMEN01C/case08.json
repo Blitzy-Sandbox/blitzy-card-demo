@@ -1,0 +1,80 @@
+{
+  "program": "COMEN01C",
+  "caseId": "case08",
+  "description": "The second term of the validation guard, app/cbl/COMEN01C.cbl:128 - WS-OPTION > CDEMO-MENU-OPT-COUNT - with option 11: one past the count of 10 declared at app/cpy/COMEN02Y.cpy:21 and yet still INSIDE the CDEMO-MENU-OPT OCCURS 12 TIMES range declared at :88. That gap between the two numbers is the whole point of this case. The ungated filter at 136-137 subscripts slot 11, which the REDEFINES leaves present-but-unvalued because the copybook gives VALUE clauses to only ten entries, so the read finds no authorisation column and the filter is false. A translation that trimmed the table to the active count would be reading outside its own array here, and one that treated an unvalued slot as an 'A' entry would refuse access instead of reporting an invalid option.",
+  "unitKind": "SERVICE",
+  "inputs": {},
+  "screenRequest": {
+    "eibcalen": 160,
+    "aid": "DFHENTER",
+    "pinnedClock": "2022-07-19T23:12:33",
+    "charset": "US-ASCII",
+    "commarea": {
+      "CDEMO-FROM-TRANID": "CC00",
+      "CDEMO-FROM-PROGRAM": "COSGN00C",
+      "CDEMO-TO-PROGRAM": "COMEN01C",
+      "CDEMO-USER-ID": "USER0001",
+      "CDEMO-USER-TYPE": "U",
+      "CDEMO-PGM-CONTEXT": "1"
+    },
+    "mapFields": {
+      "OPTIONI": "11"
+    },
+    "forcedOutcomes": {}
+  },
+  "expectedResponse": {
+    "nextMapset": "COMEN01",
+    "nextMap": "COMEN1A",
+    "navigation": {
+      "CDEMO-FROM-TRANID": "CC00",
+      "CDEMO-FROM-PROGRAM": "COSGN00C",
+      "CDEMO-TO-TRANID": "    ",
+      "CDEMO-TO-PROGRAM": "COMEN01C",
+      "CDEMO-USER-ID": "USER0001",
+      "CDEMO-USER-TYPE": "U",
+      "CDEMO-PGM-CONTEXT": "1",
+      "CDEMO-CUST-ID": "000000000",
+      "CDEMO-CUST-FNAME": "                         ",
+      "CDEMO-CUST-MNAME": "                         ",
+      "CDEMO-CUST-LNAME": "                         ",
+      "CDEMO-ACCT-ID": "00000000000",
+      "CDEMO-ACCT-STATUS": " ",
+      "CDEMO-CARD-NUM": "0000000000000000",
+      "CDEMO-LAST-MAP": "       ",
+      "CDEMO-LAST-MAPSET": "       "
+    },
+    "sends": [
+      {
+        "fields": {
+          "OPTN001O": "01. Account View                        ",
+          "OPTN002O": "02. Account Update                      ",
+          "OPTN003O": "03. Credit Card List                    ",
+          "OPTN004O": "04. Credit Card View                    ",
+          "OPTN005O": "05. Credit Card Update                  ",
+          "OPTN006O": "06. Transaction List                    ",
+          "OPTN007O": "07. Transaction View                    ",
+          "OPTN008O": "08. Transaction Add                     ",
+          "OPTN009O": "09. Transaction Reports                 ",
+          "OPTN010O": "10. Bill Payment                        ",
+          "OPTN011O": "                                        ",
+          "OPTN012O": "                                        ",
+          "OPTIONO": "11"
+        },
+        "attributes": {
+          "ERRMSGC": "DFHRED"
+        }
+      }
+    ],
+    "termination": "RETURN_TRANSID"
+  },
+  "expectedWrites": [],
+  "expectedFinalState": [],
+  "expectedReturnCode": 0,
+  "expectedMessages": [
+    {
+      "channel": "WS_MESSAGE_80",
+      "text": "Please enter a valid option number...                                           "
+    }
+  ],
+  "normalisations": []
+}

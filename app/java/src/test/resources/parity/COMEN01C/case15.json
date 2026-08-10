@@ -1,0 +1,80 @@
+{
+  "program": "COMEN01C",
+  "caseId": "case15",
+  "description": "The WHEN OTHER arm of the ordered EVALUATE EIBAID, app/cbl/COMEN01C.cbl:99-102, driven with DFHPF12 - an attention identifier PfKeyResolver can name but that COMEN01C gives no arm of its own, because this program does not COPY CSSTRPFY and tests EIBAID inline. Line 100 moves 'Y' to WS-ERR-FLG and line 101 moves CCDA-MSG-INVALID-KEY, a PIC X(50) sender from app/cpy/CSMSG01Y.cpy, into the PIC X(80) WS-MESSAGE: left-justified, space-padded to eighty, and deliberately NOT the PIC X(40) CCDA-THANK-YOU of app/cpy/COTTL01Y.cpy. PROCESS-ENTER-KEY does not run, so OPTIONO keeps the re-supplied '7 ' unnormalised - had the ENTER arm run it would read '07' - and the menu is painted from the copybook table.",
+  "unitKind": "SERVICE",
+  "inputs": {},
+  "screenRequest": {
+    "eibcalen": 160,
+    "aid": "DFHPF12",
+    "pinnedClock": "2022-07-19T23:12:33",
+    "charset": "US-ASCII",
+    "commarea": {
+      "CDEMO-FROM-TRANID": "CC00",
+      "CDEMO-FROM-PROGRAM": "COSGN00C",
+      "CDEMO-TO-PROGRAM": "COMEN01C",
+      "CDEMO-USER-ID": "USER0001",
+      "CDEMO-USER-TYPE": "U",
+      "CDEMO-PGM-CONTEXT": "1"
+    },
+    "mapFields": {
+      "OPTIONI": "7 "
+    },
+    "forcedOutcomes": {}
+  },
+  "expectedResponse": {
+    "nextMapset": "COMEN01",
+    "nextMap": "COMEN1A",
+    "navigation": {
+      "CDEMO-FROM-TRANID": "CC00",
+      "CDEMO-FROM-PROGRAM": "COSGN00C",
+      "CDEMO-TO-TRANID": "    ",
+      "CDEMO-TO-PROGRAM": "COMEN01C",
+      "CDEMO-USER-ID": "USER0001",
+      "CDEMO-USER-TYPE": "U",
+      "CDEMO-PGM-CONTEXT": "1",
+      "CDEMO-CUST-ID": "000000000",
+      "CDEMO-CUST-FNAME": "                         ",
+      "CDEMO-CUST-MNAME": "                         ",
+      "CDEMO-CUST-LNAME": "                         ",
+      "CDEMO-ACCT-ID": "00000000000",
+      "CDEMO-ACCT-STATUS": " ",
+      "CDEMO-CARD-NUM": "0000000000000000",
+      "CDEMO-LAST-MAP": "       ",
+      "CDEMO-LAST-MAPSET": "       "
+    },
+    "sends": [
+      {
+        "fields": {
+          "OPTN001O": "01. Account View                        ",
+          "OPTN002O": "02. Account Update                      ",
+          "OPTN003O": "03. Credit Card List                    ",
+          "OPTN004O": "04. Credit Card View                    ",
+          "OPTN005O": "05. Credit Card Update                  ",
+          "OPTN006O": "06. Transaction List                    ",
+          "OPTN007O": "07. Transaction View                    ",
+          "OPTN008O": "08. Transaction Add                     ",
+          "OPTN009O": "09. Transaction Reports                 ",
+          "OPTN010O": "10. Bill Payment                        ",
+          "OPTN011O": "                                        ",
+          "OPTN012O": "                                        ",
+          "OPTIONO": "7 "
+        },
+        "attributes": {
+          "ERRMSGC": "DFHRED"
+        }
+      }
+    ],
+    "termination": "RETURN_TRANSID"
+  },
+  "expectedWrites": [],
+  "expectedFinalState": [],
+  "expectedReturnCode": 0,
+  "expectedMessages": [
+    {
+      "channel": "WS_MESSAGE_80",
+      "text": "Invalid key pressed. Please see below...                                        "
+    }
+  ],
+  "normalisations": []
+}

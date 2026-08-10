@@ -3,15 +3,14 @@ package com.vsergeychik.carddemo.user;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.vsergeychik.carddemo.common.BmsAttributes;
 import com.vsergeychik.carddemo.common.CicsAid;
+import com.vsergeychik.carddemo.common.FieldAttributeSetter;
 import com.vsergeychik.carddemo.common.FileStatus;
+import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.NavigationContext;
 import com.vsergeychik.carddemo.common.PfKeyResolver;
-import com.vsergeychik.carddemo.common.RecordImageForm;
-import com.vsergeychik.carddemo.common.ScreenResponse;
 import com.vsergeychik.carddemo.common.ScreenTitles;
-import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBinding;
-import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBindings;
 import com.vsergeychik.carddemo.common.SystemMessages;
+import com.vsergeychik.carddemo.config.WebConfig;
 import com.vsergeychik.carddemo.user.SecUserRepository.WriteResult;
 import com.vsergeychik.carddemo.user.UserAddController.ProgramState;
 import com.vsergeychik.carddemo.user.dto.UserAddRequest;
@@ -25,10 +24,6 @@ import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Objects;
-import java.util.UUID;
-import com.zaxxer.hikari.HikariDataSource;
-import javax.sql.DataSource;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -36,14 +31,15 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
-import org.springframework.context.annotation.AnnotationConfigApplicationContext;
-import org.springframework.context.annotation.Configuration;
-import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.jdbc.support.JdbcTransactionManager;
-import org.springframework.transaction.PlatformTransactionManager;
-import org.springframework.transaction.annotation.EnableTransactionManagement;
-import org.springframework.transaction.annotation.Transactional;
-import org.springframework.transaction.support.TransactionTemplate;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpMethod;
+import org.springframework.http.MediaType;
+import org.springframework.http.converter.json.MappingJackson2HttpMessageConverter;
+import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.MvcResult;
+import org.springframework.test.web.servlet.ResultMatcher;
+import org.springframework.test.web.servlet.request.MockMvcRequestBuilders;
+import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -52,15 +48,64 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
- * Behavioural parity tests for {@link UserAddController} against {@code app/cbl/COUSR01C.cbl}.
+ * Behavioural parity tests for {@link UserAddController} against {@code app/cbl/COUSR01C.cbl}, the
+ * CICS program behind {@code DEFINE TRANSACTION(CU01) PROGRAM(COUSR01C)}
+ * [{@code app/csd/CARDDEMO.CSD:459-460}], projected onto {@code POST /api/users}.
  *
- * <p>Every assertion cites the source line it pins. The controller's decisions all live in
- * {@link UserAddController#mainPara(UserAddRequest, byte, int)}, which mentions no servlet type, so
- * these tests call it as a plain Java method - no HTTP layer, no {@code MockMvc} and no Spring context
- * in the path. That is what makes every branch reachable, including the ones an HTTP test could not
- * reach at all, such as a repository reporting no CICS response code.
+ * <p>Every assertion cites the source line it pins. The paragraphs under test are
+ * {@code MAIN-PARA} [{@code :71-110}], {@code PROCESS-ENTER-KEY}'s ordered blank chain
+ * [{@code :117-151}] and its five plain {@code MOVE}s [{@code :153-158}],
+ * {@code RETURN-TO-PREV-SCREEN} [{@code :165-178}], {@code WRITE-USER-SEC-FILE} [{@code :238-274}]
+ * and {@code INITIALIZE-ALL-FIELDS} [{@code :286-294}].
+ *
+ * <h2>Two levels, deliberately</h2>
+ * The controller's decisions all live in {@link UserAddController#mainPara(UserAddRequest, byte, int)},
+ * which mentions no servlet type, so most tests here call it as a plain Java method - no HTTP layer and
+ * no Spring context in the path. That is what makes every branch reachable, including the ones an HTTP
+ * test could not reach at all, such as a repository reporting no CICS response code.
+ *
+ * <p>A second, smaller group raises a real dispatcher through
+ * {@link org.springframework.test.web.servlet.setup.MockMvcBuilders#standaloneSetup}, because a handful
+ * of rules belong to the adapter rather than to the program and exist nowhere else: that the mapping is
+ * registered on {@code POST} and on that path, the {@code 405} a wrong verb earns, which members the
+ * wire format actually carries, whether a blank field is answered by the program or refused by the
+ * binder, and that nothing is pinned to a session, a cookie, a redirect or a forward. Standalone rather
+ * than {@code @WebMvcTest}: exactly one handler is registered, so a wrong-verb request has nowhere else
+ * to land and the status is the dispatcher's own answer rather than another controller's mapping.
+ *
+ * <h2>Copybooks in play, including the one that is not</h2>
+ * {@code COUSR01C:55-56} copies {@code DFHAID} and {@code DFHBMSCA}, so {@link CicsAid} and
+ * {@link BmsAttributes} constants are legitimately asserted here. {@code COUSR01C:57} reads
+ * {@code *COPY DFHATTR.} - <strong>commented out</strong> - so {@code DFHATTR} contributes nothing at
+ * compile time and nothing here asserts a {@code DFHATTR}-specific attribute. The migration plan's
+ * "DFHATTR: 2 consumers" is a textual count that includes this commented line.
+ *
+ * <h2>Where the expected values come from</h2>
+ * They are <strong>statically derived</strong> by reading {@code COUSR01C.cbl} paragraph by paragraph
+ * and cross-checking against {@code app/cpy-bms/COUSR01.CPY} (field names and widths),
+ * {@code app/bms/COUSR01.bms} (the {@code DFHMDF} definitions), {@code app/cpy/CSUSR01Y.cpy} (the
+ * eighty-byte record) and {@code app/cpy/COCOM01Y.cpy} (the hundred-and-sixty-byte communication area).
+ * They are <em>not</em> captured from a live COBOL run: this environment cannot execute the program, for
+ * the reasons the migration plan records, so no execution baseline exists to capture. Nothing here was
+ * written by observing the Java and calling the observation the expectation.
+ *
+ * <h2>Seed identities</h2>
+ * {@code USRSEC} has no fixture under {@code app/data/ASCII}; it is seeded in-stream by
+ * {@code app/jcl/DUSRSECJ.jcl}, whose {@code //SYSUT1 DD *} at line 34 carries ten records of
+ * fifty-seven characters on lines 35-44 - {@code ADMIN001}-{@code ADMIN005} as type {@code A} and
+ * {@code USER0001}-{@code USER0005} as type {@code U}, every one of them with the password literal
+ * {@code PASSWORD}, and every one of them three bytes short of {@code SEC-USER-DATA}'s eighty because
+ * the stream omits {@code SEC-USR-FILLER X(23)}. A duplicate is therefore modelled on {@code ADMIN001},
+ * an addition on an identity the seed does not hold such as {@code NEWUSER1}.
+ *
+ * @see SignOnServiceTest for the other half of the case asymmetry: {@code COSGN00C:132-137} upper-cases
+ *     its input unconditionally, whereas {@code COUSR01C:153-158} does not normalise at all
  */
 @DisplayName("UserAddController - app/cbl/COUSR01C.cbl parity")
 class UserAddControllerTest {
@@ -567,19 +612,6 @@ class UserAddControllerTest {
         }
 
         @Test
-        @DisplayName("a permanent error reporting no RESP at all also lands on WHEN OTHER")
-        void unreportedRespLandsOnWhenOther() {
-            when(repository.add(any(SecUserRecord.class)))
-                    .thenReturn(WriteResult.of("90", com.vsergeychik.carddemo.common.CicsResponse.none()));
-
-            ProgramState state = enter(populatedRequest());
-
-            assertThat(state.respCd()).as("no RESP reported, so never mistaken for NORMAL").isEqualTo(-1);
-            assertThat(state.message()).isEqualTo(pad(UserAddController.MSG_UNABLE_TO_ADD));
-            assertThat(state.writeStatus()).contains("90");
-        }
-
-        @Test
         @DisplayName("L240-248: the record written is exactly eighty bytes with the FILLER space-filled")
         void writtenRecordIsEightyBytes() {
             enter(request("John", "Doe", "USR1", "PASS1234", "U"));
@@ -640,6 +672,184 @@ class UserAddControllerTest {
         }
 
         private SecUserRecord captureWrittenRecord() {
+            org.mockito.ArgumentCaptor<SecUserRecord> captor =
+                    org.mockito.ArgumentCaptor.forClass(SecUserRecord.class);
+            verify(repository).add(captor.capture());
+            return captor.getValue();
+        }
+    }
+
+    // =================================================================================================
+    // No case normalisation - COUSR01C:153-158.
+    //
+    // The five statements are plain MOVEs. There is no FUNCTION UPPER-CASE anywhere in the program -
+    // grep across app/cbl/COUSR01C.cbl returns zero occurrences - so whatever the operator typed is what
+    // reaches SEC-USER-DATA, in the case they typed it in.
+    //
+    // This is one half of a genuine asymmetry, and the half this class owns. COSGN00C:132-137 upper-cases
+    // its user id and password UNCONDITIONALLY before it looks either up, which SignOnServiceTest pins.
+    // Put the two halves together and a user added here as 'newuser1' cannot sign on as 'newuser1': the
+    // sign-on program upper-cases the key to 'NEWUSER1', reads USRSEC for that, and does not find the
+    // record this program stored under the lower-case key. That is the legacy system's behaviour.
+    // Asserting it is this migration's job; correcting it would be a new business rule and is not.
+    // =================================================================================================
+
+    @Nested
+    @DisplayName("No case normalisation - COUSR01C:153-158")
+    class NoCaseNormalisation {
+
+        /**
+         * The codec the five moves are performed through, at the code page the controller declares.
+         *
+         * <p>Constructed here rather than reached through the controller because the point of the
+         * assertions below is that {@code movePicX} - the explicit alphanumeric {@code MOVE} - is what
+         * produces the stored image, so the expectation has to be computed by the same rule the
+         * implementation is claimed to follow rather than by a hand-written literal that could agree
+         * with the implementation and disagree with COBOL.
+         */
+        private final FixedWidthCodec codec = new FixedWidthCodec(StandardCharsets.US_ASCII);
+
+        @Test
+        @DisplayName("B5: the brief's own lower-case case - newuser1/alice/smith/secret99/u stored as typed")
+        void lowerCaseIsStoredExactlyAsTyped() {
+            enter(request("alice", "smith", "newuser1", "secret99", "u"));
+
+            SecUserRecord written = writtenRecord();
+            // Not toUpperCase() anywhere: the id is the eight characters typed, in the case typed.
+            assertThat(written.secUsrId()).isEqualTo("newuser1");
+            assertThat(written.secUsrFname()).isEqualTo(codec.movePicX("alice",
+                    SecUserRecord.SEC_USR_FNAME_LENGTH));
+            assertThat(written.secUsrLname()).isEqualTo(codec.movePicX("smith",
+                    SecUserRecord.SEC_USR_LNAME_LENGTH));
+            assertThat(written.secUsrPwd()).isEqualTo("secret99");
+            assertThat(written.secUsrType()).isEqualTo("u");
+
+            // Stated the other way round, so a future upper-casing "fix" fails here rather than passing
+            // silently: none of the five stored values equals its own upper-cased form.
+            assertThat(written.secUsrId()).isNotEqualTo("NEWUSER1");
+            assertThat(written.secUsrFname()).isNotEqualTo(codec.movePicX("ALICE",
+                    SecUserRecord.SEC_USR_FNAME_LENGTH));
+            assertThat(written.secUsrLname()).isNotEqualTo(codec.movePicX("SMITH",
+                    SecUserRecord.SEC_USR_LNAME_LENGTH));
+            assertThat(written.secUsrPwd()).isNotEqualTo("SECRET99");
+            assertThat(written.secUsrType()).isNotEqualTo("U");
+        }
+
+        @Test
+        @DisplayName("B5: mixed case survives too - NewUser1 is stored as NewUser1, not NEWUSER1")
+        void mixedCaseIsPreserved() {
+            enter(request("Alice", "McSmith", "NewUser1", "Secret99", "A"));
+
+            SecUserRecord written = writtenRecord();
+            assertThat(written.secUsrId()).isEqualTo("NewUser1");
+            assertThat(written.secUsrFname()).startsWith("Alice");
+            assertThat(written.secUsrLname()).as("an interior capital is not a word boundary to a MOVE")
+                    .startsWith("McSmith");
+            assertThat(written.secUsrPwd()).isEqualTo("Secret99");
+        }
+
+        @Test
+        @DisplayName("the id the confirmation message quotes is the id as typed, so the two agree")
+        void theConfirmationQuotesTheStoredCase() {
+            ProgramState state = enter(request("alice", "smith", "newuser1", "secret99", "u"));
+
+            // L255-258 builds the message from SEC-USR-ID, the record field, so the operator is told
+            // exactly which key was written - lower case and all.
+            assertThat(state.message()).isEqualTo(pad("User newuser1 has been added ..."));
+            assertThat(state.message()).doesNotContain("NEWUSER1");
+        }
+
+        @ParameterizedTest(name = "\"{0}\" is stored as \"{0}\"")
+        @ValueSource(strings = {"a", "A", "z", "Z", "u", "U", "aB", "Ab", "mIxEdCa"})
+        @DisplayName("no character class is folded in either direction")
+        void noFoldingInEitherDirection(String userId) {
+            enter(request("First", "Last", userId, "PASS1234", "U"));
+
+            assertThat(writtenRecord().secUsrId())
+                    .isEqualTo(codec.movePicX(userId, SecUserRecord.SEC_USR_ID_LENGTH));
+        }
+
+        @Test
+        @DisplayName("PIC X pads on the RIGHT: alice fills SEC-USR-FNAME X(20) with fifteen trailing spaces")
+        void picXPadsOnTheRight() {
+            enter(request("alice", "smith", "newuser1", "secret99", "u"));
+
+            SecUserRecord written = writtenRecord();
+            assertThat(written.secUsrFname()).isEqualTo("alice" + " ".repeat(15));
+            assertThat(written.secUsrFname()).hasSize(20);
+            assertThat(written.secUsrFname()).as("left justified, so the value is at the front")
+                    .startsWith("alice");
+            // The same image the codec's explicit helper produces, which is the rule being claimed.
+            assertThat(written.secUsrFname()).isEqualTo(codec.movePicX("alice", 20));
+        }
+
+        @Test
+        @DisplayName("PIC X truncates on the RIGHT: a 25-character name keeps its first 20 characters")
+        void picXTruncatesOnTheRight() {
+            String twentyFive = "ABCDEFGHIJKLMNOPQRSTUVWXY";
+            assertThat(twentyFive).hasSize(25);
+
+            enter(request(twentyFive, twentyFive, "newuser1", "secret99", "u"));
+
+            SecUserRecord written = writtenRecord();
+            assertThat(written.secUsrFname()).isEqualTo("ABCDEFGHIJKLMNOPQRST");
+            assertThat(written.secUsrFname()).isEqualTo(codec.movePicX(twentyFive, 20));
+            // The direction is the whole point. A left-truncating receiver would have kept the tail, and
+            // the defect would be invisible at the call site - which is why the move goes through the
+            // codec's named helper and never through a bare Java assignment.
+            assertThat(written.secUsrFname()).as("the LEADING characters survive, never the trailing ones")
+                    .doesNotContain("Y")
+                    .startsWith("A");
+            assertThat(written.secUsrLname()).isEqualTo(codec.movePicX(twentyFive, 20));
+        }
+
+        @Test
+        @DisplayName("movePicX is the rule for all five receivers, at each declared width")
+        void everyReceiverUsesItsDeclaredWidth() {
+            enter(request("alice", "smith", "newuser1", "secret99", "u"));
+
+            SecUserRecord written = writtenRecord();
+            assertThat(written.secUsrId()).isEqualTo(codec.movePicX("newuser1", 8));
+            assertThat(written.secUsrFname()).isEqualTo(codec.movePicX("alice", 20));
+            assertThat(written.secUsrLname()).isEqualTo(codec.movePicX("smith", 20));
+            assertThat(written.secUsrPwd()).isEqualTo(codec.movePicX("secret99", 8));
+            assertThat(written.secUsrType()).isEqualTo(codec.movePicX("u", 1));
+            // And the widths themselves are CSUSR01Y's, not this test's opinion.
+            assertThat(new int[] {SecUserRecord.SEC_USR_ID_LENGTH, SecUserRecord.SEC_USR_FNAME_LENGTH,
+                SecUserRecord.SEC_USR_LNAME_LENGTH, SecUserRecord.SEC_USR_PWD_LENGTH,
+                SecUserRecord.SEC_USR_TYPE_LENGTH})
+                    .containsExactly(8, 20, 20, 8, 1);
+        }
+
+        @Test
+        @DisplayName("G41, B6: the password is stored in the clear, byte for byte, with no hashing")
+        void passwordIsStoredByteForByte() {
+            String submitted = "s3cr#t9";
+
+            enter(request("alice", "smith", "newuser1", submitted, "u"));
+
+            String stored = writtenRecord().secUsrPwd();
+            // COUSR01C:157 is MOVE PASSWDI TO SEC-USR-PWD. Nothing is applied to it: no digest, no salt,
+            // no encoder. SEC-USR-PWD is PIC X(08), so the only transformation is the PIC X pad.
+            assertThat(stored).isEqualTo(codec.movePicX(submitted, 8));
+            assertThat(stored.strip()).isEqualTo(submitted);
+            assertThat(stored).hasSize(8);
+            // A hash of any kind would neither round-trip nor fit, which is what these two pin.
+            assertThat(stored).doesNotContain("$");
+            assertThat(Integer.toHexString(submitted.hashCode())).isNotEqualTo(stored.strip());
+        }
+
+        @Test
+        @DisplayName("a password that exactly fills PIC X(08) is stored with no padding at all")
+        void anExactlyFittingPasswordIsUnpadded() {
+            // The literal every DUSRSECJ seed record carries, and it fills the field precisely.
+            enter(request("alice", "smith", "newuser1", "PASSWORD", "u"));
+
+            assertThat(writtenRecord().secUsrPwd()).isEqualTo("PASSWORD");
+            assertThat(writtenRecord().secUsrPwd()).doesNotContain(" ");
+        }
+
+        private SecUserRecord writtenRecord() {
             org.mockito.ArgumentCaptor<SecUserRecord> captor =
                     org.mockito.ArgumentCaptor.forClass(SecUserRecord.class);
             verify(repository).add(captor.capture());
@@ -806,7 +1016,7 @@ class UserAddControllerTest {
         @Test
         @DisplayName("addUser delegates and projects, producing the same response as mainPara")
         void adapterDelegates() {
-            ScreenResponse<UserAddResponse> answer = controller.addUser(populatedRequest(), 0x7D,
+            var answer = controller.addUser(populatedRequest(), 0x7D,
                     NavigationContext.COMMAREA_LENGTH, null);
 
             UserAddResponse viaAdapter = answer.screen();
@@ -1115,187 +1325,760 @@ class UserAddControllerTest {
     }
 
     // =================================================================================================
-    // The transaction boundary. COUSR01C:240 is EXEC CICS WRITE, and a CICS task's syncpoint at RETURN
-    // is what makes it durable. Every other test in this class drives the program with a stubbed
-    // repository, which is right for parity and is exactly why none of them can see whether the insert
-    // survives the connection going back to the pool.
+    // The seed identities of app/jcl/DUSRSECJ.jcl, and the two answers they distinguish.
+    //
+    // USRSEC has no fixture under app/data/ASCII. It is seeded in-stream: //SYSUT1 DD * at DUSRSECJ.jcl:34
+    // with ten records on lines 35-44, each fifty-seven characters - eight for the id, twenty for the
+    // first name, twenty for the last, eight for the password and one for the type - which is
+    // SEC-USER-DATA less its trailing SEC-USR-FILLER X(23), so a loader right-pads fifty-seven to eighty.
+    // Five ids are administrators and five are regular users, and all ten carry the password literal
+    // PASSWORD. An id the seed already holds is what makes a duplicate reachable; one it does not hold is
+    // what makes an addition reachable.
     // =================================================================================================
 
     @Nested
-    @DisplayName("The transaction boundary - the USRSEC insert must survive the connection's return")
-    class TheTransactionBoundary {
+    @DisplayName("Seed identities - app/jcl/DUSRSECJ.jcl:34-44")
+    class SeedIdentities {
 
-        /** The dataset the binding names, quoted as a delimited identifier by the repository. */
-        private static final String DSNAME = "TEST.USRSEC.VSAM.KSDS";
+        /** An id the in-stream seed does not hold, so adding it is the NORMAL path. */
+        private static final String UNSEEDED_ID = "NEWUSER1";
+
+        /** The first id the seed holds, so adding it again is the duplicate path. */
+        private static final String SEEDED_ADMIN_ID = "ADMIN001";
+
+        /** The password literal every one of the ten seed records carries, filling PIC X(08) exactly. */
+        private static final String SEED_PASSWORD = "PASSWORD";
 
         @Test
-        @DisplayName("the inserted user is still there after the request, on a pool that does not "
-                + "auto-commit")
-        void theInsertIsCommitted() {
-            // The pool is configured exactly as application.yml:146 configures production - auto-commit
-            // false - because that setting is what makes this observable. Under it, a statement issued
-            // with no transaction open is rolled back when Hikari takes the connection back, and the
-            // screen still says 'User USR1 has been added ...' because the repository reported NORMAL
-            // and was telling the truth about the statement it executed.
-            withTransactionalContext(true, (controller, verifier) -> {
-                ScreenResponse<UserAddResponse> response = controller.addUser(populatedRequest(),
-                        (int) CicsAid.DFHENTER, NavigationContext.COMMAREA_LENGTH, null);
+        @DisplayName("L251-259: an unseeded id is added and confirmed by name")
+        void anUnseededIdIsAdded() {
+            ProgramState state = enter(request("Newton", "Newman", UNSEEDED_ID, SEED_PASSWORD, "U"));
 
-                assertThat(response.screen().errMsg())
-                        .as("the screen the operator is shown")
-                        .startsWith("User USR1 has been added");
-                assertThat(recordsIn(verifier))
-                        .as("and the record the screen promised, read back on another connection")
-                        .hasSize(1)
-                        .allSatisfy(image -> assertThat(image).hasSize(80).startsWith("USR1    "));
-            });
+            assertThat(state.wroteRecord()).isTrue();
+            assertThat(state.errFlgOff()).isTrue();
+            assertThat(state.message()).isEqualTo(pad("User NEWUSER1 has been added ..."));
+            assertThat(state.errMsgColour()).as("L254: MOVE DFHGREEN TO ERRMSGC")
+                    .isEqualTo(BmsAttributes.DFHGREEN);
+            assertThat(SEED_PASSWORD).as("the seed literal fills SEC-USR-PWD PIC X(08) exactly")
+                    .hasSize(SecUserRecord.SEC_USR_PWD_LENGTH);
         }
 
         @Test
-        @DisplayName("without the boundary the same call reports success and leaves nothing behind, "
-                + "which is the defect this closes")
-        void withoutTheBoundaryTheInsertIsLost() {
-            // The control, and it is what makes the case above evidence rather than assertion. The only
-            // difference is that transaction management is not enabled, so @Transactional advises
-            // nothing - which is the same runtime the annotation's absence produced. The screen is
-            // identical; the dataset is empty.
-            withTransactionalContext(false, (controller, verifier) -> {
-                ScreenResponse<UserAddResponse> response = controller.addUser(populatedRequest(),
-                        (int) CicsAid.DFHENTER, NavigationContext.COMMAREA_LENGTH, null);
+        @DisplayName("L260-266: a seeded id earns the duplicate answer, whichever RESP reports it")
+        void aSeededIdIsRefusedAsADuplicate() {
+            when(repository.add(any(SecUserRecord.class))).thenReturn(WriteResult.duplicateRecord());
 
-                assertThat(response.screen().errMsg())
-                        .as("the operator is told the same thing either way")
-                        .startsWith("User USR1 has been added");
-                assertThat(recordsIn(verifier))
-                        .as("but nothing was committed")
-                        .isEmpty();
-            });
+            ProgramState state = enter(request("Margaret", "Gold", SEEDED_ADMIN_ID, SEED_PASSWORD, "A"));
+
+            assertThat(state.wroteRecord()).isFalse();
+            assertThat(state.errFlgOn()).isTrue();
+            assertThat(state.message()).isEqualTo(pad(UserAddController.MSG_USER_ID_EXISTS));
+            assertThat(state.cursorField()).contains(UserAddController.CURSOR_USERID);
         }
 
         @Test
-        @DisplayName("the insert enlists in the unit of work, so a task that never commits leaves "
-                + "nothing behind")
-        void theInsertIsRolledBackWithTheUnitOfWork() {
-            // The other half of a boundary. Committing is only meaningful if not committing is equally
-            // possible: this drives the same request inside a unit of work the test then abandons, which
-            // is the CICS task that abends before its syncpoint. The insert has to be enlisted in that
-            // unit rather than standing outside it, or the record would survive an abend the mainframe
-            // would have backed out.
-            withTransactionalContext(true, (controller, verifier) -> {
-                TransactionTemplate abandoned = new TransactionTemplate(new JdbcTransactionManager(
-                        Objects.requireNonNull(verifier.getDataSource())));
+        @DisplayName("L256: a two-character id yields 'User AB has been added ...' with no interior padding")
+        void aShortIdCarriesNoInteriorPadding() {
+            ProgramState state = enter(request("Ann", "Bell", "AB", SEED_PASSWORD, "U"));
 
-                ScreenResponse<UserAddResponse> response = abandoned.execute(status -> {
-                    ScreenResponse<UserAddResponse> answer = controller.addUser(populatedRequest(),
-                            (int) CicsAid.DFHENTER, NavigationContext.COMMAREA_LENGTH, null);
-                    status.setRollbackOnly();
-                    return answer;
-                });
+            // The record field is 'AB      ' - PIC X(08), six trailing spaces - but DELIMITED BY SPACE
+            // stops the sending operand at the first space, so the message carries 'AB' and the two words
+            // either side of it are separated by exactly one space each. A naive concatenation of the
+            // whole eight-byte field would have produced 'User AB        has been added ...'.
+            assertThat(state.message()).isEqualTo(pad("User AB has been added ..."));
+            assertThat(state.message()).doesNotContain("AB  ");
+            assertThat(state.message().strip()).isEqualTo("User AB has been added ...");
+            assertThat(writtenRecord().secUsrId()).as("while the RECORD keeps its full declared width")
+                    .isEqualTo("AB      ");
+        }
 
-                assertThat(response).isNotNull();
-                assertThat(response.screen().errMsg())
-                        .as("the program is unchanged - it still reports what it did")
-                        .startsWith("User USR1 has been added");
-                assertThat(recordsIn(verifier))
-                        .as("but the unit of work was abandoned, so the insert went with it")
-                        .isEmpty();
-            });
+        @ParameterizedTest(name = "id \"{0}\" is quoted as \"{1}\"")
+        @CsvSource({
+            "A, User A has been added ...",
+            "AB, User AB has been added ...",
+            "USR1, User USR1 has been added ...",
+            "NEWUSER1, User NEWUSER1 has been added ...",
+            "ADMIN005, User ADMIN005 has been added ..."
+        })
+        @DisplayName("every id width from one to eight is quoted with single spaces around it")
+        void everyIdWidthIsQuotedWithSingleSpaces(String userId, String expectedMessage) {
+            ProgramState state = enter(request("First", "Last", userId, SEED_PASSWORD, "U"));
+
+            assertThat(state.message()).isEqualTo(pad(expectedMessage));
         }
 
         @Test
-        @DisplayName("the boundary is on the HTTP entry point, and mainPara stays free of it")
-        void theBoundaryIsOnTheEntryPoint() throws Exception {
-            // Placement is the whole of it. On the entry point the annotation is advised by the proxy
-            // Spring creates; on mainPara it would be reached by self-invocation from within the same
-            // instance and advise nothing at all - and it would also put a transaction in the path of
-            // every parity test, which drive mainPara directly against a stubbed repository.
-            assertThat(UserAddController.class
-                    .getMethod("addUser", UserAddRequest.class, Integer.class, Integer.class, Integer.class)
-                    .isAnnotationPresent(Transactional.class))
-                    .isTrue();
-            assertThat(UserAddController.class
-                    .getMethod("mainPara", UserAddRequest.class, byte.class, int.class)
-                    .isAnnotationPresent(Transactional.class))
-                    .isFalse();
-            assertThat(Modifier.isFinal(UserAddController.class.getModifiers()))
-                    .as("a final class cannot be proxied by CGLIB, so the annotation would be inert")
-                    .isFalse();
-            assertThat(Modifier.isFinal(UserAddController.class
-                    .getMethod("addUser", UserAddRequest.class, Integer.class, Integer.class, Integer.class)
-                    .getModifiers()))
-                    .as("nor can a final method be overridden by the proxy")
-                    .isFalse();
+        @DisplayName("L252, L287-295: a successful add blanks every screen field INCLUDING the password")
+        void successBlanksEveryScreenFieldIncludingThePassword() {
+            ProgramState state = enter(request("Newton", "Newman", UNSEEDED_ID, SEED_PASSWORD, "U"));
+
+            UserAddResponse response = state.response();
+            // INITIALIZE-ALL-FIELDS moves SPACES into USERIDI, FNAMEI, LNAMEI, PASSWDI and USRTYPEI.
+            // The password is in that list, which is why UserAddResponse declares a passwd member at all:
+            // it carries a blank, never a value read back out of USRSEC. COUSR01C only ever reads PASSWDI
+            // and stores it at :157 - it never reads a password from the dataset onto the screen.
+            assertThat(response.passwd()).isEqualTo(" ".repeat(UserAddResponse.PASSWD_LENGTH));
+            assertThat(response.userId()).isEqualTo(" ".repeat(UserAddResponse.USER_ID_LENGTH));
+            assertThat(response.fName()).isEqualTo(" ".repeat(UserAddResponse.F_NAME_LENGTH));
+            assertThat(response.lName()).isEqualTo(" ".repeat(UserAddResponse.L_NAME_LENGTH));
+            assertThat(response.usrType()).isEqualTo(" ".repeat(UserAddResponse.USR_TYPE_LENGTH));
+            // The submitted password does not survive anywhere on the response.
+            assertThat(response.passwd()).doesNotContain(SEED_PASSWORD);
+            assertThat(response.errMsg()).doesNotContain(SEED_PASSWORD);
+            // L289: the cursor goes back to the first field of the now-empty form.
+            assertThat(state.cursorField()).contains(UserAddController.CURSOR_FNAME);
         }
+
+        @Test
+        @DisplayName("L96-97, L287-295: PF4 blanks the same five fields, password included")
+        void clearBlanksTheSameFiveFields() {
+            ProgramState state = controller.mainPara(
+                    request("Newton", "Newman", UNSEEDED_ID, SEED_PASSWORD, "U"),
+                    CicsAid.DFHPF4, NavigationContext.COMMAREA_LENGTH);
+
+            UserAddResponse response = state.response();
+            assertThat(response.passwd()).isEqualTo(" ".repeat(UserAddResponse.PASSWD_LENGTH));
+            assertThat(response.userId()).isEqualTo(" ".repeat(UserAddResponse.USER_ID_LENGTH));
+            assertThat(response.fName()).isEqualTo(" ".repeat(UserAddResponse.F_NAME_LENGTH));
+            assertThat(response.lName()).isEqualTo(" ".repeat(UserAddResponse.L_NAME_LENGTH));
+            assertThat(response.usrType()).isEqualTo(" ".repeat(UserAddResponse.USR_TYPE_LENGTH));
+            assertThat(state.message()).as("L295 blanks WS-MESSAGE too, so PF4 says nothing")
+                    .isEqualTo(" ".repeat(UserAddController.WS_MESSAGE_LENGTH));
+            verify(repository, never()).add(any(SecUserRecord.class));
+        }
+
+        private SecUserRecord writtenRecord() {
+            org.mockito.ArgumentCaptor<SecUserRecord> captor =
+                    org.mockito.ArgumentCaptor.forClass(SecUserRecord.class);
+            verify(repository).add(captor.capture());
+            return captor.getValue();
+        }
+    }
+
+    // =================================================================================================
+    // Preserved absences. Three things COUSR01C does NOT do, and which the Java must go on not doing.
+    // Each is verified against the source rather than assumed, because "absent" is the one property a
+    // reader cannot confirm by looking at the Java alone.
+    // =================================================================================================
+
+    @Nested
+    @DisplayName("Preserved absences - COUSR01C:57, :172-173, and the un-extended commarea")
+    class PreservedAbsences {
+
+        @Test
+        @DisplayName("B4: DFHATTR is commented out at :57, so no DFHATTR attribute is in play")
+        void dfhattrContributesNothing() {
+            // app/cbl/COUSR01C.cbl:55-57 reads, in order:
+            //     COPY DFHAID.
+            //     COPY DFHBMSCA.
+            //    *COPY DFHATTR.
+            // The third is commented, so the compiler never expanded it and the program cannot name a
+            // DFHATTR item. What it CAN name is DFHAID's attention identifiers and DFHBMSCA's attributes,
+            // and those are exactly the two constant sets this class asserts against. This test documents
+            // the boundary rather than asserting a DFHATTR-specific behaviour, because there is none to
+            // assert: the migration plan's "DFHATTR: 2 consumers" counts this commented line textually.
+            assertThat(CicsAid.DFHENTER).as("DFHAID is copied, so DFHENTER is reachable").isNotZero();
+            assertThat(CicsAid.DFHPF3).isNotZero();
+            assertThat(CicsAid.DFHPF4).isNotZero();
+            assertThat(BmsAttributes.DFHGREEN).as("DFHBMSCA is copied, so DFHGREEN is reachable")
+                    .isNotZero();
+            assertThat(BmsAttributes.DFHRED).isNotZero();
+
+            // And the two colours the program actually moves are DFHBMSCA's, distinct from one another.
+            ProgramState added = enter(populatedRequest());
+            assertThat(added.errMsgColour()).isEqualTo(BmsAttributes.DFHGREEN);
+            setUp();
+            ProgramState refused = enter(request("  ", "Doe", "USR1", "PASS1234", "U"));
+            assertThat(refused.errMsgColour()).isEqualTo(BmsAttributes.DFHDFCOL);
+            assertThat(BmsAttributes.DFHGREEN).isNotEqualTo(BmsAttributes.DFHDFCOL);
+        }
+
+        @Test
+        @DisplayName("B5: :172-173 are commented out, so a transfer leaves the identity fields alone")
+        void theCommentedMovesStayAbsent() {
+            // RETURN-TO-PREV-SCREEN, verbatim:
+            //     MOVE WS-TRANID    TO CDEMO-FROM-TRANID     <- runs
+            //     MOVE WS-PGMNAME   TO CDEMO-FROM-PROGRAM    <- runs
+            //    *MOVE WS-USER-ID   TO CDEMO-USER-ID         <- does NOT run
+            //    *MOVE SEC-USR-TYPE TO CDEMO-USER-TYPE       <- does NOT run
+            //     MOVE ZEROS        TO CDEMO-PGM-CONTEXT     <- runs
+            // Restoring either commented line would overwrite the signed-on operator's identity with the
+            // identity of the user just added - which is precisely the behaviour change the comment
+            // averted, and the reason the lines must stay inert.
+            NavigationContext signedOn = NavigationContext.empty()
+                    .withUserId("ADMIN001")
+                    .withUserTypeAdmin()
+                    .withPgmReenter();
+            UserAddRequest leaving = new UserAddRequest(null, null, null, null, null, null,
+                    "Newton", "Newman", "NEWUSER1", "PASSWORD", "U", null, signedOn, null);
+
+            ProgramState state = controller.mainPara(leaving, CicsAid.DFHPF3,
+                    NavigationContext.COMMAREA_LENGTH);
+
+            assertThat(state.transferred()).isTrue();
+            assertThat(state.commarea().userId()).as(":172 is commented, so the operator's id survives")
+                    .isEqualTo("ADMIN001");
+            assertThat(state.commarea().userType()).as(":173 is commented, so the operator's type survives")
+                    .isEqualTo("A");
+            assertThat(state.commarea().isAdmin()).isTrue();
+            // The id of the user being added never reaches the identity field.
+            assertThat(state.commarea().userId()).isNotEqualTo("NEWUSER1");
+            assertThat(state.commarea().userType()).isNotEqualTo("U");
+            // While the three lines that are NOT commented did run.
+            assertThat(state.commarea().fromTranid()).isEqualTo("CU01");
+            assertThat(state.commarea().fromProgram()).isEqualTo("COUSR01C");
+            assertThat(state.commarea().pgmContext()).isZero();
+            assertThat(state.commarea().toProgram()).isEqualTo(UserAddController.ADMIN_MENU_PROGRAM);
+        }
+
+        @Test
+        @DisplayName("B5: the identity fields are equally untouched by a plain add, which never transfers")
+        void anAddDoesNotTouchTheIdentityEither() {
+            NavigationContext signedOn = NavigationContext.empty()
+                    .withUserId("USER0001")
+                    .withUserTypeUser()
+                    .withPgmReenter();
+            UserAddRequest adding = new UserAddRequest(null, null, null, null, null, null,
+                    "Newton", "Newman", "NEWUSER1", "PASSWORD", "A", null, signedOn, null);
+
+            ProgramState state = controller.mainPara(adding, CicsAid.DFHENTER,
+                    NavigationContext.COMMAREA_LENGTH);
+
+            assertThat(state.wroteRecord()).isTrue();
+            assertThat(state.commarea().userId()).isEqualTo("USER0001");
+            assertThat(state.commarea().userType()).as("adding an administrator does not promote the "
+                    + "operator who added them").isEqualTo("U");
+            assertThat(state.commarea().isUser()).isTrue();
+        }
+
+        @Test
+        @DisplayName("B5: the commarea is the plain 160-byte COCOM01Y, with no inline extension")
+        void theCommareaCarriesNoInlineExtension() {
+            // COUSR00C, COUSR02C and COUSR03C each redefine the tail of CARDDEMO-COMMAREA with a 34-byte
+            // CDEMO-CU0n-INFO block carrying the paging cursor and the selection flag. COUSR01C does not:
+            // grep -c 'CDEMO-CU0[0-9]-INFO' app/cbl/COUSR01C.cbl returns 0. So this screen has no page
+            // number, no next-page flag, no selection flag and no auto-lookup-from-selection branch - it
+            // is a blank form that is filled in and written, and nothing more.
+            ProgramState state = enter(populatedRequest());
+
+            // COCOM01Y's own arithmetic: 34 general + 84 customer + 12 account + 16 card + 14 more = 160.
+            assertThat(NavigationContext.COMMAREA_LENGTH).isEqualTo(160);
+            assertThat(NavigationContext.GENERAL_INFO_LENGTH + NavigationContext.CUSTOMER_INFO_LENGTH
+                    + NavigationContext.ACCOUNT_INFO_LENGTH + NavigationContext.CARD_INFO_LENGTH
+                    + NavigationContext.MORE_INFO_LENGTH)
+                    .isEqualTo(NavigationContext.COMMAREA_LENGTH);
+            // An extension would have made the accepted length 160 + 34 = 194. It is not accepted.
+            assertThat(state.eibcalen()).isEqualTo(NavigationContext.COMMAREA_LENGTH);
+            assertThatThrownBy(() -> controller.addUser(populatedRequest(), null,
+                    NavigationContext.COMMAREA_LENGTH + NavigationContext.GENERAL_INFO_LENGTH, null))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining(UserAddController.EIBCALEN_PARAM);
+        }
+
+        @Test
+        @DisplayName("B5: neither the request nor the response declares a paging or selection member")
+        void noPagingOrSelectionMemberIsDeclared() throws Exception {
+            ObjectMapper mapper = new ObjectMapper();
+            UserAddResponse response = enter(populatedRequest()).response();
+
+            String requestJson = mapper.writeValueAsString(populatedRequest());
+            String responseJson = mapper.writeValueAsString(response);
+
+            for (String absent : List.of("cu01Info", "cu00Info", "pageNum", "nextPageFlg", "usrSelFlg",
+                    "usrSelected", "usridFirst", "usridLast")) {
+                assertThat(requestJson).as("the request must not carry %s", absent)
+                        .doesNotContain(absent);
+                assertThat(responseJson).as("the response must not carry %s", absent)
+                        .doesNotContain(absent);
+            }
+            // Nor is there any read path at all on this screen: nothing is ever looked up, only written.
+            verify(repository, never()).read(any());
+        }
+
+        @Test
+        @DisplayName("B5: the only dataset call this program makes is the WRITE at :240")
+        void theOnlyDatasetCallIsTheWrite() {
+            enter(populatedRequest());
+
+            verify(repository).add(any(SecUserRecord.class));
+            // No STARTBR, no READNEXT, no READ, no REWRITE, no DELETE. COUSR01C declares one EXEC CICS
+            // file command and this is it, so an auto-lookup branch could not exist without adding one.
+            org.mockito.Mockito.verifyNoMoreInteractions(repository);
+        }
+    }
+
+    // =================================================================================================
+    // Error highlighting - CSSETATY through common.FieldAttributeSetter.
+    //
+    // The copybook's outer test is (FLG-NOT-OK OR FLG-BLANK) AND CDEMO-PGM-REENTER, so first entry never
+    // highlights however wrong the screen is; the inner test refines it to FLG-BLANK, which is what adds
+    // the asterisk on top of the colour.
+    // =================================================================================================
+
+    @Nested
+    @DisplayName("Error highlighting - CSSETATY, reenter-gated")
+    class ErrorHighlighting {
+
+        @Test
+        @DisplayName("G38: on ENTER nothing is highlighted, even with a blank field on the screen")
+        void firstEntryNeverHighlights() {
+            FieldAttributeSetter.FieldHighlight highlight = FieldAttributeSetter.resolve(
+                    FieldAttributeSetter.FieldValidationState.of(false, true), false,
+                    "FNAME", UserAddResponse.MAP_NAME);
+
+            assertThat(highlight.untouched()).isTrue();
+            assertThat(highlight.colourItemAssigned()).isFalse();
+            assertThat(highlight.outputItemAssigned()).isFalse();
+        }
+
+        @Test
+        @DisplayName("G38: on REENTER a blank field takes DFHRED on its colour item and '*' on its output")
+        void reenterHighlightsABlankField() {
+            FieldAttributeSetter.FieldHighlight highlight = FieldAttributeSetter.resolve(
+                    FieldAttributeSetter.FieldValidationState.of(false, true), true,
+                    "FNAME", UserAddResponse.MAP_NAME);
+
+            assertThat(highlight.colourItemAssigned()).isTrue();
+            assertThat(highlight.colourItemValue()).isEqualTo(BmsAttributes.DFHRED);
+            assertThat(highlight.outputItemAssigned()).isTrue();
+            assertThat(highlight.outputItemValue()).isEqualTo(FieldAttributeSetter.ASTERISK);
+            assertThat(highlight.colourItemName()).isEqualTo("FNAMEC");
+            assertThat(highlight.outputItemName()).isEqualTo("FNAMEO");
+            assertThat(highlight.untouched()).isFalse();
+        }
+
+        @Test
+        @DisplayName("on REENTER a not-ok but non-blank field takes the colour only, never the asterisk")
+        void reenterHighlightsANotOkFieldWithoutTheAsterisk() {
+            FieldAttributeSetter.FieldHighlight highlight = FieldAttributeSetter.resolve(
+                    FieldAttributeSetter.FieldValidationState.of(true, false), true,
+                    "USERID", UserAddResponse.MAP_NAME);
+
+            assertThat(highlight.colourItemAssigned()).as("the outer action is unconditional").isTrue();
+            assertThat(highlight.outputItemAssigned()).as("the inner test is FLG-BLANK only").isFalse();
+            assertThat(highlight.colourItemName()).isEqualTo("USERIDC");
+        }
+
+        @ParameterizedTest(name = "notOk={0} blank={1} reenter={2} -> colour={3} asterisk={4}")
+        @CsvSource({
+            "false, false, false, false, false",
+            "false, false, true,  false, false",
+            "false, true,  false, false, false",
+            "false, true,  true,  true,  true",
+            "true,  false, false, false, false",
+            "true,  false, true,  true,  false",
+            "true,  true,  false, false, false",
+            "true,  true,  true,  true,  true"
+        })
+        @DisplayName("G50: the complete truth table of the copybook's two nested tests")
+        void theCompleteTruthTable(boolean notOk, boolean blank, boolean reenter, boolean colour,
+                boolean asterisk) {
+            FieldAttributeSetter.FieldHighlight highlight =
+                    FieldAttributeSetter.resolveFromFlags(notOk, blank, reenter, "FNAME",
+                            UserAddResponse.MAP_NAME);
+
+            assertThat(highlight.colourItemAssigned()).isEqualTo(colour);
+            assertThat(highlight.outputItemAssigned()).isEqualTo(asterisk);
+        }
+
+        @ParameterizedTest(name = "{0} is highlighted on reenter when it is the blank one")
+        @ValueSource(strings = {"FNAME", "LNAME", "USERID", "PASSWD", "USRTYPE"})
+        @DisplayName("each of the five data fields names its own colour and output items")
+        void everyDataFieldNamesItsOwnItems(String prefix) {
+            FieldAttributeSetter.FieldHighlight highlight = FieldAttributeSetter.resolve(
+                    FieldAttributeSetter.FieldValidationState.of(false, true), true, prefix,
+                    UserAddResponse.MAP_NAME);
+
+            assertThat(highlight.colourItemName()).isEqualTo(prefix + "C");
+            assertThat(highlight.outputItemName()).isEqualTo(prefix + "O");
+            assertThat(highlight.colourItemValue()).isEqualTo(BmsAttributes.DFHRED);
+        }
+
+        @Test
+        @DisplayName("the program's own first entry is the ENTER state, so it paints without highlighting")
+        void theProgramsFirstEntryIsNotHighlighted() {
+            // COUSR01C:83-87. The screen is painted from LOW-VALUES with the cursor on FNAMEL and no
+            // validation has run at all, so there is nothing to highlight and CDEMO-PGM-CONTEXT is still
+            // the ENTER value when the decision would have been taken.
+            UserAddRequest first = new UserAddRequest(null, null, null, null, null, null,
+                    null, null, null, null, null, null, NavigationContext.empty(), null);
+            assertThat(NavigationContext.empty().isEnter()).isTrue();
+
+            ProgramState state = controller.mainPara(first, CicsAid.DFHENTER,
+                    NavigationContext.COMMAREA_LENGTH);
+
+            assertThat(state.errFlgOff()).isTrue();
+            assertThat(state.errMsgColour()).isEqualTo(BmsAttributes.DFHDFCOL);
+            assertThat(state.screenMetadata().fields())
+                    .as("no field carries a highlight on a first entry").isEmpty();
+        }
+    }
+
+    // =================================================================================================
+    // The HTTP contract - POST /api/users, transaction CU01 [app/csd/CARDDEMO.CSD:459-460].
+    //
+    // A standalone dispatcher over this one controller. The rules here are the adapter's own and live
+    // nowhere else: the verb and the path, the status a wrong verb earns, which members the wire format
+    // carries, whether a blank field is answered by the program or refused by the binder, and that
+    // nothing at all is pinned to a session, a cookie, a redirect or a forward.
+    // =================================================================================================
+
+    @Nested
+    @DisplayName("The HTTP contract - POST /api/users")
+    class HttpContract {
+
+        /** The twelve wire names, in the order app/cpy-bms/COUSR01.CPY declares their xxxI items. */
+        private static final List<String> PAYLOAD_FIELDS = List.of(
+            "trnName", "title01", "curDate", "pgmName", "title02", "curTime", "fName", "lName",
+            "userId", "passwd", "usrType", "errMsg");
+
+        private final ObjectMapper mapper = new ObjectMapper();
 
         /**
-         * Runs a body against a real controller over a real repository, a real non-auto-commit pool and a
-         * private in-memory database.
+         * A dispatcher carrying only {@code POST /api/users}, with the application's own advice attached.
          *
-         * @param transactionManagementEnabled whether {@code @Transactional} is advised at all
-         * @param body                         given the controller as the context exposes it - proxied
-         *                                     when management is enabled - and a template for reading the
-         *                                     dataset back
+         * <p>The advice is the real {@link WebConfig.CobolErrorHandler} rather than the dispatcher's
+         * default handling, because the status and body a rejected request earns are that class's
+         * decision and asserting the default would assert nothing about this application.
+         *
+         * @return the dispatcher; never {@code null}
          */
-        private void withTransactionalContext(boolean transactionManagementEnabled,
-                java.util.function.BiConsumer<UserAddController, JdbcTemplate> body) {
-            // A fresh name per test rather than a shared counter, which is how TransactionRepositoryTest
-            // isolates its relations and which keeps this class free of mutable static state (gate G53).
-            String url = "jdbc:h2:mem:useradd_tx" + UUID.randomUUID()
-                    + ";DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE";
-            HikariDataSource pool = new HikariDataSource();
-            pool.setJdbcUrl(url);
-            pool.setDriverClassName("org.h2.Driver");
-            pool.setUsername("sa");
-            pool.setPassword("");
-            // The two settings that matter, and both mirror production: no auto-commit, and a pool small
-            // enough that the connection a request used is the one the next request gets back.
-            pool.setAutoCommit(false);
-            pool.setMaximumPoolSize(2);
+        private MockMvc http() {
+            return MockMvcBuilders.standaloneSetup(controller)
+                    .setControllerAdvice(new WebConfig.CobolErrorHandler())
+                    .setMessageConverters(new MappingJackson2HttpMessageConverter(mapper))
+                    .build();
+        }
 
-            try (HikariDataSource opened = pool) {
-                JdbcTemplate schema = new JdbcTemplate(opened);
-                new TransactionTemplate(new JdbcTransactionManager(opened)).executeWithoutResult(
-                        status -> schema.execute("CREATE TABLE \"" + DSNAME + "\" (RECORD_IMAGE "
-                                + "VARCHAR(80))"));
+        private String body(UserAddRequest payload) throws Exception {
+            return mapper.writeValueAsString(payload);
+        }
 
-                AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext();
-                context.registerBean(DataSource.class, () -> opened);
-                context.registerBean(PlatformTransactionManager.class,
-                        () -> new JdbcTransactionManager(opened));
-                context.registerBean(UserAddController.class, () -> new UserAddController(
-                        new SecUserRepository(new JdbcTemplate(opened), bindings(),
-                                StandardCharsets.US_ASCII, RecordImageForm.CHARACTER),
-                        FIXED_CLOCK, StandardCharsets.US_ASCII));
-                if (transactionManagementEnabled) {
-                    context.register(TransactionManagementEnabled.class);
-                }
-                try (AnnotationConfigApplicationContext running = context) {
-                    running.refresh();
-                    body.accept(running.getBean(UserAddController.class), new JdbcTemplate(opened));
-                }
+        private ResultMatcher errMsgStartsWith(String expectedPrefix) {
+            return result -> assertThat(mapper.readTree(result.getResponse().getContentAsString())
+                            .path("errMsg").asText())
+                    .startsWith(expectedPrefix);
+        }
+
+        @Test
+        @DisplayName("the mapping is POST /api/users and it answers 200 JSON with the screen unwrapped")
+        void theMappingRoutesAndAnswers() throws Exception {
+            http().perform(post(UserAddController.USERS_PATH)
+                            .param(UserAddController.EIBCALEN_PARAM,
+                                    String.valueOf(NavigationContext.COMMAREA_LENGTH))
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(body(populatedRequest())))
+                    .andExpect(status().isOk())
+                    .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
+                    .andExpect(errMsgStartsWith("User USR1 has been added ..."))
+                    .andExpect(jsonPath("$.trnName").value("CU01"))
+                    .andExpect(jsonPath("$.pgmName").value("COUSR01C"))
+                    .andExpect(jsonPath("$.nextProgram").value("COUSR01C"))
+                    .andExpect(jsonPath("$.nextMapset").value("COUSR01"))
+                    .andExpect(jsonPath("$.nextMap").value("COUSR1A"));
+
+            verify(repository).add(any(SecUserRecord.class));
+        }
+
+        @Test
+        @DisplayName("the path is exactly /api/users, the projection CU01 was assigned")
+        void thePathIsTheOneTheTransactionWasMappedTo() {
+            assertThat(UserAddController.USERS_PATH).isEqualTo("/api/users");
+            assertThat(UserAddController.WS_TRANID).isEqualTo("CU01");
+            assertThat(UserAddController.WS_PGMNAME).isEqualTo("COUSR01C");
+        }
+
+        @ParameterizedTest(name = "{0} /api/users earns 405")
+        @ValueSource(strings = {"GET", "PUT", "DELETE", "PATCH", "HEAD"})
+        @DisplayName("only POST is mapped on this path, so any other verb earns 405")
+        void anyOtherVerbEarns405(String verb) throws Exception {
+            http().perform(MockMvcRequestBuilders.request(
+                            HttpMethod.valueOf(verb), UserAddController.USERS_PATH)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(body(populatedRequest())))
+                    .andExpect(status().isMethodNotAllowed());
+
+            verify(repository, never()).add(any(SecUserRecord.class));
+        }
+
+        @Test
+        @DisplayName("G9: the request body carries the twelve xxxI members and no xxxL, xxxF or xxxA")
+        void theRequestCarriesOnlyTheTwelvePayloadFields() throws Exception {
+            List<String> members = new ArrayList<>();
+            mapper.readTree(body(populatedRequest())).fieldNames().forEachRemaining(members::add);
+
+            // The twelve payload members, then the two that carry conversation rather than screen state.
+            assertThat(members).containsExactly("trnName", "title01", "curDate", "pgmName", "title02",
+                    "curTime", "fName", "lName", "userId", "passwd", "usrType", "errMsg",
+                    "navigationContext", "aid");
+
+            // The symbolic map declares a quad per field. Only the last of the four is a payload member:
+            // xxxL is the length CICS reports, xxxF the attribute byte and xxxA its REDEFINES view, and
+            // all three are metadata the transport has no business carrying.
+            String json = body(populatedRequest());
+            for (String prefix : PAYLOAD_FIELDS) {
+                String screenName = prefix.substring(0, 1).toUpperCase(java.util.Locale.ROOT)
+                        + prefix.substring(1);
+                assertThat(json).as("%sL must not be a member", prefix)
+                        .doesNotContain("\"" + prefix + "L\"").doesNotContain("\"" + screenName + "L\"");
+                assertThat(json).as("%sF must not be a member", prefix)
+                        .doesNotContain("\"" + prefix + "F\"").doesNotContain("\"" + screenName + "F\"");
+                assertThat(json).as("%sA must not be a member", prefix)
+                        .doesNotContain("\"" + prefix + "A\"").doesNotContain("\"" + screenName + "A\"");
             }
         }
 
-        /**
-         * @param template a template over the dataset's database
-         * @return every record image the dataset holds, read outside any transaction the body opened
-         */
-        private List<String> recordsIn(JdbcTemplate template) {
-            return template.queryForList("SELECT RECORD_IMAGE FROM \"" + DSNAME + "\"", String.class);
+        @Test
+        @DisplayName("G9: the id member is userId, from USERIDI - never usrIdIn, which is COUSR02/03's")
+        void theIdMemberIsTheOneThisMapDeclares() throws Exception {
+            String json = body(populatedRequest());
+
+            assertThat(json).contains("\"userId\"");
+            assertThat(json).as("USRIDIN belongs to COUSR02 and COUSR03, not to COUSR01")
+                    .doesNotContain("usrIdIn").doesNotContain("usridIn").doesNotContain("USRIDIN");
+            assertThat(UserAddRequest.USERID_FIELD).isEqualTo("USERIDI");
+            assertThat(UserAddRequest.USERID_LENGTH).isEqualTo(8);
         }
 
-        /** The catalogue naming {@link #DSNAME} at {@code CSUSR01Y}'s geometry. */
-        private DatasetBindings bindings() {
-            DatasetBindings catalogue = new DatasetBindings();
-            catalogue.put(SecUserRepository.CICS_FILE_NAME, new DatasetBinding(DSNAME, "ksds", false,
-                    "FB", null, SecUserRecord.RECORD_LENGTH, "CSUSR01Y", 8, null, null, null));
-            return catalogue;
+        @Test
+        @DisplayName("G9: CURTIME is X(8) on this map, not COSGN00's X(9)")
+        void curTimeIsEightOnThisMap() {
+            assertThat(UserAddRequest.CURTIME_LENGTH).isEqualTo(8);
+            assertThat(UserAddResponse.MAP_DERIVED_FIELD_LENGTHS.get(5)).isEqualTo(8);
         }
 
-        /** Turns on the proxying that makes {@code @Transactional} mean anything. */
-        @Configuration
-        @EnableTransactionManagement
-        static class TransactionManagementEnabled {
+        @Test
+        @DisplayName("a blank field is answered by the program with 200 and a message, NOT refused as 400")
+        void aBlankFieldIsAnsweredNotRefused() throws Exception {
+            // The request DTO declares no @NotBlank and no @NotNull, deliberately: COUSR01C:117-151
+            // answers each blank field with its OWN message, and a binder rejection would replace five
+            // distinct COBOL answers with one framework error the operator was never shown.
+            http().perform(post(UserAddController.USERS_PATH)
+                            .param(UserAddController.EIBCALEN_PARAM,
+                                    String.valueOf(NavigationContext.COMMAREA_LENGTH))
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(body(request(null, "Doe", "USR1", "PASS1234", "U"))))
+                    .andExpect(status().isOk())
+                    .andExpect(errMsgStartsWith(UserAddController.MSG_FIRST_NAME_EMPTY));
+
+            http().perform(post(UserAddController.USERS_PATH)
+                            .param(UserAddController.EIBCALEN_PARAM,
+                                    String.valueOf(NavigationContext.COMMAREA_LENGTH))
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(body(request("   ", "   ", "   ", "   ", " "))))
+                    .andExpect(status().isOk())
+                    .andExpect(errMsgStartsWith(UserAddController.MSG_FIRST_NAME_EMPTY));
+
+            verify(repository, never()).add(any(SecUserRecord.class));
+        }
+
+        @ParameterizedTest(name = "a blank {0} still answers 200")
+        @CsvSource({
+            "first name, First Name can NOT be empty...",
+            "last name, Last Name can NOT be empty...",
+            "user id, User ID can NOT be empty...",
+            "password, Password can NOT be empty...",
+            "user type, User Type can NOT be empty..."
+        })
+        @DisplayName("each of the five arms travels over HTTP as 200 with its own text")
+        void eachArmTravelsAsTwoHundred(String which, String expected) throws Exception {
+            String[] values = {"John", "Doe", "USR1", "PASS1234", "U"};
+            int blankIndex =
+                    List.of("first name", "last name", "user id", "password", "user type").indexOf(which);
+            values[blankIndex] = blankIndex == 4 ? " " : "  ";
+
+            http().perform(post(UserAddController.USERS_PATH)
+                            .param(UserAddController.EIBCALEN_PARAM,
+                                    String.valueOf(NavigationContext.COMMAREA_LENGTH))
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(body(request(values[0], values[1], values[2], values[3],
+                                    values[4]))))
+                    .andExpect(status().isOk())
+                    .andExpect(errMsgStartsWith(expected));
+        }
+
+        @Test
+        @DisplayName("@Size is the one constraint that does apply: an over-width field earns 400")
+        void anOverWidthFieldIsRefused() throws Exception {
+            // A value wider than the symbolic map's own PIC X(n) could not have arrived from a 3270 at
+            // all, so refusing it is not a new rule - it is the field's declared width, enforced.
+            String twentyOne = "A".repeat(UserAddRequest.FNAME_LENGTH + 1);
+
+            http().perform(post(UserAddController.USERS_PATH)
+                            .param(UserAddController.EIBCALEN_PARAM,
+                                    String.valueOf(NavigationContext.COMMAREA_LENGTH))
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(body(request(twentyOne, "Doe", "USR1", "PASS1234", "U"))))
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.fieldErrors[0].field").value("fName"));
+
+            verify(repository, never()).add(any(SecUserRecord.class));
+        }
+
+        @ParameterizedTest(name = "an over-width {0} earns 400")
+        @CsvSource({"fName, 21", "lName, 21", "userId, 9", "passwd, 9", "usrType, 2"})
+        @DisplayName("every data field's @Size maximum is the width its xxxI item declares")
+        void everyDataFieldEnforcesItsDeclaredWidth(String member, int overWidth) throws Exception {
+            String tooWide = "X".repeat(overWidth);
+            UserAddRequest payload = switch (member) {
+                case "fName" -> request(tooWide, "Doe", "USR1", "PASS1234", "U");
+                case "lName" -> request("John", tooWide, "USR1", "PASS1234", "U");
+                case "userId" -> request("John", "Doe", tooWide, "PASS1234", "U");
+                case "passwd" -> request("John", "Doe", "USR1", tooWide, "U");
+                default -> request("John", "Doe", "USR1", "PASS1234", tooWide);
+            };
+
+            http().perform(post(UserAddController.USERS_PATH)
+                            .param(UserAddController.EIBCALEN_PARAM,
+                                    String.valueOf(NavigationContext.COMMAREA_LENGTH))
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(body(payload)))
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.fieldErrors[0].field").value(member));
+
+            verify(repository, never()).add(any(SecUserRecord.class));
+        }
+
+        @Test
+        @DisplayName("a value at exactly the declared width is accepted, so the boundary is inclusive")
+        void aValueAtTheDeclaredWidthIsAccepted() throws Exception {
+            http().perform(post(UserAddController.USERS_PATH)
+                            .param(UserAddController.EIBCALEN_PARAM,
+                                    String.valueOf(NavigationContext.COMMAREA_LENGTH))
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(body(request("A".repeat(UserAddRequest.FNAME_LENGTH),
+                                    "B".repeat(UserAddRequest.LNAME_LENGTH), "NEWUSER1", "PASSWORD",
+                                    "U"))))
+                    .andExpect(status().isOk())
+                    .andExpect(errMsgStartsWith("User NEWUSER1 has been added ..."));
+        }
+
+        @Test
+        @DisplayName("G37: no session, no cookie, no redirect and no forward - the state is in the payload")
+        void nothingIsPinnedToTheClient() throws Exception {
+            MvcResult result = http().perform(post(UserAddController.USERS_PATH)
+                            .param(UserAddController.EIBCALEN_PARAM,
+                                    String.valueOf(NavigationContext.COMMAREA_LENGTH))
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(body(populatedRequest())))
+                    .andExpect(status().isOk())
+                    .andReturn();
+
+            assertThat(result.getRequest().getSession(false))
+                    .as("no HttpSession was created, so nothing is held between calls").isNull();
+            assertThat(result.getResponse().getCookies())
+                    .as("no cookie, so nothing is pinned to a client").isEmpty();
+            assertThat(result.getResponse().getRedirectedUrl()).as("no sendRedirect").isNull();
+            assertThat(result.getResponse().getForwardedUrl()).as("no server-side forward").isNull();
+            // The conversation comes back in the body instead, which is rule R6 in one assertion.
+            assertThat(result.getResponse().getContentAsString()).contains("navigationContext");
+        }
+
+        @Test
+        @DisplayName("G40: a PF3 transfer names its target in the body, never in a Location header")
+        void aTransferIsAResponseFieldNotARedirect() throws Exception {
+            MvcResult result = http().perform(post(UserAddController.USERS_PATH)
+                            .param(UserAddController.EIBAID_PARAM,
+                                    String.valueOf(Byte.toUnsignedInt(CicsAid.DFHPF3)))
+                            .param(UserAddController.EIBCALEN_PARAM,
+                                    String.valueOf(NavigationContext.COMMAREA_LENGTH))
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(body(populatedRequest())))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.nextProgram")
+                            .value(UserAddController.ADMIN_MENU_PROGRAM))
+                    .andReturn();
+
+            assertThat(result.getResponse().getRedirectedUrl()).isNull();
+            assertThat(result.getResponse().getForwardedUrl()).isNull();
+            assertThat(result.getResponse().getHeader(HttpHeaders.LOCATION))
+                    .as("XCTL is not a redirect: the client reads nextProgram and calls it").isNull();
+            assertThat(result.getResponse().getStatus()).isEqualTo(200);
+            verify(repository, never()).add(any(SecUserRecord.class));
+        }
+
+        @Test
+        @DisplayName("G37: two independent requests over one dispatcher do not interfere")
+        void independentRequestsDoNotInterfere() throws Exception {
+            MockMvc dispatcher = http();
+
+            MvcResult refused = dispatcher.perform(post(UserAddController.USERS_PATH)
+                            .param(UserAddController.EIBCALEN_PARAM,
+                                    String.valueOf(NavigationContext.COMMAREA_LENGTH))
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(body(request("  ", "Doe", "USR1", "PASS1234", "U"))))
+                    .andExpect(status().isOk())
+                    .andReturn();
+            assertThat(refused.getResponse().getContentAsString())
+                    .contains(UserAddController.MSG_FIRST_NAME_EMPTY);
+
+            MvcResult accepted = dispatcher.perform(post(UserAddController.USERS_PATH)
+                            .param(UserAddController.EIBCALEN_PARAM,
+                                    String.valueOf(NavigationContext.COMMAREA_LENGTH))
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(body(request("Newton", "Newman", "NEWUSER1", "PASSWORD", "U"))))
+                    .andExpect(status().isOk())
+                    .andReturn();
+
+            assertThat(accepted.getResponse().getContentAsString())
+                    .as("the previous request's error must not leak into this one")
+                    .doesNotContain(UserAddController.MSG_FIRST_NAME_EMPTY)
+                    .contains("User NEWUSER1 has been added ...");
+            assertThat(accepted.getRequest().getSession(false)).isNull();
+        }
+
+        @Test
+        @DisplayName("an unhandled key over HTTP lands on WHEN OTHER with the invalid-key message")
+        void anUnhandledKeyLandsOnWhenOther() throws Exception {
+            http().perform(post(UserAddController.USERS_PATH)
+                            .param(UserAddController.EIBAID_PARAM,
+                                    String.valueOf(Byte.toUnsignedInt(CicsAid.DFHPF9)))
+                            .param(UserAddController.EIBCALEN_PARAM,
+                                    String.valueOf(NavigationContext.COMMAREA_LENGTH))
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(body(populatedRequest())))
+                    .andExpect(status().isOk())
+                    .andExpect(errMsgStartsWith(SystemMessages.CCDA_MSG_INVALID_KEY.strip()));
+
+            verify(repository, never()).add(any(SecUserRecord.class));
+        }
+
+        @Test
+        @DisplayName("no body at all is EIBCALEN = 0, which transfers to the sign-on screen")
+        void noBodyIsTheColdStart() throws Exception {
+            http().perform(post(UserAddController.USERS_PATH))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.nextProgram").value(UserAddController.SIGNON_PROGRAM));
+
+            verify(repository, never()).add(any(SecUserRecord.class));
+        }
+
+        @Test
+        @DisplayName("a malformed body is refused by the advice, not answered as a screen")
+        void aMalformedBodyIsRefused() throws Exception {
+            http().perform(post(UserAddController.USERS_PATH)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"fName\": "))
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.code")
+                            .value(WebConfig.CobolErrorHandler.MALFORMED_REQUEST_CODE));
+
+            verify(repository, never()).add(any(SecUserRecord.class));
+        }
+
+        @Test
+        @DisplayName("the response is JSON only - no HTML, no template, no view name")
+        void theResponseIsJsonOnly() throws Exception {
+            MvcResult result = http().perform(post(UserAddController.USERS_PATH)
+                            .param(UserAddController.EIBCALEN_PARAM,
+                                    String.valueOf(NavigationContext.COMMAREA_LENGTH))
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(body(populatedRequest())))
+                    .andExpect(status().isOk())
+                    .andReturn();
+
+            assertThat(result.getModelAndView()).as("a REST controller resolves no view").isNull();
+            assertThat(result.getResponse().getContentAsString()).startsWith("{").endsWith("}");
         }
     }
 

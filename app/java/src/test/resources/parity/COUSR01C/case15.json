@@ -1,7 +1,7 @@
 {
   "program": "COUSR01C",
   "caseId": "case15",
-  "description": "The REENTER half of the pair, taken through the arm the summaries of this program usually omit. EVALUATE EIBAID at app/cbl/COUSR01C.cbl:90-103 has FOUR arms, not three: DFHENTER, DFHPF3, DFHPF4 at :96-97 and WHEN OTHER. DFHPF4 performs CLEAR-CURRENT-SCREEN at :279-282, which is INITIALIZE-ALL-FIELDS followed by a send. So all five data fields become SPACES - compare case14, where the same five fields are LOW-VALUES - WS-MESSAGE is blanked at :295 so ERRMSGO goes out as seventy-eight spaces, and the cursor returns to FNAMEL from :289. The arm does NOT raise WS-ERR-FLG, so the repainted screen carries no message and no error colour, and nothing is written. Everything typed is discarded, which is the whole point of the key.",
+  "description": "The REENTER half of the pair, taken through the fourth EVALUATE EIBAID arm - the one summaries of this program lose. EVALUATE EIBAID at app/cbl/COUSR01C.cbl:90-103 has FOUR arms, not three: DFHENTER at :91-92, DFHPF3 at :93-95, DFHPF4 at :96-97 and WHEN OTHER at :98-102. DFHPF4 performs CLEAR-CURRENT-SCREEN at :279-282, which is INITIALIZE-ALL-FIELDS followed by a send. INITIALIZE-ALL-FIELDS at :287-295 moves -1 into FNAMEL at :289 and SPACES into USERIDI, FNAMEI, LNAMEI, PASSWDI and USRTYPEI at :290-294 and into WS-MESSAGE at :295, so all five typed data fields go out as SPACES - compare case14, where the same five are LOW-VALUES from MOVE LOW-VALUES TO COUSR1AO at :85, which is x'00' and a materially different observable byte. A translation reaching for one figurative constant for both would pass one of the two cases and fail the other. The blanked WS-MESSAGE reaches the map through MOVE WS-MESSAGE TO ERRMSGO at :188, and the two widths are derived rather than trimmed: WS-MESSAGE PIC X(80) carries eighty spaces, ERRMSGO PIC X(78) truncates on the right to seventy-eight, and both channels are written out in full. The cursor returns to FNAMEL from :289. The arm does NOT raise WS-ERR-FLG, so the repainted screen carries no message and no error colour; COUSR01C copies neither CSSETATY nor CSSTRPFY, so no '*' marker and no per-field DFHRED exists to assert, and *COPY DFHATTR. at :57 is commented out, so no DFHATTR constant is compiled in at all. The commarea is untouched, so CDEMO-PGM-CONTEXT arrives 1 and leaves 1: PF4 clears the screen, not the conversation. Nothing is written and everything typed is discarded, which is the whole point of the key - USRSEC is left exactly as app/jcl/DUSRSECJ.jcl:35-44 seeded it, asserted both by the ten expectedFinalState row images and by the FINAL_STATE count of ten rows at eighty bytes, the count being the one statement no row expectation can make. Where the duplicate arm is NOT: :260-266 puts DFHRESP(DUPKEY) and DFHRESP(DUPREC) on two consecutive WHEN labels with no statements between them, so both fall into one arm - one 'User ID already exist...' text at :263-264, one -1 into USERIDL at :265, no write - and that equivalence follows from COBOL EVALUATE label semantics rather than from anything peculiar to this program. That pair is pinned in this folder by case08, which forces the write to the DUPKEY RESP, and by case09, which collides naturally with the seeded ADMIN001, while case10 and case13 own the write's WHEN OTHER fallback at :267-273 - whose 'Unable to Add User...' text and FNAMEL cursor are precisely what a translation that handled only DUPREC and let DUPKEY fall through to the fallback would wrongly emit. This case pins none of that and declares no forced outcome, because it never reaches the write and the harness refuses a run that declares an outcome it never asks for. Provenance: every expected value here is statically derived by structured reading of :76-107, :184-196, :214-233 and :279-295, cross-checked against app/cpy/CSUSR01Y.cpy's six-field eighty-byte layout - X(08) + X(20) + X(20) + X(08) + X(01) + SEC-USR-FILLER X(23), summed mechanically to 80 - app/cpy-bms/COUSR01.CPY's USERIDI PIC X(8) at :72 and ERRMSGO PIC X(78) at :164, whose USERIDL, ERRMSGC and sibling length and attribute items are metadata and never payload members, app/csd/CARDDEMO.CSD:88-89's FILE(USRSEC) definition with ADD(YES) at :93, app/jcl/DUSRSECJ.jcl:35-44 for the ten fifty-seven-character seed rows - row nine is USER0005, type U - and :64-68 for KEYS(8,0) RECORDSIZE(80,80) INDEXED, app/cpy/COCOM01Y.cpy for the sixteen commarea fields, app/cpy/CSDAT01Y.cpy for the header date and time, and app/cpy/COTTL01Y.cpy for the two title literals, whose Credit Card Demo Application alternative is commented out in the copybook and therefore is not what goes out. They were NOT captured from, recorded against or replayed from any execution of the legacy COBOL: that is empirically impossible here on eight independently verified counts, among them no z/OS or CICS runtime, an indexed file handler the available compiler reports as disabled, no Language Environment CEE* services, and DFHAID, DFHBMSCA and DFHATTR absent from this repository. Only the provenance of the expected values is substituted - twenty cases, field-for-field diffing and a required diff count of zero all stand. The pinned clock 2022-07-19T23:12:34 is the Ver: footer of the program source itself and is shared by all twenty cases of this folder, so no assertion here depends on a wall clock, and the code page is named explicitly as US-ASCII rather than inherited from the platform.",
   "unitKind": "CONTROLLER_POJO",
   "inputs": {
     "USRSEC": {
@@ -19,6 +19,7 @@
       ]
     }
   },
+  "jobParameters": {},
   "screenRequest": {
     "eibcalen": 160,
     "aid": "DFHPF4",
@@ -165,6 +166,14 @@
     {
       "dataset": "USRSEC",
       "kind": "USRSEC_FILLER_PAD_57_TO_80"
+    }
+  ],
+  "expectedDatasets": [
+    {
+      "dataset": "USRSEC",
+      "channel": "FINAL_STATE",
+      "rowCount": 10,
+      "recordLength": 80
     }
   ]
 }

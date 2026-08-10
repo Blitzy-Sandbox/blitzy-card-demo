@@ -1,7 +1,7 @@
 {
   "program": "COTRN00C",
   "caseId": "case02",
-  "description": "The first-entry path at :112-116 with twelve records on file: NOT CDEMO-PGM-REENTER, so the program sets REENTER, blanks COTRN0AO at :114 and runs PROCESS-ENTER-KEY. Nothing was typed and no cell was selected, so TRAN-ID takes LOW-VALUES at :207, CDEMO-CT00-PAGE-NUM is zeroed at :224 and PROCESS-PAGE-FORWARD paints a full page. This pins the page size of TEN as behaviour (gate G39): the loop at :297 runs while WS-IDX >= 11 is false, so it populates rows one to ten and stops - the eleventh record is NOT painted. It also pins the WS-IDX step at :301 (ten increments), the page-number COMPUTE at :306-307 (0 + 1 = 1), the look-ahead READNEXT at :308 finding record eleven and therefore SET NEXT-PAGE-YES at :310, and the two cursor writes POPULATE-TRAN-DATA makes only on the first and last rows - CDEMO-CT00-TRNID-FIRST at :393 from row one and CDEMO-CT00-TRNID-LAST at :439 from row ten. EIBAID is DFHENTER, so the guard at :285 skips the extra READNEXT and row one is not consumed. MAIN-PARA's first-entry branch performs BOTH PROCESS-ENTER-KEY at :115 AND SEND-TRNLST-SCREEN at :116, so this path sends one more time than PROCESS-PAGE-FORWARD does on its own - the last send is :116's and it re-paints the same screen with WS-MESSAGE unchanged.",
+  "description": "The RE-ENTRY path at app/cbl/COTRN00C.cbl:117-121, driven with the ENTER key over twelve records. CDEMO-PGM-CONTEXT arrives as 1, so 'IF NOT CDEMO-PGM-REENTER' at :112 is FALSE and control reaches the two statements no first-entry case executes at all: RECEIVE-TRNLST-SCREEN at :118 and the EVALUATE EIBAID at :119. DFHENTER matches the FIRST of the five arms at :120, which is the ordering gate G30 asserts - ENTER, then DFHPF3 at :122, then DFHPF7 at :125, then DFHPF8 at :127, with WHEN OTHER last at :129. This is the REENTER half of gate G38: MOVE LOW-VALUES TO COTRN0AO at :114 belongs to the enter path alone, so on re-entry the map area is the received one rather than a blanked one, and there is no field highlighting to gate because COTRN00C writes no attribute byte anywhere - it copies DFHBMSCA at :81 and never uses it, and it does not copy CSSETATY at all. All ten selection cells arrive as SPACES, so not one of the ten WHEN clauses at :149-178 is true and PROCESS-ENTER-KEY falls through to WHEN OTHER at :179-181, which moves SPACES into CDEMO-CT00-TRN-SEL-FLG and CDEMO-CT00-TRN-SELECTED; the guard at :183 is therefore FALSE, no XCTL is issued and no next program is named. TRNIDINI is SPACES too, so TRAN-ID takes LOW-VALUES at :207 and the browse starts at the beginning of the file - note that an ENTER ignores CDEMO-CT00-TRNID-FIRST and CDEMO-CT00-TRNID-LAST entirely, which is precisely what separates it from PROCESS-PF7-KEY at :236-239 and PROCESS-PF8-KEY at :259-262, both of which anchor on them. The commarea arrives on page TWO, anchored exactly where case13's PF8 left it - page number 00000002, TRNID-FIRST record eleven, TRNID-LAST record ten, NEXT-PAGE-FLG N - so MOVE 0 TO CDEMO-CT00-PAGE-NUM at :224 is observably a reset rather than a no-op: the page number goes two, then zero, then one through the COMPUTE at :306-307. PROCESS-PAGE-FORWARD then paints page one. STARTBR returns DFHRESP(NORMAL) at :603 (gate G47). The guard at :285 is the abbreviated combined relation 'EIBAID NOT = DFHENTER AND DFHPF7 AND DFHPF3', which reads as three negations joined by AND, and ENTER makes it FALSE - so the anchor READNEXT at :286 is SKIPPED and record one is not consumed. :290 blanks rows one to ten, :295 primes WS-IDX at one, and :301 steps it once per painted row until 'UNTIL WS-IDX >= 11' at :297 ends the loop with WS-IDX at eleven: TEN rows, which pins the page size as behaviour and not configuration (gate G39). Records eleven and twelve stay unpainted - the look-ahead READNEXT at :308 reads record eleven only to SET NEXT-PAGE-YES at :310 - so eleven reads in all, and ONE send, the one at :326, because the extra SEND-TRNLST-SCREEN at :116 sits on the first-entry branch and is not reached from here. POPULATE-TRAN-DATA writes its two cursor fields on the first and last rows only: CDEMO-CT00-TRNID-FIRST at :393 from row one and CDEMO-CT00-TRNID-LAST at :439 from row ten. Despite the mandated Java name TransactionMenuController, COTRN00C LISTS transactions - ':5 Function : List Transactions from TRANSACT file' - and what this case asserts is a listing, never a menu. Every expected value here is STATICALLY DERIVED from the COBOL paragraphs, the CVTRA05Y byte layout, the COTRN00.CPY symbolic map, the COTRN00.bms field definitions and the CARDDEMO.CSD bindings; none of it was captured from a live COBOL run, which this environment cannot perform.",
   "unitKind": "CONTROLLER_POJO",
   "inputs": {
     "TRANSACT": {
@@ -32,7 +32,7 @@
       "CDEMO-TO-PROGRAM": "COTRN00C",
       "CDEMO-USER-ID": "USER0001",
       "CDEMO-USER-TYPE": "U",
-      "CDEMO-PGM-CONTEXT": "0",
+      "CDEMO-PGM-CONTEXT": "1",
       "CDEMO-CUST-ID": "000000000",
       "CDEMO-CUST-FNAME": "                         ",
       "CDEMO-CUST-MNAME": "                         ",
@@ -42,14 +42,26 @@
       "CDEMO-CARD-NUM": "0000000000000000",
       "CDEMO-LAST-MAP": "       ",
       "CDEMO-LAST-MAPSET": "       ",
-      "CDEMO-CT00-TRNID-FIRST": "                ",
-      "CDEMO-CT00-TRNID-LAST": "                ",
-      "CDEMO-CT00-PAGE-NUM": "00000000",
+      "CDEMO-CT00-TRNID-FIRST": "0000000000000011",
+      "CDEMO-CT00-TRNID-LAST": "0000000000000010",
+      "CDEMO-CT00-PAGE-NUM": "00000002",
       "CDEMO-CT00-NEXT-PAGE-FLG": "N",
       "CDEMO-CT00-TRN-SEL-FLG": " ",
       "CDEMO-CT00-TRN-SELECTED": "                "
     },
-    "mapFields": {},
+    "mapFields": {
+      "TRNIDINI": "                ",
+      "SEL0001I": " ",
+      "SEL0002I": " ",
+      "SEL0003I": " ",
+      "SEL0004I": " ",
+      "SEL0005I": " ",
+      "SEL0006I": " ",
+      "SEL0007I": " ",
+      "SEL0008I": " ",
+      "SEL0009I": " ",
+      "SEL0010I": " "
+    },
     "forcedOutcomes": {},
     "aid": "DFHENTER"
   },
@@ -81,16 +93,6 @@
       "CDEMO-CT00-TRN-SELECTED": "                "
     },
     "sends": [
-      {
-        "fields": {
-          "TITLE01O": "      AWS Mainframe Modernization       ",
-          "TITLE02O": "              CardDemo                  ",
-          "TRNNAMEO": "CT00",
-          "PGMNAMEO": "COTRN00C",
-          "CURDATEO": "07/19/22",
-          "CURTIMEO": "23:12:34"
-        }
-      },
       {
         "fields": {
           "TITLE01O": "      AWS Mainframe Modernization       ",

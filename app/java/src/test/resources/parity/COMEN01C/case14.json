@@ -1,0 +1,60 @@
+{
+  "program": "COMEN01C",
+  "caseId": "case14",
+  "description": "The second arm of the ordered EVALUATE EIBAID, app/cbl/COMEN01C.cbl:96-98: WHEN DFHPF3 moves 'COSGN00C' into CDEMO-TO-PROGRAM - TO here, where line 83 wrote FROM - and performs RETURN-TO-SIGNON-SCREEN. The combined relation at line 172 now finds the field populated and leaves it alone, and the XCTL at 175-177 transfers with NO COMMAREA, which is the difference from the option transfer at 152-155 and is exactly the condition COSGN00C's own EIBCALEN = 0 test is looking for. PROCESS-ENTER-KEY never runs on this arm, so nothing writes OPTIONO and the field still holds the image the client re-supplied - statelessness made visible, because the value survives only by having travelled in the payload. WS-MESSAGE stays as the spaces line 79 left in it.",
+  "unitKind": "SERVICE",
+  "inputs": {},
+  "screenRequest": {
+    "eibcalen": 160,
+    "aid": "DFHPF3",
+    "pinnedClock": "2022-07-19T23:12:33",
+    "charset": "US-ASCII",
+    "commarea": {
+      "CDEMO-FROM-TRANID": "CC00",
+      "CDEMO-FROM-PROGRAM": "COSGN00C",
+      "CDEMO-TO-PROGRAM": "COMEN01C",
+      "CDEMO-USER-ID": "USER0001",
+      "CDEMO-USER-TYPE": "U",
+      "CDEMO-PGM-CONTEXT": "1"
+    },
+    "mapFields": {
+      "OPTIONI": "  "
+    },
+    "forcedOutcomes": {}
+  },
+  "expectedResponse": {
+    "nextProgram": "COSGN00C",
+    "nextMapset": "COMEN01",
+    "nextMap": "COMEN1A",
+    "navigation": {
+      "CDEMO-FROM-TRANID": "CC00",
+      "CDEMO-FROM-PROGRAM": "COSGN00C",
+      "CDEMO-TO-TRANID": "    ",
+      "CDEMO-TO-PROGRAM": "COSGN00C",
+      "CDEMO-USER-ID": "USER0001",
+      "CDEMO-USER-TYPE": "U",
+      "CDEMO-PGM-CONTEXT": "1",
+      "CDEMO-CUST-ID": "000000000",
+      "CDEMO-CUST-FNAME": "                         ",
+      "CDEMO-CUST-MNAME": "                         ",
+      "CDEMO-CUST-LNAME": "                         ",
+      "CDEMO-ACCT-ID": "00000000000",
+      "CDEMO-ACCT-STATUS": " ",
+      "CDEMO-CARD-NUM": "0000000000000000",
+      "CDEMO-LAST-MAP": "       ",
+      "CDEMO-LAST-MAPSET": "       "
+    },
+    "sends": [],
+    "termination": "XCTL"
+  },
+  "expectedWrites": [],
+  "expectedFinalState": [],
+  "expectedReturnCode": 0,
+  "expectedMessages": [
+    {
+      "channel": "WS_MESSAGE_80",
+      "text": "                                                                                "
+    }
+  ],
+  "normalisations": []
+}

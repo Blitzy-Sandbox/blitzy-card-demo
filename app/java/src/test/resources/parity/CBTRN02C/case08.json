@@ -1,0 +1,133 @@
+{
+  "program": "CBTRN02C",
+  "caseId": "case08",
+  "description": "The TCATBALF create arm and the negative-amount branch together, both straight from the fixtures. dailytran row 1 carries type 03, category 0001 and DALYTRAN-AMT -919.00; cardxref row 3 resolves its card to account 20; acctdata row 19 is account 20 with limit 3767.00 and expiry 2024-03-13; and TCATBALF is seeded with tcatbal row 19, which is key (20,01,0001) - type 01, not 03. So WS-TEMP-BAL is 0.00 - 0.00 + -919.00 = -919.00, comfortably under the limit, the expiry passes, and 2700-UPDATE-TCATBAL builds key 00000000020030001 and reads it: the READ at :474 reports '23', which the guard at :481 accepts as NORMAL - '00' OR '23' - so no abend, and the INVALID KEY arm displays the not-found line and sets WS-CREATE-TRANCAT-REC to 'Y'. 2700-A then INITIALIZEs the record, and because a COBOL INITIALIZE with no REPLACING leaves FILLER alone, the new record's 22 reserved bytes are the spaces the freshly allocated area held rather than the twenty-two zeros every tcatbal fixture row carries. The created row is appended, so TCATBALF holds the untouched seed first and the new key second. In the account, :548 is false for a negative amount, so the -919.00 goes to ACCT-CURR-CYC-DEBIT and not to ACCT-CURR-CYC-CREDIT, and ACCT-CURR-BAL becomes 369.00 + -919.00 = -550.00 - a negative balance whose zoned image carries the '}' overpunch.",
+  "unitKind": "BATCH_JOB",
+  "inputs": {
+    "DALYTRAN": {
+      "fixture": "dailytran.txt",
+      "fromRow": 1,
+      "rowCount": 1
+    },
+    "XREFFILE": {
+      "fixture": "cardxref.txt",
+      "fromRow": 3,
+      "rowCount": 1
+    },
+    "ACCTFILE": {
+      "fixture": "acctdata.txt",
+      "fromRow": 19,
+      "rowCount": 1
+    },
+    "TCATBALF": {
+      "fixture": "tcatbal.txt",
+      "fromRow": 19,
+      "rowCount": 1
+    },
+    "TRANFILE": {
+      "empty": true,
+      "recordLength": 350,
+      "copybook": "CVTRA05Y"
+    }
+  },
+  "expectedWrites": [],
+  "expectedFinalState": [
+    {
+      "dataset": "DALYTRAN",
+      "rowIndex": 0,
+      "expectedBytes": "0000000001774260030001OPERATOR  Return item at Nitzsche, Nicolas and Lowe                                                           0000009190}800000000Nitzsche, Nicolas and Lowe                        Fidelshire                                        53378     09279871086362322022-06-10 19:27:53.000000                                              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 0,
+      "expectedBytes": "092798710863623200000002000000000020              "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 0,
+      "expectedBytes": "00000000020Y00000005500}00000037670{00000010400{2014-02-272024-03-132024-03-1300000000000{00000009190}A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "TCATBALF",
+      "rowIndex": 0,
+      "expectedBytes": "000000000200100010000000000{0000000000000000000000"
+    },
+    {
+      "dataset": "TCATBALF",
+      "rowIndex": 1,
+      "expectedBytes": "000000000200300010000009190}                      "
+    },
+    {
+      "dataset": "TRANFILE",
+      "rowIndex": 0,
+      "expectedBytes": "0000000001774260030001OPERATOR  Return item at Nitzsche, Nicolas and Lowe                                                           0000009190}800000000Nitzsche, Nicolas and Lowe                        Fidelshire                                        53378     09279871086362322022-06-10 19:27:53.0000002022-07-19-23.12.34.000000                    "
+    }
+  ],
+  "expectedReturnCode": 0,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "START OF EXECUTION OF PROGRAM CBTRN02C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "TCATBAL record not found for key : 00000000020030001.. Creating."
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "TRANSACTIONS PROCESSED :000000001"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "TRANSACTIONS REJECTED  :000000000"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "END OF EXECUTION OF PROGRAM CBTRN02C"
+    }
+  ],
+  "normalisations": [
+    {
+      "dataset": "XREFFILE",
+      "kind": "CARDXREF_FILLER_PAD_36_TO_50"
+    }
+  ],
+  "expectedDatasets": [
+    {
+      "dataset": "DALYREJS",
+      "channel": "WRITES",
+      "rowCount": 0,
+      "recordLength": 430
+    },
+    {
+      "dataset": "DALYTRAN",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 350
+    },
+    {
+      "dataset": "XREFFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 50
+    },
+    {
+      "dataset": "ACCTFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 300
+    },
+    {
+      "dataset": "TCATBALF",
+      "channel": "FINAL_STATE",
+      "rowCount": 2,
+      "recordLength": 50
+    },
+    {
+      "dataset": "TRANFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 350
+    }
+  ]
+}

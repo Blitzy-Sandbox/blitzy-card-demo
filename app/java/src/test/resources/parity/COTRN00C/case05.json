@@ -1,13 +1,32 @@
 {
   "program": "COTRN00C",
   "caseId": "case05",
-  "description": "An EMPTY result. TRANSACT exists at its declared 350-byte width and holds no row, which is a different assertion from a case that never mentions the dataset - only this one reaches the first-read end-of-data branch. STARTBR positions at LOW-VALUES and its probe read finds nothing, so STARTBR-TRANSACT-FILE takes its end-of-data arm at :605-611: SET TRANSACT-EOF, 'You are at the top of the page...', MOVE -1 TO TRNIDINL, SEND. Note what that arm does NOT do - it never sets WS-ERR-FLG - which is why :283 still lets execution continue. The blanking loop at :289 is skipped because TRANSACT-EOF is already true, the paging loop makes no iteration, and at :316 WS-IDX is still 1 so 'IF WS-IDX > 1' is FALSE and the page number stays ZERO. An implementation that bumped it unconditionally would show page one over an empty list. MAIN-PARA's first-entry branch performs BOTH PROCESS-ENTER-KEY at :115 AND SEND-TRNLST-SCREEN at :116, so this path sends one more time than PROCESS-PAGE-FORWARD does on its own - the last send is :116's and it re-paints the same screen with WS-MESSAGE unchanged.",
+  "description": "The EXACT-MULTIPLE-OF-TEN boundary reached by PF8, and the deliberate counterpart of case04: case04's fill loop ends EARLY on end-of-file and its page number comes from :317-318, whereas this case COMPLETES the ten-row page and its page number comes from :306-307. Twenty records on file and an anchor of 0000000000000010 carried in CDEMO-CT00-TRNID-LAST, so :285 - an abbreviated combined relation reading 'NOT = DFHENTER AND DFHPF7 AND DFHPF3' - is TRUE for PF8 and the skip READNEXT at :286 consumes record ten before the page begins at record eleven. The loop at :297 then paints records eleven to twenty into ALL TEN slots and ends on its own bound with WS-IDX at eleven, not on end-of-file, so at :305 TRANSACT-EOF is still false and WS-ERR-FLG is still off: :306-307 computes 1 + 1 = 2. Only THEN does the look-ahead READNEXT at :308 reach DFHRESP(ENDFILE) at :639, because record twenty was the last - and that arm sets TRANSACT-EOF, moves 'You have reached the bottom of the page...' at :642 into WS-MESSAGE, moves -1 into TRNIDINL and performs SEND-TRNLST-SCREEN at :645, but it does NOT set WS-ERR-FLG. The IF at :309 is therefore false and :312 SETs NEXT-PAGE-NO, which is the counterintuitive outcome this case exists to pin: a FULL ten-row page that reports CDEMO-CT00-NEXT-PAGE-FLG as N. It is the mirror of case14, which shares this anchor and this page number but finds record twenty-one and so takes :310 instead. Because slot ten IS reached, :439 writes CDEMO-CT00-TRNID-LAST as well as :393 writing CDEMO-CT00-TRNID-FIRST. Two sends, in order: the ENDFILE arm's at :645 and the tail at :326, and WS-MESSAGE is not cleared between them, so the same 80-byte text is painted twice. The page size of ten is behaviour rather than configuration and this case is its clearest proof - a page size of nine or eleven would move the boundary and change the page number, the next-page flag and the send count together. Note that COTRN00C LISTS transactions; the class is named TransactionMenuController because the mandated name is honoured verbatim while the behaviour is taken from the source. PROVENANCE: statically derived by reading app/cbl/COTRN00C.cbl:257-328, :381-445 and :624-653 against app/cpy/CVTRA05Y.cpy, app/cpy-bms/COTRN00.CPY and app/cpy/COCOM01Y.cpy. It was never captured from a live COBOL run - no runtime here can execute these programs - so every value above traces to a source line rather than to an observation.",
   "unitKind": "CONTROLLER_POJO",
   "inputs": {
     "TRANSACT": {
-      "empty": true,
-      "recordLength": 350,
-      "copybook": "CVTRA05Y"
+      "rows": [
+        "0000000000000001010001POS TERM  TRANSACTION 01 DESCRIPTION                                                                          0000001010{000000001MERCHANT 01                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    ",
+        "0000000000000002010001POS TERM  TRANSACTION 02 DESCRIPTION                                                                          0000001020{000000002MERCHANT 02                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    ",
+        "0000000000000003010001POS TERM  TRANSACTION 03 DESCRIPTION                                                                          0000001030{000000003MERCHANT 03                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    ",
+        "0000000000000004010001POS TERM  TRANSACTION 04 DESCRIPTION                                                                          0000001040{000000004MERCHANT 04                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    ",
+        "0000000000000005010001POS TERM  TRANSACTION 05 DESCRIPTION                                                                          0000001050{000000005MERCHANT 05                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    ",
+        "0000000000000006010001POS TERM  TRANSACTION 06 DESCRIPTION                                                                          0000001060{000000006MERCHANT 06                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    ",
+        "0000000000000007010001POS TERM  TRANSACTION 07 DESCRIPTION                                                                          0000001070{000000007MERCHANT 07                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    ",
+        "0000000000000008010001POS TERM  TRANSACTION 08 DESCRIPTION                                                                          0000001080{000000008MERCHANT 08                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    ",
+        "0000000000000009010001POS TERM  TRANSACTION 09 DESCRIPTION                                                                          0000001090{000000009MERCHANT 09                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    ",
+        "0000000000000010010001POS TERM  TRANSACTION 10 DESCRIPTION                                                                          0000001100{000000010MERCHANT 10                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    ",
+        "0000000000000011010001POS TERM  TRANSACTION 11 DESCRIPTION                                                                          0000001110{000000011MERCHANT 11                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    ",
+        "0000000000000012010001POS TERM  TRANSACTION 12 DESCRIPTION                                                                          0000001120{000000012MERCHANT 12                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    ",
+        "0000000000000013010001POS TERM  TRANSACTION 13 DESCRIPTION                                                                          0000001130{000000013MERCHANT 13                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    ",
+        "0000000000000014010001POS TERM  TRANSACTION 14 DESCRIPTION                                                                          0000001140{000000014MERCHANT 14                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    ",
+        "0000000000000015010001POS TERM  TRANSACTION 15 DESCRIPTION                                                                          0000001150{000000015MERCHANT 15                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    ",
+        "0000000000000016010001POS TERM  TRANSACTION 16 DESCRIPTION                                                                          0000001160{000000016MERCHANT 16                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    ",
+        "0000000000000017010001POS TERM  TRANSACTION 17 DESCRIPTION                                                                          0000001170{000000017MERCHANT 17                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    ",
+        "0000000000000018010001POS TERM  TRANSACTION 18 DESCRIPTION                                                                          0000001180{000000018MERCHANT 18                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    ",
+        "0000000000000019010001POS TERM  TRANSACTION 19 DESCRIPTION                                                                          0000001190{000000019MERCHANT 19                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    ",
+        "0000000000000020010001POS TERM  TRANSACTION 20 DESCRIPTION                                                                          0000001200{000000020MERCHANT 20                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    "
+      ]
     }
   },
   "screenRequest": {
@@ -21,7 +40,7 @@
       "CDEMO-TO-PROGRAM": "COTRN00C",
       "CDEMO-USER-ID": "USER0001",
       "CDEMO-USER-TYPE": "U",
-      "CDEMO-PGM-CONTEXT": "0",
+      "CDEMO-PGM-CONTEXT": "1",
       "CDEMO-CUST-ID": "000000000",
       "CDEMO-CUST-FNAME": "                         ",
       "CDEMO-CUST-MNAME": "                         ",
@@ -31,16 +50,16 @@
       "CDEMO-CARD-NUM": "0000000000000000",
       "CDEMO-LAST-MAP": "       ",
       "CDEMO-LAST-MAPSET": "       ",
-      "CDEMO-CT00-TRNID-FIRST": "                ",
-      "CDEMO-CT00-TRNID-LAST": "                ",
-      "CDEMO-CT00-PAGE-NUM": "00000000",
-      "CDEMO-CT00-NEXT-PAGE-FLG": "N",
+      "CDEMO-CT00-TRNID-FIRST": "0000000000000001",
+      "CDEMO-CT00-TRNID-LAST": "0000000000000010",
+      "CDEMO-CT00-PAGE-NUM": "00000001",
+      "CDEMO-CT00-NEXT-PAGE-FLG": "Y",
       "CDEMO-CT00-TRN-SEL-FLG": " ",
       "CDEMO-CT00-TRN-SELECTED": "                "
     },
     "mapFields": {},
     "forcedOutcomes": {},
-    "aid": "DFHENTER"
+    "aid": "DFHPF8"
   },
   "expectedResponse": {
     "nextMapset": "COTRN00",
@@ -62,24 +81,14 @@
       "CDEMO-CARD-NUM": "0000000000000000",
       "CDEMO-LAST-MAP": "       ",
       "CDEMO-LAST-MAPSET": "       ",
-      "CDEMO-CT00-TRNID-FIRST": "                ",
-      "CDEMO-CT00-TRNID-LAST": "                ",
-      "CDEMO-CT00-PAGE-NUM": "00000000",
+      "CDEMO-CT00-TRNID-FIRST": "0000000000000011",
+      "CDEMO-CT00-TRNID-LAST": "0000000000000020",
+      "CDEMO-CT00-PAGE-NUM": "00000002",
       "CDEMO-CT00-NEXT-PAGE-FLG": "N",
       "CDEMO-CT00-TRN-SEL-FLG": " ",
       "CDEMO-CT00-TRN-SELECTED": "                "
     },
     "sends": [
-      {
-        "fields": {
-          "TITLE01O": "      AWS Mainframe Modernization       ",
-          "TITLE02O": "              CardDemo                  ",
-          "TRNNAMEO": "CT00",
-          "PGMNAMEO": "COTRN00C",
-          "CURDATEO": "07/19/22",
-          "CURTIMEO": "23:12:34"
-        }
-      },
       {
         "fields": {
           "TITLE01O": "      AWS Mainframe Modernization       ",
@@ -110,11 +119,11 @@
   "expectedMessages": [
     {
       "channel": "WS_MESSAGE_80",
-      "text": "You are at the top of the page...                                               "
+      "text": "You have reached the bottom of the page...                                      "
     },
     {
       "channel": "SCREEN_ERRMSG_78",
-      "text": "You are at the top of the page...                                             "
+      "text": "You have reached the bottom of the page...                                    "
     }
   ]
 }

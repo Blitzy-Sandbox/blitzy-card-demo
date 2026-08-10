@@ -1,0 +1,183 @@
+{
+  "program": "CBTRN02C",
+  "caseId": "case20",
+  "description": "Three real transactions posted end to end, and the case that pins every declared width with its FILLER intact (gates G19 and G21). It is case15's seed with account 5 present, so all three of dailytran rows 0 to 2 post: row 0 to account 7 at +504.77, row 1 to account 20 at -919.00 on the type 03 key that has to be created, row 2 to account 5 at +67.88. Every record here is pinned at its copybook width and every one of them ends in a reserved span that has to be emitted for the width to come out right: the three TRAN-RECORDs at 350 bytes each end in FILLER X(20); the three account records at 300 bytes each end in FILLER X(178) and carry A000000000 in ACCT-ADDR-ZIP with ACCT-GROUP-ID as ten spaces, which is genuinely how acctdata.txt is laid out; the three cross-reference records are 50 bytes only because the 36-byte fixture rows were widened by their declared normalisation; and the category-balance records are 50 bytes with FILLER X(22) - twenty-two zeros on the two the fixture supplied and twenty-two spaces on the one INITIALIZE created. Each posted transaction also carries two 26-byte timestamps: TRAN-ORIG-TS copied from the daily record and TRAN-PROC-TS composed by Z-GET-DB2-FORMAT-TIMESTAMP, whose separators are hyphens at positions 5, 8 AND 11 - the date and the time are joined by a hyphen, not a space, unlike the ORIG-TS beside it - then dots at 14, 17 and 20 and the literal 0000 in the last four bytes. RETURN-CODE is 0 and both count lines read 000000003 and 000000000. The created category-balance record carries twenty-two ZEROS in its FILLER for the reason case15 spells out: record 0's READ succeeded first and left tcatbal row 6 in the area, and INITIALIZE at :504 does not touch FILLER.",
+  "unitKind": "BATCH_JOB",
+  "inputs": {
+    "DALYTRAN": {
+      "fixture": "dailytran.txt",
+      "fromRow": 0,
+      "rowCount": 3
+    },
+    "XREFFILE": {
+      "rows": [
+        "092798710863623200000002000000000020",
+        "485945261287706500000000700000000007",
+        "600961915067452600000000500000000005"
+      ]
+    },
+    "ACCTFILE": {
+      "rows": [
+        "00000000005Y00000003450{00000038190{00000024300{2012-10-032025-03-092025-03-0900000000000{00000000000{A000000000                                                                                                                                                                                            ",
+        "00000000007Y00000001930{00000020650{00000002640{2012-10-122024-12-132024-12-1300000000000{00000000000{A000000000                                                                                                                                                                                            ",
+        "00000000020Y00000003690{00000037670{00000010400{2014-02-272024-03-132024-03-1300000000000{00000000000{A000000000                                                                                                                                                                                            "
+      ]
+    },
+    "TCATBALF": {
+      "rows": [
+        "000000000050100010000000000{0000000000000000000000",
+        "000000000070100010000000000{0000000000000000000000"
+      ]
+    },
+    "TRANFILE": {
+      "empty": true,
+      "recordLength": 350,
+      "copybook": "CVTRA05Y"
+    }
+  },
+  "expectedWrites": [],
+  "expectedFinalState": [
+    {
+      "dataset": "DALYTRAN",
+      "rowIndex": 0,
+      "expectedBytes": "0000000000683580010001POS TERM  Purchase at Abshire-Lowe                                                                            0000005047G800000000Abshire-Lowe                                      North Enoshaven                                   72112     48594526128770652022-06-10 19:27:53.000000                                              "
+    },
+    {
+      "dataset": "DALYTRAN",
+      "rowIndex": 1,
+      "expectedBytes": "0000000001774260030001OPERATOR  Return item at Nitzsche, Nicolas and Lowe                                                           0000009190}800000000Nitzsche, Nicolas and Lowe                        Fidelshire                                        53378     09279871086362322022-06-10 19:27:53.000000                                              "
+    },
+    {
+      "dataset": "DALYTRAN",
+      "rowIndex": 2,
+      "expectedBytes": "0000000006292564010001POS TERM  Purchase at Ernser, Roob and Gleason                                                                0000000678H800000000Ernser, Roob and Gleason                          North Makenziemouth                               78487-796560096191506745262022-06-10 19:27:53.000000                                              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 0,
+      "expectedBytes": "092798710863623200000002000000000020              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 1,
+      "expectedBytes": "485945261287706500000000700000000007              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 2,
+      "expectedBytes": "600961915067452600000000500000000005              "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 0,
+      "expectedBytes": "00000000005Y00000004128H00000038190{00000024300{2012-10-032025-03-092025-03-0900000000678H00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 1,
+      "expectedBytes": "00000000007Y00000006977G00000020650{00000002640{2012-10-122024-12-132024-12-1300000005047G00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 2,
+      "expectedBytes": "00000000020Y00000005500}00000037670{00000010400{2014-02-272024-03-132024-03-1300000000000{00000009190}A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "TCATBALF",
+      "rowIndex": 0,
+      "expectedBytes": "000000000050100010000000678H0000000000000000000000"
+    },
+    {
+      "dataset": "TCATBALF",
+      "rowIndex": 1,
+      "expectedBytes": "000000000070100010000005047G0000000000000000000000"
+    },
+    {
+      "dataset": "TCATBALF",
+      "rowIndex": 2,
+      "expectedBytes": "000000000200300010000009190}0000000000000000000000"
+    },
+    {
+      "dataset": "TRANFILE",
+      "rowIndex": 0,
+      "expectedBytes": "0000000000683580010001POS TERM  Purchase at Abshire-Lowe                                                                            0000005047G800000000Abshire-Lowe                                      North Enoshaven                                   72112     48594526128770652022-06-10 19:27:53.0000002022-07-19-23.12.34.000000                    "
+    },
+    {
+      "dataset": "TRANFILE",
+      "rowIndex": 1,
+      "expectedBytes": "0000000001774260030001OPERATOR  Return item at Nitzsche, Nicolas and Lowe                                                           0000009190}800000000Nitzsche, Nicolas and Lowe                        Fidelshire                                        53378     09279871086362322022-06-10 19:27:53.0000002022-07-19-23.12.34.000000                    "
+    },
+    {
+      "dataset": "TRANFILE",
+      "rowIndex": 2,
+      "expectedBytes": "0000000006292564010001POS TERM  Purchase at Ernser, Roob and Gleason                                                                0000000678H800000000Ernser, Roob and Gleason                          North Makenziemouth                               78487-796560096191506745262022-06-10 19:27:53.0000002022-07-19-23.12.34.000000                    "
+    }
+  ],
+  "expectedReturnCode": 0,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "START OF EXECUTION OF PROGRAM CBTRN02C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "TCATBAL record not found for key : 00000000020030001.. Creating."
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "TRANSACTIONS PROCESSED :000000003"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "TRANSACTIONS REJECTED  :000000000"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "END OF EXECUTION OF PROGRAM CBTRN02C"
+    }
+  ],
+  "normalisations": [
+    {
+      "dataset": "XREFFILE",
+      "kind": "CARDXREF_FILLER_PAD_36_TO_50"
+    }
+  ],
+  "expectedDatasets": [
+    {
+      "dataset": "DALYREJS",
+      "channel": "WRITES",
+      "rowCount": 0,
+      "recordLength": 430
+    },
+    {
+      "dataset": "DALYTRAN",
+      "channel": "FINAL_STATE",
+      "rowCount": 3,
+      "recordLength": 350
+    },
+    {
+      "dataset": "XREFFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 3,
+      "recordLength": 50
+    },
+    {
+      "dataset": "ACCTFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 3,
+      "recordLength": 300
+    },
+    {
+      "dataset": "TCATBALF",
+      "channel": "FINAL_STATE",
+      "rowCount": 3,
+      "recordLength": 50
+    },
+    {
+      "dataset": "TRANFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 3,
+      "recordLength": 350
+    }
+  ]
+}

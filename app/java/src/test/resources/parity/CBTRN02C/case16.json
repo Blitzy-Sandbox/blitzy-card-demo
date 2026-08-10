@@ -1,0 +1,114 @@
+{
+  "program": "CBTRN02C",
+  "caseId": "case16",
+  "description": "An empty daily-transaction file, which is the boundary of the loop at :202-219 rather than an error. The very first READ at :346 reports '10', so :352 moves 16 into APPL-RESULT, 88 APPL-EOF is true at :360 and :361 moves 'Y' into END-OF-FILE - and the PERFORM UNTIL exits without the body ever running, so no transaction is counted, validated, posted or rejected. All six files are still opened and all six still closed, both count lines are still displayed reading 000000000, and :229 leaves RETURN-CODE 0. DALYREJS is opened and closed holding no record, which app/jcl/POSTTRAN.jcl:34's DISP=(NEW,CATLG,DELETE) then catalogues as an empty generation rather than as no generation at all - so a zero-row rejects file is a positive observation here, not an absence of one.",
+  "unitKind": "BATCH_JOB",
+  "inputs": {
+    "DALYTRAN": {
+      "empty": true,
+      "recordLength": 350,
+      "copybook": "CVTRA06Y"
+    },
+    "XREFFILE": {
+      "fixture": "cardxref.txt",
+      "fromRow": 20,
+      "rowCount": 1
+    },
+    "ACCTFILE": {
+      "fixture": "acctdata.txt",
+      "fromRow": 6,
+      "rowCount": 1
+    },
+    "TCATBALF": {
+      "fixture": "tcatbal.txt",
+      "fromRow": 6,
+      "rowCount": 1
+    },
+    "TRANFILE": {
+      "empty": true,
+      "recordLength": 350,
+      "copybook": "CVTRA05Y"
+    }
+  },
+  "expectedWrites": [],
+  "expectedFinalState": [
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 0,
+      "expectedBytes": "485945261287706500000000700000000007              "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 0,
+      "expectedBytes": "00000000007Y00000001930{00000020650{00000002640{2012-10-122024-12-132024-12-1300000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "TCATBALF",
+      "rowIndex": 0,
+      "expectedBytes": "000000000070100010000000000{0000000000000000000000"
+    }
+  ],
+  "expectedReturnCode": 0,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "START OF EXECUTION OF PROGRAM CBTRN02C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "TRANSACTIONS PROCESSED :000000000"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "TRANSACTIONS REJECTED  :000000000"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "END OF EXECUTION OF PROGRAM CBTRN02C"
+    }
+  ],
+  "normalisations": [
+    {
+      "dataset": "XREFFILE",
+      "kind": "CARDXREF_FILLER_PAD_36_TO_50"
+    }
+  ],
+  "expectedDatasets": [
+    {
+      "dataset": "DALYREJS",
+      "channel": "WRITES",
+      "rowCount": 0,
+      "recordLength": 430
+    },
+    {
+      "dataset": "DALYTRAN",
+      "channel": "FINAL_STATE",
+      "rowCount": 0,
+      "recordLength": 350
+    },
+    {
+      "dataset": "XREFFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 50
+    },
+    {
+      "dataset": "ACCTFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 300
+    },
+    {
+      "dataset": "TCATBALF",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 50
+    },
+    {
+      "dataset": "TRANFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 0,
+      "recordLength": 350
+    }
+  ]
+}

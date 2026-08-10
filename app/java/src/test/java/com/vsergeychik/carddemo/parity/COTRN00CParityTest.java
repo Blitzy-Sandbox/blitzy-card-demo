@@ -172,6 +172,9 @@ final class COTRN00CParityTest {
     /** The {@code TRANSACT} binding key, which is the one dataset every case seeds. */
     private static final String TRANSACT = TransactionRepository.CICS_FILE_NAME;
 
+    /** The copybook that fixes the 350-byte record {@code TRANSACT} holds, named as app/cpy spells it. */
+    private static final String TRAN_COPYBOOK = "CVTRA05Y";
+
     /** Every case declares this kind, and the harness checks the declaration before the unit runs. */
     private static final ParityCase.UnitKind UNIT_KIND = ParityCase.UnitKind.CONTROLLER_POJO;
 
@@ -232,6 +235,28 @@ final class COTRN00CParityTest {
     /** {@code COTRN01C}, the target of an accepted row selection at {@code :188}. */
     private static final String TRAN_VIEW_PGM = "COTRN01C";
 
+    /**
+     * The ordinal of the record {@code case19}'s typed key names, and therefore the record that must
+     * be painted into screen row one.
+     *
+     * <p>{@code case19} is the one case that types a key into {@code TRNIDINI}, so it is the one case
+     * that reaches the {@code ELSE} at {@code :208} and positions the browse on a key the operator
+     * supplied rather than on {@code LOW-VALUES}. Eight is a record in the middle of that case's
+     * twenty-four-row seed, chosen so that ten records lie at or after it and an eleventh lies beyond
+     * them - which is what makes both the full page and {@code SET NEXT-PAGE-YES} at {@code :310}
+     * observable from one browse.
+     */
+    private static final int NUMERIC_START_ORDINAL = 8;
+
+    /** {@code WHEN 's'} at {@code :187} - the lower-case half of the two-clause selection arm. */
+    private static final String SELECTOR_LOWER = "s";
+
+    /** A letter neither {@code :186} nor {@code :187} enumerates, so it reaches {@code :196}. */
+    private static final String SELECTOR_INVALID = "x";
+
+    /** {@code MOVE 'Invalid selection. Valid value is S' TO WS-MESSAGE} - {@code :198-200}. */
+    private static final String MSG_INVALID_SELECTION = "Invalid selection. Valid value is S";
+
     // =================================================================================================
     // Case supply. ParityHarness.cases(String) already refuses a set that is not exactly case01
     // through case20 - a short set is not a smaller gate, it is a gate that passes vacuously - so the
@@ -279,6 +304,50 @@ final class COTRN00CParityTest {
      */
     private static ParityCase caseNumber(int ordinal) {
         return ParityHarness.usAscii().load(PROGRAM, ParityHarness.caseId(ordinal));
+    }
+
+    /**
+     * A declared case with one selection cell re-typed, and its echoed selector expectation amended to
+     * match.
+     *
+     * <p>Two arms of the selection {@code EVALUATE} at {@code :185-203} differ from one another in
+     * exactly one byte of the payload: {@code WHEN 'S'} at {@code :186} and {@code WHEN 's'} at
+     * {@code :187} share one body, and {@code WHEN OTHER} at {@code :196} takes a different one. The
+     * suite is fixed at twenty declared cases, so rather than spending three of them on one byte, the
+     * two further letters are driven from the declared upper-case case with that byte substituted.
+     * Only the received cell and the {@code CDEMO-CT00-TRN-SEL-FLG} the program echoes back are
+     * changed, so the derived case remains a faithful statement of what the source does with that
+     * letter - and the lower-case one is still judged, diff for diff, against the amended expectation.
+     *
+     * @param base the declared case to derive from; its first selection cell is the one substituted
+     * @param letter the letter to type into that cell
+     * @return a case identical to {@code base} but for that one byte and its echo
+     */
+    private static ParityCase withSelectorLetter(ParityCase base, String letter) {
+        String selectorItem = TransactionListRequest.inputItemName(
+                TransactionListRequest.selectionFieldName(TransactionListResponse.FIRST_ROW));
+        ParityCase.ScreenRequest request = base.screenRequest();
+        assertThat(request.mapFields())
+                .as("the derived case only substitutes a cell the declared case already types, so "
+                        + "that nothing else about the payload changes")
+                .containsKey(selectorItem);
+        Map<String, String> mapFields = new LinkedHashMap<>(request.mapFields());
+        mapFields.put(selectorItem, letter);
+
+        ParityCase.ExpectedResponse response = base.expectedResponse();
+        Map<String, String> navigation = new LinkedHashMap<>(response.navigation());
+        navigation.put(TransactionListCursor.TRN_SEL_FLG_FIELD, letter);
+
+        return new ParityCase(base.program(), base.caseId(), base.description(), base.unitKind(),
+                base.inputs(), base.jobParameters(),
+                new ParityCase.ScreenRequest(request.eibcalen(), request.aid(),
+                        request.pinnedClock(), request.charset(), request.commarea(), mapFields,
+                        request.forcedOutcomes()),
+                new ParityCase.ExpectedResponse(response.nextProgram(), response.nextMapset(),
+                        response.nextMap(), navigation, response.sends(), response.cursorField(),
+                        response.termination()),
+                base.expectedWrites(), base.expectedFinalState(), base.expectedReturnCode(),
+                base.expectedMessages(), base.normalisations(), base.expectedDatasets());
     }
 
     // =================================================================================================
@@ -903,12 +972,61 @@ final class COTRN00CParityTest {
      * @return the run
      */
     private static Observed clean(int ordinal) {
-        Observed observed = execute(caseNumber(ordinal));
+        return clean(caseNumber(ordinal));
+    }
+
+    /**
+     * Runs a case and requires it to be clean, for a targeted assertion that builds on a case having
+     * already passed.
+     *
+     * @param parityCase the case to run, which need not be one of the twenty declared files
+     * @return the run
+     */
+    private static Observed clean(ParityCase parityCase) {
+        Observed observed = execute(parityCase);
         assertThat(observed.diffs().count())
                 .as("%s must diff in nothing before anything further is asserted about it:%n%s",
                         observed.parityCase().caseId(), observed.diffs().render())
                 .isZero();
         return observed;
+    }
+
+    /**
+     * {@code case06} over a TRANSACT that exists and holds no row, instead of over twelve rows and a
+     * forced {@code NOTFND}.
+     *
+     * <p>{@code STARTBR-TRANSACT-FILE} at {@code :602-619} declares three arms and not one of them is
+     * {@code DFHRESP(ENDFILE)}: an empty file and a not-found key both land on {@code :605}, and
+     * {@code TransactionMenuController} folds {@link FileStatus.Outcome#END_OF_FILE} and
+     * {@link FileStatus.Outcome#NOT_FOUND} into that single arm. The two ways in therefore differ only
+     * at the repository seam, which is why {@code case06}'s expectations apply unchanged here - and
+     * asserting them against BOTH inputs is what proves the fold, rather than assuming it.
+     *
+     * <p>Derived in code rather than declared as a twenty-first file because exactly twenty case files
+     * may exist per program, and {@link ParityCase#caseId()} enforces it.
+     *
+     * @return the empty-file variant, carrying {@code case06}'s expectations verbatim
+     */
+    private static ParityCase emptyFileVariant() {
+        ParityCase forced = caseNumber(6);
+        ParityCase.ScreenRequest request = forced.screenRequest();
+        return new ParityCase(
+                forced.program(),
+                forced.caseId(),
+                forced.description(),
+                forced.unitKind(),
+                Map.of(TRANSACT,
+                        ParityCase.DatasetInput.ofEmpty(TranRecord.RECORD_LENGTH, TRAN_COPYBOOK)),
+                forced.jobParameters(),
+                new ParityCase.ScreenRequest(request.eibcalen(), request.aid(),
+                        request.pinnedClock(), request.charset(), request.commarea(),
+                        request.mapFields(), Map.of()),
+                forced.expectedResponse(),
+                forced.expectedWrites(),
+                forced.expectedFinalState(),
+                forced.expectedReturnCode(),
+                forced.expectedMessages(),
+                forced.normalisations());
     }
 
     // =================================================================================================
@@ -1213,6 +1331,40 @@ final class COTRN00CParityTest {
         }
 
         @Test
+        @DisplayName("the boundary page fills all ten rows with records eleven to twenty")
+        void theBoundaryPageLeavesNoRowBlank() {
+            Observed observed = clean(5);
+            for (int row = TransactionListResponse.FIRST_ROW;
+                 row <= TransactionListResponse.LAST_ROW; row++) {
+                int record = row + TransactionListResponse.PAGE_SIZE;
+                assertThat(observed.response().getRowTransactionId(row))
+                        .as("PF8 anchored on record ten and the skip read at :286 consumed it, so row "
+                                + "%d takes record %d. NOT ONE row is blank here - which is what makes "
+                                + "this the exact-multiple-of-ten boundary rather than a partial page, "
+                                + "and why the loop at :297 ended on its bound instead of on "
+                                + "end-of-file", row, record)
+                        .isEqualTo(keyImageOf(tranIdImage(record)));
+                assertThat(observed.response().getRowTransactionDate(row))
+                        .as("row %d's date is its own record's TRAN-ORIG-TS through :384-388", row)
+                        .hasSize(TransactionListResponse.TDATE_LENGTH)
+                        .isEqualTo("06/10/22");
+                assertThat(observed.response().getRowDescription(row))
+                        .as("row %d's description is X(100) kept leftmost into X(26)", row)
+                        .hasSize(TransactionListResponse.TDESC_LENGTH)
+                        .isEqualTo(String.format("TRANSACTION %02d DESCRIPTION", record));
+                assertThat(observed.response().getRowAmount(row))
+                        .as("row %d's amount renders through PIC +99999999.99 at :56", row)
+                        .hasSize(TransactionListResponse.TAMT_LENGTH)
+                        .isEqualTo(editedAmountOf(seededAmount(record)));
+            }
+            assertThat(observed.response().getRowTransactionId(
+                            TransactionListResponse.LAST_ROW))
+                    .as("and because slot ten WAS reached, :439 wrote CDEMO-CT00-TRNID-LAST from it - "
+                            + "the anchor the next PF8 would resume from, had the flag not said N")
+                    .isEqualTo(keyImageOf(observed.work().cursor().getTrnidLast()));
+        }
+
+        @Test
         @DisplayName("the description is truncated on the right, from X(100) to X(26)")
         void theDescriptionIsTruncatedOnTheRight() {
             Observed observed = clean(2);
@@ -1257,6 +1409,122 @@ final class COTRN00CParityTest {
                     .as("the header date is the pinned clock's, which is a different month entirely")
                     .isEqualTo("07/19/22");
             assertThat(observed.response().getCurtimeO()).isEqualTo("23:12:34");
+        }
+
+        // =============================================================================================
+        // The four display-format edges, all of them seeded inside case19's ten-row window. case02's
+        // seed is uniform and positive, so on its own it cannot tell a correct rendering from one that
+        // drops the sign position, rounds instead of truncating, keeps the wrong end of an overflowing
+        // number or truncates a description at the wrong end. These four assertions are stated twice
+        // over: once against the mechanically derived rendering, and once against the literal bytes, so
+        // that a reader can see what the terminal shows without re-deriving it.
+        // =============================================================================================
+
+        @Test
+        @DisplayName("the sign position is occupied on every row - '-' when negative, '+' at zero")
+        void theSignPositionIsAlwaysOccupied() {
+            Observed observed = clean(19);
+
+            assertThat(observed.response().getRowAmount(2))
+                    .as("record %d holds a negative TRAN-AMT. PIC + reserves a sign position, so a "
+                            + "negative value fills it with '-' - and the two decimal places survive "
+                            + "the move because both sender and receiver carry scale two",
+                            NUMERIC_START_ORDINAL + 1)
+                    .hasSize(TransactionListResponse.TAMT_LENGTH)
+                    .isEqualTo(editedAmountOf(case19Amount(2)))
+                    .isEqualTo("-00001234.56");
+
+            assertThat(observed.response().getRowAmount(4))
+                    .as("record %d holds zero. PIC + fills its position with '+' rather than leaving "
+                            + "it blank, so a zero amount is signed too", NUMERIC_START_ORDINAL + 3)
+                    .hasSize(TransactionListResponse.TAMT_LENGTH)
+                    .isEqualTo(editedAmountOf(case19Amount(4)))
+                    .isEqualTo("+00000000.00");
+
+            for (int row = TransactionListResponse.FIRST_ROW;
+                 row <= TransactionListResponse.LAST_ROW; row++) {
+                assertThat(observed.response().getRowAmount(row))
+                        .as("row %d: twelve characters, and the first of them is always a sign", row)
+                        .hasSize(TransactionListResponse.TAMT_LENGTH)
+                        .matches("^[+-]\\d{8}\\.\\d{2}$");
+            }
+        }
+
+        @Test
+        @DisplayName("a ninth integer digit is lost on the LEFT, because the mask has only eight")
+        void aNinthIntegerDigitIsLostOnTheLeft() {
+            Observed observed = clean(19);
+            BigDecimal seeded = case19Amount(6);
+
+            assertThat(seeded.precision() - seeded.scale())
+                    .as("TRAN-AMT is S9(09)V99, so the sender can hold nine integer digits; record %d "
+                            + "holds a value that uses all nine", NUMERIC_START_ORDINAL + 5)
+                    .isEqualTo(9);
+            assertThat(observed.response().getRowAmount(6))
+                    .as("WS-TRAN-AMT is PIC +99999999.99 with EIGHT integer positions, and a COBOL "
+                            + "numeric MOVE aligns on the implied decimal point and so truncates on "
+                            + "the LEFT. The most significant digit of %s is therefore discarded. "
+                            + "Widening the mask to fit it would be a new feature; keeping the "
+                            + "leading digits instead would be the classic defect", seeded.toPlainString())
+                    .hasSize(TransactionListResponse.TAMT_LENGTH)
+                    .isEqualTo(editedAmountOf(seeded))
+                    .isEqualTo("+87654321.99")
+                    .doesNotContain("987654321");
+        }
+
+        @Test
+        @DisplayName("an over-long description is truncated on the right, mid-word")
+        void anOverLongDescriptionIsTruncatedMidWord() {
+            Observed observed = clean(19);
+            String stored = case19Record(8).tranDesc();
+
+            assertThat(stored.strip().length())
+                    .as("record %d carries a TRAN-DESC longer than the screen field, which is what "
+                            + "makes the truncation observable at all - every other row's description "
+                            + "already measures exactly %d", NUMERIC_START_ORDINAL + 7,
+                            TransactionListResponse.TDESC_LENGTH)
+                    .isGreaterThan(TransactionListResponse.TDESC_LENGTH);
+            assertThat(observed.response().getRowDescription(8))
+                    .as("MOVE TRAN-DESC TO TDESC08I at :430 sends X(100) into X(26), and a COBOL "
+                            + "alphanumeric MOVE truncates on the RIGHT, so the leading 26 characters "
+                            + "survive and the row ends mid-word. Numeric and alphanumeric moves "
+                            + "truncate at opposite ends and both happen in this one paragraph")
+                    .hasSize(TransactionListResponse.TDESC_LENGTH)
+                    .isEqualTo(stored.substring(0, TransactionListResponse.TDESC_LENGTH))
+                    .isEqualTo("PURCHASE OF PROFESSIONAL S");
+        }
+
+        @Test
+        @DisplayName("each row's date follows its OWN record, not the clock and not its neighbours")
+        void eachRowsDateFollowsItsOwnRecord() {
+            Observed observed = clean(19);
+
+            assertThat(observed.response().getRowTransactionDate(6))
+                    .as("record %d was originated in a different year from every other row, and "
+                            + "WS-TIMESTAMP-DT-YYYY(3:2) at :385 takes the last two digits of it",
+                            NUMERIC_START_ORDINAL + 5)
+                    .hasSize(TransactionListResponse.TDATE_LENGTH)
+                    .isEqualTo("11/07/23");
+            assertThat(observed.response().getRowTransactionDate(8))
+                    .as("and record %d in another year again", NUMERIC_START_ORDINAL + 7)
+                    .hasSize(TransactionListResponse.TDATE_LENGTH)
+                    .isEqualTo("12/31/21");
+            assertThat(observed.response().getCurdateO())
+                    .as("while the header shows the pinned clock's date, which is neither of them - "
+                            + "so a translation that painted CURDATEO into the rows would fail here")
+                    .isEqualTo("07/19/22");
+        }
+
+        /** One row of {@code case19}'s seed, decoded at its declared 350-byte width. */
+        private TranRecord case19Record(int screenRow) {
+            List<String> rows = caseNumber(19).inputs().get(TRANSACT).rows();
+            int recordOrdinal = NUMERIC_START_ORDINAL + screenRow - TransactionListResponse.FIRST_ROW;
+            return TranRecord.decode(rows.get(recordOrdinal - 1), CHARSET);
+        }
+
+        /** The {@code TRAN-AMT} {@code case19} seeded into the record that screen row shows. */
+        private BigDecimal case19Amount(int screenRow) {
+            return case19Record(screenRow).tranAmt();
         }
 
         /**
@@ -1323,6 +1591,20 @@ final class COTRN00CParityTest {
             assertThat(clean(14).work().cursor().getNextPageFlg())
                     .as("the look-ahead READNEXT at :308 found record twenty-one, so :310 sets Y")
                     .isEqualTo(TransactionListCursor.NEXT_PAGE_YES);
+            assertThat(clean(5).work().cursor().getPageNum())
+                    .as("case05 is the exact-multiple-of-ten boundary: twenty records, so the loop at "
+                            + ":297 ends on its own bound with WS-IDX at eleven rather than on "
+                            + "end-of-file. :305 is therefore TRUE and this site - not :317-318 - "
+                            + "makes the page number two. Satisfying one increment while breaking the "
+                            + "other is what the case04/case05 pair exists to prevent")
+                    .isEqualTo(2);
+            assertThat(clean(5).work().cursor().getNextPageFlg())
+                    .as("and yet the flag is N on a FULL ten-row page, because the look-ahead READNEXT "
+                            + "at :308 consumed the last record and reached :312. case05 and case14 "
+                            + "share this page number and both cursor anchors and differ only here, "
+                            + "which is what makes the look-ahead's outcome - rather than the row "
+                            + "count - the thing that sets the flag")
+                    .isEqualTo(TransactionListCursor.NEXT_PAGE_NO);
         }
 
         @Test
@@ -1335,13 +1617,14 @@ final class COTRN00CParityTest {
             assertThat(clean(13).work().cursor().getPageNum())
                     .as("the same site from page one gives two")
                     .isEqualTo(2);
-            assertThat(clean(5).work().cursor().getPageNum())
-                    .as("an empty result reaches :316 with WS-IDX still at one, so 'IF WS-IDX > 1' is "
-                            + "FALSE and the page number stays ZERO. An unconditional increment would "
-                            + "show page one over an empty list")
-                    .isZero();
             assertThat(clean(6).work().cursor().getPageNum())
-                    .as("a NOTFND position leaves it at zero for the same reason")
+                    .as("a position that finds nothing reaches :316 with WS-IDX still at one, so "
+                            + "'IF WS-IDX > 1' is FALSE and the page number stays ZERO. An "
+                            + "unconditional increment would show page one over an empty list")
+                    .isZero();
+            assertThat(clean(emptyFileVariant()).work().cursor().getPageNum())
+                    .as("and an empty file leaves it at zero for the same reason, through the same "
+                            + "arm - the input differs, the outcome does not")
                     .isZero();
         }
 
@@ -1469,14 +1752,66 @@ final class COTRN00CParityTest {
         }
 
         @Test
-        @DisplayName("a selection in a middle cell proves the chain is walked, not short-circuited")
-        void aMiddleCellProvesTheChainIsWalked() {
+        @DisplayName("the browse-key filter is a two-limb IF, and case19 takes the NUMERIC limb")
+        void theNumericLimbOfTheBrowseKeyFilterIsTaken() {
             Observed observed = clean(19);
+
+            // :206 IF TRNIDINI = SPACES OR LOW-VALUES is FALSE, so control takes the ELSE at :208,
+            // and :209 IF TRNIDINI IS NUMERIC is TRUE, so :210 copies the sixteen typed digits into
+            // TRAN-ID. Nineteen of the twenty cases take the :206-207 limb and browse from
+            // LOW-VALUES; this is the one that takes the other.
             assertThat(observed.work().selectedRow())
-                    .as("arms one to four must all evaluate false before arm five at :161 matches")
-                    .isEqualTo(5);
+                    .as("all ten SEL000nI cells are spaces, so the ten-way EVALUATE TRUE at :148 "
+                            + "falls through every arm to WHEN OTHER at :179-181 and no row is "
+                            + "selected - which is what lets control reach :206 at all")
+                    .isZero();
+            assertThat(observed.work().cursor().getTrnSelFlg())
+                    .as("MOVE SPACES TO CDEMO-CT00-TRN-SEL-FLG at :180")
+                    .isBlank();
             assertThat(observed.work().cursor().getTrnSelected())
-                    .isEqualTo(keyImageOf(tranIdImage(7)));
+                    .as("MOVE SPACES TO CDEMO-CT00-TRN-SELECTED at :181, so :183 is false and the "
+                            + "selection EVALUATE at :185 is never entered")
+                    .isBlank();
+
+            // GTEQ is the STARTBR default and :597 has the keyword commented out, so positioning is
+            // at-or-after the RIDFLD and inclusive of the anchor. The AID is ENTER, so the combined
+            // relation at :285 is false and no skip read discards that anchor: the record AT the
+            // typed key is screen row one.
+            assertThat(observed.response().getRowTransactionId(TransactionListResponse.FIRST_ROW))
+                    .as("the typed key is record eight's, so record eight - not record one and not "
+                            + "record nine - is painted into row one")
+                    .isEqualTo(keyImageOf(tranIdImage(NUMERIC_START_ORDINAL)));
+            assertThat(observed.work().cursor().getTrnidFirst())
+                    .as("MOVE TRAN-ID TO CDEMO-CT00-TRNID-FIRST at :393")
+                    .isEqualTo(keyImageOf(tranIdImage(NUMERIC_START_ORDINAL)));
+            assertThat(observed.work().cursor().getTrnidLast())
+                    .as("MOVE TRAN-ID TO CDEMO-CT00-TRNID-LAST at :439, ten records on from the key")
+                    .isEqualTo(keyImageOf(tranIdImage(
+                            NUMERIC_START_ORDINAL + TransactionListResponse.PAGE_SIZE - 1)));
+
+            // :224 MOVE 0 TO CDEMO-CT00-PAGE-NUM ran before :306-307 added one. The commarea arrived
+            // at page two, so a translation that dropped :224 would report three here.
+            assertThat(caseNumber(19).screenRequest().commarea()
+                            .get(TransactionListCursor.PAGE_NUM_FIELD))
+                    .as("the inbound page number must be non-zero for the reset at :224 to be "
+                            + "observable rather than merely asserted")
+                    .isNotEqualTo("00000000");
+            assertThat(observed.work().cursor().getPageNum())
+                    .as("0 + 1, not 2 + 1")
+                    .isEqualTo(1);
+            assertThat(observed.work().cursor().getNextPageFlg())
+                    .as("the look-ahead READNEXT at :308 finds a further record, so :310 SET "
+                            + "NEXT-PAGE-YES")
+                    .isEqualTo(TransactionListCursor.NEXT_PAGE_YES);
+            assertThat(observed.response().getTrnidinO())
+                    .as("MOVE SPACE TO TRNIDINO at :325 and again at :228: once a page has been "
+                            + "painted the typed key is cleared from the redisplayed screen, so the "
+                            + "next ENTER browses on from the cursor instead of restarting here")
+                    .isBlank();
+            assertThat(observed.work().sendCount())
+                    .as("exactly one send, from :326. The REENTER path at :118-121 does not perform "
+                            + "SEND-TRNLST-SCREEN at :116, and no read reported end-of-data")
+                    .isEqualTo(1);
         }
 
         @Test
@@ -1485,10 +1820,37 @@ final class COTRN00CParityTest {
             assertThat(clean(18).work().cursor().getTrnSelFlg())
                     .as("WHEN 'S' at :186")
                     .isEqualTo("S");
-            assertThat(clean(19).work().cursor().getTrnSelFlg())
-                    .as("WHEN 's' at :187, a second WHEN clause sharing one body. There is no folding "
-                            + "here, so any other letter falls to WHEN OTHER at :196 instead")
-                    .isEqualTo("s");
+
+            // WHEN 's' at :187 - a second WHEN clause sharing one body. Driven from case18's own
+            // payload with the one cell re-typed in lower case, because the two clauses differ in
+            // exactly that byte: judging a derived case rather than a declared one keeps the twenty
+            // declared cases at twenty while still driving both halves of the shared body. If the
+            // implementation folded case instead of enumerating, this would pass for 'x' too, which
+            // the third assertion below rules out.
+            ParityCase lowerCase = withSelectorLetter(caseNumber(18), SELECTOR_LOWER);
+            Observed folded = execute(lowerCase);
+            assertThat(folded.diffs().count())
+                    .as("case18 re-typed in lower case must reach the same body and differ in "
+                            + "nothing but the echoed selector byte:%n%s", folded.diffs().render())
+                    .isZero();
+            assertThat(folded.work().cursor().getTrnSelFlg()).isEqualTo(SELECTOR_LOWER);
+            assertThat(folded.response().getNextProgram())
+                    .as("the lower-case letter reaches the XCTL at :192-195, exactly as 'S' does")
+                    .isEqualTo(TRAN_VIEW_PGM);
+
+            // And a letter that is neither reaches WHEN OTHER at :196, which sets the message and
+            // then FALLS THROUGH to the browse, because PERFORM SEND-TRNLST-SCREEN at :202 is
+            // commented out in the source and stays commented out.
+            Observed rejected = execute(withSelectorLetter(caseNumber(18), SELECTOR_INVALID));
+            assertThat(rejected.work().cursor().getTrnSelFlg()).isEqualTo(SELECTOR_INVALID);
+            assertThat(rejected.response().getNextProgram())
+                    .as("no transfer: 'x' is not enumerated, so nothing is folded onto 'S'. "
+                            + "CDEMO-TO-PROGRAM keeps the eight spaces a target-less path leaves")
+                    .isBlank();
+            assertThat(rejected.work().message())
+                    .as("MOVE 'Invalid selection. Valid value is S' TO WS-MESSAGE at :198-200")
+                    .startsWith(MSG_INVALID_SELECTION)
+                    .hasSize(WS_MESSAGE_WIDTH);
         }
     }
 
@@ -1500,7 +1862,7 @@ final class COTRN00CParityTest {
         @Test
         @DisplayName("an accepted selection names COTRN01C and performs no server-side forward")
         void anAcceptedSelectionNamesTheNextProgram() {
-            for (int ordinal : new int[]{18, 19, 20}) {
+            for (int ordinal : new int[]{18, 20}) {
                 Observed observed = clean(ordinal);
                 assertThat(observed.response().getNextProgram())
                         .as("case%02d: EXEC CICS XCTL PROGRAM(CDEMO-TO-PROGRAM) at :192-195 becomes a "
@@ -1727,14 +2089,35 @@ final class COTRN00CParityTest {
         @Test
         @DisplayName("the declared-empty seed carries the width no row could measure")
         void theEmptySeedCarriesItsDeclaredWidth() {
-            ParityCase.DatasetInput input = caseNumber(5).inputs().get(TRANSACT);
+            ParityCase.DatasetInput input = emptyFileVariant().inputs().get(TRANSACT);
             assertThat(input.rows()).isEmpty();
             assertThat(input.recordLength())
                     .as("a dataset holding no row has no row to measure, so the width is declared. "
                             + "That is how an empty TRANSACT is told apart from an empty 430-byte "
                             + "reject file or an empty 133-byte report")
                     .isEqualTo(TranRecord.RECORD_LENGTH);
-            assertThat(input.copybook()).isEqualTo("CVTRA05Y");
+            assertThat(input.copybook()).isEqualTo(TRAN_COPYBOOK);
+        }
+
+        @Test
+        @DisplayName("the boundary seed carries exactly twenty rows, which is two pages and no remainder")
+        void theBoundarySeedCarriesExactlyTwoFullPages() {
+            ParityCase.DatasetInput input = caseNumber(5).inputs().get(TRANSACT);
+            assertThat(input.rows())
+                    .as("case05 exists to land the page edge exactly, and it can only do that if the "
+                            + "seed is exactly two pages of %d. Nineteen rows would make the second "
+                            + "page partial and route the page number through :317-318 instead of "
+                            + ":306-307; twenty-one would leave a record for the look-ahead READNEXT "
+                            + "at :308 to find and set the flag to Y. The cardinality IS the case",
+                            TransactionListResponse.PAGE_SIZE)
+                    .hasSize(2 * TransactionListResponse.PAGE_SIZE);
+            assertThat(input.recordLength())
+                    .as("a seeded row measures its own width, so no width is declared beside it")
+                    .isNull();
+            assertThat(input.rows().get(2 * TransactionListResponse.PAGE_SIZE - 1))
+                    .as("and the twentieth row is the last key the browse can reach, which is why the "
+                            + "look-ahead read reports end-of-file")
+                    .startsWith("0000000000000020");
         }
     }
 
@@ -1746,8 +2129,9 @@ final class COTRN00CParityTest {
         @Test
         @DisplayName("each of the six paging literals is emitted byte-exactly by its own path")
         void eachPagingLiteralComesFromItsOwnPath() {
-            assertThat(clean(5).work().message())
-                    .as("STARTBR's end-of-data arm at :608-609")
+            assertThat(clean(6).work().message())
+                    .as("STARTBR's end-of-data arm at :608-609, which is the only paragraph that "
+                            + "produces this literal")
                     .isEqualTo(paddedMessage(MSG_AT_TOP));
             assertThat(clean(3).work().message())
                     .as("READNEXT's ENDFILE arm at :642-643")
@@ -1879,7 +2263,7 @@ final class COTRN00CParityTest {
             assertThat(clean(2).work().startbrOutcome())
                     .as("WHEN DFHRESP(NORMAL) at :603")
                     .isEqualTo(FileStatus.Outcome.OK);
-            assertThat(clean(5).work().startbrOutcome())
+            assertThat(clean(emptyFileVariant()).work().startbrOutcome())
                     .as("an empty file: the positioning probe finds nothing, which reaches the same "
                             + "arm as NOTFND at :605")
                     .isEqualTo(FileStatus.Outcome.END_OF_FILE);
@@ -1956,20 +2340,37 @@ final class COTRN00CParityTest {
         @Test
         @DisplayName("an end-of-data position does NOT set the error flag, so paging continues")
         void anEndOfDataPositionDoesNotSetTheErrorFlag() {
-            for (int ordinal : new int[]{5, 6}) {
-                Observed observed = clean(ordinal);
+            for (ParityCase declared : List.of(caseNumber(6), emptyFileVariant())) {
+                Observed observed = clean(declared);
                 assertThat(observed.work().isErrFlgOff())
-                        .as("case%02d: the arm at :605-611 sets TRANSACT-EOF and a message but never "
+                        .as("the arm at :605-611 sets TRANSACT-EOF and a message but never "
                                 + "WS-ERR-FLG, which is precisely why :283 lets execution reach ENDBR "
-                                + "at :322 and the second SEND at :326", ordinal)
+                                + "at :322 and the second SEND at :326")
                         .isTrue();
                 assertThat(observed.work().isTransactEof()).isTrue();
                 assertThat(observed.work().sendCount())
-                        .as("case%02d: three sends - one from the arm at :611, one from :326, and one "
+                        .as("three sends - one from the arm at :611, one from :326, and one "
                                 + "from :116, which MAIN-PARA performs after PROCESS-ENTER-KEY on the "
-                                + "first-entry path", ordinal)
+                                + "first-entry path")
                         .isEqualTo(3);
             }
+        }
+
+        @Test
+        @DisplayName("an end-of-data READ does not set it either, which is why a full page can end a list")
+        void anEndOfDataReadDoesNotSetTheErrorFlag() {
+            Observed observed = clean(5);
+            assertThat(observed.work().isErrFlgOff())
+                    .as("READNEXT's ENDFILE arm at :639-645 sets TRANSACT-EOF and the bottom-of-page "
+                            + "message but never WS-ERR-FLG. Confusing the two would make :309 take "
+                            + "the wrong branch and lose the page number as well as the flag")
+                    .isTrue();
+            assertThat(observed.work().isTransactEof()).isTrue();
+            assertThat(observed.work().sendCount())
+                    .as("two sends on the PF8 boundary path - :645's from inside the look-ahead read "
+                            + "and :326's tail - and WS-MESSAGE is not cleared between them, so the "
+                            + "terminal saw the same 80-byte text twice")
+                    .isEqualTo(2);
         }
     }
 
@@ -2014,7 +2415,10 @@ final class COTRN00CParityTest {
         @Test
         @DisplayName("a path that opens no browse issues no repository call at all")
         void aPathThatOpensNoBrowseIssuesNoCall() {
-            for (int ordinal : new int[]{1, 9, 10, 11, 12, 18, 19, 20}) {
+            // case19 is deliberately absent: it types a key and therefore DOES open a browse. The
+            // ordinals here are the ones whose paths never reach :281 - the no-commarea guard, the
+            // PF3 return, the unnamed key, the two paging refusals and the two accepted selections.
+            for (int ordinal : new int[]{1, 9, 10, 11, 12, 18, 20}) {
                 Observed observed = clean(ordinal);
                 assertThat(observed.cursors())
                         .as("case%02d: no STARTBR is issued on this path, so the file is never "

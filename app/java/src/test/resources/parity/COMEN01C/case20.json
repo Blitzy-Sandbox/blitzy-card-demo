@@ -1,0 +1,85 @@
+{
+  "program": "COMEN01C",
+  "caseId": "case20",
+  "description": "All twenty name-labelled DFHMDF fields of mapset COMEN01, pinned in one send. The six POPULATE-HEADER-INFO fields of app/cbl/COMEN01C.cbl:212-231 - TRNNAMEO, TITLE01O, CURDATEO, PGMNAMEO, TITLE02O and CURTIMEO - exist only in the controller projection, which is why they cannot be observed on a service case at all, and CURDATEO and CURTIMEO are comparable only because the case pins the clock. Each width comes from the matching xxxI item of app/cpy-bms/COMEN01.CPY and from nowhere else: the xxxL, xxxF and xxxA items are length, flag and attribute metadata rather than payload, which is why ERRMSGC appears as an attribute and not as a field. The date is rendered MM/DD/YY from WS-CURDATE-YEAR(3:2) and the time HH:MM:SS, both eight bytes.",
+  "unitKind": "CONTROLLER_POJO",
+  "inputs": {},
+  "screenRequest": {
+    "eibcalen": 160,
+    "aid": "DFHENTER",
+    "pinnedClock": "2022-07-19T23:12:33",
+    "charset": "US-ASCII",
+    "commarea": {
+      "CDEMO-FROM-TRANID": "CC00",
+      "CDEMO-FROM-PROGRAM": "COSGN00C",
+      "CDEMO-TO-PROGRAM": "COMEN01C",
+      "CDEMO-USER-ID": "ADMIN001",
+      "CDEMO-USER-TYPE": "A",
+      "CDEMO-PGM-CONTEXT": "0"
+    },
+    "mapFields": {},
+    "forcedOutcomes": {}
+  },
+  "expectedResponse": {
+    "nextMapset": "COMEN01",
+    "nextMap": "COMEN1A",
+    "navigation": {
+      "CDEMO-FROM-TRANID": "CC00",
+      "CDEMO-FROM-PROGRAM": "COSGN00C",
+      "CDEMO-TO-TRANID": "    ",
+      "CDEMO-TO-PROGRAM": "COMEN01C",
+      "CDEMO-USER-ID": "ADMIN001",
+      "CDEMO-USER-TYPE": "A",
+      "CDEMO-PGM-CONTEXT": "1",
+      "CDEMO-CUST-ID": "000000000",
+      "CDEMO-CUST-FNAME": "                         ",
+      "CDEMO-CUST-MNAME": "                         ",
+      "CDEMO-CUST-LNAME": "                         ",
+      "CDEMO-ACCT-ID": "00000000000",
+      "CDEMO-ACCT-STATUS": " ",
+      "CDEMO-CARD-NUM": "0000000000000000",
+      "CDEMO-LAST-MAP": "       ",
+      "CDEMO-LAST-MAPSET": "       "
+    },
+    "sends": [
+      {
+        "fields": {
+          "TRNNAMEO": "CM00",
+          "TITLE01O": "      AWS Mainframe Modernization       ",
+          "CURDATEO": "07/19/22",
+          "PGMNAMEO": "COMEN01C",
+          "TITLE02O": "              CardDemo                  ",
+          "CURTIMEO": "23:12:33",
+          "OPTN001O": "01. Account View                        ",
+          "OPTN002O": "02. Account Update                      ",
+          "OPTN003O": "03. Credit Card List                    ",
+          "OPTN004O": "04. Credit Card View                    ",
+          "OPTN005O": "05. Credit Card Update                  ",
+          "OPTN006O": "06. Transaction List                    ",
+          "OPTN007O": "07. Transaction View                    ",
+          "OPTN008O": "08. Transaction Add                     ",
+          "OPTN009O": "09. Transaction Reports                 ",
+          "OPTN010O": "10. Bill Payment                        ",
+          "OPTN011O": "                                        ",
+          "OPTN012O": "                                        ",
+          "OPTIONO": "  ",
+          "ERRMSGO": "                                                                              "
+        },
+        "attributes": {
+          "ERRMSGC": "DFHRED"
+        }
+      }
+    ],
+    "termination": "RETURN_TRANSID"
+  },
+  "expectedWrites": [],
+  "expectedFinalState": [],
+  "expectedReturnCode": 0,
+  "expectedMessages": [
+    {
+      "channel": "SCREEN_ERRMSG_78",
+      "text": "                                                                              "
+    }
+  ],
+  "normalisations": []
+}

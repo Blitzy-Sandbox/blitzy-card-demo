@@ -1,7 +1,7 @@
 {
   "program": "COTRN00C",
   "caseId": "case19",
-  "description": "The same transfer through the OTHER half of the two-clause WHEN at :186-187, and from a cell that is neither the first nor the last. A lower-case 's' is accepted because 's' is enumerated beside 'S', not because anything is case-folded - there is no folding here, so a different letter or a full-width S would fall to WHEN OTHER at :196 instead. Driving row five as well as row one proves the EVALUATE TRUE chain is a chain rather than a test of the first cell only: arms one to four must all evaluate false before arm five matches, and the identifier copied into CDEMO-CT00-TRN-SELECTED must come from TRNID05I rather than from TRNID01I.",
+  "description": "The NUMERIC half of the browse-key filter at :206-219, which is the limb no other case in this folder reaches. TRNIDINI is not spaces, so :206 is false and control takes the ELSE at :208; the sixteen characters typed are all digits, so IS NUMERIC at :209 is true and :210 MOVE TRNIDINI OF COTRN0AI TO TRAN-ID copies them into the RIDFLD width for width. WS-ERR-FLG is NOT set, so nothing downstream short-circuits and the reject limb at :211-217 is not entered. Note what IS NUMERIC costs the operator on a PIC X(16) item: every one of the sixteen positions is examined, so a short entry that arrives space padded is not numeric and is refused - the key declared here is a full-width sixteen-digit identifier for exactly that reason. POSITIONING, derived rather than assumed: :597 has GTEQ commented out, and GTEQ is the STARTBR default, so commenting it out changed nothing and the browse positions at-or-after the RIDFLD, inclusive of the anchor record. The other cases in this folder corroborate it - they browse from LOW-VALUES and are served the first record on file, which only an inclusive at-or-after positioning produces. And because the key pressed is ENTER, the combined relation at :285 (NOT = DFHENTER AND DFHPF7 AND DFHPF3) is false, so no skip read discards the anchor: record 08 - the record AT the typed key - is screen row one, and rows one to ten take records 08 to 17. The look-ahead READNEXT at :308 then finds record 18, so :310 SET NEXT-PAGE-YES. Exactly ONE send, from :326, because this is the REENTER path at :118-121 and no read reported end-of-data. The page number is reset before it is incremented: the commarea arrives at page two and :224 MOVE 0 TO CDEMO-CT00-PAGE-NUM overwrites it, so :306-307 computes 0 + 1 = 1 rather than 2 + 1 = 3 - which is what makes the reset observable rather than inferred. The typed key is then cleared from the redisplayed screen twice over, by :325 inside PROCESS-PAGE-FORWARD and again by :228 once it returns, so TRNIDINO comes back as spaces. The ten-way selection scan at :148-182 takes its WHEN OTHER at :179-181 because all ten SEL000nI cells are spaces, which leaves CDEMO-CT00-TRN-SEL-FLG and CDEMO-CT00-TRN-SELECTED spaces and makes :183 false, so no transfer is attempted. This case is also the folder's carrier for the four display-format edges of POPULATE-TRAN-DATA at :381-445, all four seeded INSIDE the ten-row window. TRAN-AMT is S9(09)V99 and WS-TRAN-AMT is PIC +99999999.99 at :56, so :383 renders twelve characters - one sign position that is always occupied, eight integer positions, a point and two decimals. Record 09 holds -1234.56 and renders -00001234.56, the only negative sign in the folder. Record 11 holds 0.00 and renders +00000000.00, because PIC + emits a plus for zero rather than a space. Record 13 holds 987654321.99, which has NINE integer digits where the mask has eight: a numeric MOVE truncates on the LEFT, so the leading 9 is discarded and the row renders +87654321.99. That is legacy behaviour to reproduce, not a mask to widen. Record 15 carries a fifty-character TRAN-DESC where TDESC08I is PIC X(26), and an alphanumeric MOVE truncates on the RIGHT, so the row paints 'PURCHASE OF PROFESSIONAL S' - twenty-six characters ending mid-word. Both truncations happen in the one paragraph and at opposite ends. Records 13 and 15 also carry origination timestamps in different years from every other row, so TDATE renders 11/07/23 and 12/31/21 against a pinned clock reading 07/19/22: the row date comes from TRAN-ORIG-TS through :384-388 and never from FUNCTION CURRENT-DATE at :569. The class is TransactionMenuController because the build prompt names it so; the program LISTS transactions ten to a page, and there is no menu anywhere in its 699 lines. PROVENANCE: every value here was derived statically, by reading app/cbl/COTRN00C.cbl against the byte offsets of app/cpy/CVTRA05Y.cpy, the field widths of app/cpy-bms/COTRN00.CPY and app/bms/COTRN00.bms, and the file definition in app/csd/CARDDEMO.CSD. It was never captured from a live COBOL run: no z/OS, no CICS emulator and no indexed-file COBOL runtime is available here, and DFHAID, DFHBMSCA and DFHATTR are absent from the repository.",
   "unitKind": "CONTROLLER_POJO",
   "inputs": {
     "TRANSACT": {
@@ -14,15 +14,28 @@
         "0000000000000006010001POS TERM  TRANSACTION 06 DESCRIPTION                                                                          0000001060{000000006MERCHANT 06                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    ",
         "0000000000000007010001POS TERM  TRANSACTION 07 DESCRIPTION                                                                          0000001070{000000007MERCHANT 07                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    ",
         "0000000000000008010001POS TERM  TRANSACTION 08 DESCRIPTION                                                                          0000001080{000000008MERCHANT 08                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    ",
-        "0000000000000009010001POS TERM  TRANSACTION 09 DESCRIPTION                                                                          0000001090{000000009MERCHANT 09                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    ",
+        "0000000000000009010001POS TERM  TRANSACTION 09 DESCRIPTION                                                                          0000012345O000000009MERCHANT 09                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    ",
         "0000000000000010010001POS TERM  TRANSACTION 10 DESCRIPTION                                                                          0000001100{000000010MERCHANT 10                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    ",
-        "0000000000000011010001POS TERM  TRANSACTION 11 DESCRIPTION                                                                          0000001110{000000011MERCHANT 11                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    ",
-        "0000000000000012010001POS TERM  TRANSACTION 12 DESCRIPTION                                                                          0000001120{000000012MERCHANT 12                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    "
+        "0000000000000011010001POS TERM  TRANSACTION 11 DESCRIPTION                                                                          0000000000{000000011MERCHANT 11                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    ",
+        "0000000000000012010001POS TERM  TRANSACTION 12 DESCRIPTION                                                                          0000001120{000000012MERCHANT 12                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    ",
+        "0000000000000013010001POS TERM  TRANSACTION 13 DESCRIPTION                                                                          9876543219I000000013MERCHANT 13                                       SEATTLE                                           98101     41111111111111112023-11-07 08:09:10.1234562022-06-11 08:00:00.000000                    ",
+        "0000000000000014010001POS TERM  TRANSACTION 14 DESCRIPTION                                                                          0000001140{000000014MERCHANT 14                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    ",
+        "0000000000000015010001POS TERM  PURCHASE OF PROFESSIONAL SERVICES RENDERED IN JULY                                                  0000001150{000000015MERCHANT 15                                       SEATTLE                                           98101     41111111111111112021-12-31 23:59:59.9999992022-06-11 08:00:00.000000                    ",
+        "0000000000000016010001POS TERM  TRANSACTION 16 DESCRIPTION                                                                          0000001160{000000016MERCHANT 16                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    ",
+        "0000000000000017010001POS TERM  TRANSACTION 17 DESCRIPTION                                                                          0000001170{000000017MERCHANT 17                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    ",
+        "0000000000000018010001POS TERM  TRANSACTION 18 DESCRIPTION                                                                          0000001180{000000018MERCHANT 18                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    ",
+        "0000000000000019010001POS TERM  TRANSACTION 19 DESCRIPTION                                                                          0000001190{000000019MERCHANT 19                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    ",
+        "0000000000000020010001POS TERM  TRANSACTION 20 DESCRIPTION                                                                          0000001200{000000020MERCHANT 20                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    ",
+        "0000000000000021010001POS TERM  TRANSACTION 21 DESCRIPTION                                                                          0000001210{000000021MERCHANT 21                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    ",
+        "0000000000000022010001POS TERM  TRANSACTION 22 DESCRIPTION                                                                          0000001220{000000022MERCHANT 22                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    ",
+        "0000000000000023010001POS TERM  TRANSACTION 23 DESCRIPTION                                                                          0000001230{000000023MERCHANT 23                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    ",
+        "0000000000000024010001POS TERM  TRANSACTION 24 DESCRIPTION                                                                          0000001240{000000024MERCHANT 24                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    "
       ]
     }
   },
   "screenRequest": {
     "eibcalen": 218,
+    "aid": "DFHENTER",
     "pinnedClock": "2022-07-19T23:12:34",
     "charset": "US-ASCII",
     "commarea": {
@@ -42,30 +55,29 @@
       "CDEMO-CARD-NUM": "0000000000000000",
       "CDEMO-LAST-MAP": "       ",
       "CDEMO-LAST-MAPSET": "       ",
-      "CDEMO-CT00-TRNID-FIRST": "0000000000000001",
-      "CDEMO-CT00-TRNID-LAST": "0000000000000010",
-      "CDEMO-CT00-PAGE-NUM": "00000001",
+      "CDEMO-CT00-TRNID-FIRST": "0000000000000011",
+      "CDEMO-CT00-TRNID-LAST": "0000000000000020",
+      "CDEMO-CT00-PAGE-NUM": "00000002",
       "CDEMO-CT00-NEXT-PAGE-FLG": "Y",
       "CDEMO-CT00-TRN-SEL-FLG": " ",
       "CDEMO-CT00-TRN-SELECTED": "                "
     },
     "mapFields": {
-      "SEL0005I": "s",
-      "TRNID05I": "0000000000000007"
+      "TRNIDINI": "0000000000000008"
     },
-    "forcedOutcomes": {},
-    "aid": "DFHENTER"
+    "forcedOutcomes": {}
   },
   "expectedResponse": {
-    "nextProgram": "COTRN01C",
+    "nextMapset": "COTRN00",
+    "nextMap": "COTRN0A",
     "navigation": {
-      "CDEMO-FROM-TRANID": "CT00",
-      "CDEMO-FROM-PROGRAM": "COTRN00C",
+      "CDEMO-FROM-TRANID": "CM00",
+      "CDEMO-FROM-PROGRAM": "COMEN01C",
       "CDEMO-TO-TRANID": "CT00",
-      "CDEMO-TO-PROGRAM": "COTRN01C",
+      "CDEMO-TO-PROGRAM": "COTRN00C",
       "CDEMO-USER-ID": "USER0001",
       "CDEMO-USER-TYPE": "U",
-      "CDEMO-PGM-CONTEXT": "0",
+      "CDEMO-PGM-CONTEXT": "1",
       "CDEMO-CUST-ID": "000000000",
       "CDEMO-CUST-FNAME": "                         ",
       "CDEMO-CUST-MNAME": "                         ",
@@ -75,16 +87,27 @@
       "CDEMO-CARD-NUM": "0000000000000000",
       "CDEMO-LAST-MAP": "       ",
       "CDEMO-LAST-MAPSET": "       ",
-      "CDEMO-CT00-TRNID-FIRST": "0000000000000001",
-      "CDEMO-CT00-TRNID-LAST": "0000000000000010",
+      "CDEMO-CT00-TRNID-FIRST": "0000000000000008",
+      "CDEMO-CT00-TRNID-LAST": "0000000000000017",
       "CDEMO-CT00-PAGE-NUM": "00000001",
       "CDEMO-CT00-NEXT-PAGE-FLG": "Y",
-      "CDEMO-CT00-TRN-SEL-FLG": "s",
-      "CDEMO-CT00-TRN-SELECTED": "0000000000000007"
+      "CDEMO-CT00-TRN-SEL-FLG": " ",
+      "CDEMO-CT00-TRN-SELECTED": "                "
     },
-    "sends": [],
+    "sends": [
+      {
+        "fields": {
+          "TITLE01O": "      AWS Mainframe Modernization       ",
+          "TITLE02O": "              CardDemo                  ",
+          "TRNNAMEO": "CT00",
+          "PGMNAMEO": "COTRN00C",
+          "CURDATEO": "07/19/22",
+          "CURTIMEO": "23:12:34"
+        }
+      }
+    ],
     "cursorField": "TRNIDINL",
-    "termination": "XCTL"
+    "termination": "RETURN_TRANSID"
   },
   "expectedWrites": [],
   "expectedFinalState": [],

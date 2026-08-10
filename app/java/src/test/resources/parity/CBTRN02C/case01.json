@@ -1,0 +1,124 @@
+{
+  "program": "CBTRN02C",
+  "caseId": "case01",
+  "description": "The clean post, seeded entirely from app/data/ASCII and the case every other one is a variation of. dailytran row 0 carries card 4859452612877065, type 01, category 0001 and DALYTRAN-AMT +504.77; cardxref row 20 resolves that card to account 7; acctdata row 6 is account 7 with ACCT-CREDIT-LIMIT 2065.00, ACCT-EXPIRAION-DATE 2024-12-13 and both cycle amounts zero; tcatbal row 6 is key (7,01,0001) at +0.00. So 1500-A finds the card, 1500-B finds the account, COMPUTE WS-TEMP-BAL at :403-405 gives 0.00 - 0.00 + 504.77 = 504.77, 2065.00 >= 504.77 so :407 continues, and 2024-12-13 >= 2022-06-10 so :414 continues. Reason stays 0, :211 chooses 2000-POST-TRANSACTION, and the three writes happen in the source's order: TCATBALF rewritten to +504.77 (its READ reported '00', so :498 takes the update arm and the 22 reserved bytes stay the fixture's twenty-two zeros), then the account rewritten with ACCT-CURR-BAL 193.00+504.77=697.77 and ACCT-CURR-CYC-CREDIT 0.00+504.77=504.77 because :548 tests >= 0, then the 350-byte TRAN-RECORD added under TRAN-ID 0000000000683580 with TRAN-PROC-TS holding the 26 bytes Z-GET-DB2-FORMAT-TIMESTAMP composes from the pinned clock. No reject, so :229 leaves RETURN-CODE 0 and DALYREJS is opened and closed holding nothing.",
+  "unitKind": "BATCH_JOB",
+  "inputs": {
+    "DALYTRAN": {
+      "fixture": "dailytran.txt",
+      "fromRow": 0,
+      "rowCount": 1
+    },
+    "XREFFILE": {
+      "fixture": "cardxref.txt",
+      "fromRow": 20,
+      "rowCount": 1
+    },
+    "ACCTFILE": {
+      "fixture": "acctdata.txt",
+      "fromRow": 6,
+      "rowCount": 1
+    },
+    "TCATBALF": {
+      "fixture": "tcatbal.txt",
+      "fromRow": 6,
+      "rowCount": 1
+    },
+    "TRANFILE": {
+      "empty": true,
+      "recordLength": 350,
+      "copybook": "CVTRA05Y"
+    }
+  },
+  "expectedWrites": [],
+  "expectedFinalState": [
+    {
+      "dataset": "DALYTRAN",
+      "rowIndex": 0,
+      "expectedBytes": "0000000000683580010001POS TERM  Purchase at Abshire-Lowe                                                                            0000005047G800000000Abshire-Lowe                                      North Enoshaven                                   72112     48594526128770652022-06-10 19:27:53.000000                                              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 0,
+      "expectedBytes": "485945261287706500000000700000000007              "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 0,
+      "expectedBytes": "00000000007Y00000006977G00000020650{00000002640{2012-10-122024-12-132024-12-1300000005047G00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "TCATBALF",
+      "rowIndex": 0,
+      "expectedBytes": "000000000070100010000005047G0000000000000000000000"
+    },
+    {
+      "dataset": "TRANFILE",
+      "rowIndex": 0,
+      "expectedBytes": "0000000000683580010001POS TERM  Purchase at Abshire-Lowe                                                                            0000005047G800000000Abshire-Lowe                                      North Enoshaven                                   72112     48594526128770652022-06-10 19:27:53.0000002022-07-19-23.12.34.000000                    "
+    }
+  ],
+  "expectedReturnCode": 0,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "START OF EXECUTION OF PROGRAM CBTRN02C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "TRANSACTIONS PROCESSED :000000001"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "TRANSACTIONS REJECTED  :000000000"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "END OF EXECUTION OF PROGRAM CBTRN02C"
+    }
+  ],
+  "normalisations": [
+    {
+      "dataset": "XREFFILE",
+      "kind": "CARDXREF_FILLER_PAD_36_TO_50"
+    }
+  ],
+  "expectedDatasets": [
+    {
+      "dataset": "DALYREJS",
+      "channel": "WRITES",
+      "rowCount": 0,
+      "recordLength": 430
+    },
+    {
+      "dataset": "DALYTRAN",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 350
+    },
+    {
+      "dataset": "XREFFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 50
+    },
+    {
+      "dataset": "ACCTFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 300
+    },
+    {
+      "dataset": "TCATBALF",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 50
+    },
+    {
+      "dataset": "TRANFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 350
+    }
+  ]
+}

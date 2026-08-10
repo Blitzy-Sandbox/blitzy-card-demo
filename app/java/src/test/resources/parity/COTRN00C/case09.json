@@ -1,7 +1,7 @@
 {
   "program": "COTRN00C",
   "caseId": "case09",
-  "description": "The DFHPF3 arm at :122-124, the second of the five EVALUATE EIBAID arms in source order. The program moves 'COMEN01C' into CDEMO-TO-PROGRAM and performs RETURN-TO-PREV-SCREEN, which at :512 finds the target already set and so keeps it, then stamps CDEMO-FROM-TRANID and CDEMO-FROM-PROGRAM with its own identity and MOVEs ZEROS to CDEMO-PGM-CONTEXT at :517 - so the conversation returns to the menu in ENTER state, not REENTER. XCTL transfers control, so the EXEC CICS RETURN at :138 is not reached and no map is sent. The browse cursor is echoed back untouched, next-page flag included: :99 SET NEXT-PAGE-NO runs against the program's own storage and :111 then replaces the whole area with the inbound one, so the inbound Y survives.",
+  "description": "The DFHPF3 arm at :122-124, which is the SECOND of the five EVALUATE EIBAID arms at :119-134 in source order - ENTER, PF3, PF7, PF8, then WHEN OTHER last (gate G30). It is reached in REENTER state, so the test at :112 is false, :118 performs RECEIVE-TRNLST-SCREEN and the key alone decides everything that follows. The arm moves 'COMEN01C' into CDEMO-TO-PROGRAM and performs RETURN-TO-PREV-SCREEN, which at :512 finds the target already set and therefore keeps it rather than defaulting to 'COSGN00C', stamps CDEMO-FROM-TRANID with WS-TRANID at :515 and CDEMO-FROM-PROGRAM with WS-PGMNAME at :516, and MOVEs ZEROS to CDEMO-PGM-CONTEXT at :517 - so the menu is re-entered in ENTER state, not REENTER. The XCTL at :518-521 transfers control, which is why the EXEC CICS RETURN at :138 is never reached, no map is sent and the send list is empty. Statelessness (gate G37) means that transfer is reported as the nextProgram response field for the client to resolve, never as a server-side forward and never as session state. What makes this more than a key test is that the operator had typed something. mapFields fills the ninth selection cell with 'S', carries in TRNID09I the key that cell held when page one was painted, and puts a numeric transaction id in TRNIDINI - and all three are discarded UNEVALUATED, because PROCESS-ENTER-KEY at :146-229 is performed only from the ENTER arm at :121. Had the translation walked that paragraph anyway, three observable things would differ: the ninth arm of the ten-way EVALUATE TRUE at :173-175 would have moved SEL0009I and TRNID09I into CDEMO-CT00-TRN-SEL-FLG and CDEMO-CT00-TRN-SELECTED and :188 would then have named 'COTRN01C' rather than 'COMEN01C'; :206-210 would have moved the numeric TRNIDINI into TRAN-ID; and :224-225 would have zeroed CDEMO-CT00-PAGE-NUM and performed PROCESS-PAGE-FORWARD, opening a browse and sending a map. The expectation pins all three the other way round - COMEN01C, the two selection fields still blank, PAGE-NUM unchanged at 1, no send and no repository call at all. The browse cursor is echoed back untouched, next-page flag included: :99 SET NEXT-PAGE-NO runs against the program's own WORKING-STORAGE and :111 then replaces all 218 bytes of it with the inbound area - 160 bytes of CARDDEMO-COMMAREA from app/cpy/COCOM01Y.cpy plus the 58-byte CDEMO-CT00-INFO extension declared at :62-70 - so the inbound Y survives the SET. WS-MESSAGE holds the 80 spaces :102 leaves and ERRMSGO the 78 spaces :103 leaves; neither is a truncation of a message, because the MOVE at :531 is never reached. TRANSACT is seeded with twelve rows so that 'the file was never opened' is an assertion about a file that had something to read rather than a vacuous statement about an empty one. Each row measures 350 bytes summed from app/cpy/CVTRA05Y.cpy: TRAN-ID X(16) at 0, TRAN-TYPE-CD X(02) at 16, TRAN-CAT-CD 9(04) at 18, TRAN-SOURCE X(10) at 22, TRAN-DESC X(100) at 32, TRAN-AMT S9(09)V99 occupying 11 bytes at 132 with the sign overpunched into its trailing byte at scale 2 (gate G23), TRAN-MERCHANT-ID 9(09) at 143, merchant name and city X(50) at 152 and 202, zip X(10) at 252, TRAN-CARD-NUM X(16) at 262, TRAN-ORIG-TS and TRAN-PROC-TS X(26) at 278 and 304, and FILLER X(20) at 330 through 349 emitted as spaces (gate G21) - drop the FILLER and the row measures 330 and every offset behind it addresses the wrong bytes. The timestamps are pinned and the clock is pinned to the source's own version stamp so that CURDATEO and CURTIMEO, which :569 reads from FUNCTION CURRENT-DATE, are reproducible, and the code page is named US-ASCII rather than taken from the platform. Two things a reader must not infer from the class name. The program LISTS transactions - its own header reads 'List Transactions from TRANSACT file' and it paints a ten-row scrolling page whose size of ten is behaviour taken from the loop bounds at :290, :297 and :344 rather than configuration (gate G39) - even though the mandated Java class is TransactionMenuController; that name is honoured verbatim and none of the behaviour below is taken from it. And this expectation is STATICALLY DERIVED, by reading app/cbl/COTRN00C.cbl paragraph by paragraph against the copybook byte layouts in app/cpy, the symbolic-map widths in app/cpy-bms/COTRN00.CPY, the DFHMDF definitions in app/bms/COTRN00.bms and the transaction binding in app/csd/CARDDEMO.CSD. It was never captured from a running COBOL program: no z/OS runtime and no CICS emulator exists here, and DFHAID, DFHBMSCA and DFHATTR are absent from this repository. That substitution changes only the provenance of the numbers, and it is recorded as an accepted risk rather than left implicit.",
   "unitKind": "CONTROLLER_POJO",
   "inputs": {
     "TRANSACT": {
@@ -21,8 +21,10 @@
       ]
     }
   },
+  "jobParameters": {},
   "screenRequest": {
     "eibcalen": 218,
+    "aid": "DFHPF3",
     "pinnedClock": "2022-07-19T23:12:34",
     "charset": "US-ASCII",
     "commarea": {
@@ -49,9 +51,12 @@
       "CDEMO-CT00-TRN-SEL-FLG": " ",
       "CDEMO-CT00-TRN-SELECTED": "                "
     },
-    "mapFields": {},
-    "forcedOutcomes": {},
-    "aid": "DFHPF3"
+    "mapFields": {
+      "SEL0009I": "S",
+      "TRNID09I": "0000000000000009",
+      "TRNIDINI": "0000000000000012"
+    },
+    "forcedOutcomes": {}
   },
   "expectedResponse": {
     "nextProgram": "COMEN01C",

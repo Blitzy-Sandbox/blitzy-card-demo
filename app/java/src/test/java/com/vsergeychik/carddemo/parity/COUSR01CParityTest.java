@@ -217,10 +217,18 @@ final class COUSR01CParityTest {
             UserAddResponse.USR_TYPE_FIELD);
 
     /** How many of the twenty cases reach a completed {@code EXEC CICS WRITE}. */
-    private static final int SUCCESSFUL_WRITES = 4;
+    private static final int SUCCESSFUL_WRITES = 5;
 
-    /** How many of the twenty end by {@code EXEC CICS XCTL} rather than by {@code RETURN}. */
-    private static final int TRANSFERS = 2;
+    /**
+     * How many of the twenty end by {@code EXEC CICS XCTL} rather than by {@code RETURN}.
+     *
+     * <p>One: {@code case16} presses {@code DFHPF3} and transfers at {@code :93-95}. The other
+     * transferring path - the no-commarea guard at {@code :78-80} - is driven by
+     * {@code UserAddControllerTest} rather than by a parity case, because a case that carries no
+     * commarea and no map field also carries no record to diff, so the whole of its evidence is the
+     * response, and the controller's own test states that more directly.
+     */
+    private static final int TRANSFERS = 1;
 
     // =============================================================================================
     // The case set.
@@ -845,8 +853,8 @@ final class COUSR01CParityTest {
             }
         }
         assertThat(written)
-                .as("four of the twenty cases reach a successful write - case01, case11, case12 and "
-                        + "case20 - and the other sixteen must write nothing at all")
+                .as("five of the twenty cases reach a successful write - case01, case11, case12, "
+                        + "case19 and case20 - and the other fifteen must write nothing at all")
                 .isEqualTo(SUCCESSFUL_WRITES);
     }
 
@@ -1006,7 +1014,7 @@ final class COUSR01CParityTest {
             }
         }
         assertThat(greenSends)
-                .as("each of the four successful writes confirms on a green message")
+                .as("each of the five successful writes confirms on a green message")
                 .isEqualTo(SUCCESSFUL_WRITES);
     }
 
@@ -1142,8 +1150,7 @@ final class COUSR01CParityTest {
     }
 
     /**
-     * Conversation state travels in the payload, and the two transferring paths name a program and
-     * no map.
+     * Conversation state travels in the payload, and a transferring path names a program and no map.
      *
      * <p>All sixteen {@code CARDDEMO-COMMAREA} fields are pinned on every case, at their declared
      * widths and totalling {@value NavigationContext#COMMAREA_LENGTH} bytes, because the differ
@@ -1206,22 +1213,23 @@ final class COUSR01CParityTest {
             }
         }
         assertThat(transfers)
-                .as("two paths transfer: the no-commarea guard at :78-80 to COSGN00C, and DFHPF3 at "
-                        + ":93-95 to COADM01C")
+                .as("one parity case transfers - DFHPF3 at :93-95 to COADM01C - and the no-commarea "
+                        + "guard at :78-80, which is the other transferring path, is driven by "
+                        + "UserAddControllerTest instead")
                 .isEqualTo(TRANSFERS);
 
         Map<String, ParityCase> byId = casesById();
         assertThat(byId.get(ParityHarness.caseId(16)).expectedResponse().nextProgram())
                 .isEqualTo(UserAddController.ADMIN_MENU_PROGRAM);
-        assertThat(byId.get(ParityHarness.caseId(19)).expectedResponse().nextProgram())
-                .isEqualTo(UserAddController.SIGNON_PROGRAM);
-        assertThat(byId.get(ParityHarness.caseId(19)).screenRequest().eibcalen())
-                .as("case19 is the EIBCALEN = 0 guard, where there is no state on the server to "
-                        + "fall back on at all")
-                .isZero();
-        assertThat(byId.get(ParityHarness.caseId(19)).screenRequest().commarea())
-                .as("and the payload carries none either, which is the whole point")
-                .isEmpty();
+        assertThat(byId.get(ParityHarness.caseId(16)).screenRequest().eibcalen())
+                .as("case16 arrives WITH a communication area, so its transfer is DFHPF3's decision "
+                        + "at :93 and not the guard's at :78 - the two are different branches and "
+                        + "must not be confused for one")
+                .isNotZero();
+        assertThat(byId.get(ParityHarness.caseId(16)).screenRequest().commarea())
+                .as("and the payload carries that area, because conversation state travels in the "
+                        + "payload rather than in server-side session state")
+                .isNotEmpty();
     }
 
     /**

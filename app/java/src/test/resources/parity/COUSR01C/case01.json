@@ -1,7 +1,7 @@
 {
   "program": "COUSR01C",
   "caseId": "case01",
-  "description": "PROCESS-ENTER-KEY falls through all five blank-field arms to WHEN OTHER at app/cbl/COUSR01C.cbl:148-150, so IF NOT ERR-FLG-ON at :153 is true and WRITE-USER-SEC-FILE runs. The RESP is NORMAL, which selects :251-259 - four statements whose ORDER is the subtle part. INITIALIZE-ALL-FIELDS runs FIRST at :252 and blanks the five screen fields and WS-MESSAGE, and only then is the confirmation composed at :255-258. That works solely because SEC-USR-ID lives in WORKING-STORAGE rather than in the map, so it survives the blanking: a translation that composed the message from USERIDI, or that blanked after composing, would put an empty id on the screen and this case would catch it. DFHGREEN reaches ERRMSGC at :254 - the value comes from common.BmsAttributes, reproduced from IBM CICS documentation because DFHBMSCA is absent from this repository, and NOT from any file here. The eleven-row final state is in KEY sequence: app/jcl/DUSRSECJ.jcl STEP02 defines USRSEC as KEYS(8,0) INDEXED, and NEWUSR01 sorts between ADMIN005 and USER0001.",
+  "description": "COUSR01C, transaction CU01, the successful add. PROCESS-ENTER-KEY at app/cbl/COUSR01C.cbl:117-151 falls through all five blank-field arms to WHEN OTHER at :148-150, so IF NOT ERR-FLG-ON at :153 is true, :154-158 move the five received items into SEC-USER-DATA and :159 performs WRITE-USER-SEC-FILE. The EXEC CICS WRITE at :240-248 reports NORMAL, which selects the first arm of EVALUATE WS-RESP-CD at :250-259 - four statements whose ORDER is the subtle part. INITIALIZE-ALL-FIELDS runs FIRST at :252 and blanks the five screen items and WS-MESSAGE at :289-295, and only then is the confirmation composed at :255-258. That works solely because SEC-USR-ID lives in WORKING-STORAGE (app/cpy/CSUSR01Y.cpy:18, copied at :53) rather than in the map, so it survives the blanking: a translation that composed the message from USERIDI, or that blanked after composing, would put an empty id on the screen and this case would catch it. The five data output items are SPACES and not LOW-VALUES because app/cpy-bms/COUSR01.CPY:91 declares 01 COUSR1AO REDEFINES COUSR1AI, so the MOVE SPACES at :290-294 reaches FNAMEO, LNAMEO, USERIDO, PASSWDO and USRTYPEO through the very same bytes; the LOW-VALUES paint belongs to the first-entry path and is pinned by case14. WS-MESSAGE is X(80) at :38 and ERRMSGO is X(78) at COUSR01.CPY:90, so the MOVE at :188 truncates on the right and both widths are pinned; the MOVE SPACES at :253 is what leaves the tail of the 80-byte field blank, because the STRING at :255-258 does not pad what it does not reach. DFHGREEN reaches ERRMSGC at :254 - that value comes from common.BmsAttributes, which reproduces DFHBMSCA from IBM CICS documentation because the copybook is absent from this repository, and NOT from any file in this checkout. No DFHATTR constant is pinned: the COPY at :57 is commented out, so the program compiles none in. No error marker and no per-field colour is pinned either, because COUSR01C copies neither CSSETATY nor CSSTRPFY; the confirmation colour above is the whole of its attribute behaviour. Cursor placement is FNAMEL, from MOVE -1 at :289. The eleven-row final state is in KEY sequence - app/jcl/DUSRSECJ.jcl STEP02 defines USRSEC as KEYS(8,0) INDEXED - so NEWUSR01 sorts between ADMIN005 and USER0001 and the inserted row is row 5; the other ten rows are byte-identical to the seed. expectedWrites carries exactly one record and expectedDatasets pins USRSEC at one row on the WRITES channel and eleven on FINAL_STATE, which together assert that this path writes once and that no twelfth row appears. The clock is pinned to 2022-07-19T23:12:34, the version footer at :298, so CURDATEO at :227 and CURTIMEO at :233 are derived rather than read from a wall clock, and the whole folder shares that instant. SEC-USR-PWD stays plaintext at its declared X(08) because :157 moves PASSWDI unchanged and COSGN00C compares it unchanged; hashing it would change observable behaviour and is out of scope. This case drives the REENTER half of :83; the ENTER first-entry paint at :83-87 is case14, the PF4 clear at :96-97 is case15, and the EIBCALEN = 0 guard at :78-80 is case19. PROVENANCE: every expected value here is STATICALLY DERIVED, by structured reading of the paragraphs cited above cross-checked against app/cpy/CSUSR01Y.cpy:17-23 for the 8-20-20-8-1-23 byte layout that sums to 80, app/cpy-bms/COUSR01.CPY with app/bms/COUSR01.bms for the twelve screen field shapes, app/cpy/COCOM01Y.cpy:19-44 for the 160-byte commarea, app/cpy/COTTL01Y.cpy:18-22 for the two 40-byte title literals with the CCDA literal commented out at :21, app/csd/CARDDEMO.CSD for the CU01 and USRSEC bindings, and app/jcl/DUSRSECJ.jcl:35-44 for the ten 57-character seed rows. It was NOT captured from, recorded against, or replayed from any execution of the legacy COBOL: section 0.7.6 of the plan records eight independently verified blockers - no z-OS or CICS runtime, an indexed file handler reported as disabled, no Language Environment CEE services, the three IBM copybooks absent, and the rest - that make executing these programs impossible in this environment. Only the provenance of the values is substituted; the twenty cases, the field-for-field diffing and the required diff count of zero all stand.",
   "unitKind": "CONTROLLER_POJO",
   "inputs": {
     "USRSEC": {
@@ -19,6 +19,7 @@
       ]
     }
   },
+  "jobParameters": {},
   "screenRequest": {
     "eibcalen": 160,
     "aid": "DFHENTER",
@@ -184,6 +185,20 @@
     {
       "dataset": "USRSEC",
       "kind": "USRSEC_FILLER_PAD_57_TO_80"
+    }
+  ],
+  "expectedDatasets": [
+    {
+      "dataset": "USRSEC",
+      "channel": "WRITES",
+      "rowCount": 1,
+      "recordLength": 80
+    },
+    {
+      "dataset": "USRSEC",
+      "channel": "FINAL_STATE",
+      "rowCount": 11,
+      "recordLength": 80
     }
   ]
 }

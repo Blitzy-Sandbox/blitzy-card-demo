@@ -1,0 +1,135 @@
+{
+  "program": "CBTRN02C",
+  "caseId": "case09",
+  "description": "Two transactions on one category-balance key, which is how the cycle amounts feed the next record's COMPUTE. Both rows are verbatim dailytran rows - row 3 at +281.77 and row 7 at +373.66 - and they share card 8040580410348680, so both resolve through cardxref row 40 to account 26 and both address key (26,01,0001), seeded from tcatbal row 25 at +0.00. The first record computes 0.00 - 0.00 + 281.77 = 281.77 against limit 2181.00 and posts, leaving ACCT-CURR-CYC-CREDIT at 281.77. The second then computes 281.77 - 0.00 + 373.66 = 655.43 - not 373.66 - because :403 reads the cycle amounts from the account record the first transaction rewrote, and that is the whole point of this case: the running credit is an input to the credit-limit test. Both pass, so TRAN-CAT-BAL accumulates to 655.43 through two REWRITEs, ACCT-CURR-BAL reaches 46.00 + 281.77 + 373.66 = 701.43, and TRANFILE holds the two transactions in the order they were written.",
+  "unitKind": "BATCH_JOB",
+  "inputs": {
+    "DALYTRAN": {
+      "rows": [
+        "0000000009101861010001POS TERM  Purchase at Guann LLC                                                                               0000002817G800000000Guann LLC                                         South Lynn                                        51508-916680405804103486802022-06-10 19:27:53.000000                                              ",
+        "0000000017874199010001POS TERM  Purchase at Legros Group                                                                            0000003736F800000000Legros Group                                      Carmeloborough                                    34849-512780405804103486802022-06-10 19:27:53.000000                                              "
+      ]
+    },
+    "XREFFILE": {
+      "fixture": "cardxref.txt",
+      "fromRow": 40,
+      "rowCount": 1
+    },
+    "ACCTFILE": {
+      "fixture": "acctdata.txt",
+      "fromRow": 25,
+      "rowCount": 1
+    },
+    "TCATBALF": {
+      "fixture": "tcatbal.txt",
+      "fromRow": 25,
+      "rowCount": 1
+    },
+    "TRANFILE": {
+      "empty": true,
+      "recordLength": 350,
+      "copybook": "CVTRA05Y"
+    }
+  },
+  "expectedWrites": [],
+  "expectedFinalState": [
+    {
+      "dataset": "DALYTRAN",
+      "rowIndex": 0,
+      "expectedBytes": "0000000009101861010001POS TERM  Purchase at Guann LLC                                                                               0000002817G800000000Guann LLC                                         South Lynn                                        51508-916680405804103486802022-06-10 19:27:53.000000                                              "
+    },
+    {
+      "dataset": "DALYTRAN",
+      "rowIndex": 1,
+      "expectedBytes": "0000000017874199010001POS TERM  Purchase at Legros Group                                                                            0000003736F800000000Legros Group                                      Carmeloborough                                    34849-512780405804103486802022-06-10 19:27:53.000000                                              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 0,
+      "expectedBytes": "804058041034868000000002600000000026              "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 0,
+      "expectedBytes": "00000000026Y00000007014C00000021810{00000013750{2009-04-202024-12-192024-12-1900000006554C00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "TCATBALF",
+      "rowIndex": 0,
+      "expectedBytes": "000000000260100010000006554C0000000000000000000000"
+    },
+    {
+      "dataset": "TRANFILE",
+      "rowIndex": 0,
+      "expectedBytes": "0000000009101861010001POS TERM  Purchase at Guann LLC                                                                               0000002817G800000000Guann LLC                                         South Lynn                                        51508-916680405804103486802022-06-10 19:27:53.0000002022-07-19-23.12.34.000000                    "
+    },
+    {
+      "dataset": "TRANFILE",
+      "rowIndex": 1,
+      "expectedBytes": "0000000017874199010001POS TERM  Purchase at Legros Group                                                                            0000003736F800000000Legros Group                                      Carmeloborough                                    34849-512780405804103486802022-06-10 19:27:53.0000002022-07-19-23.12.34.000000                    "
+    }
+  ],
+  "expectedReturnCode": 0,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "START OF EXECUTION OF PROGRAM CBTRN02C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "TRANSACTIONS PROCESSED :000000002"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "TRANSACTIONS REJECTED  :000000000"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "END OF EXECUTION OF PROGRAM CBTRN02C"
+    }
+  ],
+  "normalisations": [
+    {
+      "dataset": "XREFFILE",
+      "kind": "CARDXREF_FILLER_PAD_36_TO_50"
+    }
+  ],
+  "expectedDatasets": [
+    {
+      "dataset": "DALYREJS",
+      "channel": "WRITES",
+      "rowCount": 0,
+      "recordLength": 430
+    },
+    {
+      "dataset": "DALYTRAN",
+      "channel": "FINAL_STATE",
+      "rowCount": 2,
+      "recordLength": 350
+    },
+    {
+      "dataset": "XREFFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 50
+    },
+    {
+      "dataset": "ACCTFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 300
+    },
+    {
+      "dataset": "TCATBALF",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 50
+    },
+    {
+      "dataset": "TRANFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 2,
+      "recordLength": 350
+    }
+  ]
+}

@@ -1,7 +1,7 @@
 {
   "program": "COUSR01C",
   "caseId": "case19",
-  "description": "The statelessness case. EIBCALEN is 0 at app/cbl/COUSR01C.cbl:78, so the MOVE DFHCOMMAREA(1:EIBCALEN) at :82 is never reached and there is nothing whatsoever on the server to fall back on: the program moves 'COSGN00C' into CDEMO-TO-PROGRAM at :79 and transfers. The payload here carries no commarea and no map field, which is the same input a caller with no conversation at all presents, and the ENTIRE observable answer is the response - which is the point. Every one of the sixteen CARDDEMO-COMMAREA fields is pinned at its declared width and takes its value from WORKING-STORAGE's initial state, spaces for each alphanumeric span and zeros for each PIC 9 span, with only the three fields :170-174 writes set. Because CDEMO-TO-PROGRAM is already 'COSGN00C' the blank-target fallback at :167-169 is a no-op rather than the thing that supplied the value. No send, no message, no write, and no HttpSession anywhere in the path: conversation state travels in the payload.",
+  "description": "Two preserved behaviours in one case, and neither is a defect to be repaired. FIRST, mixed-case fidelity. app/cbl/COUSR01C.cbl contains ZERO occurrences of FUNCTION UPPER-CASE, and the five stores at :154-158 are bare MOVEs between items of identical width - USERIDI X(8) at app/cpy-bms/COUSR01.CPY:72 into SEC-USR-ID X(08), FNAMEI X(20) at :60 into SEC-USR-FNAME X(20), LNAMEI X(20) at :66 into SEC-USR-LNAME X(20), PASSWDI X(8) at :78 into SEC-USR-PWD X(08) and USRTYPEI X(1) at :84 into SEC-USR-TYPE X(01) - so nothing pads, nothing truncates and nothing folds between the map and the record. case11 states this with an all-lower-case payload; mixed case is the harder form and is pinned here, because McDonald, OBrienSmith and MiXeD001 each break under an upper-casing tidy-up, under a lower-casing one, AND under a capitalise-the-first-letter one. Only exact byte preservation survives all three. SECOND, the user type is not validated against A and U. The EVALUATE TRUE arm at :142 tests USRTYPEI OF COUSR1AI = SPACES OR LOW-VALUES and nothing else, and no arm anywhere in the program compares the value to 'A' or to 'U'. Three things document that vocabulary and not one of them enforces it: app/bms/COUSR01.bms:146-150 paints an unnamed DFHMDF of LENGTH=17 whose INITIAL is '(A=Admin, U=User)' beside the field, so the screen says it; all ten seed rows at app/jcl/DUSRSECJ.jcl:35-44 carry A or U, five each, so the data says it too; and app/cpy/COCOM01Y.cpy:26-28 declares 88 CDEMO-USRTYP-ADMIN VALUE 'A' and 88 CDEMO-USRTYP-USER VALUE 'U', which are COMMAREA predicates the menu programs read downstream rather than a rule this program applies to the screen field. So X is accepted and written unchanged. case06 states the same boundary negatively - blank is the one value this program does refuse, with 'User Type can NOT be empty...' - and the two must stay consistent. The failure mode this case exists to catch is a @Pattern of [AU] on UserAddRequest.usrType, an enum-valued type, or an allowed-values check in the service: each rejects X and answers with a message COUSR01C never emits, or rejects before any message at all. UserAddRequest carries @Size(max = n) and nothing else for exactly the reason its own documentation gives about @NotBlank - the program answers each blank with its own specific text - and that reasoning forbids an allowed-values constraint just as firmly. THE PATH: EIBCALEN is 160 and CDEMO-PGM-CONTEXT is 1, so :83 is false and :89 receives the map; EIBAID is DFHENTER so :91 performs PROCESS-ENTER-KEY; all five fields are non-blank so the EVALUATE falls through to WHEN OTHER at :148-150; :153 is true, :154-158 store, and :159 writes SEC-USER-DATA at a LENGTH of 80 with a KEYLENGTH of 8. The write is not forced: MiXeD001 is none of the ten seeded keys, so the key-sequenced file accepts it and reports NORMAL, which selects :251-259. That arm runs in source order - INITIALIZE-ALL-FIELDS at :252 FIRST, blanking the five screen fields but not SEC-USR-ID, which lives in WORKING-STORAGE - then MOVE SPACES TO WS-MESSAGE at :253, then MOVE DFHGREEN TO ERRMSGC at :254, then the STRING at :255-258, then the send at :259. That order is why the five screen fields come back blank at 20, 20, 8, 8 and 1 while the stored record keeps every typed byte. THE MESSAGE: 'User ' contributes all 5 bytes DELIMITED BY SIZE; SEC-USR-ID is DELIMITED BY SPACE and MiXeD001 holds no space, so all 8 transfer in exact mixed case; ' has been added ...' contributes all 19. 5 + 8 + 19 = 32 characters into a WS-MESSAGE PIC X(80) that :253 had just filled with spaces, and STRING does not pad, so the 80-byte channel is those 32 characters followed by 48 spaces; MOVE WS-MESSAGE TO ERRMSGO at :188 then narrows X(80) onto the map's X(78) at COUSR01.CPY:164 by truncating on the RIGHT, so the screen channel is the same 32 characters followed by 46 spaces. THE ROW INDEX: the two record channels answer two different questions, so the harness indexes them two different ways, and this file uses each as the harness documents it. expectedWrites is the write ordinal and there is exactly one write, so it is 0. expectedFinalState is the position in the dataset as the run left it, and app/jcl/DUSRSECJ.jcl:64-73 defines USRSEC with KEYS(8,0) RECORDSIZE(80,80) INDEXED, so the file is key-sequenced: in US-ASCII M is x'4D', which sorts after A x'41' and before U x'55', placing MiXeD001 at zero-based index 5, immediately after ADMIN005 and before USER0001 - the same slot case01's NEWUSR01 takes, and deliberately unlike case11's newusr01 at 10, where lower case sorts past every seeded key, and case12's AB at 0. Eleven rows, each eighty bytes. The seeded rows are declared at the JCL's own fifty-seven characters and brought to eighty by the USRSEC_FILLER_PAD_57_TO_80 normalisation, which is the harness's work and not this file's. PROVENANCE: every expected value here is STATICALLY DERIVED by structured reading of app/cbl/COUSR01C.cbl:142-160 and :238-259 - including the verified ABSENCE of both FUNCTION UPPER-CASE and any A/U allowed-values test - cross-checked against app/cpy/CSUSR01Y.cpy:17-23, whose six spans sum to 8 + 20 + 20 + 8 + 1 + 23 = 80 with SEC-USR-FILLER X(23) a NAMED field rather than an anonymous one; against app/cpy-bms/COUSR01.CPY:60, :66, :72, :78, :84 and :164, which prove every store same-width; against app/bms/COUSR01.bms:141-150, whose USRTYPE DFHMDF is LENGTH=1 and whose neighbour carries the (A=Admin, U=User) prompt; against app/cpy/COCOM01Y.cpy:26-31; against app/csd/CARDDEMO.CSD:88-89 and :93, which bind FILE(USRSEC) to its KSDS and grant ADD(YES); and against app/jcl/DUSRSECJ.jcl:35-44, :48 and :64-73. They were NOT captured from a live COBOL execution, which this environment cannot perform for the eight independently verified reasons on record - no z/OS, no CICS emulator, a compiler whose indexed file handler is disabled, no Language Environment CEE services, and the rest. SEC-USR-PWD stays the plaintext PaSsW0rd, eight characters with a digit zero standing where the letter o would be, because COSGN00C compares the field in plaintext and hashing it would be a behaviour change.",
   "unitKind": "CONTROLLER_POJO",
   "inputs": {
     "USRSEC": {
@@ -19,24 +19,20 @@
       ]
     }
   },
+  "jobParameters": {},
   "screenRequest": {
-    "eibcalen": 0,
+    "eibcalen": 160,
+    "aid": "DFHENTER",
     "pinnedClock": "2022-07-19T23:12:34",
     "charset": "US-ASCII",
-    "commarea": {},
-    "mapFields": {},
-    "forcedOutcomes": {}
-  },
-  "expectedResponse": {
-    "nextProgram": "COSGN00C",
-    "navigation": {
-      "CDEMO-FROM-TRANID": "CU01",
-      "CDEMO-FROM-PROGRAM": "COUSR01C",
-      "CDEMO-TO-TRANID": "    ",
-      "CDEMO-TO-PROGRAM": "COSGN00C",
-      "CDEMO-USER-ID": "        ",
-      "CDEMO-USER-TYPE": " ",
-      "CDEMO-PGM-CONTEXT": "0",
+    "commarea": {
+      "CDEMO-FROM-TRANID": "CA00",
+      "CDEMO-FROM-PROGRAM": "COADM01C",
+      "CDEMO-TO-TRANID": "CU01",
+      "CDEMO-TO-PROGRAM": "COUSR01C",
+      "CDEMO-USER-ID": "ADMIN001",
+      "CDEMO-USER-TYPE": "A",
+      "CDEMO-PGM-CONTEXT": "1",
       "CDEMO-CUST-ID": "000000000",
       "CDEMO-CUST-FNAME": "                         ",
       "CDEMO-CUST-MNAME": "                         ",
@@ -47,10 +43,76 @@
       "CDEMO-LAST-MAP": "       ",
       "CDEMO-LAST-MAPSET": "       "
     },
-    "sends": [],
-    "termination": "XCTL"
+    "mapFields": {
+      "FNAMEI": "McDonald            ",
+      "LNAMEI": "OBrienSmith         ",
+      "USERIDI": "MiXeD001",
+      "PASSWDI": "PaSsW0rd",
+      "USRTYPEI": "X"
+    },
+    "forcedOutcomes": {}
   },
-  "expectedWrites": [],
+  "expectedResponse": {
+    "nextProgram": "COUSR01C",
+    "nextMapset": "COUSR01",
+    "nextMap": "COUSR1A",
+    "navigation": {
+      "CDEMO-FROM-TRANID": "CA00",
+      "CDEMO-FROM-PROGRAM": "COADM01C",
+      "CDEMO-TO-TRANID": "CU01",
+      "CDEMO-TO-PROGRAM": "COUSR01C",
+      "CDEMO-USER-ID": "ADMIN001",
+      "CDEMO-USER-TYPE": "A",
+      "CDEMO-PGM-CONTEXT": "1",
+      "CDEMO-CUST-ID": "000000000",
+      "CDEMO-CUST-FNAME": "                         ",
+      "CDEMO-CUST-MNAME": "                         ",
+      "CDEMO-CUST-LNAME": "                         ",
+      "CDEMO-ACCT-ID": "00000000000",
+      "CDEMO-ACCT-STATUS": " ",
+      "CDEMO-CARD-NUM": "0000000000000000",
+      "CDEMO-LAST-MAP": "       ",
+      "CDEMO-LAST-MAPSET": "       "
+    },
+    "sends": [
+      {
+        "fields": {
+          "TRNNAMEO": "CU01",
+          "TITLE01O": "      AWS Mainframe Modernization       ",
+          "CURDATEO": "07/19/22",
+          "PGMNAMEO": "COUSR01C",
+          "TITLE02O": "              CardDemo                  ",
+          "CURTIMEO": "23:12:34",
+          "FNAMEO": "                    ",
+          "LNAMEO": "                    ",
+          "USERIDO": "        ",
+          "PASSWDO": "        ",
+          "USRTYPEO": " ",
+          "ERRMSGO": "User MiXeD001 has been added ...                                              "
+        },
+        "attributes": {
+          "ERRMSGC": "DFHGREEN"
+        }
+      }
+    ],
+    "cursorField": "FNAMEL",
+    "termination": "RETURN_TRANSID"
+  },
+  "expectedWrites": [
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 0,
+      "fields": {
+        "SEC-USR-ID": "MiXeD001",
+        "SEC-USR-FNAME": "McDonald            ",
+        "SEC-USR-LNAME": "OBrienSmith         ",
+        "SEC-USR-PWD": "PaSsW0rd",
+        "SEC-USR-TYPE": "X",
+        "SEC-USR-FILLER": "                       "
+      },
+      "expectedBytes": "MiXeD001McDonald            OBrienSmith         PaSsW0rdX                       "
+    }
+  ],
   "expectedFinalState": [
     {
       "dataset": "USRSEC",
@@ -80,31 +142,45 @@
     {
       "dataset": "USRSEC",
       "rowIndex": 5,
-      "expectedBytes": "USER0001LAWRENCE            THOMAS              PASSWORDU                       "
+      "expectedBytes": "MiXeD001McDonald            OBrienSmith         PaSsW0rdX                       "
     },
     {
       "dataset": "USRSEC",
       "rowIndex": 6,
-      "expectedBytes": "USER0002AJITH               KUMAR               PASSWORDU                       "
+      "expectedBytes": "USER0001LAWRENCE            THOMAS              PASSWORDU                       "
     },
     {
       "dataset": "USRSEC",
       "rowIndex": 7,
-      "expectedBytes": "USER0003LAURITZ             ALME                PASSWORDU                       "
+      "expectedBytes": "USER0002AJITH               KUMAR               PASSWORDU                       "
     },
     {
       "dataset": "USRSEC",
       "rowIndex": 8,
-      "expectedBytes": "USER0004AVERARDO            MAZZI               PASSWORDU                       "
+      "expectedBytes": "USER0003LAURITZ             ALME                PASSWORDU                       "
     },
     {
       "dataset": "USRSEC",
       "rowIndex": 9,
+      "expectedBytes": "USER0004AVERARDO            MAZZI               PASSWORDU                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 10,
       "expectedBytes": "USER0005LEE                 TING                PASSWORDU                       "
     }
   ],
   "expectedReturnCode": 0,
-  "expectedMessages": [],
+  "expectedMessages": [
+    {
+      "channel": "WS_MESSAGE_80",
+      "text": "User MiXeD001 has been added ...                                                "
+    },
+    {
+      "channel": "SCREEN_ERRMSG_78",
+      "text": "User MiXeD001 has been added ...                                              "
+    }
+  ],
   "normalisations": [
     {
       "dataset": "USRSEC",

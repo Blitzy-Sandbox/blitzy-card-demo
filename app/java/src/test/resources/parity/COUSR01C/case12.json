@@ -1,7 +1,7 @@
 {
   "program": "COUSR01C",
   "caseId": "case12",
-  "description": "The complete eighty-byte record image, stated in full, from five values that are all shorter than the fields they land in. app/cpy/CSUSR01Y.cpy declares SEC-USR-ID X(08) + SEC-USR-FNAME X(20) + SEC-USR-LNAME X(20) + SEC-USR-PWD X(08) + SEC-USR-TYPE X(01) + SEC-USR-FILLER X(23), and the sum of those six spans is the eighty that EXEC CICS WRITE sends at :243 as LENGTH OF SEC-USER-DATA. Every short value is padded on the RIGHT, which is the direction COBOL pads an alphanumeric receiver. SEC-USR-FILLER is assigned by nothing in this program and must still be present and space-filled: drop it and the record is fifty-seven bytes, which is precisely the width the fixture deviation would disguise. The confirmation reads 'User AB has been added ...' with no padding gap, because :256 contributes SEC-USR-ID DELIMITED BY SPACE and the operand stops at the first space of 'AB      '. Concatenating the padded field instead - the classic defect at this site - would read 'User AB       has been added ...'. 'AB      ' also sorts ahead of ADMIN001, so the added row is row zero of the final state.",
+  "description": "WHEN OTHER at app/cbl/COUSR01C.cbl:148-150 - the fall-through that is left when none of the five blank-field arms matches - and then the complete eighty-byte record image, stated in full, built from five values every one of which is shorter than the field it lands in. app/cpy/CSUSR01Y.cpy declares SEC-USR-ID X(08) + SEC-USR-FNAME X(20) + SEC-USR-LNAME X(20) + SEC-USR-PWD X(08) + SEC-USR-TYPE X(01) + SEC-USR-FILLER X(23), and the sum of those six spans is the eighty that EXEC CICS WRITE sends at :243 as LENGTH OF SEC-USER-DATA. Each of the five MOVEs at :154-158 pads on the RIGHT, which is the direction COBOL pads an alphanumeric receiver, so 'Q' is stored as 'Q' and nineteen spaces and 'AB' as 'AB' and six. SEC-USR-FILLER is assigned by nothing in this program and must still be emitted, space-filled: drop it and the record is fifty-seven bytes, which is precisely the width the seeding deviation would disguise. The confirmation reads 'User AB has been added ...' with no padding gap, because :256 contributes SEC-USR-ID DELIMITED BY SPACE and the operand stops at the first space of 'AB      '. Concatenating the padded field instead - the classic defect at this site, and invisible at the call site - would read 'User AB       has been added ...'. Under KEYS(8,0) INDEXED 'AB      ' also sorts ahead of ADMIN001, so the added row is row zero of the final state and the position itself is an assertion about what was stored. The five screen items go out as spaces rather than as what was typed, and that is the NORMAL arm rather than an omission: :252 performs INITIALIZE-ALL-FIELDS, which moves SPACES over USERIDI, FNAMEI, LNAMEI, PASSWDI and USRTYPEI at :290-294, and COUSR1AO REDEFINES COUSR1AI over identical seven-byte per-field prefixes, so each xxxI and its xxxO occupy the same bytes. ERRMSGC carries DFHGREEN from :254, the only attribute assignment anywhere in COUSR01C; DFHATTR is not among its copybooks at all, because :57 reads *COPY DFHATTR. and is commented out. The blank-field limbs are pinned elsewhere, deliberately. Each of the five conditions at :118, :124, :130, :136 and :142 is the compound test = SPACES OR LOW-VALUES - two comparisons against two distinct figurative constants, X'20' repeated and X'00' repeated, and not one emptiness test - and the two limbs are driven separately so that neither can be collapsed into a single is-blank helper: case02 through case05 supply literal spaces, case06 omits USRTYPEI from the payload entirely, which is a field never typed and is LOW-VALUES in map storage, and case07 mixes both limbs at once to prove that only the earliest arm speaks. This case is the negative half of that same contract: all five items arrive populated, which is the only way to leave every arm unmatched and reach :148-150 at all, so a translation that widened any arm to match a short but non-blank value would fail here rather than pass quietly. Nothing is left for a reader to infer. The code page is stated rather than inherited - US-ASCII, named on the request, never the platform default - every value is written at its full declared width with literal spaces, and no member is empty, null or omitted as shorthand for spaces, because on this screen an absent mapFields key means 'never transmitted' and is a different assertion. Provenance: these expected values are statically derived by structured reading of app/cbl/COUSR01C.cbl:117-151, :153-160, :240-248, :250-259, :184-196, :214-233 and :289-295, cross-checked against app/cpy/CSUSR01Y.cpy's byte layout, app/cpy-bms/COUSR01.CPY's xxxI and xxxO PICTURE widths - FNAMEI X(20), USERIDI X(8) rather than the USRIDINI of COUSR02 and COUSR03, ERRMSGO X(78) - the DFHMDF definitions in app/bms/COUSR01.bms, the ten fifty-seven-character in-stream rows of app/jcl/DUSRSECJ.jcl:L35-L44 together with the KEYS(8,0) RECORDSIZE(80,80) INDEXED cluster the same job defines, and the clock pinned from the source's own version footer at :298, 2022-07-19 23:12:34. They were NOT captured from any execution of the legacy COBOL, which is empirically impossible in this environment: there is no z/OS or CICS runtime, the available compiler reports its indexed file handler disabled, no Language Environment CEE services exist, and DFHAID, DFHBMSCA and DFHATTR are absent from the repository. Only the provenance of the expected values differs - the twenty cases, the field-for-field diffing and the diff-count-of-zero gate are all unchanged.",
   "unitKind": "CONTROLLER_POJO",
   "inputs": {
     "USRSEC": {
@@ -19,6 +19,7 @@
       ]
     }
   },
+  "jobParameters": {},
   "screenRequest": {
     "eibcalen": 160,
     "aid": "DFHENTER",
@@ -184,6 +185,20 @@
     {
       "dataset": "USRSEC",
       "kind": "USRSEC_FILLER_PAD_57_TO_80"
+    }
+  ],
+  "expectedDatasets": [
+    {
+      "dataset": "USRSEC",
+      "channel": "WRITES",
+      "rowCount": 1,
+      "recordLength": 80
+    },
+    {
+      "dataset": "USRSEC",
+      "channel": "FINAL_STATE",
+      "rowCount": 11,
+      "recordLength": 80
     }
   ]
 }

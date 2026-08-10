@@ -1,7 +1,7 @@
 {
   "program": "COUSR01C",
   "caseId": "case07",
-  "description": "Four of the five fields are blank at once - FNAMEI as spaces, USERIDI and USRTYPEI omitted and therefore LOW-VALUES, PASSWDI as spaces - and only LNAMEI is populated. An EVALUATE is ordered and the FIRST matching WHEN wins, so app/cbl/COUSR01C.cbl:118-123 answers and the screen says 'First Name can NOT be empty...' with the cursor on FNAMEL. Nothing reports the other three. This is the case that makes the ordering falsifiable: reordering the chain into the order the fields appear on the screen, or into SEC-USER-DATA's record order, or into any 'validate everything and report the first failure' scheme, changes the answer here while leaving case02 through case06 passing.",
+  "description": "All five validated fields are blank at once and only the earliest of them speaks. FNAMEI, LNAMEI and PASSWDI arrive as spaces at their declared PIC X widths while USERIDI and USRTYPEI are omitted from the payload altogether and are therefore LOW-VALUES, so both limbs of the test at app/cbl/COUSR01C.cbl:118 - '= SPACES OR LOW-VALUES', two comparisons against two different figurative constants - are driven in one case. An EVALUATE is ordered and the FIRST matching WHEN wins, so :118-123 answers and nothing else does: WS-ERR-FLG is raised at :119, 'First Name can NOT be empty...' is moved into WS-MESSAGE at :120-121, -1 is moved into FNAMEL at :122, and SEND-USRADD-SCREEN is performed at :123. LNAMEI at :124, USERIDI at :130, PASSWDI at :136, USRTYPEI at :142 and WHEN OTHER at :148-150 are never evaluated, and the other four blanks go unreported. That is what makes the ordering falsifiable rather than merely stated: with all five blank, EVERY reordering of the chain changes the answer here - screen order, SEC-USER-DATA record order, report-the-last-failure and collect-them-all are each ruled out - while case02 through case06, which pin the five arms one at a time in source order, keep passing. Because the arm raised the flag, IF NOT ERR-FLG-ON at :153 is false, so the five MOVEs into SEC-USER-DATA at :154-158 and PERFORM WRITE-USER-SEC-FILE at :159 are all skipped: expectedWrites is empty, SecUserRepository.add is never called, and no user id of any kind reaches USRSEC. That is asserted positively too - the ten seeded rows are pinned byte for byte at the copybook's eighty characters, and the dataset-level expectation pins the FINAL_STATE row count at exactly ten with a declared width of eighty, so an eleventh row is a difference rather than something no expectation happens to address. The message is stated on both channels because the narrowing between them is observable: the literal is thirty characters, the MOVE at :120-121 pads it to the PIC X(80) of :38 with fifty trailing spaces, and MOVE WS-MESSAGE TO ERRMSGO at :188 truncates that on the right to the PIC X(78) of app/cpy-bms/COUSR01.CPY:164, leaving thirty characters and forty-eight spaces. Exactly one send occurs; it repaints all six header fields from POPULATE-HEADER-INFO at :214-233 and echoes the five data fields untouched, because the error arm performs no INITIALIZE-ALL-FIELDS and COUSR1AO REDEFINES COUSR1AI at app/cpy-bms/COUSR01.CPY:91 - what was received is what goes out, spaces as spaces and LOW-VALUES as x'00'. ERRMSGC carries the map's default colour: MOVE DFHGREEN TO ERRMSGC at :254 is the only attribute assignment in the program and no path here reaches it. There is no '*' marker and no per-field DFHRED in this case, and that is source rather than omission - COUSR01C copies neither CSSETATY nor CSSTRPFY, and COPY DFHATTR at :57 is commented out. State travels in the payload: EIBCALEN is 160, CDEMO-PGM-CONTEXT arrives as 1 so :83 takes the re-entry branch, all sixteen CARDDEMO-COMMAREA fields return unchanged because this path assigns none of them, and the run ends at the EXEC CICS RETURN TRANSID('CU01') of :107-110 rather than at an XCTL. Provenance: every expected value here is STATICALLY DERIVED and none was captured from a running COBOL program, which this environment makes impossible - no z/OS runtime, an indexed file handler the available compiler reports as disabled, no Language Environment services, no CICS emulator, and DFHAID, DFHBMSCA and DFHATTR absent from the repository. They come from structured reading of app/cbl/COUSR01C.cbl:78-110, :117-160, :184-196 and :214-233, cross-checked against app/cpy-bms/COUSR01.CPY - FNAMEI and LNAMEI PIC X(20) at :60 and :66, USERIDI and PASSWDI PIC X(08) at :72 and :78, USRTYPEI PIC X(01) at :84, ERRMSGO PIC X(78) at :164 - the DFHMDF definitions of app/bms/COUSR01.bms for FNAME at :84-88, LNAME at :97-101 and ERRMSG at :151-154, the two byte-exact titles of app/cpy/COTTL01Y.cpy:18-22, the 8+20+20+8+1+23 layout of app/cpy/CSUSR01Y.cpy:17-23, the sixteen fields of app/cpy/COCOM01Y.cpy:19-44 totalling 160, and the ten in-stream rows of app/jcl/DUSRSECJ.jcl:L35-L44 at the fifty-seven characters the JCL actually carries. The clock is pinned rather than read from a wall clock and the instant is the source's own - app/cbl/COUSR01C.cbl:298 stamps 2022-07-19 23:12:34 - and the code page is named explicitly as US-ASCII rather than left to a platform default. A statically derived expectation can encode a misreading of the COBOL where a captured one cannot, so a failure here should be read against the cited lines first.",
   "unitKind": "CONTROLLER_POJO",
   "inputs": {
     "USRSEC": {
@@ -19,6 +19,7 @@
       ]
     }
   },
+  "jobParameters": {},
   "screenRequest": {
     "eibcalen": 160,
     "aid": "DFHENTER",
@@ -44,7 +45,7 @@
     },
     "mapFields": {
       "FNAMEI": "                    ",
-      "LNAMEI": "SMITH               ",
+      "LNAMEI": "                    ",
       "PASSWDI": "        "
     },
     "forcedOutcomes": {}
@@ -81,7 +82,7 @@
           "TITLE02O": "              CardDemo                  ",
           "CURTIMEO": "23:12:34",
           "FNAMEO": "                    ",
-          "LNAMEO": "SMITH               ",
+          "LNAMEO": "                    ",
           "USERIDO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
           "PASSWDO": "        ",
           "USRTYPEO": "\u0000",
@@ -163,6 +164,14 @@
     {
       "dataset": "USRSEC",
       "kind": "USRSEC_FILLER_PAD_57_TO_80"
+    }
+  ],
+  "expectedDatasets": [
+    {
+      "dataset": "USRSEC",
+      "channel": "FINAL_STATE",
+      "rowCount": 10,
+      "recordLength": 80
     }
   ]
 }

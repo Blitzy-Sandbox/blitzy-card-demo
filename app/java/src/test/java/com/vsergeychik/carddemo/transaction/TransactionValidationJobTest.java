@@ -33,6 +33,7 @@ import com.vsergeychik.carddemo.transaction.model.TranRecord;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Proxy;
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.sql.Connection;
@@ -51,7 +52,10 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.mockito.ArgumentMatchers;
+import org.mockito.InOrder;
 import org.mockito.Mockito;
 import org.springframework.batch.core.ExitStatus;
 import org.springframework.batch.core.Job;
@@ -82,12 +86,32 @@ import static org.assertj.core.api.Assertions.assertThatIllegalStateException;
  * are real H2 relations of the copybook widths, so the assertions are over the bytes that would reach the
  * dataset.
  *
- * <p>The expected values are <strong>statically derived</strong> from the COBOL, the copybooks and the JCL -
- * no COBOL execution is possible in this environment (AAP 0.7.6, risk R-A).
+ * <p><strong>Provenance of every expected value in this class.</strong> They are <strong>statically
+ * derived</strong> - read out of {@code app/cbl/CBTRN02C.cbl}, the five copybooks it copies, the DD and
+ * {@code DCB} cards of {@code app/jcl/POSTTRAN.jcl} and the nine real fixtures under
+ * {@code app/data/ASCII} - and they are <strong>not</strong> captured from a run of the legacy program.
+ * No COBOL execution is possible in this environment: AAP 0.7.6 documents eight independently verified
+ * blockers, from a disabled indexed-file handler to the absence of Language Environment {@code CEE*}
+ * services, and the deviation is carried as risk R-A. Nothing here should be read as a captured baseline.
+ * Where a value could not be derived mechanically from a byte layout it is derived from the statement that
+ * produces it, with that statement's line number beside the assertion.
  *
  * <p>The three preserved defects each have their own assertion, because a defect that is not pinned is a
  * defect somebody will tidy: reason 109 is set and cannot reject; the two count literals differ in their
- * spacing; and {@code 9300-DALYREJS-CLOSE} displays the cross-reference file's status.
+ * spacing; and {@code 9300-DALYREJS-CLOSE} displays the cross-reference file's status. To those, the
+ * cascade adds the one that changes an outcome rather than a message - the credit-limit test at
+ * {@code :407} and the expiry test at {@code :414} are sibling {@code IF}s, so 103 overwrites 102 on a
+ * transaction that fails both.
+ *
+ * <p>Two properties are asserted on the <em>interaction</em> rather than on the datasets, because they are
+ * invisible afterwards: the cascade's single short-circuit at {@code :372} (gate G31 - the account is
+ * never read when the card is unknown) and the posting order of {@code :440-442}. Both live in
+ * {@code Interactions}, over Mockito spies that delegate to the real collaborators.
+ *
+ * <p>{@code GateSweep} reads the COBOL back and asserts the census this suite covers - zero
+ * {@code ROUNDED}, zero {@code EVALUATE}, one {@code COMPUTE} and seven {@code ADD}s at known lines, two
+ * {@code 88}-levels - so gates G24, G28, G30 and G50 are settled against the source rather than claimed
+ * about it, and any future edit to the program that adds an arithmetic site fails this class first.
  */
 class TransactionValidationJobTest {
 
@@ -364,6 +388,142 @@ class TransactionValidationJobTest {
                 sysoutSink, clock);
     }
 
+    // -------------------------------------------------------------------------------- abend assertions
+
+    /**
+     * The three values {@code 9999-ABEND-PROGRAM} carries, on every path that reaches it.
+     *
+     * <p>{@code app/cbl/CBTRN02C.cbl:707-711} is the whole paragraph:
+     *
+     * <pre>
+     * DISPLAY 'ABENDING PROGRAM'                                                                L708
+     * MOVE 0 TO TIMING                                                                          L709
+     * MOVE 999 TO ABCODE                                                                        L710
+     * CALL 'CEE3ABD'.                                                                           L711
+     * </pre>
+     *
+     * <p>Every caller reaches it through {@code MOVE 12 TO APPL-RESULT}, so the return code is the
+     * I/O-error value in every case: the guard chains in this program set 8 as their assumed-failure value
+     * and then 0 or 12, and only 12 survives to the abend. Gate <strong>G35</strong> is that the abend
+     * carries all three - a bare "it threw" assertion would pass against an abend that reported the wrong
+     * user completion code, and the completion code is what a JCL {@code COND} sees.
+     *
+     * @param abend the abend raised by the paragraph under test
+     */
+    private static void assertStandardAbendParameters(AbendException abend) {
+        assertThat(abend.getReturnCode()).isEqualTo(AbendException.RETURN_CODE_IO_ERROR);
+        assertThat(abend.getReturnCode()).isEqualTo(TransactionValidationJob.APPL_RESULT_FATAL);
+        assertThat(abend.getAbendCode()).hasValue(AbendException.STANDARD_ABEND_CODE);
+        assertThat(abend.getAbendCode()).hasValue(999);
+        assertThat(abend.getTiming()).hasValue(AbendException.STANDARD_TIMING);
+        assertThat(abend.getTiming()).hasValue(0);
+    }
+
+    // ------------------------------------------------------------------------- collaborator spies
+
+    /**
+     * A job whose account, balance and master collaborators are Mockito spies, so that <em>which</em> call
+     * happened - and <em>in what order</em> - is asserted on the interaction rather than inferred from the
+     * dataset afterwards.
+     *
+     * <p>Two properties of {@code CBTRN02C} are interaction properties and cannot be observed any other
+     * way. Gate <strong>G31</strong>'s short-circuit is that {@code 1500-B-LOOKUP-ACCT} is never
+     * <em>performed</em> when the cross-reference read failed ({@code app/cbl/CBTRN02C.cbl:372}); a
+     * dataset-state assertion cannot separate a read that never happened from one whose result was
+     * discarded. The posting order of {@code :440-442} is invisible once all three writes have landed, yet
+     * it decides what a mid-sequence failure leaves behind.
+     *
+     * <p>The two file handles are spied <em>as they are opened</em>, because every paragraph calls through
+     * the handle its {@code OPEN} returned rather than through the repository bean:
+     * {@code acctfile.readByKey}, {@code acctfile.rewrite}, {@code tcatbalf.readByKey},
+     * {@code tcatbalf.write} and {@code tcatbalf.rewrite}. Only {@code 2900-WRITE-TRANSACTION-FILE} calls
+     * its repository directly ({@code TransactionRepository#write}), so that one is spied at the bean.
+     *
+     * <p>Every spy delegates to the real object, so the datasets behind them behave exactly as in the rest
+     * of this class: these tests assert interactions <em>in addition to</em> outcomes, never instead of
+     * them.
+     */
+    private static final class SpiedCollaborators {
+
+        private final TransactionValidationJob job;
+
+        private final TransactionRepository master;
+
+        private final List<AccountRepository.AccountFile> accountFiles = new ArrayList<>();
+
+        private final List<TranCatBalRepository.TranCatBalFile> balanceFiles = new ArrayList<>();
+
+        SpiedCollaborators(JdbcTemplate t, CapturedSysout sysout) {
+            DatasetBindings b = bindings();
+
+            AccountRepository accounts =
+                    Mockito.spy(new AccountRepository(t, b, ASCII, RecordImageForm.CHARACTER));
+            Mockito.doAnswer(invocation -> {
+                AccountRepository.AccountFile opened =
+                        Mockito.spy((AccountRepository.AccountFile) invocation.callRealMethod());
+                accountFiles.add(opened);
+                return opened;
+            }).when(accounts).open(ArgumentMatchers.any());
+
+            TranCatBalRepository balances =
+                    Mockito.spy(new TranCatBalRepository(t, b, ASCII, RecordImageForm.CHARACTER));
+            Mockito.doAnswer(invocation -> {
+                TranCatBalRepository.TranCatBalFile opened =
+                        Mockito.spy((TranCatBalRepository.TranCatBalFile) invocation.callRealMethod());
+                balanceFiles.add(opened);
+                return opened;
+            }).when(balances).open(ArgumentMatchers.any());
+
+            this.master = Mockito
+                    .spy(new TransactionRepository(t, b, ASCII, RecordImageForm.CHARACTER, ORDINAL));
+            this.job = new TransactionValidationJob(scaffolding(contracts(), b),
+                    new DalyTranRepository(t, b, ASCII, RecordImageForm.CHARACTER, ORDINAL),
+                    new CardXrefRepository(t, b, ASCII, RecordImageForm.CHARACTER),
+                    accounts, balances, this.master,
+                    new DalyRejectWriter(t, ASCII, b, RecordImageForm.CHARACTER),
+                    new PresentBean<SysoutSink>(sysout), FIXED);
+        }
+
+        /**
+         * Opens the six files, which is when the two handle spies come into existence.
+         *
+         * @return the opened run
+         */
+        PostingRun openedRun() {
+            PostingRun run = job.newRun(job.sysoutSink());
+            run.openFiles();
+            return run;
+        }
+
+        /**
+         * The one {@code ACCTFILE} handle {@code 0400-ACCTFILE-OPEN} took.
+         *
+         * @return the spied handle
+         */
+        AccountRepository.AccountFile accountFile() {
+            assertThat(accountFiles)
+                    .as("0400-ACCTFILE-OPEN takes exactly one handle per run")
+                    .hasSize(1);
+            return accountFiles.get(0);
+        }
+
+        /**
+         * The one {@code TCATBALF} handle {@code 0500-TCATBALF-OPEN} took.
+         *
+         * @return the spied handle
+         */
+        TranCatBalRepository.TranCatBalFile balanceFile() {
+            assertThat(balanceFiles)
+                    .as("0500-TCATBALF-OPEN takes exactly one handle per run")
+                    .hasSize(1);
+            return balanceFiles.get(0);
+        }
+
+        TransactionRepository master() {
+            return master;
+        }
+    }
+
     // ------------------------------------------------------------------------------ record fixtures
 
     private static DalyTranRecord dalyTran(String id, String cardNum, String amount, String origTs) {
@@ -489,6 +649,20 @@ class TransactionValidationJobTest {
         @Test
         @DisplayName("a declared job parameter is refused: the EXEC card carries no PARM")
         void aDeclaredParameterIsRefused() {
+            // THE CONTRAST THAT MAKES THIS TEST NECESSARY. app/jcl/POSTTRAN.jcl:23 is
+            //
+            //     //STEP15 EXEC PGM=CBTRN02C
+            //
+            // and nothing follows the program name, whereas app/jcl/INTCALC.jcl:22 is
+            //
+            //     //STEP15 EXEC PGM=CBACT04C,PARM='2022071800'
+            //
+            // which is why AccountInterestCalcJob carries a parmDate parameter and this job carries none.
+            // The value below is INTCALC's own PARM, used here precisely because it is the parameter a
+            // future change would most plausibly copy across: a declared parameter cannot alter what
+            // CBTRN02C does - it receives none - but Spring Batch identifies a job INSTANCE by its
+            // parameters, so declaring one would silently resolve two submissions of the same work to two
+            // different instances. Do not add a parameter to this job's contract.
             JobContracts parameterised = contracts(TransactionValidationJob.REQUIRED_STEPS,
                     List.of(new JobParameterContract("parmDate", "string", "2022071800")),
                     jobScopedDatasets());
@@ -502,7 +676,9 @@ class TransactionValidationJobTest {
         @Test
         @DisplayName("the declared parameter set really is empty")
         void theParameterSetIsEmpty() {
+            // POSTTRAN.jcl declares no PARM, so the launched instance is identified by nothing at all.
             assertThat(job(database(), bindings()).jobParameters().isEmpty()).isTrue();
+            assertThat(job(database(), bindings()).jobParameters().getParameters()).isEmpty();
         }
 
         @Test
@@ -980,13 +1156,9 @@ class TransactionValidationJobTest {
             try {
                 assertThatExceptionOfType(AbendException.class)
                         .isThrownBy(run::openFiles)
-                        .satisfies(abend -> {
-                            assertThat(abend.getReturnCode())
-                                    .isEqualTo(AbendException.RETURN_CODE_IO_ERROR);
-                            assertThat(abend.getAbendCode())
-                                    .hasValue(AbendException.STANDARD_ABEND_CODE);
-                            assertThat(abend.getTiming()).hasValue(AbendException.STANDARD_TIMING);
-                        });
+                        // The same three values every other path through 9999-ABEND-PROGRAM carries, from
+                        // the one helper, so the six open failures cannot drift from the six later ones.
+                        .satisfies(TransactionValidationJobTest::assertStandardAbendParameters);
             } finally {
                 run.release();
             }
@@ -1117,8 +1289,7 @@ class TransactionValidationJobTest {
             try {
                 assertThatExceptionOfType(AbendException.class)
                         .isThrownBy(run::dalytranGetNext)
-                        .satisfies(abend -> assertThat(abend.getReturnCode())
-                                .isEqualTo(AbendException.RETURN_CODE_IO_ERROR));
+                        .satisfies(TransactionValidationJobTest::assertStandardAbendParameters);
             } finally {
                 run.release();
             }
@@ -1221,6 +1392,85 @@ class TransactionValidationJobTest {
             run.release();
         }
 
+        @ParameterizedTest(name = "[{index}] limit {0}, expiry {1}, amount {2} -> reason {3}")
+        @CsvSource(delimiter = '|', value = {
+            // limit    | expiry     | amount | reason | the description that reason carries
+            "5000.00    | 2026-01-01 | 10.00  | 0      | SPACES",
+            "100.00     | 2026-01-01 | 50.00  | 102    | OVERLIMIT TRANSACTION",
+            "5000.00    | 2022-01-01 | 10.00  | 103    | TRANSACTION RECEIVED AFTER ACCT EXPIRATION",
+            "100.00     | 2022-01-01 | 50.00  | 103    | TRANSACTION RECEIVED AFTER ACCT EXPIRATION",
+            "140.00     | 2022-06-10 | 50.00  | 0      | SPACES",
+            "139.99     | 2026-01-01 | 50.00  | 102    | OVERLIMIT TRANSACTION",
+            "5000.00    | 2022-06-09 | 10.00  | 103    | TRANSACTION RECEIVED AFTER ACCT EXPIRATION",
+        })
+        @DisplayName("the reason matrix: one reason and one description per record, never two")
+        void theReasonMatrixCarriesExactlyOneReason(String creditLimit, String expiry, String amount,
+                int expectedReason, String expectedDescription) {
+            JdbcTemplate t = database();
+            seed(t, XREF_DS, xrefImage(CARD, ACCOUNT));
+            // The cycle amounts are fixed at 90.00 credit and 0.00 debit throughout, so WS-TEMP-BAL is
+            // 90.00 + the amount and the only variables are the limit and the expiry - which is what makes
+            // the fourth row (both tests failing) comparable with rows two and three.
+            seed(t, ACCT_DS, account(ACCOUNT, creditLimit, expiry, "90.00", "0.00", "0.00")
+                    .toFixedWidthString());
+            CapturedSysout sysout = new CapturedSysout();
+            PostingRun run = runOver(t, sysout);
+
+            run.validateTran(dalyTran("T1", CARD, amount, "2022-06-10 19:27:53.000000"));
+
+            // NO IMPLICIT FALL-THROUGH AND NO ACCUMULATION. WS-VALIDATION-FAIL-REASON is one PIC 9(04)
+            // item and WS-VALIDATION-FAIL-REASON-DESC one PIC X(76): a MOVE replaces, it never appends.
+            // Asserting the description with isEqualTo rather than contains is what makes that a property
+            // of this test - a cascade that concatenated its reasons would fail here even though the final
+            // reason code was right.
+            assertThat(run.workingStorage().validationFailReason()).isEqualTo(expectedReason);
+            assertThat(run.workingStorage().validationFailReasonDesc())
+                    .isEqualTo("SPACES".equals(expectedDescription)
+                            ? TransactionValidationJob.DESC_SPACES
+                            : expectedDescription);
+            assertThat(run.workingStorage().validationFailReasonIsZero())
+                    .isEqualTo(expectedReason == TransactionValidationJob.REASON_NONE);
+            run.release();
+        }
+
+        @Test
+        @DisplayName("one hundredth over the limit fails, which is the whole width of the boundary")
+        void oneHundredthOverTheLimitFails() {
+            JdbcTemplate t = database();
+            seed(t, XREF_DS, xrefImage(CARD, ACCOUNT));
+            // WS-TEMP-BAL = 90.00 - 0.00 + 50.00 = 140.00 and the limit is 139.99, so the test at :407
+            // fails by exactly one hundredth - the smallest amount by which it can fail, because every
+            // operand is scale 2. Compare anExactLimitPasses(), where the limit is 140.00 and it passes:
+            // the two cases together pin the comparison as >= rather than >, and pin it at scale 2 rather
+            // than at some wider precision that would swallow the difference.
+            seed(t, ACCT_DS, account(ACCOUNT, "139.99", "2026-01-01", "90.00", "0.00", "0.00")
+                    .toFixedWidthString());
+            CapturedSysout sysout = new CapturedSysout();
+            PostingRun run = runOver(t, sysout);
+            run.validateTran(dalyTran("T1", CARD, "50.00", "2022-06-10 19:27:53.000000"));
+            assertThat(run.workingStorage().validationFailReason())
+                    .isEqualTo(TransactionValidationJob.REASON_OVERLIMIT_TRANSACTION);
+            assertThat(run.workingStorage().tempBal()).isEqualByComparingTo("140.00");
+            assertThat(run.workingStorage().tempBal().scale())
+                    .isEqualTo(CobolDecimal.MONETARY_SCALE);
+            run.release();
+        }
+
+        @Test
+        @DisplayName("the three COMPUTE operands are all scale 2, so no rounding can enter the comparison")
+        void everyOperandOfTheComputeIsScaleTwo() {
+            // ACCT-CURR-CYC-CREDIT, ACCT-CURR-CYC-DEBIT and ACCT-CREDIT-LIMIT are PIC S9(10)V99
+            // (app/cpy/CVACT01Y.cpy) and DALYTRAN-AMT is PIC S9(09)V99 (app/cpy/CVTRA06Y.cpy): four
+            // operands, one scale. Any of them arriving at another scale would make the >= at :407 a
+            // comparison between two different quantities.
+            AccountRecord a = account(ACCOUNT, "139.99", "2026-01-01", "90.00", "0.00", "0.00");
+            assertThat(a.getAcctCurrCycCredit().scale()).isEqualTo(CobolDecimal.MONETARY_SCALE);
+            assertThat(a.getAcctCurrCycDebit().scale()).isEqualTo(CobolDecimal.MONETARY_SCALE);
+            assertThat(a.getAcctCreditLimit().scale()).isEqualTo(CobolDecimal.MONETARY_SCALE);
+            assertThat(dalyTran("T1", CARD, "50.00", "2022-06-10 19:27:53.000000").dalytranAmt().scale())
+                    .isEqualTo(CobolDecimal.MONETARY_SCALE);
+        }
+
         @Test
         @DisplayName("past the expiry date alone is reason 103")
         void pastExpiryAloneIsReasonOneHundredAndThree() {
@@ -1291,11 +1541,90 @@ class TransactionValidationJobTest {
         }
 
         @Test
+        @DisplayName("the day before the timestamp fails and the day after passes, one day either side")
+        void theExpiryBoundaryIsOneDayWide() {
+            String origTs = "2022-06-10 19:27:53.000000";
+
+            // 2022-06-09 < '2022-06-10' - the transaction arrived after the account expired.
+            JdbcTemplate dayBefore = database();
+            seed(dayBefore, XREF_DS, xrefImage(CARD, ACCOUNT));
+            seed(dayBefore, ACCT_DS, account(ACCOUNT, "5000.00", "2022-06-09", "0.00", "0.00", "0.00")
+                    .toFixedWidthString());
+            CapturedSysout beforeSysout = new CapturedSysout();
+            PostingRun beforeRun = runOver(dayBefore, beforeSysout);
+            beforeRun.validateTran(dalyTran("T1", CARD, "10.00", origTs));
+            assertThat(beforeRun.workingStorage().validationFailReason())
+                    .isEqualTo(TransactionValidationJob.REASON_TRANSACTION_AFTER_EXPIRATION);
+            beforeRun.release();
+
+            // 2022-06-11 > '2022-06-10' - still valid. With anEqualExpiryDatePasses() in between, the
+            // three cases pin the comparison as >= across the whole boundary.
+            JdbcTemplate dayAfter = database();
+            seed(dayAfter, XREF_DS, xrefImage(CARD, ACCOUNT));
+            seed(dayAfter, ACCT_DS, account(ACCOUNT, "5000.00", "2022-06-11", "0.00", "0.00", "0.00")
+                    .toFixedWidthString());
+            CapturedSysout afterSysout = new CapturedSysout();
+            PostingRun afterRun = runOver(dayAfter, afterSysout);
+            afterRun.validateTran(dalyTran("T1", CARD, "10.00", origTs));
+            assertThat(afterRun.workingStorage().validationFailReasonIsZero()).isTrue();
+            afterRun.release();
+        }
+
+        @Test
+        @DisplayName("the compared span is DALYTRAN-ORIG-TS (1:10) - eleven characters would invert it")
+        void theComparedSpanIsExactlyTenCharacters() {
+            String origTs = "2022-06-10 19:27:53.000000";
+            DalyTranRecord item = dalyTran("T1", CARD, "10.00", origTs);
+
+            // The reference subscript at :414 is (1:10): the first ten characters of the 26-byte
+            // timestamp, at DALYTRAN-ORIG-TS's own offset.
+            assertThat(item.dalytranOrigDt())
+                    .hasSize(DalyTranRecord.DALYTRAN_ORIG_DT_LENGTH)
+                    .isEqualTo("2022-06-10")
+                    .isEqualTo(item.dalytranOrigTs()
+                            .substring(0, DalyTranRecord.DALYTRAN_ORIG_DT_LENGTH));
+            assertThat(DalyTranRecord.DALYTRAN_ORIG_DT_OFFSET)
+                    .isEqualTo(DalyTranRecord.DALYTRAN_ORIG_TS_OFFSET);
+
+            // WHY THE WIDTH OF THE SLICE IS ITSELF A PARITY PROPERTY. Take an account whose expiry is the
+            // very day of the transaction. Against the ten-character slice the two are equal, so the >= at
+            // :414 holds. Against an eleven-character slice the sender carries a trailing space, and
+            // against the whole 26 bytes it carries a time as well, and in both cases the ten-character
+            // receiver compares SHORT - COBOL pads the shorter operand with spaces, and a space is below
+            // every digit - so the account would look expired. An off-by-one here rejects a transaction
+            // the mainframe posts, on the boundary day, silently.
+            String expiry = "2022-06-10";
+            assertThat(expiry.compareTo(item.dalytranOrigDt())).isZero();
+            assertThat(expiry.compareTo(item.dalytranOrigTs().substring(0,
+                    DalyTranRecord.DALYTRAN_ORIG_DT_LENGTH + 1))).isNegative();
+            assertThat(expiry.compareTo(item.dalytranOrigTs())).isNegative();
+
+            // And the run itself takes the ten-character outcome, not either of the other two.
+            JdbcTemplate t = database();
+            seed(t, XREF_DS, xrefImage(CARD, ACCOUNT));
+            seed(t, ACCT_DS, account(ACCOUNT, "5000.00", expiry, "0.00", "0.00", "0.00")
+                    .toFixedWidthString());
+            CapturedSysout sysout = new CapturedSysout();
+            PostingRun run = runOver(t, sysout);
+            run.validateTran(item);
+            assertThat(run.workingStorage().validationFailReasonIsZero()).isTrue();
+            run.release();
+        }
+
+        @Test
         @DisplayName("the misspelled ACCT-EXPIRAION-DATE is the field that is compared")
         void theMisspelledFieldIsTheOneCompared() {
             AccountRecord a = account(ACCOUNT, "5000.00", "2026-12-31", "0.00", "0.00", "0.00");
             assertThat(a.getAcctExpiraionDate()).isEqualTo("2026-12-31");
             assertThat(a.rawAcctExpiraionDate()).isEqualTo("2026-12-31");
+            // CVACT01Y spells it EXPIRAION, and the field-for-field diff the parity gate performs is by
+            // NAME: renaming it to EXPIRATION would break every comparison the differ makes (implicit
+            // requirement I1). The accessor is therefore misspelled deliberately, and this assertion is
+            // what stops a well-meaning rename.
+            assertThat(AccountRecord.ACCT_EXPIRAION_DATE_NAME).isEqualTo("ACCT-EXPIRAION-DATE");
+            assertThat(AccountRecord.ACCT_EXPIRAION_DATE_OFFSET).isEqualTo(58);
+            assertThat(AccountRecord.ACCT_EXPIRAION_DATE_LENGTH)
+                    .isEqualTo(DalyTranRecord.DALYTRAN_ORIG_DT_LENGTH);
         }
 
         @Test
@@ -1416,9 +1745,30 @@ class TransactionValidationJobTest {
 
             List<String> written = rows(t, TRANSACT_DS);
             assertThat(written).hasSize(1);
-            assertThat(written.get(0)).hasSize(TranRecord.RECORD_LENGTH);
-            TranRecord stored = TranRecord.decode(written.get(0), ASCII);
+            String image = written.get(0);
+            assertThat(image).hasSize(TranRecord.RECORD_LENGTH);
+            assertThat(image.getBytes(ASCII)).hasSize(TranRecord.RECORD_LENGTH);
+            TranRecord stored = TranRecord.decode(image, ASCII);
             assertThat(stored.filler()).isEqualTo(" ".repeat(TranRecord.FILLER_LENGTH));
+
+            // GATES G19 AND G21 AT THE BYTE LEVEL. The decoded accessors above would agree with a codec
+            // that had every span in the wrong place, so the two spans CVTRA05Y puts last are asserted at
+            // their absolute offsets in the 350 bytes that reached the dataset:
+            //   05 TRAN-PROC-TS PIC X(26)  - bytes 304..329
+            //   05 FILLER       PIC X(20)  - bytes 330..349, spaces, never written by 2000
+            assertThat(TranRecord.TRAN_PROC_TS_OFFSET).isEqualTo(304);
+            assertThat(TranRecord.FILLER_OFFSET).isEqualTo(330);
+            assertThat(image.substring(TranRecord.TRAN_PROC_TS_OFFSET,
+                    TranRecord.TRAN_PROC_TS_OFFSET + TransactionValidationJob.DB2_TIMESTAMP_LENGTH))
+                    .isEqualTo(EXPECTED_PROC_TS);
+            assertThat(image.substring(TranRecord.FILLER_OFFSET,
+                    TranRecord.FILLER_OFFSET + TranRecord.FILLER_LENGTH))
+                    .isEqualTo(" ".repeat(TranRecord.FILLER_LENGTH));
+            // The record ends there: FILLER is the last span, so its end IS the record length. Omitting
+            // FILLER would shorten the record to 330 and shift nothing - which is exactly why the length
+            // assertion above and this offset assertion are both needed.
+            assertThat(TranRecord.FILLER_OFFSET + TranRecord.FILLER_LENGTH)
+                    .isEqualTo(TranRecord.RECORD_LENGTH);
         }
 
         @Test
@@ -1702,11 +2052,13 @@ class TransactionValidationJobTest {
             run.postTransaction(item);
             try {
                 assertThatExceptionOfType(AbendException.class)
-                        .isThrownBy(() -> run.writeTransactionFile());
+                        .isThrownBy(() -> run.writeTransactionFile())
+                        .satisfies(TransactionValidationJobTest::assertStandardAbendParameters);
             } finally {
                 run.release();
             }
             assertThat(sysout.lines()).contains(TransactionValidationJob.ERROR_WRITING_TRANFILE);
+            assertThat(sysout.lines()).contains(AbendException.ABEND_DISPLAY_TEXT);
         }
 
         @Test
@@ -1722,12 +2074,14 @@ class TransactionValidationJobTest {
             t.execute("DROP TABLE \"" + TCATBAL_DS + "\"");
             try {
                 assertThatExceptionOfType(AbendException.class)
-                        .isThrownBy(() -> run.updateTcatbal(item));
+                        .isThrownBy(() -> run.updateTcatbal(item))
+                        .satisfies(TransactionValidationJobTest::assertStandardAbendParameters);
             } finally {
                 recreate(t, TCATBAL_DS);
                 run.release();
             }
             assertThat(sysout.lines()).contains(TransactionValidationJob.ERROR_READING_TCATBALF);
+            assertThat(sysout.lines()).contains(AbendException.ABEND_DISPLAY_TEXT);
         }
 
         @Test
@@ -1746,7 +2100,8 @@ class TransactionValidationJobTest {
             t.execute("DROP TABLE \"" + TCATBAL_DS + "\"");
             try {
                 assertThatExceptionOfType(AbendException.class)
-                        .isThrownBy(() -> run.createTcatbalRec(item));
+                        .isThrownBy(() -> run.createTcatbalRec(item))
+                        .satisfies(TransactionValidationJobTest::assertStandardAbendParameters);
             } finally {
                 recreate(t, TCATBAL_DS);
                 run.release();
@@ -1769,13 +2124,303 @@ class TransactionValidationJobTest {
             t.execute("DROP TABLE \"" + TCATBAL_DS + "\"");
             try {
                 assertThatExceptionOfType(AbendException.class)
-                        .isThrownBy(() -> run.updateTcatbalRec(item));
+                        .isThrownBy(() -> run.updateTcatbalRec(item))
+                        .satisfies(TransactionValidationJobTest::assertStandardAbendParameters);
             } finally {
                 recreate(t, TCATBAL_DS);
                 run.release();
             }
             assertThat(sysout.lines()).contains(TransactionValidationJob.ERROR_REWRITING_TCATBALF);
             assertThat(sysout.lines()).doesNotContain(TransactionValidationJob.ERROR_WRITING_TCATBALF);
+        }
+    }
+
+    // =============================================================================================
+    // The gate sweep, taken from the COBOL rather than claimed about it - gates G24, G28, G30 and G50.
+    // =============================================================================================
+
+    @Nested
+    @DisplayName("The gate sweep - the census this suite covers, read out of CBTRN02C itself")
+    class GateSweep {
+
+        /**
+         * Reads the translated program, which is a read-only parity reference and never written.
+         *
+         * @return its 731 lines
+         * @throws Exception if the source cannot be read, which is itself a failure
+         */
+        private List<String> programSource() throws Exception {
+            java.nio.file.Path path = java.nio.file.Path
+                    .of("..", "..", "app", "cbl", "CBTRN02C.cbl").normalize();
+            if (!java.nio.file.Files.isReadable(path)) {
+                path = java.nio.file.Path.of("app", "cbl", "CBTRN02C.cbl");
+            }
+            assertThat(java.nio.file.Files.isReadable(path))
+                    .as("app/cbl/CBTRN02C.cbl is the oracle this suite is derived from")
+                    .isTrue();
+            return java.nio.file.Files.readAllLines(path, ASCII);
+        }
+
+        /**
+         * The line numbers, 1-based, at which a verb begins a statement.
+         *
+         * <p>Counted at <strong>statement-initial</strong> positions - six characters of sequence area,
+         * then optional indentation, then the verb and a space. A bare word search over-counts, because
+         * COBOL's hyphen is not a word character: {@code END-COMPUTE} and a paragraph named
+         * {@code 1300-COMPUTE-INTEREST} both match {@code \bCOMPUTE\b}. Column 7 holds {@code *} on a
+         * comment line, which this shape excludes - including the {@code * ADD MORE VALIDATIONS HERE}
+         * comment at {@code :377}, which is a comment and not an eighth {@code ADD}.
+         *
+         * @param source the program
+         * @param verb   the verb to locate
+         * @return the 1-based line numbers, in order
+         */
+        private List<Integer> statementInitial(List<String> source, String verb) {
+            java.util.regex.Pattern shape =
+                    java.util.regex.Pattern.compile("^.{6} *" + verb + " ");
+            List<Integer> lines = new ArrayList<>();
+            for (int i = 0; i < source.size(); i++) {
+                if (shape.matcher(source.get(i)).find()) {
+                    lines.add(i + 1);
+                }
+            }
+            return lines;
+        }
+
+        @Test
+        @DisplayName("GATE G24: ROUNDED appears nowhere, so every store truncates toward zero")
+        void roundedAppearsNowhere() throws Exception {
+            assertThat(programSource()).noneMatch(line -> line.contains("ROUNDED"));
+            // Which is why CobolDecimal's only rounding mode is DOWN, and why every expectation in this
+            // class is the truncated value. HALF_UP on the interest-style divide of a sibling program, or
+            // here on any ADD, would differ by one hundredth on exactly the amounts a parity case cares
+            // about.
+            assertThat(CobolDecimal.COBOL_ROUNDING).isEqualTo(RoundingMode.DOWN);
+        }
+
+        @Test
+        @DisplayName("GATE G28: the eight named arithmetic sites are the eight this suite asserts")
+        void theArithmeticCensusIsComplete() throws Exception {
+            List<String> source = programSource();
+
+            // One COMPUTE: WS-TEMP-BAL at :403, asserted by theTemporaryBalanceIsComputedAtScaleTwo,
+            // theStoreTruncatesTowardZero, oneHundredthOverTheLimitFails and anExactLimitPasses.
+            assertThat(statementInitial(source, "COMPUTE")).containsExactly(403);
+
+            // Seven ADDs, each with its own assertion:
+            //   :206 ADD 1 TO WS-TRANSACTION-COUNT        - theCountersIncrement, aMixedRun
+            //   :214 ADD 1 TO WS-REJECT-COUNT             - theCountersIncrement, aMixedRun
+            //   :508 ADD DALYTRAN-AMT TO TRAN-CAT-BAL     - the '23' create path
+            //   :527 ADD DALYTRAN-AMT TO TRAN-CAT-BAL     - the '00' update path
+            //   :547 ADD DALYTRAN-AMT TO ACCT-CURR-BAL    - every posting
+            //   :549 ADD ... TO ACCT-CURR-CYC-CREDIT      - the amount >= 0 arm, zero included
+            //   :551 ADD ... TO ACCT-CURR-CYC-DEBIT       - the amount < 0 arm
+            assertThat(statementInitial(source, "ADD"))
+                    .containsExactly(206, 214, 508, 527, 547, 549, 551);
+
+            // And no other arithmetic verb exists in this program at all, so the census above is closed.
+            assertThat(statementInitial(source, "SUBTRACT")).isEmpty();
+            assertThat(statementInitial(source, "MULTIPLY")).isEmpty();
+            assertThat(statementInitial(source, "DIVIDE")).isEmpty();
+        }
+
+        @Test
+        @DisplayName("GATE G30: CBTRN02C contains no EVALUATE, so the gate is vacuous here - by fact")
+        void thereIsNoEvaluateInThisProgram() throws Exception {
+            // Recorded rather than assumed. Gate G30 (every EVALUATE arm in source order, WHEN OTHER last)
+            // has no subject in CBTRN02C: the whole program branches with IF alone. The nearest analogue
+            // is the nested IF of 1000-DALYTRAN-GET-NEXT at :347-356, whose three arms - '00', '10' and
+            // everything else, in that order - are covered by the DalytranRead tests. Should an EVALUATE
+            // ever appear in this program, this assertion fails and the arm-ordering tests G30 asks for
+            // become due.
+            assertThat(programSource()).noneMatch(line -> line.contains("EVALUATE"));
+        }
+
+        @Test
+        @DisplayName("GATE G50: the two 88-levels are APPL-AOK and APPL-EOF, both driven either way")
+        void theConditionNameCensusIsComplete() throws Exception {
+            List<String> conditionNames = programSource().stream()
+                    .filter(line -> line.matches("^ *88 .*"))
+                    .map(line -> line.trim().split("\\s+")[1])
+                    .toList();
+            // :143 88 APPL-AOK VALUE 0 and :144 88 APPL-EOF VALUE 16 - the program declares no others, and
+            // bothConditionNamesAreReachable drives each of them true and false.
+            assertThat(conditionNames).containsExactly("APPL-AOK", "APPL-EOF");
+            assertThat(TransactionValidationJob.APPL_RESULT_AOK).isZero();
+            assertThat(TransactionValidationJob.APPL_RESULT_EOF).isEqualTo(16);
+        }
+    }
+
+    // =============================================================================================
+    // The interaction properties: the cascade's one short-circuit (gate G31) and the posting order of
+    // app/cbl/CBTRN02C.cbl:440-442. Neither is visible in the datasets afterwards, so both are asserted
+    // on the calls themselves.
+    // =============================================================================================
+
+    @Nested
+    @DisplayName("Collaborator interactions - what is NOT called, and the order of what is")
+    class Interactions {
+
+        @Test
+        @DisplayName("GATE G31: an unknown card number means ACCTFILE is never read at all")
+        void theAccountIsNeverReadWhenTheCardIsUnknown() {
+            JdbcTemplate t = database();
+            seedResolvableAccount(t);
+            CapturedSysout sysout = new CapturedSysout();
+            SpiedCollaborators spies = new SpiedCollaborators(t, sysout);
+            PostingRun run = spies.openedRun();
+            AccountRepository.AccountFile acctfile = spies.accountFile();
+            // The handle was taken by 0400-ACCTFILE-OPEN, so the account file IS open and a read would
+            // succeed - the account row seeded above resolves. Nothing but the guard at :372 prevents it.
+            Mockito.clearInvocations(acctfile);
+
+            run.validateTran(dalyTran("T1", OTHER_CARD, "10.00", "2022-06-10 19:27:53.000000"));
+
+            // app/cbl/CBTRN02C.cbl:372 - IF WS-VALIDATION-FAIL-REASON = 0 PERFORM 1500-B-LOOKUP-ACCT.
+            // The reason is 100, so 1500-B is never performed and no form of read reaches ACCTFILE. An
+            // outcome-only assertion would pass just as well against an implementation that read the
+            // account and then threw the result away, which is why this is a never() verification.
+            Mockito.verify(acctfile, Mockito.never()).readByKey(ArgumentMatchers.anyLong());
+            Mockito.verify(acctfile, Mockito.never()).readNext();
+            Mockito.verify(acctfile, Mockito.never()).readForUpdate(ArgumentMatchers.anyString());
+            Mockito.verify(acctfile, Mockito.never()).rewrite(ArgumentMatchers.any());
+            assertThat(run.workingStorage().validationFailReason())
+                    .isEqualTo(TransactionValidationJob.REASON_INVALID_CARD_NUMBER);
+            run.release();
+        }
+
+        @Test
+        @DisplayName("a resolvable card number does reach the account read, exactly once")
+        void theAccountIsReadOnceWhenTheCardResolves() {
+            JdbcTemplate t = database();
+            seedResolvableAccount(t);
+            CapturedSysout sysout = new CapturedSysout();
+            SpiedCollaborators spies = new SpiedCollaborators(t, sysout);
+            PostingRun run = spies.openedRun();
+            AccountRepository.AccountFile acctfile = spies.accountFile();
+            Mockito.clearInvocations(acctfile);
+
+            run.validateTran(dalyTran("T1", CARD, "10.00", "2022-06-10 19:27:53.000000"));
+
+            // The counterpart of the never() above: without this, a job that never read the account at all
+            // would satisfy the short-circuit test. READ ACCOUNT-FILE at :395 is one keyed read, not two.
+            Mockito.verify(acctfile, Mockito.times(1)).readByKey(ACCOUNT);
+            Mockito.verify(acctfile, Mockito.never()).rewrite(ArgumentMatchers.any());
+            assertThat(run.workingStorage().validationFailReasonIsZero()).isTrue();
+            run.release();
+        }
+
+        @Test
+        @DisplayName("the posting order is TCATBAL, then the account, then the master - and no other")
+        void thePostingOrderIsBalanceThenAccountThenMaster() {
+            JdbcTemplate t = database();
+            seedResolvableAccount(t);
+            CapturedSysout sysout = new CapturedSysout();
+            SpiedCollaborators spies = new SpiedCollaborators(t, sysout);
+            PostingRun run = spies.openedRun();
+            TranCatBalRepository.TranCatBalFile tcatbalf = spies.balanceFile();
+            AccountRepository.AccountFile acctfile = spies.accountFile();
+            TransactionRepository master = spies.master();
+            DalyTranRecord item = dalyTran("T000000000000001", CARD, "25.55",
+                    "2022-06-10 19:27:53.000000");
+            run.validateTran(item);
+            Mockito.clearInvocations(tcatbalf, acctfile, master);
+
+            run.postTransaction(item);
+
+            // app/cbl/CBTRN02C.cbl:440-442 in that order and no other:
+            //     PERFORM 2700-UPDATE-TCATBAL      L440   - the keyed read, then the rewrite
+            //     PERFORM 2800-UPDATE-ACCOUNT-REC  L441
+            //     PERFORM 2900-WRITE-TRANSACTION-FILE L442
+            // The order is contractual, not incidental: it decides what a mid-sequence failure leaves
+            // behind. A failure inside 2700 leaves the account and the master untouched, while a failure
+            // inside 2900 leaves both already updated. Once all three writes have landed the order is
+            // invisible in the datasets, so it is verified here on the calls.
+            InOrder posting = Mockito.inOrder(tcatbalf, acctfile, master);
+            posting.verify(tcatbalf).readByKey(ArgumentMatchers.<TranCatBalRecord.TranCatKey>any());
+            posting.verify(tcatbalf).rewrite(ArgumentMatchers.any());
+            posting.verify(acctfile).rewrite(ArgumentMatchers.any());
+            posting.verify(master).write(ArgumentMatchers.any());
+
+            // Each of the three happens exactly once per posted record. 2000-POST-TRANSACTION performs
+            // each paragraph once ({@code PERFORM}, not {@code PERFORM n TIMES}), and a retry would apply
+            // an amount twice that ADD had already applied.
+            Mockito.verify(tcatbalf, Mockito.times(1)).rewrite(ArgumentMatchers.any());
+            Mockito.verify(acctfile, Mockito.times(1)).rewrite(ArgumentMatchers.any());
+            Mockito.verify(master, Mockito.times(1)).write(ArgumentMatchers.any());
+            run.release();
+
+            // And the datasets agree with the interactions: one balance row, one account row, one master
+            // record. Interaction and outcome are asserted together, never one instead of the other.
+            assertThat(rows(t, TCATBAL_DS)).hasSize(1);
+            assertThat(rows(t, ACCT_DS)).hasSize(1);
+            assertThat(rows(t, TRANSACT_DS)).hasSize(1);
+        }
+
+        @Test
+        @DisplayName("on the create path the order is unchanged: the write still precedes the account")
+        void theCreatePathKeepsTheSameOrder() {
+            JdbcTemplate t = database();
+            // No TCATBAL row, so 2700 takes the '23' create arm instead of the '00' update arm. The order
+            // of the three paragraphs is a property of 2000-POST-TRANSACTION and cannot depend on it.
+            seed(t, XREF_DS, xrefImage(CARD, ACCOUNT));
+            seed(t, ACCT_DS, account(ACCOUNT, "5000.00", "2026-01-01", "100.00", "50.00", "250.00")
+                    .toFixedWidthString());
+            CapturedSysout sysout = new CapturedSysout();
+            SpiedCollaborators spies = new SpiedCollaborators(t, sysout);
+            PostingRun run = spies.openedRun();
+            TranCatBalRepository.TranCatBalFile tcatbalf = spies.balanceFile();
+            AccountRepository.AccountFile acctfile = spies.accountFile();
+            TransactionRepository master = spies.master();
+            DalyTranRecord item = dalyTran("T000000000000002", CARD, "10.00",
+                    "2022-06-10 19:27:53.000000");
+            run.validateTran(item);
+            Mockito.clearInvocations(tcatbalf, acctfile, master);
+
+            run.postTransaction(item);
+
+            InOrder posting = Mockito.inOrder(tcatbalf, acctfile, master);
+            posting.verify(tcatbalf).readByKey(ArgumentMatchers.<TranCatBalRecord.TranCatKey>any());
+            posting.verify(tcatbalf).write(ArgumentMatchers.any());
+            posting.verify(acctfile).rewrite(ArgumentMatchers.any());
+            posting.verify(master).write(ArgumentMatchers.any());
+
+            // 2700-A writes and never rewrites; 2700-B rewrites and never writes. The two arms of :495-499
+            // are exclusive, so the wrong one running applies DALYTRAN-AMT twice.
+            Mockito.verify(tcatbalf, Mockito.times(1)).write(ArgumentMatchers.any());
+            Mockito.verify(tcatbalf, Mockito.never()).rewrite(ArgumentMatchers.any());
+            Mockito.verify(acctfile, Mockito.times(1)).rewrite(ArgumentMatchers.any());
+            Mockito.verify(master, Mockito.times(1)).write(ArgumentMatchers.any());
+            run.release();
+
+            assertThat(rows(t, TCATBAL_DS)).hasSize(1);
+            assertThat(rows(t, TRANSACT_DS)).hasSize(1);
+        }
+
+        @Test
+        @DisplayName("a rejected record touches neither the balances, nor the account, nor the master")
+        void aRejectedRecordPostsNothing() {
+            JdbcTemplate t = database();
+            seedResolvableAccount(t);
+            CapturedSysout sysout = new CapturedSysout();
+            SpiedCollaborators spies = new SpiedCollaborators(t, sysout);
+            PostingRun run = spies.openedRun();
+            TranCatBalRepository.TranCatBalFile tcatbalf = spies.balanceFile();
+            AccountRepository.AccountFile acctfile = spies.accountFile();
+            TransactionRepository master = spies.master();
+            Mockito.clearInvocations(tcatbalf, acctfile, master);
+
+            // The ELSE arm of :211-216: ADD 1 TO WS-REJECT-COUNT then 2500-WRITE-REJECT-REC. Nothing in
+            // that arm posts, so no write of any kind may appear on the three posting collaborators.
+            RecordOutcome outcome = run.processRecord(
+                    dalyTran("T1", OTHER_CARD, "10.00", "2022-06-10 19:27:53.000000"));
+
+            assertThat(outcome.rejected()).isTrue();
+            Mockito.verify(tcatbalf, Mockito.never()).write(ArgumentMatchers.any());
+            Mockito.verify(tcatbalf, Mockito.never()).rewrite(ArgumentMatchers.any());
+            Mockito.verify(acctfile, Mockito.never()).rewrite(ArgumentMatchers.any());
+            Mockito.verify(master, Mockito.never()).write(ArgumentMatchers.any());
+            run.release();
         }
     }
 
@@ -1843,12 +2488,14 @@ class TransactionValidationJobTest {
             t.execute("DROP TABLE \"" + DALYREJS_DS + "\"");
             try {
                 assertThatExceptionOfType(AbendException.class)
-                        .isThrownBy(() -> run.writeRejectRec(item));
+                        .isThrownBy(() -> run.writeRejectRec(item))
+                        .satisfies(TransactionValidationJobTest::assertStandardAbendParameters);
             } finally {
                 recreate(t, DALYREJS_DS);
                 run.release();
             }
             assertThat(sysout.lines()).contains(TransactionValidationJob.ERROR_WRITING_DALYREJS);
+            assertThat(sysout.lines()).contains(AbendException.ABEND_DISPLAY_TEXT);
         }
 
         private static String padRight(String value, int width) {
