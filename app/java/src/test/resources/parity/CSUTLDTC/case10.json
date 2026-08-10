@@ -1,0 +1,17 @@
+{
+  "program": "CSUTLDTC",
+  "caseId": "case10",
+  "description": "CSUTLDTC, the called date-validation subprogram, invoked as the @Service it became. LS-DATE='1582-10-14' and LS-DATE-FORMAT='YYYY-MM-DD' are this case's two LINKAGE SECTION parameters (L84-L85); LS-RESULT PIC X(80) (L86) is the output and is asserted below as the single WS_MESSAGE_80 line. This program opens no file and is reached by no JCL, so it seeds no dataset, writes no record and takes no job parameter - its entire observable behaviour is the 80 bytes L97 moves into LS-RESULT and the severity L98 moves into RETURN-CODE. Expected values are STATICALLY DERIVED from the 01 WS-MESSAGE declaration at L42-L57 and the group move at L122, never captured from a COBOL run, which is impossible here. Arm 5: FC-UNSUPP-RANGE, 88-level VALUE X'000309D159C3C5C5' (L66) - severity 3, message 2513. THIS IS THE ONE ERROR VALUE BOTH ONLINE CALLERS DELIBERATELY ACCEPT, so CORPT00CParityTest and COTRN02CParityTest may rely on the four bytes '2513' appearing at offset 15 with '0003' at offset 0. 14 October 1582 is the day before the Lillian epoch and one of the ten days the Gregorian reform skipped, so it precedes the supported range; case03 pins the other side of that boundary.",
+  "unitKind": "SERVICE",
+  "inputs": {},
+  "expectedWrites": [],
+  "expectedFinalState": [],
+  "expectedReturnCode": 3,
+  "expectedMessages": [
+    {
+      "channel": "WS_MESSAGE_80",
+      "text": "0003Mesg Code: 2513 Unsupp. Range   TstDate: \u0000\n1582-10- Mask used:YYYY-MM-DD    "
+    }
+  ],
+  "normalisations": []
+}

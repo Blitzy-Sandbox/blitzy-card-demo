@@ -1,0 +1,79 @@
+{
+  "program": "CBSTM03B",
+  "caseId": "case13",
+  "description": "app/cbl/CBSTM03B.CBL:213-216 - 4000-ACCTFILE-PROC's keyed read, the fourth and last dispatch arm (:125-126), driven as app/cbl/CBSTM03A.CBL:391-401 drives it with WS-M03B-KEY-LN COMPUTE'd from LENGTH OF XREF-ACCT-ID and therefore 11. The area pins that as the signed zoned image '001A'. FD-ACCT-ID is PIC 9(11) rather than PIC X, so the used key reaches the record key through a numeric DISPLAY move - right justified and zero filled - and the expectation is stated at the 300-byte CVACT01Y width, whose signed spans carry their real overpunched images from app/data/ASCII/acctdata.txt.",
+  "unitKind": "COMPONENT",
+  "inputs": {
+    "ACCTFILE": {
+      "fixture": "acctdata.txt",
+      "fromRow": 9,
+      "rowCount": 3
+    }
+  },
+  "jobParameters": {},
+  "screenRequest": null,
+  "expectedResponse": null,
+  "expectedWrites": [
+    {
+      "dataset": "M03BAREA",
+      "rowIndex": 0,
+      "fields": {
+        "LK-M03B-DD": "ACCTFILE",
+        "LK-M03B-OPER": "O",
+        "LK-M03B-RC": "00"
+      },
+      "expectedBytes": "ACCTFILEO00                         000{                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        "
+    },
+    {
+      "dataset": "M03BAREA",
+      "rowIndex": 1,
+      "fields": {
+        "LK-M03B-DD": "ACCTFILE",
+        "LK-M03B-OPER": "K",
+        "LK-M03B-RC": "00"
+      },
+      "expectedBytes": "ACCTFILEK0000000000011              001A00000000011Y00000002120{00000049980{00000031750{2014-09-122025-03-122025-03-1200000000000{00000000000{A000000000                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        "
+    },
+    {
+      "dataset": "M03BAREA",
+      "rowIndex": 2,
+      "fields": {
+        "LK-M03B-DD": "ACCTFILE",
+        "LK-M03B-OPER": "C",
+        "LK-M03B-RC": "00"
+      },
+      "expectedBytes": "ACCTFILEC00                         000{00000000011Y00000002120{00000049980{00000031750{2014-09-122025-03-122025-03-1200000000000{00000000000{A000000000                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        "
+    }
+  ],
+  "expectedFinalState": [
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 0,
+      "fields": {},
+      "expectedBytes": "00000000010Y00000001590{00000054010{00000044420{2015-09-132023-01-272023-01-2700000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 1,
+      "fields": {},
+      "expectedBytes": "00000000011Y00000002120{00000049980{00000031750{2014-09-122025-03-122025-03-1200000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 2,
+      "fields": {},
+      "expectedBytes": "00000000012Y00000001760{00000046360{00000003880{2009-06-172023-07-072023-07-0700000000000{00000000000{A000000000                                                                                                                                                                                            "
+    }
+  ],
+  "expectedReturnCode": 0,
+  "expectedMessages": [],
+  "normalisations": [],
+  "expectedDatasets": [
+    {
+      "dataset": "M03BAREA",
+      "channel": "WRITES",
+      "rowCount": 3,
+      "recordLength": 1040
+    }
+  ]
+}

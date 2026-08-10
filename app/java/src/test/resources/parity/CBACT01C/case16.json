@@ -1,0 +1,599 @@
+{
+  "program": "CBACT01C",
+  "caseId": "case16",
+  "description": "The first ten records of the shipped fixture: 1 + (10 x 13) + 1 = 132 lines. A ten-record pass is dense enough to catch an off-by-one in the block boundary - a thirteen-line block emitted as twelve or fourteen lines shifts every line after the first record and is reported at the position it first diverges.",
+  "unitKind": "BATCH_JOB",
+  "inputs": {
+    "ACCTFILE": {
+      "fixture": "acctdata.txt",
+      "fromRow": 0,
+      "rowCount": 10
+    }
+  },
+  "jobParameters": {},
+  "expectedWrites": [],
+  "expectedFinalState": [
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 0,
+      "expectedBytes": "00000000001Y00000001940{00000020200{00000010200{2014-11-202025-05-202025-05-2000000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 1,
+      "expectedBytes": "00000000002Y00000001580{00000061300{00000054480{2013-06-192024-08-112024-08-1100000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 2,
+      "expectedBytes": "00000000003Y00000001470{00000049090{00000005380{2013-08-232024-01-102024-01-1000000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 3,
+      "expectedBytes": "00000000004Y00000000400{00000035030{00000027890{2012-11-172023-12-162023-12-1600000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 4,
+      "expectedBytes": "00000000005Y00000003450{00000038190{00000024300{2012-10-032025-03-092025-03-0900000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 5,
+      "expectedBytes": "00000000006Y00000002180{00000035840{00000029480{2017-12-232025-10-082025-10-0800000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 6,
+      "expectedBytes": "00000000007Y00000001930{00000020650{00000002640{2012-10-122024-12-132024-12-1300000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 7,
+      "expectedBytes": "00000000008Y00000006050{00000061040{00000013180{2012-01-042024-05-202024-05-2000000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 8,
+      "expectedBytes": "00000000009Y00000005600{00000082010{00000020650{2016-08-272024-12-272024-12-2700000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 9,
+      "expectedBytes": "00000000010Y00000001590{00000054010{00000044420{2015-09-132023-01-272023-01-2700000000000{00000000000{A000000000                                                                                                                                                                                            "
+    }
+  ],
+  "expectedReturnCode": 0,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "START OF EXECUTION OF PROGRAM CBACT01C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-ID                 :00000000001"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-ACTIVE-STATUS      :Y"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CURR-BAL           :00000001940{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CREDIT-LIMIT       :00000020200{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CASH-CREDIT-LIMIT  :00000010200{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-OPEN-DATE          :2014-11-20"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-EXPIRAION-DATE     :2025-05-20"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-REISSUE-DATE       :2025-05-20"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CURR-CYC-CREDIT    :00000000000{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CURR-CYC-DEBIT     :00000000000{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-GROUP-ID           :          "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "-------------------------------------------------"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "00000000001Y00000001940{00000020200{00000010200{2014-11-202025-05-202025-05-2000000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-ID                 :00000000002"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-ACTIVE-STATUS      :Y"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CURR-BAL           :00000001580{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CREDIT-LIMIT       :00000061300{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CASH-CREDIT-LIMIT  :00000054480{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-OPEN-DATE          :2013-06-19"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-EXPIRAION-DATE     :2024-08-11"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-REISSUE-DATE       :2024-08-11"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CURR-CYC-CREDIT    :00000000000{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CURR-CYC-DEBIT     :00000000000{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-GROUP-ID           :          "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "-------------------------------------------------"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "00000000002Y00000001580{00000061300{00000054480{2013-06-192024-08-112024-08-1100000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-ID                 :00000000003"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-ACTIVE-STATUS      :Y"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CURR-BAL           :00000001470{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CREDIT-LIMIT       :00000049090{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CASH-CREDIT-LIMIT  :00000005380{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-OPEN-DATE          :2013-08-23"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-EXPIRAION-DATE     :2024-01-10"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-REISSUE-DATE       :2024-01-10"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CURR-CYC-CREDIT    :00000000000{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CURR-CYC-DEBIT     :00000000000{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-GROUP-ID           :          "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "-------------------------------------------------"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "00000000003Y00000001470{00000049090{00000005380{2013-08-232024-01-102024-01-1000000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-ID                 :00000000004"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-ACTIVE-STATUS      :Y"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CURR-BAL           :00000000400{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CREDIT-LIMIT       :00000035030{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CASH-CREDIT-LIMIT  :00000027890{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-OPEN-DATE          :2012-11-17"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-EXPIRAION-DATE     :2023-12-16"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-REISSUE-DATE       :2023-12-16"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CURR-CYC-CREDIT    :00000000000{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CURR-CYC-DEBIT     :00000000000{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-GROUP-ID           :          "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "-------------------------------------------------"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "00000000004Y00000000400{00000035030{00000027890{2012-11-172023-12-162023-12-1600000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-ID                 :00000000005"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-ACTIVE-STATUS      :Y"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CURR-BAL           :00000003450{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CREDIT-LIMIT       :00000038190{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CASH-CREDIT-LIMIT  :00000024300{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-OPEN-DATE          :2012-10-03"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-EXPIRAION-DATE     :2025-03-09"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-REISSUE-DATE       :2025-03-09"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CURR-CYC-CREDIT    :00000000000{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CURR-CYC-DEBIT     :00000000000{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-GROUP-ID           :          "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "-------------------------------------------------"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "00000000005Y00000003450{00000038190{00000024300{2012-10-032025-03-092025-03-0900000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-ID                 :00000000006"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-ACTIVE-STATUS      :Y"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CURR-BAL           :00000002180{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CREDIT-LIMIT       :00000035840{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CASH-CREDIT-LIMIT  :00000029480{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-OPEN-DATE          :2017-12-23"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-EXPIRAION-DATE     :2025-10-08"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-REISSUE-DATE       :2025-10-08"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CURR-CYC-CREDIT    :00000000000{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CURR-CYC-DEBIT     :00000000000{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-GROUP-ID           :          "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "-------------------------------------------------"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "00000000006Y00000002180{00000035840{00000029480{2017-12-232025-10-082025-10-0800000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-ID                 :00000000007"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-ACTIVE-STATUS      :Y"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CURR-BAL           :00000001930{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CREDIT-LIMIT       :00000020650{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CASH-CREDIT-LIMIT  :00000002640{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-OPEN-DATE          :2012-10-12"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-EXPIRAION-DATE     :2024-12-13"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-REISSUE-DATE       :2024-12-13"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CURR-CYC-CREDIT    :00000000000{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CURR-CYC-DEBIT     :00000000000{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-GROUP-ID           :          "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "-------------------------------------------------"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "00000000007Y00000001930{00000020650{00000002640{2012-10-122024-12-132024-12-1300000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-ID                 :00000000008"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-ACTIVE-STATUS      :Y"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CURR-BAL           :00000006050{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CREDIT-LIMIT       :00000061040{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CASH-CREDIT-LIMIT  :00000013180{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-OPEN-DATE          :2012-01-04"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-EXPIRAION-DATE     :2024-05-20"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-REISSUE-DATE       :2024-05-20"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CURR-CYC-CREDIT    :00000000000{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CURR-CYC-DEBIT     :00000000000{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-GROUP-ID           :          "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "-------------------------------------------------"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "00000000008Y00000006050{00000061040{00000013180{2012-01-042024-05-202024-05-2000000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-ID                 :00000000009"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-ACTIVE-STATUS      :Y"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CURR-BAL           :00000005600{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CREDIT-LIMIT       :00000082010{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CASH-CREDIT-LIMIT  :00000020650{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-OPEN-DATE          :2016-08-27"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-EXPIRAION-DATE     :2024-12-27"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-REISSUE-DATE       :2024-12-27"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CURR-CYC-CREDIT    :00000000000{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CURR-CYC-DEBIT     :00000000000{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-GROUP-ID           :          "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "-------------------------------------------------"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "00000000009Y00000005600{00000082010{00000020650{2016-08-272024-12-272024-12-2700000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-ID                 :00000000010"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-ACTIVE-STATUS      :Y"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CURR-BAL           :00000001590{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CREDIT-LIMIT       :00000054010{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CASH-CREDIT-LIMIT  :00000044420{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-OPEN-DATE          :2015-09-13"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-EXPIRAION-DATE     :2023-01-27"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-REISSUE-DATE       :2023-01-27"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CURR-CYC-CREDIT    :00000000000{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CURR-CYC-DEBIT     :00000000000{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-GROUP-ID           :          "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "-------------------------------------------------"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "00000000010Y00000001590{00000054010{00000044420{2015-09-132023-01-272023-01-2700000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "END OF EXECUTION OF PROGRAM CBACT01C"
+    }
+  ],
+  "normalisations": []
+}

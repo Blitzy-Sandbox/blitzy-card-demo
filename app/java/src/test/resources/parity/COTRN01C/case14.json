@@ -1,0 +1,109 @@
+{
+  "program" : "COTRN01C",
+  "caseId" : "case14",
+  "description" : "Re-entry with no attention identifier at all, which is EIBAID = DFHNULL - the value CICS reports when no key raised the interrupt. It matches none of the four named values at :113, :115, :123 and :125 and therefore takes WHEN OTHER, which is where an unrecognised key belongs. Pinned separately from case13 because an absent AID and an unnamed AID reach the same arm by different routes, and a translation that defaulted an absent AID to ENTER would issue a read the terminal never asked for.",
+  "unitKind" : "CONTROLLER_POJO",
+  "inputs" : {
+    "TRANSACT" : {
+      "rows" : [ "0000000000000001010005POS TERM  GROCERY PURCHASE AT PARITY MARKET WITH A DESCRIPTION THAT OVERFLOWS THE SCREEN FIELD                0000005047G800000001PARITY MARKET NUMBER ONE OF SEVERAL LONG NAMES    SPRINGFIELD MASSACHUSETTS USA                     01103-123441111111111111112022-07-19 23:12:34.1234562022-07-20 01:02:03.654321                    ", "0000000000000002020010ONLINE    REFUND ISSUED BY MERCHANT                                                                           0000000500}800000002PARITY REFUNDS LIMITED                            PORTLAND OREGON                                   97201-000242222222222222222022-07-18 08:00:00.0000012022-07-18 09:30:00.000002                    ", "0000000000000003034444BATCH     LARGE SETTLEMENT                                                                                    1234567891B800000003PARITY SETTLEMENT HOUSE                           NEW YORK NEW YORK                                 10001-000343333333333333332022-07-17 12:00:00.0000032022-07-17 12:00:01.000004                    " ]
+    }
+  },
+  "screenRequest" : {
+    "eibcalen" : 218,
+    "aid" : "DFHNULL",
+    "pinnedClock" : "2022-07-19T23:12:34",
+    "charset" : "US-ASCII",
+    "commarea" : {
+      "CDEMO-PGM-CONTEXT" : "1"
+    },
+    "mapFields" : {
+      "TRNIDINI" : "0000000000000001"
+    },
+    "forcedOutcomes" : { }
+  },
+  "expectedResponse" : {
+    "nextProgram" : "COTRN01C",
+    "nextMapset" : "COTRN01",
+    "nextMap" : "COTRN1A",
+    "navigation" : {
+      "CDEMO-FROM-TRANID" : "    ",
+      "CDEMO-FROM-PROGRAM" : "        ",
+      "CDEMO-TO-TRANID" : "    ",
+      "CDEMO-TO-PROGRAM" : "        ",
+      "CDEMO-USER-ID" : "        ",
+      "CDEMO-USER-TYPE" : " ",
+      "CDEMO-PGM-CONTEXT" : "1",
+      "CDEMO-CUST-ID" : "000000000",
+      "CDEMO-CUST-FNAME" : "                         ",
+      "CDEMO-CUST-MNAME" : "                         ",
+      "CDEMO-CUST-LNAME" : "                         ",
+      "CDEMO-ACCT-ID" : "00000000000",
+      "CDEMO-ACCT-STATUS" : " ",
+      "CDEMO-CARD-NUM" : "0000000000000000",
+      "CDEMO-LAST-MAP" : "       ",
+      "CDEMO-LAST-MAPSET" : "       ",
+      "CDEMO-CT01-TRNID-FIRST" : "                ",
+      "CDEMO-CT01-TRNID-LAST" : "                ",
+      "CDEMO-CT01-PAGE-NUM" : "00000000",
+      "CDEMO-CT01-NEXT-PAGE-FLG" : " ",
+      "CDEMO-CT01-TRN-SEL-FLG" : " ",
+      "CDEMO-CT01-TRN-SELECTED" : "                "
+    },
+    "sends" : [ {
+      "fields" : {
+        "TRNNAMEO" : "CT01",
+        "TITLE01O" : "      AWS Mainframe Modernization       ",
+        "CURDATEO" : "07/19/22",
+        "PGMNAMEO" : "COTRN01C",
+        "TITLE02O" : "              CardDemo                  ",
+        "CURTIMEO" : "23:12:34",
+        "TRNIDINO" : "0000000000000001",
+        "TRNIDO" : "                ",
+        "CARDNUMO" : "                ",
+        "TTYPCDO" : "  ",
+        "TCATCDO" : "    ",
+        "TRNSRCO" : "          ",
+        "TDESCO" : "                                                            ",
+        "TRNAMTO" : "            ",
+        "TORIGDTO" : "          ",
+        "TPROCDTO" : "          ",
+        "MIDO" : "         ",
+        "MNAMEO" : "                              ",
+        "MCITYO" : "                         ",
+        "MZIPO" : "          ",
+        "ERRMSGO" : "Invalid key pressed. Please see below...                                      "
+      },
+      "attributes" : { }
+    } ],
+    "termination" : "RETURN_TRANSID"
+  },
+  "expectedWrites" : [ ],
+  "expectedFinalState" : [ {
+    "dataset" : "TRANSACT",
+    "rowIndex" : 0,
+    "expectedBytes" : "0000000000000001010005POS TERM  GROCERY PURCHASE AT PARITY MARKET WITH A DESCRIPTION THAT OVERFLOWS THE SCREEN FIELD                0000005047G800000001PARITY MARKET NUMBER ONE OF SEVERAL LONG NAMES    SPRINGFIELD MASSACHUSETTS USA                     01103-123441111111111111112022-07-19 23:12:34.1234562022-07-20 01:02:03.654321                    "
+  }, {
+    "dataset" : "TRANSACT",
+    "rowIndex" : 1,
+    "expectedBytes" : "0000000000000002020010ONLINE    REFUND ISSUED BY MERCHANT                                                                           0000000500}800000002PARITY REFUNDS LIMITED                            PORTLAND OREGON                                   97201-000242222222222222222022-07-18 08:00:00.0000012022-07-18 09:30:00.000002                    "
+  }, {
+    "dataset" : "TRANSACT",
+    "rowIndex" : 2,
+    "expectedBytes" : "0000000000000003034444BATCH     LARGE SETTLEMENT                                                                                    1234567891B800000003PARITY SETTLEMENT HOUSE                           NEW YORK NEW YORK                                 10001-000343333333333333332022-07-17 12:00:00.0000032022-07-17 12:00:01.000004                    "
+  } ],
+  "expectedReturnCode" : 0,
+  "expectedMessages" : [ {
+    "channel" : "WS_MESSAGE_80",
+    "text" : "Invalid key pressed. Please see below...                                        "
+  }, {
+    "channel" : "SCREEN_ERRMSG_78",
+    "text" : "Invalid key pressed. Please see below...                                      "
+  } ],
+  "normalisations" : [ ],
+  "expectedDatasets" : [ {
+    "dataset" : "TRANSACT",
+    "channel" : "FINAL_STATE",
+    "rowCount" : 3,
+    "recordLength" : 350
+  } ]
+}

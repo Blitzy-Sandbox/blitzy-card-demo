@@ -1,0 +1,44 @@
+{
+  "program": "CBACT03C",
+  "caseId": "case13",
+  "description": "An empty XREFFILE whose CLOSE at :138 then reports the extended status '96'. Four lines: the opening banner and the three failure lines, with neither a record line nor a closing banner. Two things are pinned at once. The extended arm of 9910-DISPLAY-IO-STATUS is reached from the CLOSE paragraph as well as from the OPEN paragraph of case07, which is what makes the paragraph genuinely shared rather than incidentally correct at one site: the second byte '6' has code point 54, so the image is 9054. And the close ladder is exercised on a run that read nothing, so a translation that only closed after at least one successful read would produce two lines here instead of four.",
+  "unitKind": "BATCH_JOB",
+  "inputs": {
+    "XREFFILE": {
+      "empty": true,
+      "recordLength": 50,
+      "copybook": "CVACT03Y"
+    }
+  },
+  "jobParameters": {},
+  "expectedWrites": [],
+  "expectedFinalState": [],
+  "expectedReturnCode": 12,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "START OF EXECUTION OF PROGRAM CBACT03C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ERROR CLOSING XREFFILE"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "FILE STATUS IS: NNNN9054"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ABENDING PROGRAM"
+    }
+  ],
+  "normalisations": [],
+  "expectedDatasets": [
+    {
+      "dataset": "XREFFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 0,
+      "recordLength": 50
+    }
+  ]
+}

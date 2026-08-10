@@ -1,0 +1,170 @@
+{
+  "program": "COUSR01C",
+  "caseId": "case18",
+  "description": "The same WHEN OTHER arm reached the other way, and the isolated proof of the eighty-into-seventy-eight narrowing. DFHPF12 is x'7C' and common.PfKeyResolver DOES resolve it, to PFK12 - but app/cbl/COUSR01C.cbl:90-103 names only DFHENTER, DFHPF3 and DFHPF4, so a resolvable key this program does not name still falls to :98-102. That is a different sub-branch from case17's unresolvable x'6B', and a resolver rewritten to return a default key instead of nothing would pass one and fail the other. The narrowing: WS-MESSAGE is declared PIC X(80) at :38 and ERRMSGO is PIC X(78) in app/cpy-bms/COUSR01.CPY, so MOVE WS-MESSAGE TO ERRMSGO at :188 drops the last two bytes on the right. expectedMessages states both channels at both widths, so the eighty and the seventy-eight are compared as different things: comparing across them would let the truncation pass unnoticed, which is exactly why the two channels exist. Every literal this program moves is far shorter than seventy-eight, so the two dropped bytes are always spaces - a property of the source, stated rather than assumed.",
+  "unitKind": "CONTROLLER_POJO",
+  "inputs": {
+    "USRSEC": {
+      "rows": [
+        "ADMIN001MARGARET            GOLD                PASSWORDA",
+        "ADMIN002RUSSELL             RUSSELL             PASSWORDA",
+        "ADMIN003RAYMOND             WHITMORE            PASSWORDA",
+        "ADMIN004EMMANUEL            CASGRAIN            PASSWORDA",
+        "ADMIN005GRANVILLE           LACHAPELLE          PASSWORDA",
+        "USER0001LAWRENCE            THOMAS              PASSWORDU",
+        "USER0002AJITH               KUMAR               PASSWORDU",
+        "USER0003LAURITZ             ALME                PASSWORDU",
+        "USER0004AVERARDO            MAZZI               PASSWORDU",
+        "USER0005LEE                 TING                PASSWORDU"
+      ]
+    }
+  },
+  "screenRequest": {
+    "eibcalen": 160,
+    "aid": "DFHPF12",
+    "pinnedClock": "2022-07-19T23:12:34",
+    "charset": "US-ASCII",
+    "commarea": {
+      "CDEMO-FROM-TRANID": "CA00",
+      "CDEMO-FROM-PROGRAM": "COADM01C",
+      "CDEMO-TO-TRANID": "CU01",
+      "CDEMO-TO-PROGRAM": "COUSR01C",
+      "CDEMO-USER-ID": "ADMIN001",
+      "CDEMO-USER-TYPE": "A",
+      "CDEMO-PGM-CONTEXT": "1",
+      "CDEMO-CUST-ID": "000000000",
+      "CDEMO-CUST-FNAME": "                         ",
+      "CDEMO-CUST-MNAME": "                         ",
+      "CDEMO-CUST-LNAME": "                         ",
+      "CDEMO-ACCT-ID": "00000000000",
+      "CDEMO-ACCT-STATUS": " ",
+      "CDEMO-CARD-NUM": "0000000000000000",
+      "CDEMO-LAST-MAP": "       ",
+      "CDEMO-LAST-MAPSET": "       "
+    },
+    "mapFields": {
+      "FNAMEI": "NEWTON              ",
+      "LNAMEI": "SMITH               ",
+      "USERIDI": "NEWUSR01",
+      "PASSWDI": "PASSWORD",
+      "USRTYPEI": "U"
+    },
+    "forcedOutcomes": {}
+  },
+  "expectedResponse": {
+    "nextProgram": "COUSR01C",
+    "nextMapset": "COUSR01",
+    "nextMap": "COUSR1A",
+    "navigation": {
+      "CDEMO-FROM-TRANID": "CA00",
+      "CDEMO-FROM-PROGRAM": "COADM01C",
+      "CDEMO-TO-TRANID": "CU01",
+      "CDEMO-TO-PROGRAM": "COUSR01C",
+      "CDEMO-USER-ID": "ADMIN001",
+      "CDEMO-USER-TYPE": "A",
+      "CDEMO-PGM-CONTEXT": "1",
+      "CDEMO-CUST-ID": "000000000",
+      "CDEMO-CUST-FNAME": "                         ",
+      "CDEMO-CUST-MNAME": "                         ",
+      "CDEMO-CUST-LNAME": "                         ",
+      "CDEMO-ACCT-ID": "00000000000",
+      "CDEMO-ACCT-STATUS": " ",
+      "CDEMO-CARD-NUM": "0000000000000000",
+      "CDEMO-LAST-MAP": "       ",
+      "CDEMO-LAST-MAPSET": "       "
+    },
+    "sends": [
+      {
+        "fields": {
+          "TRNNAMEO": "CU01",
+          "TITLE01O": "      AWS Mainframe Modernization       ",
+          "CURDATEO": "07/19/22",
+          "PGMNAMEO": "COUSR01C",
+          "TITLE02O": "              CardDemo                  ",
+          "CURTIMEO": "23:12:34",
+          "FNAMEO": "NEWTON              ",
+          "LNAMEO": "SMITH               ",
+          "USERIDO": "NEWUSR01",
+          "PASSWDO": "PASSWORD",
+          "USRTYPEO": "U",
+          "ERRMSGO": "Invalid key pressed. Please see below...                                      "
+        },
+        "attributes": {
+          "ERRMSGC": "DFHDFCOL"
+        }
+      }
+    ],
+    "cursorField": "FNAMEL",
+    "termination": "RETURN_TRANSID"
+  },
+  "expectedWrites": [],
+  "expectedFinalState": [
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 0,
+      "expectedBytes": "ADMIN001MARGARET            GOLD                PASSWORDA                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 1,
+      "expectedBytes": "ADMIN002RUSSELL             RUSSELL             PASSWORDA                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 2,
+      "expectedBytes": "ADMIN003RAYMOND             WHITMORE            PASSWORDA                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 3,
+      "expectedBytes": "ADMIN004EMMANUEL            CASGRAIN            PASSWORDA                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 4,
+      "expectedBytes": "ADMIN005GRANVILLE           LACHAPELLE          PASSWORDA                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 5,
+      "expectedBytes": "USER0001LAWRENCE            THOMAS              PASSWORDU                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 6,
+      "expectedBytes": "USER0002AJITH               KUMAR               PASSWORDU                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 7,
+      "expectedBytes": "USER0003LAURITZ             ALME                PASSWORDU                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 8,
+      "expectedBytes": "USER0004AVERARDO            MAZZI               PASSWORDU                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 9,
+      "expectedBytes": "USER0005LEE                 TING                PASSWORDU                       "
+    }
+  ],
+  "expectedReturnCode": 0,
+  "expectedMessages": [
+    {
+      "channel": "WS_MESSAGE_80",
+      "text": "Invalid key pressed. Please see below...                                        "
+    },
+    {
+      "channel": "SCREEN_ERRMSG_78",
+      "text": "Invalid key pressed. Please see below...                                      "
+    }
+  ],
+  "normalisations": [
+    {
+      "dataset": "USRSEC",
+      "kind": "USRSEC_FILLER_PAD_57_TO_80"
+    }
+  ]
+}

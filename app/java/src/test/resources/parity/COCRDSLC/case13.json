@@ -1,0 +1,149 @@
+{
+  "program": "COCRDSLC",
+  "caseId": "case13",
+  "description": "The asterisk arm of :622-627, the card-side mirror of case12. Both asterisk tests are ORed with SPACES in the source, which is why an operator who clears the field and one who leaves the painted asterisk reach the same arm; the two are pinned separately here because the source states them as two disjuncts and a translation could faithfully implement one and lose the other.",
+  "unitKind": "CONTROLLER_POJO",
+  "inputs": {
+    "CARDDAT": {
+      "fixture": "carddata.txt",
+      "fromRow": 0,
+      "rowCount": 3
+    }
+  },
+  "screenRequest": {
+    "eibcalen": 172,
+    "aid": "DFHENTER",
+    "pinnedClock": "2022-07-19T23:12:33",
+    "charset": "US-ASCII",
+    "commarea": {
+      "CDEMO-FROM-TRANID": "CCDL",
+      "CDEMO-FROM-PROGRAM": "COCRDSLC",
+      "CDEMO-TO-TRANID": "    ",
+      "CDEMO-TO-PROGRAM": "        ",
+      "CDEMO-USER-ID": "USER0001",
+      "CDEMO-USER-TYPE": "U",
+      "CDEMO-PGM-CONTEXT": "1",
+      "CDEMO-CUST-ID": "000000000",
+      "CDEMO-CUST-FNAME": "                         ",
+      "CDEMO-CUST-MNAME": "                         ",
+      "CDEMO-CUST-LNAME": "                         ",
+      "CDEMO-ACCT-ID": "00000000050",
+      "CDEMO-ACCT-STATUS": " ",
+      "CDEMO-CARD-NUM": "0000000000000000",
+      "CDEMO-LAST-MAP": "CCRDSLA",
+      "CDEMO-LAST-MAPSET": "COCRDSL"
+    },
+    "mapFields": {
+      "ACCTSIDI": "00000000050",
+      "CARDSIDI": "*               "
+    },
+    "forcedOutcomes": {}
+  },
+  "expectedResponse": {
+    "nextProgram": "COCRDSLC",
+    "nextMapset": "COCRDSL",
+    "nextMap": "CCRDSLA",
+    "navigation": {
+      "CDEMO-FROM-TRANID": "CCDL",
+      "CDEMO-FROM-PROGRAM": "COCRDSLC",
+      "CDEMO-TO-TRANID": "    ",
+      "CDEMO-TO-PROGRAM": "        ",
+      "CDEMO-USER-ID": "USER0001",
+      "CDEMO-USER-TYPE": "U",
+      "CDEMO-PGM-CONTEXT": "1",
+      "CDEMO-CUST-ID": "000000000",
+      "CDEMO-CUST-FNAME": "                         ",
+      "CDEMO-CUST-MNAME": "                         ",
+      "CDEMO-CUST-LNAME": "                         ",
+      "CDEMO-ACCT-ID": "00000000050",
+      "CDEMO-ACCT-STATUS": " ",
+      "CDEMO-CARD-NUM": "0000000000000000",
+      "CDEMO-LAST-MAP": "CCRDSLA",
+      "CDEMO-LAST-MAPSET": "COCRDSL"
+    },
+    "sends": [
+      {
+        "fields": {
+          "TRNNAMEO": "CCDL",
+          "TITLE01O": "      AWS Mainframe Modernization       ",
+          "CURDATEO": "07/19/22",
+          "PGMNAMEO": "COCRDSLC",
+          "TITLE02O": "              CardDemo                  ",
+          "CURTIMEO": "23:12:33",
+          "ACCTSIDO": "00000000050",
+          "CARDSIDO": "*               ",
+          "CRDNAMEO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "CRDSTCDO": "\u0000",
+          "EXPMONO": "\u0000\u0000",
+          "EXPYEARO": "\u0000\u0000\u0000\u0000",
+          "INFOMSGO": "Please enter Account and Card Number    ",
+          "ERRMSGO": "Card number not provided                                                        ",
+          "FKEYSO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000"
+        },
+        "attributes": {
+          "TRNNAMEC": "DFHDFCOL",
+          "TITLE01C": "DFHDFCOL",
+          "CURDATEC": "DFHDFCOL",
+          "PGMNAMEC": "DFHDFCOL",
+          "TITLE02C": "DFHDFCOL",
+          "CURTIMEC": "DFHDFCOL",
+          "ACCTSIDC": "DFHDFCOL",
+          "CARDSIDC": "DFHRED",
+          "CRDNAMEC": "DFHDFCOL",
+          "CRDSTCDC": "DFHDFCOL",
+          "EXPMONC": "DFHDFCOL",
+          "EXPYEARC": "DFHDFCOL",
+          "INFOMSGC": "DFHNEUTR",
+          "ERRMSGC": "DFHDFCOL",
+          "FKEYSC": "DFHDFCOL",
+          "TRNNAMEH": "DFHDFHI",
+          "TITLE01H": "DFHDFHI",
+          "CURDATEH": "DFHDFHI",
+          "PGMNAMEH": "DFHDFHI",
+          "TITLE02H": "DFHDFHI",
+          "CURTIMEH": "DFHDFHI",
+          "ACCTSIDH": "DFHDFHI",
+          "CARDSIDH": "DFHDFHI",
+          "CRDNAMEH": "DFHDFHI",
+          "CRDSTCDH": "DFHDFHI",
+          "EXPMONH": "DFHDFHI",
+          "EXPYEARH": "DFHDFHI",
+          "INFOMSGH": "DFHDFHI",
+          "ERRMSGH": "DFHDFHI",
+          "FKEYSH": "DFHDFHI"
+        }
+      }
+    ],
+    "cursorField": "CARDSIDL",
+    "termination": "RETURN_TRANSID"
+  },
+  "expectedWrites": [],
+  "expectedFinalState": [
+    {
+      "dataset": "CARDDAT",
+      "rowIndex": 0,
+      "expectedBytes": "050002445376574000000000050747Aniya Von                                         2023-03-09Y                                                           "
+    },
+    {
+      "dataset": "CARDDAT",
+      "rowIndex": 1,
+      "expectedBytes": "068358619817151600000000027567Ward Jones                                        2025-07-13Y                                                           "
+    },
+    {
+      "dataset": "CARDDAT",
+      "rowIndex": 2,
+      "expectedBytes": "092387719324733000000000002028Enrico Rosenbaum                                  2024-08-11Y                                                           "
+    }
+  ],
+  "expectedReturnCode": 0,
+  "expectedMessages": [],
+  "normalisations": [],
+  "expectedDatasets": [
+    {
+      "dataset": "CARDDAT",
+      "channel": "FINAL_STATE",
+      "rowCount": 3,
+      "recordLength": 150
+    }
+  ]
+}

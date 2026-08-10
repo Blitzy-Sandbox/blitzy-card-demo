@@ -1,0 +1,149 @@
+{
+  "program": "COCRDSLC",
+  "caseId": "case07",
+  "description": "The cross-field edit at :637-640: FLG-ACCTFILTER-BLANK and FLG-CARDFILTER-BLANK together set NO-SEARCH-CRITERIA-RECEIVED, which overwrites the 'Account number not provided' that 2210-EDIT-ACCOUNT had already placed - the cross-field MOVE is unguarded, so the last writer wins. Both blank flags plus CDEMO-PGM-REENTER then satisfy :541-551, so an asterisk is moved into ACCTSIDO and CARDSIDO and both colours go DFHRED. This is CSSETATY's shape, and the AND CDEMO-PGM-REENTER guard is the reason the asterisk appears here and nowhere on a first-entry path.",
+  "unitKind": "CONTROLLER_POJO",
+  "inputs": {
+    "CARDDAT": {
+      "fixture": "carddata.txt",
+      "fromRow": 0,
+      "rowCount": 3
+    }
+  },
+  "screenRequest": {
+    "eibcalen": 172,
+    "aid": "DFHENTER",
+    "pinnedClock": "2022-07-19T23:12:33",
+    "charset": "US-ASCII",
+    "commarea": {
+      "CDEMO-FROM-TRANID": "CCDL",
+      "CDEMO-FROM-PROGRAM": "COCRDSLC",
+      "CDEMO-TO-TRANID": "    ",
+      "CDEMO-TO-PROGRAM": "        ",
+      "CDEMO-USER-ID": "USER0001",
+      "CDEMO-USER-TYPE": "U",
+      "CDEMO-PGM-CONTEXT": "1",
+      "CDEMO-CUST-ID": "000000000",
+      "CDEMO-CUST-FNAME": "                         ",
+      "CDEMO-CUST-MNAME": "                         ",
+      "CDEMO-CUST-LNAME": "                         ",
+      "CDEMO-ACCT-ID": "00000000000",
+      "CDEMO-ACCT-STATUS": " ",
+      "CDEMO-CARD-NUM": "0000000000000000",
+      "CDEMO-LAST-MAP": "CCRDSLA",
+      "CDEMO-LAST-MAPSET": "COCRDSL"
+    },
+    "mapFields": {
+      "ACCTSIDI": "           ",
+      "CARDSIDI": "                "
+    },
+    "forcedOutcomes": {}
+  },
+  "expectedResponse": {
+    "nextProgram": "COCRDSLC",
+    "nextMapset": "COCRDSL",
+    "nextMap": "CCRDSLA",
+    "navigation": {
+      "CDEMO-FROM-TRANID": "CCDL",
+      "CDEMO-FROM-PROGRAM": "COCRDSLC",
+      "CDEMO-TO-TRANID": "    ",
+      "CDEMO-TO-PROGRAM": "        ",
+      "CDEMO-USER-ID": "USER0001",
+      "CDEMO-USER-TYPE": "U",
+      "CDEMO-PGM-CONTEXT": "1",
+      "CDEMO-CUST-ID": "000000000",
+      "CDEMO-CUST-FNAME": "                         ",
+      "CDEMO-CUST-MNAME": "                         ",
+      "CDEMO-CUST-LNAME": "                         ",
+      "CDEMO-ACCT-ID": "00000000000",
+      "CDEMO-ACCT-STATUS": " ",
+      "CDEMO-CARD-NUM": "0000000000000000",
+      "CDEMO-LAST-MAP": "CCRDSLA",
+      "CDEMO-LAST-MAPSET": "COCRDSL"
+    },
+    "sends": [
+      {
+        "fields": {
+          "TRNNAMEO": "CCDL",
+          "TITLE01O": "      AWS Mainframe Modernization       ",
+          "CURDATEO": "07/19/22",
+          "PGMNAMEO": "COCRDSLC",
+          "TITLE02O": "              CardDemo                  ",
+          "CURTIMEO": "23:12:33",
+          "ACCTSIDO": "*          ",
+          "CARDSIDO": "*               ",
+          "CRDNAMEO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "CRDSTCDO": "\u0000",
+          "EXPMONO": "\u0000\u0000",
+          "EXPYEARO": "\u0000\u0000\u0000\u0000",
+          "INFOMSGO": "Please enter Account and Card Number    ",
+          "ERRMSGO": "No input received                                                               ",
+          "FKEYSO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000"
+        },
+        "attributes": {
+          "TRNNAMEC": "DFHDFCOL",
+          "TITLE01C": "DFHDFCOL",
+          "CURDATEC": "DFHDFCOL",
+          "PGMNAMEC": "DFHDFCOL",
+          "TITLE02C": "DFHDFCOL",
+          "CURTIMEC": "DFHDFCOL",
+          "ACCTSIDC": "DFHRED",
+          "CARDSIDC": "DFHRED",
+          "CRDNAMEC": "DFHDFCOL",
+          "CRDSTCDC": "DFHDFCOL",
+          "EXPMONC": "DFHDFCOL",
+          "EXPYEARC": "DFHDFCOL",
+          "INFOMSGC": "DFHNEUTR",
+          "ERRMSGC": "DFHDFCOL",
+          "FKEYSC": "DFHDFCOL",
+          "TRNNAMEH": "DFHDFHI",
+          "TITLE01H": "DFHDFHI",
+          "CURDATEH": "DFHDFHI",
+          "PGMNAMEH": "DFHDFHI",
+          "TITLE02H": "DFHDFHI",
+          "CURTIMEH": "DFHDFHI",
+          "ACCTSIDH": "DFHDFHI",
+          "CARDSIDH": "DFHDFHI",
+          "CRDNAMEH": "DFHDFHI",
+          "CRDSTCDH": "DFHDFHI",
+          "EXPMONH": "DFHDFHI",
+          "EXPYEARH": "DFHDFHI",
+          "INFOMSGH": "DFHDFHI",
+          "ERRMSGH": "DFHDFHI",
+          "FKEYSH": "DFHDFHI"
+        }
+      }
+    ],
+    "cursorField": "ACCTSIDL",
+    "termination": "RETURN_TRANSID"
+  },
+  "expectedWrites": [],
+  "expectedFinalState": [
+    {
+      "dataset": "CARDDAT",
+      "rowIndex": 0,
+      "expectedBytes": "050002445376574000000000050747Aniya Von                                         2023-03-09Y                                                           "
+    },
+    {
+      "dataset": "CARDDAT",
+      "rowIndex": 1,
+      "expectedBytes": "068358619817151600000000027567Ward Jones                                        2025-07-13Y                                                           "
+    },
+    {
+      "dataset": "CARDDAT",
+      "rowIndex": 2,
+      "expectedBytes": "092387719324733000000000002028Enrico Rosenbaum                                  2024-08-11Y                                                           "
+    }
+  ],
+  "expectedReturnCode": 0,
+  "expectedMessages": [],
+  "normalisations": [],
+  "expectedDatasets": [
+    {
+      "dataset": "CARDDAT",
+      "channel": "FINAL_STATE",
+      "rowCount": 3,
+      "recordLength": 150
+    }
+  ]
+}

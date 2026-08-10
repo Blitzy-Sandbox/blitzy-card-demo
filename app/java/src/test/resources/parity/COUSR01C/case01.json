@@ -1,0 +1,189 @@
+{
+  "program": "COUSR01C",
+  "caseId": "case01",
+  "description": "PROCESS-ENTER-KEY falls through all five blank-field arms to WHEN OTHER at app/cbl/COUSR01C.cbl:148-150, so IF NOT ERR-FLG-ON at :153 is true and WRITE-USER-SEC-FILE runs. The RESP is NORMAL, which selects :251-259 - four statements whose ORDER is the subtle part. INITIALIZE-ALL-FIELDS runs FIRST at :252 and blanks the five screen fields and WS-MESSAGE, and only then is the confirmation composed at :255-258. That works solely because SEC-USR-ID lives in WORKING-STORAGE rather than in the map, so it survives the blanking: a translation that composed the message from USERIDI, or that blanked after composing, would put an empty id on the screen and this case would catch it. DFHGREEN reaches ERRMSGC at :254 - the value comes from common.BmsAttributes, reproduced from IBM CICS documentation because DFHBMSCA is absent from this repository, and NOT from any file here. The eleven-row final state is in KEY sequence: app/jcl/DUSRSECJ.jcl STEP02 defines USRSEC as KEYS(8,0) INDEXED, and NEWUSR01 sorts between ADMIN005 and USER0001.",
+  "unitKind": "CONTROLLER_POJO",
+  "inputs": {
+    "USRSEC": {
+      "rows": [
+        "ADMIN001MARGARET            GOLD                PASSWORDA",
+        "ADMIN002RUSSELL             RUSSELL             PASSWORDA",
+        "ADMIN003RAYMOND             WHITMORE            PASSWORDA",
+        "ADMIN004EMMANUEL            CASGRAIN            PASSWORDA",
+        "ADMIN005GRANVILLE           LACHAPELLE          PASSWORDA",
+        "USER0001LAWRENCE            THOMAS              PASSWORDU",
+        "USER0002AJITH               KUMAR               PASSWORDU",
+        "USER0003LAURITZ             ALME                PASSWORDU",
+        "USER0004AVERARDO            MAZZI               PASSWORDU",
+        "USER0005LEE                 TING                PASSWORDU"
+      ]
+    }
+  },
+  "screenRequest": {
+    "eibcalen": 160,
+    "aid": "DFHENTER",
+    "pinnedClock": "2022-07-19T23:12:34",
+    "charset": "US-ASCII",
+    "commarea": {
+      "CDEMO-FROM-TRANID": "CA00",
+      "CDEMO-FROM-PROGRAM": "COADM01C",
+      "CDEMO-TO-TRANID": "CU01",
+      "CDEMO-TO-PROGRAM": "COUSR01C",
+      "CDEMO-USER-ID": "ADMIN001",
+      "CDEMO-USER-TYPE": "A",
+      "CDEMO-PGM-CONTEXT": "1",
+      "CDEMO-CUST-ID": "000000000",
+      "CDEMO-CUST-FNAME": "                         ",
+      "CDEMO-CUST-MNAME": "                         ",
+      "CDEMO-CUST-LNAME": "                         ",
+      "CDEMO-ACCT-ID": "00000000000",
+      "CDEMO-ACCT-STATUS": " ",
+      "CDEMO-CARD-NUM": "0000000000000000",
+      "CDEMO-LAST-MAP": "       ",
+      "CDEMO-LAST-MAPSET": "       "
+    },
+    "mapFields": {
+      "FNAMEI": "NEWTON              ",
+      "LNAMEI": "SMITH               ",
+      "USERIDI": "NEWUSR01",
+      "PASSWDI": "PASSWORD",
+      "USRTYPEI": "U"
+    },
+    "forcedOutcomes": {}
+  },
+  "expectedResponse": {
+    "nextProgram": "COUSR01C",
+    "nextMapset": "COUSR01",
+    "nextMap": "COUSR1A",
+    "navigation": {
+      "CDEMO-FROM-TRANID": "CA00",
+      "CDEMO-FROM-PROGRAM": "COADM01C",
+      "CDEMO-TO-TRANID": "CU01",
+      "CDEMO-TO-PROGRAM": "COUSR01C",
+      "CDEMO-USER-ID": "ADMIN001",
+      "CDEMO-USER-TYPE": "A",
+      "CDEMO-PGM-CONTEXT": "1",
+      "CDEMO-CUST-ID": "000000000",
+      "CDEMO-CUST-FNAME": "                         ",
+      "CDEMO-CUST-MNAME": "                         ",
+      "CDEMO-CUST-LNAME": "                         ",
+      "CDEMO-ACCT-ID": "00000000000",
+      "CDEMO-ACCT-STATUS": " ",
+      "CDEMO-CARD-NUM": "0000000000000000",
+      "CDEMO-LAST-MAP": "       ",
+      "CDEMO-LAST-MAPSET": "       "
+    },
+    "sends": [
+      {
+        "fields": {
+          "TRNNAMEO": "CU01",
+          "TITLE01O": "      AWS Mainframe Modernization       ",
+          "CURDATEO": "07/19/22",
+          "PGMNAMEO": "COUSR01C",
+          "TITLE02O": "              CardDemo                  ",
+          "CURTIMEO": "23:12:34",
+          "FNAMEO": "                    ",
+          "LNAMEO": "                    ",
+          "USERIDO": "        ",
+          "PASSWDO": "        ",
+          "USRTYPEO": " ",
+          "ERRMSGO": "User NEWUSR01 has been added ...                                              "
+        },
+        "attributes": {
+          "ERRMSGC": "DFHGREEN"
+        }
+      }
+    ],
+    "cursorField": "FNAMEL",
+    "termination": "RETURN_TRANSID"
+  },
+  "expectedWrites": [
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 0,
+      "fields": {
+        "SEC-USR-ID": "NEWUSR01",
+        "SEC-USR-FNAME": "NEWTON              ",
+        "SEC-USR-LNAME": "SMITH               ",
+        "SEC-USR-PWD": "PASSWORD",
+        "SEC-USR-TYPE": "U",
+        "SEC-USR-FILLER": "                       "
+      },
+      "expectedBytes": "NEWUSR01NEWTON              SMITH               PASSWORDU                       "
+    }
+  ],
+  "expectedFinalState": [
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 0,
+      "expectedBytes": "ADMIN001MARGARET            GOLD                PASSWORDA                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 1,
+      "expectedBytes": "ADMIN002RUSSELL             RUSSELL             PASSWORDA                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 2,
+      "expectedBytes": "ADMIN003RAYMOND             WHITMORE            PASSWORDA                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 3,
+      "expectedBytes": "ADMIN004EMMANUEL            CASGRAIN            PASSWORDA                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 4,
+      "expectedBytes": "ADMIN005GRANVILLE           LACHAPELLE          PASSWORDA                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 5,
+      "expectedBytes": "NEWUSR01NEWTON              SMITH               PASSWORDU                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 6,
+      "expectedBytes": "USER0001LAWRENCE            THOMAS              PASSWORDU                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 7,
+      "expectedBytes": "USER0002AJITH               KUMAR               PASSWORDU                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 8,
+      "expectedBytes": "USER0003LAURITZ             ALME                PASSWORDU                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 9,
+      "expectedBytes": "USER0004AVERARDO            MAZZI               PASSWORDU                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 10,
+      "expectedBytes": "USER0005LEE                 TING                PASSWORDU                       "
+    }
+  ],
+  "expectedReturnCode": 0,
+  "expectedMessages": [
+    {
+      "channel": "WS_MESSAGE_80",
+      "text": "User NEWUSR01 has been added ...                                                "
+    },
+    {
+      "channel": "SCREEN_ERRMSG_78",
+      "text": "User NEWUSR01 has been added ...                                              "
+    }
+  ],
+  "normalisations": [
+    {
+      "dataset": "USRSEC",
+      "kind": "USRSEC_FILLER_PAD_57_TO_80"
+    }
+  ]
+}

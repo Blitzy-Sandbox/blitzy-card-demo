@@ -1,0 +1,34 @@
+{
+  "program": "CBACT02C",
+  "caseId": "case08",
+  "description": "0000-CARDFILE-OPEN reports '10', and that is still a failure. This is the case most likely to be translated wrongly, because '10' is the benign end-of-file status everywhere else in the program: 1000-CARDFILE-GET-NEXT tests for it explicitly at app/cbl/CBACT02C.cbl:98 and treats it as an orderly end. The open paragraph does not test for it at all. :121 asks only whether the status is '00', so '10' takes the ELSE at :124, APPL-RESULT becomes 12, APPL-EOF is never consulted, and the program emits 'ERROR OPENING CARDFILE', the status image '0010', and 'ABENDING PROGRAM' before abending with RETURN-CODE 12. An implementation that shared one status-handling routine between the open and the read would report a clean, empty, successful run here.",
+  "unitKind": "BATCH_JOB",
+  "inputs": {
+    "CARDFILE": {
+      "fixture": "carddata.txt"
+    }
+  },
+  "jobParameters": {},
+  "expectedWrites": [],
+  "expectedFinalState": [],
+  "expectedReturnCode": 12,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "START OF EXECUTION OF PROGRAM CBACT02C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ERROR OPENING CARDFILE"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "FILE STATUS IS: NNNN0010"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ABENDING PROGRAM"
+    }
+  ],
+  "normalisations": []
+}

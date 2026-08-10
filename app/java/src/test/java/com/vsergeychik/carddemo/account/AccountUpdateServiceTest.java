@@ -18,12 +18,15 @@ import com.vsergeychik.carddemo.common.CobolDecimal;
 import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.NavigationContext;
+import com.vsergeychik.carddemo.config.DatasetUnitOfWork;
 import com.vsergeychik.carddemo.customer.CustomerRepository;
 import com.vsergeychik.carddemo.customer.model.CustomerRecord;
 
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.EnumSet;
+import java.util.List;
 import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.Set;
@@ -296,7 +299,7 @@ class AccountUpdateServiceTest {
     // =================================================================================================
 
     @Nested
-    @DisplayName("Wiring - constructor injection only, and both collaborators required")
+    @DisplayName("Wiring - constructor injection only, and all three collaborators required")
     class Wiring {
 
         @Test
@@ -318,7 +321,16 @@ class AccountUpdateServiceTest {
         }
 
         @Test
-        @DisplayName("the bean holds no state beyond its two final collaborators")
+        @DisplayName("the unit of work is required, because the two locking reads cannot do without it")
+        void unitOfWorkRequired() {
+            Assertions.assertThatNullPointerException()
+                    .isThrownBy(() -> new AccountUpdateService(accountRepository, customerRepository,
+                            null))
+                    .withMessageContaining("unit-of-work boundary is required");
+        }
+
+        @Test
+        @DisplayName("the bean holds no state beyond its three final collaborators")
         void noStaticMutableState() {
             Assertions.assertThat(AccountUpdateService.class.getDeclaredFields())
                     .allSatisfy(field -> Assertions.assertThat(
@@ -349,7 +361,7 @@ class AccountUpdateServiceTest {
         }
 
         @Test
-        @DisplayName("a real Spring context builds the bean from the two collaborators (gate G3)")
+        @DisplayName("a real Spring context builds the bean from the three collaborators (gate G3)")
         void aRealContextWiresTheBean() {
             // The module has no live DataSource here, so a whole-application context load would fail for
             // reasons that have nothing to do with this bean - which is why CardDemoApplicationTest
@@ -1394,7 +1406,7 @@ class AccountUpdateServiceTest {
         }
 
         @Test
-        @DisplayName("the customer rewrite fails: SYNCPOINT ROLLBACK is requested - :4099-4101")
+        @DisplayName("the customer rewrite fails: SYNCPOINT ROLLBACK is reported - :4099-4101")
         void customerRewriteFailureRequestsRollback() {
             arrangeBothLocks();
             when(accountRepository.rewrite(any(AccountRecord.class)))

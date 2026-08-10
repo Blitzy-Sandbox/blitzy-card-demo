@@ -1,0 +1,138 @@
+{
+  "program": "COUSR01C",
+  "caseId": "case16",
+  "description": "DFHPF3 at app/cbl/COUSR01C.cbl:93-95 moves 'COADM01C' into CDEMO-TO-PROGRAM and performs RETURN-TO-PREV-SCREEN, whose XCTL at :175-178 passes PROGRAM and COMMAREA and no map at all. Four things follow and all four are pinned. The termination is XCTL and not RETURN_TRANSID: control transfers and does not come back, so the EXEC CICS RETURN at :107 is never reached, and the two are not interchangeable. nextMapset and nextMap are absent, because the transfer names no map - whereas every sending path names COUSR01 and COUSR1A. There is no send, so no message reaches a terminal and expectedMessages is empty even though a RECEIVE did happen at :89. And the commarea comes back rewritten in exactly three places by :170-174 - CDEMO-FROM-TRANID 'CU01', CDEMO-FROM-PROGRAM 'COUSR01C' and CDEMO-PGM-CONTEXT zeroed - while CDEMO-USER-ID and CDEMO-USER-TYPE travel through untouched, because lines :172-173 that would have set them are commented out in the source and are not reproduced.",
+  "unitKind": "CONTROLLER_POJO",
+  "inputs": {
+    "USRSEC": {
+      "rows": [
+        "ADMIN001MARGARET            GOLD                PASSWORDA",
+        "ADMIN002RUSSELL             RUSSELL             PASSWORDA",
+        "ADMIN003RAYMOND             WHITMORE            PASSWORDA",
+        "ADMIN004EMMANUEL            CASGRAIN            PASSWORDA",
+        "ADMIN005GRANVILLE           LACHAPELLE          PASSWORDA",
+        "USER0001LAWRENCE            THOMAS              PASSWORDU",
+        "USER0002AJITH               KUMAR               PASSWORDU",
+        "USER0003LAURITZ             ALME                PASSWORDU",
+        "USER0004AVERARDO            MAZZI               PASSWORDU",
+        "USER0005LEE                 TING                PASSWORDU"
+      ]
+    }
+  },
+  "screenRequest": {
+    "eibcalen": 160,
+    "aid": "DFHPF3",
+    "pinnedClock": "2022-07-19T23:12:34",
+    "charset": "US-ASCII",
+    "commarea": {
+      "CDEMO-FROM-TRANID": "CA00",
+      "CDEMO-FROM-PROGRAM": "COADM01C",
+      "CDEMO-TO-TRANID": "CU01",
+      "CDEMO-TO-PROGRAM": "COUSR01C",
+      "CDEMO-USER-ID": "ADMIN001",
+      "CDEMO-USER-TYPE": "A",
+      "CDEMO-PGM-CONTEXT": "1",
+      "CDEMO-CUST-ID": "000000000",
+      "CDEMO-CUST-FNAME": "                         ",
+      "CDEMO-CUST-MNAME": "                         ",
+      "CDEMO-CUST-LNAME": "                         ",
+      "CDEMO-ACCT-ID": "00000000000",
+      "CDEMO-ACCT-STATUS": " ",
+      "CDEMO-CARD-NUM": "0000000000000000",
+      "CDEMO-LAST-MAP": "       ",
+      "CDEMO-LAST-MAPSET": "       "
+    },
+    "mapFields": {
+      "FNAMEI": "NEWTON              ",
+      "LNAMEI": "SMITH               ",
+      "USERIDI": "NEWUSR01",
+      "PASSWDI": "PASSWORD",
+      "USRTYPEI": "U"
+    },
+    "forcedOutcomes": {}
+  },
+  "expectedResponse": {
+    "nextProgram": "COADM01C",
+    "navigation": {
+      "CDEMO-FROM-TRANID": "CU01",
+      "CDEMO-FROM-PROGRAM": "COUSR01C",
+      "CDEMO-TO-TRANID": "CU01",
+      "CDEMO-TO-PROGRAM": "COADM01C",
+      "CDEMO-USER-ID": "ADMIN001",
+      "CDEMO-USER-TYPE": "A",
+      "CDEMO-PGM-CONTEXT": "0",
+      "CDEMO-CUST-ID": "000000000",
+      "CDEMO-CUST-FNAME": "                         ",
+      "CDEMO-CUST-MNAME": "                         ",
+      "CDEMO-CUST-LNAME": "                         ",
+      "CDEMO-ACCT-ID": "00000000000",
+      "CDEMO-ACCT-STATUS": " ",
+      "CDEMO-CARD-NUM": "0000000000000000",
+      "CDEMO-LAST-MAP": "       ",
+      "CDEMO-LAST-MAPSET": "       "
+    },
+    "sends": [],
+    "termination": "XCTL"
+  },
+  "expectedWrites": [],
+  "expectedFinalState": [
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 0,
+      "expectedBytes": "ADMIN001MARGARET            GOLD                PASSWORDA                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 1,
+      "expectedBytes": "ADMIN002RUSSELL             RUSSELL             PASSWORDA                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 2,
+      "expectedBytes": "ADMIN003RAYMOND             WHITMORE            PASSWORDA                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 3,
+      "expectedBytes": "ADMIN004EMMANUEL            CASGRAIN            PASSWORDA                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 4,
+      "expectedBytes": "ADMIN005GRANVILLE           LACHAPELLE          PASSWORDA                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 5,
+      "expectedBytes": "USER0001LAWRENCE            THOMAS              PASSWORDU                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 6,
+      "expectedBytes": "USER0002AJITH               KUMAR               PASSWORDU                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 7,
+      "expectedBytes": "USER0003LAURITZ             ALME                PASSWORDU                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 8,
+      "expectedBytes": "USER0004AVERARDO            MAZZI               PASSWORDU                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 9,
+      "expectedBytes": "USER0005LEE                 TING                PASSWORDU                       "
+    }
+  ],
+  "expectedReturnCode": 0,
+  "expectedMessages": [],
+  "normalisations": [
+    {
+      "dataset": "USRSEC",
+      "kind": "USRSEC_FILLER_PAD_57_TO_80"
+    }
+  ]
+}

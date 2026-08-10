@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.hamcrest.Matchers.startsWith;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -21,6 +22,9 @@ import com.vsergeychik.carddemo.card.CardXrefRepository;
 import com.vsergeychik.carddemo.card.model.CardXrefRecord;
 import com.vsergeychik.carddemo.common.BmsAttributes;
 import com.vsergeychik.carddemo.common.CicsAid;
+import com.vsergeychik.carddemo.common.CobolDecimal;
+import com.vsergeychik.carddemo.common.FieldAttributeSetter;
+import com.vsergeychik.carddemo.common.FieldAttributeSetter.FieldHighlight;
 import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.NavigationContext;
@@ -44,6 +48,7 @@ import com.zaxxer.hikari.HikariDataSource;
 import java.io.IOException;
 import java.lang.reflect.Modifier;
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -64,6 +69,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.mockito.InOrder;
 import org.springframework.context.annotation.AnnotationConfigApplicationContext;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.MediaType;
@@ -81,6 +87,22 @@ import org.springframework.transaction.support.TransactionTemplate;
 /**
  * {@link TransactionViewController} - the {@code COTRN02C} / {@code CT02} screen, which despite its
  * mandated name <strong>adds</strong> a transaction (risk R-B).
+ *
+ * <h2>Risk R-B, and the rule that settles it</h2>
+ * The mandated class name and the program it was migrated from disagree, deliberately.
+ * {@code app/cbl/COTRN02C.cbl:5} reads {@code * Function    : Add a new Transaction to TRANSACT file},
+ * the program issues {@code STARTBR} at L644, {@code READPREV} at L675, {@code ENDBR} at L704 and
+ * {@code WRITE} at L713, and {@code README.md:213-231} documents {@code CT02} as "Transaction Add" -
+ * so the prompt's mapping is inverted, and {@code TransactionAddController} carries the mirror image
+ * of the same swap. The resolution is rule <strong>R1</strong>: <em>the name comes from the prompt,
+ * the behaviour comes from the source</em>. This class therefore asserts an <strong>insert</strong>
+ * throughout, and asserts it against {@code COTRN02C} line by line. Per practice <strong>B4</strong>
+ * the conflict is recorded rather than corrected: the ambiguity is not resolved in either direction
+ * here, because the Agent Action Plan escalates it for explicit user confirmation.
+ *
+ * <p><strong>No user rules were provided for this project</strong> - {@code review_rules} returns the
+ * single line "No user rules provided" - so the bar this class is held to is the Agent Action Plan's
+ * twelve enterprise practices, cited by name where they bite.
  *
  * <p>Every test that asserts a <em>decision</em> instantiates the controller <strong>directly</strong>
  * with mocked repositories, a real {@link DateUtilityJob} and a fixed {@link Clock}. There is no Spring
@@ -268,6 +290,25 @@ class TransactionViewControllerTest {
         void theMandatedNameIsHonoured() {
             assertThat(TransactionViewController.class.getSimpleName())
                     .isEqualTo("TransactionViewController");
+        }
+
+        @Test
+        @DisplayName("it names rule R1 as the resolution, and resolves the swap in neither direction")
+        void documentationNamesTheResolvingRule() throws IOException {
+            String text = source();
+
+            assertThat(text)
+                    .as("rule R1: the name comes from the prompt, the behaviour comes from the source")
+                    .contains("R1")
+                    .contains("verbatim");
+            assertThat(text)
+                    .as("practice B4: the conflict is surfaced for confirmation, never quietly fixed")
+                    .contains("B4");
+            assertThat(controller.getClass().getSimpleName())
+                    .as("the name is not corrected towards the behaviour")
+                    .isEqualTo("TransactionViewController")
+                    .isNotEqualTo("TransactionAddController");
+            verifyNoInteractions(transactionRepository, cardXrefRepository);
         }
 
         @Test
@@ -2918,6 +2959,812 @@ class TransactionViewControllerTest {
         @Configuration
         @EnableTransactionManagement
         static class TransactionManagementEnabled {
+        }
+    }
+
+    // =================================================================================================
+    // The written record, carved at CVTRA05Y's own offsets. Every other assertion about the record reads
+    // it through TranRecord's accessors, which is the right way round for a behavioural test and is
+    // exactly why it cannot catch a span that has moved: an accessor and the span it reads move together,
+    // so both stay self-consistently wrong. These assertions cut the 350 bytes at the copybook's numbers
+    // instead - the wire format is the contract (rule R5), and gates G19 and G21 are about bytes at
+    // offsets, not about values behind getters.
+    //
+    // app/cpy/CVTRA05Y.cpy, one span per line, 1-based COBOL columns in the comment and 0-based Java
+    // offsets in the code:
+    //   TRAN-ID            PIC X(16)      1-16     offset 0
+    //   TRAN-TYPE-CD       PIC X(02)     17-18     offset 16
+    //   TRAN-CAT-CD        PIC 9(04)     19-22     offset 18
+    //   TRAN-SOURCE        PIC X(10)     23-32     offset 22
+    //   TRAN-DESC          PIC X(100)    33-132    offset 32
+    //   TRAN-AMT           PIC S9(09)V99 133-143   offset 132, eleven zoned bytes
+    //   TRAN-MERCHANT-ID   PIC 9(09)     144-152   offset 143
+    //   TRAN-MERCHANT-NAME PIC X(50)     153-202   offset 152
+    //   TRAN-MERCHANT-CITY PIC X(50)     203-252   offset 202
+    //   TRAN-MERCHANT-ZIP  PIC X(10)     253-262   offset 252
+    //   TRAN-CARD-NUM      PIC X(16)     263-278   offset 262
+    //   TRAN-ORIG-TS       PIC X(26)     279-304   offset 278
+    //   TRAN-PROC-TS       PIC X(26)     305-330   offset 304
+    //   FILLER             PIC X(20)     331-350   offset 330
+    // =================================================================================================
+
+    @Nested
+    @DisplayName("CVTRA05Y offsets - the written 350 bytes cut at the copybook's own numbers")
+    class CopybookOffsets {
+
+        /** {@code TRAN-AMT} for {@code +00000012.34}: ten digits and a {@code D}, positive four. */
+        private static final String POSITIVE_AMOUNT_IMAGE = "0000000123D";
+
+        /** {@code TRAN-AMT} for {@code -00000012.34}: the same ten digits and an {@code M}. */
+        private static final String NEGATIVE_AMOUNT_IMAGE = "0000000123M";
+
+        /** {@code TRAN-AMT} for {@code +00000000.00}: ten zeros and a {@code &#123;}, positive zero. */
+        private static final String ZERO_AMOUNT_IMAGE = "0000000000{";
+
+        /**
+         * Drives one complete add and returns the single image the write received.
+         *
+         * @param amount the twelve-character {@code TRNAMTI} value to type
+         * @return exactly {@link TranRecord#RECORD_LENGTH} characters
+         */
+        private String writtenImage(String amount) {
+            xrefByAccountFound();
+            browseWithLastId();
+            writeSucceeds();
+            TransactionViewRequest request = completeRequest();
+            request.setTrnamt(amount);
+
+            ProgramState state = controller.mainPara(request);
+
+            assertThat(state.writtenRecords())
+                    .as("one EXEC CICS WRITE, so one image")
+                    .hasSize(1);
+            return state.writtenRecords().get(0);
+        }
+
+        /**
+         * One span of an image, addressed absolutely.
+         *
+         * @param image  the record image
+         * @param offset the 0-based offset the copybook implies
+         * @param length the declared width
+         * @return that span, exactly {@code length} characters
+         */
+        private static String span(String image, int offset, int length) {
+            return image.substring(offset, offset + length);
+        }
+
+        @Test
+        @DisplayName("the thirteen data spans each sit at their copybook offset, at their declared width")
+        void everySpanSitsAtItsCopybookOffset() {
+            String image = writtenImage("+00000012.34");
+
+            assertThat(image).hasSize(350).hasSize(TranRecord.RECORD_LENGTH);
+            assertThat(span(image, 0, 16))
+                    .as("TRAN-ID PIC X(16) at offset 0 - the generated high-water-mark key")
+                    .isEqualTo("0000000000000051");
+            assertThat(span(image, 16, 2))
+                    .as("TRAN-TYPE-CD PIC X(02) at offset 16")
+                    .isEqualTo("01");
+            assertThat(span(image, 18, 4))
+                    .as("TRAN-CAT-CD PIC 9(04) at offset 18, zero-filled to its width")
+                    .isEqualTo("0001");
+            assertThat(span(image, 22, 10))
+                    .as("TRAN-SOURCE PIC X(10) at offset 22")
+                    .isEqualTo("POS TERM  ");
+            assertThat(span(image, 32, 100))
+                    .as("TRAN-DESC PIC X(100) at offset 32, TDESCI X(60) padded on the right")
+                    .isEqualTo("Coffee and a newspaper" + " ".repeat(78));
+            assertThat(span(image, 132, 11))
+                    .as("TRAN-AMT PIC S9(09)V99 at offset 132 - eleven bytes, not twelve")
+                    .isEqualTo(POSITIVE_AMOUNT_IMAGE);
+            assertThat(span(image, 143, 9))
+                    .as("TRAN-MERCHANT-ID PIC 9(09) at offset 143")
+                    .isEqualTo("000123456");
+            assertThat(span(image, 152, 50))
+                    .as("TRAN-MERCHANT-NAME PIC X(50) at offset 152")
+                    .isEqualTo("Kwik-E-Mart" + " ".repeat(39));
+            assertThat(span(image, 202, 50))
+                    .as("TRAN-MERCHANT-CITY PIC X(50) at offset 202")
+                    .isEqualTo("Springfield" + " ".repeat(39));
+            assertThat(span(image, 252, 10))
+                    .as("TRAN-MERCHANT-ZIP PIC X(10) at offset 252")
+                    .isEqualTo("0000012345");
+            assertThat(span(image, 262, 16))
+                    .as("TRAN-CARD-NUM PIC X(16) at offset 262 - the card the xref resolved")
+                    .isEqualTo(CARD_NUMBER);
+            assertThat(span(image, 278, 26))
+                    .as("TRAN-ORIG-TS PIC X(26) at offset 278, TORIGDTI X(10) padded on the right")
+                    .isEqualTo(VALID_DATE + " ".repeat(16));
+            assertThat(span(image, 304, 26))
+                    .as("TRAN-PROC-TS PIC X(26) at offset 304 - from TPROCDTI at L465, not from the clock")
+                    .isEqualTo(VALID_DATE + " ".repeat(16));
+        }
+
+        @Test
+        @DisplayName("gate G21: FILLER PIC X(20) at offset 330 is present and space-filled")
+        void theTrailingFillerIsSpaceFilled() {
+            String image = writtenImage("+00000012.34");
+
+            assertThat(span(image, 330, 20))
+                    .as("omit it and the record is 330 bytes with every consumer's offsets still right")
+                    .isEqualTo(" ".repeat(20))
+                    .isEqualTo(" ".repeat(TranRecord.FILLER_LENGTH));
+            assertThat(image.substring(330))
+                    .as("nothing follows FILLER: 330 + 20 is the whole record")
+                    .hasSize(20);
+        }
+
+        @Test
+        @DisplayName("the offset constants are the copybook's, and the fourteen spans tile 350 with no gap")
+        void theSpansTileTheRecord() {
+            int[][] layout = {
+                {TranRecord.TRAN_ID_OFFSET, TranRecord.TRAN_ID_LENGTH},
+                {TranRecord.TRAN_TYPE_CD_OFFSET, TranRecord.TRAN_TYPE_CD_LENGTH},
+                {TranRecord.TRAN_CAT_CD_OFFSET, TranRecord.TRAN_CAT_CD_LENGTH},
+                {TranRecord.TRAN_SOURCE_OFFSET, TranRecord.TRAN_SOURCE_LENGTH},
+                {TranRecord.TRAN_DESC_OFFSET, TranRecord.TRAN_DESC_LENGTH},
+                {TranRecord.TRAN_AMT_OFFSET, TranRecord.TRAN_AMT_LENGTH},
+                {TranRecord.TRAN_MERCHANT_ID_OFFSET, TranRecord.TRAN_MERCHANT_ID_LENGTH},
+                {TranRecord.TRAN_MERCHANT_NAME_OFFSET, TranRecord.TRAN_MERCHANT_NAME_LENGTH},
+                {TranRecord.TRAN_MERCHANT_CITY_OFFSET, TranRecord.TRAN_MERCHANT_CITY_LENGTH},
+                {TranRecord.TRAN_MERCHANT_ZIP_OFFSET, TranRecord.TRAN_MERCHANT_ZIP_LENGTH},
+                {TranRecord.TRAN_CARD_NUM_OFFSET, TranRecord.TRAN_CARD_NUM_LENGTH},
+                {TranRecord.TRAN_ORIG_TS_OFFSET, TranRecord.TRAN_ORIG_TS_LENGTH},
+                {TranRecord.TRAN_PROC_TS_OFFSET, TranRecord.TRAN_PROC_TS_LENGTH},
+                {TranRecord.FILLER_OFFSET, TranRecord.FILLER_LENGTH},
+            };
+            int[][] copybook = {
+                {0, 16}, {16, 2}, {18, 4}, {22, 10}, {32, 100}, {132, 11}, {143, 9}, {152, 50},
+                {202, 50}, {252, 10}, {262, 16}, {278, 26}, {304, 26}, {330, 20},
+            };
+
+            assertThat(layout)
+                    .as("the model's constants against the copybook read out by hand")
+                    .isDeepEqualTo(copybook);
+
+            int cursor = 0;
+            for (int[] field : layout) {
+                assertThat(field[0])
+                        .as("span at offset %d follows the previous one with no gap and no overlap",
+                                field[0])
+                        .isEqualTo(cursor);
+                cursor += field[1];
+            }
+            assertThat(cursor).isEqualTo(TranRecord.RECORD_LENGTH).isEqualTo(350);
+            assertThat(TranRecord.sumOfDeclaredSpanLengths()).isEqualTo(350);
+        }
+
+        @Test
+        @DisplayName("the amount's sign is overpunched into the trailing byte, for both signs and zero")
+        void theAmountSignIsOverpunched() {
+            // Zoned decimal carries the sign in the zone half of the last digit rather than in a byte of
+            // its own, which is why S9(09)V99 is eleven bytes wide and not twelve: 4 positive is 'D' and
+            // 4 negative is 'M'. There is no COMP-3 anywhere in app/cpy - verified - so this is the only
+            // signed representation any record in this system uses.
+            assertThat(span(writtenImage("+00000012.34"), 132, 11))
+                    .isEqualTo(POSITIVE_AMOUNT_IMAGE)
+                    .hasSize(TranRecord.TRAN_AMT_LENGTH)
+                    .endsWith("D");
+            assertThat(span(writtenImage("-00000012.34"), 132, 11))
+                    .as("the same ten digits: only the zone of the trailing byte changes")
+                    .isEqualTo(NEGATIVE_AMOUNT_IMAGE)
+                    .startsWith(POSITIVE_AMOUNT_IMAGE.substring(0, 10))
+                    .endsWith("M");
+            assertThat(span(writtenImage("+00000000.00"), 132, 11))
+                    .as("positive zero is a brace, not a digit - a zero test cannot stand in for bytes")
+                    .isEqualTo(ZERO_AMOUNT_IMAGE);
+        }
+
+        @Test
+        @DisplayName("the amount span is stored truncated at scale 2, never rounded")
+        void theAmountIsTruncatedNotRounded() {
+            // L456-458 is COMPUTE WS-TRAN-AMT-N = FUNCTION NUMVAL-C(...) followed by MOVE ... TO
+            // TRAN-AMT, and the receiver is PIC S9(09)V99. COBOL truncates excess fraction digits on
+            // store because ROUNDED appears zero times in all 28 programs, so 12.349 becomes 12.34 and
+            // never 12.35 (rule R2, gate G24). Asserted through the written span, because a rounding
+            // policy that only holds in a decoded value is not the policy the file receives.
+            TranRecord record = new TranRecord(CHARSET);
+
+            record.moveTranAmt(CobolDecimal.storeAtPicture(new BigDecimal("12.349"),
+                    TranRecord.TRAN_AMT_INTEGER_DIGITS, TranRecord.TRAN_AMT_SCALE));
+
+            assertThat(CobolDecimal.COBOL_ROUNDING)
+                    .as("one policy, in one place: never HALF_UP, HALF_EVEN, CEILING or FLOOR")
+                    .isEqualTo(RoundingMode.DOWN);
+            assertThat(record.tranAmt())
+                    .isEqualByComparingTo(new BigDecimal("12.34"))
+                    .isNotEqualByComparingTo(new BigDecimal("12.35"));
+            assertThat(record.tranAmt().scale()).isEqualTo(2).isEqualTo(TranRecord.TRAN_AMT_SCALE);
+            assertThat(span(record.displayImage(), 132, 11)).isEqualTo(POSITIVE_AMOUNT_IMAGE);
+        }
+    }
+
+    // =================================================================================================
+    // The three browse commands, as a sequence. COTRN02C:445-447 is STARTBR, then READPREV, then ENDBR,
+    // and L466's WRITE comes after all three. Verifying each call on its own says nothing about the order
+    // they were issued in, and the order is the behaviour: a write issued while the browse is still
+    // positioned is a different program.
+    // =================================================================================================
+
+    @Nested
+    @DisplayName("STARTBR then READPREV then ENDBR - the ordering of L445-447, not merely the calls")
+    class TheBrowseSequence {
+
+        @Test
+        @DisplayName("the add issues STARTBR, READPREV, ENDBR and only then WRITE")
+        void theFourCommandsIssueInTheSourcesOrder() {
+            xrefByAccountFound();
+            TransactionRepository.Browse browse = browseWithLastId();
+            writeSucceeds();
+
+            controller.mainPara(completeRequest());
+
+            InOrder ordered = inOrder(transactionRepository, browse);
+            ordered.verify(transactionRepository)
+                    .startBrowse(TransactionRepository.BrowseDirection.BACKWARD);       // L644-650
+            ordered.verify(browse).readPrev();                                          // L675-683
+            ordered.verify(browse).endBrowse();                                         // L704-706
+            ordered.verify(transactionRepository).write(any());                         // L713-721
+        }
+
+        @Test
+        @DisplayName("an empty master keeps the same order: the ENDFILE arm does not skip the ENDBR")
+        void anEmptyMasterKeepsTheOrder() {
+            xrefByAccountFound();
+            TransactionRepository.Browse browse = browseYielding(
+                    TransactionRepository.ReadResult.endOfFile(
+                            TransactionRepository.CICS_FILE_NAME));
+            writeSucceeds();
+
+            ProgramState state = controller.mainPara(completeRequest());
+
+            InOrder ordered = inOrder(transactionRepository, browse);
+            ordered.verify(transactionRepository)
+                    .startBrowse(TransactionRepository.BrowseDirection.BACKWARD);
+            ordered.verify(browse).readPrev();
+            ordered.verify(browse).endBrowse();
+            ordered.verify(transactionRepository).write(any());
+            assertThat(state.tranRecord().tranId())
+                    .as("ENDFILE moved zeros into TRAN-ID at L689, so the first key ever issued is 1")
+                    .isEqualTo("0000000000000001");
+        }
+
+        @Test
+        @DisplayName("a rejected READPREV still releases the browse, and issues no write")
+        void aRejectedReadStillReleasesTheBrowse() {
+            xrefByAccountFound();
+            TransactionRepository.Browse browse = browseYielding(
+                    TransactionRepository.ReadResult.other(TransactionRepository.CICS_FILE_NAME,
+                            TransactionRepository.PERMANENT_ERROR_STATUS));
+
+            ProgramState state = controller.mainPara(completeRequest());
+
+            InOrder ordered = inOrder(transactionRepository, browse);
+            ordered.verify(transactionRepository)
+                    .startBrowse(TransactionRepository.BrowseDirection.BACKWARD);
+            ordered.verify(browse).readPrev();
+            ordered.verify(browse).endBrowse();
+            verify(transactionRepository, never()).write(any());
+            assertThat(state.browseOpen()).isFalse();
+            assertThat(state.message()).startsWith("Unable to lookup Transaction...");
+        }
+
+        @Test
+        @DisplayName("PF5's copy walks the same three commands in the same order, and writes nothing")
+        void theCopyWalksTheSameSequence() {
+            TransactionViewRequest request = enterRequest();
+            request.setActidin(ACCOUNT_ID);
+            request.setAid(PfKeyResolver.AidKey.PFK05.token());
+            xrefByAccountFound();
+            TransactionRepository.Browse browse = browseWithLastId();
+
+            controller.mainPara(request);
+
+            InOrder ordered = inOrder(transactionRepository, browse);
+            ordered.verify(transactionRepository)
+                    .startBrowse(TransactionRepository.BrowseDirection.BACKWARD);       // L476
+            ordered.verify(browse).readPrev();                                          // L477
+            ordered.verify(browse).endBrowse();                                         // L478
+            verify(transactionRepository, never())
+                    .write(any());
+        }
+
+        @Test
+        @DisplayName("the identifier comes from the browse and from no field of the request")
+        void theIdentifierIsNeverTyped() {
+            // app/cpy-bms/COTRN02.CPY declares no TRNIDIN item, so there is nothing to type it into: the
+            // key is generated. A request cannot influence it, which this drives by handing the browse a
+            // different high-water mark and watching only that change the key.
+            xrefByAccountFound();
+            browseYielding(TransactionRepository.ReadResult.found(
+                    TransactionRepository.CICS_FILE_NAME, recordWithId("0000000000000999")));
+            writeSucceeds();
+
+            ProgramState state = controller.mainPara(completeRequest());
+
+            assertThat(state.tranRecord().tranId()).isEqualTo("0000000000001000");
+            assertThat(state.wsTranIdN()).isEqualTo(1_000L);
+            assertThat(TransactionViewResponse.ScreenField.values())
+                    .as("no screen field could have carried it")
+                    .noneMatch(field -> field.label().contains("TRNID"));
+        }
+    }
+
+    // =================================================================================================
+    // The caller-side projection of CSUTLDTC's eighty bytes. COTRN02C:62-69 redefines LS-RESULT as
+    // severity X(04) + FILLER X(11) + message-number X(04) + message X(61), which is a DIFFERENT split
+    // from the producer's own WS-MESSAGE at app/cbl/CSUTLDTC.cbl:42-57 - and the two agree only because
+    // the producer's 'Mesg Code:' literal is exactly eleven bytes wide. The tolerance at L400 is read
+    // from offsets 15-18; read it one byte out and a 2513 stops being tolerated, silently.
+    // =================================================================================================
+
+    @Nested
+    @DisplayName("CSUTLDTC's eighty bytes - the caller's split, and the offsets the 2513 rule reads")
+    class TheCsutldtcProjection {
+
+        /** {@code CSUTLDTC-RESULT-SEV-CD PIC X(04)} - offsets 0 to 3. */
+        private static final int SEVERITY_OFFSET = 0;
+
+        /** The width of {@code CSUTLDTC-RESULT-SEV-CD}. */
+        private static final int SEVERITY_LENGTH = 4;
+
+        /** The caller's unnamed {@code FILLER PIC X(11)} - offsets 4 to 14. */
+        private static final int FILLER_OFFSET = 4;
+
+        /** The width of that {@code FILLER}, which is what puts the message number at 15. */
+        private static final int FILLER_LENGTH = 11;
+
+        /** {@code CSUTLDTC-RESULT-MSG-NUM PIC X(04)} - offsets 15 to 18. */
+        private static final int MESSAGE_NUMBER_OFFSET = 15;
+
+        /** The width of {@code CSUTLDTC-RESULT-MSG-NUM}. */
+        private static final int MESSAGE_NUMBER_LENGTH = 4;
+
+        /** {@code CSUTLDTC-RESULT-MSG PIC X(61)} - offsets 19 to 79. */
+        private static final int MESSAGE_OFFSET = 19;
+
+        /** The width of {@code CSUTLDTC-RESULT-MSG}, which closes the eighty. */
+        private static final int MESSAGE_LENGTH = 61;
+
+        /**
+         * Calls one site and returns the eighty bytes the subprogram composed.
+         *
+         * @param date the ten-byte date to validate
+         * @return the state the call was made against, carrying the result
+         */
+        private ProgramState callWith(String date) {
+            ProgramState state = new ProgramState(controller.codec());
+            controller.callCsutldtc(state, date);
+            return state;
+        }
+
+        @Test
+        @DisplayName("the four spans are 4 + 11 + 4 + 61 and they close exactly eighty")
+        void theFourSpansCloseEighty() {
+            String eighty = callWith(VALID_DATE).csutldtcResult().message();
+
+            assertThat(eighty)
+                    .hasSize(80)
+                    .hasSize(DateUtilityJob.LS_RESULT_LENGTH);
+            assertThat(SEVERITY_LENGTH + FILLER_LENGTH + MESSAGE_NUMBER_LENGTH + MESSAGE_LENGTH)
+                    .as("COTRN02C:66-69 sums to the LS-RESULT PIC X(80) it redefines")
+                    .isEqualTo(DateUtilityJob.LS_RESULT_LENGTH);
+            assertThat(SEVERITY_OFFSET + SEVERITY_LENGTH).isEqualTo(FILLER_OFFSET);
+            assertThat(FILLER_OFFSET + FILLER_LENGTH).isEqualTo(MESSAGE_NUMBER_OFFSET);
+            assertThat(MESSAGE_NUMBER_OFFSET + MESSAGE_NUMBER_LENGTH).isEqualTo(MESSAGE_OFFSET);
+            assertThat(eighty.substring(MESSAGE_OFFSET)).hasSize(MESSAGE_LENGTH);
+        }
+
+        @Test
+        @DisplayName("severity reads at 0-3 and the message number at 15-18, with 'Mesg Code:' between")
+        void theTypedViewAgreesWithTheBytes() {
+            DateUtilityJob.DateValidationResult result = callWith(VALID_DATE).csutldtcResult();
+            String eighty = result.message();
+
+            assertThat(eighty.substring(SEVERITY_OFFSET, SEVERITY_OFFSET + SEVERITY_LENGTH))
+                    .as("CSUTLDTC-RESULT-SEV-CD, which is also WS-SEVERITY at CSUTLDTC.cbl:43")
+                    .isEqualTo(result.severityCode())
+                    .isEqualTo("0000");
+            assertThat(eighty.substring(FILLER_OFFSET, FILLER_OFFSET + FILLER_LENGTH))
+                    .as("the caller calls it FILLER; the producer fills it with a literal at :45")
+                    .isEqualTo("Mesg Code: ");
+            assertThat(eighty.substring(MESSAGE_NUMBER_OFFSET,
+                    MESSAGE_NUMBER_OFFSET + MESSAGE_NUMBER_LENGTH))
+                    .as("CSUTLDTC-RESULT-MSG-NUM, which is WS-MSG-NO at CSUTLDTC.cbl:46")
+                    .isEqualTo(result.messageNumber())
+                    .isEqualTo("0000");
+            assertThat(eighty.substring(MESSAGE_OFFSET))
+                    .as("the caller's X(61) starts at the producer's space before WS-RESULT")
+                    .startsWith(" Date is valid");
+        }
+
+        @Test
+        @DisplayName("2513 appears exactly once, at offset 15, and not at 14 or 16")
+        void theToleratedNumberSitsAtTheDeclaredOffset() {
+            DateUtilityJob.DateValidationResult result = callWith(TOLERATED_DATE).csutldtcResult();
+            String eighty = result.message();
+
+            assertThat(result.messageNumber())
+                    .isEqualTo(TransactionViewController.CSUTLDTC_TOLERATED_MESSAGE_NUMBER)
+                    .isEqualTo("2513");
+            assertThat(eighty.indexOf("2513"))
+                    .as("the only occurrence, and it is where COTRN02C:68 says it is")
+                    .isEqualTo(MESSAGE_NUMBER_OFFSET);
+            assertThat(eighty.lastIndexOf("2513")).isEqualTo(MESSAGE_NUMBER_OFFSET);
+            assertThat(eighty.substring(MESSAGE_NUMBER_OFFSET - 1,
+                    MESSAGE_NUMBER_OFFSET - 1 + MESSAGE_NUMBER_LENGTH))
+                    .as("one byte early reads the FILLER's trailing space and a digit")
+                    .isEqualTo(" 251")
+                    .isNotEqualTo("2513");
+            assertThat(eighty.substring(MESSAGE_NUMBER_OFFSET + 1,
+                    MESSAGE_NUMBER_OFFSET + 1 + MESSAGE_NUMBER_LENGTH))
+                    .as("one byte late runs into CSUTLDTC-RESULT-MSG")
+                    .isEqualTo("513 ")
+                    .isNotEqualTo("2513");
+        }
+
+        @Test
+        @DisplayName("both non-zero results carry severity 0003, so the verdict cannot be the severity")
+        void theVerdictIsTheMessageNumberAndNotTheSeverity() {
+            // This is the whole point of the 2513 rule and the reason an offset slip is invisible: the
+            // tolerated result and the rejected one are indistinguishable at offsets 0-3.
+            ProgramState tolerated = callWith(TOLERATED_DATE);
+            ProgramState rejected = callWith(REJECTED_DATE);
+
+            assertThat(tolerated.csutldtcResult().severityCode())
+                    .isEqualTo(rejected.csutldtcResult().severityCode())
+                    .isEqualTo("0003")
+                    .isNotEqualTo(TransactionViewController.CSUTLDTC_SEVERITY_OK);
+            assertThat(tolerated.csutldtcResult().messageNumber()).isEqualTo("2513");
+            assertThat(rejected.csutldtcResult().messageNumber()).isEqualTo("2517");
+            assertThat(controller.callCsutldtc(new ProgramState(controller.codec()), TOLERATED_DATE))
+                    .as("L400: NOT = '2513' fails, so nothing is reported")
+                    .isTrue();
+            assertThat(controller.callCsutldtc(new ProgramState(controller.codec()), REJECTED_DATE))
+                    .as("the same severity, four different bytes at offset 15, and it rejects")
+                    .isFalse();
+            assertThat(controller.callCsutldtc(new ProgramState(controller.codec()), VALID_DATE))
+                    .as("L397: severity '0000' is accepted before the message number is even read")
+                    .isTrue();
+        }
+
+        @Test
+        @DisplayName("the call passes LS-DATE X(10) and LS-DATE-FORMAT X(10) and takes back X(80)")
+        void theThreeParameterContractIsHonoured() {
+            ProgramState state = callWith(VALID_DATE);
+
+            assertThat(state.csutldtcDate())
+                    .hasSize(DateUtilityJob.LS_DATE_LENGTH)
+                    .hasSize(10)
+                    .isEqualTo(VALID_DATE);
+            assertThat(state.csutldtcDateFormat())
+                    .as("WS-DATE-FORMAT at COTRN02C:60, moved in at L390 and L410")
+                    .hasSize(DateUtilityJob.LS_DATE_FORMAT_LENGTH)
+                    .isEqualTo(TransactionViewController.WS_DATE_FORMAT)
+                    .isEqualTo("YYYY-MM-DD");
+            assertThat(state.csutldtcResult().message())
+                    .hasSize(DateUtilityJob.LS_RESULT_LENGTH);
+        }
+
+        @Test
+        @DisplayName("a short date is padded to ten before the call, because the parameter is X(10)")
+        void aShortDateIsPaddedToTheParameterWidth() {
+            // MOVE TORIGDTI TO CSUTLDTC-DATE is a PIC X move into X(10), so a short sender pads on the
+            // right and the subprogram judges ten bytes whatever the client sent.
+            ProgramState shortDate = callWith("2022-7-1");
+            ProgramState empty = callWith("");
+
+            assertThat(shortDate.csutldtcDate())
+                    .hasSize(DateUtilityJob.LS_DATE_LENGTH)
+                    .isEqualTo("2022-7-1  ");
+            assertThat(empty.csutldtcDate())
+                    .as("an absent date arrives as ten spaces, not as a zero-length argument")
+                    .hasSize(DateUtilityJob.LS_DATE_LENGTH)
+                    .isEqualTo(" ".repeat(DateUtilityJob.LS_DATE_LENGTH));
+            assertThat(empty.csutldtcResult().severityCode())
+                    .as("ten spaces are non-numeric data, which CEEDAYS reports at severity 3")
+                    .isEqualTo("0003")
+                    .isNotEqualTo(TransactionViewController.CSUTLDTC_SEVERITY_OK);
+            assertThat(empty.csutldtcResult().messageNumber())
+                    .as("2520, which is not the tolerated 2513, so this site rejects")
+                    .isEqualTo("2520")
+                    .isNotEqualTo(TransactionViewController.CSUTLDTC_TOLERATED_MESSAGE_NUMBER);
+            assertThat(controller.callCsutldtc(new ProgramState(controller.codec()), ""))
+                    .isFalse();
+        }
+
+        @Test
+        @DisplayName("the two call sites report their own literal, each ending in three dots")
+        void eachSiteCarriesItsOwnLiteral() {
+            assertThat(TransactionViewController.MSG_ORIG_DATE_INVALID)
+                    .isEqualTo("Orig Date - Not a valid date...")
+                    .endsWith("...");
+            assertThat(TransactionViewController.MSG_PROC_DATE_INVALID)
+                    .isEqualTo("Proc Date - Not a valid date...")
+                    .endsWith("...");
+            assertThat(TransactionViewController.MSG_ORIG_DATE_INVALID)
+                    .isNotEqualTo(TransactionViewController.MSG_PROC_DATE_INVALID);
+        }
+    }
+
+    // =================================================================================================
+    // Gate G38, and what it means for a program that does not have CSSETATY. The gate reads "the CSSETATY
+    // error highlight applies only in the re-enter state". COTRN02C's copybook list at L71-93 does not
+    // include CSSETATY - its only consumer in the estate is COACTUPC - so this screen applies the
+    // DFHRED-plus-asterisk highlight in NO state, which is the strongest form the gate can take. That is
+    // asserted here rather than assumed, because "we did not implement it" and "it is not applied" are
+    // different claims, and only the second one is testable.
+    //
+    // It also matters that it stays unapplied: CSSETATY writes its asterisk into the field's OUTPUT item,
+    // and on this map the xxxO item is the same storage as the xxxI item the operator typed into - so a
+    // highlight here would overwrite a payload value and put the field-for-field diff permanently off
+    // zero.
+    // =================================================================================================
+
+    @Nested
+    @DisplayName("The highlight policy (gate G38) and the width of what travels (gate G37)")
+    class TheHighlightPolicy {
+
+        @Test
+        @DisplayName("CSSETATY would order DFHRED and an asterisk for a blank field under re-entry")
+        void whatCssetatyWouldOrder() {
+            FieldHighlight underReenter = FieldAttributeSetter.resolveFromFlags(false, true, true);
+            FieldHighlight underFirstEntry = FieldAttributeSetter.resolveFromFlags(false, true, false);
+
+            assertThat(underReenter.colourItemAssigned()).isTrue();
+            assertThat(underReenter.colourItemValue()).isEqualTo(BmsAttributes.DFHRED);
+            assertThat(underReenter.outputItemAssigned()).isTrue();
+            assertThat(underReenter.outputItemValue()).isEqualTo(FieldAttributeSetter.ASTERISK);
+            assertThat(underFirstEntry.colourItemAssigned())
+                    .as("CSSETATY's outer test requires CDEMO-PGM-REENTER, so first entry orders nothing")
+                    .isFalse();
+        }
+
+        @Test
+        @DisplayName("a re-enter rejection recolours nothing and writes no asterisk into any field")
+        void aReenterRejectionAppliesNoHighlight() {
+            xrefByAccountFound();
+            TransactionViewRequest request = enterRequest();
+            request.setActidin(ACCOUNT_ID);
+            request.setTtypcd("  ");
+
+            ProgramState state = controller.mainPara(request);
+
+            assertThat(state.errFlagOn()).isTrue();
+            assertThat(state.message()).startsWith("Type CD can NOT be empty...");
+            assertThat(state.commarea().isReenter())
+                    .as("this is the re-enter arm, the only state CSSETATY could fire in")
+                    .isTrue();
+            assertThat(state.cursorRequestedOn(TransactionViewResponse.ScreenField.TTYPCD))
+                    .as("MOVE -1 TO TTYPCDL at L256 is the whole of this program's field emphasis")
+                    .isTrue();
+            for (TransactionViewResponse.ScreenField field
+                    : TransactionViewResponse.ScreenField.values()) {
+                assertThat(state.response().getMetadata(field).isDefault())
+                        .as("%s keeps the default attribute quad", field.label())
+                        .isTrue();
+                assertThat(state.response().getMetadata(field).getColour())
+                        .as("%s is not recoloured DFHRED", field.label())
+                        .isNotEqualTo(BmsAttributes.DFHRED);
+                assertThat(state.response().getOutputItem(field))
+                        .as("%s keeps its payload; no asterisk is moved over it", field.label())
+                        .doesNotContain(FieldAttributeSetter.ASTERISK);
+            }
+        }
+
+        @Test
+        @DisplayName("first entry paints the screen with no attribute stated for any field either")
+        void firstEntryAppliesNoHighlight() {
+            TransactionViewRequest request = new TransactionViewRequest();
+            request.setNavigationContext(NavigationContext.empty());
+
+            ProgramState state = controller.mainPara(request);
+
+            assertThat(state.commarea().isReenter())
+                    .as("MAIN-PARA's not-re-enter arm at L120-130 sets it for the NEXT call")
+                    .isTrue();
+            assertThat(state.errFlagOff()).isTrue();
+            assertThat(state.response().getMetadata(TransactionViewResponse.ScreenField.ERRMSG)
+                    .isDefault())
+                    .as("the DFHGREEN of L727 is on the success path, which first entry never reaches")
+                    .isTrue();
+            assertThat(java.util.Arrays.stream(TransactionViewResponse.ScreenField.values())
+                    .allMatch(field -> state.response().getMetadata(field).isDefault()))
+                    .as("nothing is recoloured on the paint, so nothing to unpaint on the next call")
+                    .isTrue();
+        }
+
+        @Test
+        @DisplayName("the one attribute this program does state is DFHGREEN, on success, and only there")
+        void theOnlyAttributeIsGreenOnSuccess() {
+            xrefByAccountFound();
+            browseWithLastId();
+            writeSucceeds();
+
+            ProgramState added = controller.mainPara(completeRequest());
+
+            assertThat(added.response().getMetadata(TransactionViewResponse.ScreenField.ERRMSG)
+                    .getColour())
+                    .as("MOVE DFHGREEN TO ERRMSGC OF COTRN2AO at L727")
+                    .isEqualTo(BmsAttributes.DFHGREEN)
+                    .isNotEqualTo(BmsAttributes.DFHRED);
+            assertThat(java.util.Arrays.stream(TransactionViewResponse.ScreenField.values())
+                    .filter(field -> !added.response().getMetadata(field).isDefault())
+                    .toList())
+                    .as("exactly one field carries an attribute, and it is the error line")
+                    .containsExactly(TransactionViewResponse.ScreenField.ERRMSG);
+        }
+
+        @Test
+        @DisplayName("fourteen of the twenty-one fields are UNPROT, and only those could be highlighted")
+        void fourteenFieldsAreInputCapable() {
+            assertThat(java.util.Arrays.stream(TransactionViewResponse.ScreenField.values())
+                    .filter(TransactionViewResponse.ScreenField::input)
+                    .count())
+                    .as("the map's UNPROT count - the set CSSETATY could act on if it were copied")
+                    .isEqualTo(14L);
+            assertThat(TransactionViewResponse.ScreenField.ERRMSG.input())
+                    .as("ASKIP, so the error line is never a highlight target")
+                    .isFalse();
+        }
+
+        @Test
+        @DisplayName("the commarea is 160 shared bytes plus this screen's 58, and stays 218")
+        void theCommareaWidthsAreTheCopybooks() {
+            assertThat(NavigationContext.COMMAREA_LENGTH)
+                    .as("COCOM01Y, which is 160 and is never widened by a screen extension")
+                    .isEqualTo(160);
+            assertThat(TransactionViewRequest.Ct02Info.CT02_INFO_LENGTH)
+                    .as("CDEMO-CT02-INFO at COTRN02C:72-80: 16 + 16 + 8 + 1 + 1 + 16")
+                    .isEqualTo(58);
+            assertThat(NavigationContext.COMMAREA_LENGTH
+                    + TransactionViewRequest.Ct02Info.CT02_INFO_LENGTH)
+                    .isEqualTo(TransactionViewRequest.Ct02Info.COMMAREA_TOTAL_LENGTH)
+                    .isEqualTo(ProgramState.PASSED_COMMAREA_LENGTH)
+                    .isEqualTo(218);
+            assertThat(NavigationContext.empty().toFixedWidth(controller.codec()))
+                    .as("the shared area renders at its declared width, extension excluded")
+                    .hasSize(NavigationContext.COMMAREA_LENGTH);
+        }
+    }
+
+    // =================================================================================================
+    // The twenty-one-field projection of app/cpy-bms/COTRN02.CPY. The copybook declares 01 COTRN2AI at
+    // L17 with twenty-one xxxI items and 01 COTRN2AO REDEFINES COTRN2AI at L145 with twenty-one xxxO
+    // items over the same storage. The payload is those items and nothing else: the xxxL halfwords, the
+    // xxxF flag bytes and the xxxA attribute redefinitions are metadata, and this screen has thirty-five
+    // MOVE -1 cursor sites - the most in the package - so the halfwords carry real behaviour while still
+    // never appearing in a payload.
+    // =================================================================================================
+
+    @Nested
+    @DisplayName("The twenty-one-field payload projection of COTRN02.CPY")
+    class ThePayloadProjection {
+
+        @ParameterizedTest
+        @CsvSource({
+            "TRNNAME, 4", "TITLE01, 40", "CURDATE, 8", "PGMNAME, 8", "TITLE02, 40", "CURTIME, 8",
+            "ACTIDIN, 11", "CARDNIN, 16", "TTYPCD, 2", "TCATCD, 4", "TRNSRC, 10", "TDESC, 60",
+            "TRNAMT, 12", "TORIGDT, 10", "TPROCDT, 10", "MID, 9", "MNAME, 30", "MCITY, 25",
+            "MZIP, 10", "CONFIRM, 1", "ERRMSG, 78",
+        })
+        @DisplayName("each field is at the width its xxxI item declares")
+        void everyFieldIsAtItsDeclaredWidth(String label, int width) {
+            TransactionViewResponse.ScreenField field =
+                    TransactionViewResponse.ScreenField.ofLabel(label);
+
+            assertThat(field.width())
+                    .as("%sI PIC X(%d) in app/cpy-bms/COTRN02.CPY", label, width)
+                    .isEqualTo(width);
+            assertThat(field.label()).isEqualTo(label);
+        }
+
+        @Test
+        @DisplayName("there are exactly twenty-one fields, and they are all text")
+        void thereAreExactlyTwentyOneFields() {
+            assertThat(TransactionViewResponse.ScreenField.values()).hasSize(21);
+            assertThat(java.util.Arrays.stream(TransactionViewResponse.ScreenField.values())
+                    .mapToInt(TransactionViewResponse.ScreenField::width)
+                    .sum())
+                    .as("4+40+8+8+40+8+11+16+2+4+10+60+12+10+10+9+30+25+10+1+78")
+                    .isEqualTo(396);
+            for (TransactionViewResponse.ScreenField field
+                    : TransactionViewResponse.ScreenField.values()) {
+                assertThat(TransactionViewResponse.spaces(field.width()))
+                        .as("every payload item is PIC X, so its empty value is spaces of its width")
+                        .hasSize(field.width());
+            }
+        }
+
+        @Test
+        @DisplayName("there is deliberately no TRNIDIN and no TRNID field on either projection")
+        void thereIsNoTransactionIdentifierField() {
+            assertThat(java.util.Arrays.stream(TransactionViewRequest.class.getDeclaredMethods())
+                    .map(java.lang.reflect.Method::getName)
+                    .filter(name -> name.toLowerCase(java.util.Locale.ROOT).contains("trnid"))
+                    .toList())
+                    .as("COTRN01 has TRNIDIN; COTRN02 has none, because the key is generated")
+                    .isEmpty();
+            assertThat(java.util.Arrays.stream(TransactionViewResponse.class.getDeclaredMethods())
+                    .map(java.lang.reflect.Method::getName)
+                    .filter(name -> name.toLowerCase(java.util.Locale.ROOT).contains("trnid"))
+                    .toList())
+                    .isEmpty();
+            assertThatThrownBy(() -> TransactionViewResponse.ScreenField.ofLabel("TRNIDIN"))
+                    .isInstanceOf(IllegalArgumentException.class);
+        }
+
+        @Test
+        @DisplayName("no xxxL, xxxF or xxxA item is a payload member on either projection")
+        void theMetadataItemsAreNotPayloadMembers() {
+            List<String> accessors =
+                    java.util.stream.Stream.concat(
+                            java.util.Arrays.stream(
+                                    TransactionViewRequest.class.getDeclaredMethods()),
+                            java.util.Arrays.stream(
+                                    TransactionViewResponse.class.getDeclaredMethods()))
+                    .filter(method -> java.lang.reflect.Modifier.isPublic(method.getModifiers()))
+                    .map(java.lang.reflect.Method::getName)
+                    .map(name -> name.toLowerCase(java.util.Locale.ROOT))
+                    .toList();
+
+            for (TransactionViewResponse.ScreenField field
+                    : TransactionViewResponse.ScreenField.values()) {
+                String stem = field.label().toLowerCase(java.util.Locale.ROOT);
+                assertThat(accessors)
+                        .as("%sL is a COMP PIC S9(4) halfword, not a JSON member", field.label())
+                        .doesNotContain("get" + stem + "l", "set" + stem + "l");
+                assertThat(accessors)
+                        .as("%sF is the flag byte, not a JSON member", field.label())
+                        .doesNotContain("get" + stem + "f", "set" + stem + "f");
+                assertThat(accessors)
+                        .as("%sA redefines the flag byte, not a JSON member", field.label())
+                        .doesNotContain("get" + stem + "a", "set" + stem + "a");
+            }
+        }
+
+        @Test
+        @DisplayName("the cursor halfword is behaviour even though it is not a payload member")
+        void theCursorHalfwordStillCarriesBehaviour() {
+            ProgramState state = new ProgramState(controller.codec());
+
+            state.moveMinusOneTo(TransactionViewResponse.ScreenField.CONFIRM);
+
+            assertThat(state.cursorRequestedOn(TransactionViewResponse.ScreenField.CONFIRM))
+                    .as("MOVE -1 TO CONFIRML at L180 and L186")
+                    .isTrue();
+            assertThat(state.cursorRequestedOn(TransactionViewResponse.ScreenField.ACTIDIN)).isFalse();
+            assertThat(state.symbolicMap().isCursorRequested(
+                    TransactionViewRequest.ScreenField.CONFIRM))
+                    .as("the AI projection reads the same halfword the AO projection wrote")
+                    .isTrue();
+            assertThat(TransactionViewRequest.ScreenField.CONFIRM.name())
+                    .isEqualTo(TransactionViewResponse.ScreenField.CONFIRM.name());
+        }
+
+        @Test
+        @DisplayName("the account, card and merchant identifiers are echoed whole and unmasked")
+        void theIdentifiersAreNeverMasked() {
+            xrefByAccountFound();
+            TransactionViewRequest request = completeRequest();
+            request.setConfirm("N");
+
+            ProgramState state = controller.mainPara(request);
+
+            assertThat(state.message()).startsWith("Confirm to add this transaction...");
+            assertThat(state.response().getActidino())
+                    .as("all eleven digits: COTRN02C masks nothing")
+                    .isEqualTo(ACCOUNT_ID)
+                    .doesNotContain("*")
+                    .doesNotContain("X");
+            assertThat(state.response().getCardnino())
+                    .as("all sixteen digits, as READ-CXACAIX-FILE resolved them at L209")
+                    .isEqualTo(CARD_NUMBER)
+                    .doesNotContain("*");
+            assertThat(state.response().getMido())
+                    .isEqualTo("000123456")
+                    .doesNotContain("*");
         }
     }
 

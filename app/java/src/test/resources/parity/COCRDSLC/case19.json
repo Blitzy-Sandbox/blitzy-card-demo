@@ -1,0 +1,130 @@
+{
+  "program": "COCRDSLC",
+  "caseId": "case19",
+  "description": "The no-match outcome, which is the property of YYYY-STORE-PFKEY easiest to lose. The EVALUATE in app/cpy/CSSTRPFY.cpy has NO WHEN OTHER, no DFHPA3 branch, and it does not clear CCARD-AID first, so an unrecognised EIBAID leaves the field holding whatever was there - here the five spaces INITIALIZE CC-WORK-AREA put in it at :254. Five spaces satisfies neither CCARD-AID-ENTER nor CCARD-AID-PFK03, so :297-299 coerces it to ENTER and the screen is redisplayed. A translation that defaulted the resolver to ENTER instead of returning no match would pass this case for the wrong reason, which is why case15 pins a key that must NOT be coerced.",
+  "unitKind": "CONTROLLER_POJO",
+  "inputs": {
+    "CARDDAT": {
+      "fixture": "carddata.txt",
+      "fromRow": 0,
+      "rowCount": 3
+    }
+  },
+  "screenRequest": {
+    "eibcalen": 0,
+    "aid": "DFHPA3",
+    "pinnedClock": "2022-07-19T23:12:33",
+    "charset": "US-ASCII",
+    "commarea": {},
+    "mapFields": {
+      "CARDSIDI": "                "
+    },
+    "forcedOutcomes": {}
+  },
+  "expectedResponse": {
+    "nextMapset": "COCRDSL",
+    "nextMap": "CCRDSLA",
+    "navigation": {
+      "CDEMO-FROM-TRANID": "    ",
+      "CDEMO-FROM-PROGRAM": "        ",
+      "CDEMO-TO-TRANID": "    ",
+      "CDEMO-TO-PROGRAM": "        ",
+      "CDEMO-USER-ID": "        ",
+      "CDEMO-USER-TYPE": " ",
+      "CDEMO-PGM-CONTEXT": "1",
+      "CDEMO-CUST-ID": "000000000",
+      "CDEMO-CUST-FNAME": "                         ",
+      "CDEMO-CUST-MNAME": "                         ",
+      "CDEMO-CUST-LNAME": "                         ",
+      "CDEMO-ACCT-ID": "00000000000",
+      "CDEMO-ACCT-STATUS": " ",
+      "CDEMO-CARD-NUM": "0000000000000000",
+      "CDEMO-LAST-MAP": "       ",
+      "CDEMO-LAST-MAPSET": "       "
+    },
+    "sends": [
+      {
+        "fields": {
+          "TRNNAMEO": "CCDL",
+          "TITLE01O": "      AWS Mainframe Modernization       ",
+          "CURDATEO": "07/19/22",
+          "PGMNAMEO": "COCRDSLC",
+          "TITLE02O": "              CardDemo                  ",
+          "CURTIMEO": "23:12:33",
+          "ACCTSIDO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "CARDSIDO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "CRDNAMEO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "CRDSTCDO": "\u0000",
+          "EXPMONO": "\u0000\u0000",
+          "EXPYEARO": "\u0000\u0000\u0000\u0000",
+          "INFOMSGO": "Please enter Account and Card Number    ",
+          "ERRMSGO": "                                                                                ",
+          "FKEYSO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000"
+        },
+        "attributes": {
+          "TRNNAMEC": "DFHDFCOL",
+          "TITLE01C": "DFHDFCOL",
+          "CURDATEC": "DFHDFCOL",
+          "PGMNAMEC": "DFHDFCOL",
+          "TITLE02C": "DFHDFCOL",
+          "CURTIMEC": "DFHDFCOL",
+          "ACCTSIDC": "DFHDFCOL",
+          "CARDSIDC": "DFHDFCOL",
+          "CRDNAMEC": "DFHDFCOL",
+          "CRDSTCDC": "DFHDFCOL",
+          "EXPMONC": "DFHDFCOL",
+          "EXPYEARC": "DFHDFCOL",
+          "INFOMSGC": "DFHNEUTR",
+          "ERRMSGC": "DFHDFCOL",
+          "FKEYSC": "DFHDFCOL",
+          "TRNNAMEH": "DFHDFHI",
+          "TITLE01H": "DFHDFHI",
+          "CURDATEH": "DFHDFHI",
+          "PGMNAMEH": "DFHDFHI",
+          "TITLE02H": "DFHDFHI",
+          "CURTIMEH": "DFHDFHI",
+          "ACCTSIDH": "DFHDFHI",
+          "CARDSIDH": "DFHDFHI",
+          "CRDNAMEH": "DFHDFHI",
+          "CRDSTCDH": "DFHDFHI",
+          "EXPMONH": "DFHDFHI",
+          "EXPYEARH": "DFHDFHI",
+          "INFOMSGH": "DFHDFHI",
+          "ERRMSGH": "DFHDFHI",
+          "FKEYSH": "DFHDFHI"
+        }
+      }
+    ],
+    "cursorField": "ACCTSIDL",
+    "termination": "RETURN_TRANSID"
+  },
+  "expectedWrites": [],
+  "expectedFinalState": [
+    {
+      "dataset": "CARDDAT",
+      "rowIndex": 0,
+      "expectedBytes": "050002445376574000000000050747Aniya Von                                         2023-03-09Y                                                           "
+    },
+    {
+      "dataset": "CARDDAT",
+      "rowIndex": 1,
+      "expectedBytes": "068358619817151600000000027567Ward Jones                                        2025-07-13Y                                                           "
+    },
+    {
+      "dataset": "CARDDAT",
+      "rowIndex": 2,
+      "expectedBytes": "092387719324733000000000002028Enrico Rosenbaum                                  2024-08-11Y                                                           "
+    }
+  ],
+  "expectedReturnCode": 0,
+  "expectedMessages": [],
+  "normalisations": [],
+  "expectedDatasets": [
+    {
+      "dataset": "CARDDAT",
+      "channel": "FINAL_STATE",
+      "rowCount": 3,
+      "recordLength": 150
+    }
+  ]
+}

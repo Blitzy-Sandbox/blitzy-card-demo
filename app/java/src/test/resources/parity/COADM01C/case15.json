@@ -1,0 +1,87 @@
+{
+  "program": "COADM01C",
+  "caseId": "case15",
+  "description": "The narrowing at app/cbl/COADM01C.cbl:177. WS-MESSAGE is PIC X(80) at line 38 and ERRMSGO is PIC X(78) at app/cpy-bms/COADM01.CPY:260, and a COBOL alphanumeric MOVE fills the receiver from the LEFT and discards the overflow - so the surviving text is the LEADING seventy-eight characters and the trailing two bytes are lost. This case drives the WHEN OTHER arm, whose X(50) invalid-key message is the longest text the program ever produces, and pins the result on the SCREEN_ERRMSG_78 channel as well as in the send, so the width is part of the expectation rather than an incidental property of the string. case11 pins the very same message at eighty on the WS_MESSAGE_80 channel: the two together are what make the direction of the truncation observable, because a receiver filled from the right would hold the trailing seventy-eight and every character would be shifted two places.",
+  "unitKind": "CONTROLLER_POJO",
+  "inputs": {},
+  "screenRequest": {
+    "eibcalen": 160,
+    "aid": "DFHPF5",
+    "pinnedClock": "2022-07-19T23:12:32",
+    "charset": "US-ASCII",
+    "commarea": {
+      "CDEMO-FROM-TRANID": "CC00",
+      "CDEMO-FROM-PROGRAM": "COSGN00C",
+      "CDEMO-TO-PROGRAM": "COADM01C",
+      "CDEMO-USER-ID": "ADMIN001",
+      "CDEMO-USER-TYPE": "A",
+      "CDEMO-PGM-CONTEXT": "1"
+    },
+    "mapFields": {
+      "OPTIONI": "7 "
+    },
+    "forcedOutcomes": {}
+  },
+  "expectedResponse": {
+    "nextMapset": "COADM01",
+    "nextMap": "COADM1A",
+    "navigation": {
+      "CDEMO-FROM-TRANID": "CC00",
+      "CDEMO-FROM-PROGRAM": "COSGN00C",
+      "CDEMO-TO-TRANID": "    ",
+      "CDEMO-TO-PROGRAM": "COADM01C",
+      "CDEMO-USER-ID": "ADMIN001",
+      "CDEMO-USER-TYPE": "A",
+      "CDEMO-PGM-CONTEXT": "1",
+      "CDEMO-CUST-ID": "000000000",
+      "CDEMO-CUST-FNAME": "                         ",
+      "CDEMO-CUST-MNAME": "                         ",
+      "CDEMO-CUST-LNAME": "                         ",
+      "CDEMO-ACCT-ID": "00000000000",
+      "CDEMO-ACCT-STATUS": " ",
+      "CDEMO-CARD-NUM": "0000000000000000",
+      "CDEMO-LAST-MAP": "       ",
+      "CDEMO-LAST-MAPSET": "       "
+    },
+    "sends": [
+      {
+        "fields": {
+          "TRNNAMEO": "CA00",
+          "TITLE01O": "      AWS Mainframe Modernization       ",
+          "CURDATEO": "07/19/22",
+          "PGMNAMEO": "COADM01C",
+          "TITLE02O": "              CardDemo                  ",
+          "CURTIMEO": "23:12:32",
+          "OPTN001O": "01. User List (Security)                ",
+          "OPTN002O": "02. User Add (Security)                 ",
+          "OPTN003O": "03. User Update (Security)              ",
+          "OPTN004O": "04. User Delete (Security)              ",
+          "OPTN005O": "                                        ",
+          "OPTN006O": "                                        ",
+          "OPTN007O": "                                        ",
+          "OPTN008O": "                                        ",
+          "OPTN009O": "                                        ",
+          "OPTN010O": "                                        ",
+          "OPTN011O": "                                        ",
+          "OPTN012O": "                                        ",
+          "OPTIONO": "7 ",
+          "ERRMSGO": "Invalid key pressed. Please see below...                                      "
+        },
+        "attributes": {
+          "ERRMSGC": "DFHRED"
+        }
+      }
+    ],
+    "termination": "RETURN_TRANSID"
+  },
+  "expectedWrites": [],
+  "expectedFinalState": [],
+  "expectedReturnCode": 0,
+  "expectedMessages": [
+    {
+      "channel": "SCREEN_ERRMSG_78",
+      "text": "Invalid key pressed. Please see below...                                      "
+    }
+  ],
+  "normalisations": []
+}

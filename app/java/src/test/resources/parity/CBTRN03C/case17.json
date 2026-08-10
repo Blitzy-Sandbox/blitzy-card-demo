@@ -1,0 +1,65 @@
+{
+  "program": "CBTRN03C",
+  "caseId": "case17",
+  "description": "An empty TRANFILE, which fires defect 1 on the first pass. The first READ reports '10', so 1000-TRANFILE-GET-NEXT moves 'Y' to END-OF-FILE - but the range test at :173-174 runs BEFORE the END-OF-FILE test at :179, and it runs against a TRAN-RECORD no read has ever filled. That area holds spaces, spaces collate below any digit, so the test fails and NEXT SENTENCE leaves the loop before the end-of-file arm at :197 can be reached. The result is that an empty input produces a completely empty report rather than a header and a pair of zero totals - no record is written, and RETURN-CODE is 0. DATEPARM is still read, so the 'Reporting from' line is displayed.",
+  "unitKind": "BATCH_JOB",
+  "inputs": {
+    "TRANFILE": {
+      "empty": true,
+      "recordLength": 350,
+      "copybook": "CVTRA05Y"
+    },
+    "CARDXREF": {
+      "fixture": "cardxref.txt"
+    },
+    "TRANTYPE": {
+      "fixture": "trantype.txt"
+    },
+    "TRANCATG": {
+      "fixture": "trancatg.txt"
+    },
+    "DATEPARM": {
+      "rows": [
+        "2022-01-01 2022-07-06                                                           "
+      ]
+    }
+  },
+  "jobParameters": {},
+  "expectedWrites": [],
+  "expectedFinalState": [],
+  "expectedReturnCode": 0,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "START OF EXECUTION OF PROGRAM CBTRN03C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "Reporting from 2022-01-01 to 2022-07-06"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "END OF EXECUTION OF PROGRAM CBTRN03C"
+    }
+  ],
+  "normalisations": [
+    {
+      "dataset": "CARDXREF",
+      "kind": "CARDXREF_FILLER_PAD_36_TO_50"
+    }
+  ],
+  "expectedDatasets": [
+    {
+      "dataset": "TRANREPT",
+      "channel": "WRITES",
+      "rowCount": 0,
+      "recordLength": 133
+    },
+    {
+      "dataset": "TRANREPT",
+      "channel": "FINAL_STATE",
+      "rowCount": 0,
+      "recordLength": 133
+    }
+  ]
+}

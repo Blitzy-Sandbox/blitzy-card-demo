@@ -1,0 +1,120 @@
+{
+  "program": "CBACT03C",
+  "caseId": "case19",
+  "description": "The positive proof that this job writes NOTHING - which matters because its prompt-mandated name, AccountBalanceUpdateJob, says Update and the verified source performs no update of any kind. app/cbl/CBACT03C.cbl:120 issues OPEN INPUT and the program has no WRITE, no REWRITE and no DELETE anywhere in its 178 lines, so no update is possible even in principle. The assertion is made two ways at once. No record is expected on the writes channel, and the differ reports any observed write that no expectation accounts for, so a single stray record written to any dataset fails this case. And all six rows of XREFFILE are pinned byte for byte as the run left them, so a row rewritten in place - which no empty write list could detect - fails it too. The behaviour is preserved, not corrected: adding write logic to match the class name would be a new feature and a parity violation.",
+  "unitKind": "BATCH_JOB",
+  "inputs": {
+    "XREFFILE": {
+      "fixture": "cardxref.txt",
+      "fromRow": 40,
+      "rowCount": 6
+    }
+  },
+  "jobParameters": {},
+  "expectedWrites": [],
+  "expectedFinalState": [
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 0,
+      "expectedBytes": "804058041034868000000002600000000026              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 1,
+      "expectedBytes": "811254583423973500000002300000000023              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 2,
+      "expectedBytes": "826259360247307600000004900000000049              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 3,
+      "expectedBytes": "851786695820600800000001400000000014              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 4,
+      "expectedBytes": "893136935189478300000000800000000008              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 5,
+      "expectedBytes": "905629793166401100000002500000000025              "
+    }
+  ],
+  "expectedReturnCode": 0,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "START OF EXECUTION OF PROGRAM CBACT03C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "804058041034868000000002600000000026              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "804058041034868000000002600000000026              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "811254583423973500000002300000000023              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "811254583423973500000002300000000023              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "826259360247307600000004900000000049              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "826259360247307600000004900000000049              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "851786695820600800000001400000000014              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "851786695820600800000001400000000014              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "893136935189478300000000800000000008              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "893136935189478300000000800000000008              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "905629793166401100000002500000000025              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "905629793166401100000002500000000025              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "END OF EXECUTION OF PROGRAM CBACT03C"
+    }
+  ],
+  "normalisations": [
+    {
+      "dataset": "XREFFILE",
+      "kind": "CARDXREF_FILLER_PAD_36_TO_50"
+    }
+  ],
+  "expectedDatasets": [
+    {
+      "dataset": "XREFFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 6,
+      "recordLength": 50
+    }
+  ]
+}

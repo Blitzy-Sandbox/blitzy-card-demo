@@ -1,0 +1,37 @@
+{
+  "program": "CBACT02C",
+  "caseId": "case19",
+  "description": "Two inline rows at the extremes of every declared field, read in order. The first holds CARD-ACCT-ID 99999999999 - the largest value 9(11) can carry - CARD-CVV-CD 000, a CARD-EMBOSSED-NAME occupying all 50 characters with no room to pad, and CARD-ACTIVE-STATUS 'N'. The second holds CARD-ACCT-ID 00000000000 and CARD-CVV-CD 999, an all-blank name, an all-blank expiry date and a blank status, with a positive overpunch image '00000001940{' - +194.00 at scale 2 - in its FILLER. Together they pin that a numeric field is zero-filled to its declared width rather than shortened, that an alphanumeric field of spaces is 50 spaces rather than an empty string, and that the positive overpunch alphabet is handled alongside the negative one case18 exercises. Both lines are 150 characters and are emitted in seeded order, because app/cbl/CBACT02C.cbl:78 writes each record before :93 reads the next.",
+  "unitKind": "BATCH_JOB",
+  "inputs": {
+    "CARDFILE": {
+      "rows": [
+        "999999999999999999999999999000XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX9999-99-99N                                                           ",
+        "000000000000000000000000000999                                                             00000001940{                                               "
+      ]
+    }
+  },
+  "jobParameters": {},
+  "expectedWrites": [],
+  "expectedFinalState": [],
+  "expectedReturnCode": 0,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "START OF EXECUTION OF PROGRAM CBACT02C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "999999999999999999999999999000XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX9999-99-99N                                                           "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "000000000000000000000000000999                                                             00000001940{                                               "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "END OF EXECUTION OF PROGRAM CBACT02C"
+    }
+  ],
+  "normalisations": []
+}

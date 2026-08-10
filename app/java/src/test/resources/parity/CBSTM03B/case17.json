@@ -1,0 +1,73 @@
+{
+  "program": "CBSTM03B",
+  "caseId": "case17",
+  "description": "88 M03B-WRITE VALUE 'W' is declared at app/cbl/CBSTM03B.CBL:107 and tested NOWHERE. All four SELECTs are opened INPUT and no paragraph contains a WRITE statement, so the operation is dead code that must stay dead (practice B5): a 'W' request matches no IF, performs no I/O, and returns the file's stale status through 4900-EXIT. The keyed read before it leaves '23' in ACCTFILE-STATUS, so the 'W' reports '23' and not '00' - which is what distinguishes a genuine no-op from a call that quietly succeeded. The final state of the dataset is pinned row for row to prove nothing was written.",
+  "unitKind": "COMPONENT",
+  "inputs": {
+    "ACCTFILE": {
+      "fixture": "acctdata.txt",
+      "fromRow": 0,
+      "rowCount": 2
+    }
+  },
+  "jobParameters": {},
+  "screenRequest": null,
+  "expectedResponse": null,
+  "expectedWrites": [
+    {
+      "dataset": "M03BAREA",
+      "rowIndex": 0,
+      "fields": {
+        "LK-M03B-DD": "ACCTFILE",
+        "LK-M03B-OPER": "O",
+        "LK-M03B-RC": "00"
+      },
+      "expectedBytes": "ACCTFILEO00                         000{                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        "
+    },
+    {
+      "dataset": "M03BAREA",
+      "rowIndex": 1,
+      "fields": {
+        "LK-M03B-DD": "ACCTFILE",
+        "LK-M03B-OPER": "K",
+        "LK-M03B-RC": "23"
+      },
+      "expectedBytes": "ACCTFILEK2300000000099              001A                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        "
+    },
+    {
+      "dataset": "M03BAREA",
+      "rowIndex": 2,
+      "fields": {
+        "LK-M03B-DD": "ACCTFILE",
+        "LK-M03B-OPER": "W",
+        "LK-M03B-RC": "23"
+      },
+      "expectedBytes": "ACCTFILEW23                         000{                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        "
+    }
+  ],
+  "expectedFinalState": [
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 0,
+      "fields": {},
+      "expectedBytes": "00000000001Y00000001940{00000020200{00000010200{2014-11-202025-05-202025-05-2000000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 1,
+      "fields": {},
+      "expectedBytes": "00000000002Y00000001580{00000061300{00000054480{2013-06-192024-08-112024-08-1100000000000{00000000000{A000000000                                                                                                                                                                                            "
+    }
+  ],
+  "expectedReturnCode": 0,
+  "expectedMessages": [],
+  "normalisations": [],
+  "expectedDatasets": [
+    {
+      "dataset": "M03BAREA",
+      "channel": "WRITES",
+      "rowCount": 3,
+      "recordLength": 1040
+    }
+  ]
+}

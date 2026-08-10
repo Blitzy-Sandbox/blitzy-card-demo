@@ -1,0 +1,34 @@
+{
+  "program": "CBACT02C",
+  "caseId": "case11",
+  "description": "The first READ reports '23' and the program abends without displaying a record. 1000-CARDFILE-GET-NEXT is three-armed where the open is two-armed: app/cbl/CBACT02C.cbl:94 tests '00', :98 tests '10', and :101 catches everything else with MOVE 12 TO APPL-RESULT. '23' is neither of the first two, so the guard chain at :104 falls past IF APPL-AOK, and at :107 falls past IF APPL-EOF as well - APPL-EOF is VALUE 16 (:63) and APPL-RESULT holds 12 - reaching the error arm at :110-113. The order is fixed and is asserted here: 'ERROR READING CARDFILE', then the status image '0023', then 'ABENDING PROGRAM'. Three lines follow the start banner and the end banner at :85 is never reached, because PERFORM 9999-ABEND-PROGRAM does not return.",
+  "unitKind": "BATCH_JOB",
+  "inputs": {
+    "CARDFILE": {
+      "fixture": "carddata.txt"
+    }
+  },
+  "jobParameters": {},
+  "expectedWrites": [],
+  "expectedFinalState": [],
+  "expectedReturnCode": 12,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "START OF EXECUTION OF PROGRAM CBACT02C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ERROR READING CARDFILE"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "FILE STATUS IS: NNNN0023"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ABENDING PROGRAM"
+    }
+  ],
+  "normalisations": []
+}

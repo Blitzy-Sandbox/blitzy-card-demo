@@ -116,10 +116,13 @@ import org.springframework.transaction.PlatformTransactionManager;
  * <p>{@code review_rules} returns exactly one line - "No user rules provided." - so no user rule
  * governs this file. The gates it enforces directly are G1 and G3 (it compiles and the beans wire),
  * G19 and G21 (a displayed record is 50 bytes with its {@code FILLER} present as spaces), G22 (no
- * binary floating point), G35 (the abend's return code, abend code and timing), G45 (the alternate
- * index is never opened), G46 (no dataset name in Java), G47 (every file-status outcome per call
- * site), G49 and G50 (both sides of every branch, including both {@code 88}-levels) and G52 (no
- * wildcard import).
+ * binary floating point), G28 (the close paragraph's 8-to-0-or-12 ladder, which is this program's
+ * entire arithmetic surface), G35 (the abend's return code, abend code and timing), G44 (no write of
+ * any kind, on the repository or on the cursor the program actually holds), G45 (the alternate
+ * index is never opened), G46 (no dataset name in Java, and the one it uses comes from
+ * {@code carddemo.datasets.XREFFILE}), G47 (every file-status outcome at every call site - and the
+ * three call sites do not name the same statuses), G49 and G50 (both sides of every branch, including
+ * both {@code 88}-levels at each paragraph that tests them) and G52 (no wildcard import).
  */
 @DisplayName("AccountBalanceUpdateJob - CBACT03C: reads the cross reference, updates nothing, "
         + "displays every record twice")
@@ -628,6 +631,39 @@ class AccountBalanceUpdateJobTest {
         }
 
         @Test
+        @DisplayName("the browse cursor publishes no write-side method and no update-mode open")
+        void theBrowseCursorPublishesNoWriteMethod() {
+            List<String> writeVerbs = List.of("write", "rewrite", "add", "insert", "update", "delete",
+                    "put", "save", "store", "merge", "persist");
+            // The three shapes an update-mode handle takes in this estate's vocabulary. OPEN I-O and
+            // OPEN OUTPUT are the COBOL modes app/cbl/CBACT03C.cbl:120 does not use, and a
+            // read-for-update is how the two update programs in this migration take a record they mean
+            // to REWRITE. None of the three has a counterpart here.
+            List<String> updateModeOpens = List.of("forupdate", "openoutput", "openio", "openupdate");
+
+            List<String> offenders = new ArrayList<>();
+            for (Method method : BrowseCursor.class.getDeclaredMethods()) {
+                if (!Modifier.isPublic(method.getModifiers()) || method.isSynthetic()) {
+                    continue;
+                }
+                String lowered = method.getName().toLowerCase(Locale.ROOT);
+                if (writeVerbs.stream().anyMatch(verb -> namesTheVerb(method.getName(), verb))
+                        || updateModeOpens.stream().anyMatch(lowered::contains)) {
+                    offenders.add(method.getName());
+                }
+            }
+
+            // Reflecting over the repository alone leaves a hole: the repository hands out a cursor, and
+            // the cursor - not the repository - is the handle the program holds from :120 to :138. An
+            // update-mode API added there would be reachable from the program body without the
+            // repository ever growing a write method. It reads, reports and closes, and that is all.
+            assertThat(offenders)
+                    .as("app/cbl/CBACT03C.cbl:120 is OPEN INPUT, and the paragraph pair at :92 and "
+                            + ":136 only READs and CLOSEs, so no update-mode handle exists to reach for")
+                    .isEmpty();
+        }
+
+        @Test
         @DisplayName("no method of the job is named for writing, and none for the account master")
         void noMethodPromisesWhatTheProgramDoesNot() {
             List<String> methodNames = Stream.of(AccountBalanceUpdateJob.class.getDeclaredMethods())
@@ -855,6 +891,52 @@ class AccountBalanceUpdateJobTest {
             assertThat(sysout.lines().get(2))
                     .as("the display at app/cbl/CBACT03C.cbl:78 - the same unchanged record area")
                     .isEqualTo(dirty);
+        }
+
+        @Test
+        @DisplayName("the record-line count is 2 per record - neither CBACT02C's 1 nor CBACT01C's 13")
+        void theShapeIsNeitherSiblingsShape() {
+            CapturingSysout sysout = new CapturingSysout();
+
+            ExecutionSummary summary = job(repositoryOver(fixtureRecords())).execute(sysout);
+
+            int recordLines = sysout.lines().size() - AccountBalanceUpdateJob.BANNER_LINES;
+            assertThat(recordLines)
+                    .as("app/cbl/CBACT03C.cbl displays the record area at :96 and again at :78, and "
+                            + "both statements are live - column 7 of each is a space, not an asterisk")
+                    .isEqualTo(FIXTURE_ROW_COUNT * AccountBalanceUpdateJob.DISPLAYS_PER_RECORD)
+                    .isEqualTo(100)
+                    // The two wrong answers are named, not merely avoided. The three readers are 178 to
+                    // 193 lines each and differ by one line: CBACT02C:96 is commented out, so it emits
+                    // ONE line per record, and CBACT01C:96 is a PERFORM of a field-by-field display
+                    // paragraph, so it emits THIRTEEN. A translation that quietly adopted either
+                    // sibling's shape would still read the right file and still look reasonable.
+                    .as("one line per record is CBACT02C's shape, not this program's")
+                    .isNotEqualTo(FIXTURE_ROW_COUNT)
+                    .as("thirteen lines per record is CBACT01C's shape, not this program's")
+                    .isNotEqualTo(FIXTURE_ROW_COUNT * 13);
+            assertThat(summary.recordLinesDisplayed()).isEqualTo(recordLines);
+        }
+
+        @Test
+        @DisplayName("no line is labelled or ruled - CBACT03C has no display paragraph at all")
+        void noLineCarriesALabelledFieldPrefix() {
+            CapturingSysout sysout = new CapturingSysout();
+
+            job(repositoryOver(fixtureRecords())).execute(sysout);
+
+            // CBACT01C decomposes its record through PERFORM 1100-DISPLAY-ACCT-RECORD, whose output is
+            // eleven `DISPLAY 'FIELD-NAME :' FIELD` lines and a 49-hyphen rule per record. CBACT03C has
+            // no such paragraph - a comment-stripped search for `1100-DISPLAY` in
+            // app/cbl/CBACT03C.cbl finds nothing - so every line it writes is either a banner or the raw
+            // 50-byte record area. Nothing is labelled, nothing is ruled, and no field name appears.
+            assertThat(sysout.lines()).allSatisfy(line -> assertThat(line)
+                    .as("a labelled field prefix would mean a display paragraph this program lacks")
+                    .doesNotContain(":")
+                    .doesNotContain("-".repeat(49))
+                    .doesNotContain(CardXrefRecord.XREF_CARD_NUM_NAME)
+                    .doesNotContain(CardXrefRecord.XREF_CUST_ID_NAME)
+                    .doesNotContain(CardXrefRecord.XREF_ACCT_ID_NAME));
         }
     }
 
@@ -1087,6 +1169,262 @@ class AccountBalanceUpdateJobTest {
                     .startsWith(FileStatus.DISPLAY_PREFIX)
                     .isEqualTo("FILE STATUS IS: NNNN9000")
                     .hasSize(FileStatus.DISPLAY_PREFIX.length() + FileStatus.STATUS_IMAGE_LENGTH);
+        }
+    }
+
+    // =================================================================================================
+    // Every file status, at every call site - gate G47, and the other truth state of both 88-levels at
+    // each of them - gate G50.
+    //
+    // The three paragraphs do NOT test the same set of statuses, and that asymmetry is the whole content
+    // of this section. 1000-XREFFILE-GET-NEXT names '00' at :94 and '10' at :98; 0000-XREFFILE-OPEN
+    // names only '00' at :121, and 9000-XREFFILE-CLOSE only '00' at :139. So '10' is end of file to the
+    // read - APPL-EOF true, loop over, RETURN-CODE 0 - and a hard failure to the open and the close,
+    // where APPL-EOF is never consulted and 12 is moved instead. A translation that hoisted the
+    // end-of-file test into a shared helper would turn an unreadable file into an empty one and report
+    // success, which is the worst possible outcome for a reader whose entire job is to print what it
+    // finds.
+    // =================================================================================================
+
+    @Nested
+    @DisplayName("Each file status at each call site, and each 88-level in both truth states")
+    class StatusLaddersPerCallSite {
+
+        /** The status the repository reports for a backend it could not reach: renders "9000". */
+        private static final String PERMANENT = CardXrefRepository.PERMANENT_ERROR_STATUS;
+
+        /**
+         * The statuses neither {@code 0000-XREFFILE-OPEN} nor {@code 9000-XREFFILE-CLOSE} names, so each
+         * takes those paragraphs' second arm - {@code MOVE 12} at {@code :124} and
+         * {@code ADD 12 TO ZERO GIVING} at {@code :142}.
+         *
+         * <p>{@code '10'} leads the list deliberately: it is the one status that means something
+         * different at a third call site, and so the one a shared helper would get wrong.
+         */
+        @Test
+        @DisplayName("the four statuses these ladders are driven with are the shared vocabulary's own")
+        void theDrivenStatusesAreTheSharedOnes() {
+            // The @ValueSource annotations below need compile-time constants, so the four statuses are
+            // written as the FileStatus constants themselves rather than as bare literals - which is
+            // legal precisely because each of those constants is a String literal. This test is what
+            // makes that safe to read: it pins the four to the vocabulary they came from.
+            assertThat(List.of(FileStatus.END_OF_FILE, FileStatus.DUPLICATE, FileStatus.NOT_FOUND,
+                    FileStatus.RECORD_LENGTH_CONFLICT))
+                    .containsExactly("10", "22", "23", "04");
+            assertThat(FileStatus.OK).isEqualTo("00");
+        }
+
+        @ParameterizedTest(name = "OPEN reporting ''{0}''")
+        @ValueSource(strings = { FileStatus.END_OF_FILE, FileStatus.DUPLICATE, FileStatus.NOT_FOUND,
+                FileStatus.RECORD_LENGTH_CONFLICT })
+        @DisplayName("an open reporting a status other than '00' abends with RETURN-CODE 12")
+        void anOpenStatusOtherThanOkAbends(String status) {
+            BrowseCursor cursor = cursorYielding(status, FileStatus.OK,
+                    List.of(ReadResult.endOfFile(CardXrefRepository.BASE_DD_NAME)));
+            CapturingSysout sysout = new CapturingSysout();
+            AccountBalanceUpdateJob subject = job(repositoryWith(cursor));
+
+            AbendException abend = assertThatExceptionOfType(AbendException.class)
+                    .as("app/cbl/CBACT03C.cbl:121 tests only '00', so '%s' takes the :124 arm", status)
+                    .isThrownBy(() -> subject.execute(sysout))
+                    .actual();
+
+            assertThat(sysout.lines()).containsExactly(AccountBalanceUpdateJob.START_OF_EXECUTION,
+                    AccountBalanceUpdateJob.ERROR_OPENING_XREFFILE,
+                    FileStatus.toDisplayLine(status), AbendException.ABEND_DISPLAY_TEXT);
+            assertThat(abend.getReturnCode()).isEqualTo(AccountBalanceUpdateJob.APPL_RESULT_FATAL);
+            // The open has no end-of-file arm to fall into: 88 APPL-EOF is tested at :107, inside the
+            // read paragraph, and nowhere else. A '10' here is a failed OPEN, not an empty file.
+            assertThat(sysout.lines())
+                    .doesNotContain(AccountBalanceUpdateJob.END_OF_EXECUTION);
+            verify(cursor, never()).readNext();
+        }
+
+        @ParameterizedTest(name = "CLOSE reporting ''{0}''")
+        @ValueSource(strings = { FileStatus.END_OF_FILE, FileStatus.DUPLICATE, FileStatus.NOT_FOUND,
+                FileStatus.RECORD_LENGTH_CONFLICT })
+        @DisplayName("a close reporting a status other than '00' abends with RETURN-CODE 12")
+        void aCloseStatusOtherThanOkAbends(String status) {
+            BrowseCursor cursor = cursorYielding(FileStatus.OK, status,
+                    List.of(ReadResult.endOfFile(CardXrefRepository.BASE_DD_NAME)));
+            CapturingSysout sysout = new CapturingSysout();
+            AccountBalanceUpdateJob subject = job(repositoryWith(cursor));
+
+            AbendException abend = assertThatExceptionOfType(AbendException.class)
+                    .as("app/cbl/CBACT03C.cbl:139 tests only '00', so '%s' takes the :142 arm", status)
+                    .isThrownBy(() -> subject.execute(sysout))
+                    .actual();
+
+            // No record was read, so the failing close follows the start banner directly - and replaces
+            // the end banner, which :85 only reaches once :83 has returned.
+            assertThat(sysout.lines()).containsExactly(AccountBalanceUpdateJob.START_OF_EXECUTION,
+                    AccountBalanceUpdateJob.ERROR_CLOSING_XREFFILE,
+                    FileStatus.toDisplayLine(status), AbendException.ABEND_DISPLAY_TEXT);
+            assertThat(abend.getReturnCode()).isEqualTo(AccountBalanceUpdateJob.APPL_RESULT_FATAL);
+            // Exactly one CLOSE per run: :83 issues it, and the run's own cleanup stands down because
+            // the paragraph already ran.
+            verify(cursor, times(1)).closeBrowse();
+        }
+
+        @Test
+        @DisplayName("'10' is end of file to the read and a hard failure to the open and the close")
+        void tenMeansEndOfFileOnlyToTheReadParagraph() {
+            // The read: APPL-EOF true at :107, 'Y' moved to END-OF-FILE at :108, the loop ends, the
+            // close runs and the end banner is written. RETURN-CODE is never moved, so it is zero.
+            CapturingSysout readSite = new CapturingSysout();
+            ExecutionSummary summary = job(repositoryOver(List.of())).execute(readSite);
+            assertThat(readSite.lines()).containsExactly(AccountBalanceUpdateJob.START_OF_EXECUTION,
+                    AccountBalanceUpdateJob.END_OF_EXECUTION);
+            assertThat(summary.returnCode()).isEqualTo(AbendException.RETURN_CODE_OK);
+            assertThat(summary.recordsRead()).isZero();
+
+            // The open and the close: the same '10', no APPL-EOF test in either paragraph, 12 moved, and
+            // each paragraph's own message. RETURN_CODE_END_OF_FILE is 16 and is what APPL-EOF holds;
+            // proving it is NOT the code these two carry is the point of asserting against it.
+            CapturingSysout openSite = new CapturingSysout();
+            AccountBalanceUpdateJob openFailure = job(repositoryWith(cursorYielding(
+                    FileStatus.END_OF_FILE, FileStatus.OK,
+                    List.of(ReadResult.endOfFile(CardXrefRepository.BASE_DD_NAME)))));
+            assertThat(assertThatExceptionOfType(AbendException.class)
+                    .isThrownBy(() -> openFailure.execute(openSite))
+                    .actual().getReturnCode())
+                    .isEqualTo(AccountBalanceUpdateJob.APPL_RESULT_FATAL)
+                    .isNotEqualTo(AbendException.RETURN_CODE_END_OF_FILE);
+            assertThat(openSite.lines()).contains(AccountBalanceUpdateJob.ERROR_OPENING_XREFFILE);
+
+            CapturingSysout closeSite = new CapturingSysout();
+            AccountBalanceUpdateJob closeFailure = job(repositoryWith(cursorYielding(
+                    FileStatus.OK, FileStatus.END_OF_FILE,
+                    List.of(ReadResult.endOfFile(CardXrefRepository.BASE_DD_NAME)))));
+            assertThat(assertThatExceptionOfType(AbendException.class)
+                    .isThrownBy(() -> closeFailure.execute(closeSite))
+                    .actual().getReturnCode())
+                    .isEqualTo(AccountBalanceUpdateJob.APPL_RESULT_FATAL)
+                    .isNotEqualTo(AbendException.RETURN_CODE_END_OF_FILE);
+            assertThat(closeSite.lines()).contains(AccountBalanceUpdateJob.ERROR_CLOSING_XREFFILE);
+        }
+
+        @Test
+        @DisplayName("'00' at all three call sites is the whole clean pass - both 88-levels' other state")
+        void okAtEveryCallSiteIsACleanPass() {
+            CapturingSysout sysout = new CapturingSysout();
+            BrowseCursor cursor = cursorYielding(FileStatus.OK, FileStatus.OK, List.of(
+                    xrefFound(CardXrefRepository.BASE_DD_NAME, fixtureRecords().get(0)),
+                    ReadResult.endOfFile(CardXrefRepository.BASE_DD_NAME)));
+
+            ExecutionSummary summary = job(repositoryWith(cursor)).execute(sysout);
+
+            // APPL-AOK true at :126 (open), true at :104 (the record read), false-then-APPL-EOF-true at
+            // :104 and :107 (the read that reports AT END), and true at :144 (close). Both 88-levels are
+            // therefore exercised in both truth states by this one pass, and none of the three abend
+            // paths is entered.
+            String row = fixtureRows().get(0);
+            assertThat(sysout.lines()).containsExactly(AccountBalanceUpdateJob.START_OF_EXECUTION,
+                    expectedImage(row), expectedImage(row), AccountBalanceUpdateJob.END_OF_EXECUTION);
+            assertThat(summary.returnCode()).isEqualTo(AbendException.RETURN_CODE_OK);
+            assertThat(sysout.lines())
+                    .doesNotContain(AccountBalanceUpdateJob.ERROR_OPENING_XREFFILE)
+                    .doesNotContain(AccountBalanceUpdateJob.ERROR_READING_XREFFILE)
+                    .doesNotContain(AccountBalanceUpdateJob.ERROR_CLOSING_XREFFILE)
+                    .doesNotContain(AbendException.ABEND_DISPLAY_TEXT);
+        }
+
+        @Test
+        @DisplayName("the close ladder seeds 8, then reaches 0 on '00' and 12 on anything else")
+        void theCloseLadderRunsFromEightToZeroOrTwelve() {
+            // gate G28. 9000-XREFFILE-CLOSE is the only arithmetic in the whole program - two ADDs and
+            // one SUBTRACT, at :137, :140 and :142 - and its shape is easy to lose because both of the
+            // roundabout forms compute a constant:
+            //     :137  ADD 8 TO ZERO GIVING APPL-RESULT        -> 8, the seed
+            //     :140  SUBTRACT APPL-RESULT FROM APPL-RESULT   -> 0, on '00'
+            //     :142  ADD 12 TO ZERO GIVING APPL-RESULT       -> 12, on anything else
+            // The seed is dead: whichever arm runs overwrites it. What proves the SUBTRACT arm actually
+            // ran is that a clean close does NOT abend - had the seed survived, APPL-AOK at :144 would
+            // be false for 8 and the program would report ERROR CLOSING XREFFILE on a close that
+            // succeeded.
+            assertThat(AccountBalanceUpdateJob.APPL_RESULT_ASSUMED_FAILURE)
+                    .as("the value :137 seeds and :119 moves")
+                    .isEqualTo(8)
+                    .isNotEqualTo(FileStatus.APPL_AOK);
+
+            CapturingSysout clean = new CapturingSysout();
+            ExecutionSummary summary = job(repositoryOver(List.of())).execute(clean);
+            assertThat(clean.lines()).endsWith(AccountBalanceUpdateJob.END_OF_EXECUTION);
+            assertThat(clean.lines()).doesNotContain(AccountBalanceUpdateJob.ERROR_CLOSING_XREFFILE);
+            assertThat(summary.returnCode()).isEqualTo(FileStatus.APPL_AOK);
+
+            CapturingSysout failing = new CapturingSysout();
+            AccountBalanceUpdateJob subject = job(repositoryWith(cursorYielding(FileStatus.OK, PERMANENT,
+                    List.of(ReadResult.endOfFile(CardXrefRepository.BASE_DD_NAME)))));
+            assertThat(assertThatExceptionOfType(AbendException.class)
+                    .isThrownBy(() -> subject.execute(failing))
+                    .actual().getReturnCode())
+                    .isEqualTo(12)
+                    .isEqualTo(AccountBalanceUpdateJob.APPL_RESULT_FATAL);
+        }
+
+        @Test
+        @DisplayName("no abend carries the dead 8 seed, at any of the three call sites")
+        void noAbendCarriesTheDeadSeed() {
+            // The seed of :119 and :137 is never read, so it must never surface as a RETURN-CODE either.
+            // All three failure paths move 12, and JCL-equivalent COND gating downstream depends on
+            // that: 8 and 12 are different conditions on the mainframe.
+            List<CapturingSysout> sinks = List.of(new CapturingSysout(), new CapturingSysout(),
+                    new CapturingSysout());
+            List<AccountBalanceUpdateJob> subjects = List.of(
+                    job(repositoryWith(cursorYielding(PERMANENT, FileStatus.OK,
+                            List.of(ReadResult.endOfFile(CardXrefRepository.BASE_DD_NAME))))),
+                    job(repositoryWith(cursorYielding(FileStatus.OK, FileStatus.OK,
+                            List.of(ReadResult.other(CardXrefRepository.BASE_DD_NAME, PERMANENT))))),
+                    job(repositoryWith(cursorYielding(FileStatus.OK, PERMANENT,
+                            List.of(ReadResult.endOfFile(CardXrefRepository.BASE_DD_NAME))))));
+
+            for (int site = 0; site < subjects.size(); site++) {
+                AccountBalanceUpdateJob subject = subjects.get(site);
+                CapturingSysout sysout = sinks.get(site);
+
+                AbendException abend = assertThatExceptionOfType(AbendException.class)
+                        .as("call site %d", site)
+                        .isThrownBy(() -> subject.execute(sysout))
+                        .actual();
+
+                assertThat(abend.getReturnCode())
+                        .as("call site %d carries the 12 of :101, :124 or :142", site)
+                        .isEqualTo(AccountBalanceUpdateJob.APPL_RESULT_FATAL)
+                        .isNotEqualTo(AccountBalanceUpdateJob.APPL_RESULT_ASSUMED_FAILURE)
+                        .isNotEqualTo(FileStatus.APPL_AOK)
+                        .isNotEqualTo(FileStatus.APPL_EOF);
+                assertThat(abend.getAbendCode()).hasValue(AbendException.STANDARD_ABEND_CODE);
+                assertThat(abend.getTiming()).hasValue(AbendException.STANDARD_TIMING);
+                // :155 writes the abend line before :158 calls CEE3ABD, so it is always the last line.
+                assertThat(sysout.lines()).last().isEqualTo(AbendException.ABEND_DISPLAY_TEXT);
+            }
+        }
+
+        @ParameterizedTest(name = "''{0}'' renders as the numeric arm of 9910-DISPLAY-IO-STATUS")
+        @ValueSource(strings = { FileStatus.END_OF_FILE, FileStatus.DUPLICATE, FileStatus.NOT_FOUND,
+                FileStatus.RECORD_LENGTH_CONFLICT })
+        @DisplayName("a numeric status renders through the ELSE arm as '00' followed by the status")
+        void aNumericStatusTakesTheElseArmOfTheRenderer(String status) {
+            // app/cbl/CBACT03C.cbl:169-172, the ELSE arm: MOVE '0000' TO IO-STATUS-04 then
+            // MOVE IO-STATUS TO IO-STATUS-04(3:2). So a numeric status whose first character is not '9'
+            // is written as four digits with the status in the last two. The IF arm at :162-168 - taken
+            // when IO-STATUS is not numeric or IO-STAT1 is '9' - is the one the permanent error takes,
+            // and it is covered by theStatusLineIsTheSharedForm above. Both arms are therefore driven.
+            String rendered = FileStatus.toDisplayLine(status);
+            assertThat(rendered)
+                    .isEqualTo(FileStatus.DISPLAY_PREFIX + "00" + status)
+                    .hasSize(FileStatus.DISPLAY_PREFIX.length() + FileStatus.STATUS_IMAGE_LENGTH);
+
+            // And it is that rendering, not a locally assembled one, that the program displays.
+            CapturingSysout sysout = new CapturingSysout();
+            AccountBalanceUpdateJob subject = job(repositoryWith(cursorYielding(status, FileStatus.OK,
+                    List.of(ReadResult.endOfFile(CardXrefRepository.BASE_DD_NAME)))));
+
+            assertThatExceptionOfType(AbendException.class)
+                    .isThrownBy(() -> subject.execute(sysout));
+
+            assertThat(sysout.lines()).contains(rendered);
         }
     }
 
@@ -1863,6 +2201,19 @@ class AccountBalanceUpdateJobTest {
                                 context.getBean(AccountBalanceUpdateJob.class);
                         assertThat(subject.stepName()).isEqualTo(AccountBalanceUpdateJob.STEP_NAME);
                         assertThat(subject.xrefFileDatasetName()).isNotBlank();
+                        // gate G46, the half a source scan cannot reach. Asserting that no
+                        // AWS.M2.CARDDEMO literal appears in the Java shows the name was not written
+                        // there; this shows where it DID come from. The dataset the job resolved is the
+                        // one the environment binds under carddemo.datasets.XREFFILE - read back from
+                        // the environment rather than restated here, so the assertion holds whatever
+                        // the active profile or the CARDDEMO_DATASET_XREFFILE override says.
+                        assertThat(subject.xrefFileDatasetName())
+                                .as("the dataset name is resolved from carddemo.datasets.XREFFILE."
+                                        + "dsname, never composed in Java")
+                                .isEqualTo(context.getEnvironment()
+                                        .getProperty("carddemo.datasets."
+                                                + AccountBalanceUpdateJob.XREFFILE_DD_NAME
+                                                + ".dsname"));
                         // No SysoutSink bean is published by this module, so the fallback is what a
                         // wired job would use.
                         assertThat(context).doesNotHaveBean(SysoutSink.class);

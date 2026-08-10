@@ -1,0 +1,91 @@
+{
+  "program": "CBSTM03B",
+  "caseId": "case03",
+  "description": "The full sequential shape of an ACCESS MODE IS SEQUENTIAL file - app/cbl/CBSTM03B.CBL:33 - driven exactly as app/cbl/CBSTM03A.CBL drives it: OPEN (:731-734), READ (:745-746), READ again, CLOSE (:857-860). Two successive reads must return the first and then the second record in ascending RECORD KEY IS FD-TRNXS-ID order, which is what proves the browse advances by one record rather than re-reading the record it is positioned on. The CLOSE reports '00' and leaves LK-M03B-FLDT holding whatever the last read put there, because CLOSE assigns no record area.",
+  "unitKind": "COMPONENT",
+  "inputs": {
+    "TRNXFILE": {
+      "rows": [
+        "05000244537657400000000058866561010001POS TERM  Purchase at Blick-Rippin                                                                            0000001838H800000000Blick-Rippin                                      East Julien                                       87157     2022-06-10 19:27:53.000000                                              ",
+        "05000244537657400000000329724245010001POS TERM  Purchase at Reichel Group                                                                           0000000140{800000000Reichel Group                                     Port Romanfort                                    95843     2022-06-10 19:27:53.000000                                              ",
+        "05000244537657400000000475746885010001POS TERM  Purchase at Adams-Watsica                                                                           0000009674D800000000Adams-Watsica                                     Ratkemouth                                        55474-03732022-06-10 19:27:53.000000                                              "
+      ]
+    }
+  },
+  "jobParameters": {},
+  "screenRequest": null,
+  "expectedResponse": null,
+  "expectedWrites": [
+    {
+      "dataset": "M03BAREA",
+      "rowIndex": 0,
+      "fields": {
+        "LK-M03B-DD": "TRNXFILE",
+        "LK-M03B-OPER": "O",
+        "LK-M03B-RC": "00"
+      },
+      "expectedBytes": "TRNXFILEO00                         000{                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        "
+    },
+    {
+      "dataset": "M03BAREA",
+      "rowIndex": 1,
+      "fields": {
+        "LK-M03B-DD": "TRNXFILE",
+        "LK-M03B-OPER": "R",
+        "LK-M03B-RC": "00"
+      },
+      "expectedBytes": "TRNXFILER00                         000{05000244537657400000000058866561010001POS TERM  Purchase at Blick-Rippin                                                                            0000001838H800000000Blick-Rippin                                      East Julien                                       87157     2022-06-10 19:27:53.000000                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        "
+    },
+    {
+      "dataset": "M03BAREA",
+      "rowIndex": 2,
+      "fields": {
+        "LK-M03B-DD": "TRNXFILE",
+        "LK-M03B-OPER": "R",
+        "LK-M03B-RC": "00"
+      },
+      "expectedBytes": "TRNXFILER00                         000{05000244537657400000000329724245010001POS TERM  Purchase at Reichel Group                                                                           0000000140{800000000Reichel Group                                     Port Romanfort                                    95843     2022-06-10 19:27:53.000000                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        "
+    },
+    {
+      "dataset": "M03BAREA",
+      "rowIndex": 3,
+      "fields": {
+        "LK-M03B-DD": "TRNXFILE",
+        "LK-M03B-OPER": "C",
+        "LK-M03B-RC": "00"
+      },
+      "expectedBytes": "TRNXFILEC00                         000{05000244537657400000000329724245010001POS TERM  Purchase at Reichel Group                                                                           0000000140{800000000Reichel Group                                     Port Romanfort                                    95843     2022-06-10 19:27:53.000000                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        "
+    }
+  ],
+  "expectedFinalState": [
+    {
+      "dataset": "TRNXFILE",
+      "rowIndex": 0,
+      "fields": {},
+      "expectedBytes": "05000244537657400000000058866561010001POS TERM  Purchase at Blick-Rippin                                                                            0000001838H800000000Blick-Rippin                                      East Julien                                       87157     2022-06-10 19:27:53.000000                                              "
+    },
+    {
+      "dataset": "TRNXFILE",
+      "rowIndex": 1,
+      "fields": {},
+      "expectedBytes": "05000244537657400000000329724245010001POS TERM  Purchase at Reichel Group                                                                           0000000140{800000000Reichel Group                                     Port Romanfort                                    95843     2022-06-10 19:27:53.000000                                              "
+    },
+    {
+      "dataset": "TRNXFILE",
+      "rowIndex": 2,
+      "fields": {},
+      "expectedBytes": "05000244537657400000000475746885010001POS TERM  Purchase at Adams-Watsica                                                                           0000009674D800000000Adams-Watsica                                     Ratkemouth                                        55474-03732022-06-10 19:27:53.000000                                              "
+    }
+  ],
+  "expectedReturnCode": 0,
+  "expectedMessages": [],
+  "normalisations": [],
+  "expectedDatasets": [
+    {
+      "dataset": "M03BAREA",
+      "channel": "WRITES",
+      "rowCount": 4,
+      "recordLength": 1040
+    }
+  ]
+}

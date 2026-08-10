@@ -1,0 +1,196 @@
+{
+  "program": "COUSR01C",
+  "caseId": "case20",
+  "description": "The whole payload contract in one case: all twelve COUSR01 fields on the send, all sixteen CARDDEMO-COMMAREA fields on the response, and the eighty-byte write. The twelve are the field list of THIS screen, taken from app/cpy-bms/COUSR01.CPY's xxxI items only - twelve including USERID and PASSWD, where COUSR02 has twelve but replaces USERID with USRIDIN and COUSR03 has eleven because the delete screen deliberately has no password field. The payload deliberately arrives carrying a stale header and a stale ERRMSGI, all of it nonsense: RECEIVE at :89 genuinely overlays the whole map, and then POPULATE-HEADER-INFO at :214-233 overwrites all six header fields and :188 overwrites ERRMSGO, so what goes out is 'CU01', the two COTTL01Y titles, 'COUSR01C', and the pinned clock as 07/19/22 and 23:12:34 - never the received rubbish. The commarea shows the other half of the contract: CDEMO-USER-ID, CDEMO-USER-TYPE, the three customer names, the account and the card number all travel through byte for byte, because COUSR01C writes only CDEMO-PGM-CONTEXT and the three RETURN-TO-PREV-SCREEN fields and touches nothing else. SEC-USR-PWD is stored in plaintext exactly as app/cpy/CSUSR01Y.cpy declares it and COSGN00C compares it; hashing it would change behaviour and is out of scope. USER0006 sorts after USER0005, so the added row is the last of eleven.",
+  "unitKind": "CONTROLLER_POJO",
+  "inputs": {
+    "USRSEC": {
+      "rows": [
+        "ADMIN001MARGARET            GOLD                PASSWORDA",
+        "ADMIN002RUSSELL             RUSSELL             PASSWORDA",
+        "ADMIN003RAYMOND             WHITMORE            PASSWORDA",
+        "ADMIN004EMMANUEL            CASGRAIN            PASSWORDA",
+        "ADMIN005GRANVILLE           LACHAPELLE          PASSWORDA",
+        "USER0001LAWRENCE            THOMAS              PASSWORDU",
+        "USER0002AJITH               KUMAR               PASSWORDU",
+        "USER0003LAURITZ             ALME                PASSWORDU",
+        "USER0004AVERARDO            MAZZI               PASSWORDU",
+        "USER0005LEE                 TING                PASSWORDU"
+      ]
+    }
+  },
+  "screenRequest": {
+    "eibcalen": 160,
+    "aid": "DFHENTER",
+    "pinnedClock": "2022-07-19T23:12:34",
+    "charset": "US-ASCII",
+    "commarea": {
+      "CDEMO-FROM-TRANID": "CA00",
+      "CDEMO-FROM-PROGRAM": "COADM01C",
+      "CDEMO-TO-TRANID": "CU01",
+      "CDEMO-TO-PROGRAM": "COUSR01C",
+      "CDEMO-USER-ID": "ADMIN002",
+      "CDEMO-USER-TYPE": "A",
+      "CDEMO-PGM-CONTEXT": "1",
+      "CDEMO-CUST-ID": "000000042",
+      "CDEMO-CUST-FNAME": "AJITH                    ",
+      "CDEMO-CUST-MNAME": "K                        ",
+      "CDEMO-CUST-LNAME": "KUMAR                    ",
+      "CDEMO-ACCT-ID": "00000000017",
+      "CDEMO-ACCT-STATUS": "Y",
+      "CDEMO-CARD-NUM": "0000000000001234",
+      "CDEMO-LAST-MAP": "COADM1A",
+      "CDEMO-LAST-MAPSET": "COADM01"
+    },
+    "mapFields": {
+      "TRNNAMEI": "XXXX",
+      "TITLE01I": "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+      "CURDATEI": "99/99/99",
+      "PGMNAMEI": "GARBAGE!",
+      "TITLE02I": "YYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYY",
+      "CURTIMEI": "99:99:99",
+      "ERRMSGI": "stale text from the previous send                                             ",
+      "FNAMEI": "LAWRENCE            ",
+      "LNAMEI": "THOMAS              ",
+      "USERIDI": "USER0006",
+      "PASSWDI": "PASSWORD",
+      "USRTYPEI": "U"
+    },
+    "forcedOutcomes": {}
+  },
+  "expectedResponse": {
+    "nextProgram": "COUSR01C",
+    "nextMapset": "COUSR01",
+    "nextMap": "COUSR1A",
+    "navigation": {
+      "CDEMO-FROM-TRANID": "CA00",
+      "CDEMO-FROM-PROGRAM": "COADM01C",
+      "CDEMO-TO-TRANID": "CU01",
+      "CDEMO-TO-PROGRAM": "COUSR01C",
+      "CDEMO-USER-ID": "ADMIN002",
+      "CDEMO-USER-TYPE": "A",
+      "CDEMO-PGM-CONTEXT": "1",
+      "CDEMO-CUST-ID": "000000042",
+      "CDEMO-CUST-FNAME": "AJITH                    ",
+      "CDEMO-CUST-MNAME": "K                        ",
+      "CDEMO-CUST-LNAME": "KUMAR                    ",
+      "CDEMO-ACCT-ID": "00000000017",
+      "CDEMO-ACCT-STATUS": "Y",
+      "CDEMO-CARD-NUM": "0000000000001234",
+      "CDEMO-LAST-MAP": "COADM1A",
+      "CDEMO-LAST-MAPSET": "COADM01"
+    },
+    "sends": [
+      {
+        "fields": {
+          "TRNNAMEO": "CU01",
+          "TITLE01O": "      AWS Mainframe Modernization       ",
+          "CURDATEO": "07/19/22",
+          "PGMNAMEO": "COUSR01C",
+          "TITLE02O": "              CardDemo                  ",
+          "CURTIMEO": "23:12:34",
+          "FNAMEO": "                    ",
+          "LNAMEO": "                    ",
+          "USERIDO": "        ",
+          "PASSWDO": "        ",
+          "USRTYPEO": " ",
+          "ERRMSGO": "User USER0006 has been added ...                                              "
+        },
+        "attributes": {
+          "ERRMSGC": "DFHGREEN"
+        }
+      }
+    ],
+    "cursorField": "FNAMEL",
+    "termination": "RETURN_TRANSID"
+  },
+  "expectedWrites": [
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 0,
+      "fields": {
+        "SEC-USR-ID": "USER0006",
+        "SEC-USR-FNAME": "LAWRENCE            ",
+        "SEC-USR-LNAME": "THOMAS              ",
+        "SEC-USR-PWD": "PASSWORD",
+        "SEC-USR-TYPE": "U",
+        "SEC-USR-FILLER": "                       "
+      },
+      "expectedBytes": "USER0006LAWRENCE            THOMAS              PASSWORDU                       "
+    }
+  ],
+  "expectedFinalState": [
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 0,
+      "expectedBytes": "ADMIN001MARGARET            GOLD                PASSWORDA                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 1,
+      "expectedBytes": "ADMIN002RUSSELL             RUSSELL             PASSWORDA                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 2,
+      "expectedBytes": "ADMIN003RAYMOND             WHITMORE            PASSWORDA                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 3,
+      "expectedBytes": "ADMIN004EMMANUEL            CASGRAIN            PASSWORDA                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 4,
+      "expectedBytes": "ADMIN005GRANVILLE           LACHAPELLE          PASSWORDA                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 5,
+      "expectedBytes": "USER0001LAWRENCE            THOMAS              PASSWORDU                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 6,
+      "expectedBytes": "USER0002AJITH               KUMAR               PASSWORDU                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 7,
+      "expectedBytes": "USER0003LAURITZ             ALME                PASSWORDU                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 8,
+      "expectedBytes": "USER0004AVERARDO            MAZZI               PASSWORDU                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 9,
+      "expectedBytes": "USER0005LEE                 TING                PASSWORDU                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 10,
+      "expectedBytes": "USER0006LAWRENCE            THOMAS              PASSWORDU                       "
+    }
+  ],
+  "expectedReturnCode": 0,
+  "expectedMessages": [
+    {
+      "channel": "WS_MESSAGE_80",
+      "text": "User USER0006 has been added ...                                                "
+    },
+    {
+      "channel": "SCREEN_ERRMSG_78",
+      "text": "User USER0006 has been added ...                                              "
+    }
+  ],
+  "normalisations": [
+    {
+      "dataset": "USRSEC",
+      "kind": "USRSEC_FILLER_PAD_57_TO_80"
+    }
+  ]
+}

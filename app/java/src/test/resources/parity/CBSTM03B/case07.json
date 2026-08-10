@@ -1,0 +1,104 @@
+{
+  "program": "CBSTM03B",
+  "caseId": "case07",
+  "description": "Three successive reads of XREFFILE, the browse app/cbl/CBSTM03A.CBL:766-769 and :874-877 perform, followed by the CLOSE at :874-877's counterpart. The three fixture rows are returned in ascending RECORD KEY IS FD-XREF-CARD-NUM order - card numbers 0500024453765740, 0683586198171516 and 0923877193247330 - so the case pins the ORDER of a keyed browse and not merely its contents. app/data/ASCII/cardxref.txt is already stored in that order, which is what a KSDS guarantees and what the seeded relation reproduces.",
+  "unitKind": "COMPONENT",
+  "inputs": {
+    "XREFFILE": {
+      "fixture": "cardxref.txt",
+      "fromRow": 0,
+      "rowCount": 3
+    }
+  },
+  "jobParameters": {},
+  "screenRequest": null,
+  "expectedResponse": null,
+  "expectedWrites": [
+    {
+      "dataset": "M03BAREA",
+      "rowIndex": 0,
+      "fields": {
+        "LK-M03B-DD": "XREFFILE",
+        "LK-M03B-OPER": "O",
+        "LK-M03B-RC": "00"
+      },
+      "expectedBytes": "XREFFILEO00                         000{                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        "
+    },
+    {
+      "dataset": "M03BAREA",
+      "rowIndex": 1,
+      "fields": {
+        "LK-M03B-DD": "XREFFILE",
+        "LK-M03B-OPER": "R",
+        "LK-M03B-RC": "00"
+      },
+      "expectedBytes": "XREFFILER00                         000{050002445376574000000005000000000050                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    "
+    },
+    {
+      "dataset": "M03BAREA",
+      "rowIndex": 2,
+      "fields": {
+        "LK-M03B-DD": "XREFFILE",
+        "LK-M03B-OPER": "R",
+        "LK-M03B-RC": "00"
+      },
+      "expectedBytes": "XREFFILER00                         000{068358619817151600000002700000000027                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    "
+    },
+    {
+      "dataset": "M03BAREA",
+      "rowIndex": 3,
+      "fields": {
+        "LK-M03B-DD": "XREFFILE",
+        "LK-M03B-OPER": "R",
+        "LK-M03B-RC": "00"
+      },
+      "expectedBytes": "XREFFILER00                         000{092387719324733000000000200000000002                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    "
+    },
+    {
+      "dataset": "M03BAREA",
+      "rowIndex": 4,
+      "fields": {
+        "LK-M03B-DD": "XREFFILE",
+        "LK-M03B-OPER": "C",
+        "LK-M03B-RC": "00"
+      },
+      "expectedBytes": "XREFFILEC00                         000{092387719324733000000000200000000002                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    "
+    }
+  ],
+  "expectedFinalState": [
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 0,
+      "fields": {},
+      "expectedBytes": "050002445376574000000005000000000050              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 1,
+      "fields": {},
+      "expectedBytes": "068358619817151600000002700000000027              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 2,
+      "fields": {},
+      "expectedBytes": "092387719324733000000000200000000002              "
+    }
+  ],
+  "expectedReturnCode": 0,
+  "expectedMessages": [],
+  "normalisations": [
+    {
+      "dataset": "XREFFILE",
+      "kind": "CARDXREF_FILLER_PAD_36_TO_50"
+    }
+  ],
+  "expectedDatasets": [
+    {
+      "dataset": "M03BAREA",
+      "channel": "WRITES",
+      "rowCount": 5,
+      "recordLength": 1040
+    }
+  ]
+}

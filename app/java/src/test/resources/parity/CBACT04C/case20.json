@@ -1,0 +1,258 @@
+{
+  "program": "CBACT04C",
+  "caseId": "case20",
+  "description": "VOLUME AND ORDER, entirely from the fixtures. The first four rows of tcatbal.txt and the first four of acctdata.txt are seeded as contiguous slices, with the four matching cardxref.txt rows verbatim, and the only inline row is DEFAULT type 01 category 0001 taken verbatim from discgrp.txt row 17. Because every acctdata.txt row carries ACCT-GROUP-ID as ten spaces, all four records take the '23' fallback, so the displayed sequence is the record image followed by the two disclosure-group lines FOUR TIMES, in that order and interleaved rather than grouped - fourteen lines in total, and a run that batched its lookups would produce the same set in the wrong order and fail here. Four transactions are written with ascending identifiers and three accounts are rewritten, the fourth being the final group. Every balance in that fixture is a positive zero, so each rewrite adds 0.00 and clears two spans that already hold 00000000000{: the account images come back byte-identical to their seeds, and that is the correct answer rather than a missing assertion - what this case proves is the SEQUENCE.",
+  "unitKind": "BATCH_JOB",
+  "inputs": {
+    "TCATBALF": {
+      "fixture": "tcatbal.txt",
+      "fromRow": 0,
+      "rowCount": 4
+    },
+    "ACCTFILE": {
+      "fixture": "acctdata.txt",
+      "fromRow": 0,
+      "rowCount": 4
+    },
+    "XREFFILE": {
+      "rows": [
+        "968029415460369700000000100000000001",
+        "092387719324733000000000200000000002",
+        "399916924637588500000000300000000003",
+        "298809135309431200000000400000000004"
+      ]
+    },
+    "XREFFIL1": {
+      "rows": [
+        "968029415460369700000000100000000001",
+        "092387719324733000000000200000000002",
+        "399916924637588500000000300000000003",
+        "298809135309431200000000400000000004"
+      ]
+    },
+    "DISCGRP": {
+      "fixture": "discgrp.txt",
+      "fromRow": 17,
+      "rowCount": 1
+    }
+  },
+  "jobParameters": {
+    "parmDate": "2022071800"
+  },
+  "expectedWrites": [
+    {
+      "dataset": "SYSTRAN",
+      "rowIndex": 0,
+      "expectedBytes": "2022071800000001010005System    Int. for a/c 00000000001                                                                            0000000000{000000000                                                                                                              96802941546036972022-07-19-23.12.34.0000002022-07-19-23.12.34.000000                    "
+    },
+    {
+      "dataset": "SYSTRAN",
+      "rowIndex": 1,
+      "expectedBytes": "2022071800000002010005System    Int. for a/c 00000000002                                                                            0000000000{000000000                                                                                                              09238771932473302022-07-19-23.12.34.0000002022-07-19-23.12.34.000000                    "
+    },
+    {
+      "dataset": "SYSTRAN",
+      "rowIndex": 2,
+      "expectedBytes": "2022071800000003010005System    Int. for a/c 00000000003                                                                            0000000000{000000000                                                                                                              39991692463758852022-07-19-23.12.34.0000002022-07-19-23.12.34.000000                    "
+    },
+    {
+      "dataset": "SYSTRAN",
+      "rowIndex": 3,
+      "expectedBytes": "2022071800000004010005System    Int. for a/c 00000000004                                                                            0000000000{000000000                                                                                                              29880913530943122022-07-19-23.12.34.0000002022-07-19-23.12.34.000000                    "
+    }
+  ],
+  "expectedFinalState": [
+    {
+      "dataset": "TCATBALF",
+      "rowIndex": 0,
+      "expectedBytes": "000000000010100010000000000{0000000000000000000000"
+    },
+    {
+      "dataset": "TCATBALF",
+      "rowIndex": 1,
+      "expectedBytes": "000000000020100010000000000{0000000000000000000000"
+    },
+    {
+      "dataset": "TCATBALF",
+      "rowIndex": 2,
+      "expectedBytes": "000000000030100010000000000{0000000000000000000000"
+    },
+    {
+      "dataset": "TCATBALF",
+      "rowIndex": 3,
+      "expectedBytes": "000000000040100010000000000{0000000000000000000000"
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 0,
+      "expectedBytes": "00000000001Y00000001940{00000020200{00000010200{2014-11-202025-05-202025-05-2000000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 1,
+      "expectedBytes": "00000000002Y00000001580{00000061300{00000054480{2013-06-192024-08-112024-08-1100000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 2,
+      "expectedBytes": "00000000003Y00000001470{00000049090{00000005380{2013-08-232024-01-102024-01-1000000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 3,
+      "expectedBytes": "00000000004Y00000000400{00000035030{00000027890{2012-11-172023-12-162023-12-1600000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 0,
+      "expectedBytes": "092387719324733000000000200000000002              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 1,
+      "expectedBytes": "298809135309431200000000400000000004              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 2,
+      "expectedBytes": "399916924637588500000000300000000003              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 3,
+      "expectedBytes": "968029415460369700000000100000000001              "
+    },
+    {
+      "dataset": "XREFFIL1",
+      "rowIndex": 0,
+      "expectedBytes": "092387719324733000000000200000000002              "
+    },
+    {
+      "dataset": "XREFFIL1",
+      "rowIndex": 1,
+      "expectedBytes": "298809135309431200000000400000000004              "
+    },
+    {
+      "dataset": "XREFFIL1",
+      "rowIndex": 2,
+      "expectedBytes": "399916924637588500000000300000000003              "
+    },
+    {
+      "dataset": "XREFFIL1",
+      "rowIndex": 3,
+      "expectedBytes": "968029415460369700000000100000000001              "
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 0,
+      "expectedBytes": "DEFAULT   01000100150{0000000000000000000000000000"
+    }
+  ],
+  "expectedReturnCode": 0,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "START OF EXECUTION OF PROGRAM CBACT04C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "000000000010100010000000000{0000000000000000000000"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "DISCLOSURE GROUP RECORD MISSING"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "TRY WITH DEFAULT GROUP CODE"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "000000000020100010000000000{0000000000000000000000"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "DISCLOSURE GROUP RECORD MISSING"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "TRY WITH DEFAULT GROUP CODE"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "000000000030100010000000000{0000000000000000000000"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "DISCLOSURE GROUP RECORD MISSING"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "TRY WITH DEFAULT GROUP CODE"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "000000000040100010000000000{0000000000000000000000"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "DISCLOSURE GROUP RECORD MISSING"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "TRY WITH DEFAULT GROUP CODE"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "END OF EXECUTION OF PROGRAM CBACT04C"
+    }
+  ],
+  "normalisations": [
+    {
+      "dataset": "XREFFILE",
+      "kind": "CARDXREF_FILLER_PAD_36_TO_50"
+    },
+    {
+      "dataset": "XREFFIL1",
+      "kind": "CARDXREF_FILLER_PAD_36_TO_50"
+    }
+  ],
+  "expectedDatasets": [
+    {
+      "dataset": "SYSTRAN",
+      "channel": "WRITES",
+      "rowCount": 4,
+      "recordLength": 350
+    },
+    {
+      "dataset": "TCATBALF",
+      "channel": "FINAL_STATE",
+      "rowCount": 4,
+      "recordLength": 50
+    },
+    {
+      "dataset": "ACCTFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 4,
+      "recordLength": 300
+    },
+    {
+      "dataset": "XREFFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 4,
+      "recordLength": 50
+    },
+    {
+      "dataset": "XREFFIL1",
+      "channel": "FINAL_STATE",
+      "rowCount": 4,
+      "recordLength": 50
+    },
+    {
+      "dataset": "DISCGRP",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 50
+    }
+  ]
+}

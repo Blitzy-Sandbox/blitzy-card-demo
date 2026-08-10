@@ -1,0 +1,122 @@
+{
+  "program": "COCRDLIC",
+  "caseId": "case03",
+  "description": "A partial page: four records, then DFHRESP(ENDFILE) inside the loop rather than on the look-ahead, so a different arm runs. :1233-1237 ends the loop, sets CA-NEXT-PAGE-NOT-EXISTS and stores the key of the last record actually returned, because CARD-RECORD still holds it - an ENDFILE read returns no record and overwrites nothing. :1238-1240 moves 'NO MORE RECORDS TO SHOW'. The empty-result branch at :1241-1245 does not fire, because WS-SCRN-COUNTER is four. Rows five through seven keep the LOW-VALUES that MOVE LOW-VALUES TO WS-ALL-ROWS left at :1124, so 1200-SCREEN-ARRAY-INIT skips them at :716, :726 and :735 and all fifteen of their map items stay LOW-VALUES - including CRDSELnO, which is why a blank row and an unselected row are distinguishable on the wire.",
+  "unitKind": "CONTROLLER_POJO",
+  "inputs": {
+    "CARDDAT": {
+      "fixture": "carddata.txt",
+      "rowCount": 4
+    }
+  },
+  "screenRequest": {
+    "eibcalen": 0,
+    "pinnedClock": "2022-07-19T23:12:34",
+    "charset": "US-ASCII",
+    "commarea": {},
+    "mapFields": {},
+    "forcedOutcomes": {},
+    "aid": "DFHENTER"
+  },
+  "expectedResponse": {
+    "navigation": {
+      "CDEMO-FROM-TRANID": "CCLI",
+      "CDEMO-FROM-PROGRAM": "COCRDLIC",
+      "CDEMO-TO-TRANID": "    ",
+      "CDEMO-TO-PROGRAM": "        ",
+      "CDEMO-USER-ID": "        ",
+      "CDEMO-USER-TYPE": "U",
+      "CDEMO-PGM-CONTEXT": "0",
+      "CDEMO-CUST-ID": "000000000",
+      "CDEMO-CUST-FNAME": "                         ",
+      "CDEMO-CUST-MNAME": "                         ",
+      "CDEMO-CUST-LNAME": "                         ",
+      "CDEMO-ACCT-ID": "00000000000",
+      "CDEMO-ACCT-STATUS": " ",
+      "CDEMO-CARD-NUM": "0000000000000000",
+      "CDEMO-LAST-MAP": "CCRDLIA",
+      "CDEMO-LAST-MAPSET": "COCRDLI"
+    },
+    "sends": [
+      {
+        "fields": {
+          "TRNNAMEO": "CCLI",
+          "TITLE01O": "      AWS Mainframe Modernization       ",
+          "CURDATEO": "07/19/22",
+          "PGMNAMEO": "COCRDLIC",
+          "TITLE02O": "              CardDemo                  ",
+          "CURTIMEO": "23:12:34",
+          "PAGENOO": "1  ",
+          "ACCTSIDO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "CARDSIDO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "CRDSEL1O": " ",
+          "ACCTNO1O": "00000000050",
+          "CRDNUM1O": "0500024453765740",
+          "CRDSTS1O": "Y",
+          "CRDSEL2O": " ",
+          "CRDSTP2O": "\u0000",
+          "ACCTNO2O": "00000000027",
+          "CRDNUM2O": "0683586198171516",
+          "CRDSTS2O": "Y",
+          "CRDSEL3O": " ",
+          "CRDSTP3O": "\u0000",
+          "ACCTNO3O": "00000000002",
+          "CRDNUM3O": "0923877193247330",
+          "CRDSTS3O": "Y",
+          "CRDSEL4O": " ",
+          "CRDSTP4O": "\u0000",
+          "ACCTNO4O": "00000000020",
+          "CRDNUM4O": "0927987108636232",
+          "CRDSTS4O": "Y",
+          "CRDSEL5O": "\u0000",
+          "CRDSTP5O": "\u0000",
+          "ACCTNO5O": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "CRDNUM5O": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "CRDSTS5O": "\u0000",
+          "CRDSEL6O": "\u0000",
+          "CRDSTP6O": "\u0000",
+          "ACCTNO6O": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "CRDNUM6O": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "CRDSTS6O": "\u0000",
+          "CRDSEL7O": "\u0000",
+          "CRDSTP7O": "\u0000",
+          "ACCTNO7O": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "CRDNUM7O": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "CRDSTS7O": "\u0000",
+          "INFOMSGO": "TYPE S FOR DETAIL, U TO UPDATE ANY RECORD    ",
+          "ERRMSGO": "NO MORE RECORDS TO SHOW                                                       "
+        },
+        "attributes": {
+          "INFOMSGC": "DFHNEUTR"
+        }
+      }
+    ],
+    "cursorField": "ACCTSIDL",
+    "termination": "RETURN_TRANSID"
+  },
+  "expectedWrites": [],
+  "expectedFinalState": [
+    {
+      "dataset": "CARDDAT",
+      "rowIndex": 0,
+      "expectedBytes": "050002445376574000000000050747Aniya Von                                         2023-03-09Y                                                           "
+    },
+    {
+      "dataset": "CARDDAT",
+      "rowIndex": 1,
+      "expectedBytes": "068358619817151600000000027567Ward Jones                                        2025-07-13Y                                                           "
+    },
+    {
+      "dataset": "CARDDAT",
+      "rowIndex": 2,
+      "expectedBytes": "092387719324733000000000002028Enrico Rosenbaum                                  2024-08-11Y                                                           "
+    },
+    {
+      "dataset": "CARDDAT",
+      "rowIndex": 3,
+      "expectedBytes": "092798710863623200000000020003Carter Veum                                       2024-03-13Y                                                           "
+    }
+  ],
+  "expectedReturnCode": 0,
+  "expectedMessages": []
+}

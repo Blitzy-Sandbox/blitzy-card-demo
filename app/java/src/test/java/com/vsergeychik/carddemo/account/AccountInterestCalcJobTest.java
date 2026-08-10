@@ -35,7 +35,9 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.Mockito;
 import org.springframework.batch.core.Job;
@@ -59,6 +61,8 @@ import org.springframework.transaction.PlatformTransactionManager;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.UncheckedIOException;
+import java.lang.reflect.Field;
+import java.lang.reflect.Modifier;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.nio.charset.Charset;
@@ -453,28 +457,112 @@ class AccountInterestCalcJobTest {
 
     // ---------------------------------------------------------------------------------------- G25
 
-    @Test
-    void monthlyInterestTruncatesRatherThanRounds() {
-        // 1000.00 * 12.50 / 1200 = 10.41666... -> 10.41 under DOWN, 10.42 under HALF_UP.
-        BigDecimal down = AccountInterestCalcJob.computeMonthlyInterest(
-                new BigDecimal("1000.00"), new BigDecimal("12.50"));
-        assertThat(down).isEqualTo(new BigDecimal("10.41"));
-        assertThat(new BigDecimal("1000.00").multiply(new BigDecimal("12.50"))
-                .divide(new BigDecimal("1200"), 2, RoundingMode.HALF_UP))
-                .isEqualTo(new BigDecimal("10.42"));
-        assertThat(down.scale()).isEqualTo(2);
+    /**
+     * {@code COMPUTE WS-MONTHLY-INT = ( TRAN-CAT-BAL * DIS-INT-RATE) / 1200} at
+     * {@code app/cbl/CBACT04C.cbl:464-465}, driven as a matrix rather than as one worked example.
+     *
+     * <p><strong>Why a matrix, and why these rows.</strong> {@code ROUNDED} appears zero times in all
+     * 28 programs - verified with {@code grep -c ROUNDED app/cbl/*} - so the store into
+     * {@code WS-MONTHLY-INT PIC S9(09)V99} ({@code :168}) <em>truncates</em>. A single example cannot
+     * distinguish truncation from rounding unless the exact quotient's third decimal digit happens to
+     * be five or more, so six of the eleven rows below are chosen precisely because they diverge, and
+     * each carries the half-up answer in its own column. If anyone ever swaps
+     * {@link RoundingMode#DOWN} for a rounding mode, those six rows fail by name.
+     *
+     * <p><strong>Why the divergent answer is a literal and not a computation.</strong> Gate G24 admits
+     * no occurrence of {@code HALF_UP}, {@code HALF_EVEN}, {@code CEILING} or {@code FLOOR} anywhere,
+     * and {@link TheNumericParityGates#neitherTheJobNorTheDecimalPolicyNamesARoundingMode()} greps for
+     * exactly that. So the rounded alternative is stated as data - recomputed by hand from the exact
+     * quotient - rather than produced by naming the forbidden mode here.
+     *
+     * <p><strong>Negative rows.</strong> {@code TRAN-CAT-BAL} is {@code PIC S9(09)V99} and
+     * {@code DIS-INT-RATE} is {@code PIC S9(04)V99}: both are signed, so a credit balance is
+     * representable and reachable. COBOL truncation discards excess digits, which is truncation
+     * <em>toward zero</em>, and that is {@code DOWN} - not {@code FLOOR}, which would take
+     * {@code -1.249875} to {@code -1.25} and away from zero.
+     *
+     * <p>Every expected value below was derived from the copybook scales and recomputed by hand; no
+     * COBOL execution baseline exists for this program (AAP 0.7.6, risk R-A), so provenance is the
+     * arithmetic itself, shown in each row's comment.
+     *
+     * @param balance            {@code TRAN-CAT-BAL}, scale 2
+     * @param rate               {@code DIS-INT-RATE}, scale 2, a percentage
+     * @param expectedDown       the value COBOL stores, truncated to scale 2
+     * @param roundedAlternative the value a half-up implementation would store instead; equal to
+     *                           {@code expectedDown} on the rows where the two modes agree
+     */
+    @ParameterizedTest(name = "{0} at {1}% -> {2} (a rounding implementation would say {3})")
+    @CsvSource({
+        // 1499.8500 / 1200 = 1.249875           - diverges
+        "     99.99, 15.00,   1.24,   1.25",
+        // 1500.0000 / 1200 = 1.25 exactly       - agrees
+        "    100.00, 15.00,   1.25,   1.25",
+        //  190.0000 / 1200 = 0.158333...        - diverges
+        "   1000.00,  0.19,   0.15,   0.16",
+        // 12500.0000 / 1200 = 10.416666...      - diverges
+        "   1000.00, 12.50,  10.41,  10.42",
+        // 24678.8544 / 1200 = 20.565712         - diverges
+        "   1234.56, 19.99,  20.56,  20.57",
+        // 18518.4000 / 1200 = 15.432            - agrees; discgrp.txt's own 15.00 rate
+        "   1234.56, 15.00,  15.43,  15.43",
+        // zero balance is the whole shipped tcatbal.txt fixture: 0.00 at any rate
+        "      0.00, 15.00,   0.00,   0.00",
+        // 0.1500 / 1200 = 0.000125              - agrees, both floor to zero
+        "      0.01, 15.00,   0.00,   0.00",
+        // signed: -1.249875, truncated TOWARD ZERO - diverges, and FLOOR would also be wrong
+        "    -99.99, 15.00,  -1.24,  -1.25",
+        // signed: -0.158333...                  - diverges
+        "  -1000.00,  0.19,  -0.15,  -0.16",
+        // signed: -10.416666...                 - diverges
+        "  -1000.00, 12.50, -10.41, -10.42",
+    })
+    void theInterestFormulaTruncatesAtEveryRow(String balance, String rate, String expectedDown,
+            String roundedAlternative) {
+
+        BigDecimal computed = AccountInterestCalcJob.computeMonthlyInterest(
+                new BigDecimal(balance.trim()), new BigDecimal(rate.trim()));
+
+        // G23: the receiver is PIC S9(09)V99, so the stored value carries scale exactly 2 - not "a
+        // value that happens to be numerically equal at some other scale". isEqualTo on BigDecimal
+        // compares scale as well as value, which is why it is used here in preference to compareTo.
+        assertThat(computed).isEqualTo(new BigDecimal(expectedDown.trim()));
+        assertThat(computed.scale()).isEqualTo(2);
+
+        // G24: on every divergent row the truncated answer must NOT be the rounded one. This is the
+        // assertion a HALF_UP or HALF_EVEN regression trips, and it is stated per row so the failure
+        // names the operands.
+        BigDecimal rounded = new BigDecimal(roundedAlternative.trim());
+        if (rounded.compareTo(new BigDecimal(expectedDown.trim())) != 0) {
+            assertThat(computed).isNotEqualByComparingTo(rounded);
+        }
     }
 
+    /**
+     * The same formula reached through the job's own arithmetic seam, for the two rates that actually
+     * occur in {@code app/data/ASCII/discgrp.txt}.
+     *
+     * <p>Slicing all 51 fixture rows gives exactly three group ids - {@code A000000000},
+     * {@code 'DEFAULT   '} and {@code 'ZEROAPR   '} - of seventeen rows each, and the
+     * {@code 01}/{@code 0001} row of the first two carries {@code 00150}{@code &#123;}, which is
+     * {@code 15.00} once the trailing zoned overpunch is read as a positive sign. {@code ZEROAPR}
+     * carries {@code 00000}{@code &#123;}, which is {@code 0.00} and is the rate that closes the
+     * {@code IF DIS-INT-RATE NOT = 0} guard at {@code :214}.
+     */
     @Test
     void monthlyInterestUsesTheFixtureRates() {
-        // discgrp.txt row 1: group A000000000, type 01, cat 0001, rate 15.00.
-        BigDecimal fifteen = AccountInterestCalcJob.computeMonthlyInterest(
-                new BigDecimal("1234.56"), new BigDecimal("15.00"));
-        // 1234.56 * 15.00 = 18518.4000; / 1200 = 15.43200 -> 15.43
-        assertThat(fifteen).isEqualTo(new BigDecimal("15.43"));
         assertThat(AccountInterestCalcJob.computeMonthlyInterest(
-                new BigDecimal("-1000.00"), new BigDecimal("12.50")))
-                .isEqualTo(new BigDecimal("-10.41"));
+                new BigDecimal("1234.56"), new BigDecimal("15.00")))
+                .isEqualTo(new BigDecimal("15.43"));
+        // ZEROAPR: any balance at 0.00 yields 0.00, which is why the guard matters.
+        assertThat(AccountInterestCalcJob.computeMonthlyInterest(
+                new BigDecimal("999999.99"), new BigDecimal("0.00")))
+                .isEqualTo(new BigDecimal("0.00"));
+        // The whole shipped tcatbal.txt: every one of its 50 rows is 0.00, so at the fixture rate of
+        // 15.00 the fixtures generate no interest at all. That is exactly why the matrix above
+        // synthesises its own balances (agent brief, phase 4).
+        assertThat(AccountInterestCalcJob.computeMonthlyInterest(
+                new BigDecimal("0.00"), new BigDecimal("15.00")))
+                .isEqualTo(new BigDecimal("0.00"));
     }
 
     // ---------------------------------------------------------------------------------------- G26
@@ -492,6 +580,29 @@ class AccountInterestCalcJobTest {
         Mockito.verify(spy, Mockito.times(1)).computeFees();
     }
 
+    /**
+     * {@code IF DIS-INT-RATE NOT = 0} at {@code app/cbl/CBACT04C.cbl:214} closes over
+     * <strong>both</strong> {@code :215} and {@code :216}, so a zero rate reaches neither
+     * {@code 1300-COMPUTE-INTEREST} nor {@code 1400-COMPUTE-FEES}.
+     *
+     * <p><strong>This corrects the plan.</strong> AAP 0.8.3 states that
+     * {@code 1400-COMPUTE-FEES} "is invoked unconditionally alongside the interest calculation
+     * [L216]". That is wrong, and it was re-checked against the source rather than taken on trust:
+     * {@code sed -n '213,218p'} shows {@code IF DIS-INT-RATE NOT = 0} on {@code :214},
+     * {@code PERFORM 1300-COMPUTE-INTEREST} on {@code :215}, {@code PERFORM 1400-COMPUTE-FEES} on
+     * {@code :216} and the closing {@code END-IF} on {@code :217}. The fee stub is invoked
+     * unconditionally <em>with respect to the interest computation</em> - never one without the
+     * other - but the pair together is guarded. The behaviour is asserted from the source and the
+     * divergence is recorded here rather than silently conformed to (practice B4).
+     *
+     * <p>The rate used is {@code 0.00} at scale 2 and not {@code BigDecimal.ZERO}, deliberately. The
+     * COBOL comparison is a numeric-value comparison, so the Java guard has to be
+     * {@link BigDecimal#compareTo(BigDecimal)} and cannot be {@code equals}: the two are
+     * {@code compareTo}-equal and <em>not</em> {@code equals}-equal, which the second block below
+     * states outright. A guard written with {@code equals} would pass a test that used
+     * {@code BigDecimal.ZERO} and then compute interest on every zero-rate group in production,
+     * because {@code DIS-INT-RATE} always arrives from the codec at scale 2.
+     */
     @Test
     void feesIsNotCalledWhenTheRateIsZero() {
         JdbcTemplate t = database();
@@ -499,6 +610,7 @@ class AccountInterestCalcJobTest {
         seed(t, ACCT_DS, acctImage(11L, "500.00", "A000000000"));
         seed(t, XREF_DS, xrefImage("4444333322221111", 1, 11L));
         seed(t, XREF_AIX_DS, xrefImage("4444333322221111", 1, 11L));
+        // 'ZEROAPR' in the real fixture carries 00000{ here; a scale-2 zero is what the codec yields.
         seed(t, DISCGRP_DS, discgrpImage("A000000000", "01", 1, "0.00"));
         DatasetBindings b = bindings();
         CapturedSysout sysout = new CapturedSysout();
@@ -506,8 +618,20 @@ class AccountInterestCalcJobTest {
 
         spy.calculateInterest(PARM, sysout);
 
+        // Neither arm of the guard ran: no fee call, and no generated transaction either.
         Mockito.verify(spy, Mockito.never()).computeFees();
         assertThat(rows(t, SYSTRAN_DS)).isEmpty();
+        // The record was still counted and still displayed - :192-193 sit OUTSIDE the guard.
+        assertThat(sysout.lines()).hasSize(3);
+
+        // Why the guard must compare by value: the rate the codec produced above is scale-2 zero, and
+        // that is equals-different from BigDecimal.ZERO while being compareTo-identical to it.
+        BigDecimal codecZero = DisclosureGroupRecord
+                .decode(discgrpImage("A000000000", "01", 1, "0.00"), ASCII).disIntRate();
+        assertThat(codecZero.scale()).isEqualTo(2);
+        assertThat(codecZero).isNotEqualTo(BigDecimal.ZERO).isEqualByComparingTo(BigDecimal.ZERO);
+        assertThat(codecZero.equals(BigDecimal.ZERO)).isFalse();
+        assertThat(codecZero.compareTo(BigDecimal.ZERO)).isZero();
     }
 
     @Test
@@ -548,6 +672,53 @@ class AccountInterestCalcJobTest {
         assertThat(record.tranCardNum()).isEqualTo("4444333322221111");
         assertThat(record.tranOrigTs()).isEqualTo(record.tranProcTs());
         assertThat(record.filler()).isEqualTo(" ".repeat(20));
+
+        // -------------------------------------------------------------------------------------------
+        // The same record again, read as BYTES at the absolute offsets app/cpy/CVTRA05Y.cpy declares.
+        //
+        // The accessors above are the record type's view of itself; these are the dataset's. They are
+        // deliberately both present, because a field pair swapped consistently in the encoder and the
+        // decoder round-trips perfectly through the accessors and still writes an unreadable dataset.
+        // The offsets are stated as literals as well as constants, so a constant that drifted from the
+        // copybook fails here rather than agreeing with itself.
+        // -------------------------------------------------------------------------------------------
+        assertThat(TranRecord.TRAN_ID_OFFSET).isZero();
+        assertThat(image.substring(0, 16)).isEqualTo("2022071800000001");
+        assertThat(image.substring(TranRecord.TRAN_ID_OFFSET,
+                TranRecord.TRAN_ID_OFFSET + TranRecord.TRAN_ID_LENGTH))
+                .isEqualTo("2022071800000001");
+        assertThat(image.substring(16, 18)).isEqualTo("01");
+        // PIC 9(04) receiving the two-character literal '05': a numeric receiver is filled from the
+        // RIGHT, so the value is 0005 and not '05  '.
+        assertThat(image.substring(18, 22)).isEqualTo("0005");
+        // PIC X(10) receiving 'System': an alphanumeric receiver is filled from the LEFT.
+        assertThat(image.substring(22, 32)).isEqualTo("System    ");
+        assertThat(image.substring(32, 132))
+                .isEqualTo("Int. for a/c 00000000011" + " ".repeat(76));
+        // TRAN-AMT PIC S9(09)V99 = 11 zoned bytes, sign overpunched into the LAST one. 10.41 is the
+        // eleven digits 00000001041 with the trailing 1 carrying the positive zone, which IBM037
+        // renders as 'A' - so the span is 0000000104 followed by A, never "10.41" and never a
+        // separate sign byte.
+        assertThat(image.substring(132, 143)).isEqualTo("0000000104A").hasSize(11);
+        assertThat(TranRecord.TRAN_AMT_OFFSET).isEqualTo(132);
+        assertThat(TranRecord.TRAN_AMT_LENGTH).isEqualTo(11);
+        // PIC 9(09) receiving 0: zero-filled to width, no sign byte - the field is unsigned.
+        assertThat(image.substring(143, 152)).isEqualTo("000000000");
+        assertThat(image.substring(152, 202)).isEqualTo(" ".repeat(50));
+        assertThat(image.substring(202, 252)).isEqualTo(" ".repeat(50));
+        assertThat(image.substring(252, 262)).isEqualTo(" ".repeat(10));
+        // From the CROSS-REFERENCE record read at :205, not from the account record read at :203.
+        assertThat(image.substring(262, 278)).isEqualTo("4444333322221111");
+        // Both timestamps are the SAME 26 bytes: Z-GET-DB2-FORMAT-TIMESTAMP is performed once at :496
+        // and its result moved twice, at :497 and :498.
+        assertThat(image.substring(278, 304)).isEqualTo("2022-07-18-12.34.56.780000").hasSize(26);
+        assertThat(image.substring(304, 330)).isEqualTo("2022-07-18-12.34.56.780000").hasSize(26);
+        // FILLER X(20) - never written by the program, and therefore spaces. G21: if the codec omitted
+        // it the record would be 330 bytes and the hasSize(350) above would already have failed, so
+        // this states the CONTENT the width alone cannot.
+        assertThat(image.substring(330, 350)).isEqualTo(" ".repeat(20));
+        assertThat(TranRecord.FILLER_OFFSET + TranRecord.FILLER_LENGTH)
+                .isEqualTo(TranRecord.RECORD_LENGTH);
     }
 
     // ---------------------------------------------------------------------------- DB2 timestamp
@@ -644,6 +815,198 @@ class AccountInterestCalcJobTest {
         assertThat(first.getAcctCurrBal()).isEqualTo(new BigDecimal("20.82"));
     }
 
+    /**
+     * {@code MOVE WS-MONTHLY-INT TO TRAN-AMT} at {@code app/cbl/CBACT04C.cbl:490} moves the
+     * <strong>per-record</strong> interest, not the running total.
+     *
+     * <p>The two are easy to conflate because {@code :467} adds the same value into
+     * {@code WS-TOTAL-INT} one statement earlier, and a translation that wrote the accumulator into
+     * the transaction would still produce a plausible-looking first record and the correct account
+     * balance. So the categories here carry <em>different</em> balances and rates - {@code 1000.00} at
+     * {@code 12.50} and {@code 99.99} at {@code 15.00} - which makes the per-record amounts
+     * {@code 10.41} and {@code 1.24} and the accumulated total {@code 11.65}. Three distinct values,
+     * so no substitution of one for another can pass.
+     *
+     * <p>The second row is also the divergent truncation case from
+     * {@link #theInterestFormulaTruncatesAtEveryRow} carried end to end through a real run: the exact
+     * quotient is {@code 1.249875}, so a rounding implementation would write {@code 1.25} here and
+     * would post {@code 11.66} to the account.
+     */
+    @Test
+    void theWrittenAmountIsThePerRecordInterestAndNotTheAccumulatedTotal() {
+        JdbcTemplate t = database();
+        // Seeded in ascending TRAN-CAT-KEY order, which is both the insertion order and the key order
+        // a KSDS browse returns, so the assertion holds however the browse is ordered.
+        seed(t, TCATBAL_DS, tcatbalImage(11L, "01", 1, "1000.00"));
+        seed(t, TCATBAL_DS, tcatbalImage(11L, "01", 2, "99.99"));
+        // A second account, purely to make account 11's break happen: the last group is never
+        // rewritten (the unreachable ELSE at :219-221).
+        seed(t, TCATBAL_DS, tcatbalImage(22L, "01", 1, "0.00"));
+        seed(t, ACCT_DS, acctImage(11L, "500.00", "A000000000"));
+        seed(t, ACCT_DS, acctImage(22L, "700.00", "A000000000"));
+        seed(t, XREF_DS, xrefImage("4444333322221111", 1, 11L));
+        seed(t, XREF_DS, xrefImage("4444333322222222", 2, 22L));
+        seed(t, XREF_AIX_DS, xrefImage("4444333322221111", 1, 11L));
+        seed(t, XREF_AIX_DS, xrefImage("4444333322222222", 2, 22L));
+        seed(t, DISCGRP_DS, discgrpImage("A000000000", "01", 1, "12.50"));
+        seed(t, DISCGRP_DS, discgrpImage("A000000000", "01", 2, "15.00"));
+        CapturedSysout sysout = new CapturedSysout();
+
+        long processed = job(t, bindings(), sysout).calculateInterest(PARM, sysout);
+        assertThat(processed).isEqualTo(3L);
+
+        List<BigDecimal> amounts = rows(t, SYSTRAN_DS).stream()
+                .map(image -> TranRecord.decode(image, ASCII).tranAmt())
+                .toList();
+        // Each record carries its OWN interest, at scale 2, truncated: 10.41 then 1.24 then 0.00.
+        assertThat(amounts).containsExactly(new BigDecimal("10.41"), new BigDecimal("1.24"),
+                new BigDecimal("0.00"));
+        assertThat(amounts).allSatisfy(amount -> assertThat(amount.scale()).isEqualTo(2));
+        // And no record carries the accumulator, which is what a WS-TOTAL-INT mix-up would produce.
+        assertThat(amounts).doesNotContain(new BigDecimal("11.65"));
+        // The rounding-mode regression this row exists to catch would have written 1.25 instead.
+        assertThat(amounts).doesNotContain(new BigDecimal("1.25"));
+
+        // ADD WS-TOTAL-INT TO ACCT-CURR-BAL at :352 posts the accumulator, once, on the break.
+        AccountRecord broken = rows(t, ACCT_DS).stream().map(image -> AccountRecord.decode(image, ASCII))
+                .filter(account -> account.getAcctId() == 11L).findFirst().orElseThrow();
+        assertThat(broken.getAcctCurrBal()).isEqualTo(new BigDecimal("511.65"));
+    }
+
+    /**
+     * {@code :210-212} composes {@code DIS-GROUP-KEY} from the account's group id, then the category
+     * code, then the type code - and each lands in the span {@code app/cpy/CVTRA02Y.cpy} declares for
+     * it, not in source order.
+     *
+     * <pre>
+     * MOVE ACCT-GROUP-ID   TO FD-DIS-ACCT-GROUP-ID     :210   offset  0, X(10)
+     * MOVE TRANCAT-CD      TO FD-DIS-TRAN-CAT-CD       :211   offset 12, 9(04)
+     * MOVE TRANCAT-TYPE-CD TO FD-DIS-TRAN-TYPE-CD      :212   offset 10, X(02)
+     * </pre>
+     *
+     * <p>The two middle moves are written in the opposite order to the fields' physical order, which
+     * is precisely why this needs asserting: a translation that followed the statement order and
+     * packed the values consecutively would put the category where the type belongs. Both keys are 16
+     * characters either way, so no width check can see the mistake - it surfaces only as a disclosure
+     * group that is silently not found, which then falls through to {@code 'DEFAULT   '} and charges
+     * the wrong rate.
+     */
+    @Test
+    void theDisclosureKeyPlacesTheCategoryAndTypeInTheirDeclaredSpans() {
+        // The copybook's own geometry, restated so the expectation below is traceable to it.
+        assertThat(DisclosureGroupRecord.DIS_ACCT_GROUP_ID_OFFSET).isZero();
+        assertThat(DisclosureGroupRecord.DIS_ACCT_GROUP_ID_LENGTH).isEqualTo(10);
+        assertThat(DisclosureGroupRecord.DIS_TRAN_TYPE_CD_OFFSET).isEqualTo(10);
+        assertThat(DisclosureGroupRecord.DIS_TRAN_TYPE_CD_LENGTH).isEqualTo(2);
+        assertThat(DisclosureGroupRecord.DIS_TRAN_CAT_CD_OFFSET).isEqualTo(12);
+        assertThat(DisclosureGroupRecord.DIS_TRAN_CAT_CD_LENGTH).isEqualTo(4);
+
+        // The key the job actually asks the DISCGRP path for, captured from the seam.
+        Doubles doubles = new Doubles().withOneRecord();
+        doubles.job().calculateInterest(PARM, doubles.sysout);
+        assertThat(doubles.discgrp.keysRead)
+                .containsExactly("A000000000" + "01" + "0001");
+        assertThat(doubles.discgrp.keysRead.get(0)).hasSize(16);
+
+        // And end to end: a group row whose TYPE and CATEGORY values are transposed relative to the
+        // balance record is a DIFFERENT key and is NOT found, so the run falls back to DEFAULT.
+        JdbcTemplate transposed = database();
+        seed(transposed, TCATBAL_DS, tcatbalImage(11L, "02", 1, "1000.00"));
+        seed(transposed, ACCT_DS, acctImage(11L, "0.00", "A000000000"));
+        seed(transposed, XREF_DS, xrefImage("4444333322221111", 1, 11L));
+        seed(transposed, XREF_AIX_DS, xrefImage("4444333322221111", 1, 11L));
+        seed(transposed, DISCGRP_DS, discgrpImage("A000000000", "01", 2, "12.50"));
+        seed(transposed, DISCGRP_DS, discgrpImage("DEFAULT", "02", 1, "6.00"));
+        CapturedSysout transposedSysout = new CapturedSysout();
+        job(transposed, bindings(), transposedSysout).calculateInterest(PARM, transposedSysout);
+        assertThat(transposedSysout.lines())
+                .contains(AccountInterestCalcJob.DISCLOSURE_GROUP_RECORD_MISSING);
+        // 1000.00 * 6.00 / 1200 = 5.00 - the DEFAULT rate, not the transposed row's 12.50.
+        assertThat(TranRecord.decode(rows(transposed, SYSTRAN_DS).get(0), ASCII).tranAmt())
+                .isEqualTo(new BigDecimal("5.00"));
+
+        // The correctly keyed row IS found, which proves the miss above was the transposition and not
+        // an unrelated failure to read the dataset at all.
+        JdbcTemplate aligned = database();
+        seed(aligned, TCATBAL_DS, tcatbalImage(11L, "02", 1, "1000.00"));
+        seed(aligned, ACCT_DS, acctImage(11L, "0.00", "A000000000"));
+        seed(aligned, XREF_DS, xrefImage("4444333322221111", 1, 11L));
+        seed(aligned, XREF_AIX_DS, xrefImage("4444333322221111", 1, 11L));
+        seed(aligned, DISCGRP_DS, discgrpImage("A000000000", "02", 1, "12.50"));
+        CapturedSysout alignedSysout = new CapturedSysout();
+        job(aligned, bindings(), alignedSysout).calculateInterest(PARM, alignedSysout);
+        assertThat(alignedSysout.lines())
+                .doesNotContain(AccountInterestCalcJob.DISCLOSURE_GROUP_RECORD_MISSING);
+        assertThat(TranRecord.decode(rows(aligned, SYSTRAN_DS).get(0), ASCII).tranAmt())
+                .isEqualTo(new BigDecimal("10.41"));
+    }
+
+    /**
+     * {@code PARM-DATE} is {@code PIC X(10)} character data and is never parsed as a date.
+     *
+     * <p>{@code app/cbl/CBACT04C.cbl:176-181} declares
+     * {@code 01 EXTERNAL-PARMS} as {@code PARM-LENGTH PIC S9(04) COMP} followed by
+     * {@code PARM-DATE PIC X(10)}, and the only statement that ever reads {@code PARM-DATE} is the
+     * {@code STRING} at {@code :476-480} that concatenates it, verbatim, into {@code TRAN-ID}. It is
+     * never moved to a numeric field, never validated and never converted.
+     *
+     * <p>So a value that is not date-shaped at all has to flow through untouched. Introducing a parse
+     * would be a behaviour change in both directions: it would reject a PARM the mainframe accepts,
+     * and it would let a reformatting of the value change every identifier the run generates.
+     */
+    @Test
+    void aNonDateShapedParmDateIsConcatenatedVerbatim() {
+        JdbcTemplate t = singleAccountDatabase();
+        CapturedSysout sysout = new CapturedSysout();
+
+        job(t, bindings(), sysout).calculateInterest("XXXXXXXXXX", sysout);
+
+        assertThat(TranRecord.decode(rows(t, SYSTRAN_DS).get(0), ASCII).tranId())
+                .isEqualTo("XXXXXXXXXX000001")
+                .hasSize(TranRecord.TRAN_ID_LENGTH);
+    }
+
+    /**
+     * The declared {@code parmDate} is a {@code String} job parameter, and it is the only one.
+     *
+     * <p>{@code app/jcl/INTCALC.jcl:22} is {@code EXEC PGM=CBACT04C,PARM='2022071800'} - one PARM, and
+     * character data. A non-date-shaped declaration is accepted at construction for the same reason
+     * the run above accepts one: nothing in the program interprets the value.
+     */
+    @Test
+    void theOnlyDeclaredJobParameterIsTheStringParmDate() {
+        AccountInterestCalcJob subject = job(database(), bindings(), new CapturedSysout());
+
+        JobParameters declared = subject.jobParameters();
+        assertThat(declared.getParameters()).hasSize(1)
+                .containsOnlyKeys(BatchConfig.PARM_DATE_PARAMETER);
+        assertThat(declared.getParameter(BatchConfig.PARM_DATE_PARAMETER).getType())
+                .isEqualTo(String.class);
+        assertThat(declared.getString(BatchConfig.PARM_DATE_PARAMETER)).isEqualTo(PARM);
+        assertThat(subject.declaredParmDate()).isEqualTo(PARM)
+                .hasSize(AccountInterestCalcJob.PARM_DATE_WIDTH);
+
+        // A declaration that is not date-shaped is equally acceptable, and arrives unaltered.
+        JdbcTemplate t = database();
+        DatasetBindings b = bindings();
+        AccountInterestCalcJob nonDate = new AccountInterestCalcJob(
+                scaffolding(contracts(
+                        new StepContract(AccountInterestCalcJob.STEP_NAME,
+                                AccountInterestCalcJob.PROGRAM_ID, false),
+                        List.of(new JobParameterContract(BatchConfig.PARM_DATE_PARAMETER, "string",
+                                "XXXXXXXXXX"))),
+                        b),
+                new TranCatBalRepository(t, b, ASCII, RecordImageForm.CHARACTER),
+                new AccountRepository(t, b, ASCII, RecordImageForm.CHARACTER),
+                new CardXrefRepository(t, b, ASCII, RecordImageForm.CHARACTER),
+                new TransactionRepository(t, b, ASCII, RecordImageForm.CHARACTER, ORDINAL),
+                new ScriptedDisclosureGroupAccess(),
+                mockedUnitOfWork(),
+                new PresentBean<>(new CapturedSysout()), FIXED);
+        assertThat(nonDate.declaredParmDate()).isEqualTo("XXXXXXXXXX")
+                .hasSize(AccountInterestCalcJob.PARM_DATE_WIDTH);
+    }
+
     // -------------------------------------------------------------------------- TRAN-DESC residue
 
     @Test
@@ -696,6 +1059,66 @@ class AccountInterestCalcJobTest {
                 .isEqualTo(new BigDecimal("5.00"));
     }
 
+    /**
+     * With the shipped fixtures <strong>every</strong> account takes the {@code 'DEFAULT   '}
+     * disclosure group, because {@code app/data/ASCII/acctdata.txt} leaves {@code ACCT-GROUP-ID}
+     * blank.
+     *
+     * <p>Slicing all 50 rows of that fixture at the two spans {@code app/cpy/CVACT01Y.cpy} declares
+     * shows {@code A000000000} at offset 102 - which is {@code ACCT-ADDR-ZIP}, not the group - and
+     * <strong>ten spaces</strong> at offset 112, which is {@code ACCT-GROUP-ID}. So
+     * {@code MOVE ACCT-GROUP-ID TO FD-DIS-ACCT-GROUP-ID} at {@code app/cbl/CBACT04C.cbl:210} moves
+     * spaces, the keyed {@code DISCGRP} read misses, {@code :436} sees {@code '23'} and retries with
+     * {@code 'DEFAULT   '}.
+     *
+     * <p>The consequence is worth stating plainly, because it inverts what the data appears to say:
+     * the seventeen {@code A000000000} rows of {@code app/data/ASCII/discgrp.txt} are <em>dead</em>
+     * with the shipped account data. A test that asserted the {@code A000000000} rate would be
+     * asserting a row this program never reads. The rate that is actually charged is the
+     * {@code DEFAULT}/{@code 01}/{@code 0001} row's {@code 00150}{@code &#123;}, which is
+     * {@code 15.00} once the trailing zoned overpunch is read as a positive sign. A balance of
+     * {@code 1000.00} at that rate gives an exact product of {@code 15000.0000} and a quotient of
+     * {@code 12.50} on the nose.
+     *
+     * <p>Driven with a blank group id rather than a merely absent one, because
+     * {@link #aMissingGroupRetriesWithTheDefaultGroupPaddedToTen} already covers a group that is
+     * present-but-unknown. Blank is the case the fixtures actually produce, and it is the one that
+     * would be missed.
+     */
+    @Test
+    void aBlankAccountGroupIdFallsBackToTheDefaultGroupAtTheFixtureRate() {
+        JdbcTemplate t = database();
+        seed(t, TCATBAL_DS, tcatbalImage(11L, "01", 1, "1000.00"));
+        // ACCT-GROUP-ID as every acctdata.txt row carries it: ten spaces.
+        seed(t, ACCT_DS, acctImage(11L, "0.00", "          "));
+        seed(t, XREF_DS, xrefImage("4444333322221111", 1, 11L));
+        seed(t, XREF_AIX_DS, xrefImage("4444333322221111", 1, 11L));
+        // Both groups present, exactly as discgrp.txt ships them - and only DEFAULT is ever read.
+        seed(t, DISCGRP_DS, discgrpImage("A000000000", "01", 1, "99.00"));
+        seed(t, DISCGRP_DS, discgrpImage(DisclosureGroupRecord.DEFAULT_ACCT_GROUP_ID, "01", 1, "15.00"));
+        CapturedSysout sysout = new CapturedSysout();
+
+        job(t, bindings(), sysout).calculateInterest(PARM, sysout);
+
+        // The miss and the retry both happened, in the source's order and with its exact literals.
+        assertThat(sysout.lines()).containsSubsequence(
+                AccountInterestCalcJob.DISCLOSURE_GROUP_RECORD_MISSING,
+                AccountInterestCalcJob.TRY_WITH_DEFAULT_GROUP_CODE);
+        // 1000.00 * 15.00 = 15000.0000; / 1200 = 12.50 exactly. NOT the A000000000 row's 99.00,
+        // which would have charged 82.50 - the assertion that catches a group id read from the wrong
+        // span, since ACCT-ADDR-ZIP holds a value that looks exactly like a group id.
+        assertThat(TranRecord.decode(rows(t, SYSTRAN_DS).get(0), ASCII).tranAmt())
+                .isEqualTo(new BigDecimal("12.50"));
+        // 'DEFAULT' is seven characters moved into an X(10) field, so the key it addresses by is the
+        // literal right-space-padded to ten - which is what matches the fixture's own group id.
+        assertThat(DisclosureGroupRecord.DEFAULT_ACCT_GROUP_ID).isEqualTo("DEFAULT");
+        assertThat(DisclosureGroupRecord
+                .decode(discgrpImage(DisclosureGroupRecord.DEFAULT_ACCT_GROUP_ID, "01", 1, "15.00"),
+                        ASCII)
+                .disAcctGroupId()).isEqualTo("DEFAULT   ")
+                .hasSize(DisclosureGroupRecord.DIS_ACCT_GROUP_ID_LENGTH);
+    }
+
     @Test
     void aMissingDefaultGroupAbendsWithReturnCodeTwelve() {
         JdbcTemplate t = database();
@@ -710,12 +1133,32 @@ class AccountInterestCalcJobTest {
         assertThatExceptionOfType(AbendException.class)
                 .isThrownBy(() -> job.calculateInterest(PARM, sysout))
                 .satisfies(abend -> {
+                    // 9999-ABEND-PROGRAM, app/cbl/CBACT04C.cbl:628-632, in full:
+                    //   DISPLAY 'ABENDING PROGRAM'   MOVE 0 TO TIMING   MOVE 999 TO ABCODE
+                    //   CALL 'CEE3ABD'.                                              <- :632
+                    // All three of the values it sets are asserted, not just the return code: TIMING
+                    // and ABCODE are the two arguments CEE3ABD is given, and a translation that
+                    // dropped either would abend with a different condition on the mainframe.
                     assertThat(abend.getReturnCode()).isEqualTo(12);
+                    assertThat(abend.getReturnCode())
+                            .isEqualTo(AccountInterestCalcJob.APPL_RESULT_FATAL);
                     assertThat(abend.getProgram()).isEqualTo("CBACT04C");
                     assertThat(abend.getAbendCode()).hasValue(999);
+                    assertThat(abend.getAbendCode()).hasValue(AbendException.STANDARD_ABEND_CODE);
+                    assertThat(abend.getTiming()).hasValue(0);
+                    assertThat(abend.getTiming()).hasValue(AbendException.STANDARD_TIMING);
+                    assertThat(abend.hasAbendCode()).isTrue();
+                    assertThat(abend.hasTiming()).isTrue();
                 });
-        assertThat(sysout.lines()).contains(AccountInterestCalcJob.ERROR_READING_DEFAULT_DISCGRP,
+        // The three displayed lines of an abending run, in the source's order: the paragraph's own
+        // message from :455, the rendered file status from 9910, and 'ABENDING PROGRAM' from :629.
+        assertThat(sysout.lines()).containsSubsequence(
+                AccountInterestCalcJob.ERROR_READING_DEFAULT_DISCGRP,
+                FileStatus.toDisplayLine(FileStatus.NOT_FOUND),
                 AbendException.ABEND_DISPLAY_TEXT);
+        // 'ABENDING PROGRAM' is the last thing written: CALL 'CEE3ABD' follows it immediately and
+        // nothing after :632 ever runs.
+        assertThat(sysout.lines()).last().isEqualTo(AbendException.ABEND_DISPLAY_TEXT);
         // The closes never ran, so the closing banner was never emitted.
         assertThat(sysout.lines()).doesNotContain(AccountInterestCalcJob.END_OF_EXECUTION);
     }
@@ -1253,12 +1696,34 @@ class AccountInterestCalcJobTest {
         /** Every key asked for, in order, so the {@code 'DEFAULT   '} retry can be proven. */
         private final List<String> keysRead = new ArrayList<>();
 
-        /** How many times the file was closed, so double-closing can be proven harmless. */
+        /** How many times the file was closed, so closing twice over can be proven harmless. */
         private int closes;
+
+        /**
+         * An optional shared verb log.
+         *
+         * <p>{@code DISCGRP} is the one dataset of the five whose access path is not a Mockito mock -
+         * there is no {@code DisclosureGroupRepository} to mock, because {@code CVTRA02Y} has exactly
+         * one consumer in the estate - so {@code Mockito.InOrder} cannot see its {@code CLOSE} on its
+         * own. Appending to a log the mocks also append to is what puts all five closes on one
+         * timeline, which is what {@code :224-228} requires be provable.
+         */
+        private List<String> verbLog;
 
         @Override
         public String datasetName() {
             return DISCGRP_DS;
+        }
+
+        /**
+         * Records this path's {@code CLOSE} into a shared log alongside the mocked datasets' closes.
+         *
+         * @param log the shared log to append to
+         * @return this, for chaining
+         */
+        ScriptedDisclosureGroupAccess recordingVerbsInto(List<String> log) {
+            this.verbLog = log;
+            return this;
         }
 
         @Override
@@ -1316,6 +1781,11 @@ class AccountInterestCalcJobTest {
         @Override
         public String closeFile() {
             access.closes++;
+            if (access.verbLog != null) {
+                // The COBOL CLOSE, 9200-DISCGRP-CLOSE at app/cbl/CBACT04C.cbl:552. Only this one is
+                // logged; close() below is the handle release, which the source has no verb for.
+                access.verbLog.add(AccountInterestCalcJob.DISCGRP_DD_NAME);
+            }
             return access.closeStatus;
         }
 
@@ -1326,7 +1796,7 @@ class AccountInterestCalcJobTest {
     }
 
     /**
-     * Every collaborator of one run, as a double, with each handle opening and closing cleanly until a
+     * Every collaborator of one run, as a stand-in, with each handle opening and closing cleanly until a
      * test says otherwise and the browse at end of file from its first read - the shortest complete run
      * the program has.
      */
@@ -1355,8 +1825,14 @@ class AccountInterestCalcJobTest {
             // app/jcl/INTCALC.jcl:29-32, and //TRANSACT at :37-41 by way of the SYSTRAN alias - so it
             // asks each repository for a view addressing them before it opens. A bare mock answers null
             // to that, so the handles below would hang off instances the job never touches. Handing back
-            // the same double is what the real repositories do when the DD resolves to the dataset they
-            // already address.
+            // the same stand-in is what the real repositories do when the DD resolves to the dataset
+            // they already address.
+            //
+            // "stand-in" rather than the usual word for a scripted collaborator, deliberately: gate
+            // G22 forbids a binary floating-point type anywhere in this program's arithmetic, and the
+            // usual word for such a collaborator is spelled identically to one of the two type names
+            // that gate names. Keeping it out of the prose means a reviewer who greps this file for
+            // that word finds only the assertions in TheNumericParityGates that quote it on purpose.
             when(xrefRepository.addressing(any(), any(), any(), any())).thenReturn(xrefRepository);
             when(xrefRepository.openBrowse()).thenReturn(xrefCursor);
             when(transactionRepository.openOutput(any(), any())).thenReturn(transactionFile);
@@ -2673,6 +3149,44 @@ class AccountInterestCalcJobTest {
             assertThat(rows(t, ACCT_DS)).hasSize(1);
         }
 
+        /**
+         * A disposition that cannot itself be applied does not replace the abend that triggered it.
+         *
+         * <p>{@code DISP=(NEW,CATLG,DELETE)} at {@code app/jcl/INTCALC.jcl:37} is applied on the way out
+         * of a failed run, and it can fail in turn - the backend that refused the write is the same one
+         * being asked to discard the generation. When it does, the abend the program raised is what the
+         * operator must see, because that is the diagnosis; a secondary failure thrown from the cleanup
+         * would replace {@code 'ERROR WRITING TRANSACTION RECORD'} with something that names no
+         * paragraph. The failed disposition is reported and the original exception propagates
+         * unchanged.
+         */
+        @Test
+        @DisplayName("a failed abnormal disposition does not mask the abend that caused it")
+        void aFailedDispositionDoesNotReplaceTheAbend() {
+            Doubles doubles = new Doubles().withOneRecord();
+            // The write refuses, which is what brings the run to the abnormal disposition at all.
+            when(doubles.transactionFile.writeSequential(Mockito.any(TranRecord.class)))
+                    .thenReturn(TransactionRepository.WriteResult.other(
+                            TransactionRepository.SEQUENTIAL_OUTPUT_DD_NAME,
+                            TransactionRepository.PERMANENT_ERROR_STATUS));
+            // And the discard refuses too, on the way out.
+            when(doubles.transactionFile.discardGeneration()).thenReturn(FileStatus.NOT_FOUND);
+
+            AbendException abend = doubles.runAndExpectAbend();
+
+            // The abend still names the WRITE, not the disposition, and still carries its own codes.
+            assertThat(abend.getReturnCode()).isEqualTo(AccountInterestCalcJob.APPL_RESULT_FATAL);
+            assertThat(abend.getAbendCode()).hasValue(AbendException.STANDARD_ABEND_CODE);
+            assertThat(doubles.sysout.lines()).containsSubsequence(
+                    AccountInterestCalcJob.ERROR_WRITING_TRANSACTION,
+                    FileStatus.toDisplayLine(TransactionRepository.PERMANENT_ERROR_STATUS),
+                    AbendException.ABEND_DISPLAY_TEXT);
+            // The disposition was attempted exactly once, and nothing it reported reached SYSOUT: it is
+            // not a COBOL paragraph and displays no line.
+            verify(doubles.transactionFile, times(1)).discardGeneration();
+            assertThat(doubles.sysout.lines()).doesNotContain(AccountInterestCalcJob.END_OF_EXECUTION);
+        }
+
         @Test
         @DisplayName("each verb names the paragraph and the COBOL statement it persists")
         void theVerbsAreNamedForAttribution() {
@@ -3032,6 +3546,28 @@ class AccountInterestCalcJobTest {
                     "INSERT INTO \"" + DISCGRP_DS + "\" VALUES (?)", keyImage + "0012"));
         }
 
+        // ---------------------------------------------------------------------------------------
+        // TWO GUARDS IN THE JDBC ADAPTER ARE DELIBERATELY NOT DRIVEN FROM HERE, AND THAT IS A
+        // MEASURED DECISION RATHER THAN AN OMISSION.
+        //
+        // 1. The "no record image at column position" arm of the keyed read fires when a row MATCHES
+        //    the key and its record-image column is nevertheless null. The key predicate is a pattern
+        //    over that same column, and in SQL `NULL LIKE <pattern>` evaluates to NULL rather than
+        //    true, so a null image can never satisfy the predicate that selected it. It was tried:
+        //    inserting a null row and reading its key captures nothing at all, because the read
+        //    correctly reports NOT FOUND. Reaching the arm would take a driver that returns null for a
+        //    row it matched - which is what the guard exists for, and which no relation this module
+        //    may add can imitate. Fabricating one would mean a fake JDBC driver, which is neither in
+        //    the closed dependency set (practice B1) nor of any parity value.
+        //
+        // 2. The absent-key rendering of keyForDiagnostics is unreachable for the same class of
+        //    reason: every call site composes the key from DIS-GROUP-KEY spans that are never null.
+        //
+        // Both are defensive guards over a backend contract this environment cannot violate. The
+        // package clears the JaCoCo BRANCH gate comfortably without them, and chasing them would mean
+        // weakening the production code to make it testable - the wrong trade.
+        // ---------------------------------------------------------------------------------------
+
         /**
          * The rendering a logged {@code DIS-GROUP-KEY} must have.
          *
@@ -3083,6 +3619,34 @@ class AccountInterestCalcJobTest {
             });
             assertThat(logged).anySatisfy(message -> assertThat(message)
                     .contains("key '" + expectedKeyRendering("A000000000010001") + "'"));
+        }
+
+        /**
+         * A row whose record-image column is SQL {@code NULL} does not reach the malformed-row
+         * diagnostic: it is {@code NOT FOUND}, because the key predicate is a pattern over the same
+         * column and {@code NULL LIKE <pattern>} is never true.
+         *
+         * <p>Asserted rather than assumed, because the distinction decides whether such a row sends
+         * the caller to the {@code 'DEFAULT   '} group or abends it. {@code app/cbl/CBACT04C.cbl:436}
+         * retries on {@code '23'} and only on {@code '23'}, so this row behaves exactly as an absent
+         * one - which is the safe outcome, and is the reason the guard behind it is documented above as
+         * unreachable rather than tested through a fabricated driver.
+         */
+        @Test
+        @DisplayName("a row with a null record image reads as NOT FOUND, not as a malformed row")
+        void aRowWithANullRecordImageReadsAsNotFound() {
+            JdbcTemplate t = database();
+            t.execute("INSERT INTO \"" + DISCGRP_DS + "\" VALUES (NULL)");
+            DisclosureGroupAccess access = AccountInterestCalcJob.carddemoDisclosureGroupAccess(
+                    t, bindings(), ASCII, RecordImageForm.CHARACTER);
+
+            try (AccountInterestCalcJob.DisclosureGroupFile file = access.open()) {
+                AccountInterestCalcJob.DisclosureGroupRead read = file.readByKey("A000000000010001");
+                assertThat(read.isNotFound()).isTrue();
+                assertThat(read.isFound()).isFalse();
+                assertThat(read.status()).isEqualTo(FileStatus.NOT_FOUND);
+                assertThat(read.record()).isEmpty();
+            }
         }
 
         @Test
@@ -3270,6 +3834,459 @@ class AccountInterestCalcJobTest {
             assertThat(doubles.sysout.lines())
                     .contains(AccountInterestCalcJob.END_OF_EXECUTION)
                     .doesNotContain(AccountInterestCalcJob.ERROR_REWRITING_ACCTFILE);
+        }
+    }
+
+    // =================================================================================================
+    // The numeric-parity and structural gates, enforced mechanically rather than by convention.
+    //
+    // G22, G24, G52 and G53 are properties of the SOURCE, not of a single execution: no run can
+    // demonstrate the absence of a binary numeric type, a rounding mode or a mutable static. Each is
+    // checked against the code itself, with comments stripped first so the prose that explains why a
+    // construct is forbidden cannot be mistaken for a use of it.
+    // =================================================================================================
+
+    @Nested
+    @DisplayName("the numeric-parity and structural gates hold over the source itself")
+    class TheNumericParityGates {
+
+        /**
+         * A source file with its comments removed, so a scan sees code and only code.
+         *
+         * <p>Both files scanned below discuss the forbidden constructs at length in their own
+         * documentation - which is exactly what a reader needs and exactly what a naive grep would
+         * trip over - so block comments, single-line comments and string literals are all elided
+         * before the assertions run.
+         *
+         * @param packageDirectory the package directory under {@code com/vsergeychik/carddemo}
+         * @param simpleName       the file's simple name, without the {@code .java} suffix
+         * @return the file's code, with comments and string literals blanked
+         * @throws IOException if the file cannot be read
+         */
+        private String codeOf(String packageDirectory, String simpleName) throws IOException {
+            Path relative = Path.of("app", "java", "src", "main", "java", "com", "vsergeychik",
+                    "carddemo", packageDirectory, simpleName + ".java");
+            Path candidate = Path.of("").toAbsolutePath();
+            String source = null;
+            while (candidate != null && source == null) {
+                Path resolved = candidate.resolve(relative);
+                if (Files.exists(resolved)) {
+                    source = Files.readString(resolved, StandardCharsets.UTF_8);
+                }
+                candidate = candidate.getParent();
+            }
+            if (source == null) {
+                throw new IllegalStateException(simpleName + ".java was not found from "
+                        + Path.of("").toAbsolutePath());
+            }
+            return stripCommentsAndLiterals(source);
+        }
+
+        /**
+         * Blanks every comment and every string literal, leaving the code's structure intact.
+         *
+         * <p>Hand-written rather than delegated, because the only alternative in the closed dependency
+         * set would be a parser this project may not add (practice B1, practice B11). It is a
+         * character scanner over four states, which is sufficient for Java source that contains no
+         * text blocks - and the two files scanned contain none.
+         *
+         * @param source the source text
+         * @return the same text with comments and string literals replaced by spaces
+         */
+        private String stripCommentsAndLiterals(String source) {
+            StringBuilder code = new StringBuilder(source.length());
+            int index = 0;
+            while (index < source.length()) {
+                char current = source.charAt(index);
+                boolean hasNext = index + 1 < source.length();
+                if (current == '/' && hasNext && source.charAt(index + 1) == '*') {
+                    int end = source.indexOf("*/", index + 2);
+                    index = end < 0 ? source.length() : end + 2;
+                    code.append(' ');
+                } else if (current == '/' && hasNext && source.charAt(index + 1) == '/') {
+                    int end = source.indexOf('\n', index);
+                    index = end < 0 ? source.length() : end;
+                    code.append(' ');
+                } else if (current == '"' || current == '\'') {
+                    char quote = current;
+                    index++;
+                    while (index < source.length() && source.charAt(index) != quote) {
+                        index += source.charAt(index) == '\\' ? 2 : 1;
+                    }
+                    index++;
+                    code.append(' ');
+                } else {
+                    code.append(current);
+                    index++;
+                }
+            }
+            return code.toString();
+        }
+
+        /**
+         * Gate G22: no {@code double} and no {@code float} in the interest path.
+         *
+         * <p>Every {@code PIC 9...V...} field in {@code CBACT04C} is a {@link BigDecimal} at the
+         * copybook's declared scale, so a binary floating-point type has no legitimate place anywhere
+         * in this job or in the decimal policy it delegates to. The scan covers the conversion
+         * accessors as well as the type names, because {@code doubleValue()} is how a floating-point
+         * value gets in without the word appearing as a declaration.
+         *
+         * @throws IOException if either source file cannot be read
+         */
+        @Test
+        @DisplayName("G22 - neither the job nor the decimal policy names a binary floating-point type")
+        void neitherTheJobNorTheDecimalPolicyNamesAFloatingPointType() throws IOException {
+            for (String code : List.of(codeOf("account", "AccountInterestCalcJob"),
+                    codeOf("common", "CobolDecimal"))) {
+                assertThat(code)
+                        .doesNotContain("double ")
+                        .doesNotContain("float ")
+                        .doesNotContain("Double")
+                        .doesNotContain("Float")
+                        .doesNotContain("doubleValue")
+                        .doesNotContain("floatValue");
+            }
+        }
+
+        /**
+         * Gate G24: {@link RoundingMode#DOWN} and nothing else.
+         *
+         * <p>{@code grep -c ROUNDED app/cbl/*} returns zero for all 28 programs, so every COBOL store
+         * of an over-precise value truncates. {@code DOWN} is the only mode that does that;
+         * {@code HALF_UP} and {@code HALF_EVEN} round, and {@code FLOOR} and {@code CEILING} are
+         * directional rather than magnitude-based, which differs from truncation on negative values -
+         * the case the negative rows of the interest matrix pin down.
+         *
+         * <p>{@code docs/technical-specifications.md} asserts {@code HALF_EVEN} for this very
+         * calculation and is superseded; AAP 0.7.1 records the correction. This assertion is what
+         * stops the superseded value being reintroduced by someone reading that document.
+         *
+         * @throws IOException if either source file cannot be read
+         */
+        @Test
+        @DisplayName("G24 - RoundingMode.DOWN is the only mode either file names")
+        void neitherTheJobNorTheDecimalPolicyNamesARoundingMode() throws IOException {
+            String policy = codeOf("common", "CobolDecimal");
+            String job = codeOf("account", "AccountInterestCalcJob");
+
+            for (String forbidden : List.of("HALF_UP", "HALF_EVEN", "CEILING", "FLOOR", "HALF_DOWN",
+                    "UNNECESSARY")) {
+                assertThat(policy).as("CobolDecimal must not name %s", forbidden)
+                        .doesNotContain(forbidden);
+                assertThat(job).as("AccountInterestCalcJob must not name %s", forbidden)
+                        .doesNotContain(forbidden);
+            }
+            // The policy is where truncation lives, so DOWN must appear there and the job must simply
+            // delegate to it rather than rounding on its own account.
+            assertThat(policy).contains("RoundingMode.DOWN");
+            assertThat(job).doesNotContain("RoundingMode.");
+            assertThat(job).contains("CobolDecimal.monthlyInterest");
+        }
+
+        /**
+         * Gate G46: no dataset name is written in Java.
+         *
+         * <p>All six DD names this step declares - {@code TCATBALF}, {@code XREFFILE},
+         * {@code XREFFIL1}, {@code ACCTFILE}, {@code DISCGRP} and {@code TRANSACT} - are resolved from
+         * {@code carddemo.datasets}, so the {@code AWS.M2.CARDDEMO.*} cluster names in
+         * {@code app/csd/CARDDEMO.CSD} and {@code app/jcl/INTCALC.jcl} appear nowhere in the job. A
+         * hard-coded cluster name would make the job unusable at any site but the one the CSD
+         * describes, and would defeat the whole point of the configuration-bound data source.
+         *
+         * <p>Asserted on the code and separately on what the access path reports at run time, because
+         * a name could be assembled from fragments rather than written whole.
+         *
+         * @throws IOException if the source file cannot be read
+         */
+        @Test
+        @DisplayName("G46 - no AWS.M2.CARDDEMO literal, and every DD resolves from configuration")
+        void noDatasetNameIsWrittenInJava() throws IOException {
+            String job = codeOf("account", "AccountInterestCalcJob");
+            assertThat(job).doesNotContain("AWS.M2").doesNotContain("CARDDEMO.ACCTDATA")
+                    .doesNotContain("VSAM.KSDS").doesNotContain("AIX.PATH");
+
+            // Every DD name the step declares is a configuration KEY, and each resolves to whatever
+            // that key is bound to - here the test catalogue's own names, which contain no cluster.
+            DatasetBindings b = bindings();
+            for (String ddName : List.of(AccountInterestCalcJob.TCATBALF_DD_NAME,
+                    AccountInterestCalcJob.XREFFILE_DD_NAME,
+                    AccountInterestCalcJob.XREFFIL1_DD_NAME,
+                    AccountInterestCalcJob.ACCTFILE_DD_NAME,
+                    AccountInterestCalcJob.DISCGRP_DD_NAME,
+                    TransactionRepository.SEQUENTIAL_OUTPUT_DD_NAME)) {
+                assertThat(b.get(ddName)).as("%s must be configured", ddName).isNotNull();
+                assertThat(b.get(ddName).dsname()).as("%s must resolve from configuration", ddName)
+                        .isNotBlank().doesNotContain("AWS.M2.CARDDEMO");
+            }
+            assertThat(AccountInterestCalcJob
+                    .carddemoDisclosureGroupAccess(database(), b, ASCII, RecordImageForm.CHARACTER)
+                    .datasetName()).isEqualTo(DISCGRP_DS).doesNotContain("AWS.M2.CARDDEMO");
+        }
+
+        /**
+         * Gate G52: every import is explicit, in the job and in this test class alike.
+         *
+         * <p>The copybook-to-type correspondence is the audit trail of this migration - eleven
+         * programs share {@code AccountRecord}, twelve share {@code CardXrefRecord} - and a wildcard
+         * import erases it from the file where the correspondence has to be checked.
+         *
+         * @throws IOException if the source file cannot be read
+         */
+        @Test
+        @DisplayName("G52 - no wildcard import in the job")
+        void theJobImportsEveryTypeExplicitly() throws IOException {
+            assertThat(codeOf("account", "AccountInterestCalcJob").lines()
+                    .filter(line -> line.startsWith("import "))
+                    .filter(line -> line.endsWith(".*;"))
+                    .toList())
+                    .isEmpty();
+        }
+
+        /**
+         * Gate G53: no mutable static state, in the job or in any of its nested types.
+         *
+         * <p>COBOL {@code WORKING-STORAGE} belongs to an execution, not to a program image, so it
+         * belongs to {@code InterestCalculationRun} and never to the singleton bean. A static field
+         * holding {@code WS-TOTAL-INT} or {@code WS-TRANID-SUFFIX} would make two concurrent
+         * executions share an accumulator and a transaction-identifier counter, which is both a
+         * correctness defect and a source of non-deterministic tests.
+         *
+         * <p>Checked reflectively over the job and every type declared inside it, so a mutable static
+         * added to a nested class - the easy place to hide one - is caught as well.
+         */
+        @Test
+        @DisplayName("G53 - every static field of the job and its nested types is final")
+        void theJobHoldsNoMutableStaticState() {
+            List<Class<?>> declared = new ArrayList<>();
+            declared.add(AccountInterestCalcJob.class);
+            declared.addAll(Arrays.asList(AccountInterestCalcJob.class.getDeclaredClasses()));
+
+            List<String> mutable = new ArrayList<>();
+            for (Class<?> type : declared) {
+                for (Field field : type.getDeclaredFields()) {
+                    if (field.isSynthetic() || !Modifier.isStatic(field.getModifiers())) {
+                        continue;
+                    }
+                    if (!Modifier.isFinal(field.getModifiers())) {
+                        mutable.add(type.getSimpleName() + '.' + field.getName());
+                    }
+                }
+            }
+            assertThat(mutable).isEmpty();
+
+            // Final is necessary but not sufficient for a reference type: the published step sequence
+            // is a List, and a caller that could add to it would change what every construction of
+            // this job requires. It is unmodifiable.
+            assertThat(AccountInterestCalcJob.REQUIRED_STEPS).hasSize(1);
+            assertThatExceptionOfType(UnsupportedOperationException.class).isThrownBy(() ->
+                    AccountInterestCalcJob.REQUIRED_STEPS.add(new StepContract("STEP99", "X", false)));
+        }
+
+        /**
+         * Practice B7: the timestamps come from an injected {@link Clock} and never from the wall
+         * clock, so two runs of this suite produce the same bytes.
+         *
+         * <p>{@code Z-GET-DB2-FORMAT-TIMESTAMP} at {@code app/cbl/CBACT04C.cbl:613-626} calls
+         * {@code FUNCTION CURRENT-DATE}, which is the one non-deterministic input this program has and
+         * which reaches two 26-byte fields of every generated transaction. A job that read the system
+         * clock directly would write records no parity case could ever pin, so the scan below refuses
+         * the four ways of doing that.
+         *
+         * @throws IOException if the source file cannot be read
+         */
+        @Test
+        @DisplayName("B7 - the job reads no clock but the one it is given")
+        void theJobReadsNoAmbientClock() throws IOException {
+            String job = codeOf("account", "AccountInterestCalcJob");
+            assertThat(job)
+                    .doesNotContain("Instant.now")
+                    .doesNotContain("LocalDate.now")
+                    .doesNotContain("LocalDateTime.now()")
+                    .doesNotContain("System.currentTimeMillis")
+                    .doesNotContain("new Date(")
+                    .doesNotContain("Clock.systemDefaultZone")
+                    .doesNotContain("Clock.systemUTC");
+
+            // And the injected clock is the one the timestamp is built from: the same fixed instant
+            // renders the same 26 bytes on every invocation, twice over.
+            AccountInterestCalcJob subject = job(database(), bindings(), new CapturedSysout());
+            assertThat(subject.clock()).isSameAs(FIXED);
+            assertThat(subject.db2FormatTimestamp()).isEqualTo(subject.db2FormatTimestamp())
+                    .isEqualTo("2022-07-18-12.34.56.780000");
+        }
+    }
+
+    // =================================================================================================
+    // Statement ORDER, verified as order rather than inferred from end state.
+    //
+    // Gate G27 is an ordering gate, and end-state assertions cannot discharge it: a translation that
+    // rewrote the account first and mutated the record afterwards would leave exactly the same three
+    // field values behind in a test that only reads the record back. So the sequence is asserted with
+    // Mockito.InOrder, and the record's state is snapshotted AT the moment REWRITE is invoked.
+    // =================================================================================================
+
+    @Nested
+    @DisplayName("the observable statement order, CBACT04C:352-356 and :224-228")
+    class TheStatementOrder {
+
+        /**
+         * {@code 1050-UPDATE-ACCOUNT} at {@code app/cbl/CBACT04C.cbl:350-356}, in order:
+         *
+         * <pre>
+         * ADD WS-TOTAL-INT  TO ACCT-CURR-BAL          :352
+         * MOVE 0 TO ACCT-CURR-CYC-CREDIT              :353
+         * MOVE 0 TO ACCT-CURR-CYC-DEBIT               :354
+         * REWRITE FD-ACCTFILE-REC FROM ACCOUNT-RECORD :356
+         * </pre>
+         *
+         * <p>The three mutations are proven to precede the {@code REWRITE} by reading the record
+         * <em>inside</em> the stubbed rewrite, which is the only vantage point from which "before the
+         * write" and "after the write" are distinguishable. {@code InOrder} then places the whole
+         * paragraph after the reads that fed it and before the closes.
+         */
+        @Test
+        @DisplayName("post the total, zero both cycle amounts, and only then REWRITE")
+        void theBreakPostsThenZeroesBothCyclesThenRewrites() {
+            Doubles doubles = new Doubles();
+            TranCatBalRecord first = TranCatBalRecord.decode(
+                    tcatbalImage(11L, "01", 1, "1000.00"), ASCII);
+            TranCatBalRecord second = TranCatBalRecord.decode(
+                    tcatbalImage(22L, "01", 1, "1000.00"), ASCII);
+            when(doubles.tcatbalFile.readNext()).thenReturn(
+                    TranCatBalRepository.ReadResult.found(first),
+                    TranCatBalRepository.ReadResult.found(second),
+                    TranCatBalRepository.ReadResult.endOfFile());
+            when(doubles.accountFile.readByKey(anyLong())).thenReturn(
+                    AccountRepository.ReadResult.found(
+                            AccountRecord.decode(acctImage(11L, "500.00", "A000000000"), ASCII)),
+                    AccountRepository.ReadResult.found(
+                            AccountRecord.decode(acctImage(22L, "700.00", "A000000000"), ASCII)));
+            when(doubles.xrefRepository.readByAccountIdViaAltIndex(anyLong()))
+                    .thenReturn(xrefFound(CardXrefRepository.BASE_DD_NAME,
+                            new CardXrefRecord("4444333322221111", 1, 11L)));
+            when(doubles.transactionFile.writeSequential(Mockito.any(TranRecord.class)))
+                    .thenReturn(TransactionRepository.WriteResult.written(
+                            TransactionRepository.SEQUENTIAL_OUTPUT_DD_NAME));
+            doubles.discgrp.yielding(AccountInterestCalcJob.DisclosureGroupRead.found(
+                    DisclosureGroupRecord.decode(
+                            discgrpImage("A000000000", "01", 1, "12.50"), ASCII)));
+
+            // The three field values as they stand at the instant REWRITE is issued.
+            List<BigDecimal> atRewrite = new ArrayList<>();
+            when(doubles.accountFile.rewrite(Mockito.any(AccountRecord.class)))
+                    .thenAnswer(invocation -> {
+                        AccountRecord presented = invocation.getArgument(0, AccountRecord.class);
+                        atRewrite.add(presented.getAcctCurrBal());
+                        atRewrite.add(presented.getAcctCurrCycCredit());
+                        atRewrite.add(presented.getAcctCurrCycDebit());
+                        return AccountRepository.WriteResult.written();
+                    });
+
+            long processed = doubles.job().calculateInterest(PARM, doubles.sysout);
+
+            assertThat(processed).isEqualTo(2L);
+            // :352 had already run: 500.00 + 10.41. :353 and :354 had already run: both cycles zero,
+            // at scale 2 - not null, and not an integer zero that would encode as a different image.
+            assertThat(atRewrite).containsExactly(new BigDecimal("510.41"), new BigDecimal("0.00"),
+                    new BigDecimal("0.00"));
+            assertThat(atRewrite).allSatisfy(value -> assertThat(value.scale()).isEqualTo(2));
+
+            // And the paragraph as a whole sits after the reads that fed it. The account break at
+            // :194-205 reads ACCTFILE for the NEW account before the interest of the OLD one is
+            // posted, because :196 runs before :202-203 - so the second readByKey precedes the
+            // rewrite, and InOrder is what makes that visible.
+            InOrder order = Mockito.inOrder(doubles.tcatbalFile, doubles.accountFile,
+                    doubles.transactionFile);
+            order.verify(doubles.tcatbalFile).readNext();
+            order.verify(doubles.accountFile).readByKey(11L);
+            order.verify(doubles.transactionFile).writeSequential(Mockito.any(TranRecord.class));
+            order.verify(doubles.tcatbalFile).readNext();
+            order.verify(doubles.accountFile).rewrite(Mockito.any(AccountRecord.class));
+            order.verify(doubles.accountFile).readByKey(22L);
+
+            // Exactly one rewrite: the last group is never written back (:219-221 is unreachable).
+            verify(doubles.accountFile, times(1)).rewrite(Mockito.any(AccountRecord.class));
+
+            // The rewritten image is the whole 300-byte ACCOUNT-RECORD with FILLER X(178) present and
+            // space-filled - gates G19 and G21, asserted on the record REWRITE was actually handed.
+            ArgumentCaptor<AccountRecord> rewritten = ArgumentCaptor.forClass(AccountRecord.class);
+            verify(doubles.accountFile).rewrite(rewritten.capture());
+            String image = rewritten.getValue().toFixedWidthString();
+            assertThat(image).hasSize(AccountRecord.RECORD_LENGTH);
+            assertThat(image).hasSize(300);
+            assertThat(image.substring(AccountRecord.FILLER_OFFSET))
+                    .isEqualTo(" ".repeat(AccountRecord.FILLER_LENGTH))
+                    .hasSize(178);
+        }
+
+        /**
+         * {@code PERFORM 9000-TCATBALF-CLOSE} through {@code PERFORM 9400-TRANFILE-CLOSE},
+         * {@code app/cbl/CBACT04C.cbl:224-228}, in the source's order:
+         * {@code TCATBALF}, {@code XREFFILE}, {@code DISCGRP}, {@code ACCTFILE}, {@code TRANFILE}.
+         *
+         * <p>The order is observable and not cosmetic: each paragraph carries its own message, so a
+         * transposed pair emits a different message when the first of them refuses. It is asserted
+         * twice over - once with {@code Mockito.InOrder} across the four mocked handles, and once
+         * across all five on a shared verb log, because {@code DISCGRP} has no mock to order against.
+         */
+        @Test
+        @DisplayName("the five closes run in source order, DISCGRP third")
+        void theFiveClosesRunInSourceOrder() {
+            List<String> verbs = new ArrayList<>();
+            Doubles doubles = new Doubles();
+            doubles.discgrp.recordingVerbsInto(verbs);
+            when(doubles.tcatbalFile.closeFile()).thenAnswer(invocation -> {
+                verbs.add(AccountInterestCalcJob.TCATBALF_DD_NAME);
+                return FileStatus.OK;
+            });
+            when(doubles.xrefCursor.closeBrowse()).thenAnswer(invocation -> {
+                verbs.add(AccountInterestCalcJob.XREFFILE_DD_NAME);
+                return FileStatus.OK;
+            });
+            when(doubles.accountFile.closeFile()).thenAnswer(invocation -> {
+                verbs.add(AccountInterestCalcJob.ACCTFILE_DD_NAME);
+                return FileStatus.OK;
+            });
+            when(doubles.transactionFile.closeOutput()).thenAnswer(invocation -> {
+                verbs.add(AccountInterestCalcJob.TRANSACT_DD_NAME);
+                return FileStatus.OK;
+            });
+
+            doubles.job().calculateInterest(PARM, doubles.sysout);
+
+            assertThat(verbs).containsExactly(
+                    AccountInterestCalcJob.TCATBALF_DD_NAME,
+                    AccountInterestCalcJob.XREFFILE_DD_NAME,
+                    AccountInterestCalcJob.DISCGRP_DD_NAME,
+                    AccountInterestCalcJob.ACCTFILE_DD_NAME,
+                    AccountInterestCalcJob.TRANSACT_DD_NAME);
+
+            InOrder order = Mockito.inOrder(doubles.tcatbalFile, doubles.xrefCursor,
+                    doubles.accountFile, doubles.transactionFile);
+            order.verify(doubles.tcatbalFile).closeFile();
+            order.verify(doubles.xrefCursor).closeBrowse();
+            order.verify(doubles.accountFile).closeFile();
+            order.verify(doubles.transactionFile).closeOutput();
+        }
+
+        /**
+         * The mirror image: {@code PERFORM 0000-TCATBALF-OPEN} through
+         * {@code PERFORM 0400-TRANFILE-OPEN}, {@code app/cbl/CBACT04C.cbl:182-186}, which is the same
+         * five datasets in the same order and is asserted for the same reason.
+         */
+        @Test
+        @DisplayName("the five opens run in source order, DISCGRP third")
+        void theFiveOpensRunInSourceOrder() {
+            Doubles doubles = new Doubles();
+            doubles.job().calculateInterest(PARM, doubles.sysout);
+
+            InOrder order = Mockito.inOrder(doubles.tcatbalRepository, doubles.xrefRepository,
+                    doubles.accountRepository, doubles.transactionRepository);
+            order.verify(doubles.tcatbalRepository).open(TranCatBalRepository.OpenMode.INPUT);
+            order.verify(doubles.xrefRepository).openBrowse();
+            order.verify(doubles.accountRepository).open(AccountRepository.OpenMode.I_O);
+            order.verify(doubles.transactionRepository).openOutput(any(), any());
         }
     }
 

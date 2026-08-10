@@ -1,0 +1,147 @@
+{
+  "program": "CBACT04C",
+  "caseId": "case10",
+  "description": "The '23' window and the 'DEFAULT' retry, both lines and both reads. The account row is acctdata.txt row 0 VERBATIM, so ACCT-GROUP-ID is ten spaces and the key :210-212 builds misses every group in the file. DISCGRP holds two rows verbatim - A000000000 type 01 category 0001 and DEFAULT type 01 category 0001, both at fifteen percent - which is what makes the miss meaningful: a matching category exists under another group, and the program still does not see it, because the group id is part of the sixteen-byte DIS-GROUP-KEY. So :418 and :419 display, :437 moves 'DEFAULT' into the key, and the retry at :444 succeeds. Note what the '23' window leaves behind: READ ... INTO transfers on success only, so between the two reads DIS-GROUP-RECORD still holds whatever it held before - which is why the retry at :444 has no INVALID KEY phrase and why a SECOND '23' is fatal rather than merely quiet. 1000.00 at fifteen percent is 12.50.",
+  "unitKind": "BATCH_JOB",
+  "inputs": {
+    "TCATBALF": {
+      "rows": [
+        "000000000010100010000010000{0000000000000000000000"
+      ]
+    },
+    "ACCTFILE": {
+      "fixture": "acctdata.txt",
+      "fromRow": 0,
+      "rowCount": 1
+    },
+    "XREFFILE": {
+      "rows": [
+        "968029415460369700000000100000000001"
+      ]
+    },
+    "XREFFIL1": {
+      "rows": [
+        "968029415460369700000000100000000001"
+      ]
+    },
+    "DISCGRP": {
+      "rows": [
+        "A00000000001000100150{0000000000000000000000000000",
+        "DEFAULT   01000100150{0000000000000000000000000000"
+      ]
+    }
+  },
+  "jobParameters": {
+    "parmDate": "2022071800"
+  },
+  "expectedWrites": [
+    {
+      "dataset": "SYSTRAN",
+      "rowIndex": 0,
+      "expectedBytes": "2022071800000001010005System    Int. for a/c 00000000001                                                                            0000000125{000000000                                                                                                              96802941546036972022-07-19-23.12.34.0000002022-07-19-23.12.34.000000                    "
+    }
+  ],
+  "expectedFinalState": [
+    {
+      "dataset": "TCATBALF",
+      "rowIndex": 0,
+      "expectedBytes": "000000000010100010000010000{0000000000000000000000"
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 0,
+      "expectedBytes": "00000000001Y00000001940{00000020200{00000010200{2014-11-202025-05-202025-05-2000000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 0,
+      "expectedBytes": "968029415460369700000000100000000001              "
+    },
+    {
+      "dataset": "XREFFIL1",
+      "rowIndex": 0,
+      "expectedBytes": "968029415460369700000000100000000001              "
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 0,
+      "expectedBytes": "A00000000001000100150{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 1,
+      "expectedBytes": "DEFAULT   01000100150{0000000000000000000000000000"
+    }
+  ],
+  "expectedReturnCode": 0,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "START OF EXECUTION OF PROGRAM CBACT04C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "000000000010100010000010000{0000000000000000000000"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "DISCLOSURE GROUP RECORD MISSING"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "TRY WITH DEFAULT GROUP CODE"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "END OF EXECUTION OF PROGRAM CBACT04C"
+    }
+  ],
+  "normalisations": [
+    {
+      "dataset": "XREFFILE",
+      "kind": "CARDXREF_FILLER_PAD_36_TO_50"
+    },
+    {
+      "dataset": "XREFFIL1",
+      "kind": "CARDXREF_FILLER_PAD_36_TO_50"
+    }
+  ],
+  "expectedDatasets": [
+    {
+      "dataset": "SYSTRAN",
+      "channel": "WRITES",
+      "rowCount": 1,
+      "recordLength": 350
+    },
+    {
+      "dataset": "TCATBALF",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 50
+    },
+    {
+      "dataset": "ACCTFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 300
+    },
+    {
+      "dataset": "XREFFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 50
+    },
+    {
+      "dataset": "XREFFIL1",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 50
+    },
+    {
+      "dataset": "DISCGRP",
+      "channel": "FINAL_STATE",
+      "rowCount": 2,
+      "recordLength": 50
+    }
+  ]
+}

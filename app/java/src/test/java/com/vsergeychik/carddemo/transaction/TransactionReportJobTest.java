@@ -89,21 +89,53 @@ import org.springframework.transaction.PlatformTransactionManager;
  *
  * <h2>What this suite is really guarding</h2>
  *
- * <p>Three things, and all three are things a well-meaning implementer would get wrong.
+ * <p>Four things, and all four are things a well-meaning implementer would get wrong. The first three
+ * are defects of the COBOL that this migration <strong>preserves</strong> rather than corrects, because
+ * correcting any of them would change an observable byte and fail the parity diff (practice B5). Each is
+ * commented at its assertion as source behaviour, so no future reader mistakes the test for a bug
+ * (practice B4).
  *
  * <p><strong>Defect 1.</strong> {@code NEXT SENTENCE} at {@code :177} ends the whole read loop rather
- * than skipping one record, so a single out-of-range record truncates the report and suppresses the
- * page and grand totals entirely. Asserted directly, and asserted as an absence: the totals must not
- * appear.
+ * than skipping one record - the enclosing {@code PERFORM UNTIL ... END-PERFORM.} ends with a period, so
+ * control passes beyond it. A single out-of-range record therefore truncates the report and suppresses
+ * the page and grand totals entirely. Asserted directly, asserted as an absence, and asserted at three
+ * positions in the file, because the "skip and continue" misreading passes a two-record fixture and fails
+ * a five-record one.
  *
  * <p><strong>Defect 2.</strong> The end-of-file arm at {@code :200} adds the last record's amount a
- * second time. Asserted numerically against the arithmetic, not against a hard-coded expectation, so
- * the assertion says <em>why</em> the number is what it is.
+ * second time, the amount having already been added inside {@code 1100}. Asserted numerically against the
+ * arithmetic, not against a hard-coded expectation, so the assertion says <em>why</em> the number is what
+ * it is.
+ *
+ * <p><strong>Defect 3.</strong> The final account's total is never written. The end-of-file arm performs
+ * {@code 1110-WRITE-PAGE-TOTALS} and {@code 1110-WRITE-GRAND-TOTALS} and never
+ * {@code 1120-WRITE-ACCOUNT-TOTALS}, and the last account never breaks, so its accumulated total is
+ * discarded unprinted. Asserted as an absence at one, two and three accounts, and across a page break.
  *
  * <p><strong>Only page totals roll into the grand total.</strong> {@code :297} is the only place
  * {@code WS-GRAND-TOTAL} grows, and {@code 1120-WRITE-ACCOUNT-TOTALS} has no counterpart. Asserted by
  * running a report whose account totals and page totals differ, and pinning the grand total to the
  * page totals.
+ *
+ * <h2>Where the expected values come from</h2>
+ *
+ * <p><strong>Static derivation, not capture</strong> (practice B12). No expectation here was recorded
+ * from a run of the COBOL, because no run of the COBOL is possible in this environment: the Agent Action
+ * Plan documents eight independently verified blockers, among them that the available compiler reports
+ * {@code indexed file handler : disabled} while this program opens three {@code ORGANIZATION INDEXED}
+ * files, and that no Language Environment is present to supply {@code CEE3ABD}. Every expected value is
+ * instead derived from four authorities that <em>are</em> present and are read directly: the byte layouts
+ * and {@code PICTURE} clauses of {@code app/cpy/CVTRA07Y.cpy}, {@code CVTRA05Y.cpy}, {@code CVTRA03Y.cpy},
+ * {@code CVTRA04Y.cpy} and {@code CVACT03Y.cpy}; the DD, {@code LRECL} and step contracts of
+ * {@code app/jcl/TRANREPT.jcl} and {@code app/proc/TRANREPT.prc}; the paragraph bodies of
+ * {@code app/cbl/CBTRN03C.cbl}, cited by line at each assertion; and the real fixture data of
+ * {@code app/data/ASCII/trantype.txt} (7 x 60) and {@code trancatg.txt} (18 x 60).
+ *
+ * <p>Two consequences are deliberate. Line counts and totals are computed from the source's own
+ * increments and stated in the Javadoc that asserts them, so a failure can be traced to a paragraph
+ * rather than to a magic number. And where an expected image would otherwise be hand-counted - the
+ * numeric-edited masks especially - it is composed from the declared widths instead, since a
+ * miscount is the likeliest way a statically derived expectation goes wrong.
  *
  * <h2>How it runs</h2>
  *
@@ -114,14 +146,32 @@ import org.springframework.transaction.PlatformTransactionManager;
  * <em>real</em> rather than mocked, so every assertion about a 133-byte record is an assertion about
  * bytes the production code path produced.
  *
+ * <p>The reporting range is read from the {@value TransactionReportJob#DATEPARM_DD_NAME} dataset through
+ * the {@link DateParmReader} bean and is <strong>not</strong> a job parameter:
+ * {@code app/jcl/TRANREPT.jcl:73-74} declares it as a DD over {@code DSN=AWS.M2.CARDDEMO.DATEPARM},
+ * mirrored at {@code app/proc/TRANREPT.prc:71-72}. Contrast {@code app/jcl/INTCALC.jcl:22}, whose step
+ * carries {@code PARM='2022071800'} and whose Java counterpart therefore does take a job parameter. The
+ * difference is behavioural rather than cosmetic: a {@code PARM} cannot be empty, whereas an empty
+ * {@code DATEPARM} is the {@code '10'} arm that yields an empty report and a zero return code.
+ *
+ * <p>This suite is also self-contained: it imports nothing from
+ * {@code com.vsergeychik.carddemo.parity} and reads nothing from {@code src/test/resources/parity}, so
+ * it stands or falls on its own fixtures.
+ *
  * <p>{@code review_rules} returns exactly one line - "No user rules provided." - so no user rule
- * governs this file. The gates it enforces directly are G1 and G3 (it compiles and the beans wire),
- * G20 and G21 (every report line is 133 bytes with its {@code FILLER} intact), G22 (no binary
- * floating point), G28 (the arithmetic sites), G30 (the {@code EVALUATE} arms in source order with
- * {@code WHEN OTHER} last), G35 (the abend's return code, abend code and timing), G44 and G46 (no DDL
- * and no dataset name in Java), G47 (every file-status outcome per call site), G49 and G50 (both
- * sides of every branch, including both {@code 88}-levels), G51 (the body runs with no launcher), G52
- * (no wildcard import) and G53 (no mutable static state).
+ * governs this file, and enterprise-standard practice plus the Agent Action Plan's own constraints are
+ * held in its place. The gates it enforces directly are G1 and G3 (it compiles and the beans wire),
+ * G20 and G21 (every report line is 133 bytes with its {@code FILLER} intact, the two {@code '-'}
+ * separators at one-based columns 32 and 53 included), G22 (no binary floating point), G28 (the
+ * arithmetic sites), G30 (the {@code EVALUATE} arms in source order with {@code WHEN OTHER} last), G33
+ * (every one-based position converted at both ends of its span; this program declares no
+ * {@code OCCURS}, so there is no table subscript to convert), G35 (the abend's return code, abend code
+ * and timing), G44 and G46 (no DDL and no dataset name in Java), G47 (every file-status outcome per
+ * call site), G49 and G50 (both sides of every branch, including both {@code 88}-levels), G51 (the body
+ * runs with no launcher), G52 (no wildcard import) and G53 (no mutable static state). Rules R2 and R4
+ * hold trivially here and are asserted as such: {@code COMPUTE}, {@code MULTIPLY} and {@code DIVIDE}
+ * appear zero times in {@code CBTRN03C}, so every total is an exact sum of scale-2 {@link BigDecimal}
+ * values and no rounding mode is ever consulted.
  */
 @DisplayName("TransactionReportJob - CBTRN03C: prints the transaction detail report, defects included")
 class TransactionReportJobTest {
@@ -182,6 +232,15 @@ class TransactionReportJobTest {
 
     /** A second card number, so the account break can be driven. */
     private static final String CARD_TWO = "4222222222222222";
+
+    /**
+     * A third card number, so two account breaks can be driven in one run.
+     *
+     * <p>Two is the smallest number that shows the account total is <em>zeroed</em> between breaks
+     * ({@code app/cbl/CBTRN03C.cbl:310}) rather than accumulated across them, and simultaneously shows
+     * that the last account's total is never written at all.
+     */
+    private static final String CARD_THREE = "4333333333333333";
 
     /** The transaction type code every fixture record carries. */
     private static final String TYPE_CODE = "01";
@@ -968,6 +1027,102 @@ class TransactionReportJobTest {
         return new BigDecimal(amount);
     }
 
+    /**
+     * A run of in-range records on {@link #CARD_ONE}, all of the same amount.
+     *
+     * <p>Used by the pagination cases, where the interesting variable is how many records there are and
+     * not what they contain. One card throughout, so no account break perturbs the line counter and the
+     * only breaks are the {@code MOD} page breaks of {@code app/cbl/CBTRN03C.cbl:282}.
+     *
+     * @param count  how many records to build, at least one
+     * @param amount the {@code TRAN-AMT} every record carries
+     * @return the records, in read order
+     */
+    private static List<TranRecord> recordsOnOneCard(int count, String amount) {
+        List<TranRecord> records = new ArrayList<>(count);
+        for (int ordinal = 1; ordinal <= count; ordinal++) {
+            records.add(record(transactionId(ordinal), CARD_ONE, amount, IN_RANGE_DATE));
+        }
+        return records;
+    }
+
+    /**
+     * The {@value TranReportLayouts#AMOUNT_MASK_WIDTH}-character numeric-edited amount a report line
+     * carries at the given offset.
+     *
+     * <p>Returned as the rendered image rather than parsed back into a {@link BigDecimal}: reversing the
+     * mask in the test would re-implement the very {@code Z}-suppression rule under assertion, and a
+     * shared bug would then cancel out. Callers compare against
+     * {@link TranReportLayouts#editTotalAmount(BigDecimal)} instead.
+     *
+     * @param line   a rendered 133-byte report record
+     * @param offset the zero-based offset of the amount within it
+     * @return exactly {@value TranReportLayouts#AMOUNT_MASK_WIDTH} characters
+     */
+    private static String amountImageAt(String line, int offset) {
+        return line.substring(offset, offset + TranReportLayouts.AMOUNT_MASK_WIDTH);
+    }
+
+    /**
+     * One field's span of a rendered report record, read by absolute offset and width.
+     *
+     * <p>Zero-based, so every caller states the conversion from the copybook's one-based column once and
+     * visibly, rather than embedding it in an arithmetic expression.
+     *
+     * @param line   a rendered report record
+     * @param offset the field's zero-based offset
+     * @param length the field's declared width
+     * @return exactly {@code length} characters
+     */
+    private static String spanOf(String line, int offset, int length) {
+        return line.substring(offset, offset + length);
+    }
+
+    /**
+     * A distinct 16-character {@code TRAN-ID} per ordinal.
+     *
+     * <p>Composed by explicit left-padding rather than through a formatter, so no locale can alter the
+     * digits and no ordinal can collide with another at ten or above - which a naive
+     * {@code "TRAN" + ordinal} would not guarantee once the width is fixed at 16.
+     *
+     * @param ordinal the record's position in the run, from one
+     * @return exactly {@value TranReportLayouts#TRAN_REPORT_TRANS_ID_LENGTH} characters
+     */
+    private static String transactionId(int ordinal) {
+        return "TRAN" + zeroPaddedDigits(ordinal,
+                TranReportLayouts.TRAN_REPORT_TRANS_ID_LENGTH - "TRAN".length());
+    }
+
+    /**
+     * A value rendered as {@code width} ASCII digits, zero-filled on the left.
+     *
+     * <p>{@code String.format("%0<width>d", value)} would be shorter and is what this replaced, but it
+     * resolves against {@link java.util.Locale#getDefault()}: under a locale whose numbering system is
+     * not Latin - {@code hi-IN-u-nu-deva} or {@code ar-SA-u-nu-arab}, for instance - {@code %d} emits
+     * non-ASCII digits, and a fixed-width record built from them is neither 350 bytes nor comparable.
+     * That is the same reason {@code TranReportLayouts} composes its numeric-edited masks by explicit
+     * character placement instead of with a formatter. Practice B8: explicit at every boundary.
+     *
+     * @param value the value to render; must not be negative, since {@code PIC 9(n)} is unsigned
+     * @param width the exact number of digits to produce
+     * @return exactly {@code width} characters, all of them ASCII digits
+     * @throws IllegalArgumentException if {@code value} is negative or does not fit in {@code width}
+     *                                  digits
+     */
+    private static String zeroPaddedDigits(long value, int width) {
+        if (value < 0) {
+            throw new IllegalArgumentException("A PIC 9 field is unsigned, so " + value
+                    + " cannot be rendered into " + width + " digits.");
+        }
+        String digits = Long.toString(value);
+        if (digits.length() > width) {
+            throw new IllegalArgumentException(value + " needs " + digits.length()
+                    + " digits and the field holds " + width + "; COBOL would truncate on the left, "
+                    + "which is never what a fixture intends.");
+        }
+        return "0".repeat(width - digits.length()) + digits;
+    }
+
 
     // =============================================================================================
     // STEP01R and STEP05R - the two preparatory steps this job runs before the program.
@@ -1147,7 +1302,7 @@ class TransactionReportJobTest {
         void nothingIsDroppedAndNothingLeaks() {
             List<String> mixed = new ArrayList<>();
             for (int index = 1; index <= 6; index++) {
-                mixed.add(image(String.format("%016d", index), CARD_ONE,
+                mixed.add(image(zeroPaddedDigits(index, TranRecord.TRAN_ID_KEY_LENGTH), CARD_ONE,
                         index % 2 == 0 ? IN_RANGE_DATE : OUT_OF_RANGE_DATE));
             }
 
@@ -1584,6 +1739,96 @@ class TransactionReportJobTest {
             assertThat(TransactionReportJob.SORT_TRAN_CARD_NUM_LENGTH).isEqualTo(16);
             assertThat(TransactionReportJob.SORT_TRAN_PROC_DT_POSITION).isEqualTo(305);
             assertThat(TransactionReportJob.SORT_TRAN_PROC_DT_LENGTH).isEqualTo(10);
+        }
+
+        /**
+         * The one-based to zero-based conversion, asserted at the first and the last position of every
+         * indexed span this program addresses (gate G33).
+         *
+         * <p>{@code CBTRN03C} and its five copybooks - {@code CVTRA07Y}, {@code CVTRA05Y},
+         * {@code CVTRA03Y}, {@code CVTRA04Y} and {@code CVACT03Y} - contain <strong>no</strong>
+         * {@code OCCURS} clause, so there is no table subscript to convert. What there is instead are
+         * absolute positions: the two SORT symbol-table fields, which the JCL states one-based, and the
+         * two detail-line separators, whose columns {@code CVTRA07Y} states one-based. Both are asserted
+         * at each end of the span, because an off-by-one shows at a boundary and nowhere else.
+         */
+        @Test
+        @DisplayName("every one-based position converts to a zero-based offset at both ends of its span")
+        void oneBasedPositionsConvertAtBothEnds() {
+            assertThat(TransactionReportJob.SORT_TRAN_CARD_NUM_POSITION)
+                    .as("the sort key's first byte: zero-based offset %d is one-based position %d",
+                            TranRecord.TRAN_CARD_NUM_OFFSET, TranRecord.TRAN_CARD_NUM_OFFSET + 1)
+                    .isEqualTo(TranRecord.TRAN_CARD_NUM_OFFSET + 1);
+            assertThat(TransactionReportJob.SORT_TRAN_CARD_NUM_POSITION
+                    + TransactionReportJob.SORT_TRAN_CARD_NUM_LENGTH - 1)
+                    .as("and its last byte, one-based")
+                    .isEqualTo(TranRecord.TRAN_CARD_NUM_OFFSET + TranRecord.TRAN_CARD_NUM_LENGTH);
+            assertThat(TransactionReportJob.SORT_TRAN_PROC_DT_POSITION)
+                    .as("the include filter's first byte")
+                    .isEqualTo(TranRecord.TRAN_PROC_DT_OFFSET + 1);
+            assertThat(TransactionReportJob.SORT_TRAN_PROC_DT_POSITION
+                    + TransactionReportJob.SORT_TRAN_PROC_DT_LENGTH - 1)
+                    .as("and its last byte, which must land inside the 350-byte record")
+                    .isEqualTo(TranRecord.TRAN_PROC_DT_OFFSET + TranRecord.TRAN_PROC_DT_LENGTH)
+                    .isLessThanOrEqualTo(TranRecord.RECORD_LENGTH);
+            assertThat(TranReportLayouts.TRAN_REPORT_TYPE_DESC_OFFSET)
+                    .as("CVTRA07Y's first FILLER '-' occupies one-based column 32, so the description "
+                            + "that follows it starts at zero-based offset 32 and one-based column 33")
+                    .isEqualTo(32);
+            assertThat(TranReportLayouts.TRAN_REPORT_CAT_DESC_OFFSET)
+                    .as("and the second '-' occupies one-based column 53, so its description starts at "
+                            + "zero-based offset 53 and one-based column 54")
+                    .isEqualTo(53);
+            assertThat(TranReportLayouts.TRAN_REPORT_TYPE_CD_OFFSET
+                    + TranReportLayouts.TRAN_REPORT_TYPE_CD_LENGTH)
+                    .as("the first separator's own zero-based index: one-based column 32 less one")
+                    .isEqualTo(31);
+            assertThat(TranReportLayouts.TRAN_REPORT_CAT_CD_OFFSET
+                    + TranReportLayouts.TRAN_REPORT_CAT_CD_LENGTH)
+                    .as("and the second's: one-based column 53 less one")
+                    .isEqualTo(52);
+            assertThat(TranReportLayouts.TRAN_REPORT_AMT_OFFSET + 1)
+                    .as("the amount column starts at one-based 98")
+                    .isEqualTo(TranReportLayouts.AMOUNT_COLUMN_START);
+            assertThat(TranReportLayouts.TRAN_REPORT_AMT_OFFSET
+                    + TranReportLayouts.AMOUNT_MASK_WIDTH)
+                    .as("and ends at one-based 112, the last byte of the natural detail layout's data")
+                    .isEqualTo(TranReportLayouts.AMOUNT_COLUMN_END);
+        }
+
+        /**
+         * The date range is a <strong>dataset</strong>, not a {@code PARM}.
+         *
+         * <p>{@code app/jcl/TRANREPT.jcl:73-74} declares {@code //DATEPARM DD} over
+         * {@code DSN=AWS.M2.CARDDEMO.DATEPARM}, mirrored at {@code app/proc/TRANREPT.prc:71-72}, and
+         * {@code 0550-DATEPARM-READ} reads it with a {@code READ} that has its own three-arm status
+         * ladder. Contrast {@code app/jcl/INTCALC.jcl:22}, whose step carries
+         * {@code PARM='2022071800'} and whose Java counterpart therefore takes a job parameter: that is
+         * what this job must <em>not</em> do. The distinction is behavioural, not cosmetic - a {@code PARM}
+         * cannot be empty, whereas an empty {@code DATEPARM} is the {@code '10'} arm that produces an
+         * empty report without an error.
+         */
+        @Test
+        @DisplayName("the reporting range comes from the DATEPARM bean, and the job declares no "
+                + "parameter - unlike INTCALC's PARM='2022071800'")
+        void theRangeComesFromTheDatasetAndNotFromAParameter() {
+            Harness harness = harness(List.of(record("TRAN000000000001", CARD_ONE, "1.00",
+                    IN_RANGE_DATE)));
+
+            harness.run();
+
+            assertThat(TransactionReportJob.DATE_RANGE_SOURCE)
+                    .as("the declared source is the DD name, not a parameter name")
+                    .isEqualTo(TransactionReportJob.DATEPARM_DD_NAME)
+                    .isEqualTo(DateParmReader.DD_NAME);
+            assertThat(validContracts().get(TransactionReportJob.JOB_KEY).parameters())
+                    .as("TRANREPT.jcl declares no PARM on any of its three steps")
+                    .isEmpty();
+            verify(harness.dateParms).read();
+            assertThat(harness.sysout.lines)
+                    .as("and the range it returned is the range the program reports")
+                    .contains(TransactionReportJob.REPORTING_FROM + START_DATE
+                            + TransactionReportJob.REPORTING_TO + END_DATE);
         }
 
         @Test
@@ -2033,6 +2278,71 @@ class TransactionReportJobTest {
                     .hasSize(TranReportLayouts.AMOUNT_MASK_WIDTH);
         }
 
+        /**
+         * All eight moves of {@code 1120-WRITE-DETAIL} - {@code app/cbl/CBTRN03C.cbl:363-370} - land in
+         * their declared spans, and the counter advances by one for the write that follows them.
+         *
+         * <p>Asserted span by span rather than as one whole-line comparison, so a failure names the field
+         * that moved wrongly instead of reporting a 133-character mismatch. Each source is deliberately
+         * distinguishable from every other, which is what makes a crossed move visible: two fields
+         * carrying each other's value would pass a comparison built from the same crossed helper.
+         *
+         * <p>The eight, with their sources: {@code TRAN-ID}, {@code XREF-ACCT-ID} - from the cross
+         * reference, not the transaction - {@code TRAN-TYPE-CD OF TRAN-RECORD},
+         * {@code TRAN-TYPE-DESC} from the type row, {@code TRAN-CAT-CD OF TRAN-RECORD},
+         * {@code TRAN-CAT-TYPE-DESC} from the category row, {@code TRAN-SOURCE}, and {@code TRAN-AMT}.
+         */
+        @Test
+        @DisplayName("the detail line's eight moves each land in their own span, and the write counts one")
+        void theEightDetailMovesEachLandInTheirOwnSpan() {
+            TranRecord only = record("TRAN000000000042", CARD_ONE, "-1234.56", IN_RANGE_DATE);
+            Harness harness = harness(List.of(only));
+
+            ExecutionSummary summary = harness.run();
+            String detail = harness.sink.lines().get(TransactionReportJob.HEADER_LINES);
+
+            assertThat(spanOf(detail, TranReportLayouts.TRAN_REPORT_TRANS_ID_OFFSET,
+                    TranReportLayouts.TRAN_REPORT_TRANS_ID_LENGTH))
+                    .as(":363 MOVE TRAN-ID - PIC X(16) to PIC X(16), nothing truncated")
+                    .isEqualTo(only.tranId());
+            assertThat(spanOf(detail, TranReportLayouts.TRAN_REPORT_ACCOUNT_ID_OFFSET,
+                    TranReportLayouts.TRAN_REPORT_ACCOUNT_ID_LENGTH))
+                    .as(":364 MOVE XREF-ACCT-ID - from the cross reference, not from the transaction")
+                    .isEqualTo(Long.toString(ACCOUNT_ID));
+            assertThat(spanOf(detail, TranReportLayouts.TRAN_REPORT_TYPE_CD_OFFSET,
+                    TranReportLayouts.TRAN_REPORT_TYPE_CD_LENGTH))
+                    .as(":365 MOVE TRAN-TYPE-CD OF TRAN-RECORD")
+                    .isEqualTo(TYPE_CODE);
+            assertThat(spanOf(detail, TranReportLayouts.TRAN_REPORT_TYPE_DESC_OFFSET,
+                    TranReportLayouts.TRAN_REPORT_TYPE_DESC_LENGTH))
+                    .as(":366 MOVE TRAN-TYPE-DESC - X(50) into X(15), left-anchored and space-padded")
+                    .isEqualTo(TYPE_DESCRIPTION + " ".repeat(
+                            TranReportLayouts.TRAN_REPORT_TYPE_DESC_LENGTH
+                                    - TYPE_DESCRIPTION.length()));
+            assertThat(spanOf(detail, TranReportLayouts.TRAN_REPORT_CAT_CD_OFFSET,
+                    TranReportLayouts.TRAN_REPORT_CAT_CD_LENGTH))
+                    .as(":367 MOVE TRAN-CAT-CD OF TRAN-RECORD - PIC 9(04), so zero-filled on the left")
+                    .isEqualTo("0001");
+            assertThat(spanOf(detail, TranReportLayouts.TRAN_REPORT_CAT_DESC_OFFSET,
+                    TranReportLayouts.TRAN_REPORT_CAT_DESC_LENGTH))
+                    .as(":368 MOVE TRAN-CAT-TYPE-DESC - X(50) into X(29)")
+                    .isEqualTo(CATEGORY_DESCRIPTION + " ".repeat(
+                            TranReportLayouts.TRAN_REPORT_CAT_DESC_LENGTH
+                                    - CATEGORY_DESCRIPTION.length()));
+            assertThat(spanOf(detail, TranReportLayouts.TRAN_REPORT_SOURCE_OFFSET,
+                    TranReportLayouts.TRAN_REPORT_SOURCE_LENGTH))
+                    .as(":369 MOVE TRAN-SOURCE - PIC X(10) to PIC X(10)")
+                    .isEqualTo(only.tranSource());
+            assertThat(spanOf(detail, TranReportLayouts.TRAN_REPORT_AMT_OFFSET,
+                    TranReportLayouts.AMOUNT_MASK_WIDTH))
+                    .as(":370 MOVE TRAN-AMT - through the -ZZZ,ZZZ,ZZZ.ZZ mask")
+                    .isEqualTo(TranReportLayouts.editDetailAmount(money("-1234.56")));
+            assertThat(summary.lineCounter() - TransactionReportJob.HEADER_LINES
+                    - TransactionReportJob.TOTALS_BLOCK_LINES)
+                    .as(":373 ADD 1 TO WS-LINE-COUNTER, once for the detail write")
+                    .isEqualTo(1L);
+        }
+
         @Test
         @DisplayName("the dot leaders are 86, 84 and 86 characters as CVTRA07Y declares")
         void theDotLeadersAreTheDeclaredWidths() {
@@ -2132,6 +2442,79 @@ class TransactionReportJobTest {
     }
 
     @Nested
+    @DisplayName("Defect 1 - the loop ends mid-file, wherever the out-of-range record sits (practice B5)")
+    class DefectOneMidFile {
+
+        /**
+         * The scenario the "skip and continue" misreading passes and the source fails.
+         *
+         * <p>Five records, the third of them out of range. A translation that turned
+         * {@code NEXT SENTENCE} into a {@code continue} would report records 1, 2, 4 and 5 - four detail
+         * lines - and would be wrong four ways: the two survivors it invents, the page total it then
+         * reaches, and the grand total that follows. The source reports records 1 and 2 and stops, so the
+         * assertion is written as an exact sequence rather than a count, and the two totals are asserted
+         * as absences (practices B4 and B5; rule R7 preserves the fall-through <em>outcome</em>, not the
+         * {@code GO TO} form).
+         */
+        @Test
+        @DisplayName("record 3 of 5 out of range: records 1-2 are reported and 4-5 never appear")
+        void anOutOfRangeThirdRecordStopsAtTheSecond() {
+            TranRecord one = record("TRAN000000000001", CARD_ONE, "10.00", IN_RANGE_DATE);
+            TranRecord two = record("TRAN000000000002", CARD_ONE, "20.00", IN_RANGE_DATE);
+            TranRecord three = record("TRAN000000000003", CARD_ONE, "30.00", OUT_OF_RANGE_DATE);
+            TranRecord four = record("TRAN000000000004", CARD_ONE, "40.00", IN_RANGE_DATE);
+            TranRecord five = record("TRAN000000000005", CARD_ONE, "50.00", IN_RANGE_DATE);
+            Harness harness = harness(List.of(one, two, three, four, five));
+
+            ExecutionSummary summary = harness.run();
+
+            TranReportLayouts layouts = expectedLayouts();
+            List<String> expected = new ArrayList<>(headerRecords(layouts));
+            expected.add(detailRecord(layouts, one));
+            expected.add(detailRecord(layouts, two));
+
+            assertThat(harness.sink.lines())
+                    .as("four headers and two detail lines - records 4 and 5 are never reached")
+                    .containsExactlyElementsOf(expected);
+            assertThat(summary.detailLinesWritten())
+                    .as("two, not the four a skip-and-continue translation would produce")
+                    .isEqualTo(2);
+            assertThat(summary.recordsRead())
+                    .as("three reads: the loop ends on the third, so records 4 and 5 are never read")
+                    .isEqualTo(3);
+            assertThat(harness.sink.lines())
+                    .as("neither total block is reached, because the loop left through :177")
+                    .noneMatch(line -> line.startsWith(TranReportLayouts.PAGE_TOTAL_LABEL_VALUE))
+                    .noneMatch(line -> line.startsWith(TranReportLayouts.ACCOUNT_TOTAL_LABEL_VALUE))
+                    .noneMatch(line -> line.startsWith(TranReportLayouts.GRAND_TOTAL_LABEL_VALUE));
+            assertThat(summary.grandTotal()).isEqualByComparingTo(money("0.00"));
+        }
+
+        /**
+         * The same rule one record later, so the stop position is shown to track the offending record
+         * rather than being fixed at any particular ordinal.
+         */
+        @Test
+        @DisplayName("record 4 of 5 out of range: records 1-3 are reported and 5 never appears")
+        void anOutOfRangeFourthRecordStopsAtTheThird() {
+            TranRecord one = record("TRAN000000000001", CARD_ONE, "10.00", IN_RANGE_DATE);
+            TranRecord two = record("TRAN000000000002", CARD_ONE, "20.00", IN_RANGE_DATE);
+            TranRecord three = record("TRAN000000000003", CARD_ONE, "30.00", IN_RANGE_DATE);
+            TranRecord four = record("TRAN000000000004", CARD_ONE, "40.00", OUT_OF_RANGE_DATE);
+            TranRecord five = record("TRAN000000000005", CARD_ONE, "50.00", IN_RANGE_DATE);
+            Harness harness = harness(List.of(one, two, three, four, five));
+
+            ExecutionSummary summary = harness.run();
+
+            assertThat(summary.detailLinesWritten()).isEqualTo(3);
+            assertThat(summary.recordsRead()).isEqualTo(4);
+            assertThat(summary.reportLinesWritten())
+                    .as("four headers and three details, and no total block")
+                    .isEqualTo(7);
+        }
+    }
+
+    @Nested
     @DisplayName("Defect 2 - the last amount is counted twice at :200 (practice B5)")
     class DefectTwo {
 
@@ -2175,6 +2558,92 @@ class TransactionReportJobTest {
         }
     }
 
+    @Nested
+    @DisplayName("Defect 3 - the last account's total is never written at :197-204 (practice B5)")
+    class DefectThree {
+
+        /**
+         * The end-of-file arm performs {@code 1110-WRITE-PAGE-TOTALS} and
+         * {@code 1110-WRITE-GRAND-TOTALS} and <strong>never</strong>
+         * {@code 1120-WRITE-ACCOUNT-TOTALS} - {@code app/cbl/CBTRN03C.cbl:197-204}. An account total is
+         * written only by the account-break arm at {@code :183}, and the last account never breaks,
+         * because the loop leaves through end of file rather than through a change of card.
+         *
+         * <p>So the amounts of the final account are accumulated into {@code WS-ACCOUNT-TOTAL} at
+         * {@code :287-288} and then discarded unprinted. Preserved, not corrected: emitting the missing
+         * line would add a report line the COBOL does not write, which would move every byte after it and
+         * fail the diff (practices B4 and B5).
+         */
+        @Test
+        @DisplayName("a single-account report ends with a page total and a grand total, and no account "
+                + "total at all")
+        void aSingleAccountReportNeverWritesAnAccountTotal() {
+            TranRecord one = record("TRAN000000000001", CARD_ONE, "60.00", IN_RANGE_DATE);
+            TranRecord two = record("TRAN000000000002", CARD_ONE, "40.00", IN_RANGE_DATE);
+            Harness harness = harness(List.of(one, two));
+
+            harness.run();
+
+            assertThat(harness.sink.lines())
+                    .as("WS-ACCOUNT-TOTAL reached 60.00 + 40.00 + 40.00 and was never printed")
+                    .noneMatch(line -> line.startsWith(TranReportLayouts.ACCOUNT_TOTAL_LABEL_VALUE));
+            assertThat(harness.sink.lines())
+                    .as("the two the end-of-file arm does write")
+                    .anyMatch(line -> line.startsWith(TranReportLayouts.PAGE_TOTAL_LABEL_VALUE))
+                    .anyMatch(line -> line.startsWith(TranReportLayouts.GRAND_TOTAL_LABEL_VALUE));
+        }
+
+        /**
+         * The same omission with three accounts, which is where it is visible as an asymmetry: two
+         * account totals are written for the first two cards and none for the third, even though the
+         * third card's records were accumulated exactly as theirs were.
+         */
+        @Test
+        @DisplayName("three accounts produce two account totals - the last account's is the one lost")
+        void theLastOfThreeAccountsLosesItsTotal() {
+            TranRecord first = record("TRAN000000000001", CARD_ONE, "11.00", IN_RANGE_DATE);
+            TranRecord second = record("TRAN000000000002", CARD_TWO, "22.00", IN_RANGE_DATE);
+            TranRecord third = record("TRAN000000000003", CARD_THREE, "33.00", IN_RANGE_DATE);
+            Harness harness = harness(List.of(first, second, third));
+
+            harness.run();
+            List<String> accountTotals = harness.sink.lines().stream()
+                    .filter(line -> line.startsWith(TranReportLayouts.ACCOUNT_TOTAL_LABEL_VALUE))
+                    .toList();
+
+            assertThat(accountTotals)
+                    .as("three accounts, two breaks, two account totals")
+                    .hasSize(2);
+            assertThat(accountTotals.get(0))
+                    .as("the first card's own 11.00, not a running figure")
+                    .contains(TranReportLayouts.editTotalAmount(money("11.00")));
+            assertThat(accountTotals.get(1))
+                    .as("the second card's own 22.00 - :310 zeroed the field after the first line")
+                    .contains(TranReportLayouts.editTotalAmount(money("22.00")));
+            assertThat(harness.sink.lines())
+                    .as("and 33.00 never appears on an account-total line, only inside the page total")
+                    .noneMatch(line -> line.startsWith(TranReportLayouts.ACCOUNT_TOTAL_LABEL_VALUE)
+                            && line.contains(TranReportLayouts.editTotalAmount(money("33.00"))));
+        }
+
+        /**
+         * The omission survives a page break, so it cannot be explained away as "the page total covers
+         * it": a page break writes a page total and resets nothing of {@code WS-ACCOUNT-TOTAL}, and the
+         * account total is still never emitted at end of file.
+         */
+        @Test
+        @DisplayName("even a report that breaks a page still ends without the last account total")
+        void aPagedReportStillLosesTheLastAccountTotal() {
+            Harness harness = harness(recordsOnOneCard(17, "1.00"));
+
+            harness.run();
+
+            assertThat(harness.sink.lines())
+                    .as("two page totals and a grand total, and not one account total")
+                    .noneMatch(line -> line.startsWith(TranReportLayouts.ACCOUNT_TOTAL_LABEL_VALUE));
+        }
+    }
+
     // =============================================================================================
     // Pagination and the account break.
     // =============================================================================================
@@ -2211,6 +2680,198 @@ class TransactionReportJobTest {
             assertThat(summary.detailLinesWritten()).isEqualTo(17);
             assertThat(summary.reportLinesWritten()).isEqualTo(30);
             assertThat(summary.lineCounter()).isEqualTo(29L);
+        }
+
+        /**
+         * {@code 1120-WRITE-HEADERS} - {@code app/cbl/CBTRN03C.cbl:324-341} - writes four lines and
+         * performs {@code ADD 1 TO WS-LINE-COUNTER} after each, so it advances the counter by exactly
+         * four. Asserted through a one-record report, where the header block is the only thing that has
+         * run before the single detail line: the counter is then four headers plus one detail, and the
+         * end-of-file page-total pair adds two more.
+         *
+         * <p>The four are asserted in write order too, because {@code MOD} is evaluated against the
+         * counter and the counter is advanced by whichever of the four have been written - so a
+         * reordering that kept the count would still be a different program.
+         */
+        @Test
+        @DisplayName("the header block writes four lines in order and advances the counter by four")
+        void theHeaderBlockWritesFourLinesAndCountsFour() {
+            TranRecord only = record("TRAN000000000001", CARD_ONE, "1.00", IN_RANGE_DATE);
+            Harness harness = harness(List.of(only));
+
+            ExecutionSummary summary = harness.run();
+            TranReportLayouts layouts = expectedLayouts();
+
+            assertThat(TransactionReportJob.HEADER_LINES)
+                    .as("REPORT-NAME-HEADER, WS-BLANK-LINE, TRANSACTION-HEADER-1, TRANSACTION-HEADER-2")
+                    .isEqualTo(4);
+            assertThat(TransactionReportJob.TOTALS_BLOCK_LINES)
+                    .as("a total line and the rule line that follows it - :296-301 and :309-313")
+                    .isEqualTo(2);
+            assertThat(harness.sink.lines().subList(0, TransactionReportJob.HEADER_LINES))
+                    .as("the four header lines, in the order :325, :329, :333 and :337 write them")
+                    .containsExactlyElementsOf(headerRecords(layouts));
+            assertThat(summary.lineCounter())
+                    .as("four for the headers, one for the detail line, two for the page-total pair - "
+                            + "and nothing for the grand total")
+                    .isEqualTo(TransactionReportJob.HEADER_LINES + 1L
+                            + TransactionReportJob.TOTALS_BLOCK_LINES);
+            assertThat(TransactionReportJob.isPageBoundary(TransactionReportJob.HEADER_LINES))
+                    .as("MOD(4, 20) = 4, which is why the first record never breaks a page")
+                    .isFalse();
+        }
+
+        /**
+         * {@code 1120-WRITE-DETAIL} begins with {@code INITIALIZE TRANSACTION-DETAIL-REPORT} -
+         * {@code app/cbl/CBTRN03C.cbl:362} - and {@code INITIALIZE} without a {@code REPLACING} phrase
+         * does not treat a {@code FILLER} item as a receiving operand. So the two {@code FILLER PIC X(01)
+         * VALUE '-'} separators survive every detail line, and gate G21 holds: omit them and the record
+         * is 131 bytes of content in a 133-byte frame with every column after 31 displaced.
+         *
+         * <p>The columns are quoted one-based from {@code app/cpy/CVTRA07Y.cpy} and indexed zero-based in
+         * Java, which is the conversion this assertion exists to pin.
+         */
+        @Test
+        @DisplayName("INITIALIZE skips FILLER, so the '-' separators at columns 32 and 53 survive")
+        void theDetailSeparatorsSurviveTheInitialize() {
+            TranRecord only = record("TRAN000000000001", CARD_ONE, "1.00", IN_RANGE_DATE);
+            Harness harness = harness(List.of(only));
+
+            harness.run();
+            String detail = harness.sink.lines().get(TransactionReportJob.HEADER_LINES);
+
+            // Each separator is the FILLER immediately BEFORE its description field, so its zero-based
+            // index is that field's offset less one. Derived rather than hard-coded, because the two
+            // private offsets in TranReportLayouts are the single source of the geometry.
+            int typeSeparatorIndex = TranReportLayouts.TRAN_REPORT_TYPE_DESC_OFFSET - 1;
+            int categorySeparatorIndex = TranReportLayouts.TRAN_REPORT_CAT_DESC_OFFSET - 1;
+            assertThat(typeSeparatorIndex)
+                    .as("one-based column 32 is zero-based index 31")
+                    .isEqualTo(31);
+            assertThat(categorySeparatorIndex)
+                    .as("one-based column 53 is zero-based index 52")
+                    .isEqualTo(52);
+            assertThat(detail.charAt(typeSeparatorIndex))
+                    .as("the separator between TRAN-REPORT-TYPE-CD and TRAN-REPORT-TYPE-DESC")
+                    .isEqualTo('-');
+            assertThat(detail.charAt(categorySeparatorIndex))
+                    .as("the separator between TRAN-REPORT-CAT-CD and TRAN-REPORT-CAT-DESC")
+                    .isEqualTo('-');
+            assertThat(detail).hasSize(TranReportWriter.RECORD_LENGTH);
+        }
+
+        /**
+         * The verb's own rule, exercised on the layout directly: alphanumerics become spaces, the one
+         * numeric item becomes zeros, the numeric-edited amount blanks under its all-{@code Z} mask, and
+         * both {@code FILLER} separators are left alone.
+         */
+        @Test
+        @DisplayName("INITIALIZE blanks the PIC X items, zeros the PIC 9 item and leaves FILLER alone")
+        void initializeFollowsTheVerbsRule() {
+            TranReportLayouts layouts = expectedLayouts();
+            layouts.moveTranReportTransId("TRAN000000000001");
+            layouts.moveTranReportCatCd(4321L);
+            layouts.moveTranReportAmt(money("12.34"));
+
+            layouts.initializeTransactionDetailReport();
+            String initialised = layouts.renderTransactionDetailReport();
+
+            assertThat(layouts.tranReportTransId())
+                    .as("PIC X(16) receives SPACE")
+                    .isEqualTo(" ".repeat(TranReportLayouts.TRAN_REPORT_TRANS_ID_LENGTH));
+            assertThat(layouts.tranReportCatCd())
+                    .as("PIC 9(04) receives ZERO, which is '0000' and not four spaces")
+                    .isEqualTo("0".repeat(TranReportLayouts.TRAN_REPORT_CAT_CD_LENGTH));
+            assertThat(layouts.tranReportCatCdValue()).isZero();
+            assertThat(layouts.tranReportAmt())
+                    .as("the numeric-edited item receives ZERO and its all-Z mask blanks it")
+                    .isEqualTo(" ".repeat(TranReportLayouts.AMOUNT_MASK_WIDTH));
+            assertThat(initialised.charAt(TranReportLayouts.TRAN_REPORT_TYPE_DESC_OFFSET - 1))
+                    .as("FILLER is not a receiving operand, so one-based column 32 is still '-'")
+                    .isEqualTo('-');
+            assertThat(initialised.charAt(TranReportLayouts.TRAN_REPORT_CAT_DESC_OFFSET - 1))
+                    .as("nor is one-based column 53")
+                    .isEqualTo('-');
+            assertThat(initialised).hasSize(TranReportLayouts.TRANSACTION_DETAIL_REPORT_LENGTH);
+        }
+
+        /**
+         * Two page boundaries, so the repeating structure is proven rather than only its first instance.
+         *
+         * <p>Derived from the source, not from a run. The counter starts at zero; the first record's
+         * first-time header block leaves it at four; each detail line adds one; a page break adds two for
+         * its total pair and four for the fresh header block. A break fires when the counter is a
+         * multiple of {@value TransactionReportJob#PAGE_SIZE} as {@code 1100} is entered:
+         *
+         * <pre>
+         * record  1 : counter 0  -> headers (4)                     -> detail -> 5
+         * records 2-16: no break                                    -> detail -> 20
+         * record 17 : counter 20 -> page pair (22), headers (26)    -> detail -> 27
+         * records 18-30: no break                                   -> detail -> 40
+         * record 31 : counter 40 -> page pair (42), headers (46)    -> detail -> 47
+         * end of file: page pair (49), grand total (no increment)   ->          49
+         * </pre>
+         *
+         * So 31 records is the smallest run that crosses two boundaries, and it yields three page totals,
+         * three report-name headers, 50 report lines and a final counter of 49.
+         */
+        @Test
+        @DisplayName("thirty-one records cross two page boundaries, so three pages and three page totals")
+        void thirtyOneRecordsCrossTwoPageBoundaries() {
+            Harness harness = harness(recordsOnOneCard(31, "1.00"));
+
+            ExecutionSummary summary = harness.run();
+            List<String> lines = harness.sink.lines();
+
+            assertThat(lines.stream()
+                    .filter(line -> line.startsWith(TranReportLayouts.PAGE_TOTAL_LABEL_VALUE))
+                    .count())
+                    .as("record 17, record 31, and end of file")
+                    .isEqualTo(3L);
+            assertThat(lines.stream()
+                    .filter(line -> line.startsWith(TranReportLayouts.REPT_SHORT_NAME_VALUE))
+                    .count())
+                    .as("three header blocks, so three pages")
+                    .isEqualTo(3L);
+            assertThat(lines.get(20))
+                    .as("the first break, after four headers and sixteen details")
+                    .startsWith(TranReportLayouts.PAGE_TOTAL_LABEL_VALUE);
+            assertThat(lines.get(40))
+                    .as("the second break, thirteen details after the second page opened")
+                    .startsWith(TranReportLayouts.PAGE_TOTAL_LABEL_VALUE);
+            assertThat(summary.detailLinesWritten()).isEqualTo(31);
+            assertThat(summary.reportLinesWritten()).isEqualTo(50);
+            assertThat(summary.lineCounter()).isEqualTo(49L);
+            assertThat(lines).allSatisfy(line ->
+                    assertThat(line).hasSize(TranReportWriter.RECORD_LENGTH));
+        }
+
+        /**
+         * The page total is zeroed at {@code :298} the moment its line is written, so each page's total
+         * covers that page alone. A translation that forgot the reset would report a running figure that
+         * still looks plausible - and would make the grand total, which sums the page totals at
+         * {@code :297}, larger than the sum of the amounts.
+         */
+        @Test
+        @DisplayName("each page total covers its own page only, because :298 zeroes it after the write")
+        void eachPageTotalCoversItsOwnPage() {
+            Harness harness = harness(recordsOnOneCard(31, "1.00"));
+
+            ExecutionSummary summary = harness.run();
+            List<String> pageTotals = harness.sink.lines().stream()
+                    .filter(line -> line.startsWith(TranReportLayouts.PAGE_TOTAL_LABEL_VALUE))
+                    .map(line -> amountImageAt(line, TranReportLayouts.REPT_PAGE_TOTAL_OFFSET))
+                    .toList();
+
+            assertThat(pageTotals)
+                    .as("16 records on page one, 14 on page two, then record 31 counted twice at "
+                            + "end of file by defect 2")
+                    .containsExactly(TranReportLayouts.editTotalAmount(money("16.00")),
+                            TranReportLayouts.editTotalAmount(money("14.00")),
+                            TranReportLayouts.editTotalAmount(money("2.00")));
+            assertThat(summary.grandTotal())
+                    .as(":297 sums the three page totals, so 16 + 14 + 2 = 32 for 31 records of 1.00")
+                    .isEqualByComparingTo(money("32.00"));
         }
 
         @Test
@@ -2287,6 +2948,113 @@ class TransactionReportJobTest {
                     .isNotEqualByComparingTo(money("100.00"));
         }
 
+        /**
+         * {@code 1110-WRITE-GRAND-TOTALS} - {@code app/cbl/CBTRN03C.cbl:318-322} - writes its line and
+         * increments nothing, unlike every other write in the program. Asserted by difference: the grand
+         * total is written exactly once per completed run, so {@code WS-LINE-COUNTER} must trail
+         * {@code reportLinesWritten} by exactly one, whatever the shape of the report.
+         *
+         * <p>Driven across three report shapes, because a single shape could satisfy the arithmetic by
+         * coincidence.
+         */
+        @ParameterizedTest
+        @ValueSource(ints = {1, 16, 31})
+        @DisplayName("the grand-total write increments nothing, so the counter trails the line count by "
+                + "exactly one")
+        void theGrandTotalWriteIncrementsNothing(int recordCount) {
+            Harness harness = harness(recordsOnOneCard(recordCount, "1.00"));
+
+            ExecutionSummary summary = harness.run();
+
+            assertThat(harness.sink.lines().getLast())
+                    .as("the grand total is written once, and it is the report's last line")
+                    .startsWith(TranReportLayouts.GRAND_TOTAL_LABEL_VALUE);
+            assertThat(harness.sink.lines().stream()
+                    .filter(line -> line.startsWith(TranReportLayouts.GRAND_TOTAL_LABEL_VALUE))
+                    .count())
+                    .isEqualTo(1L);
+            assertThat(summary.reportLinesWritten() - summary.lineCounter())
+                    .as("every write but the grand total's is followed by ADD 1 TO WS-LINE-COUNTER")
+                    .isEqualTo(1L);
+        }
+
+        /**
+         * {@code MOVE 0 TO WS-ACCOUNT-TOTAL} at {@code :310} runs immediately after the account-total
+         * line is written, so a second break reports its own account's amount and not a running figure.
+         *
+         * <p>The zero it moves is a {@code PIC S9(09)V99} zero - scale two - not a scale-free zero. The
+         * distinction is observable rather than academic: {@link BigDecimal#ZERO} has scale 0, the summary
+         * contract rejects a grand total whose scale is not
+         * {@value TransactionReportJob#TOTAL_SCALE}, and the numeric-edited mask is driven from the stored
+         * value's scale.
+         */
+        @Test
+        @DisplayName("the account total is zeroed at scale 2 after each break, never accumulated")
+        void theAccountTotalIsZeroedAtScaleTwoAfterEachBreak() {
+            TranRecord first = record("TRAN000000000001", CARD_ONE, "11.00", IN_RANGE_DATE);
+            TranRecord second = record("TRAN000000000002", CARD_TWO, "22.00", IN_RANGE_DATE);
+            TranRecord third = record("TRAN000000000003", CARD_THREE, "33.00", IN_RANGE_DATE);
+            Harness harness = harness(List.of(first, second, third));
+
+            ExecutionSummary summary = harness.run();
+            List<String> accountAmounts = harness.sink.lines().stream()
+                    .filter(line -> line.startsWith(TranReportLayouts.ACCOUNT_TOTAL_LABEL_VALUE))
+                    .map(line -> amountImageAt(line, TranReportLayouts.REPT_ACCOUNT_TOTAL_OFFSET))
+                    .toList();
+
+            assertThat(accountAmounts)
+                    .as("22.00, not 33.00 - the second break starts from the zero :310 moved in")
+                    .containsExactly(TranReportLayouts.editTotalAmount(money("11.00")),
+                            TranReportLayouts.editTotalAmount(money("22.00")));
+            assertThat(summary.grandTotal().scale())
+                    .as("the totals are PIC S9(09)V99, so scale 2 - never BigDecimal.ZERO's scale 0")
+                    .isEqualTo(TransactionReportJob.TOTAL_SCALE);
+            assertThat(BigDecimal.ZERO.scale())
+                    .as("which is exactly what BigDecimal.ZERO is not")
+                    .isNotEqualTo(TransactionReportJob.TOTAL_SCALE);
+        }
+
+        /**
+         * A total that nets to zero prints a blank amount column, because
+         * {@value TranReportLayouts#TOTAL_AMOUNT_MASK} has no {@code 9} in it: under the all-{@code Z}
+         * rule the whole {@value TranReportLayouts#AMOUNT_MASK_WIDTH}-character item is suppressed,
+         * including the sign. A translation that rendered {@code +0.00} would differ in fifteen bytes on
+         * every line it touched.
+         *
+         * <p>Reachable in a real run, not only as a pure-function fact: every record carries
+         * {@code 0.00}, so the page total at the first break is zero, the total at end of file is zero
+         * even after defect 2 doubles it, and the grand total is zero too.
+         */
+        @Test
+        @DisplayName("a zero total blanks all fifteen bytes of its amount column, sign included")
+        void aZeroTotalRendersAsSpaces() {
+            Harness harness = harness(recordsOnOneCard(17, "0.00"));
+
+            ExecutionSummary summary = harness.run();
+            String blank = " ".repeat(TranReportLayouts.AMOUNT_MASK_WIDTH);
+
+            assertThat(TranReportLayouts.editTotalAmount(money("0.00")))
+                    .as("the all-Z rule, stated as a pure function first")
+                    .isEqualTo(blank);
+            assertThat(TranReportLayouts.editDetailAmount(money("0.00")))
+                    .as("and the detail mask suppresses zero the same way")
+                    .isEqualTo(blank);
+            assertThat(harness.sink.lines().stream()
+                    .filter(line -> line.startsWith(TranReportLayouts.PAGE_TOTAL_LABEL_VALUE))
+                    .map(line -> amountImageAt(line, TranReportLayouts.REPT_PAGE_TOTAL_OFFSET)))
+                    .as("both page totals - the mid-report break and the one at end of file")
+                    .hasSize(2)
+                    .allSatisfy(image -> assertThat(image).isEqualTo(blank));
+            assertThat(amountImageAt(harness.sink.lines().getLast(),
+                    TranReportLayouts.REPT_GRAND_TOTAL_OFFSET))
+                    .as("and the grand total, which summed two zero page totals")
+                    .isEqualTo(blank);
+            assertThat(summary.grandTotal())
+                    .as("zero at scale 2, which is not BigDecimal.ZERO but compares equal to it")
+                    .isEqualByComparingTo(money("0.00"));
+            assertThat(summary.grandTotal().scale()).isEqualTo(TransactionReportJob.TOTAL_SCALE);
+        }
+
         @Test
         @DisplayName("the cross reference is read once per account, not once per record")
         void theCrossReferenceIsReadOncePerAccount() {
@@ -2303,6 +3071,162 @@ class TransactionReportJobTest {
         }
     }
 
+
+    // =============================================================================================
+    // The named arithmetic sites (gate G28).
+    //
+    // Counted at statement-initial positions with `^.{6} *VERB `, not with `grep -owc`: the latter
+    // over-counts, because END-COMPUTE and a paragraph name such as 1300-COMPUTE-INTEREST both match the
+    // bare word. On this program the honest census is ADD 16, SUBTRACT 2, and COMPUTE, MULTIPLY and
+    // DIVIDE zero each - so CBTRN03C performs no multiplication, no division and no COMPUTE at all, and
+    // therefore reaches no rounding decision. Every total is a sum of scale-2 values, which is exact.
+    //
+    // The sixteen ADDs are: one two-receiver ADD at :287-288, its duplicate at :200-201, the roll-up at
+    // :297, nine ADD 1 TO WS-LINE-COUNTER at :299 :302 :311 :314 :327 :331 :335 :339 :373, and four
+    // ADD n TO ZERO GIVING APPL-RESULT at :515 :520 :533 :538. The two SUBTRACTs are the
+    // SUBTRACT APPL-RESULT FROM APPL-RESULT at :518 and :536, asserted by CloseLadders.
+    // =============================================================================================
+
+    @Nested
+    @DisplayName("The arithmetic - sixteen ADDs, two SUBTRACTs, and no rounding decision (gate G28)")
+    class Arithmetic {
+
+        /**
+         * {@code ADD TRAN-AMT TO WS-PAGE-TOTAL WS-ACCOUNT-TOTAL} - {@code app/cbl/CBTRN03C.cbl:287-288}
+         * - is one statement with <em>two</em> receivers, and both are credited with the same amount.
+         *
+         * <p>Observed through both windows in a single run: the account-total line written at the card
+         * change reports what the account receiver holds, and the page total at end of file reports what
+         * the page receiver holds. A translation that credited only one would satisfy neither the account
+         * line nor the grand total.
+         */
+        @Test
+        @DisplayName("the one ADD with two receivers credits the page total and the account total alike")
+        void theTwoReceiverAddCreditsBoth() {
+            TranRecord first = record("TRAN000000000001", CARD_ONE, "100.00", IN_RANGE_DATE);
+            TranRecord second = record("TRAN000000000002", CARD_TWO, "7.00", IN_RANGE_DATE);
+            Harness harness = harness(List.of(first, second));
+
+            ExecutionSummary summary = harness.run();
+            List<String> lines = harness.sink.lines();
+
+            assertThat(lines.stream()
+                    .filter(line -> line.startsWith(TranReportLayouts.ACCOUNT_TOTAL_LABEL_VALUE))
+                    .map(line -> amountImageAt(line, TranReportLayouts.REPT_ACCOUNT_TOTAL_OFFSET)))
+                    .as("the account receiver took the first card's 100.00")
+                    .containsExactly(TranReportLayouts.editTotalAmount(money("100.00")));
+            assertThat(lines.stream()
+                    .filter(line -> line.startsWith(TranReportLayouts.PAGE_TOTAL_LABEL_VALUE))
+                    .map(line -> amountImageAt(line, TranReportLayouts.REPT_PAGE_TOTAL_OFFSET)))
+                    .as("and the page receiver took both, plus the last one again through defect 2")
+                    .containsExactly(TranReportLayouts.editTotalAmount(money("114.00")));
+            assertThat(summary.grandTotal()).isEqualByComparingTo(money("114.00"));
+        }
+
+        /**
+         * No {@code COMPUTE}, no {@code MULTIPLY} and no {@code DIVIDE} appear in this program, so no
+         * rounding mode is ever consulted: every total is a sum of {@code PIC S9(09)V99} values, and the
+         * sum of scale-2 values is exact at scale 2.
+         *
+         * <p>Asserted at the picture's own boundary, because that is where an inexact accumulation would
+         * show: three additions of {@code 111111111.11} produce {@code 333333333.33}, which uses all nine
+         * integer digits and both fractional ones. Under {@code RoundingMode.DOWN} - the only mode the
+         * estate uses, because {@code ROUNDED} appears nowhere in the 28 programs - this is unchanged,
+         * and it would be unchanged under any mode, which is exactly the point: rule R2 is not exercised
+         * here because the program gives it nothing to decide.
+         */
+        @Test
+        @DisplayName("the totals are exact sums at scale 2, so no rounding mode is ever consulted")
+        void theTotalsAreExactSumsAtScaleTwo() {
+            TranRecord first = record("TRAN000000000001", CARD_ONE, "111111111.11", IN_RANGE_DATE);
+            TranRecord second = record("TRAN000000000002", CARD_ONE, "111111111.11", IN_RANGE_DATE);
+            Harness harness = harness(List.of(first, second));
+
+            ExecutionSummary summary = harness.run();
+
+            assertThat(summary.grandTotal())
+                    .as("111111111.11 three times - the two records and defect 2's repeat of the last")
+                    .isEqualTo(money("333333333.33").setScale(TransactionReportJob.TOTAL_SCALE));
+            assertThat(summary.grandTotal().precision())
+                    .as("eleven significant digits, which is PIC S9(09)V99 in full")
+                    .isEqualTo(TransactionReportJob.TOTAL_INTEGER_DIGITS
+                            + TransactionReportJob.TOTAL_SCALE);
+            assertThat(amountImageAt(harness.sink.lines().getLast(),
+                    TranReportLayouts.REPT_GRAND_TOTAL_OFFSET))
+                    .as("and the mask prints every digit, both commas and the sign")
+                    .isEqualTo("+333,333,333.33");
+        }
+
+        /**
+         * The smallest representable amount, accumulated, so the fractional digits are shown to carry
+         * rather than being folded away by a binary approximation (rule R4, gate G22).
+         */
+        @Test
+        @DisplayName("the smallest representable amount accumulates exactly, cent by cent")
+        void theSmallestAmountAccumulatesExactly() {
+            Harness harness = harness(recordsOnOneCard(3, "0.01"));
+
+            ExecutionSummary summary = harness.run();
+
+            assertThat(summary.grandTotal())
+                    .as("four cents: three records and defect 2's repeat")
+                    .isEqualTo(money("0.04"));
+            // Suppression cannot pass the decimal point, so the sign prints, all nine digit slots and
+            // both commas blank, and the point and the two fractional digits print. The suppressed run
+            // is therefore the mask less the sign, the point and the fraction - derived rather than
+            // hand-counted, because miscounting it is precisely the mistake this assertion guards.
+            String suppressed = " ".repeat(TranReportLayouts.AMOUNT_MASK_WIDTH - 1 - 1
+                    - TranReportLayouts.AMOUNT_FRACTION_DIGITS);
+            assertThat(amountImageAt(harness.sink.lines().getLast(),
+                    TranReportLayouts.REPT_GRAND_TOTAL_OFFSET))
+                    .as("suppression stops at the decimal point, so no integer digit prints")
+                    .isEqualTo("+" + suppressed + ".04")
+                    .hasSize(TranReportLayouts.AMOUNT_MASK_WIDTH);
+        }
+
+        /**
+         * The nine {@code ADD 1 TO WS-LINE-COUNTER} sites, asserted as an identity rather than as nine
+         * separate numbers: every write the program makes is followed by an increment except the grand
+         * total's, so the counter and the line count differ by exactly the number of grand totals
+         * written - one for a completed run, zero for a run that never reaches end of file.
+         */
+        @ParameterizedTest
+        @ValueSource(ints = {1, 17, 31})
+        @DisplayName("every counted write increments once, and the identity holds at every report shape")
+        void everyCountedWriteIncrementsOnce(int recordCount) {
+            Harness harness = harness(recordsOnOneCard(recordCount, "1.00"));
+
+            ExecutionSummary summary = harness.run();
+            long grandTotals = harness.sink.lines().stream()
+                    .filter(line -> line.startsWith(TranReportLayouts.GRAND_TOTAL_LABEL_VALUE))
+                    .count();
+
+            assertThat(summary.lineCounter())
+                    .as("WS-LINE-COUNTER counts every write but the grand total's")
+                    .isEqualTo(summary.reportLinesWritten() - grandTotals);
+            assertThat(grandTotals).isEqualTo(1L);
+        }
+
+        /**
+         * The same identity on a run that abends before end of file: no grand total is written, so the
+         * counter equals the line count exactly.
+         */
+        @Test
+        @DisplayName("a run that never reaches end of file writes no grand total, so the two agree")
+        void anIncompleteRunHasNoGrandTotalToExclude() {
+            TranRecord inRange = record("TRAN000000000001", CARD_ONE, "1.00", IN_RANGE_DATE);
+            TranRecord outOfRange = record("TRAN000000000002", CARD_ONE, "1.00", OUT_OF_RANGE_DATE);
+            Harness harness = harness(List.of(inRange, outOfRange));
+
+            ExecutionSummary summary = harness.run();
+
+            assertThat(harness.sink.lines())
+                    .noneMatch(line -> line.startsWith(TranReportLayouts.GRAND_TOTAL_LABEL_VALUE));
+            assertThat(summary.lineCounter())
+                    .as("four headers and one detail, all five counted")
+                    .isEqualTo(summary.reportLinesWritten());
+        }
+    }
 
     // =============================================================================================
     // 0550-DATEPARM-READ - all three EVALUATE arms, WHEN OTHER last (gate G30).
@@ -2462,6 +3386,77 @@ class TransactionReportJobTest {
                             TransactionReportJob.INVALID_TRAN_CATG_KEY
                                     + keyImageOf(TYPE_CODE, CATEGORY_CODE),
                             FileStatus.NOT_FOUND));
+        }
+
+        /**
+         * The qualification hazard, pinned.
+         *
+         * <p>{@code app/cbl/CBTRN03C.cbl} writes {@code TRAN-TYPE-CD OF TRAN-RECORD} at {@code :189},
+         * {@code :191} and {@code :365}, and {@code TRAN-CAT-CD OF TRAN-RECORD} at {@code :193} and
+         * {@code :367}. The qualification is not decoration: {@code app/cpy/CVTRA04Y.cpy} declares items
+         * of exactly those names inside {@code TRAN-CAT-RECORD}, which {@code 1500-C-LOOKUP-TRANCATG}
+         * has just read into. Drop the qualifier and the compiler resolves it to whichever the program
+         * happens to see, and the report silently prints the category row's own key back at itself -
+         * which is indistinguishable from correct on any fixture where the two agree.
+         *
+         * <p>So the two are made to disagree. The category row this run returns carries a different type
+         * code and a different category code from the transaction, and the detail line must show the
+         * <em>transaction's</em>.
+         */
+        @Test
+        @DisplayName("the detail line's type and category codes come from TRAN-RECORD, not from the "
+                + "category row of the same field names")
+        void theDetailCodesComeFromTheTransactionRecord() {
+            String foreignTypeCode = "99";
+            int foreignCategoryCode = 8888;
+            TranRecord only = record("TRAN000000000001", CARD_ONE, "1.00", IN_RANGE_DATE);
+            Harness harness = harness(List.of(only));
+            // doReturn, not when(...): re-stubbing through when() would first invoke the harness's own
+            // answer with the matcher's default arguments.
+            doReturn(TranCategoryRepository.ReadResult.found(TranCategoryRecord.of(foreignTypeCode,
+                    foreignCategoryCode, CATEGORY_DESCRIPTION, ASCII)))
+                    .when(harness.categories).readByKey(anyString(), anyInt());
+            doReturn(TranTypeRepository.ReadResult.found(foreignTypeCode,
+                    TranTypeRecord.of(foreignTypeCode, TYPE_DESCRIPTION, ASCII)))
+                    .when(harness.types).readByTranType(anyString());
+
+            harness.run();
+            String detail = harness.sink.lines().get(TransactionReportJob.HEADER_LINES);
+
+            assertThat(detail.substring(TranReportLayouts.TRAN_REPORT_TYPE_CD_OFFSET,
+                    TranReportLayouts.TRAN_REPORT_TYPE_CD_OFFSET
+                            + TranReportLayouts.TRAN_REPORT_TYPE_CD_LENGTH))
+                    .as(":365 moves TRAN-TYPE-CD OF TRAN-RECORD, so the transaction's %s and not the "
+                            + "category row's %s", TYPE_CODE, foreignTypeCode)
+                    .isEqualTo(TYPE_CODE);
+            assertThat(detail.substring(TranReportLayouts.TRAN_REPORT_CAT_CD_OFFSET,
+                    TranReportLayouts.TRAN_REPORT_CAT_CD_OFFSET
+                            + TranReportLayouts.TRAN_REPORT_CAT_CD_LENGTH))
+                    .as(":367 moves TRAN-CAT-CD OF TRAN-RECORD, so the transaction's %d zero-filled and "
+                            + "not the category row's %d", CATEGORY_CODE, foreignCategoryCode)
+                    .isEqualTo(keyImageOf(TYPE_CODE, CATEGORY_CODE)
+                            .substring(TranCategoryRecord.TRAN_CAT_CD_OFFSET));
+            assertThat(detail)
+                    .as("the description, by contrast, IS the category row's - :368 has no qualifier "
+                            + "because TRAN-CAT-TYPE-DESC exists only there")
+                    .contains(CATEGORY_DESCRIPTION);
+        }
+
+        /**
+         * The lookups are keyed on the transaction's own codes too, not on anything the previous read
+         * left behind: {@code :189} and {@code :191-194} move from {@code TRAN-RECORD} into the two
+         * record keys before each read.
+         */
+        @Test
+        @DisplayName("both lookups are keyed from the transaction's own codes")
+        void bothLookupsAreKeyedFromTheTransaction() {
+            Harness harness = harness(List.of(record("TRAN000000000001", CARD_ONE, "1.00",
+                    IN_RANGE_DATE)));
+
+            harness.run();
+
+            verify(harness.types).readByTranType(TYPE_CODE);
+            verify(harness.categories).readByKey(TYPE_CODE, CATEGORY_CODE);
         }
 
         @Test

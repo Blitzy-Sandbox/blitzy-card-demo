@@ -1,0 +1,32 @@
+{
+  "program": "CBACT02C",
+  "caseId": "case17",
+  "description": "The record-geometry case: one inline row whose six declared fields are set and whose FILLER X(59) is blank, asserted as a single 150-character line. app/cpy/CVACT02Y.cpy declares CARD-NUM X(16), CARD-ACCT-ID 9(11), CARD-CVV-CD 9(03), CARD-EMBOSSED-NAME X(50), CARD-EXPIRAION-DATE X(10) - misspelled in the copybook and carried verbatim - CARD-ACTIVE-STATUS X(01) and FILLER X(59), which sum to exactly 150. Because DISPLAY CARD-RECORD at app/cbl/CBACT02C.cbl:78 names the 01 group item, the emitted line is the whole area, so the expected text below is the direct assertion that the total width is 150 and that the FILLER span is present and space-filled: a codec that dropped the FILLER would emit 91 characters, and one that mis-sized any field would shift every byte after it. The embossed name is padded to its full 50 characters and is not trimmed, because a PIC X field is its declared width.",
+  "unitKind": "BATCH_JOB",
+  "inputs": {
+    "CARDFILE": {
+      "rows": [
+        "111111111111111000000000042007PARITY WIDTH PROBE                                2024-01-31Y                                                           "
+      ]
+    }
+  },
+  "jobParameters": {},
+  "expectedWrites": [],
+  "expectedFinalState": [],
+  "expectedReturnCode": 0,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "START OF EXECUTION OF PROGRAM CBACT02C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "111111111111111000000000042007PARITY WIDTH PROBE                                2024-01-31Y                                                           "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "END OF EXECUTION OF PROGRAM CBACT02C"
+    }
+  ],
+  "normalisations": []
+}

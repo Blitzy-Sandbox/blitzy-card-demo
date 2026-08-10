@@ -1,0 +1,34 @@
+{
+  "program": "CBACT02C",
+  "caseId": "case10",
+  "description": "The OPEN is refused outright rather than answering with a status: the dataset cannot be reached at all. COBOL has no exception for this - OPEN has a FILE STATUS clause at app/cbl/CBACT02C.cbl:33 and nothing else - so the refusal must surface as a status, and it surfaces as the same '9' permanent-error convention case09 reaches, giving the identical image '9000'. The two cases are distinct on purpose: case09 is a backend that answered with a response carrying no batch equivalent, this one is a backend that never answered. Both must land on the ELSE MOVE 12 arm at :124 and abend with RETURN-CODE 12, and neither may be allowed to escape as a Java exception, because a program that threw where the COBOL displays and abends would lose the two diagnostic lines the mainframe writes.",
+  "unitKind": "BATCH_JOB",
+  "inputs": {
+    "CARDFILE": {
+      "fixture": "carddata.txt"
+    }
+  },
+  "jobParameters": {},
+  "expectedWrites": [],
+  "expectedFinalState": [],
+  "expectedReturnCode": 12,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "START OF EXECUTION OF PROGRAM CBACT02C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ERROR OPENING CARDFILE"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "FILE STATUS IS: NNNN9000"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ABENDING PROGRAM"
+    }
+  ],
+  "normalisations": []
+}

@@ -1,0 +1,80 @@
+{
+  "program": "COADM01C",
+  "caseId": "case08",
+  "description": "The 'DUMMY' branch at app/cbl/COADM01C.cbl:138 and the statements it guards at 146-154. Line 138 reference-modifies the first five characters of CDEMO-ADMIN-OPT-PGMNAME(WS-OPTION); when they ARE 'DUMMY' the XCTL is skipped, and because an XCTL never returns those five statements are reachable on this path alone - line 147 blanks WS-MESSAGE, line 148 moves DFHGREEN over the mapset's COLOR=RED, lines 149-153 STRING 'This option ' and 'is coming soon ...' into it (the CDEMO-ADMIN-OPT-NAME operand between them is commented out in the source and stays out), and line 154 sends. Note that WS-ERR-FLG remains 'N' here: this is a successful path that happens not to transfer, not a rejection. app/cpy/COADM02Y.cpy names no DUMMY program, so the branch is unreachable from the copybook table and is driven through the option-table seam instead, with a single entry differing from the copybook's first entry in nothing but its program name - so the program name is the only variable under test. The branch is preserved and exercised rather than removed, because dead code is preserved, not cleaned up.",
+  "unitKind": "SERVICE",
+  "inputs": {},
+  "screenRequest": {
+    "eibcalen": 160,
+    "aid": "DFHENTER",
+    "pinnedClock": "2022-07-19T23:12:32",
+    "charset": "US-ASCII",
+    "commarea": {
+      "CDEMO-FROM-TRANID": "CC00",
+      "CDEMO-FROM-PROGRAM": "COSGN00C",
+      "CDEMO-TO-PROGRAM": "COADM01C",
+      "CDEMO-USER-ID": "ADMIN001",
+      "CDEMO-USER-TYPE": "A",
+      "CDEMO-PGM-CONTEXT": "1"
+    },
+    "mapFields": {
+      "OPTIONI": "1 "
+    },
+    "forcedOutcomes": {}
+  },
+  "expectedResponse": {
+    "nextMapset": "COADM01",
+    "nextMap": "COADM1A",
+    "navigation": {
+      "CDEMO-FROM-TRANID": "CC00",
+      "CDEMO-FROM-PROGRAM": "COSGN00C",
+      "CDEMO-TO-TRANID": "    ",
+      "CDEMO-TO-PROGRAM": "COADM01C",
+      "CDEMO-USER-ID": "ADMIN001",
+      "CDEMO-USER-TYPE": "A",
+      "CDEMO-PGM-CONTEXT": "1",
+      "CDEMO-CUST-ID": "000000000",
+      "CDEMO-CUST-FNAME": "                         ",
+      "CDEMO-CUST-MNAME": "                         ",
+      "CDEMO-CUST-LNAME": "                         ",
+      "CDEMO-ACCT-ID": "00000000000",
+      "CDEMO-ACCT-STATUS": " ",
+      "CDEMO-CARD-NUM": "0000000000000000",
+      "CDEMO-LAST-MAP": "       ",
+      "CDEMO-LAST-MAPSET": "       "
+    },
+    "sends": [
+      {
+        "fields": {
+          "OPTN001O": "01. User List (Security)                ",
+          "OPTN002O": "                                        ",
+          "OPTN003O": "                                        ",
+          "OPTN004O": "                                        ",
+          "OPTN005O": "                                        ",
+          "OPTN006O": "                                        ",
+          "OPTN007O": "                                        ",
+          "OPTN008O": "                                        ",
+          "OPTN009O": "                                        ",
+          "OPTN010O": "                                        ",
+          "OPTN011O": "                                        ",
+          "OPTN012O": "                                        ",
+          "OPTIONO": "01"
+        },
+        "attributes": {
+          "ERRMSGC": "DFHGREEN"
+        }
+      }
+    ],
+    "termination": "RETURN_TRANSID"
+  },
+  "expectedWrites": [],
+  "expectedFinalState": [],
+  "expectedReturnCode": 0,
+  "expectedMessages": [
+    {
+      "channel": "WS_MESSAGE_80",
+      "text": "This option is coming soon ...                                                  "
+    }
+  ],
+  "normalisations": []
+}

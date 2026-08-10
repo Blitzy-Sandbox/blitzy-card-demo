@@ -1,0 +1,58 @@
+{
+  "program": "COADM01C",
+  "caseId": "case10",
+  "description": "The second arm of the EVALUATE at app/cbl/COADM01C.cbl:96-98: PF3 exits to the sign-on screen. Line 97 moves 'COSGN00C' into CDEMO-TO-PROGRAM - TO here, where line 83 set FROM - and RETURN-TO-SIGNON-SCREEN then finds the field already populated, so the default at line 163 does NOT fire and the combined relation's false outcome is what is being observed. The XCTL at 165-167 carries no COMMAREA, which is the difference from the option transfer at 142-145 and is the condition COSGN00C's own EIBCALEN = 0 test looks for. No map is sent and CDEMO-PGM-CONTEXT stays at re-enter, because nothing on this path changes it.",
+  "unitKind": "SERVICE",
+  "inputs": {},
+  "screenRequest": {
+    "eibcalen": 160,
+    "aid": "DFHPF3",
+    "pinnedClock": "2022-07-19T23:12:32",
+    "charset": "US-ASCII",
+    "commarea": {
+      "CDEMO-FROM-TRANID": "CC00",
+      "CDEMO-FROM-PROGRAM": "COSGN00C",
+      "CDEMO-TO-PROGRAM": "COADM01C",
+      "CDEMO-USER-ID": "ADMIN001",
+      "CDEMO-USER-TYPE": "A",
+      "CDEMO-PGM-CONTEXT": "1"
+    },
+    "mapFields": {
+      "OPTIONI": "  "
+    },
+    "forcedOutcomes": {}
+  },
+  "expectedResponse": {
+    "nextProgram": "COSGN00C",
+    "navigation": {
+      "CDEMO-FROM-TRANID": "CC00",
+      "CDEMO-FROM-PROGRAM": "COSGN00C",
+      "CDEMO-TO-TRANID": "    ",
+      "CDEMO-TO-PROGRAM": "COSGN00C",
+      "CDEMO-USER-ID": "ADMIN001",
+      "CDEMO-USER-TYPE": "A",
+      "CDEMO-PGM-CONTEXT": "1",
+      "CDEMO-CUST-ID": "000000000",
+      "CDEMO-CUST-FNAME": "                         ",
+      "CDEMO-CUST-MNAME": "                         ",
+      "CDEMO-CUST-LNAME": "                         ",
+      "CDEMO-ACCT-ID": "00000000000",
+      "CDEMO-ACCT-STATUS": " ",
+      "CDEMO-CARD-NUM": "0000000000000000",
+      "CDEMO-LAST-MAP": "       ",
+      "CDEMO-LAST-MAPSET": "       "
+    },
+    "sends": [],
+    "termination": "XCTL"
+  },
+  "expectedWrites": [],
+  "expectedFinalState": [],
+  "expectedReturnCode": 0,
+  "expectedMessages": [
+    {
+      "channel": "WS_MESSAGE_80",
+      "text": "                                                                                "
+    }
+  ],
+  "normalisations": []
+}

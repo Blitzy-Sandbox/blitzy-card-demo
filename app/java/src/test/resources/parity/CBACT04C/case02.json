@@ -1,0 +1,141 @@
+{
+  "program": "CBACT04C",
+  "caseId": "case02",
+  "description": "THE TRUNCATION CASE, and the sharpest expectation in this gate. COMPUTE WS-MONTHLY-INT = ( TRAN-CAT-BAL * DIS-INT-RATE) / 1200 at :464-465 carries NO ROUNDED phrase - the keyword occurs zero times in all twenty-eight programs - so the store into WS-MONTHLY-INT PIC S9(09)V99 at :168 truncates. 1000.00 at 12.50 has an exact product of 12500.0000 and an exact quotient of 10.41666..., whose third decimal digit is six: that is the only kind of operand pair that can tell truncation from rounding. TRAN-AMT therefore carries 0000000104A - the zoned image of 10.41 with the sign overpunched onto its trailing byte - and NOT 0000000104B, which is 10.42 and is what this system would write if it rounded. The ACCOUNT IS acctdata.txt ROW 0 VERBATIM, ACCT-GROUP-ID and all, so the arithmetic is proven against a real production account row: its group is ten spaces, the READ at :416 misses, :418-419 display, and the retry at :437-438 finds the rate under 'DEFAULT   '. Only the disclosure-group row is stated inline, because no row of discgrp.txt carries 12.50 and no row of tcatbal.txt carries a non-zero balance - the category-balance row is written in that fixture's own 50-byte shape, FILLER span of zeros included.",
+  "unitKind": "BATCH_JOB",
+  "inputs": {
+    "TCATBALF": {
+      "rows": [
+        "000000000010100010000010000{0000000000000000000000"
+      ]
+    },
+    "ACCTFILE": {
+      "fixture": "acctdata.txt",
+      "fromRow": 0,
+      "rowCount": 1
+    },
+    "XREFFILE": {
+      "rows": [
+        "968029415460369700000000100000000001"
+      ]
+    },
+    "XREFFIL1": {
+      "rows": [
+        "968029415460369700000000100000000001"
+      ]
+    },
+    "DISCGRP": {
+      "rows": [
+        "DEFAULT   01000100125{0000000000000000000000000000"
+      ]
+    }
+  },
+  "jobParameters": {
+    "parmDate": "2022071800"
+  },
+  "expectedWrites": [
+    {
+      "dataset": "SYSTRAN",
+      "rowIndex": 0,
+      "expectedBytes": "2022071800000001010005System    Int. for a/c 00000000001                                                                            0000000104A000000000                                                                                                              96802941546036972022-07-19-23.12.34.0000002022-07-19-23.12.34.000000                    "
+    }
+  ],
+  "expectedFinalState": [
+    {
+      "dataset": "TCATBALF",
+      "rowIndex": 0,
+      "expectedBytes": "000000000010100010000010000{0000000000000000000000"
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 0,
+      "expectedBytes": "00000000001Y00000001940{00000020200{00000010200{2014-11-202025-05-202025-05-2000000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 0,
+      "expectedBytes": "968029415460369700000000100000000001              "
+    },
+    {
+      "dataset": "XREFFIL1",
+      "rowIndex": 0,
+      "expectedBytes": "968029415460369700000000100000000001              "
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 0,
+      "expectedBytes": "DEFAULT   01000100125{0000000000000000000000000000"
+    }
+  ],
+  "expectedReturnCode": 0,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "START OF EXECUTION OF PROGRAM CBACT04C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "000000000010100010000010000{0000000000000000000000"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "DISCLOSURE GROUP RECORD MISSING"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "TRY WITH DEFAULT GROUP CODE"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "END OF EXECUTION OF PROGRAM CBACT04C"
+    }
+  ],
+  "normalisations": [
+    {
+      "dataset": "XREFFILE",
+      "kind": "CARDXREF_FILLER_PAD_36_TO_50"
+    },
+    {
+      "dataset": "XREFFIL1",
+      "kind": "CARDXREF_FILLER_PAD_36_TO_50"
+    }
+  ],
+  "expectedDatasets": [
+    {
+      "dataset": "SYSTRAN",
+      "channel": "WRITES",
+      "rowCount": 1,
+      "recordLength": 350
+    },
+    {
+      "dataset": "TCATBALF",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 50
+    },
+    {
+      "dataset": "ACCTFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 300
+    },
+    {
+      "dataset": "XREFFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 50
+    },
+    {
+      "dataset": "XREFFIL1",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 50
+    },
+    {
+      "dataset": "DISCGRP",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 50
+    }
+  ]
+}

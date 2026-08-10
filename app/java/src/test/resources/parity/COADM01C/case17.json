@@ -1,0 +1,78 @@
+{
+  "program": "COADM01C",
+  "caseId": "case17",
+  "description": "Two of COADM01C's declarations are never referenced again anywhere in the program and both survive the translation, because a declaration is part of what the program is. COPY CSUSR01Y at app/cbl/COADM01C.cbl:58 brings 01 SEC-USER-DATA into working storage and not one of its six fields is read or written; WS-USRSEC-FILE at line 39 holds the eight-byte logical file name 'USRSEC  ' - note the two trailing spaces of the source literal - and is likewise never referenced. This case runs an ordinary first-entry paint and asserts at the unit that the unused record is still blank afterwards, that the logical name is still its declared image, and that no SEC-USR value reaches the response. No dataset is seeded here, and deliberately so: the distinction from case16 is that this is working storage, not a file.",
+  "unitKind": "SERVICE",
+  "inputs": {},
+  "screenRequest": {
+    "eibcalen": 160,
+    "aid": "DFHENTER",
+    "pinnedClock": "2022-07-19T23:12:32",
+    "charset": "US-ASCII",
+    "commarea": {
+      "CDEMO-FROM-TRANID": "CC00",
+      "CDEMO-FROM-PROGRAM": "COSGN00C",
+      "CDEMO-TO-PROGRAM": "COADM01C",
+      "CDEMO-USER-ID": "ADMIN001",
+      "CDEMO-USER-TYPE": "A",
+      "CDEMO-PGM-CONTEXT": "0"
+    },
+    "mapFields": {},
+    "forcedOutcomes": {}
+  },
+  "expectedResponse": {
+    "nextMapset": "COADM01",
+    "nextMap": "COADM1A",
+    "navigation": {
+      "CDEMO-FROM-TRANID": "CC00",
+      "CDEMO-FROM-PROGRAM": "COSGN00C",
+      "CDEMO-TO-TRANID": "    ",
+      "CDEMO-TO-PROGRAM": "COADM01C",
+      "CDEMO-USER-ID": "ADMIN001",
+      "CDEMO-USER-TYPE": "A",
+      "CDEMO-PGM-CONTEXT": "1",
+      "CDEMO-CUST-ID": "000000000",
+      "CDEMO-CUST-FNAME": "                         ",
+      "CDEMO-CUST-MNAME": "                         ",
+      "CDEMO-CUST-LNAME": "                         ",
+      "CDEMO-ACCT-ID": "00000000000",
+      "CDEMO-ACCT-STATUS": " ",
+      "CDEMO-CARD-NUM": "0000000000000000",
+      "CDEMO-LAST-MAP": "       ",
+      "CDEMO-LAST-MAPSET": "       "
+    },
+    "sends": [
+      {
+        "fields": {
+          "OPTN001O": "01. User List (Security)                ",
+          "OPTN002O": "02. User Add (Security)                 ",
+          "OPTN003O": "03. User Update (Security)              ",
+          "OPTN004O": "04. User Delete (Security)              ",
+          "OPTN005O": "                                        ",
+          "OPTN006O": "                                        ",
+          "OPTN007O": "                                        ",
+          "OPTN008O": "                                        ",
+          "OPTN009O": "                                        ",
+          "OPTN010O": "                                        ",
+          "OPTN011O": "                                        ",
+          "OPTN012O": "                                        ",
+          "OPTIONO": "  "
+        },
+        "attributes": {
+          "ERRMSGC": "DFHRED"
+        }
+      }
+    ],
+    "termination": "RETURN_TRANSID"
+  },
+  "expectedWrites": [],
+  "expectedFinalState": [],
+  "expectedReturnCode": 0,
+  "expectedMessages": [
+    {
+      "channel": "WS_MESSAGE_80",
+      "text": "                                                                                "
+    }
+  ],
+  "normalisations": []
+}

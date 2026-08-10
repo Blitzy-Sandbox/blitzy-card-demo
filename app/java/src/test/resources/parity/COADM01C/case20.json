@@ -1,0 +1,87 @@
+{
+  "program": "COADM01C",
+  "caseId": "case20",
+  "description": "The whole screen, all twenty name-labelled fields of mapset COADM01, pinned in one expectation. app/bms/COADM01.bms declares twenty labelled DFHMDF fields and app/cpy-bms/COADM01.CPY gives each an xxxI item whose PICTURE clause is the only source of its width - TRNNAME X(4), TITLE01 X(40), CURDATE X(8), PGMNAME X(8), TITLE02 X(40), CURTIME X(8), OPTN001 to OPTN012 X(40) each, OPTION X(2) and ERRMSG X(78) - and every one of them is stated here at that full width. The xxxL, xxxF and xxxA items are length, flag and attribute metadata rather than payload, so the only one of them that appears is ERRMSGC, carried as an attribute and valued with the DFHBMSCA mnemonic the program moved. The blank-option rejection is the path chosen because it is the only one that populates all four groups at once: the header, the composed menu, the echoed option and a non-blank message. case04 pins the same COBOL path one layer down, at the eighty bytes of WS-MESSAGE.",
+  "unitKind": "CONTROLLER_POJO",
+  "inputs": {},
+  "screenRequest": {
+    "eibcalen": 160,
+    "aid": "DFHENTER",
+    "pinnedClock": "2022-07-19T23:12:32",
+    "charset": "US-ASCII",
+    "commarea": {
+      "CDEMO-FROM-TRANID": "CC00",
+      "CDEMO-FROM-PROGRAM": "COSGN00C",
+      "CDEMO-TO-PROGRAM": "COADM01C",
+      "CDEMO-USER-ID": "ADMIN001",
+      "CDEMO-USER-TYPE": "A",
+      "CDEMO-PGM-CONTEXT": "1"
+    },
+    "mapFields": {
+      "OPTIONI": "  "
+    },
+    "forcedOutcomes": {}
+  },
+  "expectedResponse": {
+    "nextMapset": "COADM01",
+    "nextMap": "COADM1A",
+    "navigation": {
+      "CDEMO-FROM-TRANID": "CC00",
+      "CDEMO-FROM-PROGRAM": "COSGN00C",
+      "CDEMO-TO-TRANID": "    ",
+      "CDEMO-TO-PROGRAM": "COADM01C",
+      "CDEMO-USER-ID": "ADMIN001",
+      "CDEMO-USER-TYPE": "A",
+      "CDEMO-PGM-CONTEXT": "1",
+      "CDEMO-CUST-ID": "000000000",
+      "CDEMO-CUST-FNAME": "                         ",
+      "CDEMO-CUST-MNAME": "                         ",
+      "CDEMO-CUST-LNAME": "                         ",
+      "CDEMO-ACCT-ID": "00000000000",
+      "CDEMO-ACCT-STATUS": " ",
+      "CDEMO-CARD-NUM": "0000000000000000",
+      "CDEMO-LAST-MAP": "       ",
+      "CDEMO-LAST-MAPSET": "       "
+    },
+    "sends": [
+      {
+        "fields": {
+          "TRNNAMEO": "CA00",
+          "TITLE01O": "      AWS Mainframe Modernization       ",
+          "CURDATEO": "07/19/22",
+          "PGMNAMEO": "COADM01C",
+          "TITLE02O": "              CardDemo                  ",
+          "CURTIMEO": "23:12:32",
+          "OPTN001O": "01. User List (Security)                ",
+          "OPTN002O": "02. User Add (Security)                 ",
+          "OPTN003O": "03. User Update (Security)              ",
+          "OPTN004O": "04. User Delete (Security)              ",
+          "OPTN005O": "                                        ",
+          "OPTN006O": "                                        ",
+          "OPTN007O": "                                        ",
+          "OPTN008O": "                                        ",
+          "OPTN009O": "                                        ",
+          "OPTN010O": "                                        ",
+          "OPTN011O": "                                        ",
+          "OPTN012O": "                                        ",
+          "OPTIONO": "00",
+          "ERRMSGO": "Please enter a valid option number...                                         "
+        },
+        "attributes": {
+          "ERRMSGC": "DFHRED"
+        }
+      }
+    ],
+    "termination": "RETURN_TRANSID"
+  },
+  "expectedWrites": [],
+  "expectedFinalState": [],
+  "expectedReturnCode": 0,
+  "expectedMessages": [
+    {
+      "channel": "SCREEN_ERRMSG_78",
+      "text": "Please enter a valid option number...                                         "
+    }
+  ],
+  "normalisations": []
+}

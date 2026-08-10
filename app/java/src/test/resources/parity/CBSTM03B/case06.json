@@ -1,0 +1,74 @@
+{
+  "program": "CBSTM03B",
+  "caseId": "case06",
+  "description": "app/cbl/CBSTM03B.CBL:164-166 - READ XREF-FILE INTO LK-M03B-FLDT. The record is 50 bytes, so the area is the row followed by 950 spaces. This is also the case that proves the 36-to-50 pad reached the record area rather than being applied somewhere downstream: bytes 37 to 50 of the area are the fourteen spaces standing in for CVACT03Y's trailing FILLER PIC X(14), and bytes 51 to 1000 are the receiver's own padding. Both runs of spaces are stated in the expectation, and they mean different things.",
+  "unitKind": "COMPONENT",
+  "inputs": {
+    "XREFFILE": {
+      "fixture": "cardxref.txt",
+      "fromRow": 0,
+      "rowCount": 3
+    }
+  },
+  "jobParameters": {},
+  "screenRequest": null,
+  "expectedResponse": null,
+  "expectedWrites": [
+    {
+      "dataset": "M03BAREA",
+      "rowIndex": 0,
+      "fields": {
+        "LK-M03B-DD": "XREFFILE",
+        "LK-M03B-OPER": "O",
+        "LK-M03B-RC": "00"
+      },
+      "expectedBytes": "XREFFILEO00                         000{                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        "
+    },
+    {
+      "dataset": "M03BAREA",
+      "rowIndex": 1,
+      "fields": {
+        "LK-M03B-DD": "XREFFILE",
+        "LK-M03B-OPER": "R",
+        "LK-M03B-RC": "00"
+      },
+      "expectedBytes": "XREFFILER00                         000{050002445376574000000005000000000050                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    "
+    }
+  ],
+  "expectedFinalState": [
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 0,
+      "fields": {},
+      "expectedBytes": "050002445376574000000005000000000050              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 1,
+      "fields": {},
+      "expectedBytes": "068358619817151600000002700000000027              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 2,
+      "fields": {},
+      "expectedBytes": "092387719324733000000000200000000002              "
+    }
+  ],
+  "expectedReturnCode": 0,
+  "expectedMessages": [],
+  "normalisations": [
+    {
+      "dataset": "XREFFILE",
+      "kind": "CARDXREF_FILLER_PAD_36_TO_50"
+    }
+  ],
+  "expectedDatasets": [
+    {
+      "dataset": "M03BAREA",
+      "channel": "WRITES",
+      "rowCount": 2,
+      "recordLength": 1040
+    }
+  ]
+}

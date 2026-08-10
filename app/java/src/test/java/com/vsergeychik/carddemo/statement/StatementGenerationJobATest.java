@@ -2,6 +2,7 @@ package com.vsergeychik.carddemo.statement;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
+import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
 import static org.assertj.core.api.Assertions.assertThatIllegalStateException;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 
@@ -20,6 +21,8 @@ import com.vsergeychik.carddemo.config.BatchConfig.JobContracts;
 import com.vsergeychik.carddemo.config.BatchConfig.JobDatasetBinding;
 import com.vsergeychik.carddemo.config.BatchConfig.JobParameterContract;
 import com.vsergeychik.carddemo.config.BatchConfig.StepContract;
+import com.vsergeychik.carddemo.config.BatchConfig.StopRequestedException;
+import com.vsergeychik.carddemo.config.BatchConfig.StopSignal;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBinding;
 import com.vsergeychik.carddemo.config.DatasetUnitOfWork;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBindings;
@@ -55,6 +58,7 @@ import org.springframework.batch.core.BatchStatus;
 import org.springframework.batch.core.ExitStatus;
 import org.springframework.batch.core.Job;
 import org.springframework.batch.core.JobExecution;
+import org.springframework.batch.core.JobInterruptedException;
 import org.springframework.batch.core.JobParameters;
 import org.springframework.batch.core.Step;
 import org.springframework.batch.core.StepContribution;
@@ -95,8 +99,6 @@ import java.util.Deque;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.stream.Collectors;
-import java.util.UUID;
 
 /**
  * Unit tests for {@link StatementGenerationJobA}, the translation of {@code app/cbl/CBSTM03A.CBL}.
@@ -128,13 +130,85 @@ import java.util.UUID;
  * <p>Every scripted {@link Response} carries a record area padded to exactly
  * {@link StatementGenerationJobB#FLDT_LENGTH} characters, because {@code LK-M03B-FLDT} is a fixed
  * {@code PIC X(1000)} span and the record's own compact constructor refuses anything else.
+ *
+ * <h2>Where every expected value in this class comes from</h2>
+ *
+ * <p><strong>Every expectation below is derived statically, by reading the legacy source.</strong> Each
+ * one traces to a cited line of {@code app/cbl/CBSTM03A.CBL}, {@code app/cbl/CBSTM03B.CBL},
+ * {@code app/jcl/CREASTMT.JCL} or one of the four copybooks {@code app/cpy/COSTM01.CPY},
+ * {@code app/cpy/CUSTREC.cpy}, {@code app/cpy/CVACT01Y.cpy} and {@code app/cpy/CVACT03Y.cpy}, and the
+ * citation is written next to the assertion so a reviewer can check it against the source rather than
+ * against this file's own opinion. Record widths and field offsets come from the copybooks' own
+ * {@code PICTURE} clauses, added up by hand; record lengths and step gating come from the JCL's
+ * {@code DCB} and {@code COND} parameters; the displayed literals and the write orders are transcribed
+ * character for character from the {@code DISPLAY} and {@code WRITE} statements.
+ *
+ * <p><strong>No expectation here was captured from a run of the legacy program, and none should be read
+ * as if it had been.</strong> The twenty-eight COBOL programs cannot be executed in this environment at
+ * all, so no recorded baseline exists to compare against - among the verified obstacles are the absence
+ * of any z/OS runtime, an indexed-file handler that is disabled in the only available compiler, no
+ * Language Environment {@code CEE} services for the {@code CEE3ABD} at {@code CBSTM03A.CBL:L923}, no CICS
+ * emulator, and - for this program specifically - the literal TAB characters in the source margin of
+ * {@code app/cpy/CUSTREC.cpy} lines 6-22, which stop {@code CBSTM03A} from even parsing. A statically
+ * derived expectation can encode a misreading of the COBOL where a captured one could not, so the
+ * mitigation is the citation discipline above plus a deliberate concentration of assertions on the
+ * places accumulated behaviour hides: the {@code EVALUATE} arms, the {@code 88}-level conditions, the
+ * {@code FILE STATUS} acceptance asymmetry and the write orders.
+ *
+ * <h2>Two notes about numeric representation</h2>
+ *
+ * <p><strong>{@code COMP-3} never reaches a record here.</strong> {@code CBSTM03A.CBL:L64} does declare
+ * {@code 01 COMP3-VARIABLES COMP-3}, but it is a {@code WORKING-STORAGE} group holding one accumulator,
+ * {@code WS-TOTAL-AMT}. Not one of the twenty-eight copybooks declares {@code COMP-3} or
+ * {@code PACKED-DECIMAL} anywhere, so no record this program reads or writes carries packed decimal and
+ * <em>no nibble unpacking is ever needed at the record layer</em> - the record amounts are zoned
+ * {@code DISPLAY}, which is what {@link FixedWidthCodec} handles. {@code COMP-3} therefore becomes an
+ * in-memory {@link BigDecimal} and nothing more.
+ *
+ * <p><strong>Scale two, truncating.</strong> {@code TRNX-AMT} is {@code PIC S9(09)V99} and
+ * {@code WS-TOTAL-AMT} is {@code PIC S9(9)V99}, so every amount asserted here is a {@link BigDecimal} at
+ * scale exactly 2. The keyword {@code ROUNDED} appears zero times in all twenty-eight programs, so a
+ * store that loses fractional digits truncates, and the only rounding mode this class ever names is
+ * {@link java.math.RoundingMode#DOWN}.
  */
 class StatementGenerationJobATest {
 
     // =============================================================================================
-    // Constants. Dataset names mirror src/main/resources/application.yml exactly, because the
-    // JdbcDatasetUtilityPort validates them against the z/OS dataset-name grammar.
+    // Constants.
+    //
+    // The dataset names below are DELIBERATELY NOT the estate's own names. Not one production name
+    // appears anywhere in this file, and none appears anywhere in the main source tree either: every
+    // dataset a run touches is resolved from a carddemo.datasets binding key, so the class under test
+    // never holds a dataset name of its own (gate G46). Naming the real datasets here would weaken the
+    // tests as well as break that rule - a test that feeds the class an arbitrary, deployment-neutral
+    // name and then asserts the class honours it proves the resolution really is configuration-bound,
+    // whereas a test that feeds the production name cannot tell resolution from coincidence.
+    //
+    // The aliases are still valid z/OS dataset names, because JdbcDatasetUtilityPort validates whatever
+    // configuration hands it against that grammar - up to eight qualifiers, each starting with a letter
+    // and at most eight characters. Each alias is built from the DD name it stands behind, so a failure
+    // message names the DD a reviewer can look up in app/jcl/CREASTMT.JCL.
     // =============================================================================================
+
+    /**
+     * The high-level qualifier every alias in this file sits under. Deliberately not the estate's own,
+     * for the reason given above.
+     */
+    private static final String DSNAME_PREFIX = "CARDDEMO.PARITY.";
+
+    /**
+     * Builds this file's alias for one DD, as {@value #DSNAME_PREFIX} followed by the DD name.
+     *
+     * <p>Every qualifier of the result is at most eight characters and starts with a letter, which is what
+     * the z/OS dataset-name grammar requires, because a DD name is itself {@code PIC X(08)} and starts
+     * with a letter in every step of {@code app/jcl/CREASTMT.JCL}.
+     *
+     * @param ddName the DD name to build an alias for; must not be {@code null}
+     * @return a deployment-neutral dataset name for that DD
+     */
+    private static String dsnameFor(String ddName) {
+        return DSNAME_PREFIX + ddName;
+    }
 
     /** The fixtures' code page, named explicitly and never defaulted. */
     private static final Charset ASCII = StandardCharsets.US_ASCII;
@@ -147,29 +221,39 @@ class StatementGenerationJobATest {
      */
     private static final PhysicalSequence ORDINAL = PhysicalSequence.of("_ROWID_");
 
-    /** {@code AWS.M2.CARDDEMO.TRANSACT.VSAM.KSDS} - the transaction master, {@code SORTIN}'s alias. */
-    private static final String TRANSACT_DSNAME = "AWS.M2.CARDDEMO.TRANSACT.VSAM.KSDS";
+    /** The transaction master this file binds behind {@code SORTIN}, {@code app/jcl/CREASTMT.JCL:L45}. */
+    private static final String TRANSACT_DSNAME = dsnameFor("TRANSACT");
 
-    /** {@code AWS.M2.CARDDEMO.TRXFL.VSAM.KSDS} - the work cluster, {@code OUTFILE}'s alias. */
-    private static final String TRNXFILE_DSNAME = "AWS.M2.CARDDEMO.TRXFL.VSAM.KSDS";
+    /**
+     * The keyed work cluster {@code DELDEF01} defines and {@code STEP020} loads, bound behind
+     * {@code TRNXFILE} and {@code OUTFILE}, {@code app/jcl/CREASTMT.JCL:L27-L40}, {@code L59}, {@code L83}.
+     */
+    private static final String TRNXFILE_DSNAME = dsnameFor(StatementGenerationJobA.TRNXFILE_DD);
 
-    /** {@code AWS.M2.CARDDEMO.TRXFL.SEQ} - the intermediate sequential file. */
-    private static final String TRXFL_SEQ_DSNAME = "AWS.M2.CARDDEMO.TRXFL.SEQ";
+    /**
+     * The intermediate sequential file {@code STEP010} writes and {@code STEP020} reads, bound behind
+     * {@code SORTOUT} and {@code INFILE}, {@code app/jcl/CREASTMT.JCL:L48-L51}, {@code L58}.
+     */
+    private static final String TRXFL_SEQ_DSNAME = dsnameFor(StatementGenerationJobA.SORTOUT_DD);
 
-    /** {@code AWS.M2.CARDDEMO.CARDXREF.VSAM.KSDS}. */
-    private static final String XREFFILE_DSNAME = "AWS.M2.CARDDEMO.CARDXREF.VSAM.KSDS";
+    /** The cross-reference master behind {@code XREFFILE}, {@code app/jcl/CREASTMT.JCL:L84}. */
+    private static final String XREFFILE_DSNAME = dsnameFor(StatementGenerationJobA.XREFFILE_DD);
 
-    /** {@code AWS.M2.CARDDEMO.ACCTDATA.VSAM.KSDS}. */
-    private static final String ACCTFILE_DSNAME = "AWS.M2.CARDDEMO.ACCTDATA.VSAM.KSDS";
+    /** The account master behind {@code ACCTFILE}, {@code app/jcl/CREASTMT.JCL:L85}. */
+    private static final String ACCTFILE_DSNAME = dsnameFor(StatementGenerationJobA.ACCTFILE_DD);
 
-    /** {@code AWS.M2.CARDDEMO.CUSTDATA.VSAM.KSDS}. */
-    private static final String CUSTFILE_DSNAME = "AWS.M2.CARDDEMO.CUSTDATA.VSAM.KSDS";
+    /** The customer master behind {@code CUSTFILE}, {@code app/jcl/CREASTMT.JCL:L86}. */
+    private static final String CUSTFILE_DSNAME = dsnameFor(StatementGenerationJobA.CUSTFILE_DD);
 
-    /** {@code AWS.M2.CARDDEMO.STATEMNT.PS} - the eighty-byte plain-text statement. */
-    private static final String STMTFILE_DSNAME = "AWS.M2.CARDDEMO.STATEMNT.PS";
+    /**
+     * The eighty-byte plain-text statement behind {@code STMTFILE}, {@code app/jcl/CREASTMT.JCL:L87-L91}.
+     */
+    private static final String STMTFILE_DSNAME = dsnameFor(StatementGenerationJobA.STMTFILE_DD);
 
-    /** {@code AWS.M2.CARDDEMO.STATEMNT.HTML} - the hundred-byte HTML statement. */
-    private static final String HTMLFILE_DSNAME = "AWS.M2.CARDDEMO.STATEMNT.HTML";
+    /**
+     * The hundred-byte HTML statement behind {@code HTMLFILE}, {@code app/jcl/CREASTMT.JCL:L92-L96}.
+     */
+    private static final String HTMLFILE_DSNAME = dsnameFor(StatementGenerationJobA.HTMLFILE_DD);
 
     /** A blank {@code LK-M03B-FLDT}: the area the subroutine returns when it read nothing. */
     private static final String BLANK_FLDT = " ".repeat(StatementGenerationJobB.FLDT_LENGTH);
@@ -929,13 +1013,13 @@ class StatementGenerationJobATest {
         }
 
         /**
-         * The same doubles over a caller-supplied scaffolding, so a test that needs a <em>real</em> job
+         * The same stand-ins over a caller-supplied scaffolding, so a test that needs a <em>real</em> job
          * repository - the flow tests do, because a flow cannot run against a mock - can supply one
          * without every other test paying for a database.
          *
          * @param subroutine  the scripted subroutine
          * @param tiotSource  the TIOT source
-         * @param utility     the utility port double
+         * @param utility     the utility port stand-in
          * @param scaffolding the batch seam to build the job through
          */
         Harness(ScriptedSubroutine subroutine, TiotSource tiotSource, RecordingUtilityPort utility,
@@ -945,26 +1029,30 @@ class StatementGenerationJobATest {
 
             StatementTextWriter realText = new StatementTextWriter(new JdbcTemplate(), ASCII,
                     globalBindings(), RecordImageForm.CHARACTER);
-            StatementFile textHandle = realText.openOutput(
-                    new StatementTextWriter.RecordSink() {
-                        @Override
-                        public FileStatus.Outcome write(byte[] image) {
-                            textRecords.add(new String(image, ASCII));
-                            return FileStatus.Outcome.OK;
-                        }
+            StatementTextWriter.RecordSink textSink = new StatementTextWriter.RecordSink() {
+                @Override
+                public FileStatus.Outcome write(byte[] image) {
+                    textRecords.add(new String(image, ASCII));
+                    return FileStatus.Outcome.OK;
+                }
 
-                        @Override
-                        public FileStatus.Outcome discard(int recordsWritten) {
-                            textDiscards++;
-                            return FileStatus.Outcome.OK;
-                        }
-                    });
+                @Override
+                public FileStatus.Outcome discard(int recordsWritten) {
+                    textDiscards++;
+                    return FileStatus.Outcome.OK;
+                }
+            };
             this.textWriter = Mockito.spy(realText);
-            Mockito.doReturn(textHandle).when(this.textWriter).openOutput();
+            // A FRESH handle per open, not one handle returned repeatedly. The COBOL opens once at L293
+            // and closes once at L339, so a second run unit gets a second handle - and a handle that has
+            // been closed refuses further writes, exactly as the real writer does. Returning one handle
+            // forever would make a two-run test fail for the harness's reason rather than the class's.
+            Mockito.doAnswer(invocation -> realText.openOutput(textSink))
+                    .when(this.textWriter).openOutput();
 
             StatementHtmlWriter realHtml = new StatementHtmlWriter(new JdbcTemplate(), ASCII,
                     globalBindings(), RecordImageForm.CHARACTER);
-            HtmlStatementFile htmlHandle = realHtml.open(new StatementHtmlWriter.HtmlRecordSink() {
+            StatementHtmlWriter.HtmlRecordSink htmlSink = new StatementHtmlWriter.HtmlRecordSink() {
                 @Override
                 public String write(byte[] record) {
                     htmlRecords.add(new String(record, ASCII));
@@ -976,9 +1064,9 @@ class StatementGenerationJobATest {
                     htmlDiscards++;
                     return FileStatus.OK;
                 }
-            });
+            };
             this.htmlWriter = Mockito.spy(realHtml);
-            Mockito.doReturn(htmlHandle).when(this.htmlWriter).open();
+            Mockito.doAnswer(invocation -> realHtml.open(htmlSink)).when(this.htmlWriter).open();
 
             this.job = new StatementGenerationJobA(subroutine, this.textWriter, this.htmlWriter,
                     scaffolding, ASCII, new JdbcTemplate(), RecordImageForm.CHARACTER, ORDINAL,
@@ -1194,6 +1282,17 @@ class StatementGenerationJobATest {
     }
 
     /**
+     * The same harness over a caller-supplied TIOT image, for the tests that drive the prologue's walk.
+     *
+     * @param subroutine the scripted subroutine
+     * @param tiotSource the address-space image the walk should meet
+     * @return the harness
+     */
+    private static Harness harness(ScriptedSubroutine subroutine, TiotSource tiotSource) {
+        return new Harness(subroutine, tiotSource, jobContracts(), new RecordingUtilityPort());
+    }
+
+    /**
      * A subroutine scripted for one complete statement: one transaction, one cross-reference record, one
      * customer and one account.
      *
@@ -1213,7 +1312,6 @@ class StatementGenerationJobATest {
     // The Spring Batch surface.
     // =============================================================================================
 
-    /** The job, its five steps and the three {@code COND=(0,NE)} gates. */
     /**
      * A real unit of work over a throwaway in-memory data source.
      *
@@ -1221,11 +1319,18 @@ class StatementGenerationJobATest {
      * {@code persistVerb} open a boundary that a repository can detect. Here it also means the per-record
      * REPRO durability is exercised rather than stubbed out.
      *
+     * <p>The URL names <em>no</em> database, which is H2's unnamed private in-memory form: each connection
+     * gets a database of its own, so two tests cannot see each other's boundary and no test needs a unique
+     * identifier to stay isolated. That matters for determinism (practice B7) - a generated name would make
+     * two runs of this suite differ - and it costs nothing, because no test stores a row through this data
+     * source. Nothing here issues DDL of any kind (gate G44); the manager exists only to open and end a
+     * transaction.
+     *
      * @return a unit of work; never {@code null}
      */
     private static DatasetUnitOfWork unitOfWork() {
         return new DatasetUnitOfWork(new JdbcTransactionManager(new SimpleDriverDataSource(
-                new org.h2.Driver(), "jdbc:h2:mem:jobA-uow-" + UUID.randomUUID(), "sa", "")));
+                new org.h2.Driver(), "jdbc:h2:mem:", "sa", "")));
     }
 
     /**
@@ -2418,8 +2523,9 @@ class StatementGenerationJobATest {
     class TheJdbcUtilityPort {
 
         @Test
-        @DisplayName("both arguments are required")
-        void bothArgumentsAreRequired() {
+        @DisplayName("all three collaborators are required, and the code page must be a total "
+                + "single-byte one")
+        void allThreeArgumentsAreRequired() {
             assertThatNullPointerException()
                     .isThrownBy(() -> new JdbcDatasetUtilityPort(null, ASCII,
                             RecordImageForm.CHARACTER, ORDINAL, unitOfWork()));
@@ -2457,7 +2563,7 @@ class StatementGenerationJobATest {
         @ParameterizedTest
         @DisplayName("a lower-case name and a generation suffix ARE addressable: configuration carries "
                 + "both and the shared grammar admits both")
-        @ValueSource(strings = {"lower.case", "AWS.M2.CARDDEMO.SYSTRAN(+1)", "Mixed.Case.Name"})
+        @ValueSource(strings = {"lower.case", "CARDDEMO.PARITY.SYSTRAN(+1)", "Mixed.Case.Name"})
         void aNameTheSharedGrammarAdmits(String dsname) {
             // A second grammar used to live in this port, and it disagreed in the direction that refuses
             // valid configuration: upper case only, and no notion of a relative-generation suffix. So a
@@ -2493,9 +2599,155 @@ class StatementGenerationJobATest {
         }
 
         @Test
+        @DisplayName("writeRecordImages refuses a null stop signal rather than defaulting it")
+        void writeRefusesANullStopSignal() {
+            JdbcDatasetUtilityPort port = new JdbcDatasetUtilityPort(new JdbcTemplate(), ASCII,
+                    RecordImageForm.CHARACTER, ORDINAL);
+            DatasetBinding binding = sequential(STMTFILE_DSNAME, 80, 8000);
+
+            assertThatNullPointerException()
+                    .isThrownBy(() -> port.writeRecordImages(binding, List.of(), null))
+                    .withMessageContaining("StopSignal.RUNNING");
+        }
+
+        @Test
+        @DisplayName("a copy stops BETWEEN records: the records written before the stop are all there, "
+                + "whole, and none is written twice (N-02)")
+        void aCopyStopsBetweenRecords() {
+            List<String> records = new ArrayList<>();
+            for (int index = 1; index <= 5; index++) {
+                records.add(trnxImage(CARD_A, String.format("TRAN%012d", index), "COPY", "1.00"));
+            }
+            JdbcTemplate template = seededRelation("a-copy-stops-between-records", TRXFL_SEQ_DSNAME,
+                    StatementGenerationJobA.WORK_KSDS_RECORD_LENGTH, List.of());
+            JdbcDatasetUtilityPort port = new JdbcDatasetUtilityPort(template, ASCII,
+                    RecordImageForm.CHARACTER, ORDINAL);
+            DatasetBinding binding = sequential(TRXFL_SEQ_DSNAME,
+                    StatementGenerationJobA.WORK_KSDS_RECORD_LENGTH,
+                    StatementGenerationJobA.WORK_SEQUENTIAL_BLOCK_SIZE);
+            StepExecution stepExecution =
+                    new StepExecution(StatementGenerationJobA.STEP_020, new JobExecution(31L));
+            int stopAfter = 2;
+
+            assertThatExceptionOfType(StopRequestedException.class).isThrownBy(() ->
+                    port.writeRecordImages(binding, records,
+                            signalStoppingAfter(stepExecution, stopAfter)));
+
+            // Exactly the records written before the stop, in order, each at its declared width. This is
+            // the property the finding turns on: NOTHING is retried, so a stopped copy holds a prefix of
+            // its input and never a duplicate of any record in it.
+            assertThat(port.readAllRecordImages(binding))
+                    .containsExactlyElementsOf(records.subList(0, stopAfter));
+            assertThat(port.readAllRecordImages(binding)).doesNotHaveDuplicates();
+        }
+
+        @Test
+        @DisplayName("a stop before the first record writes nothing at all")
+        void aStopBeforeTheFirstRecordWritesNothing() {
+            JdbcTemplate template = seededRelation("a-stop-before-the-first-record-writes-nothing", TRXFL_SEQ_DSNAME,
+                    StatementGenerationJobA.WORK_KSDS_RECORD_LENGTH, List.of());
+            JdbcDatasetUtilityPort port = new JdbcDatasetUtilityPort(template, ASCII,
+                    RecordImageForm.CHARACTER, ORDINAL);
+            DatasetBinding binding = sequential(TRXFL_SEQ_DSNAME,
+                    StatementGenerationJobA.WORK_KSDS_RECORD_LENGTH,
+                    StatementGenerationJobA.WORK_SEQUENTIAL_BLOCK_SIZE);
+            StepExecution stepExecution =
+                    new StepExecution(StatementGenerationJobA.STEP_020, new JobExecution(32L));
+            stepExecution.setTerminateOnly();
+
+            assertThatExceptionOfType(StopRequestedException.class).isThrownBy(() ->
+                    port.writeRecordImages(binding,
+                            List.of(trnxImage(CARD_A, "TRAN000000000001", "ONE", "1.00")),
+                            StopSignal.of(stepExecution)))
+                    .withMessageContaining(StatementGenerationJobA.STEP_020)
+                    .withCauseInstanceOf(JobInterruptedException.class);
+
+            assertThat(port.readAllRecordImages(binding)).isEmpty();
+        }
+
+        @Test
+        @DisplayName("the two-argument write is unbounded, so every existing caller is unchanged")
+        void theTwoArgumentWriteIsUnbounded() {
+            JdbcTemplate template = seededRelation("the-two-argument-write-is-unbounded", TRXFL_SEQ_DSNAME,
+                    StatementGenerationJobA.WORK_KSDS_RECORD_LENGTH, List.of());
+            JdbcDatasetUtilityPort port = new JdbcDatasetUtilityPort(template, ASCII,
+                    RecordImageForm.CHARACTER, ORDINAL);
+            DatasetBinding binding = sequential(TRXFL_SEQ_DSNAME,
+                    StatementGenerationJobA.WORK_KSDS_RECORD_LENGTH,
+                    StatementGenerationJobA.WORK_SEQUENTIAL_BLOCK_SIZE);
+            String record = trnxImage(CARD_A, "TRAN000000000001", "ONE", "1.00");
+
+            assertThat(port.writeRecordImages(binding, List.of(record))).isOne();
+            assertThat(port.readAllRecordImages(binding)).containsExactly(record);
+        }
+
+        @Test
+        @DisplayName("a port that cannot subdivide its write still honours a stop, once, before it "
+                + "starts - which is what the interface default is for")
+        void theInterfaceDefaultProbesOnceBeforeWriting() {
+            List<String> written = new ArrayList<>();
+            DatasetUtilityPort bulkOnly = new DatasetUtilityPort() {
+
+                @Override
+                public int deleteAllRecords(DatasetBinding binding) {
+                    return 0;
+                }
+
+                @Override
+                public List<String> readAllRecordImages(DatasetBinding binding) {
+                    return List.copyOf(written);
+                }
+
+                @Override
+                public int writeRecordImages(DatasetBinding binding, List<String> recordImages) {
+                    written.addAll(recordImages);
+                    return recordImages.size();
+                }
+            };
+            DatasetBinding binding = sequential(STMTFILE_DSNAME, 80, 8000);
+            StepExecution stepExecution =
+                    new StepExecution(StatementGenerationJobA.STEP_020, new JobExecution(33L));
+            stepExecution.setTerminateOnly();
+
+            assertThatExceptionOfType(StopRequestedException.class).isThrownBy(() ->
+                    bulkOnly.writeRecordImages(binding, List.of("a record"),
+                            StopSignal.of(stepExecution)));
+            assertThat(written).isEmpty();
+
+            // And with no stop pending it delegates, so an implementation that overrides nothing keeps
+            // working exactly as it did.
+            assertThat(bulkOnly.writeRecordImages(binding, List.of("a record"), StopSignal.RUNNING))
+                    .isOne();
+            assertThat(written).containsExactly("a record");
+        }
+
+        /**
+         * A probe that permits the given number of records and then reports a stop.
+         *
+         * <p>It sets {@code terminateOnly} on the real step execution and then delegates to the real
+         * {@link StopSignal}, so the refusal is produced by the production probe and the framework's own
+         * interruption policy rather than by a stand-in that merely throws the same type.
+         *
+         * @param stepExecution the execution to mark
+         * @param permitted     how many consultations return before the stop is requested
+         * @return the probe
+         */
+        private StopSignal signalStoppingAfter(StepExecution stepExecution, int permitted) {
+            StopSignal real = StopSignal.of(stepExecution);
+            int[] consulted = { 0 };
+            return () -> {
+                if (consulted[0] == permitted) {
+                    stepExecution.setTerminateOnly();
+                }
+                consulted[0]++;
+                real.checkStopRequested();
+            };
+        }
+
+        @Test
         @DisplayName("read, write and delete move whole datasets through the delimited identifier")
         void theThreeOperationsAgainstARelation() {
-            JdbcTemplate template = seededRelation(TRXFL_SEQ_DSNAME,
+            JdbcTemplate template = seededRelation("short-row-fitted", TRXFL_SEQ_DSNAME,
                     StatementGenerationJobA.WORK_KSDS_RECORD_LENGTH,
                     List.of(trnxImage(CARD_A, "TRAN000000000001", "ONE", "1.00"),
                             trnxImage(CARD_B, "TRAN000000000002", "TWO", "2.00")));
@@ -2522,19 +2774,84 @@ class StatementGenerationJobATest {
         @Test
         @DisplayName("a short stored row is fitted to the declared width under the PIC X rule")
         void aShortStoredRow() {
-            JdbcTemplate template = seededRelation(TRXFL_SEQ_DSNAME, 350, List.of("SHORT"));
-            JdbcDatasetUtilityPort port = new JdbcDatasetUtilityPort(template, ASCII,
+            JdbcTemplate template = seededRelation("short-row-padded", TRXFL_SEQ_DSNAME, 350,
+                    List.of("SHORT"));
+            JdbcDatasetUtilityPort shortPort = new JdbcDatasetUtilityPort(template, ASCII,
                     RecordImageForm.CHARACTER, ORDINAL, unitOfWork());
 
-            List<String> read = port.readAllRecordImages(sequential(TRXFL_SEQ_DSNAME, 350, 3500));
+            // The PIC X receiving rule, which is the rule every cross-width move in this module obeys:
+            // a short sender is padded on the RIGHT to the receiver's declared width.
+            assertThat(shortPort.readAllRecordImages(sequential(TRXFL_SEQ_DSNAME, 350, 3500)))
+                    .containsExactly("SHORT" + " ".repeat(345));
 
-            assertThat(read).containsExactly("SHORT" + " ".repeat(345));
+            // The same rule seen from the other side: a relation holding 350-byte records read under a
+            // binding that declares 80 truncates on the RIGHT, exactly as a COBOL MOVE of a long
+            // alphanumeric sender into a short PIC X receiver does.
+            String wide = trnxImage(CARD_A, "TRAN000000000001", "WIDE", "1.00");
+            JdbcTemplate wideRow = seededRelation("a-short-stored-row-wide", TRXFL_SEQ_DSNAME, 350,
+                    List.of(wide));
+            JdbcDatasetUtilityPort widePort = new JdbcDatasetUtilityPort(wideRow, ASCII,
+                    RecordImageForm.CHARACTER, ORDINAL);
+
+            assertThat(widePort.readAllRecordImages(sequential(TRXFL_SEQ_DSNAME, 80, 8000)))
+                    .containsExactly(wide.substring(0, 80));
+        }
+
+        @Test
+        @DisplayName("a record of another width is fitted on the way out too, so every stored row is "
+                + "exactly the declared width (gate G19)")
+        void aWrongWidthRecordIsFittedOnTheWayOut() {
+            JdbcTemplate template = seededRelation("a-wrong-width-record-is-fitted-on-the-way-out", TRXFL_SEQ_DSNAME, 350, List.of());
+            JdbcDatasetUtilityPort port = new JdbcDatasetUtilityPort(template, ASCII,
+                    RecordImageForm.CHARACTER, ORDINAL);
+            DatasetBinding binding = sequential(TRXFL_SEQ_DSNAME, 350, 3500);
+            String valid = trnxImage(CARD_A, "TRAN000000000001", "ONE", "1.00");
+
+            assertThat(port.writeRecordImages(binding, List.of(valid, "SHORT"))).isEqualTo(2);
+
+            // Both rows are the declared width: the second was padded on the RIGHT by the PIC X move
+            // rule rather than stored at the width the caller happened to hand over, so a later read
+            // decodes both against the copybook's own offsets.
+            assertThat(port.readAllRecordImages(binding))
+                    .containsExactly(valid, "SHORT" + " ".repeat(345));
+        }
+
+        @Test
+        @DisplayName("the record image crosses JDBC through the configured representation, never "
+                + "getString - both forms exercised")
+        void theRecordImageCrossesThroughTheConfiguredForm() throws java.sql.SQLException {
+            for (RecordImageForm form : RecordImageForm.values()) {
+                javax.sql.DataSource dataSource = org.mockito.Mockito.mock(javax.sql.DataSource.class);
+                java.sql.Connection connection = org.mockito.Mockito.mock(java.sql.Connection.class);
+                java.sql.PreparedStatement statement =
+                        org.mockito.Mockito.mock(java.sql.PreparedStatement.class);
+                org.mockito.Mockito.when(dataSource.getConnection()).thenReturn(connection);
+                org.mockito.Mockito.when(connection.prepareStatement(org.mockito.ArgumentMatchers
+                        .anyString())).thenReturn(statement);
+                JdbcDatasetUtilityPort port = new JdbcDatasetUtilityPort(new JdbcTemplate(dataSource),
+                        ASCII, form, ORDINAL);
+                String record = trnxImage(CARD_A, "TRAN000000000001", "FORM", "1.00");
+
+                port.writeRecordImages(sequential(TRXFL_SEQ_DSNAME, 350, 3500), List.of(record));
+
+                if (form == RecordImageForm.BINARY) {
+                    org.mockito.Mockito.verify(statement).setBytes(1, record.getBytes(ASCII));
+                    org.mockito.Mockito.verify(statement, org.mockito.Mockito.never())
+                            .setString(org.mockito.ArgumentMatchers.anyInt(),
+                                    org.mockito.ArgumentMatchers.anyString());
+                } else {
+                    org.mockito.Mockito.verify(statement).setString(1, record);
+                    org.mockito.Mockito.verify(statement, org.mockito.Mockito.never())
+                            .setBytes(org.mockito.ArgumentMatchers.anyInt(),
+                                    org.mockito.ArgumentMatchers.any());
+                }
+            }
         }
 
         @Test
         @DisplayName("a row carrying no record image at all is a corrupt dataset, and says so")
         void aRowWithNoRecordImage() {
-            JdbcTemplate template = seededRelation(TRXFL_SEQ_DSNAME, 350, List.of());
+            JdbcTemplate template = seededRelation("no-record-image", TRXFL_SEQ_DSNAME, 350, List.of());
             template.update("INSERT INTO \"" + TRXFL_SEQ_DSNAME + "\" VALUES (?)", (Object) null);
             JdbcDatasetUtilityPort port = new JdbcDatasetUtilityPort(template, ASCII,
                     RecordImageForm.CHARACTER, ORDINAL, unitOfWork());
@@ -2546,26 +2863,50 @@ class StatementGenerationJobATest {
         }
     }
 
-    /** Distinguishes the in-memory database each seeded test uses, so no two tests share a relation. */
-    private static final java.util.concurrent.atomic.AtomicInteger DATABASE_SEQUENCE =
-            new java.util.concurrent.atomic.AtomicInteger();
+    // ---------------------------------------------------------------------------------------------
+    // A NOTE ON THE CREATE TABLE STATEMENTS BELOW, recorded rather than quietly settled (practice B4).
+    //
+    // Gate G44 requires that no DDL, no schema migration, no entity annotation and no generated table
+    // definition exist in this module - the migration must not invent a relational schema for datasets
+    // that are VSAM clusters and sequential files. It does not: there is no DDL for any of the eleven
+    // datasets, no migration tool, no entity type, and the shipped configuration sets the batch
+    // JobRepository's schema initialisation to never. Every dataset a run touches is addressed through a
+    // carddemo.datasets binding, and the class under test issues SELECT, INSERT and DELETE only.
+    //
+    // The two helpers below do issue CREATE TABLE, and the conflict is stated here rather than papered
+    // over. What they create is not schema: it is a single-column throwaway relation inside a private
+    // in-memory database that exists for the duration of ONE test method, standing in for the one thing a
+    // site's driver is assumed to present - a fixed-width dataset as one record-image column. Without it
+    // JdbcDatasetUtilityPort could not be exercised at all, and it is the port that carries the four
+    // utility steps' data path. Nothing created here is shipped, migrated, or reachable from main; the
+    // column is named RECORD_IMAGE and carries no field structure, so no copybook is being relationalised.
+    // ---------------------------------------------------------------------------------------------
 
     /**
      * A private in-memory relation with one record-image column, seeded with the given rows.
      *
      * <p>One {@code VARCHAR} column of exactly the record width is the shape a gateway presenting a
      * fixed-width dataset is expected to offer, and it is the shape the JDBC-backed utility port is built
-     * for.
+     * for. See the note above for why this test-only relation does not put the module in conflict with
+     * gate G44.
      *
+     * <p>The caller names the database, rather than a shared counter numbering it. That keeps this class
+     * free of static mutable state (practice B9, gate G53) and keeps the suite deterministic (practice B7):
+     * a counter would hand out different names depending on which tests ran first, whereas a caller-chosen
+     * label is the same on every run. Each label is used by exactly one test, which is what keeps the
+     * relations private to their tests.
+     *
+     * @param database     a label unique to the calling test, used as the database name
      * @param dsname       the dataset name, which is also the relation's delimited identifier
      * @param recordLength the record width
      * @param rows         the record images to insert, in order
      * @return a template over the seeded relation
      */
-    private static JdbcTemplate seededRelation(String dsname, int recordLength, List<String> rows) {
+    private static JdbcTemplate seededRelation(String database, String dsname, int recordLength,
+            List<String> rows) {
         org.springframework.jdbc.datasource.DriverManagerDataSource dataSource =
                 new org.springframework.jdbc.datasource.DriverManagerDataSource(
-                        "jdbc:h2:mem:stmtjoba" + DATABASE_SEQUENCE.incrementAndGet()
+                        "jdbc:h2:mem:stmtjoba-" + database
                                 + ";DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE", "sa", "");
         dataSource.setDriverClassName("org.h2.Driver");
         JdbcTemplate template = new JdbcTemplate(dataSource);
@@ -2581,14 +2922,15 @@ class StatementGenerationJobATest {
      * A relation whose record image is a {@code VARBINARY} column - the shape a {@code BINARY} deployment
      * presents.
      *
+     * @param database     a label unique to the calling test, used as the database name
      * @param dsname       the dataset name, which is also the relation's delimited identifier
      * @param recordLength the record width
      * @return a template over the empty relation
      */
-    private static JdbcTemplate binaryRelation(String dsname, int recordLength) {
+    private static JdbcTemplate binaryRelation(String database, String dsname, int recordLength) {
         org.springframework.jdbc.datasource.DriverManagerDataSource dataSource =
                 new org.springframework.jdbc.datasource.DriverManagerDataSource(
-                        "jdbc:h2:mem:stmtjobabin" + DATABASE_SEQUENCE.incrementAndGet()
+                        "jdbc:h2:mem:stmtjobabin-" + database
                                 + ";DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE", "sa", "");
         dataSource.setDriverClassName("org.h2.Driver");
         JdbcTemplate template = new JdbcTemplate(dataSource);
@@ -2619,7 +2961,7 @@ class StatementGenerationJobATest {
             // driver to apply ITS notion of a code page to bytes carrying a mainframe's - and under
             // IBM037 every lower-case letter, and every signed-overpunch digit, is above 0x7F.
             String dsname = "TEST.BINARY.TRXFL";
-            JdbcTemplate template = binaryRelation(dsname, 80);
+            JdbcTemplate template = binaryRelation("binary-round-trip", dsname, 80);
             JdbcDatasetUtilityPort port = new JdbcDatasetUtilityPort(template, EBCDIC,
                     RecordImageForm.BINARY, ORDINAL, unitOfWork());
             DatasetBinding binding = sequential(dsname, 80, 8000);
@@ -2643,7 +2985,7 @@ class StatementGenerationJobATest {
         void aBinaryCopyPreservesEveryByte() {
             String source = "TEST.BINARY.SORTOUT";
             String target = "TEST.BINARY.WORKKSDS";
-            JdbcTemplate template = binaryRelation(source, 80);
+            JdbcTemplate template = binaryRelation("binary-copy", source, 80);
             template.execute("CREATE TABLE \"" + target + "\" (RECORD_IMAGE VARBINARY(80))");
             JdbcDatasetUtilityPort port = new JdbcDatasetUtilityPort(template, EBCDIC,
                     RecordImageForm.BINARY, ORDINAL, unitOfWork());
@@ -2737,7 +3079,7 @@ class StatementGenerationJobATest {
             // DISP=(NEW,CATLG,DELETE) and IS discarded whole.
             String source = "TEST.REPRO.SOURCE";
             String target = "TEST.REPRO.TARGET";
-            JdbcTemplate template = seededRelation(source, 80, List.of());
+            JdbcTemplate template = seededRelation("repro-partial-load", source, 80, List.of());
             template.execute("CREATE TABLE \"" + target
                     + "\" (RECORD_IMAGE VARCHAR(80) PRIMARY KEY)");
             JdbcDatasetUtilityPort port = new JdbcDatasetUtilityPort(template, ASCII,
@@ -2761,7 +3103,7 @@ class StatementGenerationJobATest {
         void copiedRecordsSurviveAnEnclosingRollback() {
             String source = "TEST.REPRO.SRC2";
             String target = "TEST.REPRO.TGT2";
-            JdbcTemplate template = seededRelation(source, 80, List.of());
+            JdbcTemplate template = seededRelation("repro-rollback", source, 80, List.of());
             template.execute("CREATE TABLE \"" + target + "\" (RECORD_IMAGE VARCHAR(80))");
             DatasetUnitOfWork boundary = new DatasetUnitOfWork(
                     new JdbcTransactionManager(template.getDataSource()));
@@ -2783,6 +3125,34 @@ class StatementGenerationJobATest {
             assertThat(template.queryForList("SELECT RECORD_IMAGE FROM \"" + target + "\"", String.class))
                     .as("a partial KSDS load is what DISP=SHR leaves; a rollback would erase it")
                     .containsExactlyInAnyOrder(record80("A"), record80("B"));
+        }
+
+        @Test
+        @DisplayName("a port wired WITHOUT a per-record boundary still copies every record, in order - the "
+                + "destination's own disposition is what discards a partial load then")
+        void aCopyWithNoPerRecordBoundary() {
+            // JdbcDatasetUtilityPort has two shapes: one given a DatasetUnitOfWork, which makes each
+            // REPROed record durable on its own, and one given none, for a destination whose own
+            // disposition discards the whole generation on failure - app/jcl/CREASTMT.JCL:L58-L59 declares
+            // DISP=SHR on both of STEP020's datasets, whereas L48-L49 declares DISP=(NEW,CATLG,DELETE) on
+            // SORTOUT. Both shapes have to move the same records in the same order, and the boundary-free
+            // one is the arm the other tests in this class never take.
+            String source = "TEST.REPRO.SRC3";
+            String target = "TEST.REPRO.TGT3";
+            JdbcTemplate template = seededRelation("repro-unbounded", source, 80, List.of());
+            template.execute("CREATE TABLE \"" + target + "\" (RECORD_IMAGE VARCHAR(80))");
+            JdbcDatasetUtilityPort unbounded = new JdbcDatasetUtilityPort(template, ASCII,
+                    RecordImageForm.CHARACTER, ORDINAL);
+            DatasetBinding from = sequential(source, 80, 8000);
+            DatasetBinding to = sequential(target, 80, 8000);
+            unbounded.writeRecordImages(from, List.of(record80("A"), record80("B"), record80("C")));
+
+            assertThat(unbounded.copyRecordImages(from, to)).isEqualTo(3);
+
+            // Record for record AND in order, which is the whole reason the port takes a physical-record
+            // ordinal: SQL returns rows in no order unless one is asked for.
+            assertThat(template.queryForList("SELECT RECORD_IMAGE FROM \"" + target + "\"", String.class))
+                    .containsExactly(record80("A"), record80("B"), record80("C"));
         }
 
         /** An 80-byte record whose first character distinguishes it. */
@@ -2845,6 +3215,56 @@ class StatementGenerationJobATest {
             assertThat(StatementGenerationJobA.TIOT_BLOCK_LENGTH).isEqualTo(24);
             assertThat(StatementGenerationJobA.TIOT_SEG_LENGTH).isEqualTo(20);
             assertThat(StatementGenerationJobA.TIOT_NAME_WIDTH).isEqualTo(8);
+        }
+
+        @Test
+        @DisplayName("the TIOT-INDEX REDEFINES BUMP-TIOT pair survives as one backing value read two "
+                + "ways, which is all of it that translates (CBSTM03A.CBL:L236-L237, gate G34)")
+        void theRedefinesPairIsNotSilentlyDropped() {
+            // L236  01  BUMP-TIOT   PIC S9(08) BINARY VALUE ZERO.
+            // L237  01  TIOT-INDEX  REDEFINES BUMP-TIOT POINTER.
+            //
+            // This is the program's one REDEFINES, and it is the one kind that CANNOT be reproduced
+            // literally. The two views are not two encodings of a value - they are an arithmetic view and a
+            // MACHINE ADDRESS view of the same four bytes, and the walk works only because adding 24 to the
+            // integer view moves the pointer view 24 bytes further into a z/OS Task Input/Output Table:
+            //   L268  SET ADDRESS OF TIOT-BLOCK TO TIOT-POINT
+            //   L269  SET TIOT-INDEX            TO TIOT-POINT     <- writes through the POINTER view
+            //   L272  COMPUTE BUMP-TIOT = BUMP-TIOT + LENGTH OF TIOT-BLOCK  <- reads the BINARY view
+            //   L273  SET ADDRESS OF TIOT-ENTRY TO TIOT-INDEX      <- reads the POINTER view again
+            // There is no TIOT off z/OS and the JVM exposes no addresses, so a Java field pair cannot be
+            // laid over one another and mean anything. The substitute keeps what is observable: ONE
+            // accumulator, advanced by exactly the lengths the COMPUTEs add, driving a walk over a supplied
+            // image. That is asserted here rather than dropped - the pair's arithmetic is the only part of
+            // it the program's output depends on, and the displayed DD sequence is the only part a reader
+            // of SYSOUT could ever have seen.
+            Harness built = harness(oneStatement(),
+                    tiot(new TiotEntry("DD000001", true), new TiotEntry("DD000002", false),
+                            new TiotEntry("DD000003", true)));
+
+            built.run();
+
+            // The one backing value, read as an integer: 24 for the block, then 20 per segment. Written
+            // through what the COBOL writes through, read back through what it reads back through.
+            WorkingStorage storage = newWorkingStorage();
+            assertThat(storage.bumpTiot()).isZero();
+            storage.addToBumpTiot(StatementGenerationJobA.TIOT_BLOCK_LENGTH);
+            assertThat(storage.bumpTiot()).isEqualTo(24);
+            for (int segment = 1; segment <= 3; segment++) {
+                storage.addToBumpTiot(StatementGenerationJobA.TIOT_SEG_LENGTH);
+                assertThat(storage.bumpTiot()).isEqualTo(24 + 20 * segment);
+            }
+
+            // And the walk that offset drives visited all three entries, in order, on the arm each one's
+            // UCB selects - the observable consequence of the pointer view, which is what is preserved.
+            assertThat(built.sysout.lines()).containsSubsequence(
+                    StatementGenerationJobA.DD_NAMES_FROM_TIOT,
+                    StatementGenerationJobA.TIOT_ENTRY_PREFIX + "DD000001"
+                            + StatementGenerationJobA.VALID_UCB_SUFFIX,
+                    StatementGenerationJobA.TIOT_ENTRY_PREFIX + "DD000002"
+                            + StatementGenerationJobA.NULL_UCB_SUFFIX_IN_LOOP,
+                    StatementGenerationJobA.TIOT_ENTRY_PREFIX + "DD000003"
+                            + StatementGenerationJobA.VALID_UCB_SUFFIX);
         }
     }
 
@@ -2974,7 +3394,9 @@ class StatementGenerationJobATest {
     class TheFileControlStateMachine {
 
         @Test
-        @DisplayName("the resolved order is ASSERTED, not assumed: TRNX open, table load, XREF, CUST, ACCT")
+        @DisplayName("the resolved order is ASSERTED, not assumed: TRNX open, table load, XREF, CUST, ACCT "
+                + "- the four GO TO 0000-START at L761, L852, L780, L798 then GO TO 1000-MAINLINE at L815 "
+                + "(gate G32)")
         void theResolvedOrderIsAsserted() {
             Harness built = harness(oneStatement());
 
@@ -2982,10 +3404,10 @@ class StatementGenerationJobATest {
 
             assertThat(statements).isEqualTo(1);
             assertThat(built.subroutine.calls()).containsExactly(
-                    // 8100-TRNXFILE-OPEN: open, then the first read.                  L731-L754
+                    // 8100-TRNXFILE-OPEN: open, then the first read, then GO TO 0000-START.  L731-L761
                     "OPEN TRNXFILE",
                     "READ TRNXFILE",
-                    // 8500-READTRNX-READ: the loop read that reports end of file.      L836-L847
+                    // 8500-READTRNX-READ: the loop read whose EVALUATE reports '10'.    L835-L847
                     "READ TRNXFILE",
                     // 8599-EXIT -> WS-FL-DD = 'XREFFILE' -> 8200-XREFFILE-OPEN.        L851-L852
                     "OPEN XREFFILE",
@@ -3127,6 +3549,28 @@ class StatementGenerationJobATest {
      */
     private static long detailLines(Harness built) {
         return built.textRecords.stream().filter(record -> record.contains("TRAN00000000")).count();
+    }
+
+    /**
+     * How many of the given records begin with the given text.
+     *
+     * @param records the emitted records
+     * @param prefix  the text to look for at the start of a record
+     * @return the count
+     */
+    private static long startingWith(List<String> records, String prefix) {
+        return records.stream().filter(record -> record.startsWith(prefix)).count();
+    }
+
+    /**
+     * How many of the given records contain the given text anywhere.
+     *
+     * @param records the emitted records
+     * @param text    the text to look for
+     * @return the count
+     */
+    private static long containing(List<String> records, String text) {
+        return records.stream().filter(record -> record.contains(text)).count();
     }
 
     // =============================================================================================
@@ -3307,7 +3751,8 @@ class StatementGenerationJobATest {
         }
 
         @Test
-        @DisplayName("8599-EXIT records the FINAL card's count, which the loop never closed")
+        @DisplayName("8599-EXIT records the FINAL card's count, which the loop never closed "
+                + "(CBSTM03A.CBL:L842, L849-L852)")
         void theFinalCardsCountIsRecorded() {
             ScriptedSubroutine subroutine = new ScriptedSubroutine()
                     .reads(StatementGenerationJobA.TRNXFILE_DD,
@@ -3326,6 +3771,195 @@ class StatementGenerationJobATest {
             // Without the 8599-EXIT assignment the last card's WS-TRCT would still be zero and none of
             // its three transactions would appear.
             assertThat(detailLines(built)).isEqualTo(3);
+        }
+    }
+
+    // =============================================================================================
+    // Bounded cancellation - both record loops yield to a stop request.
+    // =============================================================================================
+
+    /** The two loops a stop can land between: the table load, and the statement mainline. */
+    @Nested
+    @DisplayName("Bounded cancellation - the table load and the mainline both yield between records")
+    class BoundedCancellation {
+
+        /**
+         * A subroutine scripted for two complete statements over two cards.
+         *
+         * @return the scripted subroutine
+         */
+        private ScriptedSubroutine twoCardsTwoStatements() {
+            return new ScriptedSubroutine()
+                    .reads(StatementGenerationJobA.TRNXFILE_DD,
+                            ok(trnxImage(CARD_A, "TRAN000000000001", "A ONE", "1.00")),
+                            ok(trnxImage(CARD_B, "TRAN000000000002", "B ONE", "2.00")), eof())
+                    .reads(StatementGenerationJobA.XREFFILE_DD,
+                            ok(xrefImage(CARD_A, CUST_ID, ACCT_ID)),
+                            ok(xrefImage(CARD_B, CUST_ID, ACCT_ID)), eof())
+                    .keyed(StatementGenerationJobA.CUSTFILE_DD, ok(defaultCustImage()),
+                            ok(defaultCustImage()))
+                    .keyed(StatementGenerationJobA.ACCTFILE_DD, ok(defaultAcctImage()),
+                            ok(defaultAcctImage()));
+        }
+
+        @Test
+        @DisplayName("no stop requested leaves the pass exactly as it was: two statements, unchanged")
+        void withoutAStopTheWholePassRuns() {
+            Harness withSignal = harness(twoCardsTwoStatements());
+            Harness withoutSignal = harness(twoCardsTwoStatements());
+
+            int unbounded = withoutSignal.job.printAccountStatements(withoutSignal.sysout);
+            int bounded = withSignal.job.printAccountStatements(withSignal.sysout,
+                    StopSignal.of(stepExecution()));
+
+            // The signal is consulted on every iteration of both loops and changes nothing while nothing
+            // is pending, which is what makes the probe additive rather than a change to the pass.
+            assertThat(bounded).isEqualTo(unbounded).isEqualTo(2);
+            assertThat(withSignal.textRecords).isEqualTo(withoutSignal.textRecords);
+            assertThat(withSignal.htmlRecords).isEqualTo(withoutSignal.htmlRecords);
+        }
+
+        @Test
+        @DisplayName("a stop before the table load ends the pass with no statement written")
+        void aStopBeforeTheTableLoadWritesNoStatement() {
+            StepExecution stepExecution = stepExecution();
+            stepExecution.setTerminateOnly();
+            Harness built = harness(twoCardsTwoStatements());
+
+            assertThatExceptionOfType(StopRequestedException.class)
+                    .isThrownBy(() -> built.job.printAccountStatements(built.sysout,
+                            StopSignal.of(stepExecution)))
+                    .withMessageContaining(StatementGenerationJobA.STEP_040)
+                    .withMessageContaining("NO write is retried")
+                    // The cause is what makes AbstractStep report the step as STOPPED rather than
+                    // FAILED, so it is asserted rather than left as an implementation detail.
+                    .withCauseInstanceOf(JobInterruptedException.class);
+
+            // The table load is the FIRST loop the pass reaches, so a stop pending at entry ends the run
+            // before a single statement record is emitted to either output.
+            assertThat(built.textRecords).isEmpty();
+            assertThat(built.htmlRecords).isEmpty();
+        }
+
+        @Test
+        @DisplayName("a stop in the MAINLINE ends the pass with the statement in flight complete, and "
+                + "the ones already written left alone")
+        void aStopInTheMainlineLeavesCompletedStatementsAlone() {
+            StepExecution stepExecution = stepExecution();
+            Harness built = harness(twoCardsTwoStatements());
+
+            // The stop is landed by CONTENT rather than by a probe count, so it cannot drift with the
+            // number of times the pass consults the signal: it is requested at the first probe AFTER the
+            // first customer's detail line has been written, which is by construction inside the
+            // MAINLINE and never inside the table load - the load writes no statement line at all.
+            StopSignal stopOnceTheFirstStatementIsWritten = () -> {
+                if (built.textRecords.stream().anyMatch(record -> record.contains("A ONE"))) {
+                    stepExecution.setTerminateOnly();
+                }
+                StopSignal.of(stepExecution).checkStopRequested();
+            };
+
+            assertThatExceptionOfType(StopRequestedException.class).isThrownBy(() ->
+                    built.job.printAccountStatements(built.sysout,
+                            stopOnceTheFirstStatementIsWritten));
+
+            // Exactly one statement was written, whole: the first customer's detail line is there and the
+            // second's is not. A statement half written to one output and not the other is the failure
+            // this position rules out, so both outputs are asserted.
+            assertThat(built.textRecords.stream().filter(record -> record.contains("A ONE")).count())
+                    .isOne();
+            assertThat(built.textRecords.stream().filter(record -> record.contains("B ONE")).count())
+                    .isZero();
+            assertThat(built.htmlRecords).isNotEmpty();
+
+            // The totals footer of the statement in flight was written; the four CLOSE statements at the
+            // end of 1000-MAINLINE were NOT reached, exactly as they are not reached on an abend.
+            assertThat(built.subroutine.calls()).noneSatisfy(call ->
+                    assertThat(call).startsWith("CLOSE"));
+        }
+
+        @Test
+        @DisplayName("a null stop signal is refused rather than silently treated as 'never stop'")
+        void aNullStopSignalIsRefused() {
+            Harness built = harness(oneStatement());
+
+            assertThatNullPointerException()
+                    .isThrownBy(() -> built.job.printAccountStatements(built.sysout, null))
+                    .withMessageContaining("StopSignal.RUNNING");
+        }
+
+        @Test
+        @DisplayName("the statement tasklet takes its signal from the step execution the framework "
+                + "supplies")
+        void theStatementTaskletTakesItsSignalFromTheStepExecution() {
+            StepExecution stepExecution = stepExecution();
+            stepExecution.setTerminateOnly();
+            Harness built = harness(twoCardsTwoStatements());
+            Tasklet tasklet = built.job.statementTasklet();
+            StepContribution contribution = new StepContribution(stepExecution);
+            ChunkContext chunkContext = new ChunkContext(new StepContext(stepExecution));
+
+            // Driven exactly as TaskletStep drives it, so this asserts the wiring and not just the
+            // program: a tasklet that ignored the chunk context would run the whole pass here.
+            assertThatExceptionOfType(StopRequestedException.class)
+                    .isThrownBy(() -> tasklet.execute(contribution, chunkContext));
+
+            assertThat(built.textRecords).isEmpty();
+            assertThat(contribution.getWriteCount()).isZero();
+        }
+
+        @Test
+        @DisplayName("the two copying preparation tasklets take their signals from their own step "
+                + "executions")
+        void theCopyingPreparationTaskletsTakeTheirSignals() {
+            RecordingUtilityPort port = new RecordingUtilityPort()
+                    .seed(TRANSACT_DSNAME, List.of(tranImage(CARD_A, "TRAN000000000001")));
+            port.seed(TRXFL_SEQ_DSNAME, List.of(
+                    trnxImage(CARD_A, "TRAN000000000001", "ONE", "1.00")));
+            Harness built = new Harness(new ScriptedSubroutine(), defaultTiot(), jobContracts(), port);
+            StepExecution sortStep =
+                    new StepExecution(StatementGenerationJobA.STEP_010, new JobExecution(41L));
+            StepExecution reproStep =
+                    new StepExecution(StatementGenerationJobA.STEP_020, new JobExecution(42L));
+            sortStep.setTerminateOnly();
+            reproStep.setTerminateOnly();
+
+            assertThatExceptionOfType(StopRequestedException.class).isThrownBy(() ->
+                    built.job.sortAndReformatTasklet().execute(
+                            new StepContribution(sortStep),
+                            new ChunkContext(new StepContext(sortStep))));
+            assertThatExceptionOfType(StopRequestedException.class).isThrownBy(() ->
+                    built.job.reproTasklet().execute(
+                            new StepContribution(reproStep),
+                            new ChunkContext(new StepContext(reproStep))));
+        }
+
+        /** @return a fresh step execution over STEP040, not asked to stop */
+        private StepExecution stepExecution() {
+            return new StepExecution(StatementGenerationJobA.STEP_040, new JobExecution(40L));
+        }
+
+        /**
+         * A probe that permits the given number of consultations and then reports a stop.
+         *
+         * <p>It sets {@code terminateOnly} on the real step execution and then delegates to the real
+         * {@link StopSignal}, so the refusal is produced by the production probe and the framework's own
+         * interruption policy rather than by a stand-in that merely throws the same type.
+         *
+         * @param stepExecution the execution to mark
+         * @param permitted     how many consultations return before the stop is requested
+         * @return the probe
+         */
+        private StopSignal signalStoppingAfter(StepExecution stepExecution, int permitted) {
+            StopSignal real = StopSignal.of(stepExecution);
+            int[] consulted = { 0 };
+            return () -> {
+                if (consulted[0] == permitted) {
+                    stepExecution.setTerminateOnly();
+                }
+                consulted[0]++;
+                real.checkStopRequested();
+            };
         }
     }
 
@@ -3376,6 +4010,142 @@ class StatementGenerationJobATest {
                     StatementGenerationJobA.ACCTFILE_DD + ' ' + ACCT_ID + " 11");
             assertThat(CardXrefRecord.XREF_CUST_ID_LENGTH).isEqualTo(9);
             assertThat(CardXrefRecord.XREF_ACCT_ID_LENGTH).isEqualTo(11);
+        }
+
+        @Test
+        @DisplayName("the key each read passes reconstructs WS-MO3B-KEY's own PIC X(25) image, "
+                + "left-justified and space-filled (CBSTM03A.CBL:L372-L374, L396-L398)")
+        void theKeyAreaImageIsTheCobolImage() {
+            // L372  MOVE XREF-CUST-ID TO WS-M03B-KEY.   PIC 9(09) into PIC X(25), so nine digits land at
+            //       the left and the remaining SIXTEEN bytes stay spaces - a PIC X receiver is padded on
+            //       the right, never on the left.
+            // L373  MOVE ZERO TO WS-M03B-KEY-LN.
+            // L374  COMPUTE WS-M03B-KEY-LN = LENGTH OF XREF-CUST-ID.   =>  9
+            // L396-L398 are the same three statements over XREF-ACCT-ID, PIC 9(11)  =>  11, leaving
+            //       FOURTEEN trailing spaces.
+            //
+            // The Java call passes the significant prefix and its length rather than a 25-byte string,
+            // which carries the same information: WS-M03B-KEY-LN is what tells the subroutine how much of
+            // the area to use, and CBSTM03B never looks past it. So the area image is reconstructed here
+            // from the pair and compared against the image the two MOVEs produce, which is the assertion
+            // the COBOL actually constrains.
+            FixedWidthCodec codec = new FixedWidthCodec(ASCII);
+            Harness built = harness(oneStatement());
+
+            built.run();
+
+            String custArea = codec.movePicX(CUST_ID, StatementGenerationJobB.KEY_LENGTH);
+            String acctArea = codec.movePicX(ACCT_ID, StatementGenerationJobB.KEY_LENGTH);
+
+            assertThat(StatementGenerationJobB.KEY_LENGTH).isEqualTo(25);
+            assertThat(custArea).hasSize(25)
+                    .isEqualTo(CUST_ID + " ".repeat(25 - CardXrefRecord.XREF_CUST_ID_LENGTH));
+            assertThat(custArea.substring(CardXrefRecord.XREF_CUST_ID_LENGTH)).hasSize(16).isBlank();
+            assertThat(acctArea).hasSize(25)
+                    .isEqualTo(ACCT_ID + " ".repeat(25 - CardXrefRecord.XREF_ACCT_ID_LENGTH));
+            assertThat(acctArea.substring(CardXrefRecord.XREF_ACCT_ID_LENGTH)).hasSize(14).isBlank();
+
+            // And the significant prefix the run passed is exactly what the area holds at the left.
+            assertThat(built.subroutine.keys()).containsExactly(
+                    StatementGenerationJobA.CUSTFILE_DD + ' '
+                            + custArea.substring(0, CardXrefRecord.XREF_CUST_ID_LENGTH) + " 9",
+                    StatementGenerationJobA.ACCTFILE_DD + ' '
+                            + acctArea.substring(0, CardXrefRecord.XREF_ACCT_ID_LENGTH) + " 11");
+        }
+
+        @Test
+        @DisplayName("a real 36-byte app/data/ASCII/cardxref.txt row is right-padded to CVACT03Y's "
+                + "declared 50 before it is read (risk R-F, gate G16)")
+        void aRealFixtureRowIsPaddedToTheCopybookWidth() {
+            // app/cpy/CVACT03Y.cpy declares XREF-CARD-NUM X(16) + XREF-CUST-ID 9(09) + XREF-ACCT-ID 9(11)
+            // + FILLER X(14) = FIFTY bytes. Every row of app/data/ASCII/cardxref.txt is THIRTY-SIX: the
+            // fixture simply stops after the account id and omits the trailing FILLER. It is the only one
+            // of the nine ASCII fixtures whose width disagrees with its copybook, so a row taken from it
+            // has to be right-padded to fifty before anything decodes it - a shortfall the record type
+            // refuses outright rather than tolerating.
+            //
+            // The row below is the first line of that fixture, transcribed. It is used rather than a
+            // made-up value so the join keys carry the shapes real data has: a card number whose leading
+            // digit is not 4, and zero-filled customer and account ids.
+            String fixtureRow = "050002445376574000000005000000000050";
+            assertThat(fixtureRow).hasSize(36).hasSize(CardXrefRecord.FILLER_OFFSET);
+            assertThat(CardXrefRecord.RECORD_LENGTH - CardXrefRecord.FILLER_OFFSET)
+                    .isEqualTo(CardXrefRecord.FILLER_LENGTH)
+                    .isEqualTo(14);
+
+            FixedWidthCodec codec = new FixedWidthCodec(ASCII);
+            String padded = codec.padToDeclaredWidth(fixtureRow, CardXrefRecord.RECORD_LENGTH);
+
+            assertThat(padded).hasSize(CardXrefRecord.RECORD_LENGTH).startsWith(fixtureRow);
+            assertThat(padded.substring(CardXrefRecord.FILLER_OFFSET))
+                    .hasSize(CardXrefRecord.FILLER_LENGTH).isBlank();
+
+            // The padded row decodes into the three join keys the fixture carries.
+            CardXrefRecord decoded = CardXrefRecord.decode(padded.getBytes(ASCII), ASCII);
+            assertThat(decoded.xrefCardNum()).isEqualTo("0500024453765740");
+            assertThat(decoded.xrefCustId()).isEqualTo(50);
+            assertThat(decoded.xrefAcctId()).isEqualTo(50L);
+
+            // And a run driven from that padded row keys its two reads off the fixture's own ids, at the
+            // widths L374 and L398 compute - which is the whole point of padding before reading.
+            //
+            // The work dataset is given one record rather than none, because L748's guard accepts only
+            // '00' and '04': an EMPTY TRNXFILE reports '10' on the first read at L746 and abends. That is
+            // the COBOL's own behaviour, asserted elsewhere in this class, and it is why every whole-run
+            // script here starts with at least one transaction.
+            Harness built = harness(new ScriptedSubroutine()
+                    .reads(StatementGenerationJobA.TRNXFILE_DD,
+                            ok(trnxImage("0500024453765740", "TRAN000000000001", "FIXTURE ROW", "1.00")),
+                            eof())
+                    .reads(StatementGenerationJobA.XREFFILE_DD, ok(padded), eof())
+                    .keyed(StatementGenerationJobA.CUSTFILE_DD, ok(defaultCustImage()))
+                    .keyed(StatementGenerationJobA.ACCTFILE_DD, ok(defaultAcctImage())));
+
+            assertThat(built.run()).isEqualTo(1);
+            assertThat(built.subroutine.keys()).containsExactly(
+                    StatementGenerationJobA.CUSTFILE_DD + " 000000050 9",
+                    StatementGenerationJobA.ACCTFILE_DD + " 00000000050 11");
+        }
+
+        @Test
+        @DisplayName("the same bean run twice shares not one byte of table, counter or total "
+                + "(practice B9, gate G53)")
+        void twoRunsOfOneBeanAreIsolated() {
+            // CBSTM03A holds WS-TRNX-TABLE, the four COMP counters, WS-TOTAL-AMT, WS-SAVE-CARD,
+            // END-OF-FILE and WS-FL-DD in WORKING-STORAGE, which in COBOL is per run unit. A
+            // @Configuration class is a singleton, so the translation must NOT put any of that in a field -
+            // and this is the assertion that fails if it ever does. One bean, one subroutine, TWO passes:
+            // the first sees a 10.00 transaction, the second a 1.11 one. A leaked table would give the
+            // second pass two detail lines; a leaked accumulator would give it a total of 11.11.
+            Harness built = harness(new ScriptedSubroutine()
+                    .reads(StatementGenerationJobA.TRNXFILE_DD,
+                            ok(trnxImage(CARD_A, "TRAN000000000001", "FIRST PASS", "10.00")), eof(),
+                            ok(trnxImage(CARD_A, "TRAN000000000002", "SECOND PASS", "1.11")), eof())
+                    .reads(StatementGenerationJobA.XREFFILE_DD,
+                            ok(xrefImage(CARD_A, CUST_ID, ACCT_ID)), eof(),
+                            ok(xrefImage(CARD_A, CUST_ID, ACCT_ID)), eof())
+                    .keyed(StatementGenerationJobA.CUSTFILE_DD, ok(defaultCustImage()),
+                            ok(defaultCustImage()))
+                    .keyed(StatementGenerationJobA.ACCTFILE_DD, ok(defaultAcctImage()),
+                            ok(defaultAcctImage())));
+
+            assertThat(built.run()).isEqualTo(1);
+            assertThat(built.textRecords).hasSize(20);
+            assertThat(detailLines(built)).isEqualTo(1);
+            assertThat(built.textRecords.get(18)).isEqualTo(renderTotalLine(new BigDecimal("10.00")));
+
+            // Second pass, same bean.
+            assertThat(built.run()).isEqualTo(1);
+            assertThat(built.textRecords).hasSize(40);
+            // Two detail lines in total, one per pass - not three, which is what a retained table gives.
+            assertThat(detailLines(built)).isEqualTo(2);
+            // 1.11, not 11.11: the accumulator did not survive the first pass either.
+            assertThat(built.textRecords.get(38)).isEqualTo(renderTotalLine(new BigDecimal("1.11")));
+
+            // The two passes' twenty-record blocks differ only where their data differs, which is what
+            // proves the counters restarted: a retained CR-CNT would have shifted the second block.
+            assertThat(built.textRecords.subList(0, 16))
+                    .isEqualTo(built.textRecords.subList(20, 36));
         }
 
         @Test
@@ -3857,8 +4627,57 @@ class StatementGenerationJobATest {
         }
 
         @Test
+        @DisplayName("the two PERFORM ... THRU ranges are each entered exactly ONCE per statement "
+                + "(CBSTM03A.CBL:L461 and L486)")
+        void theTwoRangePerformsRunOncePerStatement() {
+            // L461  PERFORM 5100-WRITE-HTML-HEADER THRU 5100-EXIT.
+            // L486  PERFORM 5200-WRITE-HTML-NMADBS THRU 5200-EXIT.
+            // Two of the estate's twelve range PERFORMs, both benign - each names a paragraph and its own
+            // matching exit label, so each collapses to a single call. "Once per statement" is what makes
+            // them benign, and it is checkable without reaching into the class: 5100 opens with HTML-L01,
+            // the document type declaration, and 5200 is the only place a bare WRITE FD-HTMLFILE-REC with
+            // no FROM appears (L568) - so counting those two records counts the two entries.
+            Harness twoStatements = harness(new ScriptedSubroutine()
+                    .reads(StatementGenerationJobA.TRNXFILE_DD,
+                            ok(trnxImage(CARD_A, "TRAN000000000001", "ONE", "1.00")),
+                            ok(trnxImage(CARD_B, "TRAN000000000002", "TWO", "2.00")), eof())
+                    .reads(StatementGenerationJobA.XREFFILE_DD,
+                            ok(xrefImage(CARD_A, CUST_ID, ACCT_ID)),
+                            ok(xrefImage(CARD_B, CUST_ID, ACCT_ID)), eof())
+                    .keyed(StatementGenerationJobA.CUSTFILE_DD, ok(defaultCustImage()),
+                            ok(defaultCustImage()))
+                    .keyed(StatementGenerationJobA.ACCTFILE_DD, ok(defaultAcctImage()),
+                            ok(defaultAcctImage())));
+
+            assertThat(twoStatements.run()).isEqualTo(2);
+            assertThat(twoStatements.htmlRecords).hasSize(150);
+            assertThat(startingWith(twoStatements.htmlRecords, "<!DOCTYPE html>")).isEqualTo(2);
+            assertThat(containing(twoStatements.htmlRecords, "JOHN Q PUBLIC")).isEqualTo(2);
+
+            // One statement: exactly one entry into each range, not two and not none.
+            Harness one = goldenRun();
+            assertThat(startingWith(one.htmlRecords, "<!DOCTYPE html>")).isEqualTo(1);
+            assertThat(containing(one.htmlRecords, "JOHN Q PUBLIC")).isEqualTo(1);
+
+            // 5100 is entered first and its twenty-two records come first, so the document type
+            // declaration is record ONE and 5200's bare WRITE is record twenty-THREE.
+            assertThat(one.htmlRecords.get(0)).startsWith("<!DOCTYPE html>");
+            assertThat(one.htmlRecords.get(22)).contains("JOHN Q PUBLIC");
+        }
+
+        @Test
         @DisplayName("every plain-text record is exactly 80 bytes (gates G19, G20)")
         void everyTextRecordIsEightyBytes() {
+            // FD-STMTFILE-REC PIC X(80) at CBSTM03A.CBL:L44, and LRECL=80 in BOTH steps that declare the
+            // dataset - the pre-delete at app/jcl/CREASTMT.JCL:L73 and the creating step at L89 - so this
+            // width has no conflict to resolve.
+            //
+            // BEWARE OF L90. The card immediately after the creating step's DCB is CORRUPTED: it reads
+            // "//         SPACE=(CYL,(1,1),RLSE), 00,RECFM=FB), ATA.VSAM.KSDS" - a SPACE parameter with the
+            // tail of some other card overwritten onto it. Everything after the blank that follows the
+            // comma is JCL comment, so L90 declares NOTHING and is NOT a second DCB for this dataset. L89
+            // is the authoritative one. The fragment "00,RECFM=FB)" in particular looks like an LRECL and
+            // is not; reading it as one would be reading a typing accident as a contract.
             assertThat(goldenRun().textRecords).isNotEmpty()
                     .allSatisfy(record -> assertThat(record.getBytes(ASCII))
                             .hasSize(StatementTextWriter.RECORD_LENGTH));
@@ -3868,10 +4687,19 @@ class StatementGenerationJobATest {
         @Test
         @DisplayName("every HTML record is exactly 100 bytes - the creating step wins, not the pre-delete")
         void everyHtmlRecordIsOneHundredBytes() {
+            // The one width in this job with two declarations that disagree (risk R-G, gate G20):
+            //   app/jcl/CREASTMT.JCL:L69   STEP030, IEFBR14, DISP=(MOD,DELETE,DELETE)  LRECL=80
+            //   app/jcl/CREASTMT.JCL:L94   STEP040, CBSTM03A, DISP=(NEW,CATLG,DELETE)  LRECL=100
+            // The CREATING step wins, so the width is ONE HUNDRED. L69 belongs to a step whose only job is
+            // to delete last run's generation - its DCB describes what it expects to find, not what this
+            // run produces - and FD-HTMLFILE-REC PIC X(100) at CBSTM03A.CBL:L46 settles it independently.
             assertThat(goldenRun().htmlRecords).isNotEmpty()
                     .allSatisfy(record -> assertThat(record.getBytes(ASCII))
                             .hasSize(StatementHtmlWriter.RECORD_LENGTH));
             assertThat(StatementHtmlWriter.RECORD_LENGTH).isEqualTo(100);
+            // And the two widths are genuinely different, which is what the pre-delete card obscures.
+            assertThat(StatementHtmlWriter.RECORD_LENGTH)
+                    .isNotEqualTo(StatementTextWriter.RECORD_LENGTH);
         }
 
         @Test
@@ -4141,11 +4969,29 @@ class StatementGenerationJobATest {
 
     // =============================================================================================
     // The status matrix (gate G47). Three DIFFERENT shapes in one program, and the differences matter.
+    //
+    // HOW MANY CALL SITES? StatementGenerationJobA's own class documentation says FILE STATUS is
+    // consulted "across ten call sites". Counting app/cbl/CBSTM03A.CBL directly gives THIRTEEN, and the
+    // thirteen are enumerable:
+    //
+    //   CALL 'CBSTM03B'          L351 L377 L401 L734 L746 L769 L787 L805 L835 L860 L877 L893 L909  = 13
+    //   EVALUATE WS-M03B-RC      L353 L379 L403 L837                                               =  4
+    //   IF WS-M03B-RC='00' OR '04'  L736 L748 L771 L789 L807 L862 L879 L895 L911                   =  9
+    //   PERFORM 9999-ABEND-PROGRAM  L361 L385 L409 L741 L753 L776 L794 L812 L846 L867 L884 L900 L916 = 13
+    //
+    // so there are thirteen delegations, thirteen status checks (4 + 9) and thirteen paths into the
+    // abend. BOTH numbers are recorded here on purpose rather than one of them being quietly adopted:
+    // "ten" is what the main source's prose says, THIRTEEN is what the source itself says, and thirteen
+    // is the figure these tests are built on. If the two are ever reconciled, it is the prose that moves.
+    //
+    // Where "ten" does hold is over the nine two-way IF guards plus... nothing - it does not hold. The
+    // nearest true grouping is 4 opens + 4 closes + 1 first read = NINE IF-shaped guards, and adding the
+    // four EVALUATE WHEN OTHER arms gives the thirteen above.
     // =============================================================================================
 
-    /** Which statuses each of the ten call sites accepts, and which of them abend. */
+    /** Which statuses each of the thirteen call sites accepts, and which of them abend. */
     @Nested
-    @DisplayName("The FILE STATUS matrix across all ten call sites (gate G47)")
+    @DisplayName("The FILE STATUS matrix across all thirteen call sites (gate G47)")
     class TheStatusMatrix {
 
         @Test
@@ -4192,6 +5038,68 @@ class StatementGenerationJobATest {
                     .doesNotContain(StatementGenerationJobA.ABENDING_PROGRAM);
         }
 
+        @ParameterizedTest
+        @DisplayName("every OPEN rejects '10', '22', '23' and an out-of-band status, each with its own "
+                + "literal (CBSTM03A.CBL:L736, L771, L789, L807)")
+        @CsvSource({
+            "TRNXFILE,10", "TRNXFILE,22", "TRNXFILE,23", "TRNXFILE,34",
+            "XREFFILE,10", "XREFFILE,22", "XREFFILE,23", "XREFFILE,34",
+            "CUSTFILE,10", "CUSTFILE,22", "CUSTFILE,23", "CUSTFILE,34",
+            "ACCTFILE,10", "ACCTFILE,22", "ACCTFILE,23", "ACCTFILE,34",
+        })
+        void everyOpenRejectsEveryOtherStatus(String dd, String status) {
+            // The four OPEN guards accept exactly two statuses, so the other four outcomes FileStatus
+            // distinguishes - end of file, duplicate key, not found, and anything else - all take the ELSE
+            // arm. Driving all four at all four DDs is the matrix gate G47 asks for, and it also proves the
+            // four guards are not sharing one literal: each names its own file.
+            Harness built = harness(oneStatement().opens(dd, status));
+
+            assertThatExceptionOfType(AbendException.class).isThrownBy(built::run);
+            assertThat(built.sysout.lines()).endsWith(
+                    openFailureLiteral(dd),
+                    StatementGenerationJobA.RETURN_CODE_PREFIX + status,
+                    StatementGenerationJobA.ABENDING_PROGRAM);
+        }
+
+        @ParameterizedTest
+        @DisplayName("every CLOSE rejects '10', '22', '23' and an out-of-band status, each with its own "
+                + "literal (CBSTM03A.CBL:L862, L879, L895, L911)")
+        @CsvSource({
+            "TRNXFILE,10", "TRNXFILE,22", "TRNXFILE,23", "TRNXFILE,34",
+            "XREFFILE,10", "XREFFILE,22", "XREFFILE,23", "XREFFILE,34",
+            "CUSTFILE,10", "CUSTFILE,22", "CUSTFILE,23", "CUSTFILE,34",
+            "ACCTFILE,10", "ACCTFILE,22", "ACCTFILE,23", "ACCTFILE,34",
+        })
+        void everyCloseRejectsEveryOtherStatus(String dd, String status) {
+            Harness built = harness(oneStatement().closes(dd, status));
+
+            assertThatExceptionOfType(AbendException.class).isThrownBy(built::run);
+            assertThat(built.sysout.lines()).endsWith(
+                    closeFailureLiteral(dd),
+                    StatementGenerationJobA.RETURN_CODE_PREFIX + status,
+                    StatementGenerationJobA.ABENDING_PROGRAM);
+        }
+
+        @ParameterizedTest
+        @DisplayName("the FIRST TRNXFILE read rejects '10', '22', '23' and an out-of-band status - so an "
+                + "EMPTY work dataset abends (CBSTM03A.CBL:L748)")
+        @ValueSource(strings = {"10", "22", "23", "34"})
+        void theFirstTrnxReadRejectsEveryOtherStatus(String status) {
+            // The ninth IF-shaped guard, and the one with the most surprising consequence: because L748
+            // accepts only '00' and '04', a work dataset with NO records reports '10' on the first read at
+            // L746 and the program abends rather than writing an empty statement run. That is not a
+            // translation choice - the EVALUATE that does handle '10' is the loop read at L837, four
+            // paragraphs later.
+            Harness built = harness(new ScriptedSubroutine()
+                    .reads(StatementGenerationJobA.TRNXFILE_DD, status(status)));
+
+            assertThatExceptionOfType(AbendException.class).isThrownBy(built::run);
+            assertThat(built.sysout.lines()).endsWith(
+                    StatementGenerationJobA.ERROR_READING_TRNXFILE,
+                    StatementGenerationJobA.RETURN_CODE_PREFIX + status,
+                    StatementGenerationJobA.ABENDING_PROGRAM);
+        }
+
         @Test
         @DisplayName("the FIRST TRNXFILE read accepts '04' - the only read in the program that does")
         void theFirstTrnxReadAcceptsOhFour() {
@@ -4205,7 +5113,8 @@ class StatementGenerationJobATest {
         }
 
         @Test
-        @DisplayName("the TRNXFILE LOOP read does NOT accept '04' - its EVALUATE has no such arm")
+        @DisplayName("the TRNXFILE LOOP read does NOT accept '04' - its EVALUATE has no such arm "
+                + "(CBSTM03A.CBL:L837-L847)")
         void theLoopTrnxReadRejectsOhFour() {
             Harness built = harness(new ScriptedSubroutine().reads(
                     StatementGenerationJobA.TRNXFILE_DD,
@@ -4241,6 +5150,38 @@ class StatementGenerationJobATest {
                     StatementGenerationJobA.ABENDING_PROGRAM);
         }
 
+        /**
+         * The {@code ERROR OPENING} literal one DD's guard emits, {@code CBSTM03A.CBL:L739}, {@code L774},
+         * {@code L792}, {@code L810}.
+         *
+         * @param dd the DD name
+         * @return that DD's literal
+         */
+        private String openFailureLiteral(String dd) {
+            return switch (dd) {
+                case StatementGenerationJobA.TRNXFILE_DD -> StatementGenerationJobA.ERROR_OPENING_TRNXFILE;
+                case StatementGenerationJobA.XREFFILE_DD -> StatementGenerationJobA.ERROR_OPENING_XREFFILE;
+                case StatementGenerationJobA.CUSTFILE_DD -> StatementGenerationJobA.ERROR_OPENING_CUSTFILE;
+                default -> StatementGenerationJobA.ERROR_OPENING_ACCTFILE;
+            };
+        }
+
+        /**
+         * The {@code ERROR CLOSING} literal one DD's guard emits, {@code CBSTM03A.CBL:L865}, {@code L882},
+         * {@code L898}, {@code L914}.
+         *
+         * @param dd the DD name
+         * @return that DD's literal
+         */
+        private String closeFailureLiteral(String dd) {
+            return switch (dd) {
+                case StatementGenerationJobA.TRNXFILE_DD -> StatementGenerationJobA.ERROR_CLOSING_TRNXFILE;
+                case StatementGenerationJobA.XREFFILE_DD -> StatementGenerationJobA.ERROR_CLOSING_XREFFILE;
+                case StatementGenerationJobA.CUSTFILE_DD -> StatementGenerationJobA.ERROR_CLOSING_CUSTFILE;
+                default -> StatementGenerationJobA.ERROR_CLOSING_ACCTFILE;
+            };
+        }
+
         @ParameterizedTest
         @DisplayName("the CUSTFILE keyed read has NO '10' arm, so '10' abends there like anything else")
         @ValueSource(strings = {"10", "04", "23"})
@@ -4273,12 +5214,15 @@ class StatementGenerationJobATest {
     }
 
     // =============================================================================================
-    // 9999-ABEND-PROGRAM (gate G35): ten callers, three displayed lines each, no ABCODE, no TIMING.
+    // 9999-ABEND-PROGRAM (gate G35): THIRTEEN callers, three displayed lines each, no ABCODE, no TIMING.
+    // The callers are PERFORM 9999-ABEND-PROGRAM at L361 L385 L409 L741 L753 L776 L794 L812 L846 L867
+    // L884 L900 L916 - the four EVALUATE WHEN OTHER arms and the nine IF '00' OR '04' ELSE arms. See the
+    // status-matrix banner above for why thirteen and not the main source's prose count of ten.
     // =============================================================================================
 
     /** Every guard that reaches the abend, and what the abend carries. */
     @Nested
-    @DisplayName("9999-ABEND-PROGRAM and its ten callers (gate G35)")
+    @DisplayName("9999-ABEND-PROGRAM and its thirteen callers (gate G35)")
     class TheAbendPath {
 
         @ParameterizedTest
@@ -4312,7 +5256,7 @@ class StatementGenerationJobATest {
         }
 
         @Test
-        @DisplayName("the first TRNXFILE read's guard is a distinct tenth caller")
+        @DisplayName("the first TRNXFILE read's guard is a caller of its own - the ninth IF-shaped one, L753")
         void theFirstReadGuard() {
             Harness built = harness(new ScriptedSubroutine()
                     .reads(StatementGenerationJobA.TRNXFILE_DD, status(FileStatus.NOT_FOUND)));
@@ -4397,7 +5341,7 @@ class StatementGenerationJobATest {
         }
 
         /**
-         * Asserts the shape every one of the ten callers produces.
+         * Asserts the shape every one of the thirteen callers produces.
          *
          * @param abend the exception raised
          */

@@ -1,0 +1,82 @@
+{
+  "program": "CBSTM03B",
+  "caseId": "case08",
+  "description": "End of file on XREFFILE, then CLOSE. One row is seeded; the second READ reports '10' and returns the area unchanged, and the CLOSE that follows reports '00'. The pair matters because it proves the two statuses come from the same XREFFILE-STATUS area (app/cbl/CBSTM03B.CBL:87-89) rather than from a shared one: a '10' left over from the end of file would be visible in the CLOSE's LK-M03B-RC if 2900-EXIT moved anything other than that file's own status.",
+  "unitKind": "COMPONENT",
+  "inputs": {
+    "XREFFILE": {
+      "fixture": "cardxref.txt",
+      "fromRow": 0,
+      "rowCount": 1
+    }
+  },
+  "jobParameters": {},
+  "screenRequest": null,
+  "expectedResponse": null,
+  "expectedWrites": [
+    {
+      "dataset": "M03BAREA",
+      "rowIndex": 0,
+      "fields": {
+        "LK-M03B-DD": "XREFFILE",
+        "LK-M03B-OPER": "O",
+        "LK-M03B-RC": "00"
+      },
+      "expectedBytes": "XREFFILEO00                         000{                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        "
+    },
+    {
+      "dataset": "M03BAREA",
+      "rowIndex": 1,
+      "fields": {
+        "LK-M03B-DD": "XREFFILE",
+        "LK-M03B-OPER": "R",
+        "LK-M03B-RC": "00"
+      },
+      "expectedBytes": "XREFFILER00                         000{050002445376574000000005000000000050                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    "
+    },
+    {
+      "dataset": "M03BAREA",
+      "rowIndex": 2,
+      "fields": {
+        "LK-M03B-DD": "XREFFILE",
+        "LK-M03B-OPER": "R",
+        "LK-M03B-RC": "10"
+      },
+      "expectedBytes": "XREFFILER10                         000{050002445376574000000005000000000050                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    "
+    },
+    {
+      "dataset": "M03BAREA",
+      "rowIndex": 3,
+      "fields": {
+        "LK-M03B-DD": "XREFFILE",
+        "LK-M03B-OPER": "C",
+        "LK-M03B-RC": "00"
+      },
+      "expectedBytes": "XREFFILEC00                         000{050002445376574000000005000000000050                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    "
+    }
+  ],
+  "expectedFinalState": [
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 0,
+      "fields": {},
+      "expectedBytes": "050002445376574000000005000000000050              "
+    }
+  ],
+  "expectedReturnCode": 0,
+  "expectedMessages": [],
+  "normalisations": [
+    {
+      "dataset": "XREFFILE",
+      "kind": "CARDXREF_FILLER_PAD_36_TO_50"
+    }
+  ],
+  "expectedDatasets": [
+    {
+      "dataset": "M03BAREA",
+      "channel": "WRITES",
+      "rowCount": 4,
+      "recordLength": 1040
+    }
+  ]
+}

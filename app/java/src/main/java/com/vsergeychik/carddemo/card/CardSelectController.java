@@ -2459,15 +2459,23 @@ public class CardSelectController {
 
         // :514-524 - POSITION CURSOR. An ordered EVALUATE TRUE whose first two WHENs share one action and
         // whose last two share another, so consecutive WHENs are an OR - not a fall-through.
+        // The cursor is recorded on the RESPONSE as well as on the request's xxxL metadata, and both are
+        // needed. The metadata carries the -1 the source moves; the response carries it out to the client,
+        // because the request this method edits is the controller's own defensive copy and the caller's
+        // instance never sees the move. The SEND MAP at :569-576 carries CURSOR, so where the -1 landed is
+        // observable behaviour, and R6 requires it to travel in the payload rather than in server state.
         if (task.flgAcctfilterNotOk() || task.flgAcctfilterBlank()) {
             // :516-518
             request.metadata(CardSelectRequest.ScreenField.ACCTSID).positionCursorHere();
+            response.setCursorField(CardSelectRequest.ScreenField.ACCTSID.label());
         } else if (task.flgCardfilterNotOk() || task.flgCardfilterBlank()) {
             // :519-521
             request.metadata(CardSelectRequest.ScreenField.CARDSID).positionCursorHere();
+            response.setCursorField(CardSelectRequest.ScreenField.CARDSID.label());
         } else {
             // :522-523 - WHEN OTHER. Same action as the first arm, and still a distinct arm.
             request.metadata(CardSelectRequest.ScreenField.ACCTSID).positionCursorHere();
+            response.setCursorField(CardSelectRequest.ScreenField.ACCTSID.label());
         }
 
         // :526-531 - SETUP COLOR. Note there is no ELSE: arriving from anywhere else leaves both colour
@@ -2564,6 +2572,15 @@ public class CardSelectController {
         task.carddemoCommarea = task.carddemoCommarea.withPgmReenter();
 
         // :569-576 - EXEC CICS SEND MAP(CCARD-NEXT-MAP) MAPSET(CCARD-NEXT-MAPSET) FROM(CCRDSLAO)
+        //
+        // The whole next-screen triple is published, not two thirds of it. :588-590 assigns
+        // CCARD-NEXT-PROG, CCARD-NEXT-MAPSET and CCARD-NEXT-MAP in three consecutive MOVEs, so a response
+        // that carried the last two on its own members and left the first to be dug out of the work area
+        // would split one COBOL group across two shapes - and a client reading nextProgram would see
+        // nothing where the program had named itself. On the arms that never reach 2000-PROCESS-INPUTS the
+        // work area still holds the spaces INITIALIZE CC-WORK-AREA left, which is what the member already
+        // starts as, so nothing is invented for those paths either.
+        response.setNextProgram(task.ccWorkArea.getCcardNextProg());
         response.setNextMapset(task.ccWorkArea.getCcardNextMapset());
         response.setNextMap(task.ccWorkArea.getCcardNextMap());
         response.setNavigationContext(task.carddemoCommarea);

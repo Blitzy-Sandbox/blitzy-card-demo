@@ -1,0 +1,65 @@
+{
+  "program": "CBACT03C",
+  "caseId": "case08",
+  "description": "The very first READ at :93 reports '30' - a permanent I/O error - so the third arm at :100 moves 12 into APPL-RESULT, 88 APPL-AOK is false at :104, 88 APPL-EOF is false at :107, and :110-113 run: DISPLAY 'ERROR READING XREFFILE', 9910-DISPLAY-IO-STATUS, then the abend. Four lines and RETURN-CODE 12, with no record line at all: the failing READ does not reach the :96 display and the abend never reaches :78, so a failed read contributes ZERO lines rather than one. The three seeded rows prove it - a translation that displayed the record area on the failing arm would emit them.",
+  "unitKind": "BATCH_JOB",
+  "inputs": {
+    "XREFFILE": {
+      "fixture": "cardxref.txt",
+      "fromRow": 0,
+      "rowCount": 3
+    }
+  },
+  "jobParameters": {},
+  "expectedWrites": [],
+  "expectedFinalState": [
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 0,
+      "expectedBytes": "050002445376574000000005000000000050              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 1,
+      "expectedBytes": "068358619817151600000002700000000027              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 2,
+      "expectedBytes": "092387719324733000000000200000000002              "
+    }
+  ],
+  "expectedReturnCode": 12,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "START OF EXECUTION OF PROGRAM CBACT03C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ERROR READING XREFFILE"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "FILE STATUS IS: NNNN0030"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ABENDING PROGRAM"
+    }
+  ],
+  "normalisations": [
+    {
+      "dataset": "XREFFILE",
+      "kind": "CARDXREF_FILLER_PAD_36_TO_50"
+    }
+  ],
+  "expectedDatasets": [
+    {
+      "dataset": "XREFFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 3,
+      "recordLength": 50
+    }
+  ]
+}

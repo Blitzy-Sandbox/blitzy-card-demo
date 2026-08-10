@@ -1,0 +1,110 @@
+{
+  "program" : "COTRN01C",
+  "caseId" : "case17",
+  "description" : "A successful read of a record whose TRAN-AMT does not fit the receiver. :177 moves PIC S9(09)V99 into PIC +99999999.99, which has eight integer digits, so the two are aligned on the decimal point and the high-order digit that does not fit is discarded: 123456789.12 renders as +23456789.12. There is no ON SIZE ERROR phrase anywhere in the program, so nothing is raised and nothing is rounded - COBOL truncates on a store, and the keyword ROUNDED appears zero times in all 28 programs.",
+  "unitKind" : "CONTROLLER_POJO",
+  "inputs" : {
+    "TRANSACT" : {
+      "rows" : [ "0000000000000001010005POS TERM  GROCERY PURCHASE AT PARITY MARKET WITH A DESCRIPTION THAT OVERFLOWS THE SCREEN FIELD                0000005047G800000001PARITY MARKET NUMBER ONE OF SEVERAL LONG NAMES    SPRINGFIELD MASSACHUSETTS USA                     01103-123441111111111111112022-07-19 23:12:34.1234562022-07-20 01:02:03.654321                    ", "0000000000000002020010ONLINE    REFUND ISSUED BY MERCHANT                                                                           0000000500}800000002PARITY REFUNDS LIMITED                            PORTLAND OREGON                                   97201-000242222222222222222022-07-18 08:00:00.0000012022-07-18 09:30:00.000002                    ", "0000000000000003034444BATCH     LARGE SETTLEMENT                                                                                    1234567891B800000003PARITY SETTLEMENT HOUSE                           NEW YORK NEW YORK                                 10001-000343333333333333332022-07-17 12:00:00.0000032022-07-17 12:00:01.000004                    " ]
+    }
+  },
+  "screenRequest" : {
+    "eibcalen" : 218,
+    "aid" : "DFHENTER",
+    "pinnedClock" : "2022-07-19T23:12:34",
+    "charset" : "US-ASCII",
+    "commarea" : {
+      "CDEMO-PGM-CONTEXT" : "1"
+    },
+    "mapFields" : {
+      "TRNIDINI" : "0000000000000003"
+    },
+    "forcedOutcomes" : { }
+  },
+  "expectedResponse" : {
+    "nextProgram" : "COTRN01C",
+    "nextMapset" : "COTRN01",
+    "nextMap" : "COTRN1A",
+    "navigation" : {
+      "CDEMO-FROM-TRANID" : "    ",
+      "CDEMO-FROM-PROGRAM" : "        ",
+      "CDEMO-TO-TRANID" : "    ",
+      "CDEMO-TO-PROGRAM" : "        ",
+      "CDEMO-USER-ID" : "        ",
+      "CDEMO-USER-TYPE" : " ",
+      "CDEMO-PGM-CONTEXT" : "1",
+      "CDEMO-CUST-ID" : "000000000",
+      "CDEMO-CUST-FNAME" : "                         ",
+      "CDEMO-CUST-MNAME" : "                         ",
+      "CDEMO-CUST-LNAME" : "                         ",
+      "CDEMO-ACCT-ID" : "00000000000",
+      "CDEMO-ACCT-STATUS" : " ",
+      "CDEMO-CARD-NUM" : "0000000000000000",
+      "CDEMO-LAST-MAP" : "       ",
+      "CDEMO-LAST-MAPSET" : "       ",
+      "CDEMO-CT01-TRNID-FIRST" : "                ",
+      "CDEMO-CT01-TRNID-LAST" : "                ",
+      "CDEMO-CT01-PAGE-NUM" : "00000000",
+      "CDEMO-CT01-NEXT-PAGE-FLG" : " ",
+      "CDEMO-CT01-TRN-SEL-FLG" : " ",
+      "CDEMO-CT01-TRN-SELECTED" : "                "
+    },
+    "sends" : [ {
+      "fields" : {
+        "TRNNAMEO" : "CT01",
+        "TITLE01O" : "      AWS Mainframe Modernization       ",
+        "CURDATEO" : "07/19/22",
+        "PGMNAMEO" : "COTRN01C",
+        "TITLE02O" : "              CardDemo                  ",
+        "CURTIMEO" : "23:12:34",
+        "TRNIDINO" : "0000000000000003",
+        "TRNIDO" : "0000000000000003",
+        "CARDNUMO" : "4333333333333333",
+        "TTYPCDO" : "03",
+        "TCATCDO" : "4444",
+        "TRNSRCO" : "BATCH     ",
+        "TDESCO" : "LARGE SETTLEMENT                                            ",
+        "TRNAMTO" : "+23456789.12",
+        "TORIGDTO" : "2022-07-17",
+        "TPROCDTO" : "2022-07-17",
+        "MIDO" : "800000003",
+        "MNAMEO" : "PARITY SETTLEMENT HOUSE       ",
+        "MCITYO" : "NEW YORK NEW YORK        ",
+        "MZIPO" : "10001-0003",
+        "ERRMSGO" : "                                                                              "
+      },
+      "attributes" : { }
+    } ],
+    "cursorField" : "TRNIDINL",
+    "termination" : "RETURN_TRANSID"
+  },
+  "expectedWrites" : [ ],
+  "expectedFinalState" : [ {
+    "dataset" : "TRANSACT",
+    "rowIndex" : 0,
+    "expectedBytes" : "0000000000000001010005POS TERM  GROCERY PURCHASE AT PARITY MARKET WITH A DESCRIPTION THAT OVERFLOWS THE SCREEN FIELD                0000005047G800000001PARITY MARKET NUMBER ONE OF SEVERAL LONG NAMES    SPRINGFIELD MASSACHUSETTS USA                     01103-123441111111111111112022-07-19 23:12:34.1234562022-07-20 01:02:03.654321                    "
+  }, {
+    "dataset" : "TRANSACT",
+    "rowIndex" : 1,
+    "expectedBytes" : "0000000000000002020010ONLINE    REFUND ISSUED BY MERCHANT                                                                           0000000500}800000002PARITY REFUNDS LIMITED                            PORTLAND OREGON                                   97201-000242222222222222222022-07-18 08:00:00.0000012022-07-18 09:30:00.000002                    "
+  }, {
+    "dataset" : "TRANSACT",
+    "rowIndex" : 2,
+    "expectedBytes" : "0000000000000003034444BATCH     LARGE SETTLEMENT                                                                                    1234567891B800000003PARITY SETTLEMENT HOUSE                           NEW YORK NEW YORK                                 10001-000343333333333333332022-07-17 12:00:00.0000032022-07-17 12:00:01.000004                    "
+  } ],
+  "expectedReturnCode" : 0,
+  "expectedMessages" : [ {
+    "channel" : "WS_MESSAGE_80",
+    "text" : "                                                                                "
+  }, {
+    "channel" : "SCREEN_ERRMSG_78",
+    "text" : "                                                                              "
+  } ],
+  "normalisations" : [ ],
+  "expectedDatasets" : [ {
+    "dataset" : "TRANSACT",
+    "channel" : "FINAL_STATE",
+    "rowCount" : 3,
+    "recordLength" : 350
+  } ]
+}

@@ -1,0 +1,202 @@
+{
+  "program": "CBACT01C",
+  "caseId": "case19",
+  "description": "ACCT-ACTIVE-STATUS across the three values a PIC X(01) span carries in practice: 'Y', which is what all 50 rows of the shipped fixture hold, 'N', and a space. CBACT01C displays the byte and branches on nothing - there is no 88-level condition on this field anywhere in the program - so all three records must be read, displayed and counted identically.",
+  "unitKind": "BATCH_JOB",
+  "inputs": {
+    "ACCTFILE": {
+      "rows": [
+        "00000000901Y00000001940{00000020200{00000010200{2014-11-202025-05-202025-05-2000000000000{00000000000{A000000000                                                                                                                                                                                            ",
+        "00000000902N00000001940{00000020200{00000010200{2014-11-202025-05-202025-05-2000000000000{00000000000{A000000000                                                                                                                                                                                            ",
+        "00000000903 00000001940{00000020200{00000010200{2014-11-202025-05-202025-05-2000000000000{00000000000{A000000000                                                                                                                                                                                            "
+      ]
+    }
+  },
+  "jobParameters": {},
+  "expectedWrites": [],
+  "expectedFinalState": [
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 0,
+      "expectedBytes": "00000000901Y00000001940{00000020200{00000010200{2014-11-202025-05-202025-05-2000000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 1,
+      "expectedBytes": "00000000902N00000001940{00000020200{00000010200{2014-11-202025-05-202025-05-2000000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 2,
+      "expectedBytes": "00000000903 00000001940{00000020200{00000010200{2014-11-202025-05-202025-05-2000000000000{00000000000{A000000000                                                                                                                                                                                            "
+    }
+  ],
+  "expectedReturnCode": 0,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "START OF EXECUTION OF PROGRAM CBACT01C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-ID                 :00000000901"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-ACTIVE-STATUS      :Y"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CURR-BAL           :00000001940{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CREDIT-LIMIT       :00000020200{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CASH-CREDIT-LIMIT  :00000010200{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-OPEN-DATE          :2014-11-20"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-EXPIRAION-DATE     :2025-05-20"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-REISSUE-DATE       :2025-05-20"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CURR-CYC-CREDIT    :00000000000{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CURR-CYC-DEBIT     :00000000000{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-GROUP-ID           :          "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "-------------------------------------------------"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "00000000901Y00000001940{00000020200{00000010200{2014-11-202025-05-202025-05-2000000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-ID                 :00000000902"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-ACTIVE-STATUS      :N"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CURR-BAL           :00000001940{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CREDIT-LIMIT       :00000020200{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CASH-CREDIT-LIMIT  :00000010200{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-OPEN-DATE          :2014-11-20"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-EXPIRAION-DATE     :2025-05-20"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-REISSUE-DATE       :2025-05-20"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CURR-CYC-CREDIT    :00000000000{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CURR-CYC-DEBIT     :00000000000{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-GROUP-ID           :          "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "-------------------------------------------------"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "00000000902N00000001940{00000020200{00000010200{2014-11-202025-05-202025-05-2000000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-ID                 :00000000903"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-ACTIVE-STATUS      : "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CURR-BAL           :00000001940{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CREDIT-LIMIT       :00000020200{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CASH-CREDIT-LIMIT  :00000010200{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-OPEN-DATE          :2014-11-20"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-EXPIRAION-DATE     :2025-05-20"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-REISSUE-DATE       :2025-05-20"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CURR-CYC-CREDIT    :00000000000{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CURR-CYC-DEBIT     :00000000000{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-GROUP-ID           :          "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "-------------------------------------------------"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "00000000903 00000001940{00000020200{00000010200{2014-11-202025-05-202025-05-2000000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "END OF EXECUTION OF PROGRAM CBACT01C"
+    }
+  ],
+  "normalisations": []
+}

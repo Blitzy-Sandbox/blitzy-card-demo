@@ -1,0 +1,61 @@
+{
+  "program": "CBACT03C",
+  "caseId": "case03",
+  "description": "One record only, the fixture's first row 0500024453765740/000000005/00000000050, which decomposes as XREF-CARD-NUM X(16), XREF-CUST-ID 9(09) and XREF-ACCT-ID 9(11) exactly as app/cpy/CVACT03Y.cpy declares them. The smallest run that still takes both READ arms in order: '00' at :94 for the row, then '10' at :98 for end of file. Four lines - banner, the record twice, banner - which is the 2 + 2n shape at n = 1, and the case that makes the doubled display impossible to mistake for an accident of volume.",
+  "unitKind": "BATCH_JOB",
+  "inputs": {
+    "XREFFILE": {
+      "fixture": "cardxref.txt",
+      "fromRow": 0,
+      "rowCount": 1
+    }
+  },
+  "jobParameters": {},
+  "expectedWrites": [],
+  "expectedFinalState": [
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 0,
+      "fields": {
+        "XREF-CARD-NUM": "0500024453765740",
+        "XREF-CUST-ID": "000000050",
+        "XREF-ACCT-ID": "00000000050",
+        "FILLER": "              "
+      },
+      "expectedBytes": "050002445376574000000005000000000050              "
+    }
+  ],
+  "expectedReturnCode": 0,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "START OF EXECUTION OF PROGRAM CBACT03C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "050002445376574000000005000000000050              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "050002445376574000000005000000000050              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "END OF EXECUTION OF PROGRAM CBACT03C"
+    }
+  ],
+  "normalisations": [
+    {
+      "dataset": "XREFFILE",
+      "kind": "CARDXREF_FILLER_PAD_36_TO_50"
+    }
+  ],
+  "expectedDatasets": [
+    {
+      "dataset": "XREFFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 50
+    }
+  ]
+}

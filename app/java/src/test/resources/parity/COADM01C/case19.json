@@ -1,0 +1,80 @@
+{
+  "program": "COADM01C",
+  "caseId": "case19",
+  "description": "SEND-MENU-SCREEN at app/cbl/COADM01C.cbl:179-184 names MAP('COADM1A') and MAPSET('COADM01'), and RETURN at 107-110 names TRANSID('CA00') - all three of which the CSD confirms at app/csd/CARDDEMO.CSD:110, 189 and 327-328. In a stateless translation they are response fields the client acts on, never a server-side forward, so this case pins the triple on the path that sends: nextProgram is absent because no XCTL ran, and the mapset and map name the screen just painted. They are seven characters each and not eight, matching CDEMO-LAST-MAP and CDEMO-LAST-MAPSET. The complementary shape is on the transfer paths - case03, case09 and case10 - where nextProgram names a successor and the mapset and map are absent, because which map the successor paints is its own decision and not this program's.",
+  "unitKind": "SERVICE",
+  "inputs": {},
+  "screenRequest": {
+    "eibcalen": 160,
+    "aid": "DFHENTER",
+    "pinnedClock": "2022-07-19T23:12:32",
+    "charset": "US-ASCII",
+    "commarea": {
+      "CDEMO-FROM-TRANID": "CC00",
+      "CDEMO-FROM-PROGRAM": "COSGN00C",
+      "CDEMO-TO-PROGRAM": "COADM01C",
+      "CDEMO-USER-ID": "ADMIN001",
+      "CDEMO-USER-TYPE": "A",
+      "CDEMO-PGM-CONTEXT": "0"
+    },
+    "mapFields": {
+      "OPTIONI": "  "
+    },
+    "forcedOutcomes": {}
+  },
+  "expectedResponse": {
+    "nextMapset": "COADM01",
+    "nextMap": "COADM1A",
+    "navigation": {
+      "CDEMO-FROM-TRANID": "CC00",
+      "CDEMO-FROM-PROGRAM": "COSGN00C",
+      "CDEMO-TO-TRANID": "    ",
+      "CDEMO-TO-PROGRAM": "COADM01C",
+      "CDEMO-USER-ID": "ADMIN001",
+      "CDEMO-USER-TYPE": "A",
+      "CDEMO-PGM-CONTEXT": "1",
+      "CDEMO-CUST-ID": "000000000",
+      "CDEMO-CUST-FNAME": "                         ",
+      "CDEMO-CUST-MNAME": "                         ",
+      "CDEMO-CUST-LNAME": "                         ",
+      "CDEMO-ACCT-ID": "00000000000",
+      "CDEMO-ACCT-STATUS": " ",
+      "CDEMO-CARD-NUM": "0000000000000000",
+      "CDEMO-LAST-MAP": "       ",
+      "CDEMO-LAST-MAPSET": "       "
+    },
+    "sends": [
+      {
+        "fields": {
+          "OPTN001O": "01. User List (Security)                ",
+          "OPTN002O": "02. User Add (Security)                 ",
+          "OPTN003O": "03. User Update (Security)              ",
+          "OPTN004O": "04. User Delete (Security)              ",
+          "OPTN005O": "                                        ",
+          "OPTN006O": "                                        ",
+          "OPTN007O": "                                        ",
+          "OPTN008O": "                                        ",
+          "OPTN009O": "                                        ",
+          "OPTN010O": "                                        ",
+          "OPTN011O": "                                        ",
+          "OPTN012O": "                                        ",
+          "OPTIONO": "  "
+        },
+        "attributes": {
+          "ERRMSGC": "DFHRED"
+        }
+      }
+    ],
+    "termination": "RETURN_TRANSID"
+  },
+  "expectedWrites": [],
+  "expectedFinalState": [],
+  "expectedReturnCode": 0,
+  "expectedMessages": [
+    {
+      "channel": "WS_MESSAGE_80",
+      "text": "                                                                                "
+    }
+  ],
+  "normalisations": []
+}

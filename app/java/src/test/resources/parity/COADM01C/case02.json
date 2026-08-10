@@ -1,0 +1,85 @@
+{
+  "program": "COADM01C",
+  "caseId": "case02",
+  "description": "The first-entry paint at app/cbl/COADM01C.cbl:87-90. CDEMO-PGM-CONTEXT arrives 0, so IF NOT CDEMO-PGM-REENTER is true: line 88 sets CDEMO-PGM-REENTER, line 89 moves LOW-VALUES to COADM1AO and line 90 sends the map. No option is read and no validation runs on this path, which is why OPTIONO comes back blank even though the client typed nothing into it - line 89 cleared it. All twenty COADM1AO fields are pinned, including the POPULATE-HEADER-INFO header at lines 202-221 rendered from the pinned clock, and the four composed menu lines with OPTN005O to OPTN012O left as the spaces BUILD-MENU-OPTIONS never wrote. ERRMSGC keeps the mapset's declared COLOR=RED (app/bms/COADM01.bms:154-157) because line 148 did not run.",
+  "unitKind": "CONTROLLER_POJO",
+  "inputs": {},
+  "screenRequest": {
+    "eibcalen": 160,
+    "aid": "DFHENTER",
+    "pinnedClock": "2022-07-19T23:12:32",
+    "charset": "US-ASCII",
+    "commarea": {
+      "CDEMO-FROM-TRANID": "CC00",
+      "CDEMO-FROM-PROGRAM": "COSGN00C",
+      "CDEMO-TO-PROGRAM": "COADM01C",
+      "CDEMO-USER-ID": "ADMIN001",
+      "CDEMO-USER-TYPE": "A",
+      "CDEMO-PGM-CONTEXT": "0"
+    },
+    "mapFields": {},
+    "forcedOutcomes": {}
+  },
+  "expectedResponse": {
+    "nextMapset": "COADM01",
+    "nextMap": "COADM1A",
+    "navigation": {
+      "CDEMO-FROM-TRANID": "CC00",
+      "CDEMO-FROM-PROGRAM": "COSGN00C",
+      "CDEMO-TO-TRANID": "    ",
+      "CDEMO-TO-PROGRAM": "COADM01C",
+      "CDEMO-USER-ID": "ADMIN001",
+      "CDEMO-USER-TYPE": "A",
+      "CDEMO-PGM-CONTEXT": "1",
+      "CDEMO-CUST-ID": "000000000",
+      "CDEMO-CUST-FNAME": "                         ",
+      "CDEMO-CUST-MNAME": "                         ",
+      "CDEMO-CUST-LNAME": "                         ",
+      "CDEMO-ACCT-ID": "00000000000",
+      "CDEMO-ACCT-STATUS": " ",
+      "CDEMO-CARD-NUM": "0000000000000000",
+      "CDEMO-LAST-MAP": "       ",
+      "CDEMO-LAST-MAPSET": "       "
+    },
+    "sends": [
+      {
+        "fields": {
+          "TRNNAMEO": "CA00",
+          "TITLE01O": "      AWS Mainframe Modernization       ",
+          "CURDATEO": "07/19/22",
+          "PGMNAMEO": "COADM01C",
+          "TITLE02O": "              CardDemo                  ",
+          "CURTIMEO": "23:12:32",
+          "OPTN001O": "01. User List (Security)                ",
+          "OPTN002O": "02. User Add (Security)                 ",
+          "OPTN003O": "03. User Update (Security)              ",
+          "OPTN004O": "04. User Delete (Security)              ",
+          "OPTN005O": "                                        ",
+          "OPTN006O": "                                        ",
+          "OPTN007O": "                                        ",
+          "OPTN008O": "                                        ",
+          "OPTN009O": "                                        ",
+          "OPTN010O": "                                        ",
+          "OPTN011O": "                                        ",
+          "OPTN012O": "                                        ",
+          "OPTIONO": "  ",
+          "ERRMSGO": "                                                                              "
+        },
+        "attributes": {
+          "ERRMSGC": "DFHRED"
+        }
+      }
+    ],
+    "termination": "RETURN_TRANSID"
+  },
+  "expectedWrites": [],
+  "expectedFinalState": [],
+  "expectedReturnCode": 0,
+  "expectedMessages": [
+    {
+      "channel": "SCREEN_ERRMSG_78",
+      "text": "                                                                              "
+    }
+  ],
+  "normalisations": []
+}

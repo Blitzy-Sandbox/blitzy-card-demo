@@ -1,0 +1,86 @@
+{
+  "program": "CBACT03C",
+  "caseId": "case10",
+  "description": "The third READ reports '23', no record found. '23' is a perfectly ordinary branch in the online programs, which test DFHRESP(NOTFND) explicitly, and it is fatal here - which is the whole point of the case. CBACT03C tests exactly two statuses, '00' at :94 and '10' at :98, so a recognised-elsewhere status still reaches :101, still moves 12, and still abends at :113. Eight lines and RETURN-CODE 12. A translation that reused a shared status vocabulary and treated '23' as a benign not-found would silently turn an abend into a clean run.",
+  "unitKind": "BATCH_JOB",
+  "inputs": {
+    "XREFFILE": {
+      "fixture": "cardxref.txt",
+      "fromRow": 10,
+      "rowCount": 4
+    }
+  },
+  "jobParameters": {},
+  "expectedWrites": [],
+  "expectedFinalState": [
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 0,
+      "expectedBytes": "287196825281249000000000600000000006              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 1,
+      "expectedBytes": "294013936230044900000002200000000022              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 2,
+      "expectedBytes": "298809135309431200000000400000000004              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 3,
+      "expectedBytes": "326076361233756000000001000000000010              "
+    }
+  ],
+  "expectedReturnCode": 12,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "START OF EXECUTION OF PROGRAM CBACT03C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "287196825281249000000000600000000006              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "287196825281249000000000600000000006              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "294013936230044900000002200000000022              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "294013936230044900000002200000000022              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ERROR READING XREFFILE"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "FILE STATUS IS: NNNN0023"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ABENDING PROGRAM"
+    }
+  ],
+  "normalisations": [
+    {
+      "dataset": "XREFFILE",
+      "kind": "CARDXREF_FILLER_PAD_36_TO_50"
+    }
+  ],
+  "expectedDatasets": [
+    {
+      "dataset": "XREFFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 4,
+      "recordLength": 50
+    }
+  ]
+}

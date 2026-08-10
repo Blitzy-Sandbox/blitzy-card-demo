@@ -1,0 +1,121 @@
+{
+  "program": "CBACT03C",
+  "caseId": "case14",
+  "description": "The 36-to-50 normalisation, declared and exercised on four rows written out literally at the 36 characters the shipped data measures. This is the case that proves the pad FIRES rather than merely being configured. app/cpy/CVACT03Y.cpy declares 16 + 9 + 11 + FILLER PIC X(14) = 50 bytes, and every row of app/data/ASCII/cardxref.txt is exactly 36 - the filler span is simply absent from the data. The harness refuses a 36-character seed for this dataset unless the case declares CARDXREF_FILLER_PAD_36_TO_50, so deleting the normalisation from this file fails the case immediately and loudly; and each expected line is the row followed by exactly fourteen spaces, so a pad of the wrong width fails it too. CVACT03Y has twelve consumers, which makes a wrong offset found here a codebase-wide signal rather than a local one.",
+  "unitKind": "BATCH_JOB",
+  "inputs": {
+    "XREFFILE": {
+      "rows": [
+        "050002445376574000000005000000000050",
+        "068358619817151600000002700000000027",
+        "092387719324733000000000200000000002",
+        "980558340899658800000004000000000040"
+      ]
+    }
+  },
+  "jobParameters": {},
+  "expectedWrites": [],
+  "expectedFinalState": [
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 0,
+      "fields": {
+        "XREF-CARD-NUM": "0500024453765740",
+        "XREF-CUST-ID": "000000050",
+        "XREF-ACCT-ID": "00000000050",
+        "FILLER": "              "
+      },
+      "expectedBytes": "050002445376574000000005000000000050              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 1,
+      "fields": {
+        "XREF-CARD-NUM": "0683586198171516",
+        "XREF-CUST-ID": "000000027",
+        "XREF-ACCT-ID": "00000000027",
+        "FILLER": "              "
+      },
+      "expectedBytes": "068358619817151600000002700000000027              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 2,
+      "fields": {
+        "XREF-CARD-NUM": "0923877193247330",
+        "XREF-CUST-ID": "000000002",
+        "XREF-ACCT-ID": "00000000002",
+        "FILLER": "              "
+      },
+      "expectedBytes": "092387719324733000000000200000000002              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 3,
+      "fields": {
+        "XREF-CARD-NUM": "9805583408996588",
+        "XREF-CUST-ID": "000000040",
+        "XREF-ACCT-ID": "00000000040",
+        "FILLER": "              "
+      },
+      "expectedBytes": "980558340899658800000004000000000040              "
+    }
+  ],
+  "expectedReturnCode": 0,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "START OF EXECUTION OF PROGRAM CBACT03C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "050002445376574000000005000000000050              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "050002445376574000000005000000000050              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "068358619817151600000002700000000027              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "068358619817151600000002700000000027              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "092387719324733000000000200000000002              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "092387719324733000000000200000000002              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "980558340899658800000004000000000040              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "980558340899658800000004000000000040              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "END OF EXECUTION OF PROGRAM CBACT03C"
+    }
+  ],
+  "normalisations": [
+    {
+      "dataset": "XREFFILE",
+      "kind": "CARDXREF_FILLER_PAD_36_TO_50"
+    }
+  ],
+  "expectedDatasets": [
+    {
+      "dataset": "XREFFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 4,
+      "recordLength": 50
+    }
+  ]
+}

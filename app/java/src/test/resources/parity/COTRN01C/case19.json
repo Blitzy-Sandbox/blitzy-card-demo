@@ -1,0 +1,119 @@
+{
+  "program" : "COTRN01C",
+  "caseId" : "case19",
+  "description" : "The 58-byte CDEMO-CT01-INFO extension, populated in every field, echoed through a successful read. :52-61 declares the extension inside the same 01 group as the 160-byte CARDDEMO-COMMAREA, which is what makes the passed area 218 bytes, and the program never writes any of the six items - so all six must come back exactly as they arrived, including CDEMO-CT01-PAGE-NUM at its full PIC 9(08) width and CDEMO-CT01-NEXT-PAGE-FLG at 'Y'. A translation that folded the extension into the shared commarea, or that dropped the paging fields because this screen does not page, would lose the state COTRN00C needs to repaint its list.",
+  "unitKind" : "CONTROLLER_POJO",
+  "inputs" : {
+    "TRANSACT" : {
+      "rows" : [ "0000000000000001010005POS TERM  GROCERY PURCHASE AT PARITY MARKET WITH A DESCRIPTION THAT OVERFLOWS THE SCREEN FIELD                0000005047G800000001PARITY MARKET NUMBER ONE OF SEVERAL LONG NAMES    SPRINGFIELD MASSACHUSETTS USA                     01103-123441111111111111112022-07-19 23:12:34.1234562022-07-20 01:02:03.654321                    ", "0000000000000002020010ONLINE    REFUND ISSUED BY MERCHANT                                                                           0000000500}800000002PARITY REFUNDS LIMITED                            PORTLAND OREGON                                   97201-000242222222222222222022-07-18 08:00:00.0000012022-07-18 09:30:00.000002                    ", "0000000000000003034444BATCH     LARGE SETTLEMENT                                                                                    1234567891B800000003PARITY SETTLEMENT HOUSE                           NEW YORK NEW YORK                                 10001-000343333333333333332022-07-17 12:00:00.0000032022-07-17 12:00:01.000004                    " ]
+    }
+  },
+  "screenRequest" : {
+    "eibcalen" : 218,
+    "aid" : "DFHENTER",
+    "pinnedClock" : "2022-07-19T23:12:34",
+    "charset" : "US-ASCII",
+    "commarea" : {
+      "CDEMO-PGM-CONTEXT" : "1",
+      "CDEMO-FROM-PROGRAM" : "COTRN00C",
+      "CDEMO-USER-ID" : "USER0001",
+      "CDEMO-USER-TYPE" : "U",
+      "CDEMO-CT01-TRNID-FIRST" : "0000000000000001",
+      "CDEMO-CT01-TRNID-LAST" : "0000000000000003",
+      "CDEMO-CT01-PAGE-NUM" : "00000007",
+      "CDEMO-CT01-NEXT-PAGE-FLG" : "Y",
+      "CDEMO-CT01-TRN-SEL-FLG" : "S",
+      "CDEMO-CT01-TRN-SELECTED" : "0000000000000001"
+    },
+    "mapFields" : {
+      "TRNIDINI" : "0000000000000002"
+    },
+    "forcedOutcomes" : { }
+  },
+  "expectedResponse" : {
+    "nextProgram" : "COTRN01C",
+    "nextMapset" : "COTRN01",
+    "nextMap" : "COTRN1A",
+    "navigation" : {
+      "CDEMO-FROM-TRANID" : "    ",
+      "CDEMO-FROM-PROGRAM" : "COTRN00C",
+      "CDEMO-TO-TRANID" : "    ",
+      "CDEMO-TO-PROGRAM" : "        ",
+      "CDEMO-USER-ID" : "USER0001",
+      "CDEMO-USER-TYPE" : "U",
+      "CDEMO-PGM-CONTEXT" : "1",
+      "CDEMO-CUST-ID" : "000000000",
+      "CDEMO-CUST-FNAME" : "                         ",
+      "CDEMO-CUST-MNAME" : "                         ",
+      "CDEMO-CUST-LNAME" : "                         ",
+      "CDEMO-ACCT-ID" : "00000000000",
+      "CDEMO-ACCT-STATUS" : " ",
+      "CDEMO-CARD-NUM" : "0000000000000000",
+      "CDEMO-LAST-MAP" : "       ",
+      "CDEMO-LAST-MAPSET" : "       ",
+      "CDEMO-CT01-TRNID-FIRST" : "0000000000000001",
+      "CDEMO-CT01-TRNID-LAST" : "0000000000000003",
+      "CDEMO-CT01-PAGE-NUM" : "00000007",
+      "CDEMO-CT01-NEXT-PAGE-FLG" : "Y",
+      "CDEMO-CT01-TRN-SEL-FLG" : "S",
+      "CDEMO-CT01-TRN-SELECTED" : "0000000000000001"
+    },
+    "sends" : [ {
+      "fields" : {
+        "TRNNAMEO" : "CT01",
+        "TITLE01O" : "      AWS Mainframe Modernization       ",
+        "CURDATEO" : "07/19/22",
+        "PGMNAMEO" : "COTRN01C",
+        "TITLE02O" : "              CardDemo                  ",
+        "CURTIMEO" : "23:12:34",
+        "TRNIDINO" : "0000000000000002",
+        "TRNIDO" : "0000000000000002",
+        "CARDNUMO" : "4222222222222222",
+        "TTYPCDO" : "02",
+        "TCATCDO" : "0010",
+        "TRNSRCO" : "ONLINE    ",
+        "TDESCO" : "REFUND ISSUED BY MERCHANT                                   ",
+        "TRNAMTO" : "-00000050.00",
+        "TORIGDTO" : "2022-07-18",
+        "TPROCDTO" : "2022-07-18",
+        "MIDO" : "800000002",
+        "MNAMEO" : "PARITY REFUNDS LIMITED        ",
+        "MCITYO" : "PORTLAND OREGON          ",
+        "MZIPO" : "97201-0002",
+        "ERRMSGO" : "                                                                              "
+      },
+      "attributes" : { }
+    } ],
+    "cursorField" : "TRNIDINL",
+    "termination" : "RETURN_TRANSID"
+  },
+  "expectedWrites" : [ ],
+  "expectedFinalState" : [ {
+    "dataset" : "TRANSACT",
+    "rowIndex" : 0,
+    "expectedBytes" : "0000000000000001010005POS TERM  GROCERY PURCHASE AT PARITY MARKET WITH A DESCRIPTION THAT OVERFLOWS THE SCREEN FIELD                0000005047G800000001PARITY MARKET NUMBER ONE OF SEVERAL LONG NAMES    SPRINGFIELD MASSACHUSETTS USA                     01103-123441111111111111112022-07-19 23:12:34.1234562022-07-20 01:02:03.654321                    "
+  }, {
+    "dataset" : "TRANSACT",
+    "rowIndex" : 1,
+    "expectedBytes" : "0000000000000002020010ONLINE    REFUND ISSUED BY MERCHANT                                                                           0000000500}800000002PARITY REFUNDS LIMITED                            PORTLAND OREGON                                   97201-000242222222222222222022-07-18 08:00:00.0000012022-07-18 09:30:00.000002                    "
+  }, {
+    "dataset" : "TRANSACT",
+    "rowIndex" : 2,
+    "expectedBytes" : "0000000000000003034444BATCH     LARGE SETTLEMENT                                                                                    1234567891B800000003PARITY SETTLEMENT HOUSE                           NEW YORK NEW YORK                                 10001-000343333333333333332022-07-17 12:00:00.0000032022-07-17 12:00:01.000004                    "
+  } ],
+  "expectedReturnCode" : 0,
+  "expectedMessages" : [ {
+    "channel" : "WS_MESSAGE_80",
+    "text" : "                                                                                "
+  }, {
+    "channel" : "SCREEN_ERRMSG_78",
+    "text" : "                                                                              "
+  } ],
+  "normalisations" : [ ],
+  "expectedDatasets" : [ {
+    "dataset" : "TRANSACT",
+    "channel" : "FINAL_STATE",
+    "rowCount" : 3,
+    "recordLength" : 350
+  } ]
+}

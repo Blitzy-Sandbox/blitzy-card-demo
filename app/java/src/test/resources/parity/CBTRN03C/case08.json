@@ -1,0 +1,65 @@
+{
+  "program": "CBTRN03C",
+  "caseId": "case08",
+  "description": "An out-of-range record in first position, which is defect 1 firing before anything has been written. The record's TRAN-PROC-TS begins 2021-12-31, below WS-START-DATE, so the range test at :173-174 fails on the very first pass and NEXT SENTENCE leaves the loop before 1100-WRITE-TRANSACTION-REPORT has ever run. No header, no detail, no total: TRANREPT is created by 0100-REPTFILE-OPEN and closed by 9100-REPTFILE-CLOSE holding nothing, which is a state no row-level expectation can describe and which the dataset-level expectation of zero rows at 133 bytes asserts instead. RETURN-CODE is 0 - an empty report is not an error here.",
+  "unitKind": "BATCH_JOB",
+  "inputs": {
+    "TRANFILE": {
+      "rows": [
+        "TRN0000000000001010001POS TERM  A statically derived fixture transaction                                                            0000000999I999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402021-12-31-11.22.33.4444442021-12-31-11.22.33.444444                    "
+      ]
+    },
+    "CARDXREF": {
+      "fixture": "cardxref.txt"
+    },
+    "TRANTYPE": {
+      "fixture": "trantype.txt"
+    },
+    "TRANCATG": {
+      "fixture": "trancatg.txt"
+    },
+    "DATEPARM": {
+      "rows": [
+        "2022-01-01 2022-07-06                                                           "
+      ]
+    }
+  },
+  "jobParameters": {},
+  "expectedWrites": [],
+  "expectedFinalState": [],
+  "expectedReturnCode": 0,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "START OF EXECUTION OF PROGRAM CBTRN03C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "Reporting from 2022-01-01 to 2022-07-06"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "END OF EXECUTION OF PROGRAM CBTRN03C"
+    }
+  ],
+  "normalisations": [
+    {
+      "dataset": "CARDXREF",
+      "kind": "CARDXREF_FILLER_PAD_36_TO_50"
+    }
+  ],
+  "expectedDatasets": [
+    {
+      "dataset": "TRANREPT",
+      "channel": "WRITES",
+      "rowCount": 0,
+      "recordLength": 133
+    },
+    {
+      "dataset": "TRANREPT",
+      "channel": "FINAL_STATE",
+      "rowCount": 0,
+      "recordLength": 133
+    }
+  ]
+}

@@ -1,0 +1,79 @@
+{
+  "program": "CBSTM03B",
+  "caseId": "case14",
+  "description": "INVALID KEY on ACCTFILE, stated so that 'the record area is returned unchanged' is actually asserted rather than merely satisfied by accident. A successful keyed read puts a 300-byte account row into LK-M03B-FLDT; the caller then issues a second keyed read for account 00000000099 WITHOUT clearing the area, and the '23' that comes back is accompanied by the previous account row still intact. A translation that blanked the area, or returned a partially built record, would be reported here and nowhere else in this program's twenty cases.",
+  "unitKind": "COMPONENT",
+  "inputs": {
+    "ACCTFILE": {
+      "fixture": "acctdata.txt",
+      "fromRow": 9,
+      "rowCount": 3
+    }
+  },
+  "jobParameters": {},
+  "screenRequest": null,
+  "expectedResponse": null,
+  "expectedWrites": [
+    {
+      "dataset": "M03BAREA",
+      "rowIndex": 0,
+      "fields": {
+        "LK-M03B-DD": "ACCTFILE",
+        "LK-M03B-OPER": "O",
+        "LK-M03B-RC": "00"
+      },
+      "expectedBytes": "ACCTFILEO00                         000{                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        "
+    },
+    {
+      "dataset": "M03BAREA",
+      "rowIndex": 1,
+      "fields": {
+        "LK-M03B-DD": "ACCTFILE",
+        "LK-M03B-OPER": "K",
+        "LK-M03B-RC": "00"
+      },
+      "expectedBytes": "ACCTFILEK0000000000011              001A00000000011Y00000002120{00000049980{00000031750{2014-09-122025-03-122025-03-1200000000000{00000000000{A000000000                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        "
+    },
+    {
+      "dataset": "M03BAREA",
+      "rowIndex": 2,
+      "fields": {
+        "LK-M03B-DD": "ACCTFILE",
+        "LK-M03B-OPER": "K",
+        "LK-M03B-RC": "23"
+      },
+      "expectedBytes": "ACCTFILEK2300000000099              001A00000000011Y00000002120{00000049980{00000031750{2014-09-122025-03-122025-03-1200000000000{00000000000{A000000000                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        "
+    }
+  ],
+  "expectedFinalState": [
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 0,
+      "fields": {},
+      "expectedBytes": "00000000010Y00000001590{00000054010{00000044420{2015-09-132023-01-272023-01-2700000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 1,
+      "fields": {},
+      "expectedBytes": "00000000011Y00000002120{00000049980{00000031750{2014-09-122025-03-122025-03-1200000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 2,
+      "fields": {},
+      "expectedBytes": "00000000012Y00000001760{00000046360{00000003880{2009-06-172023-07-072023-07-0700000000000{00000000000{A000000000                                                                                                                                                                                            "
+    }
+  ],
+  "expectedReturnCode": 0,
+  "expectedMessages": [],
+  "normalisations": [],
+  "expectedDatasets": [
+    {
+      "dataset": "M03BAREA",
+      "channel": "WRITES",
+      "rowCount": 3,
+      "recordLength": 1040
+    }
+  ]
+}

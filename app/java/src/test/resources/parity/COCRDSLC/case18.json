@@ -1,0 +1,147 @@
+{
+  "program": "COCRDSLC",
+  "caseId": "case18",
+  "description": "Two behaviours in one invocation, and they compose. First the PF13 fold: CSSTRPFY L54-55 maps DFHPF13 to CCARD-AID-PFK01, not to PFK13 - the copybook enumerates PF13 through PF24 back onto PFK01 through PFK12 - and PFK01 is not one of the two valid keys, so :298 coerces it to ENTER. Second the discard at :268-270: CDEMO-FROM-PROGRAM is 'COMEN01C' and CDEMO-PGM-REENTER is false, so INITIALIZE CARDDEMO-COMMAREA throws away the account and card the caller sent. EIBCALEN is 172, so 1200 takes its ELSE at :461 and reads the INITIALIZEd commarea, where CDEMO-ACCT-ID and CDEMO-CARD-NUM are zero - which is why both criterion fields are LOW-VALUES rather than the caller's values.",
+  "unitKind": "CONTROLLER_POJO",
+  "inputs": {
+    "CARDDAT": {
+      "fixture": "carddata.txt",
+      "fromRow": 0,
+      "rowCount": 3
+    }
+  },
+  "screenRequest": {
+    "eibcalen": 172,
+    "aid": "DFHPF13",
+    "pinnedClock": "2022-07-19T23:12:33",
+    "charset": "US-ASCII",
+    "commarea": {
+      "CDEMO-FROM-TRANID": "CM00",
+      "CDEMO-FROM-PROGRAM": "COMEN01C",
+      "CDEMO-TO-TRANID": "    ",
+      "CDEMO-TO-PROGRAM": "        ",
+      "CDEMO-USER-ID": "ADMIN001",
+      "CDEMO-USER-TYPE": "A",
+      "CDEMO-PGM-CONTEXT": "0",
+      "CDEMO-CUST-ID": "000000000",
+      "CDEMO-CUST-FNAME": "                         ",
+      "CDEMO-CUST-MNAME": "                         ",
+      "CDEMO-CUST-LNAME": "                         ",
+      "CDEMO-ACCT-ID": "00000000050",
+      "CDEMO-ACCT-STATUS": " ",
+      "CDEMO-CARD-NUM": "0500024453765740",
+      "CDEMO-LAST-MAP": "COMEN1A",
+      "CDEMO-LAST-MAPSET": "COMEN01"
+    },
+    "mapFields": {
+      "CARDSIDI": "0500024453765740"
+    },
+    "forcedOutcomes": {}
+  },
+  "expectedResponse": {
+    "nextMapset": "COCRDSL",
+    "nextMap": "CCRDSLA",
+    "navigation": {
+      "CDEMO-FROM-TRANID": "    ",
+      "CDEMO-FROM-PROGRAM": "        ",
+      "CDEMO-TO-TRANID": "    ",
+      "CDEMO-TO-PROGRAM": "        ",
+      "CDEMO-USER-ID": "        ",
+      "CDEMO-USER-TYPE": " ",
+      "CDEMO-PGM-CONTEXT": "1",
+      "CDEMO-CUST-ID": "000000000",
+      "CDEMO-CUST-FNAME": "                         ",
+      "CDEMO-CUST-MNAME": "                         ",
+      "CDEMO-CUST-LNAME": "                         ",
+      "CDEMO-ACCT-ID": "00000000000",
+      "CDEMO-ACCT-STATUS": " ",
+      "CDEMO-CARD-NUM": "0000000000000000",
+      "CDEMO-LAST-MAP": "       ",
+      "CDEMO-LAST-MAPSET": "       "
+    },
+    "sends": [
+      {
+        "fields": {
+          "TRNNAMEO": "CCDL",
+          "TITLE01O": "      AWS Mainframe Modernization       ",
+          "CURDATEO": "07/19/22",
+          "PGMNAMEO": "COCRDSLC",
+          "TITLE02O": "              CardDemo                  ",
+          "CURTIMEO": "23:12:33",
+          "ACCTSIDO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "CARDSIDO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "CRDNAMEO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "CRDSTCDO": "\u0000",
+          "EXPMONO": "\u0000\u0000",
+          "EXPYEARO": "\u0000\u0000\u0000\u0000",
+          "INFOMSGO": "Please enter Account and Card Number    ",
+          "ERRMSGO": "                                                                                ",
+          "FKEYSO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000"
+        },
+        "attributes": {
+          "TRNNAMEC": "DFHDFCOL",
+          "TITLE01C": "DFHDFCOL",
+          "CURDATEC": "DFHDFCOL",
+          "PGMNAMEC": "DFHDFCOL",
+          "TITLE02C": "DFHDFCOL",
+          "CURTIMEC": "DFHDFCOL",
+          "ACCTSIDC": "DFHDFCOL",
+          "CARDSIDC": "DFHDFCOL",
+          "CRDNAMEC": "DFHDFCOL",
+          "CRDSTCDC": "DFHDFCOL",
+          "EXPMONC": "DFHDFCOL",
+          "EXPYEARC": "DFHDFCOL",
+          "INFOMSGC": "DFHNEUTR",
+          "ERRMSGC": "DFHDFCOL",
+          "FKEYSC": "DFHDFCOL",
+          "TRNNAMEH": "DFHDFHI",
+          "TITLE01H": "DFHDFHI",
+          "CURDATEH": "DFHDFHI",
+          "PGMNAMEH": "DFHDFHI",
+          "TITLE02H": "DFHDFHI",
+          "CURTIMEH": "DFHDFHI",
+          "ACCTSIDH": "DFHDFHI",
+          "CARDSIDH": "DFHDFHI",
+          "CRDNAMEH": "DFHDFHI",
+          "CRDSTCDH": "DFHDFHI",
+          "EXPMONH": "DFHDFHI",
+          "EXPYEARH": "DFHDFHI",
+          "INFOMSGH": "DFHDFHI",
+          "ERRMSGH": "DFHDFHI",
+          "FKEYSH": "DFHDFHI"
+        }
+      }
+    ],
+    "cursorField": "ACCTSIDL",
+    "termination": "RETURN_TRANSID"
+  },
+  "expectedWrites": [],
+  "expectedFinalState": [
+    {
+      "dataset": "CARDDAT",
+      "rowIndex": 0,
+      "expectedBytes": "050002445376574000000000050747Aniya Von                                         2023-03-09Y                                                           "
+    },
+    {
+      "dataset": "CARDDAT",
+      "rowIndex": 1,
+      "expectedBytes": "068358619817151600000000027567Ward Jones                                        2025-07-13Y                                                           "
+    },
+    {
+      "dataset": "CARDDAT",
+      "rowIndex": 2,
+      "expectedBytes": "092387719324733000000000002028Enrico Rosenbaum                                  2024-08-11Y                                                           "
+    }
+  ],
+  "expectedReturnCode": 0,
+  "expectedMessages": [],
+  "normalisations": [],
+  "expectedDatasets": [
+    {
+      "dataset": "CARDDAT",
+      "channel": "FINAL_STATE",
+      "rowCount": 3,
+      "recordLength": 150
+    }
+  ]
+}

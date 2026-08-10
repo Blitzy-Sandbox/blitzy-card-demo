@@ -7,9 +7,11 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -47,14 +49,73 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.mock.web.MockHttpServletResponse;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
 /**
  * {@link CardSelectController} - the {@code COCRDSLC} / {@code CCDL} credit-card detail screen.
+ *
+ * <p><strong>The unit and where it comes from.</strong> Program {@code app/cbl/COCRDSLC.cbl}, 887 lines,
+ * reached through CICS transaction {@code CCDL} - {@code DEFINE TRANSACTION(CCDL)} at
+ * {@code app/csd/CARDDEMO.CSD:347}, routed to {@code PROGRAM(COCRDSLC)} by the {@code TRANSID(CCDL)} at
+ * {@code :223}. Its screen is mapset {@code COCRDSL} ({@code app/bms/COCRDSL.bms}), map {@code CCRDSLA},
+ * and its symbolic map is {@code app/cpy-bms/COCRDSL.CPY}. Those four names - program, transaction, mapset
+ * and map - are the whole provenance of every expectation below.
+ *
+ * <p><strong>The class name diverges from the behaviour, deliberately (rule R1, AAP §0.8.4).</strong> The
+ * migration plan mandates the name {@code CardSelectController}; the source's own header reads
+ * "Function: Accept and process credit card detail request" ({@code app/cbl/COCRDSLC.cbl:4}), and
+ * {@code README.md:L213-231} documents {@code CCDL} as a <em>view</em>. So this is a <strong>detail
+ * view</strong>, not a selector: it takes one card number, reads one record and paints one screen. Rule R1
+ * settles the tension in one direction only - <em>the name comes from the plan, the behaviour comes from
+ * the source</em> - which means nothing here tests a "select" capability, because the program has none, and
+ * the class is not renamed either. It is one of sixteen catalogued divergences, and the register exists
+ * precisely so no reader is misled by a class name.
+ *
+ * <p><strong>No user rules govern this file.</strong> {@code review_rules} answers with exactly one line -
+ * "No user rules provided" - and that line is the entire document. Their absence is not licence to lower
+ * the bar: the binding standard is enterprise best practice as the plan codifies it in AAP §0.10.2
+ * <strong>B1-B12</strong>, together with the absolutes of §0.8.9. The practices that actually bite
+ * here are <strong>B1/B2</strong> (nothing outside the closed test stack, no version literal anywhere),
+ * <strong>B3</strong> (the COBOL, copybooks, BMS and CSD are cited as the contract and never read at
+ * runtime), <strong>B4</strong> (conflicts are documented, never silently resolved), <strong>B5</strong>
+ * (defects and dead code are preserved and pinned), <strong>B6</strong> (no card number, account id or
+ * customer id is masked, including in failure text), <strong>B7</strong> (a fixed {@link Clock}, so the
+ * screen is reproducible), <strong>B8</strong> (no wildcard import, an explicit {@link Charset}, no
+ * dataset name), <strong>B9</strong> (no static mutable state) and <strong>B11</strong> (widths
+ * asserted against the symbolic map, never by reflective deep-equality).
+ *
+ * <p><strong>The gates this file answers for.</strong> <strong>G9</strong> every payload member traces to a
+ * named {@code DFHMDF} field, at the width its {@code xxxI}/{@code xxxO} item declares;
+ * <strong>G30</strong> the five {@code WHEN}s run in source order with {@code WHEN OTHER} last;
+ * <strong>G34</strong> the three {@code CVCRD01Y} {@code REDEFINES} pairs round-trip over one backing span;
+ * <strong>G37</strong> no server-side session state;
+ * <strong>G38</strong> both {@code ENTER} and {@code REENTER}, with the error mark applied only on
+ * re-entry; <strong>G40</strong> the single {@code XCTL} site resolves to a {@code nextProgram} response
+ * field; <strong>G45</strong> {@code CARDAIX} is a second finder on the base repository, never a second
+ * table; <strong>G47</strong> every {@link FileStatus} outcome is driven at each call site;
+ * <strong>G50</strong> both states of every {@code 88}-level this program touches;
+ * <strong>G51</strong> decisions are asserted where they live, with no servlet layer in the path;
+ * <strong>G52</strong> no wildcard imports; <strong>G53</strong> no static mutable state; and
+ * <strong>G54</strong> the suite runs non-interactively.
+ *
+ * <p><strong>The preserved defect, named up front.</strong> {@code COCRDSLC:177-178} declares
+ * {@code LIT-CCLISTMAP PIC X(7) VALUE 'CCRDSLA'} - the literal that is supposed to name the <em>card
+ * list</em> program's map, holding <em>this</em> program's map instead. The card list's own map is
+ * {@code 'CCRDLIA'} ({@code app/cbl/COCRDLIC.cbl:185-186}), and the sibling literal
+ * {@code LIT-CCLISTMAPSET} at {@code :175-176} is correctly {@code 'COCRDLI'} - so only the map literal is
+ * wrong. It is preserved verbatim (practice <strong>B5</strong>) and pinned by
+ * {@code cclistmapKeepsItsDefect()}: correcting it would be an unrequested behaviour change. The defect is
+ * <em>latent</em>, and that is a measured fact rather than a hope - a search of the program for
+ * {@code LIT-CCLISTMAP} finds only the declaration at {@code :177}, because the two comparisons at
+ * {@code :505} and {@code :527} both read {@code LIT-CCLISTMAPSET}. No paragraph reads the wrong value, so
+ * nothing observable depends on it today, and it must still not be tidied away.
  *
  * <p>Every test that asserts a <em>decision</em> instantiates the controller <strong>directly</strong>
  * with a mocked {@link CardRepository} and a fixed {@link Clock}. There is no Spring context, no
@@ -646,9 +707,15 @@ class CardSelectControllerTest {
         }
 
         @ParameterizedTest(name = "AID {0} is silently COERCED to ENTER, never rejected")
-        @ValueSource(strings = {"PFK12", "CLEAR", "PA1  ", "PA2  ", "PFK01", "     "})
+        @ValueSource(strings = {"PFK12", "CLEAR", "PA1  ", "PA2  ", "PFK01", "PFK07", "PFK08",
+                "     "})
         @DisplayName("every other key becomes ENTER - the least obvious behaviour in the program")
         void invalidKeysAreCoercedToEnter(String token) {
+            // PFK07 and PFK08 are in this list on purpose. The CARD LIST program accepts them - they
+            // are its page-backward and page-forward keys - and this program does not: :292-293 tests
+            // CCARD-AID-ENTER and CCARD-AID-PFK03 and nothing else, which is a NARROWER valid set than
+            // the sibling screen's. An operator who pages on the list and then presses the same key on
+            // the detail screen gets a repaint, not a page and not an error.
             Conversation task = initialisedTask(NavigationContext.empty());
             task.ccWorkArea.setCcardAid(token);
 
@@ -657,6 +724,56 @@ class CardSelectControllerTest {
             assertThat(task.ccWorkArea.isCcardAidEnter()).isTrue();
             // :297-299 rewrites the AID and NOT the flag, so the flag is left reading INVALID.
             assertThat(task.pfkInvalid()).isTrue();
+        }
+
+        @Test
+        @DisplayName("PF13-PF24 FOLD onto PFK01-PFK12, so PF15 exits and PF19 and PF20 repaint")
+        void theHighFunctionKeysFoldOntoTheLowTokens() {
+            // CSSTRPFY.cpy L54-77 gives the upper twelve function keys the SAME twelve tokens as the
+            // lower twelve, which is why this program - whose whole AID vocabulary is those tokens -
+            // treats PF15 exactly as it treats PF3. Enumerated rather than computed, because the
+            // copybook enumerates it: the fold is data, and a modular-arithmetic shortcut here would
+            // stop being a translation of the source and start being a guess about it.
+            byte[] upper = {CicsAid.DFHPF13, CicsAid.DFHPF14, CicsAid.DFHPF15, CicsAid.DFHPF16,
+                    CicsAid.DFHPF17, CicsAid.DFHPF18, CicsAid.DFHPF19, CicsAid.DFHPF20,
+                    CicsAid.DFHPF21, CicsAid.DFHPF22, CicsAid.DFHPF23, CicsAid.DFHPF24};
+            byte[] lower = {CicsAid.DFHPF1, CicsAid.DFHPF2, CicsAid.DFHPF3, CicsAid.DFHPF4,
+                    CicsAid.DFHPF5, CicsAid.DFHPF6, CicsAid.DFHPF7, CicsAid.DFHPF8,
+                    CicsAid.DFHPF9, CicsAid.DFHPF10, CicsAid.DFHPF11, CicsAid.DFHPF12};
+
+            for (int index = 0; index < upper.length; index++) {
+                Conversation high = initialisedTask(NavigationContext.empty());
+                Conversation low = initialisedTask(NavigationContext.empty());
+
+                controller.storePfKeyYYYY(high, upper[index]);
+                controller.storePfKeyYYYY(low, lower[index]);
+
+                // The two bytes are different keys on the keyboard and one token in the work area.
+                assertThat(upper[index]).isNotEqualTo(lower[index]);
+                assertThat(high.ccWorkArea.getCcardAid())
+                        .as("PF%d and PF%d must store one token", index + 13, index + 1)
+                        .isEqualTo(low.ccWorkArea.getCcardAid())
+                        .hasSize(PfKeyResolver.AID_TOKEN_LENGTH);
+            }
+
+            // And the fold reaches the decision, not just the work area. PF15 folds onto PFK03, so it
+            // is one of the two keys :292-293 accepts and it is NOT rewritten.
+            Conversation pf15 = initialisedTask(NavigationContext.empty());
+            controller.storePfKeyYYYY(pf15, CicsAid.DFHPF15);
+            controller.coerceInvalidAid(pf15);
+            assertThat(pf15.ccWorkArea.isCcardAidPfk03()).isTrue();
+            assertThat(pf15.pfkValid()).isTrue();
+
+            // PF19 and PF20 fold onto PFK07 and PFK08 - the card list's paging keys, which this screen
+            // does not accept - so both become ENTER and repaint. Asserted here rather than left to the
+            // coercion table above, so this test proves everything its name claims.
+            for (byte paging : new byte[] {CicsAid.DFHPF19, CicsAid.DFHPF20}) {
+                Conversation task = initialisedTask(NavigationContext.empty());
+                controller.storePfKeyYYYY(task, paging);
+                controller.coerceInvalidAid(task);
+                assertThat(task.ccWorkArea.isCcardAidEnter()).isTrue();
+                assertThat(task.pfkInvalid()).isTrue();
+            }
         }
     }
 
@@ -1314,6 +1431,209 @@ class CardSelectControllerTest {
             assertThat(task.wsReturnMsg).startsWith("File Error: READ     on CARDAIX  ");
             assertThat(task.flgAcctfilterNotOk()).isTrue();
         }
+
+        @Test
+        @DisplayName("CARDAIX is a SECOND FINDER over the SAME 150 bytes, never a second table (G45)")
+        void theAlternateIndexIsAPathOverTheSameCluster() {
+            // app/csd/CARDDEMO.CSD:13-14 defines FILE(CARDAIX) over the card data cluster's
+            // .VSAM.AIX.PATH, and :25-26 defines FILE(CARDDAT) over the .VSAM.KSDS itself. A PATH is an
+            // access route, not a copy: the same record, reached by a different key. The industry default
+            // for this shape is two tables joined by an account column, and the plan forbids it outright
+            // (no schema change, gate G45), so what has to be provable is that both routes land on one
+            // row - and the strongest available statement of that is that all 150 bytes agree.
+            CardRecord row = card();
+            String image = row.encodeToImage(CHARSET);
+            assertThat(image).hasSize(CardRecord.RECORD_LENGTH);
+
+            // Route one: the base cluster, keyed on the sixteen-character card number - 9100's read.
+            when(repository.readByCardNumber(CARD_NUMBER)).thenReturn(cardRead(row));
+            Conversation byCard = initialisedTask(NavigationContext.empty());
+            byCard.ccWorkArea.setCcCardNum(CARD_NUMBER);
+            controller.getCardByAcctCard9100(byCard);
+            CardRecord fromBase = byCard.cardRecord.orElseThrow();
+
+            // Route two: the alternate-index path, keyed on THAT record's own eleven-digit account id -
+            // 9150's read. The key is taken from the row the first read returned rather than restated,
+            // so the two routes are provably asking for the same row and not two coincidentally equal
+            // ones.
+            String alternateKey = fromBase.cardAcctIdImage(new FixedWidthCodec(CHARSET));
+            assertThat(alternateKey).hasSize(11).isEqualTo("00000000011");
+            when(repository.readByAccountIdViaAltIndex(alternateKey)).thenReturn(cardRead(row));
+            Conversation byAccount = initialisedTask(NavigationContext.empty());
+            byAccount.wsCardRidAcctId = alternateKey;
+            controller.getCardByAcct9150(byAccount);
+            CardRecord fromPath = byAccount.cardRecord.orElseThrow();
+
+            // Byte-for-byte, the whole record - not field-by-field equality, which a second table with
+            // the same columns would also satisfy.
+            assertThat(fromPath.encodeToImage(CHARSET))
+                    .hasSize(CardRecord.RECORD_LENGTH)
+                    .isEqualTo(fromBase.encodeToImage(CHARSET))
+                    .isEqualTo(image);
+
+            // ONE repository served both reads: these are the only two interactions, and they are on the
+            // single instance the constructor took. A second dataset would have needed a second
+            // collaborator, and Construction.everyCollaboratorIsRequired pins that there is exactly one.
+            verify(repository).readByCardNumber(CARD_NUMBER);
+            verify(repository).readByAccountIdViaAltIndex(alternateKey);
+            verifyNoMoreInteractions(repository);
+
+            // And the two CICS file names are what the source names at :187-190 - a base and a path over
+            // it, eight characters each, carrying no dataset name into Java (gate G46).
+            assertThat(CardSelectController.LIT_CARDFILENAME)
+                    .isEqualTo(CardRepository.BASE_CICS_FILE_NAME);
+            assertThat(CardSelectController.LIT_CARDFILENAME_ACCT_PATH)
+                    .isEqualTo(CardRepository.ALTERNATE_INDEX_CICS_FILE_NAME);
+            assertThat(CardRepository.BASE_DD_NAME).isEqualTo("CARDDAT");
+            assertThat(CardRepository.ALTERNATE_INDEX_DD_NAME).isEqualTo("CARDAIX");
+        }
+    }
+
+    /**
+     * The three {@code REDEFINES} pairs of {@code app/cpy/CVCRD01Y.cpy} - gate <strong>G34</strong>.
+     *
+     * <p>{@code CC-ACCT-ID X(11)} / {@code CC-ACCT-ID-N 9(11)},
+     * {@code CC-CARD-NUM X(16)} / {@code CC-CARD-NUM-N 9(16)} and
+     * {@code CC-CUST-ID X(09)} / {@code CC-CUST-ID-N 9(9)}. Three, not one: the migration plan's §0.3.3
+     * mentions only the account pair, and the copybook declares all three, each with {@code VALUE SPACES}
+     * on the alphanumeric side.
+     *
+     * <p>The point of a {@code REDEFINES} is that there is <strong>one span of bytes and two ways to read
+     * it</strong>. Two of the three are written through their numeric side by the from-the-card-list arm at
+     * {@code app/cbl/COCRDSLC.cbl:342-343}, and read back through their alphanumeric side by
+     * {@code 1200-SETUP-SCREEN-VARS} at {@code :465} and {@code :471} - so if the two views were separate
+     * storage with a conversion between them, the screen would show whatever the conversion produced rather
+     * than the bytes the {@code MOVE} left. That is the failure this group exists to rule out.
+     */
+    @Nested
+    @DisplayName("The three CVCRD01Y REDEFINES pairs - one span, two views (gate G34)")
+    class WorkAreaRedefines {
+
+        @Test
+        @DisplayName("a write through the NUMERIC view is visible byte-for-byte through the CHARACTER view")
+        void theNumericWriteIsVisibleAsCharacters() {
+            CardScreenState workArea = new CardScreenState();
+
+            // MOVE CDEMO-ACCT-ID TO CC-ACCT-ID-N  (:342) - PIC 9(11), so zero-filled on the LEFT.
+            workArea.setCcAcctIdN(11L);
+            assertThat(workArea.getCcAcctId()).isEqualTo("00000000011").hasSize(11);
+
+            // MOVE CDEMO-CARD-NUM TO CC-CARD-NUM-N (:343) - PIC 9(16), same rule at its own width.
+            workArea.setCcCardNumN(Long.parseLong(CARD_NUMBER));
+            assertThat(workArea.getCcCardNum()).isEqualTo(CARD_NUMBER).hasSize(16);
+
+            // The third pair, which this program never writes but the copybook still declares.
+            workArea.setCcCustIdN(9L);
+            assertThat(workArea.getCcCustId()).isEqualTo("000000009").hasSize(9);
+        }
+
+        @Test
+        @DisplayName("a write through the CHARACTER view is visible through the NUMERIC view, unconverted")
+        void theCharacterWriteIsVisibleAsANumber() {
+            CardScreenState workArea = new CardScreenState();
+
+            workArea.setCcAcctId("00000000011");
+            workArea.setCcCardNum(CARD_NUMBER);
+            workArea.setCcCustId("000000009");
+
+            assertThat(workArea.getCcAcctIdN()).isEqualTo(11L);
+            assertThat(workArea.getCcCardNumN()).isEqualTo(Long.parseLong(CARD_NUMBER));
+            assertThat(workArea.getCcCustIdN()).isEqualTo(9L);
+
+            // Round trip: the characters that went in are the characters that come back out. A conversion
+            // step would show itself here as a re-formatted value.
+            assertThat(workArea.getCcAcctId()).isEqualTo("00000000011");
+            assertThat(workArea.getCcCardNum()).isEqualTo(CARD_NUMBER);
+            assertThat(workArea.getCcCustId()).isEqualTo("000000009");
+        }
+
+        @Test
+        @DisplayName("it is a REINTERPRETATION, not a parse: the span keeps bytes no number could hold")
+        void theSpanIsNotANumberInDisguise() {
+            CardScreenState workArea = new CardScreenState();
+
+            // The character view stores non-digits verbatim, at the declared width. An implementation that
+            // kept a long and rendered it on demand could not do this at all - which is the whole reason
+            // the source can test IS NOT NUMERIC at :665 and :706 and get a useful answer.
+            workArea.setCcAcctId("0000000001A");
+            assertThat(workArea.getCcAcctId()).isEqualTo("0000000001A").hasSize(11);
+            assertThat(workArea.isCcAcctIdNumeric()).isFalse();
+
+            // And the numeric view over those same bytes refuses rather than coercing them to 1 or 0.
+            // The COBOL never reaches it in this state, because :665 tests IS NOT NUMERIC first and
+            // leaves through 2210-EDIT-ACCOUNT-EXIT; the refusal is what keeps a silent coercion from
+            // being possible if that ordering were ever disturbed.
+            assertThatThrownBy(workArea::getCcAcctIdN)
+                    .isInstanceOf(IllegalArgumentException.class);
+
+            // The character view also refuses a value wider than its PICTURE rather than truncating it
+            // into a different account.
+            assertThatThrownBy(() -> workArea.setCcAcctId("000000000111"))
+                    .isInstanceOf(IllegalArgumentException.class);
+        }
+
+        @Test
+        @DisplayName("VALUE SPACES is the initial state of all three, and the guard chain tests it FIRST")
+        void theInitialStateIsSpacesOnEveryPair() {
+            CardScreenState workArea = new CardScreenState();
+
+            // 004400-004900: each alphanumeric side carries VALUE SPACES, so an untouched work area holds
+            // its width in spaces - not LOW-VALUES, and not zeros.
+            assertThat(workArea.getCcAcctId()).isEqualTo(" ".repeat(11));
+            assertThat(workArea.getCcCardNum()).isEqualTo(" ".repeat(16));
+            assertThat(workArea.getCcCustId()).isEqualTo(" ".repeat(9));
+            assertThat(workArea.isCcAcctIdSpaces()).isTrue();
+            assertThat(workArea.isCcCardNumSpaces()).isTrue();
+            assertThat(workArea.isCcAcctIdLowValues()).isFalse();
+
+            // Reading a numeric view over spaces is undefined on the mainframe, which is exactly why
+            // 2210-EDIT-ACCOUNT tests the two CHARACTER states first - "IF CC-ACCT-ID EQUAL LOW-VALUES OR
+            // CC-ACCT-ID EQUAL SPACES OR CC-ACCT-ID-N EQUAL ZEROS" at :651-653 - and leaves through
+            // 2210-EDIT-ACCOUNT-EXIT before the numeric arm can matter. The order is the safety property,
+            // so it is asserted as an order: the space test answers true while the numeric test is still
+            // untried.
+            assertThat(workArea.isCcAcctIdSpaces()).isTrue();
+            assertThat(workArea.isCcCardNumSpaces()).isTrue();
+        }
+
+        @Test
+        @DisplayName("LOW-VALUES is a THIRD distinguishable state, and the source tests it separately")
+        void lowValuesIsItsOwnState() {
+            CardScreenState workArea = new CardScreenState();
+
+            // MOVE LOW-VALUES TO CC-ACCT-ID (:617) and TO CC-CARD-NUM (:624).
+            workArea.setCcAcctIdToLowValues();
+            workArea.setCcCardNumToLowValues();
+
+            assertThat(workArea.isCcAcctIdLowValues()).isTrue();
+            assertThat(workArea.isCcAcctIdSpaces()).isFalse();
+            assertThat(workArea.isCcCardNumLowValues()).isTrue();
+            assertThat(workArea.isCcCardNumSpaces()).isFalse();
+            // Distinguishable in the bytes, not merely in a flag.
+            assertThat(workArea.getCcAcctId()).isEqualTo(CardScreenState.lowValues(11))
+                    .isNotEqualTo(" ".repeat(11));
+        }
+
+        @Test
+        @DisplayName("the from-the-card-list arm writes TWO of the three pairs, and the screen reads them "
+                + "back through the character view")
+        void theDispatcherWritesThroughTheNumericViewAndTheScreenReadsTheCharacters() {
+            // The end-to-end statement of why this gate matters: :342-343 write numerically, :465 and
+            // :471 read alphanumerically, and one span is what makes those two agree.
+            when(repository.readByCardNumber(anyString())).thenReturn(cardRead(card()));
+            CardSelectResponse response = new CardSelectResponse();
+
+            Conversation task = runMain(request(CARD_NUMBER, ACCOUNT_ID, fromCardList()),
+                    CardSelectController.PASSED_COMMAREA_LENGTH, CicsAid.DFHENTER, response);
+
+            assertThat(task.ccWorkArea.getCcAcctId()).isEqualTo(ACCOUNT_ID);
+            assertThat(task.ccWorkArea.getCcCardNum()).isEqualTo(CARD_NUMBER);
+            assertThat(response.getAcctsido()).isEqualTo(ACCOUNT_ID);
+            assertThat(response.getCardsido()).isEqualTo(CARD_NUMBER);
+            // CC-CUST-ID is the pair this program leaves alone: it is declared, never written here, and
+            // therefore still reads as its VALUE SPACES.
+            assertThat(task.ccWorkArea.getCcCustId()).isEqualTo(" ".repeat(9));
+        }
     }
 
     @Nested
@@ -1484,6 +1804,40 @@ class CardSelectControllerTest {
                     .isEqualTo(BmsAttributes.DFHBMFSE);
             // No ELSE on the colour block, so it stays as MOVE LOW-VALUES left it.
             assertThat(response.attributes(CardSelectResponse.ScreenField.ACCTSID).getColour())
+                    .isEqualTo((byte) 0x00);
+        }
+
+        @Test
+        @DisplayName("the list's MAPSET without the list's PROGRAM does NOT protect - the AND needs both")
+        void theMapsetAloneIsNotEnoughToProtect() {
+            // :505-506 and :527-528 are one condition with two conjuncts:
+            //   IF CDEMO-LAST-MAPSET EQUAL LIT-CCLISTMAPSET
+            //   AND CDEMO-FROM-PROGRAM EQUAL LIT-CCLISTPGM
+            // The sibling tests drive both-true and first-false. This one drives the third state -
+            // FIRST TRUE, SECOND FALSE - which is the only way to tell an AND from an OR, and it is
+            // reachable in the real system: the menu can transfer here while CDEMO-LAST-MAPSET still
+            // carries the card list's mapset from an earlier turn, because nothing clears it on the way.
+            // Getting it wrong would protect a criterion the operator still has to type, and the screen
+            // would simply refuse input with no message explaining why.
+            CardSelectRequest request = request(CARD_NUMBER, ACCOUNT_ID, NavigationContext.empty());
+            CardSelectResponse response = new CardSelectResponse();
+            Conversation task = initialisedTask(NavigationContext.empty()
+                    .withLastMapset(CardSelectControllerAccess.CCLIST_MAPSET)
+                    .withFromProgram(CardSelectControllerAccess.MENU_PGM));
+            task.wsEditAcctFlag = CardSelectController.FLG_FILTER_ISVALID;
+            task.wsEditCardFlag = CardSelectController.FLG_FILTER_ISVALID;
+
+            controller.setupScreenAttrs1300(request, response, task);
+
+            // Unprotected, exactly as the ELSE at :509-511 requires.
+            assertThat(request.metadata(CardSelectRequest.ScreenField.ACCTSID).getAttribute())
+                    .isEqualTo(BmsAttributes.DFHBMFSE);
+            assertThat(request.metadata(CardSelectRequest.ScreenField.CARDSID).getAttribute())
+                    .isEqualTo(BmsAttributes.DFHBMFSE);
+            // And the :527-531 colour block, which has no ELSE, left the colour alone.
+            assertThat(response.attributes(CardSelectResponse.ScreenField.ACCTSID).getColour())
+                    .isEqualTo((byte) 0x00);
+            assertThat(response.attributes(CardSelectResponse.ScreenField.CARDSID).getColour())
                     .isEqualTo((byte) 0x00);
         }
 
@@ -2119,6 +2473,49 @@ class CardSelectControllerTest {
             assertThat(body.getErrmsgo()).hasSize(80);
             assertThat(body.getFkeyso()).hasSize(75);
         }
+
+        @Test
+        @DisplayName("the fifteen widths tile 01 CCRDSLAO exactly: 12 + 15 x 7 + 387 = 504 (gate G9)")
+        void theWidthArithmeticOfTheSymbolicMap() {
+            // app/cpy-bms/COCRDSL.CPY:17-108. The group is a 12-byte TIOAPFX FILLER, then for each of the
+            // fifteen fields a 7-byte prefix - xxxL COMP PIC S9(4) is 2, xxxF PICTURE X (with its xxxA
+            // REDEFINES) is 1, and the reserved FILLER PICTURE X(4) is 4 - then the xxxI/xxxO data item.
+            // Summing the arithmetic rather than restating 504 is what makes an omitted FILLER impossible:
+            // drop one and the total stops matching the copybook.
+            int dataWidth = 0;
+            for (CardSelectResponse.ScreenField field : CardSelectResponse.ScreenField.values()) {
+                dataWidth += field.length();
+            }
+
+            assertThat(CardSelectResponse.ScreenField.values()).hasSize(15);
+            assertThat(CardSelectResponse.FIELD_PREFIX_LENGTH).isEqualTo(7);
+            assertThat(CardSelectResponse.TIOAPFX_LENGTH).isEqualTo(12);
+            assertThat(dataWidth).isEqualTo(387).isEqualTo(CardSelectResponse.DATA_LENGTH);
+            assertThat(CardSelectResponse.GROUP_LENGTH)
+                    .isEqualTo(12 + (15 * 7) + 387)
+                    .isEqualTo(504);
+        }
+
+        @Test
+        @DisplayName("this map has NO EXPDAY and NO PAGENO, and neither is invented (gate G9)")
+        void theTwoFieldsThisMapDoesNotHave() {
+            // EXPDAY exists only on COCRDUP, the update screen. The expiry REDEFINES at
+            // app/cbl/COCRDSLC.cbl:85-90 names a day and :477-484 moves only the month and the year onto
+            // this map, so the day is read and then deliberately not shown. PAGENO belongs to the paged
+            // screens - COCRDLI, COTRN00, COUSR00 - and a detail view has no pages.
+            //
+            // A response field for either would be a new feature, so their absence is a contract, and a
+            // contract worth asserting: this is the shape of mistake a copy-paste from the sibling screen
+            // makes, and it would pass every other test in this file.
+            for (CardSelectResponse.ScreenField field : CardSelectResponse.ScreenField.values()) {
+                assertThat(field.dfhmdfLabel()).isNotEqualTo("EXPDAY").isNotEqualTo("PAGENO");
+                assertThat(field.cobolName()).isNotEqualTo("EXPDAYO").isNotEqualTo("PAGENOO");
+            }
+            assertThat(CardSelectRequest.ScreenField.values()).hasSize(15);
+            for (CardSelectRequest.ScreenField field : CardSelectRequest.ScreenField.values()) {
+                assertThat(field.label()).isNotEqualTo("EXPDAY").isNotEqualTo("PAGENO");
+            }
+        }
     }
 
     @Nested
@@ -2389,6 +2786,73 @@ class CardSelectControllerTest {
         }
 
         @Test
+        @DisplayName("PF3 is answered 200 in-place: no redirect, no forward and NO Location header (G40)")
+        void backNavigationIsNotAnHttpRedirect() throws Exception {
+            // EXEC CICS XCTL PROGRAM(CDEMO-TO-PROGRAM) at :331-332 transfers control on the mainframe.
+            // The migration makes navigation client-driven (rule R6): the reply NAMES the next target and
+            // the client decides. So the one thing this must not have become is a 3xx - a redirect would
+            // put the choice back on the server, and a forward would resolve it there invisibly. Both are
+            // ruled out at the transport, where they would actually be observable.
+            MvcResult result = mockMvc().perform(get("/api/cards/{cardNum}", CARD_NUMBER)
+                            .param(AidRequestParameter.CANONICAL_NAME,
+                                    String.valueOf(Byte.toUnsignedInt(CicsAid.DFHPF3)))
+                            .param("eibcalen", String.valueOf(
+                                    CardSelectController.PASSED_COMMAREA_LENGTH))
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(body(request("", "", fromCardList()))))
+                    .andExpect(status().isOk())
+                    .andExpect(header().doesNotExist(HttpHeaders.LOCATION))
+                    .andExpect(jsonPath("$.nextProgram").exists())
+                    .andReturn();
+
+            MockHttpServletResponse response = result.getResponse();
+            // Not a redirect by status, not by header, and not by a dispatcher forward either.
+            assertThat(response.getStatus()).isEqualTo(HttpStatus.OK.value());
+            assertThat(response.getRedirectedUrl()).isNull();
+            assertThat(response.getForwardedUrl()).isNull();
+            assertThat(response.getHeader(HttpHeaders.LOCATION)).isNull();
+            // The next target arrived in the BODY, which is the whole point of G40.
+            assertThat(response.getContentAsString())
+                    .contains(CardSelectControllerAccess.CCLIST_PGM);
+            verifyNoInteractions(repository);
+        }
+
+        @Test
+        @DisplayName("the same request twice is byte-identical, and no session is created (gate G37)")
+        void theRequestIsIdempotentAndSessionless() throws Exception {
+            when(repository.readByCardNumber(anyString()))
+                    .thenReturn(cardRead(card()));
+            String sent = body(request("", ACCOUNT_ID, fromCardList()));
+
+            MvcResult first = mockMvc().perform(get("/api/cards/{cardNum}", CARD_NUMBER)
+                            .param(AidRequestParameter.CANONICAL_NAME,
+                                    String.valueOf((int) CicsAid.DFHENTER))
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(sent))
+                    .andExpect(status().isOk())
+                    .andReturn();
+            MvcResult second = mockMvc().perform(get("/api/cards/{cardNum}", CARD_NUMBER)
+                            .param(AidRequestParameter.CANONICAL_NAME,
+                                    String.valueOf((int) CicsAid.DFHENTER))
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(sent))
+                    .andExpect(status().isOk())
+                    .andReturn();
+
+            // Identical in, identical out - which can only hold if every scrap of conversation state came
+            // from the payload. A COMMAREA kept on the server, or a live clock, would break this.
+            assertThat(second.getResponse().getContentAsString())
+                    .isEqualTo(first.getResponse().getContentAsString());
+
+            // Nothing asked for a session, and nothing set a cookie to carry one. CICS is
+            // pseudo-conversational and the translation stays that way (rule R6).
+            assertThat(first.getRequest().getSession(false)).isNull();
+            assertThat(second.getRequest().getSession(false)).isNull();
+            assertThat(first.getResponse().getCookies()).isEmpty();
+            assertThat(first.getResponse().getHeader(HttpHeaders.SET_COOKIE)).isNull();
+        }
+
+        @Test
         @DisplayName("the two AID spellings carrying different keys is refused, not resolved by guessing")
         void contradictoryAidSpellingsAreRefused() throws Exception {
             mockMvc().perform(get("/api/cards/{cardNum}", CARD_NUMBER)
@@ -2479,4 +2943,13 @@ class CardSelectControllerTest {
     private static CardReadResult cardReadDuplicate(CardRecord record) {
         return CardReadResult.duplicateKey(record, record.encodeToImage(StandardCharsets.US_ASCII));
     }
+
+    // =================================================================================================
+    // Synthesised read outcomes. A CardReadResult carries the decoded record AND the bytes it was
+    // decoded from, because DISPLAY CARD-RECORD (app/cbl/CBACT02C.cbl:78) writes the record area and the
+    // area's FILLER X(59) holds whatever the row held. A test constructing an outcome has no row, so the
+    // image it supplies is the one a row of exactly this record would carry - which is what these two
+    // helpers state, once, rather than at every call site.
+    // =================================================================================================
+
 }

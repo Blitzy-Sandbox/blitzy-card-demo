@@ -1,0 +1,121 @@
+{
+  "program": "COTRN00C",
+  "caseId": "case17",
+  "description": "A PARTIAL backward page, which is the path on which the page number changes not at all. PF7 from page two anchored on record six: the anchor read consumes record six, the loop reads records five down to one into screen rows ten down to six, and the sixth READPREV reports ENDFILE and sends. TRANSACT-EOF is now true, so the IF at :359 is FALSE and the entire rewind block - the extra read at :360, the NEXT-PAGE-YES test at :361, the SUBTRACT at :364 and the MOVE at :366 - is skipped. The page number therefore stays at TWO while displaying the first five records of the file, which is an inherited oddity of the program rather than a translation artefact and must be preserved (practice B5). CDEMO-CT00-TRNID-FIRST keeps its inbound value because WS-IDX never reached one; CDEMO-CT00-TRNID-LAST is record five, written at WS-IDX ten.",
+  "unitKind": "CONTROLLER_POJO",
+  "inputs": {
+    "TRANSACT": {
+      "rows": [
+        "0000000000000001010001POS TERM  TRANSACTION 01 DESCRIPTION                                                                          0000001010{000000001MERCHANT 01                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    ",
+        "0000000000000002010001POS TERM  TRANSACTION 02 DESCRIPTION                                                                          0000001020{000000002MERCHANT 02                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    ",
+        "0000000000000003010001POS TERM  TRANSACTION 03 DESCRIPTION                                                                          0000001030{000000003MERCHANT 03                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    ",
+        "0000000000000004010001POS TERM  TRANSACTION 04 DESCRIPTION                                                                          0000001040{000000004MERCHANT 04                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    ",
+        "0000000000000005010001POS TERM  TRANSACTION 05 DESCRIPTION                                                                          0000001050{000000005MERCHANT 05                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    ",
+        "0000000000000006010001POS TERM  TRANSACTION 06 DESCRIPTION                                                                          0000001060{000000006MERCHANT 06                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    ",
+        "0000000000000007010001POS TERM  TRANSACTION 07 DESCRIPTION                                                                          0000001070{000000007MERCHANT 07                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    ",
+        "0000000000000008010001POS TERM  TRANSACTION 08 DESCRIPTION                                                                          0000001080{000000008MERCHANT 08                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    ",
+        "0000000000000009010001POS TERM  TRANSACTION 09 DESCRIPTION                                                                          0000001090{000000009MERCHANT 09                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    ",
+        "0000000000000010010001POS TERM  TRANSACTION 10 DESCRIPTION                                                                          0000001100{000000010MERCHANT 10                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    ",
+        "0000000000000011010001POS TERM  TRANSACTION 11 DESCRIPTION                                                                          0000001110{000000011MERCHANT 11                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    ",
+        "0000000000000012010001POS TERM  TRANSACTION 12 DESCRIPTION                                                                          0000001120{000000012MERCHANT 12                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    "
+      ]
+    }
+  },
+  "screenRequest": {
+    "eibcalen": 218,
+    "pinnedClock": "2022-07-19T23:12:34",
+    "charset": "US-ASCII",
+    "commarea": {
+      "CDEMO-FROM-TRANID": "CM00",
+      "CDEMO-FROM-PROGRAM": "COMEN01C",
+      "CDEMO-TO-TRANID": "CT00",
+      "CDEMO-TO-PROGRAM": "COTRN00C",
+      "CDEMO-USER-ID": "USER0001",
+      "CDEMO-USER-TYPE": "U",
+      "CDEMO-PGM-CONTEXT": "1",
+      "CDEMO-CUST-ID": "000000000",
+      "CDEMO-CUST-FNAME": "                         ",
+      "CDEMO-CUST-MNAME": "                         ",
+      "CDEMO-CUST-LNAME": "                         ",
+      "CDEMO-ACCT-ID": "00000000000",
+      "CDEMO-ACCT-STATUS": " ",
+      "CDEMO-CARD-NUM": "0000000000000000",
+      "CDEMO-LAST-MAP": "       ",
+      "CDEMO-LAST-MAPSET": "       ",
+      "CDEMO-CT00-TRNID-FIRST": "0000000000000006",
+      "CDEMO-CT00-TRNID-LAST": "0000000000000012",
+      "CDEMO-CT00-PAGE-NUM": "00000002",
+      "CDEMO-CT00-NEXT-PAGE-FLG": "N",
+      "CDEMO-CT00-TRN-SEL-FLG": " ",
+      "CDEMO-CT00-TRN-SELECTED": "                "
+    },
+    "mapFields": {},
+    "forcedOutcomes": {},
+    "aid": "DFHPF7"
+  },
+  "expectedResponse": {
+    "nextMapset": "COTRN00",
+    "nextMap": "COTRN0A",
+    "navigation": {
+      "CDEMO-FROM-TRANID": "CM00",
+      "CDEMO-FROM-PROGRAM": "COMEN01C",
+      "CDEMO-TO-TRANID": "CT00",
+      "CDEMO-TO-PROGRAM": "COTRN00C",
+      "CDEMO-USER-ID": "USER0001",
+      "CDEMO-USER-TYPE": "U",
+      "CDEMO-PGM-CONTEXT": "1",
+      "CDEMO-CUST-ID": "000000000",
+      "CDEMO-CUST-FNAME": "                         ",
+      "CDEMO-CUST-MNAME": "                         ",
+      "CDEMO-CUST-LNAME": "                         ",
+      "CDEMO-ACCT-ID": "00000000000",
+      "CDEMO-ACCT-STATUS": " ",
+      "CDEMO-CARD-NUM": "0000000000000000",
+      "CDEMO-LAST-MAP": "       ",
+      "CDEMO-LAST-MAPSET": "       ",
+      "CDEMO-CT00-TRNID-FIRST": "0000000000000006",
+      "CDEMO-CT00-TRNID-LAST": "0000000000000005",
+      "CDEMO-CT00-PAGE-NUM": "00000002",
+      "CDEMO-CT00-NEXT-PAGE-FLG": "Y",
+      "CDEMO-CT00-TRN-SEL-FLG": " ",
+      "CDEMO-CT00-TRN-SELECTED": "                "
+    },
+    "sends": [
+      {
+        "fields": {
+          "TITLE01O": "      AWS Mainframe Modernization       ",
+          "TITLE02O": "              CardDemo                  ",
+          "TRNNAMEO": "CT00",
+          "PGMNAMEO": "COTRN00C",
+          "CURDATEO": "07/19/22",
+          "CURTIMEO": "23:12:34"
+        }
+      },
+      {
+        "fields": {
+          "TITLE01O": "      AWS Mainframe Modernization       ",
+          "TITLE02O": "              CardDemo                  ",
+          "TRNNAMEO": "CT00",
+          "PGMNAMEO": "COTRN00C",
+          "CURDATEO": "07/19/22",
+          "CURTIMEO": "23:12:34"
+        }
+      }
+    ],
+    "cursorField": "TRNIDINL",
+    "termination": "RETURN_TRANSID"
+  },
+  "expectedWrites": [],
+  "expectedFinalState": [],
+  "expectedReturnCode": 0,
+  "expectedMessages": [
+    {
+      "channel": "WS_MESSAGE_80",
+      "text": "You have reached the top of the page...                                         "
+    },
+    {
+      "channel": "SCREEN_ERRMSG_78",
+      "text": "You have reached the top of the page...                                       "
+    }
+  ]
+}

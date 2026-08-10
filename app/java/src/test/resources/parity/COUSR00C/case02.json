@@ -1,0 +1,187 @@
+{
+  "program": "COUSR00C",
+  "caseId": "case02",
+  "description": "First entry with a communication area present and a full page below: the NOT CDEMO-PGM-REENTER arm at :115-119 over the ten records app/jcl/DUSRSECJ.jcl loads. :116 sets CDEMO-PGM-REENTER, :117 MOVE LOW-VALUES TO COUSR0AO discards every screen field the payload carried, :118 performs PROCESS-ENTER-KEY - whose selection scan at :151-185 therefore always reaches WHEN OTHER - and :227 restarts the count at zero before PROCESS-PAGE-FORWARD. The forward loop at :300-306 reads ten records and steps WS-IDX to 11 through the COMPUTE at :304 (gate G28), which is what page size TEN means here: exactly ten rows are filled and the eleventh iteration never runs (gate G39). :308 is then true, so :309-310 computes page 1, and the look-ahead READNEXT at :311 reaches the end of the file - setting USER-SEC-EOF, painting 'You have reached the bottom of the page...' and sending the map from inside :640 - after which :315 sets NEXT-PAGE-NO. WS-MESSAGE is not cleared between sends, so that message survives into the final image. COUSR00C sends the map three times here (:640, :329 and :119); UserMenuController records all three on its work area, but its published handler exposes only the transmission the terminal is left displaying, and widening that API would break the single-public-method property UserMenuControllerTest pins - so the earlier two are asserted there, in the user package, and all 59 fields of the final one are asserted here.",
+  "unitKind": "CONTROLLER_POJO",
+  "inputs": {
+    "USRSEC": {
+      "rows": [
+        "ADMIN001MARGARET            GOLD                PASSWORDA",
+        "ADMIN002RUSSELL             RUSSELL             PASSWORDA",
+        "ADMIN003RAYMOND             WHITMORE            PASSWORDA",
+        "ADMIN004EMMANUEL            CASGRAIN            PASSWORDA",
+        "ADMIN005GRANVILLE           LACHAPELLE          PASSWORDA",
+        "USER0001LAWRENCE            THOMAS              PASSWORDU",
+        "USER0002AJITH               KUMAR               PASSWORDU",
+        "USER0003LAURITZ             ALME                PASSWORDU",
+        "USER0004AVERARDO            MAZZI               PASSWORDU",
+        "USER0005LEE                 TING                PASSWORDU"
+      ]
+    }
+  },
+  "screenRequest": {
+    "eibcalen": 194,
+    "aid": "DFHENTER",
+    "pinnedClock": "2022-07-19T23:12:34",
+    "charset": "US-ASCII",
+    "commarea": {
+      "CDEMO-PGM-CONTEXT": "0"
+    },
+    "mapFields": {},
+    "forcedOutcomes": {}
+  },
+  "expectedResponse": {
+    "navigation": {
+      "CDEMO-FROM-TRANID": "    ",
+      "CDEMO-FROM-PROGRAM": "        ",
+      "CDEMO-TO-TRANID": "    ",
+      "CDEMO-TO-PROGRAM": "        ",
+      "CDEMO-USER-ID": "        ",
+      "CDEMO-USER-TYPE": " ",
+      "CDEMO-PGM-CONTEXT": "1",
+      "CDEMO-CUST-ID": "000000000",
+      "CDEMO-CUST-FNAME": "                         ",
+      "CDEMO-CUST-MNAME": "                         ",
+      "CDEMO-CUST-LNAME": "                         ",
+      "CDEMO-ACCT-ID": "00000000000",
+      "CDEMO-ACCT-STATUS": " ",
+      "CDEMO-CARD-NUM": "0000000000000000",
+      "CDEMO-LAST-MAP": "       ",
+      "CDEMO-LAST-MAPSET": "       ",
+      "CDEMO-CU00-USRID-FIRST": "ADMIN001",
+      "CDEMO-CU00-USRID-LAST": "USER0005",
+      "CDEMO-CU00-PAGE-NUM": "00000001",
+      "CDEMO-CU00-NEXT-PAGE-FLG": "N",
+      "CDEMO-CU00-USR-SEL-FLG": " ",
+      "CDEMO-CU00-USR-SELECTED": "        "
+    },
+    "sends": [
+      {
+        "fields": {
+          "TRNNAMEO": "CU00",
+          "TITLE01O": "      AWS Mainframe Modernization       ",
+          "CURDATEO": "07/19/22",
+          "PGMNAMEO": "COUSR00C",
+          "TITLE02O": "              CardDemo                  ",
+          "CURTIMEO": "23:12:34",
+          "PAGENUMO": "00000001",
+          "USRIDINO": "        ",
+          "SEL0001O": " ",
+          "USRID01O": "ADMIN001",
+          "FNAME01O": "MARGARET            ",
+          "LNAME01O": "GOLD                ",
+          "UTYPE01O": "A",
+          "SEL0002O": " ",
+          "USRID02O": "ADMIN002",
+          "FNAME02O": "RUSSELL             ",
+          "LNAME02O": "RUSSELL             ",
+          "UTYPE02O": "A",
+          "SEL0003O": " ",
+          "USRID03O": "ADMIN003",
+          "FNAME03O": "RAYMOND             ",
+          "LNAME03O": "WHITMORE            ",
+          "UTYPE03O": "A",
+          "SEL0004O": " ",
+          "USRID04O": "ADMIN004",
+          "FNAME04O": "EMMANUEL            ",
+          "LNAME04O": "CASGRAIN            ",
+          "UTYPE04O": "A",
+          "SEL0005O": " ",
+          "USRID05O": "ADMIN005",
+          "FNAME05O": "GRANVILLE           ",
+          "LNAME05O": "LACHAPELLE          ",
+          "UTYPE05O": "A",
+          "SEL0006O": " ",
+          "USRID06O": "USER0001",
+          "FNAME06O": "LAWRENCE            ",
+          "LNAME06O": "THOMAS              ",
+          "UTYPE06O": "U",
+          "SEL0007O": " ",
+          "USRID07O": "USER0002",
+          "FNAME07O": "AJITH               ",
+          "LNAME07O": "KUMAR               ",
+          "UTYPE07O": "U",
+          "SEL0008O": " ",
+          "USRID08O": "USER0003",
+          "FNAME08O": "LAURITZ             ",
+          "LNAME08O": "ALME                ",
+          "UTYPE08O": "U",
+          "SEL0009O": " ",
+          "USRID09O": "USER0004",
+          "FNAME09O": "AVERARDO            ",
+          "LNAME09O": "MAZZI               ",
+          "UTYPE09O": "U",
+          "SEL0010O": " ",
+          "USRID10O": "USER0005",
+          "FNAME10O": "LEE                 ",
+          "LNAME10O": "TING                ",
+          "UTYPE10O": "U",
+          "ERRMSGO": "You have reached the bottom of the page...                                    "
+        }
+      }
+    ],
+    "cursorField": "USRIDINL",
+    "termination": "RETURN_TRANSID"
+  },
+  "expectedWrites": [],
+  "expectedFinalState": [
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 0,
+      "expectedBytes": "ADMIN001MARGARET            GOLD                PASSWORDA                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 1,
+      "expectedBytes": "ADMIN002RUSSELL             RUSSELL             PASSWORDA                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 2,
+      "expectedBytes": "ADMIN003RAYMOND             WHITMORE            PASSWORDA                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 3,
+      "expectedBytes": "ADMIN004EMMANUEL            CASGRAIN            PASSWORDA                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 4,
+      "expectedBytes": "ADMIN005GRANVILLE           LACHAPELLE          PASSWORDA                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 5,
+      "expectedBytes": "USER0001LAWRENCE            THOMAS              PASSWORDU                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 6,
+      "expectedBytes": "USER0002AJITH               KUMAR               PASSWORDU                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 7,
+      "expectedBytes": "USER0003LAURITZ             ALME                PASSWORDU                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 8,
+      "expectedBytes": "USER0004AVERARDO            MAZZI               PASSWORDU                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 9,
+      "expectedBytes": "USER0005LEE                 TING                PASSWORDU                       "
+    }
+  ],
+  "expectedReturnCode": 0,
+  "expectedMessages": [],
+  "normalisations": [
+    {
+      "dataset": "USRSEC",
+      "kind": "USRSEC_FILLER_PAD_57_TO_80"
+    }
+  ]
+}

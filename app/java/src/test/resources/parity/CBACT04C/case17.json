@@ -1,0 +1,139 @@
+{
+  "program": "CBACT04C",
+  "caseId": "case17",
+  "description": "1110-GET-XREF-DATA cannot find the account through the ALTERNATE key. The account exists - ACCTFILE holds account 1 and :373 succeeds - but the cross-reference is seeded with account 2's row only, so the READ ... KEY IS FD-XREF-ACCT-ID at :394-395 misses. app/jcl/INTCALC.jcl:29-32 opens the cross-reference TWICE in this one step, //XREFFILE on the base cluster and //XREFFIL1 on the alternate-index path over it, and this is the read that uses the second: ONE dataset reached two ways, never two datasets. Both paths are seeded from the same row and both come back unchanged. The failure sequence mirrors case16 exactly - 'ACCOUNT NOT FOUND: 00000000001' from :397, then 'ERROR READING XREF FILE' from :408, the rendered status and the abend with RETURN-CODE 12 - and it is a separate case because the two paragraphs display different text and a translation that shared one message would pass one and fail the other.",
+  "unitKind": "BATCH_JOB",
+  "inputs": {
+    "TCATBALF": {
+      "rows": [
+        "000000000010100010000010000{0000000000000000000000"
+      ]
+    },
+    "ACCTFILE": {
+      "rows": [
+        "00000000001Y00000001940{00000020200{00000010200{2014-11-202025-05-202025-05-2000000000000{00000000000{A000000000A000000000                                                                                                                                                                                  "
+      ]
+    },
+    "XREFFILE": {
+      "rows": [
+        "092387719324733000000000200000000002"
+      ]
+    },
+    "XREFFIL1": {
+      "rows": [
+        "092387719324733000000000200000000002"
+      ]
+    },
+    "DISCGRP": {
+      "fixture": "discgrp.txt",
+      "fromRow": 0,
+      "rowCount": 1
+    }
+  },
+  "jobParameters": {
+    "parmDate": "2022071800"
+  },
+  "expectedWrites": [],
+  "expectedFinalState": [
+    {
+      "dataset": "TCATBALF",
+      "rowIndex": 0,
+      "expectedBytes": "000000000010100010000010000{0000000000000000000000"
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 0,
+      "expectedBytes": "00000000001Y00000001940{00000020200{00000010200{2014-11-202025-05-202025-05-2000000000000{00000000000{A000000000A000000000                                                                                                                                                                                  "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 0,
+      "expectedBytes": "092387719324733000000000200000000002              "
+    },
+    {
+      "dataset": "XREFFIL1",
+      "rowIndex": 0,
+      "expectedBytes": "092387719324733000000000200000000002              "
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 0,
+      "expectedBytes": "A00000000001000100150{0000000000000000000000000000"
+    }
+  ],
+  "expectedReturnCode": 12,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "START OF EXECUTION OF PROGRAM CBACT04C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "000000000010100010000010000{0000000000000000000000"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCOUNT NOT FOUND: 00000000001"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ERROR READING XREF FILE"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "FILE STATUS IS: NNNN0023"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ABENDING PROGRAM"
+    }
+  ],
+  "normalisations": [
+    {
+      "dataset": "XREFFILE",
+      "kind": "CARDXREF_FILLER_PAD_36_TO_50"
+    },
+    {
+      "dataset": "XREFFIL1",
+      "kind": "CARDXREF_FILLER_PAD_36_TO_50"
+    }
+  ],
+  "expectedDatasets": [
+    {
+      "dataset": "SYSTRAN",
+      "channel": "WRITES",
+      "rowCount": 0,
+      "recordLength": 350
+    },
+    {
+      "dataset": "TCATBALF",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 50
+    },
+    {
+      "dataset": "ACCTFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 300
+    },
+    {
+      "dataset": "XREFFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 50
+    },
+    {
+      "dataset": "XREFFIL1",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 50
+    },
+    {
+      "dataset": "DISCGRP",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 50
+    }
+  ]
+}

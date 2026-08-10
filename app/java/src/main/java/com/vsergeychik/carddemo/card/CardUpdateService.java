@@ -205,6 +205,23 @@ import org.springframework.stereotype.Service;
  * {@link WriteResult#cardUpdateCvvCdImage()} exposes the verbatim three bytes so a field-by-field
  * differ sees what was actually staged.
  *
+ * <h2>The whole paragraph is one unit of work (gate G43)</h2>
+ * <p>{@code 9300-CHECK-CHANGE-IN-REC} is a concurrency control only because the record it compares is
+ * <em>held</em> while it compares it. {@code EXEC CICS READ ... UPDATE} ({@code :1427-1436}) takes that
+ * hold for the duration of the task under {@code UPDATEMODEL(LOCKING)}, and the {@code REWRITE}
+ * ({@code :1477-1483}) writes the record the task still holds. Reproducing the check without reproducing
+ * the hold would leave a comparison that passes and means nothing, because another task is free to
+ * replace the record between the read and the rewrite.
+ *
+ * <p>So {@link #writeProcessing(CardScreenState, CardDetails, CardDetails, String, FixedWidthCodec)}
+ * opens one {@link DatasetUnitOfWork} around all seven steps rather than one per repository call, and
+ * {@link CardRepository#readForUpdateByCardNumber(String)} refuses to run outside one - so the boundary
+ * is not optional: without it this paragraph does not execute at all.
+ *
+ * <p><strong>No version column, no {@code @Version}, no timestamp.</strong> The six equalities the COBOL
+ * already performs are what is preserved; a version column would be a schema change, which is excluded
+ * (gate G44).
+ *
  * @see CardRepository#readForUpdateByCardNumber(String)
  * @see CardRepository#rewrite(CardRecord)
  * @see CardUpdateRecord

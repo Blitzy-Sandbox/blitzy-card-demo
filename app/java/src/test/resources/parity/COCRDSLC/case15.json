@@ -1,0 +1,93 @@
+{
+  "program": "COCRDSLC",
+  "caseId": "case15",
+  "description": "WHEN CCARD-AID-PFK03 at :305, the back-navigation arm, and the XCTL gate G40 covers. CDEMO-FROM-TRANID and CDEMO-FROM-PROGRAM both name the card list, so :313 and :320 carry them into CDEMO-TO-TRANID and CDEMO-TO-PROGRAM instead of the menu defaults; :323-324 then record this screen as the caller. :326 sets CDEMO-USRTYP-USER unconditionally - an admin who presses PF3 here leaves as a regular user, which is the source's behaviour and is preserved rather than corrected (practice B6). EXEC CICS XCTL PROGRAM(CDEMO-TO-PROGRAM) at :331-334 becomes the response's nextProgram and nothing else: the arm never reaches 1400-SEND-SCREEN, so no map is sent, no mapset or map is named, and there is no server-side forward of any kind.",
+  "unitKind": "CONTROLLER_POJO",
+  "inputs": {
+    "CARDDAT": {
+      "fixture": "carddata.txt",
+      "fromRow": 0,
+      "rowCount": 3
+    }
+  },
+  "screenRequest": {
+    "eibcalen": 172,
+    "aid": "DFHPF3",
+    "pinnedClock": "2022-07-19T23:12:33",
+    "charset": "US-ASCII",
+    "commarea": {
+      "CDEMO-FROM-TRANID": "CCLI",
+      "CDEMO-FROM-PROGRAM": "COCRDLIC",
+      "CDEMO-TO-TRANID": "    ",
+      "CDEMO-TO-PROGRAM": "        ",
+      "CDEMO-USER-ID": "ADMIN001",
+      "CDEMO-USER-TYPE": "A",
+      "CDEMO-PGM-CONTEXT": "0",
+      "CDEMO-CUST-ID": "000000000",
+      "CDEMO-CUST-FNAME": "                         ",
+      "CDEMO-CUST-MNAME": "                         ",
+      "CDEMO-CUST-LNAME": "                         ",
+      "CDEMO-ACCT-ID": "00000000050",
+      "CDEMO-ACCT-STATUS": " ",
+      "CDEMO-CARD-NUM": "0500024453765740",
+      "CDEMO-LAST-MAP": "CCRDLIA",
+      "CDEMO-LAST-MAPSET": "COCRDLI"
+    },
+    "mapFields": {
+      "CARDSIDI": "0500024453765740"
+    },
+    "forcedOutcomes": {}
+  },
+  "expectedResponse": {
+    "nextProgram": "COCRDLIC",
+    "navigation": {
+      "CDEMO-FROM-TRANID": "CCDL",
+      "CDEMO-FROM-PROGRAM": "COCRDSLC",
+      "CDEMO-TO-TRANID": "CCLI",
+      "CDEMO-TO-PROGRAM": "COCRDLIC",
+      "CDEMO-USER-ID": "ADMIN001",
+      "CDEMO-USER-TYPE": "U",
+      "CDEMO-PGM-CONTEXT": "0",
+      "CDEMO-CUST-ID": "000000000",
+      "CDEMO-CUST-FNAME": "                         ",
+      "CDEMO-CUST-MNAME": "                         ",
+      "CDEMO-CUST-LNAME": "                         ",
+      "CDEMO-ACCT-ID": "00000000050",
+      "CDEMO-ACCT-STATUS": " ",
+      "CDEMO-CARD-NUM": "0500024453765740",
+      "CDEMO-LAST-MAP": "CCRDSLA",
+      "CDEMO-LAST-MAPSET": "COCRDSL"
+    },
+    "sends": [],
+    "termination": "XCTL"
+  },
+  "expectedWrites": [],
+  "expectedFinalState": [
+    {
+      "dataset": "CARDDAT",
+      "rowIndex": 0,
+      "expectedBytes": "050002445376574000000000050747Aniya Von                                         2023-03-09Y                                                           "
+    },
+    {
+      "dataset": "CARDDAT",
+      "rowIndex": 1,
+      "expectedBytes": "068358619817151600000000027567Ward Jones                                        2025-07-13Y                                                           "
+    },
+    {
+      "dataset": "CARDDAT",
+      "rowIndex": 2,
+      "expectedBytes": "092387719324733000000000002028Enrico Rosenbaum                                  2024-08-11Y                                                           "
+    }
+  ],
+  "expectedReturnCode": 0,
+  "expectedMessages": [],
+  "normalisations": [],
+  "expectedDatasets": [
+    {
+      "dataset": "CARDDAT",
+      "channel": "FINAL_STATE",
+      "rowCount": 3,
+      "recordLength": 150
+    }
+  ]
+}

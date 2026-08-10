@@ -1,0 +1,172 @@
+{
+  "program": "CBACT03C",
+  "caseId": "case18",
+  "description": "Ten consecutive rows from the head of the fixture: twenty-two lines, which is 2 + (2 x 10). Volume between case03's single record and case01's fifty, chosen so that the 2 + 2n line arithmetic is pinned at a third point. Two candidate defects are separated by having three such points rather than one: a translation that displayed each record once would emit twelve lines here, and one that emitted a banner per record would emit forty - and neither can be distinguished from the correct count by a single-record case alone.",
+  "unitKind": "BATCH_JOB",
+  "inputs": {
+    "XREFFILE": {
+      "fixture": "cardxref.txt",
+      "fromRow": 0,
+      "rowCount": 10
+    }
+  },
+  "jobParameters": {},
+  "expectedWrites": [],
+  "expectedFinalState": [
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 0,
+      "expectedBytes": "050002445376574000000005000000000050              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 1,
+      "expectedBytes": "068358619817151600000002700000000027              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 2,
+      "expectedBytes": "092387719324733000000000200000000002              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 3,
+      "expectedBytes": "092798710863623200000002000000000020              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 4,
+      "expectedBytes": "098249621362979500000001200000000012              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 5,
+      "expectedBytes": "101408656522435000000004400000000044              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 6,
+      "expectedBytes": "114216769287893100000003700000000037              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 7,
+      "expectedBytes": "156140910649160000000003500000000035              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 8,
+      "expectedBytes": "274530372000209000000003900000000039              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 9,
+      "expectedBytes": "276083679710756500000002400000000024              "
+    }
+  ],
+  "expectedReturnCode": 0,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "START OF EXECUTION OF PROGRAM CBACT03C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "050002445376574000000005000000000050              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "050002445376574000000005000000000050              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "068358619817151600000002700000000027              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "068358619817151600000002700000000027              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "092387719324733000000000200000000002              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "092387719324733000000000200000000002              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "092798710863623200000002000000000020              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "092798710863623200000002000000000020              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "098249621362979500000001200000000012              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "098249621362979500000001200000000012              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "101408656522435000000004400000000044              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "101408656522435000000004400000000044              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "114216769287893100000003700000000037              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "114216769287893100000003700000000037              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "156140910649160000000003500000000035              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "156140910649160000000003500000000035              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "274530372000209000000003900000000039              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "274530372000209000000003900000000039              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "276083679710756500000002400000000024              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "276083679710756500000002400000000024              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "END OF EXECUTION OF PROGRAM CBACT03C"
+    }
+  ],
+  "normalisations": [
+    {
+      "dataset": "XREFFILE",
+      "kind": "CARDXREF_FILLER_PAD_36_TO_50"
+    }
+  ],
+  "expectedDatasets": [
+    {
+      "dataset": "XREFFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 10,
+      "recordLength": 50
+    }
+  ]
+}

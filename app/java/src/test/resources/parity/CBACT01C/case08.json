@@ -1,0 +1,144 @@
+{
+  "program": "CBACT01C",
+  "caseId": "case08",
+  "description": "Positive sign overpunches, the whole table this time. Two inline records carry all ten positive trailing bytes '{ABCDEFGHI' across their five S9(10)V99 spans, so together with case07 every one of the twenty zoned-sign representations a monetary span can hold is displayed and compared. The shipped fixture exercises only '{', which is why the other nine positive forms are stated here.",
+  "unitKind": "BATCH_JOB",
+  "inputs": {
+    "ACCTFILE": {
+      "rows": [
+        "00000000201Y00000012345{00000023456A00000034567B2014-11-202025-05-202025-05-2000000045678C00000056789DA000000000                                                                                                                                                                                            ",
+        "00000000202Y00000067890E00000078901F00000089012G2014-11-202025-05-202025-05-2000000090123H00000001234IA000000000                                                                                                                                                                                            "
+      ]
+    }
+  },
+  "jobParameters": {},
+  "expectedWrites": [],
+  "expectedFinalState": [
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 0,
+      "expectedBytes": "00000000201Y00000012345{00000023456A00000034567B2014-11-202025-05-202025-05-2000000045678C00000056789DA000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 1,
+      "expectedBytes": "00000000202Y00000067890E00000078901F00000089012G2014-11-202025-05-202025-05-2000000090123H00000001234IA000000000                                                                                                                                                                                            "
+    }
+  ],
+  "expectedReturnCode": 0,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "START OF EXECUTION OF PROGRAM CBACT01C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-ID                 :00000000201"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-ACTIVE-STATUS      :Y"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CURR-BAL           :00000012345{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CREDIT-LIMIT       :00000023456A"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CASH-CREDIT-LIMIT  :00000034567B"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-OPEN-DATE          :2014-11-20"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-EXPIRAION-DATE     :2025-05-20"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-REISSUE-DATE       :2025-05-20"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CURR-CYC-CREDIT    :00000045678C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CURR-CYC-DEBIT     :00000056789D"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-GROUP-ID           :          "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "-------------------------------------------------"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "00000000201Y00000012345{00000023456A00000034567B2014-11-202025-05-202025-05-2000000045678C00000056789DA000000000                                                                                                                                                                                            "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-ID                 :00000000202"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-ACTIVE-STATUS      :Y"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CURR-BAL           :00000067890E"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CREDIT-LIMIT       :00000078901F"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CASH-CREDIT-LIMIT  :00000089012G"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-OPEN-DATE          :2014-11-20"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-EXPIRAION-DATE     :2025-05-20"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-REISSUE-DATE       :2025-05-20"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CURR-CYC-CREDIT    :00000090123H"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CURR-CYC-DEBIT     :00000001234I"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-GROUP-ID           :          "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "-------------------------------------------------"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "00000000202Y00000067890E00000078901F00000089012G2014-11-202025-05-202025-05-2000000090123H00000001234IA000000000                                                                                                                                                                                            "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "END OF EXECUTION OF PROGRAM CBACT01C"
+    }
+  ],
+  "normalisations": []
+}

@@ -1,0 +1,139 @@
+{
+  "program": "CBACT04C",
+  "caseId": "case16",
+  "description": "1100-GET-ACCT-DATA cannot find the account: 'ACCOUNT NOT FOUND', then a fatal status, then the abend. The category-balance row names account 99, which ACCTFILE - seeded with account 1 alone - does not hold, so the READ at :373 takes its INVALID KEY phrase and :375 displays 'ACCOUNT NOT FOUND: ' followed by FD-ACCT-ID as eleven digits. What happens next is the part worth pinning: :378 accepts '00' ALONE, so a not-found is not tolerated here the way it is in 1200-GET-INTEREST-RATE, and the run displays 'ERROR READING ACCOUNT FILE', the rendered file status and 'ABENDING PROGRAM' before CALL 'CEE3ABD' at :632. RETURN-CODE is 12, which is what makes a JCL COND gate downstream behave as it does today. No transaction is written, no account is rewritten, and there is no 'END OF EXECUTION' line because the CLOSE paragraphs never run.",
+  "unitKind": "BATCH_JOB",
+  "inputs": {
+    "TCATBALF": {
+      "rows": [
+        "000000000990100010000010000{0000000000000000000000"
+      ]
+    },
+    "ACCTFILE": {
+      "rows": [
+        "00000000001Y00000001940{00000020200{00000010200{2014-11-202025-05-202025-05-2000000000000{00000000000{A000000000A000000000                                                                                                                                                                                  "
+      ]
+    },
+    "XREFFILE": {
+      "rows": [
+        "968029415460369700000000100000000001"
+      ]
+    },
+    "XREFFIL1": {
+      "rows": [
+        "968029415460369700000000100000000001"
+      ]
+    },
+    "DISCGRP": {
+      "fixture": "discgrp.txt",
+      "fromRow": 0,
+      "rowCount": 1
+    }
+  },
+  "jobParameters": {
+    "parmDate": "2022071800"
+  },
+  "expectedWrites": [],
+  "expectedFinalState": [
+    {
+      "dataset": "TCATBALF",
+      "rowIndex": 0,
+      "expectedBytes": "000000000990100010000010000{0000000000000000000000"
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 0,
+      "expectedBytes": "00000000001Y00000001940{00000020200{00000010200{2014-11-202025-05-202025-05-2000000000000{00000000000{A000000000A000000000                                                                                                                                                                                  "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 0,
+      "expectedBytes": "968029415460369700000000100000000001              "
+    },
+    {
+      "dataset": "XREFFIL1",
+      "rowIndex": 0,
+      "expectedBytes": "968029415460369700000000100000000001              "
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 0,
+      "expectedBytes": "A00000000001000100150{0000000000000000000000000000"
+    }
+  ],
+  "expectedReturnCode": 12,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "START OF EXECUTION OF PROGRAM CBACT04C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "000000000990100010000010000{0000000000000000000000"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCOUNT NOT FOUND: 00000000099"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ERROR READING ACCOUNT FILE"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "FILE STATUS IS: NNNN0023"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ABENDING PROGRAM"
+    }
+  ],
+  "normalisations": [
+    {
+      "dataset": "XREFFILE",
+      "kind": "CARDXREF_FILLER_PAD_36_TO_50"
+    },
+    {
+      "dataset": "XREFFIL1",
+      "kind": "CARDXREF_FILLER_PAD_36_TO_50"
+    }
+  ],
+  "expectedDatasets": [
+    {
+      "dataset": "SYSTRAN",
+      "channel": "WRITES",
+      "rowCount": 0,
+      "recordLength": 350
+    },
+    {
+      "dataset": "TCATBALF",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 50
+    },
+    {
+      "dataset": "ACCTFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 300
+    },
+    {
+      "dataset": "XREFFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 50
+    },
+    {
+      "dataset": "XREFFIL1",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 50
+    },
+    {
+      "dataset": "DISCGRP",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 50
+    }
+  ]
+}

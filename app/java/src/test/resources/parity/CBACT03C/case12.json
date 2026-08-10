@@ -1,0 +1,76 @@
+{
+  "program": "CBACT03C",
+  "caseId": "case12",
+  "description": "Two records are read and displayed, end of file is reached cleanly, and then CLOSE at :138 reports '42'. 9000-XREFFILE-CLOSE takes its :141 arm, ADD 12 TO ZERO GIVING APPL-RESULT at :142, and :147-150 run. Eight lines and RETURN-CODE 12. Two properties are pinned that no other case can pin: the close failure's three lines come AFTER every record line, because :83 follows the loop; and there is NO 'END OF EXECUTION OF PROGRAM CBACT03C' line, because :150 abends before :85. The close paragraph also writes its APPL-RESULT arithmetic the long way round - ADD 8 TO ZERO GIVING at :137 and SUBTRACT APPL-RESULT FROM APPL-RESULT at :140 where the open paragraph uses plain MOVEs - and the values are identical either way.",
+  "unitKind": "BATCH_JOB",
+  "inputs": {
+    "XREFFILE": {
+      "fixture": "cardxref.txt",
+      "fromRow": 0,
+      "rowCount": 2
+    }
+  },
+  "jobParameters": {},
+  "expectedWrites": [],
+  "expectedFinalState": [
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 0,
+      "expectedBytes": "050002445376574000000005000000000050              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 1,
+      "expectedBytes": "068358619817151600000002700000000027              "
+    }
+  ],
+  "expectedReturnCode": 12,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "START OF EXECUTION OF PROGRAM CBACT03C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "050002445376574000000005000000000050              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "050002445376574000000005000000000050              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "068358619817151600000002700000000027              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "068358619817151600000002700000000027              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ERROR CLOSING XREFFILE"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "FILE STATUS IS: NNNN0042"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ABENDING PROGRAM"
+    }
+  ],
+  "normalisations": [
+    {
+      "dataset": "XREFFILE",
+      "kind": "CARDXREF_FILLER_PAD_36_TO_50"
+    }
+  ],
+  "expectedDatasets": [
+    {
+      "dataset": "XREFFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 2,
+      "recordLength": 50
+    }
+  ]
+}

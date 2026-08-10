@@ -1,0 +1,93 @@
+{
+  "program": "COCRDSLC",
+  "caseId": "case16",
+  "description": "The other half of the PF3 arm: CDEMO-FROM-TRANID and CDEMO-FROM-PROGRAM are SPACES, so :311 and :318 substitute LIT-MENUTRANID 'CM00' and LIT-MENUPGM 'COMEN01C'. The source tests EQUAL LOW-VALUES OR EQUAL SPACES at :309-310 and :316-317; this case pins the SPACES disjunct. Note that :328 moves LIT-THISMAPSET, a PIC X(8) item holding 'COCRDSL ', into CDEMO-LAST-MAPSET PIC X(7) - the trailing space is discarded by the PIC X rule, and the X(8)-into-X(7) mismatch is preserved.",
+  "unitKind": "CONTROLLER_POJO",
+  "inputs": {
+    "CARDDAT": {
+      "fixture": "carddata.txt",
+      "fromRow": 0,
+      "rowCount": 3
+    }
+  },
+  "screenRequest": {
+    "eibcalen": 172,
+    "aid": "DFHPF3",
+    "pinnedClock": "2022-07-19T23:12:33",
+    "charset": "US-ASCII",
+    "commarea": {
+      "CDEMO-FROM-TRANID": "    ",
+      "CDEMO-FROM-PROGRAM": "        ",
+      "CDEMO-TO-TRANID": "    ",
+      "CDEMO-TO-PROGRAM": "        ",
+      "CDEMO-USER-ID": "USER0001",
+      "CDEMO-USER-TYPE": "U",
+      "CDEMO-PGM-CONTEXT": "0",
+      "CDEMO-CUST-ID": "000000000",
+      "CDEMO-CUST-FNAME": "                         ",
+      "CDEMO-CUST-MNAME": "                         ",
+      "CDEMO-CUST-LNAME": "                         ",
+      "CDEMO-ACCT-ID": "00000000000",
+      "CDEMO-ACCT-STATUS": " ",
+      "CDEMO-CARD-NUM": "0000000000000000",
+      "CDEMO-LAST-MAP": "CCRDSLA",
+      "CDEMO-LAST-MAPSET": "COCRDSL"
+    },
+    "mapFields": {
+      "CARDSIDI": "                "
+    },
+    "forcedOutcomes": {}
+  },
+  "expectedResponse": {
+    "nextProgram": "COMEN01C",
+    "navigation": {
+      "CDEMO-FROM-TRANID": "CCDL",
+      "CDEMO-FROM-PROGRAM": "COCRDSLC",
+      "CDEMO-TO-TRANID": "CM00",
+      "CDEMO-TO-PROGRAM": "COMEN01C",
+      "CDEMO-USER-ID": "USER0001",
+      "CDEMO-USER-TYPE": "U",
+      "CDEMO-PGM-CONTEXT": "0",
+      "CDEMO-CUST-ID": "000000000",
+      "CDEMO-CUST-FNAME": "                         ",
+      "CDEMO-CUST-MNAME": "                         ",
+      "CDEMO-CUST-LNAME": "                         ",
+      "CDEMO-ACCT-ID": "00000000000",
+      "CDEMO-ACCT-STATUS": " ",
+      "CDEMO-CARD-NUM": "0000000000000000",
+      "CDEMO-LAST-MAP": "CCRDSLA",
+      "CDEMO-LAST-MAPSET": "COCRDSL"
+    },
+    "sends": [],
+    "termination": "XCTL"
+  },
+  "expectedWrites": [],
+  "expectedFinalState": [
+    {
+      "dataset": "CARDDAT",
+      "rowIndex": 0,
+      "expectedBytes": "050002445376574000000000050747Aniya Von                                         2023-03-09Y                                                           "
+    },
+    {
+      "dataset": "CARDDAT",
+      "rowIndex": 1,
+      "expectedBytes": "068358619817151600000000027567Ward Jones                                        2025-07-13Y                                                           "
+    },
+    {
+      "dataset": "CARDDAT",
+      "rowIndex": 2,
+      "expectedBytes": "092387719324733000000000002028Enrico Rosenbaum                                  2024-08-11Y                                                           "
+    }
+  ],
+  "expectedReturnCode": 0,
+  "expectedMessages": [],
+  "normalisations": [],
+  "expectedDatasets": [
+    {
+      "dataset": "CARDDAT",
+      "channel": "FINAL_STATE",
+      "rowCount": 3,
+      "recordLength": 150
+    }
+  ]
+}

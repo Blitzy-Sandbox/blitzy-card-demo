@@ -1,0 +1,187 @@
+{
+  "program": "COUSR00C",
+  "caseId": "case12",
+  "description": "An attention identifier none of the four handled keys names: the WHEN OTHER arm at :132-136. COUSR00C tests EIBAID inline - it is one of the twelve programs that do not COPY CSSTRPFY - and the migration routes those tests through the single common.PfKeyResolver, which must reproduce them as identical boolean outcomes: PF9 resolves to a key that is none of ENTER, PF3, PF7 or PF8, so it joins WHEN OTHER exactly as the inline tests put it there. The arm raises the error flag, moves -1 into USRIDINL to place the cursor, and paints CCDA-MSG-INVALID-KEY from app/cpy/CSMSG01Y.cpy - a 50-character literal whose trailing spaces are significant, moved into the 80-byte WS-MESSAGE and then narrowed to the 78-byte ERRMSGO. No browse is opened.",
+  "unitKind": "CONTROLLER_POJO",
+  "inputs": {
+    "USRSEC": {
+      "rows": [
+        "ADMIN001MARGARET            GOLD                PASSWORDA",
+        "ADMIN002RUSSELL             RUSSELL             PASSWORDA",
+        "ADMIN003RAYMOND             WHITMORE            PASSWORDA",
+        "ADMIN004EMMANUEL            CASGRAIN            PASSWORDA",
+        "ADMIN005GRANVILLE           LACHAPELLE          PASSWORDA",
+        "USER0001LAWRENCE            THOMAS              PASSWORDU",
+        "USER0002AJITH               KUMAR               PASSWORDU",
+        "USER0003LAURITZ             ALME                PASSWORDU",
+        "USER0004AVERARDO            MAZZI               PASSWORDU",
+        "USER0005LEE                 TING                PASSWORDU"
+      ]
+    }
+  },
+  "screenRequest": {
+    "eibcalen": 194,
+    "aid": "DFHPF9",
+    "pinnedClock": "2022-07-19T23:12:34",
+    "charset": "US-ASCII",
+    "commarea": {
+      "CDEMO-PGM-CONTEXT": "1"
+    },
+    "mapFields": {},
+    "forcedOutcomes": {}
+  },
+  "expectedResponse": {
+    "navigation": {
+      "CDEMO-FROM-TRANID": "    ",
+      "CDEMO-FROM-PROGRAM": "        ",
+      "CDEMO-TO-TRANID": "    ",
+      "CDEMO-TO-PROGRAM": "        ",
+      "CDEMO-USER-ID": "        ",
+      "CDEMO-USER-TYPE": " ",
+      "CDEMO-PGM-CONTEXT": "1",
+      "CDEMO-CUST-ID": "000000000",
+      "CDEMO-CUST-FNAME": "                         ",
+      "CDEMO-CUST-MNAME": "                         ",
+      "CDEMO-CUST-LNAME": "                         ",
+      "CDEMO-ACCT-ID": "00000000000",
+      "CDEMO-ACCT-STATUS": " ",
+      "CDEMO-CARD-NUM": "0000000000000000",
+      "CDEMO-LAST-MAP": "       ",
+      "CDEMO-LAST-MAPSET": "       ",
+      "CDEMO-CU00-USRID-FIRST": "        ",
+      "CDEMO-CU00-USRID-LAST": "        ",
+      "CDEMO-CU00-PAGE-NUM": "00000000",
+      "CDEMO-CU00-NEXT-PAGE-FLG": "N",
+      "CDEMO-CU00-USR-SEL-FLG": " ",
+      "CDEMO-CU00-USR-SELECTED": "        "
+    },
+    "sends": [
+      {
+        "fields": {
+          "TRNNAMEO": "CU00",
+          "TITLE01O": "      AWS Mainframe Modernization       ",
+          "CURDATEO": "07/19/22",
+          "PGMNAMEO": "COUSR00C",
+          "TITLE02O": "              CardDemo                  ",
+          "CURTIMEO": "23:12:34",
+          "PAGENUMO": "        ",
+          "USRIDINO": "        ",
+          "SEL0001O": " ",
+          "USRID01O": "        ",
+          "FNAME01O": "                    ",
+          "LNAME01O": "                    ",
+          "UTYPE01O": " ",
+          "SEL0002O": " ",
+          "USRID02O": "        ",
+          "FNAME02O": "                    ",
+          "LNAME02O": "                    ",
+          "UTYPE02O": " ",
+          "SEL0003O": " ",
+          "USRID03O": "        ",
+          "FNAME03O": "                    ",
+          "LNAME03O": "                    ",
+          "UTYPE03O": " ",
+          "SEL0004O": " ",
+          "USRID04O": "        ",
+          "FNAME04O": "                    ",
+          "LNAME04O": "                    ",
+          "UTYPE04O": " ",
+          "SEL0005O": " ",
+          "USRID05O": "        ",
+          "FNAME05O": "                    ",
+          "LNAME05O": "                    ",
+          "UTYPE05O": " ",
+          "SEL0006O": " ",
+          "USRID06O": "        ",
+          "FNAME06O": "                    ",
+          "LNAME06O": "                    ",
+          "UTYPE06O": " ",
+          "SEL0007O": " ",
+          "USRID07O": "        ",
+          "FNAME07O": "                    ",
+          "LNAME07O": "                    ",
+          "UTYPE07O": " ",
+          "SEL0008O": " ",
+          "USRID08O": "        ",
+          "FNAME08O": "                    ",
+          "LNAME08O": "                    ",
+          "UTYPE08O": " ",
+          "SEL0009O": " ",
+          "USRID09O": "        ",
+          "FNAME09O": "                    ",
+          "LNAME09O": "                    ",
+          "UTYPE09O": " ",
+          "SEL0010O": " ",
+          "USRID10O": "        ",
+          "FNAME10O": "                    ",
+          "LNAME10O": "                    ",
+          "UTYPE10O": " ",
+          "ERRMSGO": "Invalid key pressed. Please see below...                                      "
+        }
+      }
+    ],
+    "cursorField": "USRIDINL",
+    "termination": "RETURN_TRANSID"
+  },
+  "expectedWrites": [],
+  "expectedFinalState": [
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 0,
+      "expectedBytes": "ADMIN001MARGARET            GOLD                PASSWORDA                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 1,
+      "expectedBytes": "ADMIN002RUSSELL             RUSSELL             PASSWORDA                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 2,
+      "expectedBytes": "ADMIN003RAYMOND             WHITMORE            PASSWORDA                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 3,
+      "expectedBytes": "ADMIN004EMMANUEL            CASGRAIN            PASSWORDA                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 4,
+      "expectedBytes": "ADMIN005GRANVILLE           LACHAPELLE          PASSWORDA                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 5,
+      "expectedBytes": "USER0001LAWRENCE            THOMAS              PASSWORDU                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 6,
+      "expectedBytes": "USER0002AJITH               KUMAR               PASSWORDU                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 7,
+      "expectedBytes": "USER0003LAURITZ             ALME                PASSWORDU                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 8,
+      "expectedBytes": "USER0004AVERARDO            MAZZI               PASSWORDU                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 9,
+      "expectedBytes": "USER0005LEE                 TING                PASSWORDU                       "
+    }
+  ],
+  "expectedReturnCode": 0,
+  "expectedMessages": [],
+  "normalisations": [
+    {
+      "dataset": "USRSEC",
+      "kind": "USRSEC_FILLER_PAD_57_TO_80"
+    }
+  ]
+}

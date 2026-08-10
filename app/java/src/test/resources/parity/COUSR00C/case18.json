@@ -1,0 +1,189 @@
+{
+  "program": "COUSR00C",
+  "caseId": "case18",
+  "description": "A start key typed into USRIDINI: the ELSE at :220-222, which is the only path that anchors the browse on what the operator typed rather than on LOW-VALUES. 'USER0002' is moved into SEC-USR-ID, so the page begins at that key - STARTBR's default positioning is at or after the RIDFLD, and :288 is false for ENTER so the anchor record is kept rather than discarded. Four records remain, so the loop fills rows 1 to 4, the fifth READNEXT reaches the end of the file, and :319-321 counts the short page as page 1. :328 then MOVEs a single SPACE into USRIDINO - padded to eight by the alphanumeric MOVE - so the start-key field is cleared once the page it asked for has been built; :231 covers the same field on the path where :328 was not reached. PROCESS-PAGE-BACKWARD deliberately does not do this, which is why case07's USRIDINO keeps what it was sent.",
+  "unitKind": "CONTROLLER_POJO",
+  "inputs": {
+    "USRSEC": {
+      "rows": [
+        "ADMIN001MARGARET            GOLD                PASSWORDA",
+        "ADMIN002RUSSELL             RUSSELL             PASSWORDA",
+        "ADMIN003RAYMOND             WHITMORE            PASSWORDA",
+        "ADMIN004EMMANUEL            CASGRAIN            PASSWORDA",
+        "ADMIN005GRANVILLE           LACHAPELLE          PASSWORDA",
+        "USER0001LAWRENCE            THOMAS              PASSWORDU",
+        "USER0002AJITH               KUMAR               PASSWORDU",
+        "USER0003LAURITZ             ALME                PASSWORDU",
+        "USER0004AVERARDO            MAZZI               PASSWORDU",
+        "USER0005LEE                 TING                PASSWORDU"
+      ]
+    }
+  },
+  "screenRequest": {
+    "eibcalen": 194,
+    "aid": "DFHENTER",
+    "pinnedClock": "2022-07-19T23:12:34",
+    "charset": "US-ASCII",
+    "commarea": {
+      "CDEMO-PGM-CONTEXT": "1"
+    },
+    "mapFields": {
+      "USRIDINI": "USER0002"
+    },
+    "forcedOutcomes": {}
+  },
+  "expectedResponse": {
+    "navigation": {
+      "CDEMO-FROM-TRANID": "    ",
+      "CDEMO-FROM-PROGRAM": "        ",
+      "CDEMO-TO-TRANID": "    ",
+      "CDEMO-TO-PROGRAM": "        ",
+      "CDEMO-USER-ID": "        ",
+      "CDEMO-USER-TYPE": " ",
+      "CDEMO-PGM-CONTEXT": "1",
+      "CDEMO-CUST-ID": "000000000",
+      "CDEMO-CUST-FNAME": "                         ",
+      "CDEMO-CUST-MNAME": "                         ",
+      "CDEMO-CUST-LNAME": "                         ",
+      "CDEMO-ACCT-ID": "00000000000",
+      "CDEMO-ACCT-STATUS": " ",
+      "CDEMO-CARD-NUM": "0000000000000000",
+      "CDEMO-LAST-MAP": "       ",
+      "CDEMO-LAST-MAPSET": "       ",
+      "CDEMO-CU00-USRID-FIRST": "USER0002",
+      "CDEMO-CU00-USRID-LAST": "        ",
+      "CDEMO-CU00-PAGE-NUM": "00000001",
+      "CDEMO-CU00-NEXT-PAGE-FLG": "N",
+      "CDEMO-CU00-USR-SEL-FLG": " ",
+      "CDEMO-CU00-USR-SELECTED": "        "
+    },
+    "sends": [
+      {
+        "fields": {
+          "TRNNAMEO": "CU00",
+          "TITLE01O": "      AWS Mainframe Modernization       ",
+          "CURDATEO": "07/19/22",
+          "PGMNAMEO": "COUSR00C",
+          "TITLE02O": "              CardDemo                  ",
+          "CURTIMEO": "23:12:34",
+          "PAGENUMO": "00000001",
+          "USRIDINO": "        ",
+          "SEL0001O": " ",
+          "USRID01O": "USER0002",
+          "FNAME01O": "AJITH               ",
+          "LNAME01O": "KUMAR               ",
+          "UTYPE01O": "U",
+          "SEL0002O": " ",
+          "USRID02O": "USER0003",
+          "FNAME02O": "LAURITZ             ",
+          "LNAME02O": "ALME                ",
+          "UTYPE02O": "U",
+          "SEL0003O": " ",
+          "USRID03O": "USER0004",
+          "FNAME03O": "AVERARDO            ",
+          "LNAME03O": "MAZZI               ",
+          "UTYPE03O": "U",
+          "SEL0004O": " ",
+          "USRID04O": "USER0005",
+          "FNAME04O": "LEE                 ",
+          "LNAME04O": "TING                ",
+          "UTYPE04O": "U",
+          "SEL0005O": " ",
+          "USRID05O": "        ",
+          "FNAME05O": "                    ",
+          "LNAME05O": "                    ",
+          "UTYPE05O": " ",
+          "SEL0006O": " ",
+          "USRID06O": "        ",
+          "FNAME06O": "                    ",
+          "LNAME06O": "                    ",
+          "UTYPE06O": " ",
+          "SEL0007O": " ",
+          "USRID07O": "        ",
+          "FNAME07O": "                    ",
+          "LNAME07O": "                    ",
+          "UTYPE07O": " ",
+          "SEL0008O": " ",
+          "USRID08O": "        ",
+          "FNAME08O": "                    ",
+          "LNAME08O": "                    ",
+          "UTYPE08O": " ",
+          "SEL0009O": " ",
+          "USRID09O": "        ",
+          "FNAME09O": "                    ",
+          "LNAME09O": "                    ",
+          "UTYPE09O": " ",
+          "SEL0010O": " ",
+          "USRID10O": "        ",
+          "FNAME10O": "                    ",
+          "LNAME10O": "                    ",
+          "UTYPE10O": " ",
+          "ERRMSGO": "You have reached the bottom of the page...                                    "
+        }
+      }
+    ],
+    "cursorField": "USRIDINL",
+    "termination": "RETURN_TRANSID"
+  },
+  "expectedWrites": [],
+  "expectedFinalState": [
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 0,
+      "expectedBytes": "ADMIN001MARGARET            GOLD                PASSWORDA                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 1,
+      "expectedBytes": "ADMIN002RUSSELL             RUSSELL             PASSWORDA                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 2,
+      "expectedBytes": "ADMIN003RAYMOND             WHITMORE            PASSWORDA                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 3,
+      "expectedBytes": "ADMIN004EMMANUEL            CASGRAIN            PASSWORDA                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 4,
+      "expectedBytes": "ADMIN005GRANVILLE           LACHAPELLE          PASSWORDA                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 5,
+      "expectedBytes": "USER0001LAWRENCE            THOMAS              PASSWORDU                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 6,
+      "expectedBytes": "USER0002AJITH               KUMAR               PASSWORDU                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 7,
+      "expectedBytes": "USER0003LAURITZ             ALME                PASSWORDU                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 8,
+      "expectedBytes": "USER0004AVERARDO            MAZZI               PASSWORDU                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 9,
+      "expectedBytes": "USER0005LEE                 TING                PASSWORDU                       "
+    }
+  ],
+  "expectedReturnCode": 0,
+  "expectedMessages": [],
+  "normalisations": [
+    {
+      "dataset": "USRSEC",
+      "kind": "USRSEC_FILLER_PAD_57_TO_80"
+    }
+  ]
+}

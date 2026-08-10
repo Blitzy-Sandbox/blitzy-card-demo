@@ -1,0 +1,32 @@
+{
+  "program": "CBACT02C",
+  "caseId": "case18",
+  "description": "A row carrying a negative zoned-sign overpunch inside FILLER X(59), passed through to the output byte for byte. CVACT02Y declares no signed field at all, so the only span of a card record whose content the copybook does not constrain is the FILLER - a span that holds no field, that CBACT02C never writes, and that READ ... INTO CARD-RECORD at app/cbl/CBACT02C.cbl:93 fills with whatever the row held. The twelve characters '00000001940}' placed there are a genuine PIC S9(10)V99 image: eleven leading digits and a trailing '}', which carries both the sign and the low-order digit, so the twelve digits are 000000019400 and the value is -194.00 at scale 2. They are row 1 of acctdata.txt's ACCT-CURR-BAL image with the sign flipped, which is the field this program's Java class name gestures at and never touches. The expectation is that the DISPLAY line equals the seeded row exactly: rendering the line from the six decoded fields would agree on all six and emit 59 spaces for the FILLER, destroying the overpunch and with it the value it denotes. Trimming the row, or reading the trailing byte as a bare sign rather than as a digit and a sign, does the same damage.",
+  "unitKind": "BATCH_JOB",
+  "inputs": {
+    "CARDFILE": {
+      "rows": [
+        "111111111111112000000000042007PARITY OVERPUNCH PROBE                            2024-02-29Y00000001940}                                               "
+      ]
+    }
+  },
+  "jobParameters": {},
+  "expectedWrites": [],
+  "expectedFinalState": [],
+  "expectedReturnCode": 0,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "START OF EXECUTION OF PROGRAM CBACT02C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "111111111111112000000000042007PARITY OVERPUNCH PROBE                            2024-02-29Y00000001940}                                               "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "END OF EXECUTION OF PROGRAM CBACT02C"
+    }
+  ],
+  "normalisations": []
+}

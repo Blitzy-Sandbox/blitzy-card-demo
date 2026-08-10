@@ -1,0 +1,159 @@
+{
+  "program": "CBTRN03C",
+  "caseId": "case13",
+  "description": "The two records that pass through the writer at their full width, and the five that do not. TRANSACTION-HEADER-2 is declared PIC X(133) VALUE ALL '-' in app/cpy/CVTRA07Y.cpy, so it is already the record width app/jcl/TRANREPT.jcl:78 declares and reaches TRANREPT unpadded - 133 hyphens, no space anywhere; and WS-BLANK-LINE is PIC X(133) VALUE SPACES at :133, so it passes through as 133 spaces. The other five layouts are narrower and are right-space-padded to 133 by the writer: REPORT-NAME-HEADER 115, TRANSACTION-HEADER-1 114, TRANSACTION-DETAIL-REPORT 114, and REPORT-PAGE-TOTALS and REPORT-GRAND-TOTALS 112 each. Pinning every record as whole bytes is what makes each of those widths assertable.",
+  "unitKind": "BATCH_JOB",
+  "inputs": {
+    "TRANFILE": {
+      "rows": [
+        "TRN0000000000001010001POS TERM  A statically derived fixture transaction                                                            0000000077G999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000009238771932473302022-03-15-11.22.33.4444442022-03-15-11.22.33.444444                    "
+      ]
+    },
+    "CARDXREF": {
+      "fixture": "cardxref.txt"
+    },
+    "TRANTYPE": {
+      "fixture": "trantype.txt"
+    },
+    "TRANCATG": {
+      "fixture": "trancatg.txt"
+    },
+    "DATEPARM": {
+      "rows": [
+        "2022-01-01 2022-07-06                                                           "
+      ]
+    }
+  },
+  "jobParameters": {},
+  "expectedWrites": [
+    {
+      "dataset": "TRANREPT",
+      "rowIndex": 0,
+      "expectedBytes": "DALYREPT                              Daily Transaction Report                 Date Range: 2022-01-01 to 2022-07-06                  "
+    },
+    {
+      "dataset": "TRANREPT",
+      "rowIndex": 1,
+      "expectedBytes": "                                                                                                                                     "
+    },
+    {
+      "dataset": "TRANREPT",
+      "rowIndex": 2,
+      "expectedBytes": "Transaction ID   Account ID  Transaction Type   Tran Category                      Tran Source            Amount                     "
+    },
+    {
+      "dataset": "TRANREPT",
+      "rowIndex": 3,
+      "expectedBytes": "-------------------------------------------------------------------------------------------------------------------------------------"
+    },
+    {
+      "dataset": "TRANREPT",
+      "rowIndex": 4,
+      "expectedBytes": "TRN0000000000001 00000000002 01-Purchase        0001-Regular Sales Draft           POS TERM                 7.77                     "
+    },
+    {
+      "dataset": "TRANREPT",
+      "rowIndex": 5,
+      "expectedBytes": "Page Total ......................................................................................+         15.54                     "
+    },
+    {
+      "dataset": "TRANREPT",
+      "rowIndex": 6,
+      "expectedBytes": "-------------------------------------------------------------------------------------------------------------------------------------"
+    },
+    {
+      "dataset": "TRANREPT",
+      "rowIndex": 7,
+      "expectedBytes": "Grand Total......................................................................................+         15.54                     "
+    }
+  ],
+  "expectedFinalState": [
+    {
+      "dataset": "TRANREPT",
+      "rowIndex": 0,
+      "expectedBytes": "DALYREPT                              Daily Transaction Report                 Date Range: 2022-01-01 to 2022-07-06                  "
+    },
+    {
+      "dataset": "TRANREPT",
+      "rowIndex": 1,
+      "expectedBytes": "                                                                                                                                     "
+    },
+    {
+      "dataset": "TRANREPT",
+      "rowIndex": 2,
+      "expectedBytes": "Transaction ID   Account ID  Transaction Type   Tran Category                      Tran Source            Amount                     "
+    },
+    {
+      "dataset": "TRANREPT",
+      "rowIndex": 3,
+      "expectedBytes": "-------------------------------------------------------------------------------------------------------------------------------------"
+    },
+    {
+      "dataset": "TRANREPT",
+      "rowIndex": 4,
+      "expectedBytes": "TRN0000000000001 00000000002 01-Purchase        0001-Regular Sales Draft           POS TERM                 7.77                     "
+    },
+    {
+      "dataset": "TRANREPT",
+      "rowIndex": 5,
+      "expectedBytes": "Page Total ......................................................................................+         15.54                     "
+    },
+    {
+      "dataset": "TRANREPT",
+      "rowIndex": 6,
+      "expectedBytes": "-------------------------------------------------------------------------------------------------------------------------------------"
+    },
+    {
+      "dataset": "TRANREPT",
+      "rowIndex": 7,
+      "expectedBytes": "Grand Total......................................................................................+         15.54                     "
+    }
+  ],
+  "expectedReturnCode": 0,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "START OF EXECUTION OF PROGRAM CBTRN03C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "Reporting from 2022-01-01 to 2022-07-06"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "TRN0000000000001010001POS TERM  A statically derived fixture transaction                                                            0000000077G999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000009238771932473302022-03-15-11.22.33.4444442022-03-15-11.22.33.444444                    "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "TRAN-AMT 0000000077G"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "WS-PAGE-TOTAL0000000077G"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "END OF EXECUTION OF PROGRAM CBTRN03C"
+    }
+  ],
+  "normalisations": [
+    {
+      "dataset": "CARDXREF",
+      "kind": "CARDXREF_FILLER_PAD_36_TO_50"
+    }
+  ],
+  "expectedDatasets": [
+    {
+      "dataset": "TRANREPT",
+      "channel": "WRITES",
+      "rowCount": 8,
+      "recordLength": 133
+    },
+    {
+      "dataset": "TRANREPT",
+      "channel": "FINAL_STATE",
+      "rowCount": 8,
+      "recordLength": 133
+    }
+  ]
+}

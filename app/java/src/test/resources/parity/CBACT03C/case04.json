@@ -1,0 +1,68 @@
+{
+  "program": "CBACT03C",
+  "caseId": "case04",
+  "description": "The fixture's last two rows, 48 and 49, so the browse ends on the highest key the cluster holds. The last-record boundary: the second row is displayed in full and only THEN does the next READ report '10'. On that end-of-file READ the record area is left untouched, exactly as a COBOL READ ... INTO leaves it at AT END, and the :77 guard is what stops the stale record being displayed a third time - which is precisely the defect this case would catch, as a translation that displayed it would emit seven lines instead of six.",
+  "unitKind": "BATCH_JOB",
+  "inputs": {
+    "XREFFILE": {
+      "fixture": "cardxref.txt",
+      "fromRow": 48,
+      "rowCount": 2
+    }
+  },
+  "jobParameters": {},
+  "expectedWrites": [],
+  "expectedFinalState": [
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 0,
+      "expectedBytes": "968029415460369700000000100000000001              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 1,
+      "expectedBytes": "980558340899658800000004000000000040              "
+    }
+  ],
+  "expectedReturnCode": 0,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "START OF EXECUTION OF PROGRAM CBACT03C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "968029415460369700000000100000000001              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "968029415460369700000000100000000001              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "980558340899658800000004000000000040              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "980558340899658800000004000000000040              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "END OF EXECUTION OF PROGRAM CBACT03C"
+    }
+  ],
+  "normalisations": [
+    {
+      "dataset": "XREFFILE",
+      "kind": "CARDXREF_FILLER_PAD_36_TO_50"
+    }
+  ],
+  "expectedDatasets": [
+    {
+      "dataset": "XREFFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 2,
+      "recordLength": 50
+    }
+  ]
+}

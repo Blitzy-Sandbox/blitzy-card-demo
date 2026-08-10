@@ -1,0 +1,277 @@
+{
+  "program": "COUSR00C",
+  "caseId": "case05",
+  "description": "A full page with a further page below it - the only path that reaches :313. Twenty-five records are seeded: the ten of app/jcl/DUSRSECJ.jcl and fifteen synthetic ZUSERnnn records, whose keys sort after both ADMIN and USER so the file stays in ascending key order and the first ten records are always the real ones. The forward loop fills all ten rows, :309-310 computes page 1, and the look-ahead READNEXT at :311 finds an eleventh record, so :313 SETs NEXT-PAGE-YES and WS-MESSAGE is never touched - the message line is 78 spaces. That is the exact complement of case02, where the same look-ahead hit the end of the file. Page size ten is behaviour and not configuration: the eleventh record exists and is deliberately NOT shown (gate G39).",
+  "unitKind": "CONTROLLER_POJO",
+  "inputs": {
+    "USRSEC": {
+      "rows": [
+        "ADMIN001MARGARET            GOLD                PASSWORDA",
+        "ADMIN002RUSSELL             RUSSELL             PASSWORDA",
+        "ADMIN003RAYMOND             WHITMORE            PASSWORDA",
+        "ADMIN004EMMANUEL            CASGRAIN            PASSWORDA",
+        "ADMIN005GRANVILLE           LACHAPELLE          PASSWORDA",
+        "USER0001LAWRENCE            THOMAS              PASSWORDU",
+        "USER0002AJITH               KUMAR               PASSWORDU",
+        "USER0003LAURITZ             ALME                PASSWORDU",
+        "USER0004AVERARDO            MAZZI               PASSWORDU",
+        "USER0005LEE                 TING                PASSWORDU",
+        "ZUSER001SYNTHETIC1          EXTRA1              PASSWORDU",
+        "ZUSER002SYNTHETIC2          EXTRA2              PASSWORDU",
+        "ZUSER003SYNTHETIC3          EXTRA3              PASSWORDU",
+        "ZUSER004SYNTHETIC4          EXTRA4              PASSWORDU",
+        "ZUSER005SYNTHETIC5          EXTRA5              PASSWORDU",
+        "ZUSER006SYNTHETIC6          EXTRA6              PASSWORDU",
+        "ZUSER007SYNTHETIC7          EXTRA7              PASSWORDU",
+        "ZUSER008SYNTHETIC8          EXTRA8              PASSWORDU",
+        "ZUSER009SYNTHETIC9          EXTRA9              PASSWORDU",
+        "ZUSER010SYNTHETIC10         EXTRA10             PASSWORDU",
+        "ZUSER011SYNTHETIC11         EXTRA11             PASSWORDU",
+        "ZUSER012SYNTHETIC12         EXTRA12             PASSWORDU",
+        "ZUSER013SYNTHETIC13         EXTRA13             PASSWORDU",
+        "ZUSER014SYNTHETIC14         EXTRA14             PASSWORDU",
+        "ZUSER015SYNTHETIC15         EXTRA15             PASSWORDU"
+      ]
+    }
+  },
+  "screenRequest": {
+    "eibcalen": 194,
+    "aid": "DFHENTER",
+    "pinnedClock": "2022-07-19T23:12:34",
+    "charset": "US-ASCII",
+    "commarea": {
+      "CDEMO-PGM-CONTEXT": "0"
+    },
+    "mapFields": {},
+    "forcedOutcomes": {}
+  },
+  "expectedResponse": {
+    "navigation": {
+      "CDEMO-FROM-TRANID": "    ",
+      "CDEMO-FROM-PROGRAM": "        ",
+      "CDEMO-TO-TRANID": "    ",
+      "CDEMO-TO-PROGRAM": "        ",
+      "CDEMO-USER-ID": "        ",
+      "CDEMO-USER-TYPE": " ",
+      "CDEMO-PGM-CONTEXT": "1",
+      "CDEMO-CUST-ID": "000000000",
+      "CDEMO-CUST-FNAME": "                         ",
+      "CDEMO-CUST-MNAME": "                         ",
+      "CDEMO-CUST-LNAME": "                         ",
+      "CDEMO-ACCT-ID": "00000000000",
+      "CDEMO-ACCT-STATUS": " ",
+      "CDEMO-CARD-NUM": "0000000000000000",
+      "CDEMO-LAST-MAP": "       ",
+      "CDEMO-LAST-MAPSET": "       ",
+      "CDEMO-CU00-USRID-FIRST": "ADMIN001",
+      "CDEMO-CU00-USRID-LAST": "USER0005",
+      "CDEMO-CU00-PAGE-NUM": "00000001",
+      "CDEMO-CU00-NEXT-PAGE-FLG": "Y",
+      "CDEMO-CU00-USR-SEL-FLG": " ",
+      "CDEMO-CU00-USR-SELECTED": "        "
+    },
+    "sends": [
+      {
+        "fields": {
+          "TRNNAMEO": "CU00",
+          "TITLE01O": "      AWS Mainframe Modernization       ",
+          "CURDATEO": "07/19/22",
+          "PGMNAMEO": "COUSR00C",
+          "TITLE02O": "              CardDemo                  ",
+          "CURTIMEO": "23:12:34",
+          "PAGENUMO": "00000001",
+          "USRIDINO": "        ",
+          "SEL0001O": " ",
+          "USRID01O": "ADMIN001",
+          "FNAME01O": "MARGARET            ",
+          "LNAME01O": "GOLD                ",
+          "UTYPE01O": "A",
+          "SEL0002O": " ",
+          "USRID02O": "ADMIN002",
+          "FNAME02O": "RUSSELL             ",
+          "LNAME02O": "RUSSELL             ",
+          "UTYPE02O": "A",
+          "SEL0003O": " ",
+          "USRID03O": "ADMIN003",
+          "FNAME03O": "RAYMOND             ",
+          "LNAME03O": "WHITMORE            ",
+          "UTYPE03O": "A",
+          "SEL0004O": " ",
+          "USRID04O": "ADMIN004",
+          "FNAME04O": "EMMANUEL            ",
+          "LNAME04O": "CASGRAIN            ",
+          "UTYPE04O": "A",
+          "SEL0005O": " ",
+          "USRID05O": "ADMIN005",
+          "FNAME05O": "GRANVILLE           ",
+          "LNAME05O": "LACHAPELLE          ",
+          "UTYPE05O": "A",
+          "SEL0006O": " ",
+          "USRID06O": "USER0001",
+          "FNAME06O": "LAWRENCE            ",
+          "LNAME06O": "THOMAS              ",
+          "UTYPE06O": "U",
+          "SEL0007O": " ",
+          "USRID07O": "USER0002",
+          "FNAME07O": "AJITH               ",
+          "LNAME07O": "KUMAR               ",
+          "UTYPE07O": "U",
+          "SEL0008O": " ",
+          "USRID08O": "USER0003",
+          "FNAME08O": "LAURITZ             ",
+          "LNAME08O": "ALME                ",
+          "UTYPE08O": "U",
+          "SEL0009O": " ",
+          "USRID09O": "USER0004",
+          "FNAME09O": "AVERARDO            ",
+          "LNAME09O": "MAZZI               ",
+          "UTYPE09O": "U",
+          "SEL0010O": " ",
+          "USRID10O": "USER0005",
+          "FNAME10O": "LEE                 ",
+          "LNAME10O": "TING                ",
+          "UTYPE10O": "U",
+          "ERRMSGO": "                                                                              "
+        }
+      }
+    ],
+    "cursorField": "USRIDINL",
+    "termination": "RETURN_TRANSID"
+  },
+  "expectedWrites": [],
+  "expectedFinalState": [
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 0,
+      "expectedBytes": "ADMIN001MARGARET            GOLD                PASSWORDA                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 1,
+      "expectedBytes": "ADMIN002RUSSELL             RUSSELL             PASSWORDA                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 2,
+      "expectedBytes": "ADMIN003RAYMOND             WHITMORE            PASSWORDA                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 3,
+      "expectedBytes": "ADMIN004EMMANUEL            CASGRAIN            PASSWORDA                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 4,
+      "expectedBytes": "ADMIN005GRANVILLE           LACHAPELLE          PASSWORDA                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 5,
+      "expectedBytes": "USER0001LAWRENCE            THOMAS              PASSWORDU                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 6,
+      "expectedBytes": "USER0002AJITH               KUMAR               PASSWORDU                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 7,
+      "expectedBytes": "USER0003LAURITZ             ALME                PASSWORDU                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 8,
+      "expectedBytes": "USER0004AVERARDO            MAZZI               PASSWORDU                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 9,
+      "expectedBytes": "USER0005LEE                 TING                PASSWORDU                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 10,
+      "expectedBytes": "ZUSER001SYNTHETIC1          EXTRA1              PASSWORDU                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 11,
+      "expectedBytes": "ZUSER002SYNTHETIC2          EXTRA2              PASSWORDU                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 12,
+      "expectedBytes": "ZUSER003SYNTHETIC3          EXTRA3              PASSWORDU                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 13,
+      "expectedBytes": "ZUSER004SYNTHETIC4          EXTRA4              PASSWORDU                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 14,
+      "expectedBytes": "ZUSER005SYNTHETIC5          EXTRA5              PASSWORDU                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 15,
+      "expectedBytes": "ZUSER006SYNTHETIC6          EXTRA6              PASSWORDU                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 16,
+      "expectedBytes": "ZUSER007SYNTHETIC7          EXTRA7              PASSWORDU                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 17,
+      "expectedBytes": "ZUSER008SYNTHETIC8          EXTRA8              PASSWORDU                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 18,
+      "expectedBytes": "ZUSER009SYNTHETIC9          EXTRA9              PASSWORDU                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 19,
+      "expectedBytes": "ZUSER010SYNTHETIC10         EXTRA10             PASSWORDU                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 20,
+      "expectedBytes": "ZUSER011SYNTHETIC11         EXTRA11             PASSWORDU                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 21,
+      "expectedBytes": "ZUSER012SYNTHETIC12         EXTRA12             PASSWORDU                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 22,
+      "expectedBytes": "ZUSER013SYNTHETIC13         EXTRA13             PASSWORDU                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 23,
+      "expectedBytes": "ZUSER014SYNTHETIC14         EXTRA14             PASSWORDU                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 24,
+      "expectedBytes": "ZUSER015SYNTHETIC15         EXTRA15             PASSWORDU                       "
+    }
+  ],
+  "expectedReturnCode": 0,
+  "expectedMessages": [],
+  "normalisations": [
+    {
+      "dataset": "USRSEC",
+      "kind": "USRSEC_FILLER_PAD_57_TO_80"
+    }
+  ]
+}

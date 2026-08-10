@@ -1,0 +1,104 @@
+{
+  "program": "CBACT03C",
+  "caseId": "case09",
+  "description": "Three records are read and displayed normally and the fourth READ reports '04', a record whose length disagrees with the copybook. Ten lines: the opening banner, six record lines, then the three failure lines. This case pins the ORDER that the two other read cases cannot - the error lines follow every line the successful reads already produced, because 1000-XREFFILE-GET-NEXT is performed inside the loop at :76 rather than before it - and it pins that '04' is fatal here. '04' is a status this program never names: :94 tests only '00' and :98 only '10', so everything else falls to :101. There is no END OF EXECUTION line, because :113 abends before :83 and :85 are reached.",
+  "unitKind": "BATCH_JOB",
+  "inputs": {
+    "XREFFILE": {
+      "fixture": "cardxref.txt",
+      "fromRow": 0,
+      "rowCount": 6
+    }
+  },
+  "jobParameters": {},
+  "expectedWrites": [],
+  "expectedFinalState": [
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 0,
+      "expectedBytes": "050002445376574000000005000000000050              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 1,
+      "expectedBytes": "068358619817151600000002700000000027              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 2,
+      "expectedBytes": "092387719324733000000000200000000002              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 3,
+      "expectedBytes": "092798710863623200000002000000000020              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 4,
+      "expectedBytes": "098249621362979500000001200000000012              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 5,
+      "expectedBytes": "101408656522435000000004400000000044              "
+    }
+  ],
+  "expectedReturnCode": 12,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "START OF EXECUTION OF PROGRAM CBACT03C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "050002445376574000000005000000000050              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "050002445376574000000005000000000050              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "068358619817151600000002700000000027              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "068358619817151600000002700000000027              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "092387719324733000000000200000000002              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "092387719324733000000000200000000002              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ERROR READING XREFFILE"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "FILE STATUS IS: NNNN0004"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ABENDING PROGRAM"
+    }
+  ],
+  "normalisations": [
+    {
+      "dataset": "XREFFILE",
+      "kind": "CARDXREF_FILLER_PAD_36_TO_50"
+    }
+  ],
+  "expectedDatasets": [
+    {
+      "dataset": "XREFFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 6,
+      "recordLength": 50
+    }
+  ]
+}

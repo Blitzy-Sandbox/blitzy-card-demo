@@ -1,0 +1,32 @@
+{
+  "program": "CBACT02C",
+  "caseId": "case04",
+  "description": "The last-record boundary, in isolation: the fixture's final row, key 9805583408996588. The same three-line shape as case03 over a different record, and it is worth its own case because the highest key in the file is where a browse that positions at-or-after its start key and a READ that walks forward can most easily disagree about whether one more record exists. Here the record is delivered ('00' at app/cbl/CBACT02C.cbl:94, DISPLAY at :78) and the following READ reports '10' (:98, then :107-108), so the file ends immediately after its last record rather than one record early or one record late.",
+  "unitKind": "BATCH_JOB",
+  "inputs": {
+    "CARDFILE": {
+      "fixture": "carddata.txt",
+      "fromRow": 49,
+      "rowCount": 1
+    }
+  },
+  "jobParameters": {},
+  "expectedWrites": [],
+  "expectedFinalState": [],
+  "expectedReturnCode": 0,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "START OF EXECUTION OF PROGRAM CBACT02C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "980558340899658800000000040908Davon Emmerich                                    2023-10-27Y                                                           "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "END OF EXECUTION OF PROGRAM CBACT02C"
+    }
+  ],
+  "normalisations": []
+}

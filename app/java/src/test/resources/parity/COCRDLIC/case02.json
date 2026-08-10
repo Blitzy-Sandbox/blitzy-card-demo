@@ -1,0 +1,137 @@
+{
+  "program": "COCRDLIC",
+  "caseId": "case02",
+  "description": "The page is exactly full and the file is exactly exhausted, which separates two arms a fuller file conflates. Seven records satisfy IF WS-SCRN-COUNTER = WS-MAX-SCREEN-LINES at :1191, so :1194-1195 stores the seventh record as the page's last key and the look-ahead READNEXT at :1197 is issued anyway - learning whether an eighth record exists is that read's only purpose. It returns DFHRESP(ENDFILE), so :1215-1216 sets CA-NEXT-PAGE-NOT-EXISTS and :1218-1221 moves 'NO MORE RECORDS TO SHOW', leaving the seventh record's key standing because the ENDFILE arm overwrites nothing. The info line is still informed: :917 matches, and :926-929's second condition only suppresses the text for the no-records message, which this is not. So the operator sees both lines - contrast case04, where one is suppressed.",
+  "unitKind": "CONTROLLER_POJO",
+  "inputs": {
+    "CARDDAT": {
+      "fixture": "carddata.txt",
+      "rowCount": 7
+    }
+  },
+  "screenRequest": {
+    "eibcalen": 0,
+    "pinnedClock": "2022-07-19T23:12:34",
+    "charset": "US-ASCII",
+    "commarea": {},
+    "mapFields": {},
+    "forcedOutcomes": {},
+    "aid": "DFHENTER"
+  },
+  "expectedResponse": {
+    "navigation": {
+      "CDEMO-FROM-TRANID": "CCLI",
+      "CDEMO-FROM-PROGRAM": "COCRDLIC",
+      "CDEMO-TO-TRANID": "    ",
+      "CDEMO-TO-PROGRAM": "        ",
+      "CDEMO-USER-ID": "        ",
+      "CDEMO-USER-TYPE": "U",
+      "CDEMO-PGM-CONTEXT": "0",
+      "CDEMO-CUST-ID": "000000000",
+      "CDEMO-CUST-FNAME": "                         ",
+      "CDEMO-CUST-MNAME": "                         ",
+      "CDEMO-CUST-LNAME": "                         ",
+      "CDEMO-ACCT-ID": "00000000000",
+      "CDEMO-ACCT-STATUS": " ",
+      "CDEMO-CARD-NUM": "0000000000000000",
+      "CDEMO-LAST-MAP": "CCRDLIA",
+      "CDEMO-LAST-MAPSET": "COCRDLI"
+    },
+    "sends": [
+      {
+        "fields": {
+          "TRNNAMEO": "CCLI",
+          "TITLE01O": "      AWS Mainframe Modernization       ",
+          "CURDATEO": "07/19/22",
+          "PGMNAMEO": "COCRDLIC",
+          "TITLE02O": "              CardDemo                  ",
+          "CURTIMEO": "23:12:34",
+          "PAGENOO": "1  ",
+          "ACCTSIDO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "CARDSIDO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "CRDSEL1O": " ",
+          "ACCTNO1O": "00000000050",
+          "CRDNUM1O": "0500024453765740",
+          "CRDSTS1O": "Y",
+          "CRDSEL2O": " ",
+          "CRDSTP2O": "\u0000",
+          "ACCTNO2O": "00000000027",
+          "CRDNUM2O": "0683586198171516",
+          "CRDSTS2O": "Y",
+          "CRDSEL3O": " ",
+          "CRDSTP3O": "\u0000",
+          "ACCTNO3O": "00000000002",
+          "CRDNUM3O": "0923877193247330",
+          "CRDSTS3O": "Y",
+          "CRDSEL4O": " ",
+          "CRDSTP4O": "\u0000",
+          "ACCTNO4O": "00000000020",
+          "CRDNUM4O": "0927987108636232",
+          "CRDSTS4O": "Y",
+          "CRDSEL5O": " ",
+          "CRDSTP5O": "\u0000",
+          "ACCTNO5O": "00000000012",
+          "CRDNUM5O": "0982496213629795",
+          "CRDSTS5O": "Y",
+          "CRDSEL6O": " ",
+          "CRDSTP6O": "\u0000",
+          "ACCTNO6O": "00000000044",
+          "CRDNUM6O": "1014086565224350",
+          "CRDSTS6O": "Y",
+          "CRDSEL7O": " ",
+          "CRDSTP7O": "\u0000",
+          "ACCTNO7O": "00000000037",
+          "CRDNUM7O": "1142167692878931",
+          "CRDSTS7O": "Y",
+          "INFOMSGO": "TYPE S FOR DETAIL, U TO UPDATE ANY RECORD    ",
+          "ERRMSGO": "NO MORE RECORDS TO SHOW                                                       "
+        },
+        "attributes": {
+          "INFOMSGC": "DFHNEUTR"
+        }
+      }
+    ],
+    "cursorField": "ACCTSIDL",
+    "termination": "RETURN_TRANSID"
+  },
+  "expectedWrites": [],
+  "expectedFinalState": [
+    {
+      "dataset": "CARDDAT",
+      "rowIndex": 0,
+      "expectedBytes": "050002445376574000000000050747Aniya Von                                         2023-03-09Y                                                           "
+    },
+    {
+      "dataset": "CARDDAT",
+      "rowIndex": 1,
+      "expectedBytes": "068358619817151600000000027567Ward Jones                                        2025-07-13Y                                                           "
+    },
+    {
+      "dataset": "CARDDAT",
+      "rowIndex": 2,
+      "expectedBytes": "092387719324733000000000002028Enrico Rosenbaum                                  2024-08-11Y                                                           "
+    },
+    {
+      "dataset": "CARDDAT",
+      "rowIndex": 3,
+      "expectedBytes": "092798710863623200000000020003Carter Veum                                       2024-03-13Y                                                           "
+    },
+    {
+      "dataset": "CARDDAT",
+      "rowIndex": 4,
+      "expectedBytes": "098249621362979500000000012075Maci Robel                                        2023-07-07Y                                                           "
+    },
+    {
+      "dataset": "CARDDAT",
+      "rowIndex": 5,
+      "expectedBytes": "101408656522435000000000044640Irving Emard                                      2024-01-17Y                                                           "
+    },
+    {
+      "dataset": "CARDDAT",
+      "rowIndex": 6,
+      "expectedBytes": "114216769287893100000000037625Shany Walker                                      2023-10-24Y                                                           "
+    }
+  ],
+  "expectedReturnCode": 0,
+  "expectedMessages": []
+}

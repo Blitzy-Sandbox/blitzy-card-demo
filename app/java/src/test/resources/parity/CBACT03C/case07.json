@@ -1,0 +1,75 @@
+{
+  "program": "CBACT03C",
+  "caseId": "case07",
+  "description": "The same failed OPEN as case06 but reporting the VSAM extended status '92', which drives the OTHER arm of 9910-DISPLAY-IO-STATUS at :162-168 - the one taken when IO-STAT1 = '9'. That arm is genuine byte arithmetic and is the most easily mistranslated paragraph in the program: IO-STAT1 is moved to IO-STATUS-04(1:1), TWO-BYTES-BINARY is zeroed, IO-STAT2 is deposited into TWO-BYTES-RIGHT through the REDEFINES at :54-56, and the resulting unsigned value fills IO-STATUS-0403 PIC 999. The second byte here is '2', whose code point is 50, so the image is 9050 and NOT 0092. A translation that formatted the two characters directly would emit 0092 and this case is what says so.",
+  "unitKind": "BATCH_JOB",
+  "inputs": {
+    "XREFFILE": {
+      "fixture": "cardxref.txt",
+      "fromRow": 0,
+      "rowCount": 5
+    }
+  },
+  "jobParameters": {},
+  "expectedWrites": [],
+  "expectedFinalState": [
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 0,
+      "expectedBytes": "050002445376574000000005000000000050              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 1,
+      "expectedBytes": "068358619817151600000002700000000027              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 2,
+      "expectedBytes": "092387719324733000000000200000000002              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 3,
+      "expectedBytes": "092798710863623200000002000000000020              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 4,
+      "expectedBytes": "098249621362979500000001200000000012              "
+    }
+  ],
+  "expectedReturnCode": 12,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "START OF EXECUTION OF PROGRAM CBACT03C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ERROR OPENING XREFFILE"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "FILE STATUS IS: NNNN9050"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ABENDING PROGRAM"
+    }
+  ],
+  "normalisations": [
+    {
+      "dataset": "XREFFILE",
+      "kind": "CARDXREF_FILLER_PAD_36_TO_50"
+    }
+  ],
+  "expectedDatasets": [
+    {
+      "dataset": "XREFFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 5,
+      "recordLength": 50
+    }
+  ]
+}

@@ -1,0 +1,58 @@
+{
+  "program": "COADM01C",
+  "caseId": "case07",
+  "description": "OPTIONI '3 ' - a digit typed with a trailing space - which is the case that proves the JUSTIFIED RIGHT receiver at app/cbl/COADM01C.cbl:45. Byte 2 is a space, so the descending scan at 117-121 stops at WS-IDX 1 and line 122 sends only the leading byte '3'. Because WS-OPTION-X is declared PIC X(02) JUST RIGHT, that one byte lands at the RIGHTMOST position and the receiver is space-filled on the LEFT, giving ' 3' and not '3 '; line 123's INSPECT then makes it '03'. A left-justifying implementation would produce '30', which is out of range and would be rejected - so the transfer to COUSR02C, the third option, is the observable difference between the two. The map agrees with the receiver: app/bms/COADM01.bms:145-149 declares OPTION with JUSTIFY=(RIGHT,ZERO).",
+  "unitKind": "SERVICE",
+  "inputs": {},
+  "screenRequest": {
+    "eibcalen": 160,
+    "aid": "DFHENTER",
+    "pinnedClock": "2022-07-19T23:12:32",
+    "charset": "US-ASCII",
+    "commarea": {
+      "CDEMO-FROM-TRANID": "CC00",
+      "CDEMO-FROM-PROGRAM": "COSGN00C",
+      "CDEMO-TO-PROGRAM": "COADM01C",
+      "CDEMO-USER-ID": "ADMIN001",
+      "CDEMO-USER-TYPE": "A",
+      "CDEMO-PGM-CONTEXT": "1"
+    },
+    "mapFields": {
+      "OPTIONI": "3 "
+    },
+    "forcedOutcomes": {}
+  },
+  "expectedResponse": {
+    "nextProgram": "COUSR02C",
+    "navigation": {
+      "CDEMO-FROM-TRANID": "CA00",
+      "CDEMO-FROM-PROGRAM": "COADM01C",
+      "CDEMO-TO-TRANID": "    ",
+      "CDEMO-TO-PROGRAM": "COADM01C",
+      "CDEMO-USER-ID": "ADMIN001",
+      "CDEMO-USER-TYPE": "A",
+      "CDEMO-PGM-CONTEXT": "0",
+      "CDEMO-CUST-ID": "000000000",
+      "CDEMO-CUST-FNAME": "                         ",
+      "CDEMO-CUST-MNAME": "                         ",
+      "CDEMO-CUST-LNAME": "                         ",
+      "CDEMO-ACCT-ID": "00000000000",
+      "CDEMO-ACCT-STATUS": " ",
+      "CDEMO-CARD-NUM": "0000000000000000",
+      "CDEMO-LAST-MAP": "       ",
+      "CDEMO-LAST-MAPSET": "       "
+    },
+    "sends": [],
+    "termination": "XCTL"
+  },
+  "expectedWrites": [],
+  "expectedFinalState": [],
+  "expectedReturnCode": 0,
+  "expectedMessages": [
+    {
+      "channel": "WS_MESSAGE_80",
+      "text": "                                                                                "
+    }
+  ],
+  "normalisations": []
+}

@@ -1,0 +1,54 @@
+{
+  "program": "CBSTM03B",
+  "caseId": "case01",
+  "description": "app/cbl/CBSTM03B.CBL:135-137 - 1000-TRNXFILE-PROC's IF M03B-OPEN, OPEN INPUT TRNX-FILE, GO TO 1900-EXIT, then 1900-EXIT's MOVE TRNXFILE-STATUS TO LK-M03B-RC. The whole of the observable behaviour is the 1040-byte area the CALL leaves behind, which is why the expectation pins it byte for byte: LK-M03B-DD X(08) 'TRNXFILE', LK-M03B-OPER X(01) 'O', LK-M03B-RC X(02) '00', LK-M03B-KEY X(25) spaces, LK-M03B-KEY-LN S9(4) as the signed zoned image '000{' for zero, and LK-M03B-FLDT X(1000) still entirely spaces because an OPEN reads no record. That last span is the 1000-byte padding assertion in its purest form - the area is 1040 bytes whether or not a record was read.",
+  "unitKind": "COMPONENT",
+  "inputs": {
+    "TRNXFILE": {
+      "rows": [
+        "05000244537657400000000058866561010001POS TERM  Purchase at Blick-Rippin                                                                            0000001838H800000000Blick-Rippin                                      East Julien                                       87157     2022-06-10 19:27:53.000000                                              ",
+        "05000244537657400000000329724245010001POS TERM  Purchase at Reichel Group                                                                           0000000140{800000000Reichel Group                                     Port Romanfort                                    95843     2022-06-10 19:27:53.000000                                              "
+      ]
+    }
+  },
+  "jobParameters": {},
+  "screenRequest": null,
+  "expectedResponse": null,
+  "expectedWrites": [
+    {
+      "dataset": "M03BAREA",
+      "rowIndex": 0,
+      "fields": {
+        "LK-M03B-DD": "TRNXFILE",
+        "LK-M03B-OPER": "O",
+        "LK-M03B-RC": "00"
+      },
+      "expectedBytes": "TRNXFILEO00                         000{                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        "
+    }
+  ],
+  "expectedFinalState": [
+    {
+      "dataset": "TRNXFILE",
+      "rowIndex": 0,
+      "fields": {},
+      "expectedBytes": "05000244537657400000000058866561010001POS TERM  Purchase at Blick-Rippin                                                                            0000001838H800000000Blick-Rippin                                      East Julien                                       87157     2022-06-10 19:27:53.000000                                              "
+    },
+    {
+      "dataset": "TRNXFILE",
+      "rowIndex": 1,
+      "fields": {},
+      "expectedBytes": "05000244537657400000000329724245010001POS TERM  Purchase at Reichel Group                                                                           0000000140{800000000Reichel Group                                     Port Romanfort                                    95843     2022-06-10 19:27:53.000000                                              "
+    }
+  ],
+  "expectedReturnCode": 0,
+  "expectedMessages": [],
+  "normalisations": [],
+  "expectedDatasets": [
+    {
+      "dataset": "M03BAREA",
+      "channel": "WRITES",
+      "rowCount": 1,
+      "recordLength": 1040
+    }
+  ]
+}

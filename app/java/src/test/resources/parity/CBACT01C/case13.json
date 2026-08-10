@@ -1,0 +1,36 @@
+{
+  "program": "CBACT01C",
+  "caseId": "case13",
+  "description": "The fatal read arm, reached by a stored row that is not a CVACT01Y record: it is the account record with its trailing FILLER PIC X(178) span absent, so it measures 122 bytes where app/cpy/CVACT01Y.cpy declares 300. Fields are not decoded from offsets that would not be theirs; the read reports a permanent error, so 1000-ACCTFILE-GET-NEXT moves 12 into APPL-RESULT, both the 88 APPL-AOK and the 88 APPL-EOF conditions fail, and L110-L113 run: DISPLAY 'ERROR READING ACCOUNT FILE', the rendered status, then the abend with RETURN-CODE 12. This is the failure mode a record-width assertion exists to catch, seen from the program's side.",
+  "unitKind": "BATCH_JOB",
+  "inputs": {
+    "ACCTFILE": {
+      "rows": [
+        "00000000601Y00000001940{00000020200{00000010200{2014-11-202025-05-202025-05-2000000000000{00000000000{A000000000          "
+      ]
+    }
+  },
+  "jobParameters": {},
+  "expectedWrites": [],
+  "expectedFinalState": [],
+  "expectedReturnCode": 12,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "START OF EXECUTION OF PROGRAM CBACT01C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ERROR READING ACCOUNT FILE"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "FILE STATUS IS: NNNN9000"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ABENDING PROGRAM"
+    }
+  ],
+  "normalisations": []
+}

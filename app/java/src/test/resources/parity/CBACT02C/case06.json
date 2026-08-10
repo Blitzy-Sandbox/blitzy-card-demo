@@ -1,0 +1,36 @@
+{
+  "program": "CBACT02C",
+  "caseId": "case06",
+  "description": "Two records: the smallest input that proves the loop iterates rather than reading once. The PERFORM UNTIL at app/cbl/CBACT02C.cbl:74 must re-test END-OF-FILE and re-enter, so the sequence is READ '00' - DISPLAY - READ '00' - DISPLAY - READ '10' - end. It also pins that the '10' arm follows a successful read without disturbing anything already emitted: :108 moves 'Y' into END-OF-FILE and the two lines already written stay written, in order. Four lines out.",
+  "unitKind": "BATCH_JOB",
+  "inputs": {
+    "CARDFILE": {
+      "fixture": "carddata.txt",
+      "fromRow": 0,
+      "rowCount": 2
+    }
+  },
+  "jobParameters": {},
+  "expectedWrites": [],
+  "expectedFinalState": [],
+  "expectedReturnCode": 0,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "START OF EXECUTION OF PROGRAM CBACT02C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "050002445376574000000000050747Aniya Von                                         2023-03-09Y                                                           "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "068358619817151600000000027567Ward Jones                                        2025-07-13Y                                                           "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "END OF EXECUTION OF PROGRAM CBACT02C"
+    }
+  ],
+  "normalisations": []
+}

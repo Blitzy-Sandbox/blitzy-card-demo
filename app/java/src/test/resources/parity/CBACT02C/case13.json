@@ -1,0 +1,34 @@
+{
+  "program": "CBACT02C",
+  "caseId": "case13",
+  "description": "The first READ fails with an invalid-request response, which has no two-character batch equivalent, so the read error is reported under the '9' permanent-error convention with image '9000'. The pairing with case09 is the point: the open and the read reach the same 9910-DISPLAY-IO-STATUS paragraph and must render an identical image for an identical status, while their preceding DISPLAY differs - 'ERROR OPENING CARDFILE' at app/cbl/CBACT02C.cbl:129 against 'ERROR READING CARDFILE' at :110. Both abend with RETURN-CODE 12 from :101 and :124 respectively. Sixteen emission sites across this estate share that one status renderer, and one implementation is what keeps all sixteen byte-identical.",
+  "unitKind": "BATCH_JOB",
+  "inputs": {
+    "CARDFILE": {
+      "fixture": "carddata.txt"
+    }
+  },
+  "jobParameters": {},
+  "expectedWrites": [],
+  "expectedFinalState": [],
+  "expectedReturnCode": 12,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "START OF EXECUTION OF PROGRAM CBACT02C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ERROR READING CARDFILE"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "FILE STATUS IS: NNNN9000"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ABENDING PROGRAM"
+    }
+  ],
+  "normalisations": []
+}

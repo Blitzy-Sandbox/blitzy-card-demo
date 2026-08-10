@@ -1,0 +1,36 @@
+{
+  "program": "CBACT02C",
+  "caseId": "case12",
+  "description": "The first READ reports '22' - a duplicate key - and delivers a record with it, and the record is still not displayed. This is the sharpest statement of what guards the DISPLAY at app/cbl/CBACT02C.cbl:78: the test at :77 is IF END-OF-FILE = 'N', not 'if a record came back'. The read arm at :101 moves 12 into APPL-RESULT, the guard chain reaches :113 PERFORM 9999-ABEND-PROGRAM, and control never returns to the mainline - so the record that was moved into the CARD-RECORD area by READ ... INTO at :93 is simply never written out. A translation that displayed whatever the read handed back, or that treated a delivered record as success, would emit a 150-character line here that the COBOL does not. '22' is reachable only through the alternate-index path in this estate, and CBACT02C browses the base cluster, so the status is induced by the test's own stub - which is exactly what a case is for when the seeded data cannot reach an arm. The arm itself is real: :101 catches every status other than '00' and '10'.",
+  "unitKind": "BATCH_JOB",
+  "inputs": {
+    "CARDFILE": {
+      "fixture": "carddata.txt",
+      "fromRow": 0,
+      "rowCount": 1
+    }
+  },
+  "jobParameters": {},
+  "expectedWrites": [],
+  "expectedFinalState": [],
+  "expectedReturnCode": 12,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "START OF EXECUTION OF PROGRAM CBACT02C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ERROR READING CARDFILE"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "FILE STATUS IS: NNNN0022"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ABENDING PROGRAM"
+    }
+  ],
+  "normalisations": []
+}

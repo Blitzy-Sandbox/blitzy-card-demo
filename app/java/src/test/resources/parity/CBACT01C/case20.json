@@ -1,0 +1,202 @@
+{
+  "program": "CBACT01C",
+  "caseId": "case20",
+  "description": "Stored order is not read order. The three inline records are declared in DESCENDING key order, and app/cbl/CBACT01C.cbl:L29-L33 declares ACCTFILE as ORGANIZATION INDEXED with ACCESS MODE SEQUENTIAL over RECORD KEY FD-ACCT-ID, so the browse returns them in ASCENDING key order regardless of the order they were stored in. The expected line sequence is therefore the reverse of the seeded order, and the final state is stated in key order too. A translation that returned rows in insertion order would pass every other case in this set and fail this one.",
+  "unitKind": "BATCH_JOB",
+  "inputs": {
+    "ACCTFILE": {
+      "rows": [
+        "00000000030Y00000001940{00000020200{00000010200{2014-11-202025-05-202025-05-2000000000000{00000000000{A000000000THIRD00000                                                                                                                                                                                  ",
+        "00000000020Y00000001940{00000020200{00000010200{2014-11-202025-05-202025-05-2000000000000{00000000000{A000000000SECOND0000                                                                                                                                                                                  ",
+        "00000000010Y00000001940{00000020200{00000010200{2014-11-202025-05-202025-05-2000000000000{00000000000{A000000000FIRST00000                                                                                                                                                                                  "
+      ]
+    }
+  },
+  "jobParameters": {},
+  "expectedWrites": [],
+  "expectedFinalState": [
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 0,
+      "expectedBytes": "00000000010Y00000001940{00000020200{00000010200{2014-11-202025-05-202025-05-2000000000000{00000000000{A000000000FIRST00000                                                                                                                                                                                  "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 1,
+      "expectedBytes": "00000000020Y00000001940{00000020200{00000010200{2014-11-202025-05-202025-05-2000000000000{00000000000{A000000000SECOND0000                                                                                                                                                                                  "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 2,
+      "expectedBytes": "00000000030Y00000001940{00000020200{00000010200{2014-11-202025-05-202025-05-2000000000000{00000000000{A000000000THIRD00000                                                                                                                                                                                  "
+    }
+  ],
+  "expectedReturnCode": 0,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "START OF EXECUTION OF PROGRAM CBACT01C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-ID                 :00000000010"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-ACTIVE-STATUS      :Y"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CURR-BAL           :00000001940{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CREDIT-LIMIT       :00000020200{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CASH-CREDIT-LIMIT  :00000010200{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-OPEN-DATE          :2014-11-20"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-EXPIRAION-DATE     :2025-05-20"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-REISSUE-DATE       :2025-05-20"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CURR-CYC-CREDIT    :00000000000{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CURR-CYC-DEBIT     :00000000000{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-GROUP-ID           :FIRST00000"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "-------------------------------------------------"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "00000000010Y00000001940{00000020200{00000010200{2014-11-202025-05-202025-05-2000000000000{00000000000{A000000000FIRST00000                                                                                                                                                                                  "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-ID                 :00000000020"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-ACTIVE-STATUS      :Y"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CURR-BAL           :00000001940{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CREDIT-LIMIT       :00000020200{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CASH-CREDIT-LIMIT  :00000010200{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-OPEN-DATE          :2014-11-20"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-EXPIRAION-DATE     :2025-05-20"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-REISSUE-DATE       :2025-05-20"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CURR-CYC-CREDIT    :00000000000{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CURR-CYC-DEBIT     :00000000000{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-GROUP-ID           :SECOND0000"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "-------------------------------------------------"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "00000000020Y00000001940{00000020200{00000010200{2014-11-202025-05-202025-05-2000000000000{00000000000{A000000000SECOND0000                                                                                                                                                                                  "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-ID                 :00000000030"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-ACTIVE-STATUS      :Y"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CURR-BAL           :00000001940{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CREDIT-LIMIT       :00000020200{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CASH-CREDIT-LIMIT  :00000010200{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-OPEN-DATE          :2014-11-20"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-EXPIRAION-DATE     :2025-05-20"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-REISSUE-DATE       :2025-05-20"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CURR-CYC-CREDIT    :00000000000{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-CURR-CYC-DEBIT     :00000000000{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCT-GROUP-ID           :THIRD00000"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "-------------------------------------------------"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "00000000030Y00000001940{00000020200{00000010200{2014-11-202025-05-202025-05-2000000000000{00000000000{A000000000THIRD00000                                                                                                                                                                                  "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "END OF EXECUTION OF PROGRAM CBACT01C"
+    }
+  ],
+  "normalisations": []
+}

@@ -1,0 +1,17 @@
+{
+  "program": "CSUTLDTC",
+  "caseId": "case14",
+  "description": "CSUTLDTC, the called date-validation subprogram, invoked as the @Service it became. LS-DATE='2022XYZ19 ' and LS-DATE-FORMAT='YYYYMMMDD ' are this case's two LINKAGE SECTION parameters (L84-L85); LS-RESULT PIC X(80) (L86) is the output and is asserted below as the single WS_MESSAGE_80 line. This program opens no file and is reached by no JCL, so it seeds no dataset, writes no record and takes no job parameter - its entire observable behaviour is the 80 bytes L97 moves into LS-RESULT and the severity L98 moves into RETURN-CODE. Expected values are STATICALLY DERIVED from the 01 WS-MESSAGE declaration at L42-L57 and the group move at L122, never captured from a COBOL run, which is impossible here. Arm 6 through the month-ABBREVIATION field rather than the numeric month: the mask asks for a three-letter month name and 'XYZ' is not one. This is a different route to the same arm and the same message number, which is exactly the sort of collapse a field-for-field diff has to be able to see: the arm is shared, the path is not.",
+  "unitKind": "SERVICE",
+  "inputs": {},
+  "expectedWrites": [],
+  "expectedFinalState": [],
+  "expectedReturnCode": 3,
+  "expectedMessages": [
+    {
+      "channel": "WS_MESSAGE_80",
+      "text": "0003Mesg Code: 2517 Invalid month   TstDate: \u0000\n2022XYZ1 Mask used:YYYYMMMDD     "
+    }
+  ],
+  "normalisations": []
+}

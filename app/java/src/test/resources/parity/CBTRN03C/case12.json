@@ -1,0 +1,77 @@
+{
+  "program": "CBTRN03C",
+  "caseId": "case12",
+  "description": "1500-A-LOOKUP-XREF (:484-492) finds nothing and abends. The card number is not in app/data/ASCII/cardxref.txt, so the account break at :181 moves it into FD-XREF-CARD-NUM at :186 and the keyed read takes its INVALID KEY arm: DISPLAY 'INVALID CARD NUMBER : ' with the whole sixteen-byte key, MOVE 23 TO IO-STATUS, FILE STATUS IS: NNNN0023, ABENDING PROGRAM, RETURN-CODE 12. This is the FIRST of the three lookups, so the trail also proves the record was displayed at :180 before it and that neither the type nor the category file was consulted. The cross-reference rows are seeded from the 36-byte fixture and padded to the 50 bytes app/cpy/CVACT03Y.cpy declares, because that fixture omits the trailing FILLER PIC X(14).",
+  "unitKind": "BATCH_JOB",
+  "inputs": {
+    "TRANFILE": {
+      "rows": [
+        "TRN0000000000001010001POS TERM  A statically derived fixture transaction                                                            0000000100{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000099999999999999992022-03-15-11.22.33.4444442022-03-15-11.22.33.444444                    "
+      ]
+    },
+    "CARDXREF": {
+      "fixture": "cardxref.txt"
+    },
+    "TRANTYPE": {
+      "fixture": "trantype.txt"
+    },
+    "TRANCATG": {
+      "fixture": "trancatg.txt"
+    },
+    "DATEPARM": {
+      "rows": [
+        "2022-01-01 2022-07-06                                                           "
+      ]
+    }
+  },
+  "jobParameters": {},
+  "expectedWrites": [],
+  "expectedFinalState": [],
+  "expectedReturnCode": 12,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "START OF EXECUTION OF PROGRAM CBTRN03C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "Reporting from 2022-01-01 to 2022-07-06"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "TRN0000000000001010001POS TERM  A statically derived fixture transaction                                                            0000000100{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000099999999999999992022-03-15-11.22.33.4444442022-03-15-11.22.33.444444                    "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "INVALID CARD NUMBER : 9999999999999999"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "FILE STATUS IS: NNNN0023"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ABENDING PROGRAM"
+    }
+  ],
+  "normalisations": [
+    {
+      "dataset": "CARDXREF",
+      "kind": "CARDXREF_FILLER_PAD_36_TO_50"
+    }
+  ],
+  "expectedDatasets": [
+    {
+      "dataset": "TRANREPT",
+      "channel": "WRITES",
+      "rowCount": 0,
+      "recordLength": 133
+    },
+    {
+      "dataset": "TRANREPT",
+      "channel": "FINAL_STATE",
+      "rowCount": 0,
+      "recordLength": 133
+    }
+  ]
+}

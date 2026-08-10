@@ -1,0 +1,79 @@
+{
+  "program": "CBSTM03B",
+  "caseId": "case10",
+  "description": "app/cbl/CBSTM03B.CBL:188-191 - IF M03B-READ-K, MOVE LK-M03B-KEY (1:LK-M03B-KEY-LN) TO FD-CUST-ID, READ CUST-FILE INTO LK-M03B-FLDT - driven exactly as app/cbl/CBSTM03A.CBL:367-377 drives it, where WS-M03B-KEY-LN is COMPUTE'd from LENGTH OF XREF-CUST-ID and is therefore 9. The area pins that key length as the signed zoned image '000I', which is what a mainframe caller actually passes for nine, and pins the 25-byte key span as the nine key characters followed by sixteen spaces. The record found is the middle of the three seeded rows, so a keyed read that quietly returned the first row would be reported. CLOSE follows and reports '00'.",
+  "unitKind": "COMPONENT",
+  "inputs": {
+    "CUSTFILE": {
+      "fixture": "custdata.txt",
+      "fromRow": 9,
+      "rowCount": 3
+    }
+  },
+  "jobParameters": {},
+  "screenRequest": null,
+  "expectedResponse": null,
+  "expectedWrites": [
+    {
+      "dataset": "M03BAREA",
+      "rowIndex": 0,
+      "fields": {
+        "LK-M03B-DD": "CUSTFILE",
+        "LK-M03B-OPER": "O",
+        "LK-M03B-RC": "00"
+      },
+      "expectedBytes": "CUSTFILEO00                         000{                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        "
+    },
+    {
+      "dataset": "M03BAREA",
+      "rowIndex": 1,
+      "fields": {
+        "LK-M03B-DD": "CUSTFILE",
+        "LK-M03B-OPER": "K",
+        "LK-M03B-RC": "00"
+      },
+      "expectedBytes": "CUSTFILEK00000000011                000I000000011Hayden                   Ressie                   Pfannerstill             14895 Everette Ridges                             Apt. 443                                          Julianneburgh                                     WAUSA24984     (002)533-6980  (553)586-7718  493538586000000000001111908551986-11-030002650577Y209                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "M03BAREA",
+      "rowIndex": 2,
+      "fields": {
+        "LK-M03B-DD": "CUSTFILE",
+        "LK-M03B-OPER": "C",
+        "LK-M03B-RC": "00"
+      },
+      "expectedBytes": "CUSTFILEC00                         000{000000011Hayden                   Ressie                   Pfannerstill             14895 Everette Ridges                             Apt. 443                                          Julianneburgh                                     WAUSA24984     (002)533-6980  (553)586-7718  493538586000000000001111908551986-11-030002650577Y209                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            "
+    }
+  ],
+  "expectedFinalState": [
+    {
+      "dataset": "CUSTFILE",
+      "rowIndex": 0,
+      "fields": {},
+      "expectedBytes": "000000010Maybell                  Creola                   Mann                     77933 Adah Dale                                   Suite 343                                         Andersonfurt                                      CTUSA44803-4279(614)594-2619  (667)057-0235  754755746000000000002128247551980-06-110093803568Y476                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTFILE",
+      "rowIndex": 1,
+      "fields": {},
+      "expectedBytes": "000000011Hayden                   Ressie                   Pfannerstill             14895 Everette Ridges                             Apt. 443                                          Julianneburgh                                     WAUSA24984     (002)533-6980  (553)586-7718  493538586000000000001111908551986-11-030002650577Y209                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTFILE",
+      "rowIndex": 2,
+      "fields": {},
+      "expectedBytes": "000000012Maci                     Alan                     Robel                    80501 Isac Cliffs                                 Suite 623                                         Predovicton                                       MNUSA78861     (584)045-5200  (610)244-0407  666114218000000000009021433511984-02-180061317348Y688                                                                                                                                                                        "
+    }
+  ],
+  "expectedReturnCode": 0,
+  "expectedMessages": [],
+  "normalisations": [],
+  "expectedDatasets": [
+    {
+      "dataset": "M03BAREA",
+      "channel": "WRITES",
+      "rowCount": 3,
+      "recordLength": 1040
+    }
+  ]
+}

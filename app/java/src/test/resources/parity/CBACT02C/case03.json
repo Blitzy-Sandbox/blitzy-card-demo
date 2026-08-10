@@ -1,0 +1,32 @@
+{
+  "program": "CBACT02C",
+  "caseId": "case03",
+  "description": "A single record - the fixture's first row, key 0500024453765740. The narrowest non-empty pass through app/cbl/CBACT02C.cbl:74-81: one READ reporting '00' at :94, one DISPLAY at :78, a second READ reporting '10', and the loop ends. Three lines out. Seeded from row 0 of carddata.txt rather than written inline, so the record's bytes are the authoritative ones and the expected line is that row verbatim - 150 characters whose last 59 are the copybook's FILLER X(59), blank in this fixture. That the line is the row and not a re-encoding of the six decoded fields is the property case18 isolates.",
+  "unitKind": "BATCH_JOB",
+  "inputs": {
+    "CARDFILE": {
+      "fixture": "carddata.txt",
+      "fromRow": 0,
+      "rowCount": 1
+    }
+  },
+  "jobParameters": {},
+  "expectedWrites": [],
+  "expectedFinalState": [],
+  "expectedReturnCode": 0,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "START OF EXECUTION OF PROGRAM CBACT02C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "050002445376574000000000050747Aniya Von                                         2023-03-09Y                                                           "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "END OF EXECUTION OF PROGRAM CBACT02C"
+    }
+  ],
+  "normalisations": []
+}

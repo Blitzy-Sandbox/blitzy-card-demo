@@ -1,0 +1,107 @@
+{
+  "program": "CBACT03C",
+  "caseId": "case16",
+  "description": "Five rows taken from the middle of the fixture, 25 through 29, so the run starts at neither the first key nor the last. Twelve lines, and the record lines must appear in ascending key order - 5975..., 6009..., 6349..., 6503..., 6509... - because ACCESS MODE IS SEQUENTIAL at :31 over a KSDS delivers records in RECORD KEY order, and the mainline loop displays each one as it arrives with nothing buffered or reordered. Line ORDER is what this case exists to pin: a translation that read the whole file before displaying, or that sorted, would produce the same twelve lines in a different sequence and every other case here would still pass.",
+  "unitKind": "BATCH_JOB",
+  "inputs": {
+    "XREFFILE": {
+      "fixture": "cardxref.txt",
+      "fromRow": 25,
+      "rowCount": 5
+    }
+  },
+  "jobParameters": {},
+  "expectedWrites": [],
+  "expectedFinalState": [
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 0,
+      "expectedBytes": "597511751661607700000004200000000042              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 1,
+      "expectedBytes": "600961915067452600000000500000000005              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 2,
+      "expectedBytes": "634925033164850900000001500000000015              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 3,
+      "expectedBytes": "650353518179599200000004800000000048              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 4,
+      "expectedBytes": "650923036255381600000003000000000030              "
+    }
+  ],
+  "expectedReturnCode": 0,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "START OF EXECUTION OF PROGRAM CBACT03C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "597511751661607700000004200000000042              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "597511751661607700000004200000000042              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "600961915067452600000000500000000005              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "600961915067452600000000500000000005              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "634925033164850900000001500000000015              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "634925033164850900000001500000000015              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "650353518179599200000004800000000048              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "650353518179599200000004800000000048              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "650923036255381600000003000000000030              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "650923036255381600000003000000000030              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "END OF EXECUTION OF PROGRAM CBACT03C"
+    }
+  ],
+  "normalisations": [
+    {
+      "dataset": "XREFFILE",
+      "kind": "CARDXREF_FILLER_PAD_36_TO_50"
+    }
+  ],
+  "expectedDatasets": [
+    {
+      "dataset": "XREFFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 5,
+      "recordLength": 50
+    }
+  ]
+}

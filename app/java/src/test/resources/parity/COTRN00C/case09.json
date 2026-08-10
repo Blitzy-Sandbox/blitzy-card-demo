@@ -1,0 +1,99 @@
+{
+  "program": "COTRN00C",
+  "caseId": "case09",
+  "description": "The DFHPF3 arm at :122-124, the second of the five EVALUATE EIBAID arms in source order. The program moves 'COMEN01C' into CDEMO-TO-PROGRAM and performs RETURN-TO-PREV-SCREEN, which at :512 finds the target already set and so keeps it, then stamps CDEMO-FROM-TRANID and CDEMO-FROM-PROGRAM with its own identity and MOVEs ZEROS to CDEMO-PGM-CONTEXT at :517 - so the conversation returns to the menu in ENTER state, not REENTER. XCTL transfers control, so the EXEC CICS RETURN at :138 is not reached and no map is sent. The browse cursor is echoed back untouched, next-page flag included: :99 SET NEXT-PAGE-NO runs against the program's own storage and :111 then replaces the whole area with the inbound one, so the inbound Y survives.",
+  "unitKind": "CONTROLLER_POJO",
+  "inputs": {
+    "TRANSACT": {
+      "rows": [
+        "0000000000000001010001POS TERM  TRANSACTION 01 DESCRIPTION                                                                          0000001010{000000001MERCHANT 01                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    ",
+        "0000000000000002010001POS TERM  TRANSACTION 02 DESCRIPTION                                                                          0000001020{000000002MERCHANT 02                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    ",
+        "0000000000000003010001POS TERM  TRANSACTION 03 DESCRIPTION                                                                          0000001030{000000003MERCHANT 03                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    ",
+        "0000000000000004010001POS TERM  TRANSACTION 04 DESCRIPTION                                                                          0000001040{000000004MERCHANT 04                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    ",
+        "0000000000000005010001POS TERM  TRANSACTION 05 DESCRIPTION                                                                          0000001050{000000005MERCHANT 05                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    ",
+        "0000000000000006010001POS TERM  TRANSACTION 06 DESCRIPTION                                                                          0000001060{000000006MERCHANT 06                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    ",
+        "0000000000000007010001POS TERM  TRANSACTION 07 DESCRIPTION                                                                          0000001070{000000007MERCHANT 07                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    ",
+        "0000000000000008010001POS TERM  TRANSACTION 08 DESCRIPTION                                                                          0000001080{000000008MERCHANT 08                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    ",
+        "0000000000000009010001POS TERM  TRANSACTION 09 DESCRIPTION                                                                          0000001090{000000009MERCHANT 09                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    ",
+        "0000000000000010010001POS TERM  TRANSACTION 10 DESCRIPTION                                                                          0000001100{000000010MERCHANT 10                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    ",
+        "0000000000000011010001POS TERM  TRANSACTION 11 DESCRIPTION                                                                          0000001110{000000011MERCHANT 11                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    ",
+        "0000000000000012010001POS TERM  TRANSACTION 12 DESCRIPTION                                                                          0000001120{000000012MERCHANT 12                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    "
+      ]
+    }
+  },
+  "screenRequest": {
+    "eibcalen": 218,
+    "pinnedClock": "2022-07-19T23:12:34",
+    "charset": "US-ASCII",
+    "commarea": {
+      "CDEMO-FROM-TRANID": "CM00",
+      "CDEMO-FROM-PROGRAM": "COMEN01C",
+      "CDEMO-TO-TRANID": "CT00",
+      "CDEMO-TO-PROGRAM": "COTRN00C",
+      "CDEMO-USER-ID": "USER0001",
+      "CDEMO-USER-TYPE": "U",
+      "CDEMO-PGM-CONTEXT": "1",
+      "CDEMO-CUST-ID": "000000000",
+      "CDEMO-CUST-FNAME": "                         ",
+      "CDEMO-CUST-MNAME": "                         ",
+      "CDEMO-CUST-LNAME": "                         ",
+      "CDEMO-ACCT-ID": "00000000000",
+      "CDEMO-ACCT-STATUS": " ",
+      "CDEMO-CARD-NUM": "0000000000000000",
+      "CDEMO-LAST-MAP": "       ",
+      "CDEMO-LAST-MAPSET": "       ",
+      "CDEMO-CT00-TRNID-FIRST": "0000000000000001",
+      "CDEMO-CT00-TRNID-LAST": "0000000000000010",
+      "CDEMO-CT00-PAGE-NUM": "00000001",
+      "CDEMO-CT00-NEXT-PAGE-FLG": "Y",
+      "CDEMO-CT00-TRN-SEL-FLG": " ",
+      "CDEMO-CT00-TRN-SELECTED": "                "
+    },
+    "mapFields": {},
+    "forcedOutcomes": {},
+    "aid": "DFHPF3"
+  },
+  "expectedResponse": {
+    "nextProgram": "COMEN01C",
+    "navigation": {
+      "CDEMO-FROM-TRANID": "CT00",
+      "CDEMO-FROM-PROGRAM": "COTRN00C",
+      "CDEMO-TO-TRANID": "CT00",
+      "CDEMO-TO-PROGRAM": "COMEN01C",
+      "CDEMO-USER-ID": "USER0001",
+      "CDEMO-USER-TYPE": "U",
+      "CDEMO-PGM-CONTEXT": "0",
+      "CDEMO-CUST-ID": "000000000",
+      "CDEMO-CUST-FNAME": "                         ",
+      "CDEMO-CUST-MNAME": "                         ",
+      "CDEMO-CUST-LNAME": "                         ",
+      "CDEMO-ACCT-ID": "00000000000",
+      "CDEMO-ACCT-STATUS": " ",
+      "CDEMO-CARD-NUM": "0000000000000000",
+      "CDEMO-LAST-MAP": "       ",
+      "CDEMO-LAST-MAPSET": "       ",
+      "CDEMO-CT00-TRNID-FIRST": "0000000000000001",
+      "CDEMO-CT00-TRNID-LAST": "0000000000000010",
+      "CDEMO-CT00-PAGE-NUM": "00000001",
+      "CDEMO-CT00-NEXT-PAGE-FLG": "Y",
+      "CDEMO-CT00-TRN-SEL-FLG": " ",
+      "CDEMO-CT00-TRN-SELECTED": "                "
+    },
+    "sends": [],
+    "cursorField": "TRNIDINL",
+    "termination": "XCTL"
+  },
+  "expectedWrites": [],
+  "expectedFinalState": [],
+  "expectedReturnCode": 0,
+  "expectedMessages": [
+    {
+      "channel": "WS_MESSAGE_80",
+      "text": "                                                                                "
+    },
+    {
+      "channel": "SCREEN_ERRMSG_78",
+      "text": "                                                                              "
+    }
+  ]
+}

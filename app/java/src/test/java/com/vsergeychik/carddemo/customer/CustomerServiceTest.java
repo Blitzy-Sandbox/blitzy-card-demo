@@ -6,6 +6,7 @@ import com.vsergeychik.carddemo.common.RecordImageForm;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBinding;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBindings;
 import com.vsergeychik.carddemo.customer.CustomerRepository.CustomerFile;
+import com.vsergeychik.carddemo.customer.CustomerRepository.ReadResult;
 import com.vsergeychik.carddemo.customer.CustomerService.Execution;
 import com.vsergeychik.carddemo.customer.CustomerService.PrintStreamSysoutSink;
 import com.vsergeychik.carddemo.customer.CustomerService.Sysout;
@@ -17,7 +18,9 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.mockito.InOrder;
 import org.mockito.Mockito;
 import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -29,13 +32,21 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.PrintStream;
 import java.io.UncheckedIOException;
+import java.lang.annotation.Annotation;
+import java.lang.reflect.Constructor;
+import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -71,6 +82,49 @@ import static org.assertj.core.api.Assertions.assertThatNullPointerException;
  *
  * <p>No {@code MockMvc}, no application context, no batch launcher: the subject is constructed with a
  * repository and nothing else, which is the property gate G51 exists to protect.
+ *
+ * <h2>Where these expectations come from</h2>
+ * <strong>Every expected value in this file is statically derived, not captured.</strong> The migration
+ * plan records eight independently verified blockers that make executing the legacy COBOL impossible in
+ * this environment - no z/OS runtime, an indexed-file handler disabled in the only available compiler, a
+ * copybook that will not parse, no Language Environment {@code CEE*} services, and no CICS emulator among
+ * them - so there is no captured baseline to diff against and none can be produced here. Each expectation
+ * below is therefore read out of three artefacts and cited to the line: {@code app/cbl/CBCUS01C.cbl} for
+ * behaviour, {@code app/cpy/CVCUS01Y.cpy} for the 500-byte record shape, and
+ * {@code app/data/ASCII/custdata.txt} for the data - the last of which is reached only through its
+ * byte-identical test-classpath copy, {@code /fixtures/custdata.txt}, because the reference trees are
+ * read-only. This is the plan's static-derivation substitute and its acknowledged residual risk: a
+ * misread paragraph can be encoded here in a way a captured value could not. Two habits contain it -
+ * widths and offsets are taken from the copybook mechanically rather than from prose, and every
+ * assertion names the source line it came from, so a disagreement is settled by reading one line.
+ *
+ * <h2>Names from the plan, behaviour from the source</h2>
+ * The plan maps {@code CBCUS01C} onto a {@code CustomerRepository} and a {@code CustomerService}, a
+ * naming that says nothing about what the program actually is: a <em>standalone batch program</em> whose
+ * whole function, per its own header at {@code CBCUS01C:L5}, is <em>read and print customer data file</em>,
+ * invoked as {@code //STEP05 EXEC PGM=CBCUS01C} by {@code app/jcl/READCUST.jcl:L6}. Rule <strong>R1</strong>
+ * settles the mismatch - the name comes from the plan, the behaviour from the source - and the runnable
+ * shell lives in {@code CustomerFileReaderJob}. Nothing in this file is asserted because of what the
+ * class is called; every assertion is asserted because {@code CBCUS01C.cbl} does it.
+ *
+ * <p>The same rule governs one API name. The plan's prose describes the browse as
+ * {@code openInput → startBrowse → readNext}, but this repository has <strong>no
+ * {@code startBrowse}</strong>: {@link CustomerRepository#openInput()} <em>is</em> the browse, returning a
+ * {@link CustomerFile} handle whose {@link CustomerFile#readNext()} walks it, exactly as
+ * {@code CBCUS01C.cbl:L120} opens and {@code L93} reads. The interaction-order assertions below name the
+ * methods the code actually has.
+ *
+ * <h2>Rules</h2>
+ * {@code review_rules} returns exactly one line, <em>"No user rules provided."</em> - so no
+ * user-specified rule governs this file. That absence lowers nothing: the plan's twelve enterprise
+ * practices stand in their place and are enforced here as written. <strong>B1</strong>, nothing outside
+ * {@code spring-boot-starter-test} and the module's existing test scope. <strong>B3</strong>, not one
+ * byte of {@code app/cbl}, {@code app/cpy}, {@code app/jcl}, {@code app/csd} or {@code app/data} is read
+ * or written - the fixture arrives from the classpath. <strong>B5</strong>, this file is the enforcement
+ * point for two preserved defects: the duplicate display at {@code L96} and {@code L78}, and the
+ * redundant guard at {@code L75}. Neither may be tidied, and the tests below fail if either is.
+ * <strong>B7</strong>, no clock, no randomness, no ordering dependence. <strong>B8</strong>, every charset
+ * is named and no import is a wildcard. <strong>B9</strong>, no shared mutable state.
  */
 @DisplayName("CustomerService - CBCUS01C, read and print the customer data file")
 class CustomerServiceTest {
@@ -251,6 +305,171 @@ class CustomerServiceTest {
         }
         Mockito.when(file.readNext()).thenReturn(first, rest);
         return new CustomerService(repository);
+    }
+
+    // =============================================================================================
+    // A stubbed run, so a status can be injected at the exact call site that reports it.
+    //
+    // The helpers above cover the two levers a real backend gives: a seeded relation, and a describe
+    // that is refused. Neither can put '10' on an OPEN or on a CLOSE, and the OPEN and CLOSE paragraphs
+    // of CBCUS01C have no APPL-EOF arm at all - so a '10' there is fatal where the same status on a read
+    // is a clean end. That asymmetry is the single easiest thing to translate wrongly in this program,
+    // and it is only assertable if each call site's status is chosen independently of the others.
+    // =============================================================================================
+
+    /**
+     * A stubbed run: the subject, the repository it was built with, and the file handle it will be given.
+     *
+     * <p>A record, so nothing here is mutable and a test cannot hand a modified harness to another.
+     *
+     * @param subject    the service under test
+     * @param repository the stubbed repository, for interaction verification
+     * @param file       the stubbed file handle, for interaction verification
+     */
+    private record StubbedRun(CustomerService subject, CustomerRepository repository, CustomerFile file) {
+    }
+
+    /**
+     * A stubbed repository that answers only what {@link CustomerService}'s constructor needs.
+     *
+     * <p>The constructor builds its codec from {@link CustomerRepository#datasetCharset()}, so that one
+     * answer is not optional. Every other access path is left unstubbed on purpose: a service that
+     * reached for the keyed read, the locking read or the rewrite would be caught by the verification in
+     * {@link Mainline}, and leaving them unstubbed means such a call also returns a bare {@code null}
+     * rather than something plausible.
+     *
+     * @return the stubbed repository
+     */
+    private static CustomerRepository stubbedRepository() {
+        CustomerRepository repository = Mockito.mock(CustomerRepository.class);
+        Mockito.when(repository.datasetCharset()).thenReturn(ASCII);
+        return repository;
+    }
+
+    /**
+     * A run whose open, reads and close each report exactly what the caller asks for.
+     *
+     * <p>The handle tracks its own closed state the way the real one does - {@code closeFile()} marks it
+     * closed before it computes the status it returns, so a second close is a no-op and the service's
+     * {@code releaseHandle} cleanup finds nothing left to release. Modelling that matters: a handle that
+     * always answered "open" would make every failing-close test verify two closes instead of one and
+     * would quietly hide whether the program closes once, as {@code CBCUS01C.cbl:L138} does.
+     *
+     * @param openStatus  the status {@code OPEN INPUT} reports - {@code CBCUS01C.cbl:L120}
+     * @param closeStatus the status {@code CLOSE} reports - {@code CBCUS01C.cbl:L138}
+     * @param reads       what successive {@code READ}s report - {@code CBCUS01C.cbl:L93}; when none are
+     *                    given the first read reports end of file, which is an empty dataset
+     * @return the harness
+     */
+    private static StubbedRun stubbedRun(String openStatus, String closeStatus, ReadResult... reads) {
+        CustomerRepository repository = stubbedRepository();
+        CustomerFile file = Mockito.mock(CustomerFile.class);
+        AtomicBoolean closed = new AtomicBoolean();
+
+        Mockito.when(repository.openInput()).thenReturn(file);
+        Mockito.when(file.openStatus()).thenReturn(openStatus);
+        Mockito.when(file.datasetName()).thenReturn(TEST_DSNAME);
+        Mockito.when(file.isClosed()).thenAnswer(invocation -> closed.get());
+        Mockito.when(file.closeFile()).thenAnswer(invocation -> {
+            closed.set(true);
+            return closeStatus;
+        });
+
+        ReadResult[] sequence = reads.length == 0 ? new ReadResult[] {ReadResult.endOfFile()} : reads;
+        Mockito.when(file.readNext())
+                .thenReturn(sequence[0], Arrays.copyOfRange(sequence, 1, sequence.length));
+
+        return new StubbedRun(new CustomerService(repository), repository, file);
+    }
+
+    /**
+     * A clean run over the given number of fixture records, ending in end of file.
+     *
+     * @param records how many of the fixture's rows the browse returns before reporting {@code '10'}
+     * @return the harness
+     */
+    private static StubbedRun stubbedRunOver(int records) {
+        List<ReadResult> sequence = new ArrayList<>();
+        for (String row : fixtureRows().subList(0, records)) {
+            sequence.add(foundRow(row));
+        }
+        sequence.add(ReadResult.endOfFile());
+        return stubbedRun(FileStatus.OK, FileStatus.OK, sequence.toArray(new ReadResult[0]));
+    }
+
+    /**
+     * A successful read of one stored row.
+     *
+     * <p>Decoded with an explicitly named charset and carrying the row's own bytes as the stored image,
+     * which is what {@code DISPLAY CUSTOMER-RECORD} writes - the record area as stored, not a re-encode.
+     *
+     * @param image the 500-character stored image
+     * @return the read outcome
+     */
+    private static ReadResult foundRow(String image) {
+        return ReadResult.found(CustomerRecord.decode(image, ASCII), image);
+    }
+
+    /**
+     * The lines a run emitted, taken from the sink it was given even when the run abended.
+     *
+     * <p>An abend propagates out of the entry point, so the {@link Execution} is never returned and the
+     * sequence has to be read off a sink the caller kept a reference to. Every failure test below does
+     * that, which is also how the emission <em>order</em> around the throw is asserted at all.
+     *
+     * @param subject the service to run
+     * @param sink    the capturing sink to run it against
+     * @return the abend the run raised
+     */
+    private static AbendException runExpectingAbend(CustomerService subject, Sysout sink) {
+        return assertThatExceptionOfType(AbendException.class)
+                .isThrownBy(() -> subject.readAndPrintCustomerFile(sink))
+                .actual();
+    }
+
+    /**
+     * Resolves a checkout-relative path by walking up from the working directory until it exists.
+     *
+     * <p>Surefire's working directory is the module, while the paths worth naming in an assertion are
+     * repository-relative - that is how the migration plan cites them. Walking up rather than assuming a
+     * depth keeps the lookup working whether the build runs from the module or from the repository root.
+     *
+     * <p>Only files under {@code app/java/} are ever named here. The reference trees are never read
+     * (practice B3), and the two source files this resolves are this module's own.
+     *
+     * @param relativePath the repository-relative path
+     * @return the resolved path
+     */
+    private static Path moduleFile(String relativePath) {
+        Path candidate = Path.of("").toAbsolutePath();
+        while (candidate != null) {
+            Path resolved = candidate.resolve(relativePath);
+            if (Files.exists(resolved)) {
+                return resolved;
+            }
+            candidate = candidate.getParent();
+        }
+        throw new IllegalStateException("Could not find " + relativePath + " at or above "
+                + Path.of("").toAbsolutePath());
+    }
+
+    /**
+     * Reads one of this module's source files as text.
+     *
+     * @param relativePath the repository-relative path, always under {@code app/java/}
+     * @return its text
+     */
+    private static String moduleSource(String relativePath) {
+        if (!relativePath.startsWith("app/java/")) {
+            throw new IllegalArgumentException("Only this module's own sources are read by these scans; "
+                    + "the COBOL, copybook, JCL, CSD and data trees are read-only reference material and "
+                    + "are never opened from a test (practice B3): " + relativePath);
+        }
+        try {
+            return Files.readString(moduleFile(relativePath), StandardCharsets.UTF_8);
+        } catch (IOException unreadable) {
+            throw new UncheckedIOException("Could not read " + relativePath, unreadable);
+        }
     }
 
     // =============================================================================================
@@ -1659,6 +1878,1209 @@ class CustomerServiceTest {
         // The other arm - a guard that refused everything would pass the test above and break every
         // DISPLAY - is driven end to end by aRowsFillerSurvivesBothDisplays and the rest of the
         // fixture-backed run tests, which take the '00' arm for every record of the file.
+    }
+
+    // =============================================================================================
+    // PROCEDURE DIVISION - app/cbl/CBCUS01C.cbl:L70-L87.
+    //
+    // The paragraph-named groups that follow assert the program's shape at the level the COBOL is
+    // written at: what is called, in what order, and which line emits which byte. The groups above
+    // assert the same program through its public entry points; these assert the seams between the
+    // paragraphs, which is where a translation drifts without any single output looking wrong.
+    // =============================================================================================
+
+    @Nested
+    @DisplayName("PROCEDURE DIVISION - the mainline, L70-L87")
+    class Mainline {
+
+        @Test
+        @DisplayName("opens once, reads until end of file, then closes once - L72, L76, L83")
+        void theInteractionOrderIsOpenThenEveryReadThenClose() {
+            // The plan's prose calls this openInput -> startBrowse -> readNext -> close. There is no
+            // startBrowse in this repository and rule R1 says the behaviour comes from the source, so the
+            // order asserted here is the order CBCUS01C actually has: OPEN INPUT at L120 (which is what
+            // openInput() is), READ at L93 once per iteration, CLOSE at L138.
+            StubbedRun run = stubbedRunOver(2);
+
+            Execution execution = run.subject().readAndPrintCustomerFile();
+
+            InOrder order = Mockito.inOrder(run.repository(), run.file());
+            order.verify(run.repository()).openInput();                                          // L72
+            order.verify(run.file()).openStatus();                                               // L121
+            // Three reads for two records: one per record, plus the one that reports '10' and ends the
+            // loop. The terminating read is a real READ, not an inference from a counter.
+            order.verify(run.file(), Mockito.times(3)).readNext();                               // L93
+            order.verify(run.file()).closeFile();                                                // L138
+
+            assertThat(execution.recordsRead()).isEqualTo(2);
+            assertThat(execution.lineCount()).isEqualTo(6);
+        }
+
+        @Test
+        @DisplayName("the browse is walked exactly once per record plus one terminating read")
+        void everyRecordCostsOneReadAndTheEndCostsOneMore() {
+            StubbedRun run = stubbedRunOver(1);
+
+            run.subject().readAndPrintCustomerFile();
+
+            // One record, two reads. A translation that displayed twice by reading twice would also emit
+            // 4 lines and would pass every line-count assertion in this file - so the read count is
+            // asserted separately from the line count. The duplication is two DISPLAYs of one READ.
+            Mockito.verify(run.file(), Mockito.times(2)).readNext();                             // L93
+            Mockito.verify(run.file(), Mockito.times(1)).closeFile();                            // L138
+        }
+
+        @Test
+        @DisplayName("an empty dataset still opens, reads once and closes - L120, L93, L138")
+        void anEmptyDatasetStillOpensReadsOnceAndCloses() {
+            StubbedRun run = stubbedRun(FileStatus.OK, FileStatus.OK);
+
+            Execution execution = run.subject().readAndPrintCustomerFile();
+
+            InOrder order = Mockito.inOrder(run.repository(), run.file());
+            order.verify(run.repository()).openInput();
+            order.verify(run.file(), Mockito.times(1)).readNext();
+            order.verify(run.file()).closeFile();
+
+            assertThat(execution.recordsRead()).isZero();
+            assertThat(execution.sysout()).containsExactly(
+                    CustomerService.START_OF_EXECUTION,                                          // L71
+                    CustomerService.END_OF_EXECUTION);                                           // L85
+        }
+
+        @Test
+        @DisplayName("a one-record dataset emits four lines: banner, image, image, banner")
+        void aSingleRecordDatasetEmitsFourLines() {
+            String only = fixtureRows().get(0);
+            StubbedRun run = stubbedRunOver(1);
+
+            Execution execution = run.subject().readAndPrintCustomerFile();
+
+            // 1 + (1 x 2) + 1. The middle pair is L96 and then L78, and they are byte-identical.
+            assertThat(execution.sysout()).containsExactly(
+                    CustomerService.START_OF_EXECUTION,                                          // L71
+                    only,                                                                        // L96
+                    only,                                                                        // L78
+                    CustomerService.END_OF_EXECUTION);                                           // L85
+            assertThat(execution.lineCount()).isEqualTo(4);
+        }
+
+        @Test
+        @DisplayName("the service touches no access path but the browse - no keyed read, no rewrite")
+        void theServiceUsesNoAccessPathButTheBrowse() {
+            // The repository offers five access paths because five programs drive this dataset, but
+            // CBCUS01C drives exactly one: SELECT ... ACCESS MODE IS SEQUENTIAL at L29-L33, READ at L93.
+            // It never sets a key, never reads for update and never writes. A service that reached for one
+            // of the other four would still pass every output assertion in this file, which is precisely
+            // why the absence is verified rather than assumed.
+            StubbedRun run = stubbedRunOver(3);
+
+            run.subject().readAndPrintCustomerFile();
+
+            Mockito.verify(run.repository(), Mockito.never()).readByKey(Mockito.anyLong());
+            Mockito.verify(run.repository(), Mockito.never()).readByKey(Mockito.anyString());
+            Mockito.verify(run.repository(), Mockito.never()).readForUpdate(Mockito.anyString());
+            Mockito.verify(run.repository(), Mockito.never()).rewrite(Mockito.any(byte[].class));
+            Mockito.verify(run.repository(), Mockito.never()).rewrite(Mockito.any(CustomerRecord.class));
+            Mockito.verify(run.file(), Mockito.never()).readByKey(Mockito.anyLong());
+            Mockito.verify(run.file(), Mockito.never()).readByKey(Mockito.anyString());
+        }
+
+        @Test
+        @DisplayName("the FIRST line of each pair is emitted inside the read paragraph - L96, not L78")
+        void theFirstOfEachPairBelongsToTheReadParagraph() throws Exception {
+            // The one assertion that tells L96 and L78 apart. Every other test can only see that two
+            // identical lines came out adjacently, which a single DISPLAY in either paragraph could also
+            // produce if it ran twice. Driving the read paragraph on its own settles it: 1000-CUSTFILE-
+            // GET-NEXT emits ONE line by itself, and the iteration that calls it emits TWO. The extra one
+            // is therefore the mainline's, at L78.
+            Method custfileGetNext = CustomerService.class.getDeclaredMethod("custfileGetNext",
+                    Sysout.class, WorkingStorage.class, CustomerFile.class);
+            custfileGetNext.setAccessible(true);
+
+            String first = fixtureRows().get(0);
+            StubbedRun run = stubbedRunOver(1);
+            CustomerFile file = run.repository().openInput();
+            Sysout readParagraphOnly = new Sysout();
+            WorkingStorage storage = new WorkingStorage();
+
+            custfileGetNext.invoke(run.subject(), readParagraphOnly, storage, file);
+
+            // L96: the read paragraph displays the record itself, on the '00' arm, before returning.
+            assertThat(readParagraphOnly.lines()).containsExactly(first);
+            assertThat(readParagraphOnly.recordImageCount()).isEqualTo(1);
+            assertThat(storage.endOfFileIsNo()).isTrue();
+            assertThat(storage.applResult()).isEqualTo(CustomerService.APPL_AOK);                // L95
+
+            // L78: the mainline adds the second, so the whole iteration emits DISPLAYS_PER_RECORD lines.
+            StubbedRun secondRun = stubbedRunOver(1);
+            CustomerFile secondFile = secondRun.repository().openInput();
+            Sysout wholeIteration = new Sysout();
+
+            int displayed = secondRun.subject().custfileDisplayIteration(wholeIteration,
+                    new WorkingStorage(), secondFile);
+
+            assertThat(displayed).isEqualTo(1);
+            assertThat(wholeIteration.lines()).containsExactly(first, first);
+            assertThat(wholeIteration.lineCount() - readParagraphOnly.lineCount()).isEqualTo(1);
+        }
+
+        @Test
+        @DisplayName("the false arm of the L75 guard reads nothing at all, not merely displays nothing")
+        void theRedundantGuardsFalseArmIssuesNoRead() {
+            // L75's IF END-OF-FILE = 'N' sits inside L74's PERFORM UNTIL END-OF-FILE = 'Y', so a run can
+            // never reach it false - the loop has already left. The guard is kept anyway (practice B5,
+            // rule R7: the evaluation order and the fall-through outcome are the source's), which leaves a
+            // branch only a direct call can cover. Reaching it through the loop body proves the arm is
+            // inert in the strongest sense available: no READ is issued, so no record can be consumed.
+            StubbedRun run = stubbedRunOver(1);
+            CustomerFile file = run.repository().openInput();
+            Sysout sink = new Sysout();
+            WorkingStorage storage = new WorkingStorage();
+            storage.moveEndOfFile(CustomerService.END_OF_FILE_YES);
+
+            int displayed = run.subject().custfileDisplayIteration(sink, storage, file);
+
+            assertThat(displayed).isZero();
+            assertThat(sink.lines()).isEmpty();
+            assertThat(sink.lineCount()).isZero();
+            Mockito.verify(file, Mockito.never()).readNext();                                    // L76
+            Mockito.verify(file, Mockito.never()).closeFile();
+        }
+
+        @Test
+        @DisplayName("the closing banner is emitted after the close, not before it - L83 then L85")
+        void theClosingBannerFollowsTheClose() {
+            // PERFORM 9000-CUSTFILE-CLOSE at L83 precedes DISPLAY at L85, and the order matters: a close
+            // that fails must abend with no closing banner at all. Observing the line count from inside
+            // the close is the only way to see the order from outside the program.
+            CustomerRepository repository = stubbedRepository();
+            CustomerFile file = Mockito.mock(CustomerFile.class);
+            AtomicBoolean closed = new AtomicBoolean();
+            AtomicInteger linesWhenClosed = new AtomicInteger(-1);
+            Sysout sink = new Sysout();
+
+            Mockito.when(repository.openInput()).thenReturn(file);
+            Mockito.when(file.openStatus()).thenReturn(FileStatus.OK);
+            Mockito.when(file.isClosed()).thenAnswer(invocation -> closed.get());
+            Mockito.when(file.readNext()).thenReturn(foundRow(fixtureRows().get(0)),
+                    ReadResult.endOfFile());
+            Mockito.when(file.closeFile()).thenAnswer(invocation -> {
+                closed.set(true);
+                linesWhenClosed.set(sink.lineCount());
+                return FileStatus.OK;
+            });
+
+            Execution execution = new CustomerService(repository).readAndPrintCustomerFile(sink);
+
+            // At the moment of the CLOSE: the banner and the record's two images are out, the closing
+            // banner is not.
+            assertThat(linesWhenClosed.get()).isEqualTo(3);
+            assertThat(execution.lineCount()).isEqualTo(4);
+            assertThat(execution.sysout().get(3)).isEqualTo(CustomerService.END_OF_EXECUTION);
+        }
+
+        @Test
+        @DisplayName("the whole 102-line sequence is asserted position by position, banners included")
+        void theWholeSequenceIsAssertedPositionByPosition() {
+            // The headline geometry, stated as one expectation rather than as three separate ones: line 0
+            // is L71's banner, lines 1-2 are the first record's two images, lines 99-100 are the fiftieth
+            // record's, and line 101 is L85's banner. 1 + (50 x 2) + 1 = 102. A de-duplicated translation
+            // gives 52 and a dropped banner gives 101; this list distinguishes all three.
+            List<String> rows = fixtureRows();
+            List<String> expected = new ArrayList<>();
+            expected.add(CustomerService.START_OF_EXECUTION);                                    // L71
+            for (String row : rows) {
+                expected.add(row);                                                               // L96
+                expected.add(row);                                                               // L78
+            }
+            expected.add(CustomerService.END_OF_EXECUTION);                                      // L85
+
+            Execution execution = service(seeded(rows)).readAndPrintCustomerFile();
+
+            assertThat(rows).hasSize(FIXTURE_RECORDS);
+            assertThat(expected).hasSize(FIXTURE_LINE_COUNT);
+            assertThat(execution.sysout()).containsExactlyElementsOf(expected);
+            assertThat(execution.lineCount()).isEqualTo(102);
+            assertThat(execution.recordsRead()).isEqualTo(50);
+
+            // And the browse arrived in ascending CUST-ID order, 000000001 through 000000050, which is what
+            // a KSDS sequential read gives CBCUS01C and what makes this sequence reproducible at all.
+            for (int record = 0; record < FIXTURE_RECORDS; record++) {
+                String image = execution.sysout().get(1 + record * CustomerService.DISPLAYS_PER_RECORD);
+                assertThat(image.substring(0, NINE))
+                        .as("the key at browse position %d", record)
+                        .isEqualTo(CustomerRecord.decode(image, ASCII).custIdImage(ASCII));
+                assertThat(Integer.parseInt(image.substring(0, NINE)))
+                        .as("keys ascend by one from 000000001")
+                        .isEqualTo(record + 1);
+            }
+        }
+
+        @Test
+        @DisplayName("a normal end returns RETURN-CODE zero, because L87 never moves into it")
+        void aNormalEndReturnsZero() {
+            // GOBACK at L87 with no MOVE TO RETURN-CODE anywhere in the program, so a normal end is 0.
+            // The three non-zero codes this program can produce all come from an abend, never from here.
+            Execution execution = stubbedRunOver(2).subject().readAndPrintCustomerFile();
+
+            assertThat(execution.returnCode()).isEqualTo(CustomerService.RETURN_CODE_NORMAL_END);
+            assertThat(execution.returnCode()).isZero();
+        }
+    }
+
+    // =============================================================================================
+    // 0000-CUSTFILE-OPEN - app/cbl/CBCUS01C.cbl:L118-L134.
+    // =============================================================================================
+
+    @Nested
+    @DisplayName("0000-CUSTFILE-OPEN - L118-L134")
+    class CustfileOpen {
+
+        @Test
+        @DisplayName("'00' moves 0 and continues, so the browse begins - L121-L122, L126-L127")
+        void anOkOpenContinues() {
+            StubbedRun run = stubbedRun(FileStatus.OK, FileStatus.OK, foundRow(fixtureRows().get(0)),
+                    ReadResult.endOfFile());
+
+            Execution execution = run.subject().readAndPrintCustomerFile();
+
+            assertThat(execution.recordsRead()).isEqualTo(1);
+            assertThat(execution.sysout().get(execution.lineCount() - 1))
+                    .isEqualTo(CustomerService.END_OF_EXECUTION);
+            Mockito.verify(run.file(), Mockito.times(2)).readNext();
+        }
+
+        @Test
+        @DisplayName("'10' on the OPEN ABENDS - the paragraph has no APPL-EOF arm at all")
+        void endOfFileOnTheOpenIsFatal() {
+            // THE ASYMMETRY. 1000-CUSTFILE-GET-NEXT tests APPL-EOF at L107 and turns '10' into a clean
+            // end; 0000-CUSTFILE-OPEN tests only APPL-AOK at L126, so its ELSE at L123-L124 moves 12 for
+            // '10' exactly as it does for any other non-'00' status, and L129-L132 abends. Assuming the
+            // read path's shape here is the mistake this test exists to catch: nothing about the output of
+            // a working translation would look wrong, and an empty file would silently become a failed job.
+            StubbedRun run = stubbedRun(FileStatus.END_OF_FILE, FileStatus.OK);
+            Sysout sink = new Sysout();
+
+            AbendException abend = runExpectingAbend(run.subject(), sink);
+
+            assertThat(abend.getReturnCode()).isEqualTo(CustomerService.APPL_RESULT_FATAL);      // L124
+            assertThat(abend.getReturnCode()).isEqualTo(12);
+            assertThat(abend.getReturnCode()).isNotEqualTo(CustomerService.APPL_EOF);
+            assertThat(sink.lines()).containsExactly(
+                    CustomerService.START_OF_EXECUTION,                                          // L71
+                    CustomerService.ERROR_OPENING_CUSTFILE,                                       // L129
+                    FileStatus.DISPLAY_PREFIX + "0010",                                           // L168/L172
+                    CustomerService.ABENDING_PROGRAM);                                            // L155
+        }
+
+        @Test
+        @DisplayName("a failed OPEN issues no READ and no CLOSE - L83 is never reached")
+        void aFailedOpenNeitherReadsNorCloses() {
+            // CEE3ABD ends the program inside the paragraph, so PERFORM 9000-CUSTFILE-CLOSE at L83 and
+            // DISPLAY at L85 are both unreachable. A translation that closed a file it never opened would
+            // report a second, misleading status.
+            StubbedRun run = stubbedRun(FileStatus.NOT_FOUND, FileStatus.OK);
+            Sysout sink = new Sysout();
+
+            runExpectingAbend(run.subject(), sink);
+
+            Mockito.verify(run.file(), Mockito.never()).readNext();
+            Mockito.verify(run.file(), Mockito.never()).closeFile();
+            assertThat(sink.recordImageCount()).isZero();
+            assertThat(sink.lines()).doesNotContain(CustomerService.END_OF_EXECUTION);
+        }
+
+        @ParameterizedTest
+        @CsvSource({"10,0010", "22,0022", "23,0023", "04,0004", "30,0030", "41,0041"})
+        @DisplayName("every non-'00' open status takes the single ELSE at L123-L124 and abends with 12")
+        void everyNonOkOpenStatusAbendsWithTwelve(String status, String image) {
+            // One arm, one outcome: the paragraph does not distinguish between its failures, so each of
+            // these produces the same three lines with only the rendered status differing (gate G47).
+            StubbedRun run = stubbedRun(status, FileStatus.OK);
+            Sysout sink = new Sysout();
+
+            AbendException abend = runExpectingAbend(run.subject(), sink);
+
+            assertThat(abend.getReturnCode()).isEqualTo(12);
+            assertThat(abend.getAbendCode()).hasValue(999);
+            assertThat(abend.getTiming()).hasValue(0);
+            assertThat(sink.lines()).containsExactly(
+                    CustomerService.START_OF_EXECUTION,
+                    CustomerService.ERROR_OPENING_CUSTFILE,
+                    FileStatus.DISPLAY_PREFIX + image,
+                    CustomerService.ABENDING_PROGRAM);
+        }
+
+        @Test
+        @DisplayName("the open text names the DD name, CUSTFILE, and not the file - L129")
+        void theOpenTextNamesTheDdName() {
+            // L129 says 'ERROR OPENING CUSTFILE' - the ASSIGN TO name from L29 - while L110 and L147 both
+            // say 'CUSTOMER FILE'. Harmonising the three would read better and would change three lines of
+            // observable output, so the inconsistency is transcribed.
+            StubbedRun run = stubbedRun(FileStatus.NOT_FOUND, FileStatus.OK);
+            Sysout sink = new Sysout();
+
+            runExpectingAbend(run.subject(), sink);
+
+            assertThat(sink.lines().get(1))
+                    .isEqualTo("ERROR OPENING " + CustomerRepository.BATCH_DD_NAME)
+                    .isEqualTo("ERROR OPENING CUSTFILE")
+                    .doesNotContain("CUSTOMER FILE");
+        }
+
+        @Test
+        @DisplayName("the transient 8 at L119 is never observable outside the paragraph")
+        void theTransientEightIsNeverObservable() {
+            // MOVE 8 TO APPL-RESULT at L119 is overwritten at L122 or L124 before the APPL-AOK test at
+            // L126, on every path. It is transcribed because deleting it would edit a program this
+            // migration may not improve, but it can never reach an abend, an exit status or a SYSOUT line.
+            StubbedRun failing = stubbedRun(FileStatus.NOT_FOUND, FileStatus.OK);
+            Sysout sink = new Sysout();
+
+            AbendException abend = runExpectingAbend(failing.subject(), sink);
+
+            assertThat(CustomerService.APPL_RESULT_ASSUMED_FAILURE).isEqualTo(8);
+            assertThat(abend.getReturnCode()).isNotEqualTo(CustomerService.APPL_RESULT_ASSUMED_FAILURE);
+            assertThat(sink.lines()).noneMatch(line -> line.endsWith("0008"));
+
+            Execution clean = stubbedRunOver(1).subject().readAndPrintCustomerFile();
+            assertThat(clean.returnCode()).isNotEqualTo(CustomerService.APPL_RESULT_ASSUMED_FAILURE);
+        }
+    }
+
+    // =============================================================================================
+    // 1000-CUSTFILE-GET-NEXT - app/cbl/CBCUS01C.cbl:L92-L116.
+    //
+    // The three-way ladder, each arm driven at its own call site. This is the only paragraph of the
+    // three with an APPL-EOF test, which is what makes '10' a clean end here and fatal everywhere else.
+    // =============================================================================================
+
+    @Nested
+    @DisplayName("1000-CUSTFILE-GET-NEXT - L92-L116")
+    class CustfileGetNext {
+
+        @Test
+        @DisplayName("'00' moves 0 and displays the record - L94-L96")
+        void anOkReadMovesZeroAndDisplays() throws Exception {
+            Method custfileGetNext = CustomerService.class.getDeclaredMethod("custfileGetNext",
+                    Sysout.class, WorkingStorage.class, CustomerFile.class);
+            custfileGetNext.setAccessible(true);
+
+            StubbedRun run = stubbedRunOver(1);
+            CustomerFile file = run.repository().openInput();
+            Sysout sink = new Sysout();
+            WorkingStorage storage = new WorkingStorage();
+
+            custfileGetNext.invoke(run.subject(), sink, storage, file);
+
+            assertThat(storage.applResult()).isEqualTo(CustomerService.APPL_AOK);                 // L95
+            assertThat(storage.applAok()).isTrue();                                              // L104
+            assertThat(storage.endOfFileIsNo()).isTrue();
+            assertThat(sink.lines()).containsExactly(fixtureRows().get(0));                      // L96
+        }
+
+        @Test
+        @DisplayName("'10' moves 16, sets the flag, emits nothing and does not abend - L98-L99, L107-L108")
+        void endOfFileMovesSixteenAndEndsCleanly() throws Exception {
+            Method custfileGetNext = CustomerService.class.getDeclaredMethod("custfileGetNext",
+                    Sysout.class, WorkingStorage.class, CustomerFile.class);
+            custfileGetNext.setAccessible(true);
+
+            StubbedRun run = stubbedRun(FileStatus.OK, FileStatus.OK);
+            CustomerFile file = run.repository().openInput();
+            Sysout sink = new Sysout();
+            WorkingStorage storage = new WorkingStorage();
+
+            custfileGetNext.invoke(run.subject(), sink, storage, file);
+
+            assertThat(storage.applResult()).isEqualTo(CustomerService.APPL_EOF);                 // L99
+            assertThat(storage.applResult()).isEqualTo(16);
+            assertThat(storage.applEof()).isTrue();                                              // L107
+            assertThat(storage.applAok()).isFalse();
+            assertThat(storage.endOfFileIsYes()).isTrue();                                       // L108
+            // Not an error: L110's text is never reached from this arm, and nothing is displayed.
+            assertThat(sink.lines()).isEmpty();
+        }
+
+        @Test
+        @DisplayName("'10' ends the whole run cleanly, with both banners and no error text")
+        void endOfFileEndsTheRunWithoutAnError() {
+            StubbedRun run = stubbedRunOver(2);
+
+            Execution execution = run.subject().readAndPrintCustomerFile();
+
+            assertThat(execution.returnCode()).isZero();
+            assertThat(execution.sysout()).doesNotContain(CustomerService.ERROR_READING_CUSTOMER_FILE);
+            assertThat(execution.sysout()).doesNotContain(CustomerService.ABENDING_PROGRAM);
+            assertThat(execution.sysout()).noneMatch(line -> line.startsWith(FileStatus.DISPLAY_PREFIX));
+            assertThat(execution.sysout().get(0)).isEqualTo(CustomerService.START_OF_EXECUTION);
+            assertThat(execution.sysout().get(5)).isEqualTo(CustomerService.END_OF_EXECUTION);
+        }
+
+        @ParameterizedTest
+        @CsvSource({"22,0022", "23,0023", "04,0004", "30,0030", "9A,9065"})
+        @DisplayName("every other status takes the single ELSE at L101, then L110-L113 abends with 12")
+        void everyOtherStatusAbendsWithTwelve(String status, String image) {
+            // Gate G47 at this call site. '22' and '23' cannot arise from a sequential browse of an input
+            // file, and the arm that handles them must still be exercised - the COBOL gives them no
+            // special case, so neither does this. The four lines are the paragraph's own order: L110's
+            // text, L112's rendered status, L155's banner, then the abend.
+            StubbedRun run = stubbedRun(FileStatus.OK, FileStatus.OK, ReadResult.of(status));
+            Sysout sink = new Sysout();
+
+            AbendException abend = runExpectingAbend(run.subject(), sink);
+
+            assertThat(abend.getReturnCode()).isEqualTo(CustomerService.APPL_RESULT_FATAL);       // L101
+            assertThat(abend.getReturnCode()).isEqualTo(12);
+            assertThat(sink.lines()).containsExactly(
+                    CustomerService.START_OF_EXECUTION,                                          // L71
+                    CustomerService.ERROR_READING_CUSTOMER_FILE,                                  // L110
+                    FileStatus.DISPLAY_PREFIX + image,                                            // L112
+                    CustomerService.ABENDING_PROGRAM);                                            // L155
+        }
+
+        @Test
+        @DisplayName("'22' and '23' produce identical output but for the rendered status - L101")
+        void duplicateAndNotFoundShareTheOneArm() {
+            Sysout duplicate = new Sysout();
+            Sysout notFound = new Sysout();
+
+            runExpectingAbend(stubbedRun(FileStatus.OK, FileStatus.OK,
+                    ReadResult.of(FileStatus.DUPLICATE)).subject(), duplicate);
+            runExpectingAbend(stubbedRun(FileStatus.OK, FileStatus.OK,
+                    ReadResult.notFound()).subject(), notFound);
+
+            assertThat(duplicate.lines()).hasSameSizeAs(notFound.lines());
+            assertThat(duplicate.lines().get(1)).isEqualTo(notFound.lines().get(1));
+            assertThat(duplicate.lines().get(3)).isEqualTo(notFound.lines().get(3));
+            assertThat(duplicate.lines().get(2)).isEqualTo(FileStatus.DISPLAY_PREFIX + "0022");
+            assertThat(notFound.lines().get(2)).isEqualTo(FileStatus.DISPLAY_PREFIX + "0023");
+        }
+
+        @Test
+        @DisplayName("a fatal read after two good records keeps the four images already displayed")
+        void theFatalArmDoesNotUnwindWhatWasAlreadyDisplayed() {
+            // SYSOUT is a spool, not a transaction: the lines already written stay written. Two records
+            // are displayed twice each before the third read fails, so the failure lands on line six.
+            List<String> rows = fixtureRows();
+            StubbedRun run = stubbedRun(FileStatus.OK, FileStatus.OK,
+                    foundRow(rows.get(0)), foundRow(rows.get(1)), ReadResult.notFound());
+            Sysout sink = new Sysout();
+
+            runExpectingAbend(run.subject(), sink);
+
+            assertThat(sink.lines()).containsExactly(
+                    CustomerService.START_OF_EXECUTION,
+                    rows.get(0), rows.get(0),                                                    // L96, L78
+                    rows.get(1), rows.get(1),                                                    // L96, L78
+                    CustomerService.ERROR_READING_CUSTOMER_FILE,                                  // L110
+                    FileStatus.DISPLAY_PREFIX + "0023",                                           // L112
+                    CustomerService.ABENDING_PROGRAM);                                            // L155
+            assertThat(sink.recordImageCount()).isEqualTo(4);
+            assertThat(sink.lines()).doesNotContain(CustomerService.END_OF_EXECUTION);
+        }
+
+        @Test
+        @DisplayName("a read that reports end of file suppresses the mainline display at L77")
+        void theInnerGuardSuppressesTheSecondDisplay() {
+            // L77's IF END-OF-FILE = 'N' is genuinely reachable both ways: true for every record, false
+            // exactly once, on the iteration whose read reported '10'. That last iteration displays
+            // nothing, which is why 50 records give 102 lines and not 104.
+            StubbedRun run = stubbedRunOver(1);
+            CustomerFile file = run.repository().openInput();
+            Sysout sink = new Sysout();
+            WorkingStorage storage = new WorkingStorage();
+
+            int firstIteration = run.subject().custfileDisplayIteration(sink, storage, file);
+            int endIteration = run.subject().custfileDisplayIteration(sink, storage, file);
+
+            assertThat(firstIteration).isEqualTo(1);
+            assertThat(endIteration).isZero();
+            assertThat(sink.lines()).hasSize(CustomerService.DISPLAYS_PER_RECORD);
+            assertThat(storage.endOfFileIsYes()).isTrue();
+        }
+    }
+
+    // =============================================================================================
+    // 9000-CUSTFILE-CLOSE - app/cbl/CBCUS01C.cbl:L136-L152.
+    //
+    // Written with ADD ... GIVING and SUBTRACT where the open uses MOVE, and reaching the same two
+    // values by a different route. The route is transcribed; the values are what is asserted.
+    // =============================================================================================
+
+    @Nested
+    @DisplayName("9000-CUSTFILE-CLOSE - L136-L152")
+    class CustfileClose {
+
+        @Test
+        @DisplayName("'00' zeroes the register by SUBTRACT and the run ends normally - L139-L140")
+        void anOkCloseZeroesTheRegisterAndEndsTheRun() {
+            StubbedRun run = stubbedRunOver(1);
+
+            Execution execution = run.subject().readAndPrintCustomerFile();
+
+            assertThat(execution.returnCode()).isZero();
+            assertThat(execution.sysout().get(3)).isEqualTo(CustomerService.END_OF_EXECUTION);   // L85
+            Mockito.verify(run.file(), Mockito.times(1)).closeFile();                            // L138
+        }
+
+        @Test
+        @DisplayName("'10' on the CLOSE ABENDS - the paragraph has no APPL-EOF arm either")
+        void endOfFileOnTheCloseIsFatal() {
+            // THE ASYMMETRY, second half. L144 tests only APPL-AOK, so L141-L142's ADD 12 TO ZERO GIVING
+            // catches '10' along with everything else and L147-L150 abends. A run whose every record was
+            // displayed correctly still ends with no closing banner and a non-zero step, which is exactly
+            // what the COBOL does and is invisible to any assertion that only checks the record images.
+            StubbedRun run = stubbedRun(FileStatus.OK, FileStatus.END_OF_FILE,
+                    foundRow(fixtureRows().get(0)), ReadResult.endOfFile());
+            Sysout sink = new Sysout();
+
+            AbendException abend = runExpectingAbend(run.subject(), sink);
+
+            assertThat(abend.getReturnCode()).isEqualTo(CustomerService.APPL_RESULT_FATAL);       // L142
+            assertThat(abend.getReturnCode()).isEqualTo(12);
+            assertThat(abend.getReturnCode()).isNotEqualTo(CustomerService.APPL_EOF);
+            assertThat(sink.lines()).containsExactly(
+                    CustomerService.START_OF_EXECUTION,                                          // L71
+                    fixtureRows().get(0), fixtureRows().get(0),                                   // L96, L78
+                    CustomerService.ERROR_CLOSING_CUSTOMER_FILE,                                  // L147
+                    FileStatus.DISPLAY_PREFIX + "0010",                                           // L149
+                    CustomerService.ABENDING_PROGRAM);                                            // L155
+            assertThat(sink.lines()).doesNotContain(CustomerService.END_OF_EXECUTION);
+        }
+
+        @ParameterizedTest
+        @CsvSource({"10,0010", "22,0022", "23,0023", "04,0004", "30,0030"})
+        @DisplayName("every non-'00' close status reaches 12 through ADD 12 TO ZERO GIVING - L141-L142")
+        void everyNonOkCloseStatusAbendsWithTwelve(String status, String image) {
+            StubbedRun run = stubbedRun(FileStatus.OK, status);
+            Sysout sink = new Sysout();
+
+            AbendException abend = runExpectingAbend(run.subject(), sink);
+
+            assertThat(abend.getReturnCode()).isEqualTo(12);
+            assertThat(abend.getAbendCode()).hasValue(999);
+            assertThat(abend.getTiming()).hasValue(0);
+            assertThat(sink.lines()).containsExactly(
+                    CustomerService.START_OF_EXECUTION,
+                    CustomerService.ERROR_CLOSING_CUSTOMER_FILE,
+                    FileStatus.DISPLAY_PREFIX + image,
+                    CustomerService.ABENDING_PROGRAM);
+        }
+
+        @Test
+        @DisplayName("the close text names the file, not the DD name - L147")
+        void theCloseTextNamesTheFile() {
+            StubbedRun run = stubbedRun(FileStatus.OK, FileStatus.NOT_FOUND);
+            Sysout sink = new Sysout();
+
+            runExpectingAbend(run.subject(), sink);
+
+            assertThat(sink.lines().get(1))
+                    .isEqualTo("ERROR CLOSING CUSTOMER FILE")
+                    .contains("CUSTOMER FILE")
+                    .doesNotContain(CustomerRepository.BATCH_DD_NAME);
+        }
+
+        @Test
+        @DisplayName("the close is reached even for an empty dataset - L83 is unconditional")
+        void theCloseIsReachedForAnEmptyDataset() {
+            StubbedRun run = stubbedRun(FileStatus.OK, FileStatus.OK);
+
+            run.subject().readAndPrintCustomerFile();
+
+            Mockito.verify(run.file(), Mockito.times(1)).closeFile();
+        }
+
+        @Test
+        @DisplayName("the transient 8 at L137 is overwritten on both arms, exactly as at L119")
+        void theTransientEightIsOverwrittenOnBothArms() {
+            // ADD 8 TO ZERO GIVING APPL-RESULT at L137 reaches the same 8 as the open's MOVE, and is
+            // discarded the same way: SUBTRACT at L140 on success, ADD 12 TO ZERO GIVING at L142 on
+            // failure. Neither arm can leave 8 behind for the APPL-AOK test at L144 to see.
+            Execution clean = stubbedRunOver(1).subject().readAndPrintCustomerFile();
+            AbendException failed = runExpectingAbend(
+                    stubbedRun(FileStatus.OK, FileStatus.DUPLICATE).subject(), new Sysout());
+
+            assertThat(clean.returnCode()).isZero();
+            assertThat(failed.getReturnCode()).isEqualTo(12);
+            assertThat(failed.getReturnCode()).isNotEqualTo(CustomerService.APPL_RESULT_ASSUMED_FAILURE);
+        }
+    }
+
+    // =============================================================================================
+    // Z-ABEND-PROGRAM - app/cbl/CBCUS01C.cbl:L154-L158.
+    //
+    //     DISPLAY 'ABENDING PROGRAM'      L155
+    //     MOVE 0   TO TIMING              L156
+    //     MOVE 999 TO ABCODE              L157
+    //     CALL 'CEE3ABD'                  L158
+    //
+    // One paragraph, reached from three call sites, and identical at all three. The arguments are
+    // constants in the source, so they are constants here, and the banner precedes the termination.
+    // =============================================================================================
+
+    @Nested
+    @DisplayName("Z-ABEND-PROGRAM - L154-L158")
+    class AbendProgram {
+
+        /**
+         * A run that abends in each of the three paragraphs that can reach {@code Z-ABEND-PROGRAM}.
+         *
+         * @param site the paragraph to fail in
+         * @param sink the sink to run against
+         * @return the abend raised
+         */
+        private AbendException abendAt(String site, Sysout sink) {
+            CustomerService subject = switch (site) {
+                // L129-L132: the open's fatal arm.
+                case "open" -> stubbedRun(FileStatus.NOT_FOUND, FileStatus.OK).subject();
+                // L110-L113: the read's fatal arm.
+                case "read" -> stubbedRun(FileStatus.OK, FileStatus.OK,
+                        ReadResult.notFound()).subject();
+                // L147-L150: the close's fatal arm.
+                case "close" -> stubbedRun(FileStatus.OK, FileStatus.NOT_FOUND).subject();
+                default -> throw new IllegalArgumentException("Unknown abend site: " + site);
+            };
+            return runExpectingAbend(subject, sink);
+        }
+
+        @ParameterizedTest
+        @ValueSource(strings = {"open", "read", "close"})
+        @DisplayName("all three sites raise the same CEE3ABD arguments - RC 12, ABCODE 999, TIMING 0")
+        void everySiteCarriesTheSameCeeThreeAbdArguments(String site) {
+            AbendException abend = abendAt(site, new Sysout());
+
+            assertThat(abend.getProgram()).isEqualTo(CustomerService.PROGRAM_ID);
+            assertThat(abend.getProgram()).isEqualTo("CBCUS01C");                                // L23
+            assertThat(abend.getReturnCode()).isEqualTo(12);
+            assertThat(abend.hasAbendCode()).isTrue();
+            assertThat(abend.getAbendCode()).hasValue(AbendException.STANDARD_ABEND_CODE);
+            assertThat(abend.getAbendCode()).hasValue(999);                                      // L157
+            assertThat(abend.hasTiming()).isTrue();
+            assertThat(abend.getTiming()).hasValue(AbendException.STANDARD_TIMING);
+            assertThat(abend.getTiming()).hasValue(0);                                           // L156
+        }
+
+        @ParameterizedTest
+        @ValueSource(strings = {"open", "read", "close"})
+        @DisplayName("no abend carries 0, 4, 8 or 16 - the reachable abend value is always 12")
+        void noAbendCarriesZeroFourEightOrSixteen(String site) {
+            // At every reachable abend site APPL-RESULT holds 12. The other three values this program can
+            // put in that register cannot reach L158: 0 continues (L104, L126, L144), 8 is transient and
+            // always overwritten (L119, L137), and 16 is end of file, which takes the clean exit at L108.
+            AbendException abend = abendAt(site, new Sysout());
+
+            assertThat(abend.getReturnCode()).isNotEqualTo(AbendException.RETURN_CODE_OK);
+            assertThat(abend.getReturnCode()).isNotEqualTo(AbendException.RETURN_CODE_WARNING);
+            assertThat(abend.getReturnCode()).isNotEqualTo(AbendException.RETURN_CODE_ASSUMED_FAILURE);
+            assertThat(abend.getReturnCode()).isNotEqualTo(AbendException.RETURN_CODE_END_OF_FILE);
+            assertThat(abend.getReturnCode()).isEqualTo(AbendException.RETURN_CODE_IO_ERROR);
+        }
+
+        @ParameterizedTest
+        @ValueSource(strings = {"open", "read", "close"})
+        @DisplayName("'ABENDING PROGRAM' is emitted BEFORE the termination, and is the final line")
+        void theBannerPrecedesTheTermination(String site) {
+            // L155 displays, L158 terminates. The line is therefore observable in the sink of a run that
+            // did abend - which is the only evidence available that the DISPLAY happened first - and it is
+            // the last line, because nothing in the program follows CEE3ABD.
+            Sysout sink = new Sysout();
+
+            abendAt(site, sink);
+
+            List<String> lines = sink.lines();
+            assertThat(lines.get(lines.size() - 1)).isEqualTo(CustomerService.ABENDING_PROGRAM);
+            // And the two lines before it are the paragraph's error text, then the rendered status.
+            assertThat(lines.get(lines.size() - 2)).startsWith(FileStatus.DISPLAY_PREFIX);
+            assertThat(CustomerService.ERROR_TEXTS).contains(lines.get(lines.size() - 3));
+        }
+
+        @Test
+        @DisplayName("the banner is the shared literal, spelt once for the whole module - L155")
+        void theBannerIsTheSharedLiteral() {
+            assertThat(CustomerService.ABENDING_PROGRAM)
+                    .isEqualTo(AbendException.ABEND_DISPLAY_TEXT)
+                    .isEqualTo("ABENDING PROGRAM");
+        }
+
+        @Test
+        @DisplayName("an abend leaves no closing banner, which is how an operator tells the ends apart")
+        void anAbendHasNoClosingBanner() {
+            Sysout sink = new Sysout();
+
+            abendAt("read", sink);
+
+            assertThat(sink.lines()).doesNotContain(CustomerService.END_OF_EXECUTION);            // L85
+            assertThat(sink.lines().get(0)).isEqualTo(CustomerService.START_OF_EXECUTION);        // L71
+        }
+
+        @Test
+        @DisplayName("the reason names the paragraph that failed, so three identical abends stay apart")
+        void theReasonNamesTheFailingParagraph() {
+            // CEE3ABD carries no reason of its own; this is added diagnosis, not observable COBOL output,
+            // and it changes no SYSOUT line. It exists because three call sites raise byte-identical
+            // arguments and a bare RC 12 would not say which paragraph produced it.
+            assertThat(abendAt("open", new Sysout()).getReason().orElseThrow())
+                    .contains(CustomerService.ERROR_OPENING_CUSTFILE);
+            assertThat(abendAt("read", new Sysout()).getReason().orElseThrow())
+                    .contains(CustomerService.ERROR_READING_CUSTOMER_FILE);
+            assertThat(abendAt("close", new Sysout()).getReason().orElseThrow())
+                    .contains(CustomerService.ERROR_CLOSING_CUSTOMER_FILE);
+        }
+    }
+
+    // =============================================================================================
+    // Z-DISPLAY-IO-STATUS - app/cbl/CBCUS01C.cbl:L161-L174.
+    //
+    //     IF  IO-STATUS NOT NUMERIC                                        L162
+    //     OR  IO-STAT1 = '9'                                               L163
+    //         MOVE IO-STAT1 TO IO-STATUS-04(1:1)                           L164
+    //         MOVE 0        TO TWO-BYTES-BINARY                            L165
+    //         MOVE IO-STAT2 TO TWO-BYTES-RIGHT                             L166
+    //         MOVE TWO-BYTES-BINARY TO IO-STATUS-0403                      L167
+    //         DISPLAY 'FILE STATUS IS: NNNN' IO-STATUS-04                  L168
+    //     ELSE
+    //         MOVE '0000' TO IO-STATUS-04                                  L170
+    //         MOVE IO-STATUS TO IO-STATUS-04(3:2)                          L171
+    //         DISPLAY 'FILE STATUS IS: NNNN' IO-STATUS-04                  L172
+    //
+    // A COMPOUND OR, so it takes THREE cases and not two: a status that is not numeric, a status that IS
+    // numeric but begins with '9', and a status that is numeric and does not. Two cases would leave one
+    // of the two conditions never decided, and the second disjunct is the one that would go missing -
+    // '91' renders '9049' through it and '0091' without it (gates G30 and G50).
+    // =============================================================================================
+
+    @Nested
+    @DisplayName("Z-DISPLAY-IO-STATUS - L161-L174, a compound OR in three cases")
+    class DisplayIoStatus {
+
+        @Test
+        @DisplayName("case 1: a status that is not numeric takes the first arm - L162")
+        void aNonNumericStatusTakesTheFirstArm() {
+            // 'AB': neither byte is a digit, so IO-STATUS NOT NUMERIC is true and the first disjunct
+            // decides it. IO-STAT1 is copied verbatim into position 1 (L164) and IO-STAT2's byte value is
+            // moved through a 2-byte binary into the 3-digit PIC 999 (L165-L167). 'B' is 66 in this code
+            // page, so the image is 'A' followed by '066'.
+            assertThat("B".getBytes(ASCII)[0]).isEqualTo((byte) 66);
+
+            assertThat(FileStatus.toStatusImage("AB")).isEqualTo("A066");
+            assertThat(FileStatus.toDisplayLine("AB")).isEqualTo("FILE STATUS IS: NNNNA066");
+
+            // And through the program's own emission, at the read's fatal arm.
+            Sysout sink = new Sysout();
+            runExpectingAbend(
+                    stubbedRun(FileStatus.OK, FileStatus.OK, ReadResult.of("AB")).subject(), sink);
+
+            assertThat(sink.lines().get(2)).isEqualTo(FileStatus.DISPLAY_PREFIX + "A066");        // L168
+        }
+
+        @Test
+        @DisplayName("case 2: a NUMERIC status beginning with '9' takes the first arm too - L163")
+        void aNumericStatusBeginningWithNineTakesTheFirstArm() {
+            // The discriminating case for the second disjunct. '91' is entirely numeric, so L162 is false
+            // and only IO-STAT1 = '9' at L163 sends it down the first arm. '1' is 49 in this code page, so
+            // the image is '9049'. An implementation that tested only "not numeric" would render '0091'
+            // here and would pass every other assertion in this class.
+            assertThat("1".getBytes(ASCII)[0]).isEqualTo((byte) 49);
+
+            assertThat(FileStatus.toStatusImage("91")).isEqualTo("9049");
+            assertThat(FileStatus.toStatusImage("91")).isNotEqualTo("0091");
+            assertThat(FileStatus.toDisplayLine("91")).isEqualTo("FILE STATUS IS: NNNN9049");
+
+            Sysout sink = new Sysout();
+            runExpectingAbend(
+                    stubbedRun(FileStatus.OK, FileStatus.OK, ReadResult.of("91")).subject(), sink);
+
+            assertThat(sink.lines().get(2)).isEqualTo(FileStatus.DISPLAY_PREFIX + "9049");        // L168
+        }
+
+        @ParameterizedTest
+        @CsvSource({"00,0000", "04,0004", "10,0010", "22,0022", "23,0023", "35,0035", "89,0089"})
+        @DisplayName("case 3: a numeric status not beginning with '9' takes the ELSE arm - L170-L171")
+        void aNumericStatusNotBeginningWithNineTakesTheElseArm(String status, String image) {
+            // MOVE '0000' then MOVE IO-STATUS TO IO-STATUS-04(3:2): the two status characters are overlaid
+            // onto the last two positions of a zeroed four-character field, which is exactly '00' followed
+            // by the status. Byte-exact, and the values are transcribed rather than computed here.
+            assertThat(FileStatus.toStatusImage(status)).isEqualTo(image);
+            assertThat(FileStatus.toStatusImage(status)).isEqualTo("00" + status);
+            assertThat(FileStatus.toDisplayLine(status)).isEqualTo("FILE STATUS IS: NNNN" + image);
+        }
+
+        @Test
+        @DisplayName("the three statuses the ladder names render '0023', '0010' and '0022' exactly")
+        void theNamedStatusesRenderByteExactly() {
+            assertThat(FileStatus.toDisplayLine(FileStatus.NOT_FOUND))
+                    .isEqualTo("FILE STATUS IS: NNNN0023");
+            assertThat(FileStatus.toDisplayLine(FileStatus.END_OF_FILE))
+                    .isEqualTo("FILE STATUS IS: NNNN0010");
+            assertThat(FileStatus.toDisplayLine(FileStatus.DUPLICATE))
+                    .isEqualTo("FILE STATUS IS: NNNN0022");
+        }
+
+        @Test
+        @DisplayName("'NNNN' is a verbatim literal, not a placeholder for the digits that follow")
+        void theLiteralNnnnIsVerbatim() {
+            // DISPLAY 'FILE STATUS IS: NNNN' IO-STATUS-04 concatenates a literal and a field, so the four
+            // Ns are printed and the four digits follow them. Reading NNNN as a template would produce a
+            // 20-character line and silently drop the status.
+            assertThat(FileStatus.DISPLAY_PREFIX).isEqualTo("FILE STATUS IS: NNNN");
+            assertThat(FileStatus.DISPLAY_PREFIX).endsWith("NNNN");
+            assertThat(FileStatus.DISPLAY_PREFIX).hasSize(20);
+
+            String line = FileStatus.toDisplayLine(FileStatus.NOT_FOUND);
+            assertThat(line).hasSize(24);
+            assertThat(line).startsWith(FileStatus.DISPLAY_PREFIX);
+            assertThat(line.substring(FileStatus.DISPLAY_PREFIX.length())).isEqualTo("0023");
+        }
+
+        @Test
+        @DisplayName("IO-STATUS-04 is four characters - PIC 9 plus PIC 999 - at every status")
+        void theImageIsAlwaysFourCharacters() {
+            // L57-L59: 01 IO-STATUS-04 is IO-STATUS-0401 PIC 9 followed by IO-STATUS-0403 PIC 999. Both
+            // arms fill all four, so no status can shorten or lengthen the line.
+            assertThat(FileStatus.STATUS_IMAGE_LENGTH).isEqualTo(4);
+            for (String status : List.of("00", "04", "10", "22", "23", "91", "AB", "9A", "  ")) {
+                assertThat(FileStatus.toStatusImage(status))
+                        .as("the image of status '%s'", status)
+                        .hasSize(FileStatus.STATUS_IMAGE_LENGTH);
+                assertThat(FileStatus.toDisplayLine(status))
+                        .as("the display line for status '%s'", status)
+                        .hasSize(FileStatus.DISPLAY_PREFIX.length() + FileStatus.STATUS_IMAGE_LENGTH);
+            }
+        }
+
+        @Test
+        @DisplayName("all three arms are driven through the program's own three fatal paragraphs")
+        void allThreeArmsAreDrivenThroughTheProgram() {
+            // The renderer is shared, and the paragraph is performed from L112, L131 and L149. Driving one
+            // arm per call site proves the MOVE CUSTFILE-STATUS TO IO-STATUS at L111, L130 and L148 each
+            // reach it with the status their own operation reported, rather than a stale one.
+            Sysout readArm = new Sysout();
+            Sysout openArm = new Sysout();
+            Sysout closeArm = new Sysout();
+
+            runExpectingAbend(stubbedRun(FileStatus.OK, FileStatus.OK,
+                    ReadResult.of("91")).subject(), readArm);
+            runExpectingAbend(stubbedRun("AB", FileStatus.OK).subject(), openArm);
+            runExpectingAbend(stubbedRun(FileStatus.OK, FileStatus.NOT_FOUND).subject(), closeArm);
+
+            assertThat(readArm.lines().get(2)).isEqualTo(FileStatus.DISPLAY_PREFIX + "9049");
+            assertThat(openArm.lines().get(2)).isEqualTo(FileStatus.DISPLAY_PREFIX + "A066");
+            assertThat(closeArm.lines().get(2)).isEqualTo(FileStatus.DISPLAY_PREFIX + "0023");
+        }
+
+        @Test
+        @DisplayName("the renderer is reached with the operation's own status, never with an empty one")
+        void theRendererIsNeverReachedWithoutAStatus() {
+            // All three fatal arms MOVE CUSTFILE-STATUS TO IO-STATUS first - L111, L130, L148 - so a
+            // renderer reached with nothing in IO-STATUS is a defect in the translation and not a file
+            // status. WorkingStorage says exactly that rather than rendering spaces.
+            WorkingStorage untouched = new WorkingStorage();
+
+            assertThatExceptionOfType(IllegalStateException.class)
+                    .isThrownBy(untouched::ioStatus)
+                    .withMessageContaining("Z-DISPLAY-IO-STATUS");
+
+            untouched.moveToIoStatus(FileStatus.NOT_FOUND);
+            assertThat(untouched.ioStatus()).isEqualTo(FileStatus.NOT_FOUND);
+            assertThat(FileStatus.toDisplayLine(untouched.ioStatus()))
+                    .isEqualTo(FileStatus.DISPLAY_PREFIX + "0023");
+        }
+    }
+
+    // =============================================================================================
+    // What this service must NOT contain.
+    //
+    // Four of the migration's gates are satisfied here by an absence rather than a value, and an
+    // absence that is merely believed is an absence that returns. Each of these would pass every
+    // behavioural test above and would still be a defect:
+    //
+    //   G22-G24  a binary floating-point or fixed-point decimal type, or a rounding mode. CVCUS01Y
+    //            declares no signed picture and no V anywhere in its 500 bytes, so this program has
+    //            nothing to scale and nothing to round - the correct answer here is nothing at all.
+    //   G51      a batch launcher or an HTTP type in the path, which would put the decision logic
+    //            somewhere the coverage gate cannot reach.
+    //   G52      a wildcard import, which would break the one-copybook-to-one-type correspondence a
+    //            reviewer follows by reading the import list.
+    //   G53/B9   static mutable state, which would let two executions share a browse.
+    //
+    // Every check here is reflective, reads a compiled class off the classpath, or reads one of this
+    // module's own two source files. None of them opens app/cbl, app/cpy, app/jcl, app/csd or
+    // app/data - those are the read-only parity oracle (practice B3, gate G5).
+    // =============================================================================================
+
+    @Nested
+    @DisplayName("What the program does not do is absent, and provably so")
+    class MigrationConstraints {
+
+        /** This module's own source for the subject. */
+        private static final String SERVICE_SOURCE =
+                "app/java/src/main/java/com/vsergeychik/carddemo/customer/CustomerService.java";
+
+        /** This module's own source for this test. */
+        private static final String TEST_SOURCE =
+                "app/java/src/test/java/com/vsergeychik/carddemo/customer/CustomerServiceTest.java";
+
+        /** The subject and every type declared inside it. */
+        private List<Class<?>> serviceTypes() {
+            List<Class<?>> types = new ArrayList<>();
+            types.add(CustomerService.class);
+            types.addAll(List.of(CustomerService.class.getDeclaredClasses()));
+            return types;
+        }
+
+        /**
+         * Reads a compiled class straight off the test classpath.
+         *
+         * <p>Through {@link Class#getResourceAsStream(String)} rather than a file path, so it works from a
+         * directory or a jar and cannot wander into the reference trees. Decoded ISO-8859-1, which maps
+         * every byte to the code point of the same value, so an ASCII needle found in the result was
+         * present in the bytes verbatim - the constant pool stores ASCII identically under modified UTF-8,
+         * so a literal cannot hide from this.
+         *
+         * @param type the class to read
+         * @return its class-file bytes as text
+         */
+        private String compiledForm(Class<?> type) {
+            String binaryName = type.getName();
+            String simpleName = binaryName.substring(binaryName.lastIndexOf('.') + 1);
+            try (InputStream stream = type.getResourceAsStream(simpleName + ".class")) {
+                if (stream == null) {
+                    throw new IllegalStateException("The compiled form of " + binaryName + " is absent "
+                            + "from the test classpath, so its constant pool cannot be inspected");
+                }
+                return new String(stream.readAllBytes(), StandardCharsets.ISO_8859_1);
+            } catch (IOException failure) {
+                throw new UncheckedIOException(failure);
+            }
+        }
+
+        @Test
+        @DisplayName("no binary floating point and no fixed-point decimal type - gates G22 and G23")
+        void carriesNoBinaryFloatingPointAndNoFixedPointDecimal() {
+            // Asserted through JVM type descriptors rather than class literals, so this test neither
+            // declares nor imports any of the types it forbids. 'D' is double, 'F' is float, '[D' and '[F'
+            // their arrays, and the boxed and fixed-point forms are named by their binary descriptors.
+            // CVCUS01Y's only numeric items are CUST-ID PIC 9(09), CUST-SSN PIC 9(09) and
+            // CUST-FICO-CREDIT-SCORE PIC 9(03) - all scale-free, all int. Nothing here computes at all.
+            Set<String> forbidden = Set.of("D", "F", "[D", "[F",
+                    "Ljava/lang/Double;", "Ljava/lang/Float;", "Ljava/math/BigDecimal;");
+
+            for (Class<?> type : serviceTypes()) {
+                for (Field field : type.getDeclaredFields()) {
+                    assertThat(field.getType().descriptorString())
+                            .as("field %s.%s", type.getSimpleName(), field.getName())
+                            .isNotIn(forbidden);
+                }
+                for (Method method : type.getDeclaredMethods()) {
+                    assertThat(method.getReturnType().descriptorString())
+                            .as("%s.%s returns", type.getSimpleName(), method.getName())
+                            .isNotIn(forbidden);
+                    for (Class<?> parameter : method.getParameterTypes()) {
+                        assertThat(parameter.descriptorString())
+                                .as("%s.%s takes", type.getSimpleName(), method.getName())
+                                .isNotIn(forbidden);
+                    }
+                }
+                for (Constructor<?> constructor : type.getDeclaredConstructors()) {
+                    for (Class<?> parameter : constructor.getParameterTypes()) {
+                        assertThat(parameter.descriptorString())
+                                .as("a constructor of %s takes", type.getSimpleName())
+                                .isNotIn(forbidden);
+                    }
+                }
+            }
+        }
+
+        @Test
+        @DisplayName("no rounding mode is referenced anywhere, because nothing here rounds - gate G24")
+        void referencesNoRoundingMode() {
+            // Rule R2 makes truncation the only faithful mode module-wide: ROUNDED appears zero times in
+            // all 28 programs, so where the migration does round it rounds down. This program has no site
+            // for it - no COMPUTE, no ADD of a scaled value, no monetary field - so the faithful
+            // translation references no rounding mode at all, and the arithmetic package with it.
+            for (Class<?> type : serviceTypes()) {
+                assertThat(compiledForm(type))
+                        .as("the compiled form of %s", type.getName())
+                        .doesNotContain("HALF_UP")
+                        .doesNotContain("HALF_EVEN")
+                        .doesNotContain("CEILING")
+                        .doesNotContain("RoundingMode")
+                        .doesNotContain("java/math");
+            }
+        }
+
+        @Test
+        @DisplayName("no batch launcher and no HTTP type is reachable from the service - gate G51")
+        void reachesNoBatchLauncherAndNoHttpLayer() {
+            // The whole reason the decision logic lives in a service: a branch reachable only by launching
+            // a job, or only through a request, is a branch the per-package BRANCH gate cannot see. The
+            // Spring Batch wiring READCUST.jcl implies lives in CustomerFileReaderJob and owns no decision.
+            for (Class<?> type : serviceTypes()) {
+                assertThat(compiledForm(type))
+                        .as("the compiled form of %s", type.getName())
+                        .doesNotContain("org/springframework/batch")
+                        .doesNotContain("org/springframework/web")
+                        .doesNotContain("JobLauncher")
+                        .doesNotContain("JobRepository")
+                        .doesNotContain("Tasklet")
+                        .doesNotContain("StepContribution")
+                        .doesNotContain("MockMvc")
+                        .doesNotContain("HttpServlet");
+            }
+        }
+
+        @Test
+        @DisplayName("no dataset name is compiled into the service - gate G46")
+        void compilesInNoDatasetName() {
+            // Dataset names arrive from carddemo.datasets in configuration, keyed by the CSD file name and
+            // the DD name. The service knows CUSTFILE - a key, not a name - and nothing else.
+            for (Class<?> type : serviceTypes()) {
+                assertThat(compiledForm(type))
+                        .as("the compiled form of %s", type.getName())
+                        .doesNotContain("AWS.M2.CARDDEMO")
+                        .doesNotContain("VSAM.KSDS");
+            }
+            assertThat(CustomerService.DD_NAME).isEqualTo(CustomerRepository.BATCH_DD_NAME);
+            assertThat(CustomerService.DD_NAME).isEqualTo("CUSTFILE");
+        }
+
+        @Test
+        @DisplayName("the service is constructor-injected and holds no static mutable state - G53, B9")
+        void isConstructorInjectedAndHoldsNoStaticMutableState() {
+            // COBOL WORKING-STORAGE belongs to one program execution. Turning END-OF-FILE, APPL-RESULT or
+            // IO-STATUS into static Java fields would share them between concurrent runs and destroy both
+            // request isolation and test determinism, so they live on a per-call WorkingStorage carrier and
+            // the only field on the bean is the injected repository.
+            Constructor<?>[] constructors = CustomerService.class.getDeclaredConstructors();
+            assertThat(constructors).hasSize(1);
+            assertThat(constructors[0].getParameterCount()).isEqualTo(1);
+            assertThat(constructors[0].getParameterTypes()[0]).isEqualTo(CustomerRepository.class);
+
+            for (Field field : CustomerService.class.getDeclaredFields()) {
+                if (field.isSynthetic()) {
+                    continue;
+                }
+                assertThat(Modifier.isFinal(field.getModifiers()))
+                        .as("field %s of the service must be final", field.getName())
+                        .isTrue();
+                if (Modifier.isStatic(field.getModifiers())) {
+                    assertThat(field.getType().isArray())
+                            .as("static field %s must not be a mutable array", field.getName())
+                            .isFalse();
+                }
+                for (Annotation annotation : field.getAnnotations()) {
+                    assertThat(annotation.annotationType().getSimpleName())
+                            .as("field %s must not be injected", field.getName())
+                            .isNotEqualTo("Autowired")
+                            .isNotEqualTo("Inject")
+                            .isNotEqualTo("Resource")
+                            .isNotEqualTo("Value");
+                }
+            }
+        }
+
+        @Test
+        @DisplayName("no import in the service or in this test is a wildcard - gate G52")
+        void noImportIsAWildcard() {
+            // The copybook-to-type correspondence is followed by reading the import list, so every type is
+            // named. Scanned line by line: a Javadoc line begins with '*' after trimming and so cannot be
+            // mistaken for an import, which keeps the guard pointed at code and leaves the prose free.
+            for (String source : List.of(SERVICE_SOURCE, TEST_SOURCE)) {
+                List<String> wildcards = moduleSource(source).lines()
+                        .map(String::strip)
+                        .filter(line -> line.startsWith("import ") && line.endsWith(".*;"))
+                        .toList();
+                assertThat(wildcards).as("wildcard imports in %s", source).isEmpty();
+            }
+        }
+
+        @Test
+        @DisplayName("this suite opens none of the read-only reference trees - practice B3, gate G5")
+        void opensNoneOfTheReferenceTrees() {
+            // Asserted on the compiled form of this test rather than on its text, and the distinction is
+            // the whole point: the Javadoc and the comments above cite the COBOL and the copybook by path
+            // on nearly every assertion, as they must, and a citation is not a read. Comments do not reach
+            // the class file, so what remains in the constant pool is only what the code can actually
+            // open - and no path into the COBOL, copybook, JCL, CSD or data trees is among it.
+            assertThat(compiledForm(CustomerServiceTest.class))
+                    .doesNotContain("app/cbl")
+                    .doesNotContain("app/cpy")
+                    .doesNotContain("app/jcl")
+                    .doesNotContain("app/csd")
+                    .doesNotContain("app/data");
+
+            // The fixture arrives from the test classpath, which is byte-identical to the ASCII oracle but
+            // is not it - a leading slash is a classpath root, not a filesystem one.
+            assertThat(FIXTURE).isEqualTo("/fixtures/custdata.txt");
+            assertThat(FIXTURE).startsWith("/fixtures/");
+
+            // And the source reader refuses anything outside this module outright, rather than trusting
+            // every future caller to remember.
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> moduleSource("README.md"))
+                    .withMessageContaining("read-only");
+        }
+
+        @Test
+        @DisplayName("this suite needs no Spring context, no launcher and no HTTP layer - gate G51")
+        void needsNoSpringContext() {
+            // Asserted on the test itself, because a suite that quietly acquired a context would still be
+            // green and would stop being the cheap, exhaustive branch vehicle the coverage gate needs.
+            for (Annotation annotation : CustomerServiceTest.class.getAnnotations()) {
+                assertThat(annotation.annotationType().getSimpleName())
+                        .isNotEqualTo("SpringBootTest")
+                        .isNotEqualTo("ExtendWith")
+                        .isNotEqualTo("ContextConfiguration")
+                        .isNotEqualTo("WebMvcTest")
+                        .isNotEqualTo("SpringBatchTest");
+            }
+            for (Field field : CustomerServiceTest.class.getDeclaredFields()) {
+                for (Annotation annotation : field.getAnnotations()) {
+                    assertThat(annotation.annotationType().getSimpleName())
+                            .as("field %s of this test", field.getName())
+                            .isNotEqualTo("Autowired")
+                            .isNotEqualTo("MockBean")
+                            .isNotEqualTo("Mock");
+                }
+            }
+            // And the subject really is constructible with one collaborator and nothing else.
+            assertThat(new CustomerService(stubbedRepository())).isNotNull();
+        }
+
+        @Test
+        @DisplayName("this test class holds no static mutable state either - practice B9")
+        void thisTestClassHoldsNoStaticMutableState() {
+            // The same standard, applied to the test. One static field is mutable by design and is named
+            // here so it cannot grow quietly: DATABASE_SEQUENCE hands each in-memory database a distinct
+            // name. It carries no program state and no expectation - only uniqueness - so no test can see
+            // another's rows and no result depends on the order the tests run in (practice B7).
+            for (Field field : CustomerServiceTest.class.getDeclaredFields()) {
+                if (field.isSynthetic()) {
+                    continue;
+                }
+                if (!Modifier.isStatic(field.getModifiers())) {
+                    continue;
+                }
+                assertThat(Modifier.isFinal(field.getModifiers()))
+                        .as("static field %s must be final", field.getName())
+                        .isTrue();
+                assertThat(field.getType().isArray())
+                        .as("static field %s must not be a mutable array", field.getName())
+                        .isFalse();
+                if (field.getType() == AtomicInteger.class) {
+                    assertThat(field.getName())
+                            .as("the only mutable static member is the database-name sequence")
+                            .isEqualTo("DATABASE_SEQUENCE");
+                    continue;
+                }
+                assertThat(field.getType())
+                        .as("static field %s must be an immutable constant", field.getName())
+                        .isIn(String.class, int.class, long.class, boolean.class, Charset.class);
+            }
+        }
     }
 
 }

@@ -1,0 +1,87 @@
+{
+  "program": "COADM01C",
+  "caseId": "case14",
+  "description": "The lines BUILD-MENU-OPTIONS never writes. app/cpy/COADM02Y.cpy gives values to four entries of a table declared OCCURS 9, and app/cbl/COADM01C.cbl:238-261 has arms for subscripts 1 to 10 plus WHEN OTHER CONTINUE - so arms 5 to 10 cannot fire while the count is 4, and there is no arm at all for OPTN011O or OPTN012O even though app/cpy-bms/COADM01.CPY:242-248 declares both and COMEN01C does dispatch to twelve. All eight remaining lines must therefore come back as the forty spaces the map initialises them to, and all twelve are carried because the map declares twelve. This case also arrives with every carried identifier populated - customer, account, card, last map and last mapset - so the navigation expectation proves COADM01C returns them untouched: it reads none of them and writes none of them.",
+  "unitKind": "SERVICE",
+  "inputs": {},
+  "screenRequest": {
+    "eibcalen": 160,
+    "aid": "DFHENTER",
+    "pinnedClock": "2022-07-19T23:12:32",
+    "charset": "US-ASCII",
+    "commarea": {
+      "CDEMO-FROM-TRANID": "CC00",
+      "CDEMO-FROM-PROGRAM": "COSGN00C",
+      "CDEMO-TO-PROGRAM": "COADM01C",
+      "CDEMO-USER-ID": "ADMIN001",
+      "CDEMO-USER-TYPE": "A",
+      "CDEMO-PGM-CONTEXT": "0",
+      "CDEMO-CUST-ID": "000000123",
+      "CDEMO-CUST-FNAME": "MARGARET                 ",
+      "CDEMO-CUST-MNAME": "J                        ",
+      "CDEMO-CUST-LNAME": "GOLD                     ",
+      "CDEMO-ACCT-ID": "00000000045",
+      "CDEMO-ACCT-STATUS": "Y",
+      "CDEMO-CARD-NUM": "0000000000000123",
+      "CDEMO-LAST-MAP": "COADM1A",
+      "CDEMO-LAST-MAPSET": "COADM01"
+    },
+    "mapFields": {},
+    "forcedOutcomes": {}
+  },
+  "expectedResponse": {
+    "nextMapset": "COADM01",
+    "nextMap": "COADM1A",
+    "navigation": {
+      "CDEMO-FROM-TRANID": "CC00",
+      "CDEMO-FROM-PROGRAM": "COSGN00C",
+      "CDEMO-TO-TRANID": "    ",
+      "CDEMO-TO-PROGRAM": "COADM01C",
+      "CDEMO-USER-ID": "ADMIN001",
+      "CDEMO-USER-TYPE": "A",
+      "CDEMO-PGM-CONTEXT": "1",
+      "CDEMO-CUST-ID": "000000123",
+      "CDEMO-CUST-FNAME": "MARGARET                 ",
+      "CDEMO-CUST-MNAME": "J                        ",
+      "CDEMO-CUST-LNAME": "GOLD                     ",
+      "CDEMO-ACCT-ID": "00000000045",
+      "CDEMO-ACCT-STATUS": "Y",
+      "CDEMO-CARD-NUM": "0000000000000123",
+      "CDEMO-LAST-MAP": "COADM1A",
+      "CDEMO-LAST-MAPSET": "COADM01"
+    },
+    "sends": [
+      {
+        "fields": {
+          "OPTN001O": "01. User List (Security)                ",
+          "OPTN002O": "02. User Add (Security)                 ",
+          "OPTN003O": "03. User Update (Security)              ",
+          "OPTN004O": "04. User Delete (Security)              ",
+          "OPTN005O": "                                        ",
+          "OPTN006O": "                                        ",
+          "OPTN007O": "                                        ",
+          "OPTN008O": "                                        ",
+          "OPTN009O": "                                        ",
+          "OPTN010O": "                                        ",
+          "OPTN011O": "                                        ",
+          "OPTN012O": "                                        ",
+          "OPTIONO": "  "
+        },
+        "attributes": {
+          "ERRMSGC": "DFHRED"
+        }
+      }
+    ],
+    "termination": "RETURN_TRANSID"
+  },
+  "expectedWrites": [],
+  "expectedFinalState": [],
+  "expectedReturnCode": 0,
+  "expectedMessages": [
+    {
+      "channel": "WS_MESSAGE_80",
+      "text": "                                                                                "
+    }
+  ],
+  "normalisations": []
+}

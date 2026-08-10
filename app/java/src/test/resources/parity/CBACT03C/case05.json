@@ -1,0 +1,96 @@
+{
+  "program": "CBACT03C",
+  "caseId": "case05",
+  "description": "Three rows already at the copybook's full 50 bytes whose trailing FILLER PIC X(14) span holds text rather than spaces. This is the case that distinguishes the two candidate images of a record and pins the right one: DISPLAY CARD-XREF-RECORD at :78 and :96 names the 01 group item, so it writes the record AREA that READ ... INTO filled - the row's own bytes, FILLER included - and not a re-encoding assembled from the three decoded fields, which would emit fourteen spaces there whatever the row held. Both candidates agree on every row of the shipped fixture, because its FILLER is blank; they disagree here, and the expectation says which one is correct. No normalisation is declared because nothing is short.",
+  "unitKind": "BATCH_JOB",
+  "inputs": {
+    "XREFFILE": {
+      "rows": [
+        "050002445376574000000005000000000050FILLERBYTES-01",
+        "068358619817151600000002700000000027FILLERBYTES-02",
+        "092387719324733000000000200000000002FILLERBYTES-03"
+      ]
+    }
+  },
+  "jobParameters": {},
+  "expectedWrites": [],
+  "expectedFinalState": [
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 0,
+      "fields": {
+        "XREF-CARD-NUM": "0500024453765740",
+        "XREF-CUST-ID": "000000050",
+        "XREF-ACCT-ID": "00000000050",
+        "FILLER": "FILLERBYTES-01"
+      },
+      "expectedBytes": "050002445376574000000005000000000050FILLERBYTES-01"
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 1,
+      "fields": {
+        "XREF-CARD-NUM": "0683586198171516",
+        "XREF-CUST-ID": "000000027",
+        "XREF-ACCT-ID": "00000000027",
+        "FILLER": "FILLERBYTES-02"
+      },
+      "expectedBytes": "068358619817151600000002700000000027FILLERBYTES-02"
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 2,
+      "fields": {
+        "XREF-CARD-NUM": "0923877193247330",
+        "XREF-CUST-ID": "000000002",
+        "XREF-ACCT-ID": "00000000002",
+        "FILLER": "FILLERBYTES-03"
+      },
+      "expectedBytes": "092387719324733000000000200000000002FILLERBYTES-03"
+    }
+  ],
+  "expectedReturnCode": 0,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "START OF EXECUTION OF PROGRAM CBACT03C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "050002445376574000000005000000000050FILLERBYTES-01"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "050002445376574000000005000000000050FILLERBYTES-01"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "068358619817151600000002700000000027FILLERBYTES-02"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "068358619817151600000002700000000027FILLERBYTES-02"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "092387719324733000000000200000000002FILLERBYTES-03"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "092387719324733000000000200000000002FILLERBYTES-03"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "END OF EXECUTION OF PROGRAM CBACT03C"
+    }
+  ],
+  "normalisations": [],
+  "expectedDatasets": [
+    {
+      "dataset": "XREFFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 3,
+      "recordLength": 50
+    }
+  ]
+}

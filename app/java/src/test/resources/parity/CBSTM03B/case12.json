@@ -1,0 +1,79 @@
+{
+  "program": "CBSTM03B",
+  "caseId": "case12",
+  "description": "The asymmetric capability matrix, and the silent no-op it produces. CUSTFILE is ACCESS MODE IS RANDOM (app/cbl/CBSTM03B.CBL:45) and 3000-CUSTFILE-PROC tests M03B-OPEN, M03B-READ-K and M03B-CLOSE - never M03B-READ. A plain 'R' against it therefore matches no IF and falls out of the third one straight into 3900-EXIT, whose MOVE CUSTFILE-STATUS TO LK-M03B-RC is outside every IF and still runs. So the call performs no I/O and returns the file's LAST-KNOWN status. The sequence makes that unmistakable: the keyed read before it leaves '23' in CUSTFILE-STATUS, so the plain read reports '23' rather than the '00' a fresh status would carry, and the record area comes back exactly as it went in.",
+  "unitKind": "COMPONENT",
+  "inputs": {
+    "CUSTFILE": {
+      "fixture": "custdata.txt",
+      "fromRow": 9,
+      "rowCount": 3
+    }
+  },
+  "jobParameters": {},
+  "screenRequest": null,
+  "expectedResponse": null,
+  "expectedWrites": [
+    {
+      "dataset": "M03BAREA",
+      "rowIndex": 0,
+      "fields": {
+        "LK-M03B-DD": "CUSTFILE",
+        "LK-M03B-OPER": "O",
+        "LK-M03B-RC": "00"
+      },
+      "expectedBytes": "CUSTFILEO00                         000{                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        "
+    },
+    {
+      "dataset": "M03BAREA",
+      "rowIndex": 1,
+      "fields": {
+        "LK-M03B-DD": "CUSTFILE",
+        "LK-M03B-OPER": "K",
+        "LK-M03B-RC": "23"
+      },
+      "expectedBytes": "CUSTFILEK23000000099                000I                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        "
+    },
+    {
+      "dataset": "M03BAREA",
+      "rowIndex": 2,
+      "fields": {
+        "LK-M03B-DD": "CUSTFILE",
+        "LK-M03B-OPER": "R",
+        "LK-M03B-RC": "23"
+      },
+      "expectedBytes": "CUSTFILER23                         000{                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        "
+    }
+  ],
+  "expectedFinalState": [
+    {
+      "dataset": "CUSTFILE",
+      "rowIndex": 0,
+      "fields": {},
+      "expectedBytes": "000000010Maybell                  Creola                   Mann                     77933 Adah Dale                                   Suite 343                                         Andersonfurt                                      CTUSA44803-4279(614)594-2619  (667)057-0235  754755746000000000002128247551980-06-110093803568Y476                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTFILE",
+      "rowIndex": 1,
+      "fields": {},
+      "expectedBytes": "000000011Hayden                   Ressie                   Pfannerstill             14895 Everette Ridges                             Apt. 443                                          Julianneburgh                                     WAUSA24984     (002)533-6980  (553)586-7718  493538586000000000001111908551986-11-030002650577Y209                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTFILE",
+      "rowIndex": 2,
+      "fields": {},
+      "expectedBytes": "000000012Maci                     Alan                     Robel                    80501 Isac Cliffs                                 Suite 623                                         Predovicton                                       MNUSA78861     (584)045-5200  (610)244-0407  666114218000000000009021433511984-02-180061317348Y688                                                                                                                                                                        "
+    }
+  ],
+  "expectedReturnCode": 0,
+  "expectedMessages": [],
+  "normalisations": [],
+  "expectedDatasets": [
+    {
+      "dataset": "M03BAREA",
+      "channel": "WRITES",
+      "rowCount": 3,
+      "recordLength": 1040
+    }
+  ]
+}

@@ -1,0 +1,166 @@
+{
+  "program": "CBACT04C",
+  "caseId": "case14",
+  "description": "1400-COMPUTE-FEES COMPUTES NOTHING - the declarative half of gate G26. The paragraph at :518-520 is a header, the comment '* To be implemented' and EXIT: zero statements. It is nevertheless PERFORMed at :216, immediately after 1300-COMPUTE-INTEREST and inside the IF DIS-INT-RATE NOT = 0 guard, so it runs once per interest computation here - twice - and must leave no trace. The rate is chosen so a fee would be unmistakable: 1200.00 at fifteen percent is exactly 15.00, a round figure, so TRAN-AMT is 0000000150{ and any fee whatsoever would move it. The rewritten account 1 shows 194.00 + 15.00 = 209.00 and nothing more, which is the part that could not be caught any other way: a fee added to WS-TOTAL-INT would be indistinguishable from interest by inspecting the account master alone, so it has to be caught in the transaction amount and the balance together. Exactly two writes, exactly four displayed lines, and no extra record anywhere.",
+  "unitKind": "BATCH_JOB",
+  "inputs": {
+    "TCATBALF": {
+      "rows": [
+        "000000000010100010000012000{0000000000000000000000",
+        "000000000020100010000000000{0000000000000000000000"
+      ]
+    },
+    "ACCTFILE": {
+      "rows": [
+        "00000000001Y00000001940{00000020200{00000010200{2014-11-202025-05-202025-05-2000000000000{00000000000{A000000000A000000000                                                                                                                                                                                  ",
+        "00000000002Y00000001580{00000061300{00000054480{2013-06-192024-08-112024-08-1100000000000{00000000000{A000000000A000000000                                                                                                                                                                                  "
+      ]
+    },
+    "XREFFILE": {
+      "rows": [
+        "968029415460369700000000100000000001",
+        "092387719324733000000000200000000002"
+      ]
+    },
+    "XREFFIL1": {
+      "rows": [
+        "968029415460369700000000100000000001",
+        "092387719324733000000000200000000002"
+      ]
+    },
+    "DISCGRP": {
+      "fixture": "discgrp.txt",
+      "fromRow": 0,
+      "rowCount": 1
+    }
+  },
+  "jobParameters": {
+    "parmDate": "2022071800"
+  },
+  "expectedWrites": [
+    {
+      "dataset": "SYSTRAN",
+      "rowIndex": 0,
+      "expectedBytes": "2022071800000001010005System    Int. for a/c 00000000001                                                                            0000000150{000000000                                                                                                              96802941546036972022-07-19-23.12.34.0000002022-07-19-23.12.34.000000                    "
+    },
+    {
+      "dataset": "SYSTRAN",
+      "rowIndex": 1,
+      "expectedBytes": "2022071800000002010005System    Int. for a/c 00000000002                                                                            0000000000{000000000                                                                                                              09238771932473302022-07-19-23.12.34.0000002022-07-19-23.12.34.000000                    "
+    }
+  ],
+  "expectedFinalState": [
+    {
+      "dataset": "TCATBALF",
+      "rowIndex": 0,
+      "expectedBytes": "000000000010100010000012000{0000000000000000000000"
+    },
+    {
+      "dataset": "TCATBALF",
+      "rowIndex": 1,
+      "expectedBytes": "000000000020100010000000000{0000000000000000000000"
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 0,
+      "expectedBytes": "00000000001Y00000002090{00000020200{00000010200{2014-11-202025-05-202025-05-2000000000000{00000000000{A000000000A000000000                                                                                                                                                                                  "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 1,
+      "expectedBytes": "00000000002Y00000001580{00000061300{00000054480{2013-06-192024-08-112024-08-1100000000000{00000000000{A000000000A000000000                                                                                                                                                                                  "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 0,
+      "expectedBytes": "092387719324733000000000200000000002              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 1,
+      "expectedBytes": "968029415460369700000000100000000001              "
+    },
+    {
+      "dataset": "XREFFIL1",
+      "rowIndex": 0,
+      "expectedBytes": "092387719324733000000000200000000002              "
+    },
+    {
+      "dataset": "XREFFIL1",
+      "rowIndex": 1,
+      "expectedBytes": "968029415460369700000000100000000001              "
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 0,
+      "expectedBytes": "A00000000001000100150{0000000000000000000000000000"
+    }
+  ],
+  "expectedReturnCode": 0,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "START OF EXECUTION OF PROGRAM CBACT04C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "000000000010100010000012000{0000000000000000000000"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "000000000020100010000000000{0000000000000000000000"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "END OF EXECUTION OF PROGRAM CBACT04C"
+    }
+  ],
+  "normalisations": [
+    {
+      "dataset": "XREFFILE",
+      "kind": "CARDXREF_FILLER_PAD_36_TO_50"
+    },
+    {
+      "dataset": "XREFFIL1",
+      "kind": "CARDXREF_FILLER_PAD_36_TO_50"
+    }
+  ],
+  "expectedDatasets": [
+    {
+      "dataset": "SYSTRAN",
+      "channel": "WRITES",
+      "rowCount": 2,
+      "recordLength": 350
+    },
+    {
+      "dataset": "TCATBALF",
+      "channel": "FINAL_STATE",
+      "rowCount": 2,
+      "recordLength": 50
+    },
+    {
+      "dataset": "ACCTFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 2,
+      "recordLength": 300
+    },
+    {
+      "dataset": "XREFFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 2,
+      "recordLength": 50
+    },
+    {
+      "dataset": "XREFFIL1",
+      "channel": "FINAL_STATE",
+      "rowCount": 2,
+      "recordLength": 50
+    },
+    {
+      "dataset": "DISCGRP",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 50
+    }
+  ]
+}

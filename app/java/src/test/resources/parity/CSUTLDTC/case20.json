@@ -1,0 +1,17 @@
+{
+  "program": "CSUTLDTC",
+  "caseId": "case20",
+  "description": "CSUTLDTC, the called date-validation subprogram, invoked as the @Service it became. LS-DATE='0000-01-01' and LS-DATE-FORMAT='YYYY-MM-DD' are this case's two LINKAGE SECTION parameters (L84-L85); LS-RESULT PIC X(80) (L86) is the output and is asserted below as the single WS_MESSAGE_80 line. This program opens no file and is reached by no JCL, so it seeds no dataset, writes no record and takes no job parameter - its entire observable behaviour is the 80 bytes L97 moves into LS-RESULT and the severity L98 moves into RETURN-CODE. Expected values are STATICALLY DERIVED from the 01 WS-MESSAGE declaration at L42-L57 and the group move at L122, never captured from a COBOL run, which is impossible here. Arm 9: FC-YEAR-IN-ERA-ZERO, 88-level VALUE X'000309D959C3C5C5' (L70) - severity 3, message 2521, the LAST of the nine named arms. The year within the era is zero, which no era admits: the count begins at one on both sides of the epoch. It is checked before the month, so this case reports 2521 and not the 2513 the date would otherwise attract for preceding the Lillian epoch - which is exactly why the order of the guard chain is part of the contract and not an implementation detail.",
+  "unitKind": "SERVICE",
+  "inputs": {},
+  "expectedWrites": [],
+  "expectedFinalState": [],
+  "expectedReturnCode": 3,
+  "expectedMessages": [
+    {
+      "channel": "WS_MESSAGE_80",
+      "text": "0003Mesg Code: 2521 YearInEra is 0  TstDate: \u0000\n0000-01- Mask used:YYYY-MM-DD    "
+    }
+  ],
+  "normalisations": []
+}

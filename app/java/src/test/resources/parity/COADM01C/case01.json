@@ -1,0 +1,49 @@
+{
+  "program": "COADM01C",
+  "caseId": "case01",
+  "description": "MAIN-PARA's EIBCALEN = 0 guard at app/cbl/COADM01C.cbl:82-84 - the transaction typed at a clear screen, with no communication area at all. The program moves 'COSGN00C' into CDEMO-FROM-PROGRAM (line 83 sets FROM, not TO - the asymmetry with line 97 is in the source and is reproduced) and performs RETURN-TO-SIGNON-SCREEN, whose combined relation at line 162 then finds CDEMO-TO-PROGRAM naming nothing and defaults it to 'COSGN00C' as well. No map is sent, so \"sends\" is empty and the response IS the whole observable behaviour, which is why it is stated field by field. The XCTL at lines 165-167 specifies NO COMMAREA, unlike the one at 142-145. EIBAID is never read on this path - line 93 is not reached - so no AID is declared: naming one would suggest the key mattered. Driven through the controller because an absent request body is how GET /api/admin/menu expresses EIBCALEN = 0.",
+  "unitKind": "CONTROLLER_POJO",
+  "inputs": {},
+  "screenRequest": {
+    "eibcalen": 0,
+    "aid": null,
+    "pinnedClock": "2022-07-19T23:12:32",
+    "charset": "US-ASCII",
+    "commarea": {},
+    "mapFields": {},
+    "forcedOutcomes": {}
+  },
+  "expectedResponse": {
+    "nextProgram": "COSGN00C",
+    "navigation": {
+      "CDEMO-FROM-TRANID": "    ",
+      "CDEMO-FROM-PROGRAM": "COSGN00C",
+      "CDEMO-TO-TRANID": "    ",
+      "CDEMO-TO-PROGRAM": "COSGN00C",
+      "CDEMO-USER-ID": "        ",
+      "CDEMO-USER-TYPE": " ",
+      "CDEMO-PGM-CONTEXT": "0",
+      "CDEMO-CUST-ID": "000000000",
+      "CDEMO-CUST-FNAME": "                         ",
+      "CDEMO-CUST-MNAME": "                         ",
+      "CDEMO-CUST-LNAME": "                         ",
+      "CDEMO-ACCT-ID": "00000000000",
+      "CDEMO-ACCT-STATUS": " ",
+      "CDEMO-CARD-NUM": "0000000000000000",
+      "CDEMO-LAST-MAP": "       ",
+      "CDEMO-LAST-MAPSET": "       "
+    },
+    "sends": [],
+    "termination": "XCTL"
+  },
+  "expectedWrites": [],
+  "expectedFinalState": [],
+  "expectedReturnCode": 0,
+  "expectedMessages": [
+    {
+      "channel": "SCREEN_ERRMSG_78",
+      "text": "                                                                              "
+    }
+  ],
+  "normalisations": []
+}

@@ -1,0 +1,75 @@
+{
+  "program": "CBACT03C",
+  "caseId": "case06",
+  "description": "OPEN INPUT at :120 reports FILE STATUS '35' - the dataset is not available - which takes the :123 arm, moves 12 into APPL-RESULT at :124, fails the 88 APPL-AOK test at :126 and runs :129-132: DISPLAY 'ERROR OPENING XREFFILE', then 9910-DISPLAY-IO-STATUS, then 9999-ABEND-PROGRAM. Four lines and RETURN-CODE 12. The five seeded rows are deliberately present and deliberately unread: a failed open must short-circuit the entire PERFORM UNTIL at :74, so a translation that read even one row would emit two extra lines here. '35' is numeric with a first byte that is not '9', so 9910 takes its ELSE arm at :170-172 and the image is '0000' with the status overlaid at (3:2), giving 0035.",
+  "unitKind": "BATCH_JOB",
+  "inputs": {
+    "XREFFILE": {
+      "fixture": "cardxref.txt",
+      "fromRow": 0,
+      "rowCount": 5
+    }
+  },
+  "jobParameters": {},
+  "expectedWrites": [],
+  "expectedFinalState": [
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 0,
+      "expectedBytes": "050002445376574000000005000000000050              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 1,
+      "expectedBytes": "068358619817151600000002700000000027              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 2,
+      "expectedBytes": "092387719324733000000000200000000002              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 3,
+      "expectedBytes": "092798710863623200000002000000000020              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 4,
+      "expectedBytes": "098249621362979500000001200000000012              "
+    }
+  ],
+  "expectedReturnCode": 12,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "START OF EXECUTION OF PROGRAM CBACT03C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ERROR OPENING XREFFILE"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "FILE STATUS IS: NNNN0035"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ABENDING PROGRAM"
+    }
+  ],
+  "normalisations": [
+    {
+      "dataset": "XREFFILE",
+      "kind": "CARDXREF_FILLER_PAD_36_TO_50"
+    }
+  ],
+  "expectedDatasets": [
+    {
+      "dataset": "XREFFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 5,
+      "recordLength": 50
+    }
+  ]
+}

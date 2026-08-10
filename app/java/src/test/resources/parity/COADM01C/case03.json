@@ -1,0 +1,58 @@
+{
+  "program": "COADM01C",
+  "caseId": "case03",
+  "description": "A re-entry with option 1 typed as '1 ', taking PROCESS-ENTER-KEY all the way to the transfer at app/cbl/COADM01C.cbl:138-145. The three-term guard at 127-129 passes, line 138 finds CDEMO-ADMIN-OPT-PGMNAME(1)(1:5) is 'COUSR' and not 'DUMMY', lines 139-141 stamp CDEMO-FROM-TRANID 'CA00', CDEMO-FROM-PROGRAM 'COADM01C' and CDEMO-PGM-CONTEXT zero, and the XCTL names COUSR00C carrying the communication area. An XCTL never returns, so lines 147-154 do not run: no map is sent, WS-MESSAGE stays the spaces line 79 left in it, and the twelve menu lines are never composed. The normalised OPTIONO of '01' is asserted at the unit rather than in \"sends\", because there is no send to carry it.",
+  "unitKind": "SERVICE",
+  "inputs": {},
+  "screenRequest": {
+    "eibcalen": 160,
+    "aid": "DFHENTER",
+    "pinnedClock": "2022-07-19T23:12:32",
+    "charset": "US-ASCII",
+    "commarea": {
+      "CDEMO-FROM-TRANID": "CC00",
+      "CDEMO-FROM-PROGRAM": "COSGN00C",
+      "CDEMO-TO-PROGRAM": "COADM01C",
+      "CDEMO-USER-ID": "ADMIN001",
+      "CDEMO-USER-TYPE": "A",
+      "CDEMO-PGM-CONTEXT": "1"
+    },
+    "mapFields": {
+      "OPTIONI": "1 "
+    },
+    "forcedOutcomes": {}
+  },
+  "expectedResponse": {
+    "nextProgram": "COUSR00C",
+    "navigation": {
+      "CDEMO-FROM-TRANID": "CA00",
+      "CDEMO-FROM-PROGRAM": "COADM01C",
+      "CDEMO-TO-TRANID": "    ",
+      "CDEMO-TO-PROGRAM": "COADM01C",
+      "CDEMO-USER-ID": "ADMIN001",
+      "CDEMO-USER-TYPE": "A",
+      "CDEMO-PGM-CONTEXT": "0",
+      "CDEMO-CUST-ID": "000000000",
+      "CDEMO-CUST-FNAME": "                         ",
+      "CDEMO-CUST-MNAME": "                         ",
+      "CDEMO-CUST-LNAME": "                         ",
+      "CDEMO-ACCT-ID": "00000000000",
+      "CDEMO-ACCT-STATUS": " ",
+      "CDEMO-CARD-NUM": "0000000000000000",
+      "CDEMO-LAST-MAP": "       ",
+      "CDEMO-LAST-MAPSET": "       "
+    },
+    "sends": [],
+    "termination": "XCTL"
+  },
+  "expectedWrites": [],
+  "expectedFinalState": [],
+  "expectedReturnCode": 0,
+  "expectedMessages": [
+    {
+      "channel": "WS_MESSAGE_80",
+      "text": "                                                                                "
+    }
+  ],
+  "normalisations": []
+}

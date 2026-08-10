@@ -1,0 +1,110 @@
+{
+  "program": "COCRDLIC",
+  "caseId": "case04",
+  "description": "Two independent things at once. DFHCLEAR resolves through app/cpy/CSSTRPFY.cpy:24-25 to CCARD-AID-CLEAR, which is not one of the four keys :371-376 accepts, so :378-380 forces CCARD-AID-ENTER and the transaction lists rather than exits - CLEAR is not a special case in this program. And the card master exists but holds no record, so the first READNEXT returns DFHRESP(ENDFILE) with WS-SCRN-COUNTER still zero: :1236-1237 stores an untouched CARD-RECORD, whose PIC X items are LOW-VALUES and whose PIC 9 items are zero, and :1241-1244 raises 'NO RECORDS FOUND FOR THIS SEARCH CONDITION.' instead of the end-of-page message because WS-CA-SCREEN-NUM is one. That message is also the one condition :926-929 tests for: WS-NO-RECORDS-FOUND is true, so the info line is left blank and keeps the DFHBMDAR colour :671 gave it. No row band is written at all.",
+  "unitKind": "CONTROLLER_POJO",
+  "inputs": {
+    "CARDDAT": {
+      "empty": true,
+      "recordLength": 150,
+      "copybook": "CVACT02Y"
+    }
+  },
+  "screenRequest": {
+    "eibcalen": 0,
+    "pinnedClock": "2022-07-19T23:12:34",
+    "charset": "US-ASCII",
+    "commarea": {},
+    "mapFields": {},
+    "forcedOutcomes": {},
+    "aid": "DFHCLEAR"
+  },
+  "expectedResponse": {
+    "navigation": {
+      "CDEMO-FROM-TRANID": "CCLI",
+      "CDEMO-FROM-PROGRAM": "COCRDLIC",
+      "CDEMO-TO-TRANID": "    ",
+      "CDEMO-TO-PROGRAM": "        ",
+      "CDEMO-USER-ID": "        ",
+      "CDEMO-USER-TYPE": "U",
+      "CDEMO-PGM-CONTEXT": "0",
+      "CDEMO-CUST-ID": "000000000",
+      "CDEMO-CUST-FNAME": "                         ",
+      "CDEMO-CUST-MNAME": "                         ",
+      "CDEMO-CUST-LNAME": "                         ",
+      "CDEMO-ACCT-ID": "00000000000",
+      "CDEMO-ACCT-STATUS": " ",
+      "CDEMO-CARD-NUM": "0000000000000000",
+      "CDEMO-LAST-MAP": "CCRDLIA",
+      "CDEMO-LAST-MAPSET": "COCRDLI"
+    },
+    "sends": [
+      {
+        "fields": {
+          "TRNNAMEO": "CCLI",
+          "TITLE01O": "      AWS Mainframe Modernization       ",
+          "CURDATEO": "07/19/22",
+          "PGMNAMEO": "COCRDLIC",
+          "TITLE02O": "              CardDemo                  ",
+          "CURTIMEO": "23:12:34",
+          "PAGENOO": "1  ",
+          "ACCTSIDO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "CARDSIDO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "CRDSEL1O": "\u0000",
+          "ACCTNO1O": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "CRDNUM1O": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "CRDSTS1O": "\u0000",
+          "CRDSEL2O": "\u0000",
+          "CRDSTP2O": "\u0000",
+          "ACCTNO2O": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "CRDNUM2O": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "CRDSTS2O": "\u0000",
+          "CRDSEL3O": "\u0000",
+          "CRDSTP3O": "\u0000",
+          "ACCTNO3O": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "CRDNUM3O": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "CRDSTS3O": "\u0000",
+          "CRDSEL4O": "\u0000",
+          "CRDSTP4O": "\u0000",
+          "ACCTNO4O": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "CRDNUM4O": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "CRDSTS4O": "\u0000",
+          "CRDSEL5O": "\u0000",
+          "CRDSTP5O": "\u0000",
+          "ACCTNO5O": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "CRDNUM5O": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "CRDSTS5O": "\u0000",
+          "CRDSEL6O": "\u0000",
+          "CRDSTP6O": "\u0000",
+          "ACCTNO6O": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "CRDNUM6O": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "CRDSTS6O": "\u0000",
+          "CRDSEL7O": "\u0000",
+          "CRDSTP7O": "\u0000",
+          "ACCTNO7O": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "CRDNUM7O": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "CRDSTS7O": "\u0000",
+          "INFOMSGO": "                                             ",
+          "ERRMSGO": "NO RECORDS FOUND FOR THIS SEARCH CONDITION.                                   "
+        },
+        "attributes": {
+          "INFOMSGC": "DFHBMDAR"
+        }
+      }
+    ],
+    "cursorField": "ACCTSIDL",
+    "termination": "RETURN_TRANSID"
+  },
+  "expectedWrites": [],
+  "expectedFinalState": [],
+  "expectedReturnCode": 0,
+  "expectedMessages": [],
+  "expectedDatasets": [
+    {
+      "dataset": "CARDDAT",
+      "channel": "FINAL_STATE",
+      "rowCount": 0,
+      "recordLength": 150
+    }
+  ]
+}

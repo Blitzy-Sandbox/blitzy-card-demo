@@ -1,0 +1,92 @@
+{
+  "program": "CBSTM03B",
+  "caseId": "case19",
+  "description": "WHEN OTHER GO TO 9999-GOBACK - app/cbl/CBSTM03B.CBL:127-131, gate G48. The GO TO jumps past every nnn900-EXIT, so no MOVE <dd>FILE-STATUS TO LK-M03B-RC runs at all and LK-M03B-RC and LK-M03B-FLDT still hold exactly what the caller left there. Asserting that requires a stale value worth recognising, so the run first browses XREFFILE to end of file, leaving '10' in the caller's own LK-M03B-RC and the last record in the area, and then calls with an unrecognised DD name WITHOUT re-issuing MOVE ZERO TO WS-M03B-RC. The answer is '10' and that same record - the STALE prior value, not a '00' and not an invented error status. The final call repeats the point with an 'O' operation to show the arm is chosen by the DD name alone: a perfectly valid operation against an unknown DD is still nothing at all.",
+  "unitKind": "COMPONENT",
+  "inputs": {
+    "XREFFILE": {
+      "fixture": "cardxref.txt",
+      "fromRow": 0,
+      "rowCount": 1
+    }
+  },
+  "jobParameters": {},
+  "screenRequest": null,
+  "expectedResponse": null,
+  "expectedWrites": [
+    {
+      "dataset": "M03BAREA",
+      "rowIndex": 0,
+      "fields": {
+        "LK-M03B-DD": "XREFFILE",
+        "LK-M03B-OPER": "O",
+        "LK-M03B-RC": "00"
+      },
+      "expectedBytes": "XREFFILEO00                         000{                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        "
+    },
+    {
+      "dataset": "M03BAREA",
+      "rowIndex": 1,
+      "fields": {
+        "LK-M03B-DD": "XREFFILE",
+        "LK-M03B-OPER": "R",
+        "LK-M03B-RC": "00"
+      },
+      "expectedBytes": "XREFFILER00                         000{050002445376574000000005000000000050                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    "
+    },
+    {
+      "dataset": "M03BAREA",
+      "rowIndex": 2,
+      "fields": {
+        "LK-M03B-DD": "XREFFILE",
+        "LK-M03B-OPER": "R",
+        "LK-M03B-RC": "10"
+      },
+      "expectedBytes": "XREFFILER10                         000{050002445376574000000005000000000050                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    "
+    },
+    {
+      "dataset": "M03BAREA",
+      "rowIndex": 3,
+      "fields": {
+        "LK-M03B-DD": "NOSUCHDD",
+        "LK-M03B-OPER": "R",
+        "LK-M03B-RC": "10"
+      },
+      "expectedBytes": "NOSUCHDDR10                         000{050002445376574000000005000000000050                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    "
+    },
+    {
+      "dataset": "M03BAREA",
+      "rowIndex": 4,
+      "fields": {
+        "LK-M03B-DD": "NOSUCHDD",
+        "LK-M03B-OPER": "O",
+        "LK-M03B-RC": "10"
+      },
+      "expectedBytes": "NOSUCHDDO10                         000{050002445376574000000005000000000050                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    "
+    }
+  ],
+  "expectedFinalState": [
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 0,
+      "fields": {},
+      "expectedBytes": "050002445376574000000005000000000050              "
+    }
+  ],
+  "expectedReturnCode": 0,
+  "expectedMessages": [],
+  "normalisations": [
+    {
+      "dataset": "XREFFILE",
+      "kind": "CARDXREF_FILLER_PAD_36_TO_50"
+    }
+  ],
+  "expectedDatasets": [
+    {
+      "dataset": "M03BAREA",
+      "channel": "WRITES",
+      "rowCount": 5,
+      "recordLength": 1040
+    }
+  ]
+}

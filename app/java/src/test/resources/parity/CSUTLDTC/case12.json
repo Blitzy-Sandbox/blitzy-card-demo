@@ -1,0 +1,17 @@
+{
+  "program": "CSUTLDTC",
+  "caseId": "case12",
+  "description": "CSUTLDTC, the called date-validation subprogram, invoked as the @Service it became. LS-DATE='2022-00-15' and LS-DATE-FORMAT='YYYY-MM-DD' are this case's two LINKAGE SECTION parameters (L84-L85); LS-RESULT PIC X(80) (L86) is the output and is asserted below as the single WS_MESSAGE_80 line. This program opens no file and is reached by no JCL, so it seeds no dataset, writes no record and takes no job parameter - its entire observable behaviour is the 80 bytes L97 moves into LS-RESULT and the severity L98 moves into RETURN-CODE. Expected values are STATICALLY DERIVED from the 01 WS-MESSAGE declaration at L42-L57 and the group move at L122, never captured from a COBOL run, which is impossible here. Arm 6: FC-INVALID-MONTH, 88-level VALUE X'000309D559C3C5C5' (L67) - severity 3, message 2517. Month 00, the lower out-of-range value. It is numeric and it fills the field, so nothing about its SHAPE is wrong - which is what separates 2517 from 2520 - and it is rejected before the day is ever measured against a month length.",
+  "unitKind": "SERVICE",
+  "inputs": {},
+  "expectedWrites": [],
+  "expectedFinalState": [],
+  "expectedReturnCode": 3,
+  "expectedMessages": [
+    {
+      "channel": "WS_MESSAGE_80",
+      "text": "0003Mesg Code: 2517 Invalid month   TstDate: \u0000\n2022-00- Mask used:YYYY-MM-DD    "
+    }
+  ],
+  "normalisations": []
+}

@@ -1,0 +1,61 @@
+{
+  "program": "CBACT03C",
+  "caseId": "case15",
+  "description": "One row, pinned as a complete 50-character record image AND field by field including the FILLER span itself. The total width is the assertion: a record that dropped CVACT03Y's trailing FILLER PIC X(14) would be 36 bytes rather than 50 and would fail here on the very first comparison, which is the only mechanical way to prove a filler span was emitted at all. The four field expectations then say WHERE each of the 50 bytes belongs - 0 to 15, 16 to 24, 25 to 35 and 36 to 49 - so an off-by-one in any offset is reported against the field it corrupted rather than as an unreadable whole-image mismatch. The dataset-level expectation restates the width independently, from the dataset rather than from the row.",
+  "unitKind": "BATCH_JOB",
+  "inputs": {
+    "XREFFILE": {
+      "rows": [
+        "578735122887933900000004700000000047"
+      ]
+    }
+  },
+  "jobParameters": {},
+  "expectedWrites": [],
+  "expectedFinalState": [
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 0,
+      "fields": {
+        "XREF-CARD-NUM": "5787351228879339",
+        "XREF-CUST-ID": "000000047",
+        "XREF-ACCT-ID": "00000000047",
+        "FILLER": "              "
+      },
+      "expectedBytes": "578735122887933900000004700000000047              "
+    }
+  ],
+  "expectedReturnCode": 0,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "START OF EXECUTION OF PROGRAM CBACT03C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "578735122887933900000004700000000047              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "578735122887933900000004700000000047              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "END OF EXECUTION OF PROGRAM CBACT03C"
+    }
+  ],
+  "normalisations": [
+    {
+      "dataset": "XREFFILE",
+      "kind": "CARDXREF_FILLER_PAD_36_TO_50"
+    }
+  ],
+  "expectedDatasets": [
+    {
+      "dataset": "XREFFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 50
+    }
+  ]
+}

@@ -1,0 +1,34 @@
+{
+  "program": "CBACT02C",
+  "caseId": "case09",
+  "description": "0000-CARDFILE-OPEN fails with a response that has no two-character batch equivalent - a length error - so the status is the '9' permanent-error convention rather than a fabricated two-digit code. This reaches the OTHER half of 9910-DISPLAY-IO-STATUS, which the numeric arm of case07 and case08 cannot: app/cbl/CBACT02C.cbl:162-163 tests IF IO-STATUS NOT NUMERIC OR IO-STAT1 = '9', and a status whose first byte is '9' carries a binary feedback code in its second byte. So :164 moves IO-STAT1 into position one, :165-167 zero a two-byte binary, overwrite its low-order byte with IO-STAT2 and move the result into a PIC 999 receiver, and :168 DISPLAYs the literal 'FILE STATUS IS: NNNN' followed by that four-character image. The feedback byte is binary zero, because a translated data-access failure carries no VSAM feedback code to report, so the image is '9000'. The trailing NNNN in the expected text really is part of the COBOL literal and is not a placeholder awaiting substitution.",
+  "unitKind": "BATCH_JOB",
+  "inputs": {
+    "CARDFILE": {
+      "fixture": "carddata.txt"
+    }
+  },
+  "jobParameters": {},
+  "expectedWrites": [],
+  "expectedFinalState": [],
+  "expectedReturnCode": 12,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "START OF EXECUTION OF PROGRAM CBACT02C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ERROR OPENING CARDFILE"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "FILE STATUS IS: NNNN9000"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ABENDING PROGRAM"
+    }
+  ],
+  "normalisations": []
+}

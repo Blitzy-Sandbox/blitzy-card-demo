@@ -1,0 +1,143 @@
+{
+  "program": "CBACT04C",
+  "caseId": "case11",
+  "description": "A SECOND '23' is fatal: 1200-A-GET-DEFAULT-INT-RATE abends with RETURN-CODE 12. The account row is acctdata.txt row 0 verbatim, so the first READ misses on a key of spaces and displays both :418-419 lines; DISCGRP then holds only ZEROAPR type 01 category 0001 verbatim, so the 'DEFAULT   ' retry at :444 misses too. That paragraph has NO INVALID KEY phrase and accepts '00' alone at :446, so APPL-RESULT becomes 12, :455 displays 'ERROR READING DEFAULT DISCLOSURE GROUP', 9910-DISPLAY-IO-STATUS renders 'FILE STATUS IS: NNNN0023' - where NNNN is genuinely part of the COBOL literal at :642 and not a placeholder - and 9999-ABEND-PROGRAM displays 'ABENDING PROGRAM' before CALL 'CEE3ABD' at :632. There is NO 'END OF EXECUTION' line, because an abend leaves the five CLOSE paragraphs at :224-228 unperformed. SYSTRAN holds no row: nothing was written, and app/jcl/INTCALC.jcl:37's DISP=(NEW,CATLG,DELETE) discards the generation of a run that does not reach GOBACK. The account is untouched.",
+  "unitKind": "BATCH_JOB",
+  "inputs": {
+    "TCATBALF": {
+      "rows": [
+        "000000000010100010000010000{0000000000000000000000"
+      ]
+    },
+    "ACCTFILE": {
+      "fixture": "acctdata.txt",
+      "fromRow": 0,
+      "rowCount": 1
+    },
+    "XREFFILE": {
+      "rows": [
+        "968029415460369700000000100000000001"
+      ]
+    },
+    "XREFFIL1": {
+      "rows": [
+        "968029415460369700000000100000000001"
+      ]
+    },
+    "DISCGRP": {
+      "fixture": "discgrp.txt",
+      "fromRow": 34,
+      "rowCount": 1
+    }
+  },
+  "jobParameters": {
+    "parmDate": "2022071800"
+  },
+  "expectedWrites": [],
+  "expectedFinalState": [
+    {
+      "dataset": "TCATBALF",
+      "rowIndex": 0,
+      "expectedBytes": "000000000010100010000010000{0000000000000000000000"
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 0,
+      "expectedBytes": "00000000001Y00000001940{00000020200{00000010200{2014-11-202025-05-202025-05-2000000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 0,
+      "expectedBytes": "968029415460369700000000100000000001              "
+    },
+    {
+      "dataset": "XREFFIL1",
+      "rowIndex": 0,
+      "expectedBytes": "968029415460369700000000100000000001              "
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 0,
+      "expectedBytes": "ZEROAPR   01000100000{0000000000000000000000000000"
+    }
+  ],
+  "expectedReturnCode": 12,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "START OF EXECUTION OF PROGRAM CBACT04C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "000000000010100010000010000{0000000000000000000000"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "DISCLOSURE GROUP RECORD MISSING"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "TRY WITH DEFAULT GROUP CODE"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ERROR READING DEFAULT DISCLOSURE GROUP"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "FILE STATUS IS: NNNN0023"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ABENDING PROGRAM"
+    }
+  ],
+  "normalisations": [
+    {
+      "dataset": "XREFFILE",
+      "kind": "CARDXREF_FILLER_PAD_36_TO_50"
+    },
+    {
+      "dataset": "XREFFIL1",
+      "kind": "CARDXREF_FILLER_PAD_36_TO_50"
+    }
+  ],
+  "expectedDatasets": [
+    {
+      "dataset": "SYSTRAN",
+      "channel": "WRITES",
+      "rowCount": 0,
+      "recordLength": 350
+    },
+    {
+      "dataset": "TCATBALF",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 50
+    },
+    {
+      "dataset": "ACCTFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 300
+    },
+    {
+      "dataset": "XREFFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 50
+    },
+    {
+      "dataset": "XREFFIL1",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 50
+    },
+    {
+      "dataset": "DISCGRP",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 50
+    }
+  ]
+}

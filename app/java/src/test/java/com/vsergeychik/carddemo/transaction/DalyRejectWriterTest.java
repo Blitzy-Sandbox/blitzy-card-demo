@@ -2,7 +2,9 @@ package com.vsergeychik.carddemo.transaction;
 
 import com.vsergeychik.carddemo.CardDemoApplication;
 import com.vsergeychik.carddemo.common.FileStatus;
+import com.vsergeychik.carddemo.common.FixedWidthRecord;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.FieldSpan;
+import com.vsergeychik.carddemo.common.FixedWidthRecord.ZonedSign;
 import com.vsergeychik.carddemo.common.RecordImageForm;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBinding;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBindings;
@@ -16,6 +18,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.Mockito;
@@ -27,6 +30,9 @@ import org.springframework.jdbc.datasource.SimpleDriverDataSource;
 import org.springframework.test.context.ActiveProfiles;
 
 import javax.sql.DataSource;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.UncheckedIOException;
 import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
 import java.math.BigDecimal;
@@ -80,7 +86,57 @@ import static org.assertj.core.api.Assertions.assertThatNullPointerException;
  *   <tr><td>The five reason codes and their texts</td>
  *       <td>{@code app/cbl/CBTRN02C.cbl:L385-L387}, {@code L397-L399}, {@code L410-L412},
  *           {@code L417-L419}, {@code L556-L558}</td></tr>
+ *   <tr><td>{@code DALYTRAN-AMT} at offset 132, 11 bytes; {@code FILLER} at offset 330</td>
+ *       <td>{@code app/cpy/CVTRA06Y.cpy:L5-L18}, offsets summed field by field</td></tr>
+ *   <tr><td>Exactly six fixture rows carry a {@code '&#125;'} overpunch</td>
+ *       <td>{@code app/data/ASCII/dailytran.txt}, counted over all 300 rows</td></tr>
  * </table>
+ *
+ * <h2>The one thing this suite reads at run time, and why</h2>
+ *
+ * <p>{@link RawSpanCopyTests} loads {@code /fixtures/dailytran.txt} - the module's shipped verbatim copy
+ * of {@code app/data/ASCII/dailytran.txt} - from the test classpath. Nothing else in this file opens a
+ * file, touches a database, a network or the clock, and nothing anywhere in it reads
+ * {@code src/test/resources/parity/**} or imports from {@code com.vsergeychik.carddemo.parity}: the
+ * writer's own {@link RecordSink} seam is the only input this suite needs (gate <strong>G51</strong>).
+ *
+ * <p>The fixture is loaded rather than transcribed because the assertion it supports is a claim
+ * <em>about the real production-shaped data</em>: that a rejected transaction carrying a sign overpunch
+ * the JVM's numeric model cannot represent still crosses into the rejects file unchanged. Transcribing
+ * the row would make the test agree with the transcription instead of with the data. Two guards keep the
+ * failure modes distinguishable, which is the objection to loading a resource at all: an absent resource
+ * fails with a named assertion rather than an {@code IOException}, and the located row is cross-checked
+ * against a transcribed literal, so an <em>altered</em> fixture fails as a mismatch rather than silently
+ * weakening the test.
+ *
+ * <h2>Why a negative zero is the assertion that bites</h2>
+ *
+ * <p>{@code MOVE DALYTRAN-RECORD TO REJECT-TRAN-DATA} is a byte copy, and the difference between copying
+ * and re-serialising is invisible on almost every record - measured, {@code decode} then {@code encode}
+ * reproduces all 300 fixture rows exactly, because {@link DalyTranRecord#encode(Charset)} transcodes the
+ * record area rather than rebuilding it from decoded values. The difference becomes visible on exactly
+ * one input: a <em>negative zero</em>. {@code PIC S9(09)V99} distinguishes {@code '&#125;'} (negative,
+ * final digit zero) from {@code '&#123;'} (positive, final digit zero); {@link BigDecimal} does not
+ * distinguish {@code -0.00} from {@code 0.00} at all. So a value that went out through a number and back
+ * loses the byte, and {@code 0000000000&#125;} returns as {@code 0000000000&#123;}.
+ * {@link RawSpanCopyTests} drives both halves: it exhibits that loss, then asserts the writer does not
+ * suffer it.
+ *
+ * <h2>Dependency surface</h2>
+ *
+ * <p>Everything imported here is either the class under test, one of its declared collaborators
+ * ({@link DalyTranRecord}, {@link FileStatus}, {@link FixedWidthRecord},
+ * {@code DataSourceConfig.DatasetBinding}), a type one of those signatures requires - {@link
+ * RecordImageForm} is a constructor parameter of {@link DalyRejectWriter}, so it cannot be avoided
+ * without failing to construct one - or test infrastructure. No wildcard imports anywhere, so every
+ * correspondence stays auditable (gate <strong>G52</strong>).
+ *
+ * <p>The single import that is none of those is {@link CardDemoApplication}, and it earns its place.
+ * {@link ContextWiringTests} exists to satisfy gate <strong>G3</strong>: that the writer bean really
+ * wires against the {@code application.yml} and {@code application-test.yml} this module ships, rather
+ * than against a catalogue this file invented. Booting a context needs the application's own entry
+ * point; substituting a local configuration class would prove only that <em>some</em> catalogue
+ * satisfies the constructor and would leave the shipped one untested.
  */
 @DisplayName("DalyRejectWriter - the 430-byte DALYREJS reject record writer")
 class DalyRejectWriterTest {
@@ -102,6 +158,60 @@ class DalyRejectWriterTest {
 
     /** {@code CVTRA06Y}'s trailing {@code FILLER PIC X(20)}, from app/cpy/CVTRA06Y.cpy:L18. */
     private static final int FILLER_WIDTH = 20;
+
+    /**
+     * Where {@code FILLER} starts inside a {@code DALYTRAN-RECORD}: 0-based 330, obtained by summing
+     * app/cpy/CVTRA06Y.cpy:L5-L17 - 16 + 2 + 4 + 10 + 100 + 11 + 9 + 50 + 50 + 10 + 16 + 26 + 26.
+     */
+    private static final int FILLER_OFFSET = 330;
+
+    /**
+     * Where {@code DALYTRAN-AMT PIC S9(09)V99} starts: 0-based 132, from app/cpy/CVTRA06Y.cpy:L10,
+     * being 16 + 2 + 4 + 10 + 100.
+     */
+    private static final int AMT_OFFSET = 132;
+
+    /** {@code PIC S9(09)V99} occupies 9 + 2 = 11 bytes, the sign overpunched into the last of them. */
+    private static final int AMT_WIDTH = 11;
+
+    /**
+     * The 0-based offset of the byte carrying {@code DALYTRAN-AMT}'s low-order digit and its sign:
+     * {@value #AMT_OFFSET} + {@value #AMT_WIDTH} - 1 = 142.
+     */
+    private static final int AMT_SIGN_OFFSET = AMT_OFFSET + AMT_WIDTH - 1;
+
+    /** The module's shipped verbatim copy of {@code app/data/ASCII/dailytran.txt}. */
+    private static final String FIXTURE_RESOURCE = "/fixtures/dailytran.txt";
+
+    /** Rows in {@code app/data/ASCII/dailytran.txt}, counted. */
+    private static final int FIXTURE_ROWS = 300;
+
+    /**
+     * The 1-based fixture lines whose {@code DALYTRAN-AMT} ends in {@code '&#125;'} - negative,
+     * low-order digit zero. Counted over all {@value #FIXTURE_ROWS} rows of
+     * {@code app/data/ASCII/dailytran.txt}: exactly six, and these are they.
+     */
+    private static final int[] NEGATIVE_ZERO_DIGIT_ROWS = {2, 55, 87, 150, 165, 210};
+
+    /**
+     * The stored {@code DALYTRAN-AMT} image of fixture line 2, transcribed from
+     * {@code app/data/ASCII/dailytran.txt} 1-based columns 133-143. Held as a literal so that an
+     * <em>altered</em> fixture fails as a named mismatch rather than quietly weakening
+     * {@link RawSpanCopyTests}.
+     */
+    private static final String ROW_2_AMT_IMAGE = "0000009190}";
+
+    /** Fixture line 2's {@code DALYTRAN-ID}, 1-based columns 1-16, transcribed. */
+    private static final String ROW_2_ID = "0000000001774260";
+
+    /**
+     * A genuine negative zero: eleven digits, all zero, with the negative overpunch on the last.
+     * {@code PIC S9(09)V99} can hold this; {@link BigDecimal} cannot, which is the whole point.
+     */
+    private static final String NEGATIVE_ZERO_AMT_IMAGE = "0000000000}";
+
+    /** What a {@link BigDecimal} round trip turns {@link #NEGATIVE_ZERO_AMT_IMAGE} into. */
+    private static final String POSITIVE_ZERO_AMT_IMAGE = "0000000000{";
 
     /**
      * A well-formed z/OS dataset name for the tests, carrying the {@code (+1)} relative generation the
@@ -195,6 +305,43 @@ class DalyRejectWriterTest {
         }
     }
 
+    /**
+     * The shipped fixture's rows, each exactly {@value #TRAN_DATA_WIDTH} characters.
+     *
+     * <p>An absent resource is reported as a named assertion failure rather than as an
+     * {@code IOException}, so a packaging problem can never be mistaken at the gate for a parity
+     * defect. The row count and row width are asserted here rather than in a caller, so every caller
+     * gets the check for free.
+     *
+     * @return all {@value #FIXTURE_ROWS} rows in file order
+     */
+    private static List<String> fixtureRows() {
+        try (InputStream stream = DalyRejectWriterTest.class.getResourceAsStream(FIXTURE_RESOURCE)) {
+            assertThat(stream)
+                    .as("the shipped fixture %s must be on the test classpath", FIXTURE_RESOURCE)
+                    .isNotNull();
+            List<String> rows = new String(stream.readAllBytes(), ASCII).lines()
+                    .filter(row -> !row.isEmpty())
+                    .toList();
+            assertThat(rows).as("%s holds 300 rows of app/data/ASCII/dailytran.txt", FIXTURE_RESOURCE)
+                    .hasSize(FIXTURE_ROWS);
+            assertThat(rows).allSatisfy(row -> assertThat(row).hasSize(TRAN_DATA_WIDTH));
+            return rows;
+        } catch (IOException unreadable) {
+            throw new UncheckedIOException("Could not read " + FIXTURE_RESOURCE, unreadable);
+        }
+    }
+
+    /**
+     * One shipped fixture row, by its 1-based line number as quoted throughout this file.
+     *
+     * @param line the 1-based line number
+     * @return exactly {@value #TRAN_DATA_WIDTH} bytes in {@link #ASCII}
+     */
+    private static byte[] fixtureRow(int line) {
+        return fixtureRows().get(line - 1).getBytes(ASCII);
+    }
+
     /** The reason code and description pairs the program moves, transcribed from the source. */
     private static Stream<Arguments> reasonPairs() {
         return Stream.of(
@@ -236,6 +383,19 @@ class DalyRejectWriterTest {
         @Test
         @DisplayName("430 decomposes as 350 + 4 + 76 with no gap and no overlap")
         void theRecordDecomposesExactly() {
+            // The derivation, by addition, from the two sources rather than from this module:
+            //
+            //   350  app/cpy/CVTRA06Y.cpy:L4-L18, 01 DALYTRAN-RECORD, being
+            //        16 + 2 + 4 + 10 + 100 + 11 + 9 + 50 + 50 + 10 + 16 + 26 + 26 + 20
+            // +   4  app/cbl/CBTRN02C.cbl:L181, 05 WS-VALIDATION-FAIL-REASON      PIC 9(04)
+            // +  76  app/cbl/CBTRN02C.cbl:L182, 05 WS-VALIDATION-FAIL-REASON-DESC PIC X(76)
+            // = 430  app/jcl/POSTTRAN.jcl:L36,   DCB=(RECFM=F,LRECL=430,BLKSIZE=0)
+            //
+            // The JCL is the tie-breaker. If the copybook arithmetic and the DD ever disagreed, the DD
+            // is what the dataset was allocated with, so the DD wins and the arithmetic is wrong.
+            assertThat(16 + 2 + 4 + 10 + 100 + 11 + 9 + 50 + 50 + 10 + 16 + 26 + 26 + FILLER_WIDTH)
+                    .as("app/cpy/CVTRA06Y.cpy sums to 350 only with its trailing FILLER X(20)")
+                    .isEqualTo(TRAN_DATA_WIDTH);
             assertThat(TRAN_DATA_WIDTH + REASON_WIDTH + DESC_WIDTH).isEqualTo(LRECL);
             assertThat(DalyRejectWriter.FD_REJECT_RECORD_LENGTH).isEqualTo(TRAN_DATA_WIDTH);
             assertThat(DalyRejectWriter.WS_VALIDATION_FAIL_REASON_LENGTH).isEqualTo(REASON_WIDTH);
@@ -293,6 +453,158 @@ class DalyRejectWriterTest {
             assertThat(DalyRejectWriter.FD_REJECT_RECORD_LENGTH)
                     .isEqualTo(DalyTranRecord.RECORD_LENGTH)
                     .isEqualTo(350);
+        }
+    }
+
+    // =================================================================================================
+    // Gate G20, on emitted bytes rather than on constants.
+    //
+    // RECFM=F is not decoration. Fixed unblocked means the file is addressed by multiplication: record
+    // n begins at n * 430 and ends at (n + 1) * 430, with nothing in between to find it by. There is no
+    // record-descriptor word, no delimiter and no terminator - those belong to RECFM=V and to
+    // line-oriented files respectively, and either one appearing inside a record image here would shift
+    // every following record while leaving each individual record looking plausible.
+    // =================================================================================================
+
+    @Nested
+    @DisplayName("Gate G20 - fixed unblocked geometry, measured on the emitted bytes")
+    class FixedFormatGeometryTests {
+
+        @Test
+        @DisplayName("the three spans occupy 0..349, 350..353 and 354..429 of the emitted record")
+        void theThreeSpansOccupyTheirAbsoluteRanges() {
+            // Mutually distinguishable content in all three spans at once, so a span that overlapped,
+            // shifted or overwrote its neighbour cannot pass by coincidence. The transaction body is
+            // 'T', its FILLER is 'F' (see image(char)), the reason is 103 and its text is the longest
+            // of the five at 42 characters - long enough to prove the description starts at 354 and
+            // short enough to leave 34 pad bytes proving it ends at 429.
+            Collector sink = new Collector();
+            try (RejectsFile file = writer().openOutput(sink)) {
+                file.writeRejectRec(image('T'), 103,
+                        DalyRejectWriter.DESC_TRANSACTION_AFTER_EXPIRATION);
+            }
+            byte[] record = sink.records.get(0);
+            assertThat(record).hasSize(LRECL);
+
+            String recordImage = new String(record, ASCII);
+            // 0..349 - REJECT-TRAN-DATA, app/cbl/CBTRN02C.cbl:L177.
+            assertThat(recordImage.substring(0, TRAN_DATA_WIDTH))
+                    .as("REJECT-TRAN-DATA occupies bytes 0..349")
+                    .hasSize(TRAN_DATA_WIDTH)
+                    .isEqualTo("T".repeat(TRAN_DATA_WIDTH - FILLER_WIDTH) + "F".repeat(FILLER_WIDTH));
+            // 350..353 - WS-VALIDATION-FAIL-REASON PIC 9(04), app/cbl/CBTRN02C.cbl:L181.
+            assertThat(recordImage.substring(350, 354))
+                    .as("WS-VALIDATION-FAIL-REASON occupies bytes 350..353")
+                    .hasSize(REASON_WIDTH)
+                    .isEqualTo("0103");
+            // 354..429 - WS-VALIDATION-FAIL-REASON-DESC PIC X(76), app/cbl/CBTRN02C.cbl:L182.
+            assertThat(recordImage.substring(354, 430))
+                    .as("WS-VALIDATION-FAIL-REASON-DESC occupies bytes 354..429")
+                    .hasSize(DESC_WIDTH)
+                    .isEqualTo("TRANSACTION RECEIVED AFTER ACCT EXPIRATION" + " ".repeat(34));
+
+            // And the three ranges tile the record exactly: no byte belongs to two spans or to none.
+            assertThat(recordImage.substring(0, TRAN_DATA_WIDTH) + recordImage.substring(350, 354)
+                    + recordImage.substring(354, 430)).isEqualTo(recordImage);
+        }
+
+        @Test
+        @DisplayName("N records concatenate to exactly N * 430, with record k at offset k * 430")
+        void recordsAreAddressedByMultiplication() {
+            char[] bodies = {'0', '1', '2', '3', '4'};
+            Collector sink = new Collector();
+            try (RejectsFile file = writer().openOutput(sink)) {
+                for (char body : bodies) {
+                    file.writeRejectRec(image(body), 100);
+                }
+            }
+
+            // Every record the same length - the defining property of RECFM=F.
+            assertThat(sink.records).hasSize(bodies.length)
+                    .allSatisfy(record -> assertThat(record).hasSize(LRECL));
+
+            // Lay them down as the dataset would and address them arithmetically.
+            byte[] dataset = new byte[bodies.length * LRECL];
+            for (int index = 0; index < bodies.length; index++) {
+                System.arraycopy(sink.records.get(index), 0, dataset, index * LRECL, LRECL);
+            }
+            assertThat(dataset).hasSize(bodies.length * LRECL);
+            for (int index = 0; index < bodies.length; index++) {
+                assertThat((char) dataset[index * LRECL])
+                        .as("record %d begins at %d * 430", index, index)
+                        .isEqualTo(bodies[index]);
+                assertThat(new String(dataset, index * LRECL + 350, 4, ASCII))
+                        .as("record %d's trailer begins at %d * 430 + 350", index, index)
+                        .isEqualTo("0100");
+            }
+        }
+
+        @Test
+        @DisplayName("carries no record-descriptor word - byte 0 is the transaction's byte 0")
+        void thereIsNoLengthPrefix() {
+            // A RECFM=V record would begin with a four-byte RDW carrying its own length. This one does
+            // not: the very first byte of the emitted image is the first byte of DALYTRAN-ID.
+            byte[] sent = image('Z');
+            Collector sink = new Collector();
+            try (RejectsFile file = writer().openOutput(sink)) {
+                file.writeRejectRec(sent, 102);
+            }
+            byte[] record = sink.records.get(0);
+            assertThat(record[0]).isEqualTo(sent[0]).isEqualTo((byte) 'Z');
+            assertThat(Arrays.copyOf(record, 4)).isEqualTo(Arrays.copyOf(sent, 4));
+            // Not the big-endian 430 an RDW would hold, in either of its two plausible widths.
+            assertThat(new byte[] {record[0], record[1]}).isNotEqualTo(new byte[] {0x01, (byte) 0xAE});
+        }
+
+        @Test
+        @DisplayName("carries no delimiter and no terminator inside the record image")
+        void thereIsNoDelimiterOrTerminator() {
+            // The fixture is a line-oriented text file, so its rows are newline-separated on disk. The
+            // separator is the file's, not the record's: a 350-byte row carries none, and the writer
+            // must not introduce one either at the trailer boundary or after the record.
+            byte[] sent = fixtureRow(NEGATIVE_ZERO_DIGIT_ROWS[0]);
+            Collector sink = new Collector();
+            try (RejectsFile file = writer().openOutput(sink)) {
+                file.writeRejectRec(sent, 100);
+                file.writeRejectRec(sent, 101);
+            }
+            assertThat(sink.records).allSatisfy(record -> {
+                assertThat(record).hasSize(LRECL);
+                assertThat(new String(record, ASCII))
+                        .doesNotContain("\n")
+                        .doesNotContain("\r")
+                        .doesNotContain("\u0000");
+                // The last byte is a description pad byte, not a terminator.
+                assertThat(record[LRECL - 1]).isEqualTo((byte) ' ');
+            });
+        }
+
+        @Test
+        @DisplayName("refuses a record area of any width but 430 rather than writing it")
+        void aWrongWidthAreaIsRefusedRatherThanWritten() {
+            // The guard this drives is unreachable through the public API - every move keeps the area
+            // at 430 - which is exactly why it is worth proving it is there. Substituting a short area
+            // is the only way to ask "and if the area were ever the wrong width?", and the answer must
+            // be a refusal: in a fixed-format file a 429-byte record does not merely truncate itself,
+            // it moves every record after it. The field is located by TYPE rather than by name so a
+            // rename in the class under test does not turn this into a spurious failure.
+            Collector sink = new Collector();
+            RejectsFile file = writer().openOutput(sink);
+            Field area = Arrays.stream(RejectsFile.class.getDeclaredFields())
+                    .filter(field -> field.getType() == FixedWidthRecord.class)
+                    .findFirst()
+                    .orElseThrow(() -> new AssertionError("RejectsFile must hold its record area in a "
+                            + "FixedWidthRecord field; without one the 430-byte width guard cannot be "
+                            + "reached and gate G20 rests on nothing but the happy path"));
+            area.setAccessible(true);
+            assertThatCode(() -> area.set(file, new FixedWidthRecord(LRECL - 1, ASCII)))
+                    .doesNotThrowAnyException();
+
+            assertThatIllegalStateException().isThrownBy(file::writeRejectRec)
+                    .withMessageContaining("429")
+                    .withMessageContaining("430")
+                    .withMessageContaining("RECFM=F");
+            assertThat(sink.records).as("a wrong-width record must never reach the dataset").isEmpty();
         }
     }
 
@@ -359,6 +671,46 @@ class DalyRejectWriterTest {
             assertThat(DalyRejectWriter.descriptionOfReason(101))
                     .isEqualTo(DalyRejectWriter.descriptionOfReason(109));
         }
+
+        @Test
+        @DisplayName("109 is renderable here but unreachable from the posting job - and stays that way")
+        void oneOfTheFiveCodesCanNeverReachThisWriter() {
+            // Reason 109 is real, transcribed, and dead. Tracing app/cbl/CBTRN02C.cbl:
+            //
+            //   L208-L209  MOVE 0 TO WS-VALIDATION-FAIL-REASON
+            //              MOVE SPACES TO WS-VALIDATION-FAIL-REASON-DESC   <- reset, per record
+            //   L210       PERFORM 1500-VALIDATE-TRAN                      <- may set 100/101/102/103
+            //   L211       IF WS-VALIDATION-FAIL-REASON = 0
+            //   L212         PERFORM 2000-POST-TRANSACTION                 <- the POST arm
+            //   L213-L215  ELSE ADD 1 TO WS-REJECT-COUNT
+            //                   PERFORM 2500-WRITE-REJECT-REC              <- the REJECT arm
+            //
+            // 109 is set at L556-L558, inside 2800-UPDATE-ACCOUNT-REC, which 2000-POST-TRANSACTION
+            // performs. That is the POST arm - reached only when the reason was already 0, and the
+            // reject decision at L211 is behind it, never in front of it. The next iteration then
+            // resets the reason at L208. So a failed account rewrite produces no reject record at all:
+            // it sets a field nobody reads and the run continues.
+            //
+            // That is a defect in the legacy program, and preserving it is required (practice B5);
+            // routing 109 to this writer would be a behaviour change (practice B4). So the code and its
+            // text are transcribed and the trailer will render them - a trailer is a value object and
+            // does not police which paragraph filled it - but nothing here creates a path that emits
+            // one, and nothing should be added that does.
+            assertThat(DalyRejectWriter.REASON_ACCOUNT_NOT_FOUND_ON_REWRITE).isEqualTo(109);
+            assertThat(DalyRejectWriter.descriptionOfReason(109))
+                    .isEqualTo("ACCOUNT RECORD NOT FOUND");
+
+            Collector sink = new Collector();
+            try (RejectsFile file = writer().openOutput(sink)) {
+                assertThat(file.writeRejectRec(image('9'),
+                        DalyRejectWriter.REASON_ACCOUNT_NOT_FOUND_ON_REWRITE))
+                        .isEqualTo(FileStatus.Outcome.OK);
+            }
+            String record = sink.only();
+            assertThat(record.substring(350, 354)).isEqualTo("0109");
+            assertThat(record.substring(354, 430))
+                    .isEqualTo("ACCOUNT RECORD NOT FOUND" + " ".repeat(DESC_WIDTH - 24));
+        }
     }
 
     // =================================================================================================
@@ -422,7 +774,52 @@ class DalyRejectWriterTest {
             try (RejectsFile file = writer().openOutput(sink)) {
                 file.writeRejectRec(image('E'), code, "");
             }
-            assertThat(sink.only().substring(350, 354)).isEqualTo(expected);
+            String reason = sink.only().substring(350, 354);
+            assertThat(reason).isEqualTo(expected);
+
+            // The padding rule stated as an exclusion, so it cannot be right by accident.
+            // WS-VALIDATION-FAIL-REASON is PIC 9(04): numeric, so it pads on the LEFT with the digit
+            // zero. Under an alphanumeric receiver the same value would be left-justified and
+            // space-padded - "102 " for 102 - which is a different four bytes that a reader splitting
+            // the trailer on whitespace would still parse as a number, so nothing downstream would
+            // complain about the wrong one.
+            assertThat(reason).doesNotContain(" ").containsOnlyDigits();
+            String digits = String.valueOf(code);
+            if (digits.length() < REASON_WIDTH) {
+                // Only meaningful for a code narrower than the receiver; 9999 fills all four bytes, so
+                // the two renderings coincide and there is nothing left to distinguish.
+                assertThat(reason)
+                        .as("PIC 9(04) pads on the left with zeroes, not on the right with spaces")
+                        .isNotEqualTo(digits + " ".repeat(REASON_WIDTH - digits.length()));
+            }
+        }
+
+        @Test
+        @DisplayName("the reason pads with zeroes and the description with spaces - never the reverse")
+        void theTwoPaddingDirectionsAreOpposite() {
+            // One record, both rules, stated against each other. Swapping the two pad characters is the
+            // single most reversible mistake available here, and it would leave a record that is still
+            // 430 bytes and still parses.
+            Collector sink = new Collector();
+            try (RejectsFile file = writer().openOutput(sink)) {
+                file.writeRejectRec(image('X'), DalyRejectWriter.REASON_INVALID_CARD_NUMBER,
+                        DalyRejectWriter.DESC_INVALID_CARD_NUMBER);
+            }
+            String record = sink.only();
+
+            // PIC 9(04): zero-filled, and on the left.
+            assertThat(record.substring(350, 354)).isEqualTo("0100")
+                    .startsWith("0")
+                    .doesNotEndWith(" ");
+            // PIC X(76): space-filled, and on the right.
+            assertThat(record.substring(354, 430))
+                    .startsWith("INVALID CARD NUMBER FOUND")
+                    .endsWith(" ")
+                    .doesNotStartWith(" ")
+                    .doesNotContain("0".repeat(DESC_WIDTH - 25));
+            assertThat(record.substring(354 + 25, 430))
+                    .as("everything after the 25-character text is spaces, not zeroes")
+                    .isEqualTo(" ".repeat(DESC_WIDTH - 25));
         }
 
         @Test
@@ -521,9 +918,18 @@ class DalyRejectWriterTest {
                 assertThat(file.writeRejectRec(transaction, 102)).isEqualTo(FileStatus.Outcome.OK);
             }
             assertThat(Arrays.copyOf(sink.records.get(0), TRAN_DATA_WIDTH)).isEqualTo(expected);
-            // A negative amount's zoned overpunch survives, which a decode-and-re-encode would risk.
-            assertThat(transaction.dalytranAmtImage()).isNotEqualTo("0000005047")
-                    .hasSize(11);
+
+            // The stored image of -50.47, in full: eleven bytes, the low-order digit 7 replaced by the
+            // negative overpunch carrying it. NEGATIVE_DIGITS is "}JKLMNOPQR", so digit 7 is 'P'.
+            //
+            // Asserting the whole image matters. An earlier form of this test said only that the image
+            // was not "0000005047" - a ten-character literal against an eleven-character image, which
+            // can never be equal, so it asserted nothing at all.
+            assertThat(transaction.dalytranAmtImage())
+                    .hasSize(AMT_WIDTH)
+                    .isEqualTo("0000000504P")
+                    .endsWith(String.valueOf(ZonedSign.overpunch(7, true)));
+            assertThat(sink.records.get(0)[AMT_SIGN_OFFSET]).isEqualTo((byte) 'P');
         }
 
         @Test
@@ -576,6 +982,230 @@ class DalyRejectWriterTest {
                 assertThat(file.validationTrailer()).isEqualTo("0000" + " ".repeat(DESC_WIDTH));
                 assertThat(file.recordsWritten()).isZero();
             }
+        }
+    }
+
+    // =================================================================================================
+    // The raw-span copy. app/cbl/CBTRN02C.cbl:L447.
+    //
+    //     MOVE DALYTRAN-RECORD TO REJECT-TRAN-DATA
+    //
+    // Both operands are 350 bytes - CVTRA06Y's 01 DALYTRAN-RECORD and CBTRN02C:L177's
+    // 05 REJECT-TRAN-DATA PIC X(350) - so this alphanumeric group move neither pads nor truncates: the
+    // rejected transaction's bytes cross over unchanged. It is a copy. It is not a re-serialisation,
+    // and the distinction is the single highest-risk thing about this writer, because on almost every
+    // input the two are indistinguishable.
+    // =================================================================================================
+
+    @Nested
+    @DisplayName("MOVE DALYTRAN-RECORD TO REJECT-TRAN-DATA - a copy, never a rebuild")
+    class RawSpanCopyTests {
+
+        @Test
+        @DisplayName("the shipped fixture is the one measured here - 300 rows, six ending in '}'")
+        void theFixtureCensusHolds() {
+            // Everything below rests on this census, so it is asserted rather than trusted. If the
+            // fixture is ever re-shipped, this fails first and says so, instead of the negative-zero
+            // tests quietly degrading into assertions about ordinary positive amounts.
+            List<String> rows = fixtureRows();
+            assertThat(rows).hasSize(FIXTURE_ROWS);
+
+            List<Integer> negativeZeroDigitRows = new ArrayList<>();
+            for (int index = 0; index < rows.size(); index++) {
+                if (rows.get(index).charAt(AMT_SIGN_OFFSET) == ZonedSign.NEGATIVE_ZERO) {
+                    negativeZeroDigitRows.add(index + 1);
+                }
+            }
+            assertThat(negativeZeroDigitRows)
+                    .as("rows of app/data/ASCII/dailytran.txt whose DALYTRAN-AMT ends in '}'")
+                    .containsExactly(Arrays.stream(NEGATIVE_ZERO_DIGIT_ROWS).boxed()
+                            .toArray(Integer[]::new));
+
+            // And the row this suite names is the row it thinks it is.
+            DalyTranRecord row2 = DalyTranRecord.decode(fixtureRow(2), ASCII);
+            assertThat(row2.dalytranId()).isEqualTo(ROW_2_ID);
+            assertThat(row2.dalytranAmtImage()).isEqualTo(ROW_2_AMT_IMAGE);
+            assertThat(row2.dalytranAmt()).isEqualByComparingTo(new BigDecimal("-919.00"));
+        }
+
+        @ParameterizedTest(name = "fixture line {0} crosses into the reject record byte for byte")
+        @ValueSource(ints = {2, 55, 87, 150, 165, 210})
+        @DisplayName("every '}' row of the real fixture is copied verbatim, overpunch included")
+        void everyNegativeOverpunchRowIsCopiedVerbatim(int line) {
+            byte[] sent = fixtureRow(line);
+            assertThat(sent).hasSize(TRAN_DATA_WIDTH);
+            assertThat(sent[AMT_SIGN_OFFSET])
+                    .as("fixture line %d must carry the '}' this test exists to protect", line)
+                    .isEqualTo((byte) ZonedSign.NEGATIVE_ZERO);
+
+            Collector sink = new Collector();
+            try (RejectsFile file = writer().openOutput(sink)) {
+                assertThat(file.writeRejectRec(sent, DalyRejectWriter.REASON_OVERLIMIT_TRANSACTION))
+                        .isEqualTo(FileStatus.Outcome.OK);
+            }
+            byte[] written = sink.records.get(0);
+
+            assertThat(written).hasSize(LRECL);
+            assertThat(Arrays.copyOf(written, TRAN_DATA_WIDTH))
+                    .as("bytes 0..349 of the reject record are the transaction, unchanged")
+                    .isEqualTo(sent);
+            assertThat(written[AMT_SIGN_OFFSET])
+                    .as("byte %d - DALYTRAN-AMT's sign overpunch", AMT_SIGN_OFFSET)
+                    .isEqualTo((byte) ZonedSign.NEGATIVE_ZERO);
+            assertThat(new String(written, AMT_OFFSET, AMT_WIDTH, ASCII))
+                    .as("DALYTRAN-AMT, bytes %d..%d", AMT_OFFSET, AMT_SIGN_OFFSET)
+                    .isEqualTo(new String(sent, AMT_OFFSET, AMT_WIDTH, ASCII))
+                    .endsWith(String.valueOf(ZonedSign.NEGATIVE_ZERO));
+        }
+
+        @Test
+        @DisplayName("a TRUE negative zero survives, where a BigDecimal round trip would lose it")
+        void aTrueNegativeZeroSurvivesTheCopy() {
+            // This is the assertion with teeth, and it is worth being explicit about why the six
+            // fixture rows above are not enough on their own.
+            //
+            // Measured over all 300 fixture rows, decode-then-encode reproduces every one exactly,
+            // because DalyTranRecord.encode transcodes the record AREA rather than rebuilding it from
+            // decoded values. Line 2's '}' therefore survives either way: '}' means "negative, low-order
+            // digit zero", and -919.00 is still unambiguously negative once decoded.
+            //
+            // A TRUE negative zero is where the two paths part. PIC S9(09)V99 distinguishes
+            //     0000000000}   negative, all digits zero
+            // from
+            //     0000000000{   positive, all digits zero
+            // and BigDecimal cannot: it has no -0. So a value routed out through a number and back
+            // comes home as '{'. First prove that loss is real, then prove the writer does not suffer
+            // it. Without the first half the second half would be an assertion about nothing.
+            DalyTranRecord viaNumber = DalyTranRecord.decode(fixtureRow(2), ASCII);
+            viaNumber.writeDalytranAmtImage(NEGATIVE_ZERO_AMT_IMAGE);
+            assertThat(viaNumber.dalytranAmtImage()).isEqualTo(NEGATIVE_ZERO_AMT_IMAGE);
+            assertThat(viaNumber.hasZeroDalytranAmt()).isTrue();
+
+            BigDecimal roundTripped = viaNumber.dalytranAmt();
+            assertThat(roundTripped).isEqualByComparingTo(BigDecimal.ZERO);
+            assertThat(roundTripped.signum()).as("BigDecimal has no negative zero").isZero();
+
+            DalyTranRecord rebuilt = viaNumber.copy();
+            rebuilt.moveDalytranAmt(roundTripped);
+            assertThat(rebuilt.dalytranAmtImage())
+                    .as("the loss this test guards against, demonstrated")
+                    .isEqualTo(POSITIVE_ZERO_AMT_IMAGE)
+                    .isNotEqualTo(NEGATIVE_ZERO_AMT_IMAGE);
+            assertThat(rebuilt.encode(ASCII)[AMT_SIGN_OFFSET]).isEqualTo((byte) ZonedSign.POSITIVE_ZERO);
+
+            // Now the writer, given the un-rebuilt record. If this ever reported '{' the writer would
+            // be decoding where it must be copying.
+            byte[] sent = viaNumber.encode(ASCII);
+            Collector viaBytes = new Collector();
+            Collector viaRecord = new Collector();
+            try (RejectsFile file = writer().openOutput(viaBytes)) {
+                file.writeRejectRec(sent, DalyRejectWriter.REASON_INVALID_CARD_NUMBER);
+            }
+            try (RejectsFile file = writer().openOutput(viaRecord)) {
+                file.writeRejectRec(viaNumber, DalyRejectWriter.REASON_INVALID_CARD_NUMBER);
+            }
+
+            for (Collector sink : List.of(viaBytes, viaRecord)) {
+                byte[] written = sink.records.get(0);
+                assertThat(written[AMT_SIGN_OFFSET])
+                        .as("byte %d is '}' and not '{'", AMT_SIGN_OFFSET)
+                        .isEqualTo((byte) ZonedSign.NEGATIVE_ZERO);
+                assertThat(new String(written, AMT_OFFSET, AMT_WIDTH, ASCII))
+                        .isEqualTo(NEGATIVE_ZERO_AMT_IMAGE);
+                assertThat(Arrays.copyOf(written, TRAN_DATA_WIDTH)).isEqualTo(sent);
+            }
+            // Both routes into the record area agree, so neither is quietly the odd one out.
+            assertThat(viaBytes.records.get(0)).isEqualTo(viaRecord.records.get(0));
+        }
+
+        @Test
+        @DisplayName("FILLER X(20) at offset 330 arrives exactly as it left, whatever it holds")
+        void theFillerSpanIsCopiedNotRegenerated() {
+            // Gate G21. CVTRA06Y:L18's FILLER is 20 bytes of the record's 350 and belongs to the
+            // sender, not to the writer. Drop it and the reject record is 410 bytes with every trailer
+            // byte 20 positions early; regenerate it and a dataset whose FILLER is not blank silently
+            // changes. The shipped fixture pads FILLER with spaces, so both are driven: the real row,
+            // and a row whose FILLER is deliberately not blank.
+            byte[] fromFixture = fixtureRow(2);
+            assertThat(new String(fromFixture, FILLER_OFFSET, FILLER_WIDTH, ASCII))
+                    .as("app/data/ASCII/dailytran.txt pads FILLER with spaces")
+                    .isEqualTo(" ".repeat(FILLER_WIDTH));
+
+            byte[] nonBlankFiller = fromFixture.clone();
+            for (int offset = FILLER_OFFSET; offset < TRAN_DATA_WIDTH; offset++) {
+                nonBlankFiller[offset] = (byte) '*';
+            }
+
+            Collector sink = new Collector();
+            try (RejectsFile file = writer().openOutput(sink)) {
+                file.writeRejectRec(fromFixture, DalyRejectWriter.REASON_ACCOUNT_RECORD_NOT_FOUND);
+                file.writeRejectRec(nonBlankFiller,
+                        DalyRejectWriter.REASON_ACCOUNT_RECORD_NOT_FOUND);
+            }
+
+            assertThat(new String(sink.records.get(0), FILLER_OFFSET, FILLER_WIDTH, ASCII))
+                    .isEqualTo(" ".repeat(FILLER_WIDTH));
+            assertThat(new String(sink.records.get(1), FILLER_OFFSET, FILLER_WIDTH, ASCII))
+                    .as("FILLER is copied, not re-derived from the picture's pad character")
+                    .isEqualTo("*".repeat(FILLER_WIDTH));
+            // The trailer still begins at 350 in both, which is what dropping FILLER would break.
+            assertThat(sink.records).allSatisfy(record -> {
+                assertThat(record).hasSize(LRECL);
+                assertThat(new String(record, 350, 4, ASCII)).isEqualTo("0101");
+            });
+        }
+
+        @Test
+        @DisplayName("no byte of the copied span is re-derived - all 350 offsets are the sender's")
+        void everyOffsetOfTheCopiedSpanBelongsToTheSender() {
+            // A per-offset statement, so a writer that got 349 of 350 bytes right cannot pass. Changing
+            // one byte of a real row at a time would need 350 runs; giving every offset its own
+            // distinguishable byte separates all 350 positions in a single one.
+            byte[] sent = fixtureRow(2).clone();
+            for (int offset = 0; offset < TRAN_DATA_WIDTH; offset++) {
+                // Printable, deterministic, and different from its neighbours in a 95-wide cycle.
+                sent[offset] = (byte) ('!' + (offset % 94));
+            }
+
+            Collector sink = new Collector();
+            try (RejectsFile file = writer().openOutput(sink)) {
+                file.writeRejectRec(sent, DalyRejectWriter.REASON_TRANSACTION_AFTER_EXPIRATION);
+            }
+            byte[] written = sink.records.get(0);
+            for (int offset = 0; offset < TRAN_DATA_WIDTH; offset++) {
+                assertThat(written[offset])
+                        .as("byte %d of REJECT-TRAN-DATA", offset)
+                        .isEqualTo(sent[offset]);
+            }
+            // And the copy stopped at 350: byte 350 is the trailer, not a 351st transaction byte.
+            assertThat(new String(written, 350, 4, ASCII)).isEqualTo("0103");
+        }
+
+        @Test
+        @DisplayName("moving a transaction leaves the trailer alone, and vice versa")
+        void theTwoMovesAreIndependent() {
+            // L447 and L448 are two separate MOVEs into two disjoint receivers. Either one running
+            // alone must leave the other's bytes as they were, or a reject record could carry one
+            // transaction's data beside another's reason.
+            Collector sink = new Collector();
+            try (RejectsFile file = writer().openOutput(sink)) {
+                file.moveToValidationTrailer(DalyRejectWriter.REASON_OVERLIMIT_TRANSACTION);
+                assertThat(file.rejectTranDataBytes())
+                        .as("moving only the trailer leaves the transaction span blank")
+                        .isEqualTo(" ".repeat(TRAN_DATA_WIDTH).getBytes(ASCII));
+
+                file.moveToRejectTranData(fixtureRow(55));
+                assertThat(file.validationFailReason())
+                        .as("moving only the transaction leaves the trailer as it was")
+                        .isEqualTo(DalyRejectWriter.REASON_OVERLIMIT_TRANSACTION);
+                assertThat(file.validationFailReasonDesc())
+                        .startsWith(DalyRejectWriter.DESC_OVERLIMIT_TRANSACTION);
+
+                assertThat(file.writeRejectRec()).isEqualTo(FileStatus.Outcome.OK);
+            }
+            byte[] written = sink.records.get(0);
+            assertThat(Arrays.copyOf(written, TRAN_DATA_WIDTH)).isEqualTo(fixtureRow(55));
+            assertThat(new String(written, 350, 4, ASCII)).isEqualTo("0102");
         }
     }
 
@@ -799,6 +1429,160 @@ class DalyRejectWriterTest {
         }
 
         @Test
+        @DisplayName("open, write and close all report a FILE STATUS outcome and decide nothing")
+        void allThreeOperationsReportRatherThanDecide() {
+            // app/cbl/CBTRN02C.cbl gives DALYREJS three paragraphs with one shape between them:
+            //
+            //   0300-DALYREJS-OPEN   L292-L307   MOVE 8 -> OPEN OUTPUT  -> '00'? 0 : 12 -> APPL-AOK?
+            //   2500-WRITE-REJECT-REC L446-L465  MOVE 8 -> WRITE        -> '00'? 0 : 12 -> APPL-AOK?
+            //   9300-DALYREJS-CLOSE  L637-L653   MOVE 8 -> CLOSE        -> '00'? 0 : 12 -> APPL-AOK?
+            //
+            // Everything to the right of the arrow is the posting job's: APPL-RESULT, the DISPLAY of
+            // 'ERROR WRITING TO REJECTS FILE', 9910-DISPLAY-IO-STATUS and 9999-ABEND-PROGRAM. What the
+            // writer owes the caller is only the left-hand side - the FILE STATUS the operation got -
+            // and that is what these three methods return (gates G47 and G51).
+            Collector sink = new Collector();
+            RejectsFile file = writer().openOutput(sink);
+            assertThat(file.openOutcome()).isNotNull().isEqualTo(FileStatus.Outcome.OK);
+            assertThat(file.writeRejectRec(image('a'), 100)).isNotNull()
+                    .isEqualTo(FileStatus.Outcome.OK);
+            assertThat(file.closeOutput()).isNotNull().isEqualTo(FileStatus.Outcome.OK);
+        }
+
+        @ParameterizedTest(name = "a sink reporting {0} is reported onward as {0}, unchanged")
+        @EnumSource(FileStatus.Outcome.class)
+        @DisplayName("transports the outcome the destination reported and never reinterprets it")
+        void theOutcomeIsTransportedNotJudged(FileStatus.Outcome reported) {
+            // The writer is not entitled to an opinion about what a status means. Whatever the
+            // destination said, the caller must see, because the caller is the one holding the
+            // EVALUATE - and a writer that helpfully collapsed statuses into "worked" and "did not"
+            // would erase the two-character value that 9910-DISPLAY-IO-STATUS exists to print.
+            // Driven over every declared Outcome, including the three that would be surprising here,
+            // because "surprising" is not the writer's call to make.
+            Collector sink = new Collector();
+            sink.openAnswer = reported;
+            sink.writeAnswer = reported;
+            sink.closeAnswer = reported;
+
+            RejectsFile file = writer().openOutput(sink);
+            assertThat(file.openOutcome()).isEqualTo(reported);
+            assertThat(file.writeRejectRec(image('t'), 102)).isEqualTo(reported);
+            assertThat(file.closeOutput()).isEqualTo(reported);
+            // And the record still went out: reporting a status is not the same as refusing to write.
+            assertThat(sink.records).singleElement()
+                    .satisfies(record -> assertThat(record).hasSize(LRECL));
+        }
+
+        @Test
+        @DisplayName("the ladder hinges on batchStatus() being '00' - the same test the COBOL makes")
+        void theLadderHingesOnTheStatusBeingZeroZero() {
+            // IF DALYREJS-STATUS = '00' is a two-character comparison, and Outcome carries exactly that
+            // two-character status. Stating the hinge here means the caller's arm selection is derivable
+            // from what the writer returns, rather than from a convention agreed by nobody.
+            Collector ok = new Collector();
+            Collector failing = new Collector();
+            failing.writeAnswer = FileStatus.Outcome.OTHER;
+
+            FileStatus.Outcome accepted;
+            FileStatus.Outcome refused;
+            try (RejectsFile file = writer().openOutput(ok)) {
+                accepted = file.writeRejectRec(image('b'), 100);
+            }
+            try (RejectsFile file = writer().openOutput(failing)) {
+                refused = file.writeRejectRec(image('c'), 100);
+            }
+
+            // The '00' arm: MOVE 0 TO APPL-RESULT, and APPL-AOK is then true.
+            assertThat(accepted.batchStatus()).contains(FileStatus.OK);
+            assertThat(accepted.batchStatus()).contains("00");
+            assertThat(FileStatus.isOk(accepted.batchStatus().orElseThrow())).isTrue();
+            assertThat(FileStatus.outcomeOfStatus("00")).isEqualTo(accepted);
+
+            // The other arm: MOVE 12 TO APPL-RESULT, and APPL-AOK is then false. OTHER deliberately
+            // carries no two-character status, because there is no COBOL FILE STATUS meaning
+            // "some failure" - which is exactly why the caller must treat "not '00'" as the condition.
+            assertThat(refused).isEqualTo(FileStatus.Outcome.OTHER);
+            assertThat(refused.batchStatus()).isEmpty();
+            assertThat(refused).isNotEqualTo(accepted);
+        }
+
+        @Test
+        @DisplayName("a refused write raises nothing - the abend is the posting job's to raise")
+        void aRefusedWriteRaisesNothing() {
+            // The whole point of returning an outcome rather than throwing: 2500-WRITE-REJECT-REC does
+            // not abend, it sets APPL-RESULT and lets 9999-ABEND-PROGRAM be performed by the caller. So
+            // a refused write must leave the handle usable, and the run must be able to carry on to the
+            // next rejected transaction - which is what a posting run that logged and continued would
+            // do. Nothing below may throw.
+            Collector sink = new Collector();
+            assertThatCode(() -> {
+                try (RejectsFile file = writer().openOutput(sink)) {
+                    sink.writeAnswer = FileStatus.Outcome.OTHER;
+                    assertThat(file.writeRejectRec(image('d'), 100))
+                            .isEqualTo(FileStatus.Outcome.OTHER);
+                    // Still open, still usable, still counting.
+                    assertThat(file.isOpen()).isTrue();
+                    sink.writeAnswer = FileStatus.Outcome.OK;
+                    assertThat(file.writeRejectRec(image('e'), 101)).isEqualTo(FileStatus.Outcome.OK);
+                    assertThat(file.recordsWritten()).isEqualTo(2);
+                }
+            }).doesNotThrowAnyException();
+            assertThat(sink.records).hasSize(2);
+            assertThat(sink.closes).isOne();
+        }
+
+        @Test
+        @DisplayName("closing after zero writes and after N writes both behave, and say which it was")
+        void closeAfterZeroAndAfterManyWritesBothBehave() {
+            // The zero case is the common one for this dataset: a posting run that rejected nothing
+            // opens DALYREJS, writes nothing and closes it, and 9300-DALYREJS-CLOSE still runs
+            // unconditionally at L224. It must not be a special case, and it must not be an error.
+            Collector empty = new Collector();
+            RejectsFile afterNone = writer().openOutput(empty);
+            assertThat(afterNone.recordsWritten()).isZero();
+            assertThat(afterNone.closeOutput()).isEqualTo(FileStatus.Outcome.OK);
+            assertThat(afterNone.isOpen()).isFalse();
+            assertThat(afterNone.recordsWritten())
+                    .as("the count survives the close, so the caller can still report it")
+                    .isZero();
+            assertThat(empty.opens).isOne();
+            assertThat(empty.closes).isOne();
+            assertThat(empty.records).isEmpty();
+
+            // And the N case, with the count and the collected records agreeing.
+            Collector several = new Collector();
+            RejectsFile afterSome = writer().openOutput(several);
+            for (int reject = 0; reject < 4; reject++) {
+                assertThat(afterSome.writeRejectRec(image((char) ('1' + reject)), 100))
+                        .isEqualTo(FileStatus.Outcome.OK);
+            }
+            assertThat(afterSome.recordsWritten()).isEqualTo(4);
+            assertThat(afterSome.closeOutput()).isEqualTo(FileStatus.Outcome.OK);
+            assertThat(afterSome.isOpen()).isFalse();
+            assertThat(afterSome.recordsWritten()).isEqualTo(4);
+            assertThat(several.records).hasSize(4).allSatisfy(record ->
+                    assertThat(record).hasSize(LRECL));
+            assertThat(several.closes).isOne();
+
+            // A failing close is reported the same way whether anything was written or not, so the
+            // caller's 9300 ladder has one shape rather than two.
+            Collector emptyThenFails = new Collector();
+            emptyThenFails.closeAnswer = FileStatus.Outcome.OTHER;
+            assertThat(writer().openOutput(emptyThenFails).closeOutput())
+                    .isEqualTo(FileStatus.Outcome.OTHER);
+        }
+
+        @Test
+        @DisplayName("isOpen answers both ways, as an 88-level condition name does")
+        void theOpenPredicateAnswersBothWays() {
+            // Gate G50: a condition name is only tested when both of its states have been seen.
+            RejectsFile file = writer().openOutput(new Collector());
+            assertThat(file.isOpen()).isTrue();
+            file.closeOutput();
+            assertThat(file.isOpen()).isFalse();
+        }
+
+        @Test
         @DisplayName("each open returns an independent handle with its own record area")
         void handlesAreIndependent() {
             DalyRejectWriter subject = writer();
@@ -888,8 +1672,10 @@ class DalyRejectWriterTest {
         }
 
         @ParameterizedTest(name = "dsname \"{0}\" defers its refusal to insertStatement()")
+        // "TEST." rather than the production high-level qualifier: gate G46 wants no AWS.M2.CARDDEMO
+        // literal anywhere in Java, and a deliberately malformed name is no reason to smuggle one in.
         @ValueSource(strings = {"", "/var/tmp/dalyrejs.dat", "not a dataset", "TOOLONGQUALIFIER.X",
-                "AWS.M2.DALYREJS(BAD)"})
+                "TEST.M2.DALYREJS(BAD)"})
         @DisplayName("still constructs when the name is not a dataset, so the context can start")
         void defersANonDatasetName(String dsname) {
             DalyRejectWriter subject = new DalyRejectWriter(new JdbcTemplate(), ASCII,
@@ -1235,6 +2021,12 @@ class DalyRejectWriterTest {
         private JdbcTemplate liveTemplate() {
             JdbcTemplate template = new JdbcTemplate(new SimpleDriverDataSource(new org.h2.Driver(),
                     "jdbc:h2:mem:dalyrejs-disp-" + UUID.randomUUID() + ";DB_CLOSE_DELAY=-1", "sa", ""));
+            // Gate G44 forbids DDL in the module, and this is not that. Nothing here is shipped, mapped
+            // or migrated: it is a per-test, per-UUID, in-memory relation that exists so the
+            // count-then-delete inside discardGeneration() can be MEASURED instead of mocked, and it is
+            // gone when the last connection to this URL closes. The module itself creates no schema -
+            // its own test profile is H2-backed by configuration (application-test.yml), and its
+            // production DataSource is configuration-bound with initialize-schema never.
             template.execute("CREATE TABLE \"" + TEST_DSNAME + "\" (RECORD_IMAGE CHAR("
                     + LRECL + "))");
             return template;

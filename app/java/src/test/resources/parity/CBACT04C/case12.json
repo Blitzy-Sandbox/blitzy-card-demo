@@ -1,0 +1,219 @@
+{
+  "program": "CBACT04C",
+  "caseId": "case12",
+  "description": "WS-TRANID-SUFFIX counts from 000001 upwards and IS NEVER RESET, not even at an account break. Four records across three accounts produce identifiers 2022071800000001 through 2022071800000004 in that exact order: ADD 1 TO WS-TRANID-SUFFIX at :474 runs once per write and nothing anywhere in the program moves zero back into it, so the counter is a property of the RUN rather than of the account. The identifier is the concatenation the STRING at :476-480 builds - PARM-DATE PIC X(10) followed by WS-TRANID-SUFFIX PIC 9(06), which is exactly the sixteen bytes of TRAN-ID PIC X(16) - so the suffix is zero-filled to six digits and the boundary between the two operands is fixed. Two breaks happen along the way, rewriting accounts 1 (194.00 + 12.50 + 25.00 = 231.50) and 2 (158.00 + 12.50 = 170.50); account 3 is the last group and keeps 147.00.",
+  "unitKind": "BATCH_JOB",
+  "inputs": {
+    "TCATBALF": {
+      "rows": [
+        "000000000010100010000010000{0000000000000000000000",
+        "000000000010100020000012000{0000000000000000000000",
+        "000000000020100010000010000{0000000000000000000000",
+        "000000000030100010000012000{0000000000000000000000"
+      ]
+    },
+    "ACCTFILE": {
+      "rows": [
+        "00000000001Y00000001940{00000020200{00000010200{2014-11-202025-05-202025-05-2000000000000{00000000000{A000000000A000000000                                                                                                                                                                                  ",
+        "00000000002Y00000001580{00000061300{00000054480{2013-06-192024-08-112024-08-1100000000000{00000000000{A000000000A000000000                                                                                                                                                                                  ",
+        "00000000003Y00000001470{00000049090{00000005380{2013-08-232024-01-102024-01-1000000000000{00000000000{A000000000A000000000                                                                                                                                                                                  "
+      ]
+    },
+    "XREFFILE": {
+      "rows": [
+        "968029415460369700000000100000000001",
+        "092387719324733000000000200000000002",
+        "399916924637588500000000300000000003"
+      ]
+    },
+    "XREFFIL1": {
+      "rows": [
+        "968029415460369700000000100000000001",
+        "092387719324733000000000200000000002",
+        "399916924637588500000000300000000003"
+      ]
+    },
+    "DISCGRP": {
+      "fixture": "discgrp.txt",
+      "fromRow": 0,
+      "rowCount": 2
+    }
+  },
+  "jobParameters": {
+    "parmDate": "2022071800"
+  },
+  "expectedWrites": [
+    {
+      "dataset": "SYSTRAN",
+      "rowIndex": 0,
+      "expectedBytes": "2022071800000001010005System    Int. for a/c 00000000001                                                                            0000000125{000000000                                                                                                              96802941546036972022-07-19-23.12.34.0000002022-07-19-23.12.34.000000                    "
+    },
+    {
+      "dataset": "SYSTRAN",
+      "rowIndex": 1,
+      "expectedBytes": "2022071800000002010005System    Int. for a/c 00000000001                                                                            0000000250{000000000                                                                                                              96802941546036972022-07-19-23.12.34.0000002022-07-19-23.12.34.000000                    "
+    },
+    {
+      "dataset": "SYSTRAN",
+      "rowIndex": 2,
+      "expectedBytes": "2022071800000003010005System    Int. for a/c 00000000002                                                                            0000000125{000000000                                                                                                              09238771932473302022-07-19-23.12.34.0000002022-07-19-23.12.34.000000                    "
+    },
+    {
+      "dataset": "SYSTRAN",
+      "rowIndex": 3,
+      "expectedBytes": "2022071800000004010005System    Int. for a/c 00000000003                                                                            0000000150{000000000                                                                                                              39991692463758852022-07-19-23.12.34.0000002022-07-19-23.12.34.000000                    "
+    }
+  ],
+  "expectedFinalState": [
+    {
+      "dataset": "TCATBALF",
+      "rowIndex": 0,
+      "expectedBytes": "000000000010100010000010000{0000000000000000000000"
+    },
+    {
+      "dataset": "TCATBALF",
+      "rowIndex": 1,
+      "expectedBytes": "000000000010100020000012000{0000000000000000000000"
+    },
+    {
+      "dataset": "TCATBALF",
+      "rowIndex": 2,
+      "expectedBytes": "000000000020100010000010000{0000000000000000000000"
+    },
+    {
+      "dataset": "TCATBALF",
+      "rowIndex": 3,
+      "expectedBytes": "000000000030100010000012000{0000000000000000000000"
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 0,
+      "expectedBytes": "00000000001Y00000002315{00000020200{00000010200{2014-11-202025-05-202025-05-2000000000000{00000000000{A000000000A000000000                                                                                                                                                                                  "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 1,
+      "expectedBytes": "00000000002Y00000001705{00000061300{00000054480{2013-06-192024-08-112024-08-1100000000000{00000000000{A000000000A000000000                                                                                                                                                                                  "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 2,
+      "expectedBytes": "00000000003Y00000001470{00000049090{00000005380{2013-08-232024-01-102024-01-1000000000000{00000000000{A000000000A000000000                                                                                                                                                                                  "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 0,
+      "expectedBytes": "092387719324733000000000200000000002              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 1,
+      "expectedBytes": "399916924637588500000000300000000003              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 2,
+      "expectedBytes": "968029415460369700000000100000000001              "
+    },
+    {
+      "dataset": "XREFFIL1",
+      "rowIndex": 0,
+      "expectedBytes": "092387719324733000000000200000000002              "
+    },
+    {
+      "dataset": "XREFFIL1",
+      "rowIndex": 1,
+      "expectedBytes": "399916924637588500000000300000000003              "
+    },
+    {
+      "dataset": "XREFFIL1",
+      "rowIndex": 2,
+      "expectedBytes": "968029415460369700000000100000000001              "
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 0,
+      "expectedBytes": "A00000000001000100150{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 1,
+      "expectedBytes": "A00000000001000200250{0000000000000000000000000000"
+    }
+  ],
+  "expectedReturnCode": 0,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "START OF EXECUTION OF PROGRAM CBACT04C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "000000000010100010000010000{0000000000000000000000"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "000000000010100020000012000{0000000000000000000000"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "000000000020100010000010000{0000000000000000000000"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "000000000030100010000012000{0000000000000000000000"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "END OF EXECUTION OF PROGRAM CBACT04C"
+    }
+  ],
+  "normalisations": [
+    {
+      "dataset": "XREFFILE",
+      "kind": "CARDXREF_FILLER_PAD_36_TO_50"
+    },
+    {
+      "dataset": "XREFFIL1",
+      "kind": "CARDXREF_FILLER_PAD_36_TO_50"
+    }
+  ],
+  "expectedDatasets": [
+    {
+      "dataset": "SYSTRAN",
+      "channel": "WRITES",
+      "rowCount": 4,
+      "recordLength": 350
+    },
+    {
+      "dataset": "TCATBALF",
+      "channel": "FINAL_STATE",
+      "rowCount": 4,
+      "recordLength": 50
+    },
+    {
+      "dataset": "ACCTFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 3,
+      "recordLength": 300
+    },
+    {
+      "dataset": "XREFFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 3,
+      "recordLength": 50
+    },
+    {
+      "dataset": "XREFFIL1",
+      "channel": "FINAL_STATE",
+      "rowCount": 3,
+      "recordLength": 50
+    },
+    {
+      "dataset": "DISCGRP",
+      "channel": "FINAL_STATE",
+      "rowCount": 2,
+      "recordLength": 50
+    }
+  ]
+}

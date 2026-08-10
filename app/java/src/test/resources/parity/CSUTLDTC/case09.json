@@ -1,0 +1,17 @@
+{
+  "program": "CSUTLDTC",
+  "caseId": "case09",
+  "description": "CSUTLDTC, the called date-validation subprogram, invoked as the @Service it became. LS-DATE='XX220719  ' and LS-DATE-FORMAT='<XX>YYMMDD' are this case's two LINKAGE SECTION parameters (L84-L85); LS-RESULT PIC X(80) (L86) is the output and is asserted below as the single WS_MESSAGE_80 line. This program opens no file and is reached by no JCL, so it seeds no dataset, writes no record and takes no job parameter - its entire observable behaviour is the 80 bytes L97 moves into LS-RESULT and the severity L98 moves into RETURN-CODE. Expected values are STATICALLY DERIVED from the 01 WS-MESSAGE declaration at L42-L57 and the group move at L122, never captured from a COBOL run, which is impossible here. Arm 4: FC-INVALID-ERA, 88-level VALUE X'000309CD59C3C5C5' (L65) - severity 3, message 2509. An era field is declared by the angle brackets and occupies two input bytes; 'XX' is not one of the supported era names. The mask is exactly ten characters ON PURPOSE: LS-DATE-FORMAT is PIC X(10) (L85), so '<XX>YYYYMMDD' would be truncated to '<XX>YYYYMM' and would report 2507 instead - which is a real trap and the reason a two-digit year is used here.",
+  "unitKind": "SERVICE",
+  "inputs": {},
+  "expectedWrites": [],
+  "expectedFinalState": [],
+  "expectedReturnCode": 3,
+  "expectedMessages": [
+    {
+      "channel": "WS_MESSAGE_80",
+      "text": "0003Mesg Code: 2509 Invalid Era     TstDate: \u0000\nXX220719 Mask used:<XX>YYMMDD    "
+    }
+  ],
+  "normalisations": []
+}

@@ -1,9 +1,11 @@
 package com.vsergeychik.carddemo.transaction;
 
+import com.vsergeychik.carddemo.common.BmsAttributes;
 import com.vsergeychik.carddemo.common.CicsAid;
 import com.vsergeychik.carddemo.common.CobolDecimal;
 import com.vsergeychik.carddemo.common.DateHeader;
-import com.vsergeychik.carddemo.common.FileStatus;
+import com.vsergeychik.carddemo.common.FieldAttributeSetter;
+import com.vsergeychik.carddemo.common.FieldAttributeSetter.FieldHighlight;
 import com.vsergeychik.carddemo.common.FileStatus.Outcome;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.NavigationContext;
@@ -22,12 +24,19 @@ import com.vsergeychik.carddemo.transaction.TransactionRepository.Browse;
 import com.vsergeychik.carddemo.transaction.TransactionRepository.BrowseDirection;
 import com.vsergeychik.carddemo.transaction.TransactionRepository.ReadResult;
 import com.vsergeychik.carddemo.transaction.dto.TransactionListRequest;
+import com.vsergeychik.carddemo.transaction.dto.TransactionListRequest.FieldMetadata;
+import com.vsergeychik.carddemo.transaction.dto.TransactionListRequest.PaginationCursor;
 import com.vsergeychik.carddemo.transaction.dto.TransactionListResponse;
 import com.vsergeychik.carddemo.transaction.dto.TransactionListResponse.TransactionListCursor;
 import com.vsergeychik.carddemo.transaction.model.TranRecord;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+
 import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
+import java.lang.reflect.RecordComponent;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
@@ -35,7 +44,10 @@ import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -45,7 +57,9 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -53,7 +67,6 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -1502,7 +1515,7 @@ final class TransactionMenuControllerTest {
                         CODEC.movePicX("X", TransactionListResponse.declaredLength(prefix)));
             }
             response.applyHighlight(TransactionListResponse.TRNIDIN,
-                    com.vsergeychik.carddemo.common.FieldAttributeSetter.resolveFromFlags(
+                    FieldAttributeSetter.resolveFromFlags(
                             true, true, false, TransactionListResponse.TRNIDIN,
                             TransactionListResponse.MAP_NAME));
 
@@ -1564,8 +1577,7 @@ final class TransactionMenuControllerTest {
         @DisplayName("all 59 DFHMDF fields are payload members and no length, flag or attribute "
                 + "item is (gate G9)")
         void onlyThePayloadItemsAreOnTheWire() throws Exception {
-            com.fasterxml.jackson.databind.ObjectMapper mapper =
-                    new com.fasterxml.jackson.databind.ObjectMapper();
+            ObjectMapper mapper = new ObjectMapper();
             List<String> responseMembers = membersOf(mapper, new TransactionListResponse());
             List<String> requestMembers = membersOf(mapper, request(true));
 
@@ -1599,7 +1611,7 @@ final class TransactionMenuControllerTest {
                     .contains("aid", "navigationContext", "cursor");
         }
 
-        private List<String> membersOf(com.fasterxml.jackson.databind.ObjectMapper mapper,
+        private List<String> membersOf(ObjectMapper mapper,
                                        Object payload) {
             List<String> members = new ArrayList<>();
             mapper.valueToTree(payload).fieldNames().forEachRemaining(members::add);
@@ -1732,11 +1744,10 @@ final class TransactionMenuControllerTest {
         @DisplayName("GET /api/transactions with a payload and an eibaid paints a page")
         void pagedListOverHttp() throws Exception {
             forward(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11);
-            String body = new com.fasterxml.jackson.databind.ObjectMapper()
-                    .writeValueAsString(request(true));
+            String body = new ObjectMapper().writeValueAsString(request(true));
 
             mockMvc().perform(get(TransactionMenuController.TRANSACTIONS_PATH)
-                            .contentType(org.springframework.http.MediaType.APPLICATION_JSON)
+                            .contentType(MediaType.APPLICATION_JSON)
                             .content(body)
                             .param(TransactionMenuController.EIBAID_PARAM,
                                     String.valueOf(ENTER_PARAM)))
@@ -1751,8 +1762,7 @@ final class TransactionMenuControllerTest {
         @DisplayName("either accepted spelling of the AID parameter names the same key, and a "
                 + "contradiction between them is refused")
         void eitherAidSpellingNamesTheSameKey() throws Exception {
-            String body = new com.fasterxml.jackson.databind.ObjectMapper()
-                    .writeValueAsString(request(true));
+            String body = new ObjectMapper().writeValueAsString(request(true));
             String enter = String.valueOf(ENTER_PARAM);
 
             // The alternate spelling was declared by two sibling routes and by none of the three that
@@ -1765,7 +1775,7 @@ final class TransactionMenuControllerTest {
                 forward(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11);
 
                 mockMvc().perform(get(TransactionMenuController.TRANSACTIONS_PATH)
-                                .contentType(org.springframework.http.MediaType.APPLICATION_JSON)
+                                .contentType(MediaType.APPLICATION_JSON)
                                 .content(body)
                                 .param(name, enter))
                         .andExpect(status().isOk())
@@ -1822,11 +1832,10 @@ final class TransactionMenuControllerTest {
         @DisplayName("the envelope leaves the screen flat and adds exactly one sibling member")
         void theEnvelopeLeavesTheScreenFlat() throws Exception {
             forward(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11);
-            String body = new com.fasterxml.jackson.databind.ObjectMapper()
-                    .writeValueAsString(request(true));
+            String body = new ObjectMapper().writeValueAsString(request(true));
 
             mockMvc().perform(get(TransactionMenuController.TRANSACTIONS_PATH)
-                            .contentType(org.springframework.http.MediaType.APPLICATION_JSON)
+                            .contentType(MediaType.APPLICATION_JSON)
                             .content(body)
                             .param(TransactionMenuController.EIBAID_PARAM,
                                     String.valueOf(ENTER_PARAM)))
@@ -2246,4 +2255,832 @@ final class TransactionMenuControllerTest {
             return response;
         }
     }
+
+    // =============================================================================================
+    // The screen-wide gates.
+    //
+    // Every case below asserts a property of the WHOLE screen rather than of one paragraph, and each
+    // one is a gate the assignment names outright:
+    //
+    //   G39  ten rows, and no property, parameter or payload member can make it anything else;
+    //   G37  the commarea, the attention identifier and the 58-byte cursor travel in the payload,
+    //        and the server keeps nothing between two requests;
+    //   G9   fifty-nine payload members, named verbatim, typed String, with the length, flag and
+    //        attribute items kept off the wire;
+    //   G33  the 1-based COBOL row index mapped onto 0-based Java rows, with 0 and 11 unreachable;
+    //   G34  the REDEFINES pair round-tripping over one backing span;
+    //   G38  the CSSETATY highlight belonging to the re-enter path and to no other;
+    //   G50  both truth states of the 88-levels these properties rest on.
+    //
+    // The class name still says "Menu" and the program still lists transactions - rule R1, and the
+    // divergence register at AAP 0.8.4. Everything here asserts a paged LIST.
+    // =============================================================================================
+
+    @Nested
+    @DisplayName("The screen-wide gates")
+    class ScreenWideGates {
+
+        /**
+         * {@code app/cpy-bms/COTRN00.CPY}'s fifty-nine {@code xxxI} items, transcribed verbatim and in
+         * copybook order: eight heading and control fields, then ten rows of five, then the error line.
+         *
+         * <p>Transcribed rather than generated on purpose. A generated list would agree with whatever
+         * rule the production code happens to use, including a wrong one; this list agrees with the
+         * copybook, which is the contract. It is what makes the three inconsistent suffix widths -
+         * {@code SEL0001} on four digits, {@code TRNID01} on two and {@code TAMT001} on three -
+         * assertable rather than assumed (practice B4).
+         */
+        private List<String> copybookFieldNames() {
+            return List.of(
+                    "TRNNAME", "TITLE01", "CURDATE", "PGMNAME", "TITLE02", "CURTIME", "PAGENUM",
+                    "TRNIDIN",
+                    "SEL0001", "TRNID01", "TDATE01", "TDESC01", "TAMT001",
+                    "SEL0002", "TRNID02", "TDATE02", "TDESC02", "TAMT002",
+                    "SEL0003", "TRNID03", "TDATE03", "TDESC03", "TAMT003",
+                    "SEL0004", "TRNID04", "TDATE04", "TDESC04", "TAMT004",
+                    "SEL0005", "TRNID05", "TDATE05", "TDESC05", "TAMT005",
+                    "SEL0006", "TRNID06", "TDATE06", "TDESC06", "TAMT006",
+                    "SEL0007", "TRNID07", "TDATE07", "TDESC07", "TAMT007",
+                    "SEL0008", "TRNID08", "TDATE08", "TDESC08", "TAMT008",
+                    "SEL0009", "TRNID09", "TDATE09", "TDESC09", "TAMT009",
+                    "SEL0010", "TRNID10", "TDATE10", "TDESC10", "TAMT010",
+                    "ERRMSG");
+        }
+
+        /**
+         * The declared {@code PIC X(n)} width of each name above, in the same order.
+         *
+         * <p>{@code 4, 40, 8, 8, 40, 8, 8, 16} for the heading and control fields, then
+         * {@code 1, 16, 8, 26, 12} ten times for the rows, then {@code 78} for the error line -
+         * {@code app/cpy-bms/COTRN00.CPY:24-372}.
+         */
+        private List<Integer> copybookFieldWidths() {
+            return List.of(
+                    4, 40, 8, 8, 40, 8, 8, 16,
+                    1, 16, 8, 26, 12,
+                    1, 16, 8, 26, 12,
+                    1, 16, 8, 26, 12,
+                    1, 16, 8, 26, 12,
+                    1, 16, 8, 26, 12,
+                    1, 16, 8, 26, 12,
+                    1, 16, 8, 26, 12,
+                    1, 16, 8, 26, 12,
+                    1, 16, 8, 26, 12,
+                    1, 16, 8, 26, 12,
+                    78);
+        }
+
+        private MockMvc mockMvc() {
+            return MockMvcBuilders.standaloneSetup(controller).build();
+        }
+
+        /** Twelve consecutive transactions, so a full page and its look-ahead can both be served. */
+        private void aFullPageAndMore() {
+            forward(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12);
+        }
+
+        // -----------------------------------------------------------------------------------------
+        // Gate G39 - the page size is behaviour, not configuration.
+        //
+        // Ten is written into the source five times: :290 PERFORM VARYING ... UNTIL WS-IDX > 10,
+        // :297 UNTIL WS-IDX >= 11, :344 UNTIL WS-IDX > 10, :349 MOVE 10 TO WS-IDX and :351
+        // UNTIL WS-IDX <= 0. None of the five reads anything an operator or an administrator could
+        // set, so nothing outside the program may be able to change the page either.
+        // -----------------------------------------------------------------------------------------
+
+        @Test
+        @DisplayName("a full page is exactly ten rows and no property can make it anything else "
+                + "(gate G39)")
+        void noPropertyCanChangeThePageSize() {
+            // Gate G39 asks for more than the absence of @Value: it asks that the size be unreachable
+            // from outside. So every property name a configurable implementation would plausibly have
+            // read is actually set, to a value that is not ten, before the page is painted.
+            List<String> plausible = List.of(
+                    "carddemo.transactions.page-size",
+                    "carddemo.transaction.list.page-size",
+                    "carddemo.page-size",
+                    "spring.data.web.pageable.default-page-size",
+                    "PAGE_SIZE");
+            Map<String, String> restore = new LinkedHashMap<>();
+            try {
+                for (String name : plausible) {
+                    restore.put(name, System.getProperty(name));
+                    System.setProperty(name, "3");
+                }
+                aFullPageAndMore();
+
+                TransactionListResponse response =
+                        controller.listTransactions(request(true), CicsAid.DFHENTER);
+
+                assertThat(rowIds(response)).containsExactly(idOf(1), idOf(2), idOf(3), idOf(4),
+                        idOf(5), idOf(6), idOf(7), idOf(8), idOf(9), idOf(10));
+                assertThat(TransactionListResponse.PAGE_SIZE).isEqualTo(10);
+                assertThat(TransactionListRequest.PAGE_SIZE).isEqualTo(10);
+                assertThat(TransactionListResponse.LAST_ROW - TransactionListResponse.FIRST_ROW + 1)
+                        .isEqualTo(10);
+            } finally {
+                // Restored whatever the outcome. A test that leaves a system property behind changes
+                // the environment of every test after it, and this suite has to be deterministic in
+                // any order (practice B7).
+                restore.forEach((name, value) -> {
+                    if (value == null) {
+                        System.clearProperty(name);
+                    } else {
+                        System.setProperty(name, value);
+                    }
+                });
+            }
+        }
+
+        @Test
+        @DisplayName("no query parameter and no request-body member can change the page size (G39)")
+        void noRequestCanChangeThePageSize() throws Exception {
+            aFullPageAndMore();
+            ObjectMapper mapper = new ObjectMapper();
+            ObjectNode body = mapper.valueToTree(request(true));
+            // Members no COTRN00 field declares. This route binds the attention identifier and
+            // nothing else, so these are ignored rather than honoured - which is the assertion.
+            body.put("pageSize", 3);
+            body.put("rowCount", 3);
+            body.put("size", 3);
+            body.put("limit", 3);
+
+            mockMvc().perform(get(TransactionMenuController.TRANSACTIONS_PATH)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(mapper.writeValueAsString(body))
+                            .param(TransactionMenuController.EIBAID_PARAM,
+                                    String.valueOf(ENTER_PARAM))
+                            .param("pageSize", "3")
+                            .param("size", "3")
+                            .param("limit", "3")
+                            .param("page", "2")
+                            .param("offset", "5"))
+                    .andExpect(status().isOk())
+                    // Rows four to ten would be blank had any of the above been honoured.
+                    .andExpect(jsonPath("$.trnid01O").value(idOf(1)))
+                    .andExpect(jsonPath("$.trnid03O").value(idOf(3)))
+                    .andExpect(jsonPath("$.trnid04O").value(idOf(4)))
+                    .andExpect(jsonPath("$.trnid10O").value(idOf(10)))
+                    // And there is no eleventh row to honour a larger size with.
+                    .andExpect(jsonPath("$.trnid11O").doesNotExist())
+                    .andExpect(jsonPath("$.pagenumO").value("00000001"));
+        }
+
+        @Test
+        @DisplayName("the row slots a short page leaves empty are spaces, never a rendered zero "
+                + "(:452-505)")
+        void blankedRowSlotsAreSpacesAndNotZeros() {
+            forward(1, 2, 3);
+
+            TransactionListResponse response =
+                    controller.listTransactions(request(true), CicsAid.DFHENTER);
+
+            // The three rows the file could fill carry the edited pair ...
+            assertThat(response.getRowAmount(1)).isEqualTo("+00000001.01");
+            assertThat(response.getRowAmount(3)).isEqualTo("+00000003.01");
+            // ... and INITIALIZE-TRAN-DATA moved SPACES into the other seven, never zeros. A blanked
+            // amount rendered as +00000000.00 would put a figure on the screen that the file does not
+            // contain - COTRN00C:457 moves SPACES, and that is the whole difference.
+            for (int row = 4; row <= TransactionListResponse.LAST_ROW; row++) {
+                assertThat(response.getRowTransactionId(row)).as("TRNID row %d", row)
+                        .isEqualTo(CODEC.movePicX("", TransactionListResponse.TRNID_LENGTH));
+                assertThat(response.getRowTransactionDate(row)).as("TDATE row %d", row)
+                        .isEqualTo(CODEC.movePicX("", TransactionListResponse.TDATE_LENGTH));
+                assertThat(response.getRowDescription(row)).as("TDESC row %d", row)
+                        .isEqualTo(CODEC.movePicX("", TransactionListResponse.TDESC_LENGTH));
+                assertThat(response.getRowAmount(row)).as("TAMT row %d", row)
+                        .isEqualTo(CODEC.movePicX("", TransactionListResponse.TAMT_LENGTH))
+                        .hasSize(TransactionListResponse.TAMT_LENGTH)
+                        .isNotEqualTo("+00000000.00")
+                        .doesNotContain("0")
+                        .isBlank();
+            }
+        }
+
+        // -----------------------------------------------------------------------------------------
+        // Gate G37 - the conversation travels in the payload and the server keeps nothing.
+        //
+        // COTRN00C:62-70 declares CDEMO-CT00-INFO immediately after COPY COCOM01Y, so the commarea a
+        // CICS RETURN passes is the 160-byte COMMAREA plus a 58-byte extension = 218 bytes. The
+        // extension belongs to this screen alone; the 160 bytes belong to all seventeen.
+        // -----------------------------------------------------------------------------------------
+
+        @Test
+        @DisplayName("the commarea stays 160 bytes and the cursor is a separate 58-byte extension")
+        void theCommareaIsNeverWidenedByTheCursor() {
+            // COCOM01Y sums to 160: 34 general + 84 customer + 12 account + 16 card + 14 more.
+            assertThat(NavigationContext.COMMAREA_LENGTH).isEqualTo(160);
+            assertThat(NavigationContext.empty().toFixedWidth(CODEC)).hasSize(160);
+
+            // CDEMO-CT00-INFO, field by field - COTRN00C:63-70.
+            assertThat(TransactionListCursor.TRNID_FIRST_LENGTH).isEqualTo(16);
+            assertThat(TransactionListCursor.TRNID_LAST_LENGTH).isEqualTo(16);
+            assertThat(TransactionListCursor.PAGE_NUM_LENGTH).isEqualTo(8);
+            assertThat(TransactionListCursor.NEXT_PAGE_FLG_LENGTH).isEqualTo(1);
+            assertThat(TransactionListCursor.TRN_SEL_FLG_LENGTH).isEqualTo(1);
+            assertThat(TransactionListCursor.TRN_SELECTED_LENGTH).isEqualTo(16);
+            assertThat(TransactionListCursor.CURSOR_LENGTH).isEqualTo(16 + 16 + 8 + 1 + 1 + 16)
+                    .isEqualTo(58);
+            assertThat(TransactionListCursor.COMMAREA_WITH_CURSOR_LENGTH).isEqualTo(160 + 58)
+                    .isEqualTo(218);
+            assertThat(PaginationCursor.CURSOR_LENGTH).isEqualTo(58);
+            assertThat(PaginationCursor.COMMAREA_LENGTH).isEqualTo(218);
+
+            // The extension is a nested type of each payload and never a member of the commarea
+            // record, because widening COCOM01Y would change a layout the other sixteen screens share.
+            assertThat(TransactionListCursor.class.getEnclosingClass())
+                    .isEqualTo(TransactionListResponse.class);
+            assertThat(PaginationCursor.class.getEnclosingClass())
+                    .isEqualTo(TransactionListRequest.class);
+            List<String> commareaComponents = new ArrayList<>();
+            for (RecordComponent component : NavigationContext.class.getRecordComponents()) {
+                commareaComponents.add(component.getName());
+            }
+            assertThat(commareaComponents).hasSize(16)
+                    .doesNotContain("trnidFirst", "trnidLast", "pageNum", "nextPageFlg", "trnSelFlg",
+                            "trnSelected", "cursor");
+
+            // And what a request reports as EIBCALEN is the sum, not either half.
+            TransactionListRequest carrying = request(true);
+            carrying.setCursor(cursor(2, idOf(11), idOf(20), true, " ", blank16()));
+            assertThat(carrying.commareaLength()).isEqualTo(218);
+            assertThat(new TransactionListRequest().commareaLength())
+                    .as("no commarea at all is EIBCALEN = 0, the cold start at :107")
+                    .isZero();
+        }
+
+        @Test
+        @DisplayName("all six fields of CDEMO-CT00-INFO travel in the request and in the response")
+        void theSixCursorFieldsTravelInBothPayloads() {
+            forward(40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51);
+            TransactionListRequest request = request(true);
+            request.setCursor(cursor(4, idOf(31), idOf(40), true, "S", idOf(35)));
+            ObjectMapper mapper = new ObjectMapper();
+            JsonNode sent = mapper.valueToTree(request).get("cursor");
+
+            TransactionListResponse response = controller.listTransactions(request, CicsAid.DFHPF8);
+            JsonNode returned = mapper.valueToTree(response).get("cursor");
+
+            // Six members on the way in and six on the way out - nothing about the browse position is
+            // held anywhere else.
+            for (JsonNode carried : List.of(sent, returned)) {
+                assertThat(carried).isNotNull();
+                assertThat(carried.fieldNames()).toIterable().containsExactlyInAnyOrder(
+                        "trnidFirst", "trnidLast", "pageNum", "nextPageFlg", "trnSelFlg",
+                        "trnSelected");
+                assertThat(carried.get("trnidFirst").asText())
+                        .hasSize(TransactionListCursor.TRNID_FIRST_LENGTH);
+                assertThat(carried.get("trnidLast").asText())
+                        .hasSize(TransactionListCursor.TRNID_LAST_LENGTH);
+                assertThat(carried.get("nextPageFlg").asText())
+                        .hasSize(TransactionListCursor.NEXT_PAGE_FLG_LENGTH);
+                assertThat(carried.get("trnSelFlg").asText())
+                        .hasSize(TransactionListCursor.TRN_SEL_FLG_LENGTH);
+                assertThat(carried.get("trnSelected").asText())
+                        .hasSize(TransactionListCursor.TRN_SELECTED_LENGTH);
+                // PIC 9(08) is a number in the payload and eight characters on the screen: :324
+                // moves it into PAGENUMI, which is X(8).
+                assertThat(carried.get("pageNum").isNumber()).isTrue();
+            }
+            assertThat(sent.get("trnidLast").asText()).isEqualTo(idOf(40));
+            assertThat(returned.get("pageNum").asInt()).isEqualTo(5);
+            assertThat(response.getPagenumO()).isEqualTo("00000005")
+                    .hasSize(TransactionListResponse.PAGENUM_LENGTH);
+        }
+
+        @Test
+        @DisplayName("no session is created, and two identical requests get identical answers (G37)")
+        void nothingIsRetainedBetweenRequests() throws Exception {
+            ObjectMapper mapper = new ObjectMapper();
+            TransactionListRequest request = request(true);
+            request.setCursor(cursor(4, idOf(31), idOf(40), true, " ", blank16()));
+            String body = mapper.writeValueAsString(request);
+
+            // Re-stubbed before each request: a browse is consumed by the request that reads it, so
+            // the second request gets its own file exactly as a second terminal would.
+            forward(40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51);
+            MvcResult first = mockMvc().perform(get(TransactionMenuController.TRANSACTIONS_PATH)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(body)
+                            .param(TransactionMenuController.EIBAID_PARAM,
+                                    String.valueOf(CicsAid.DFHPF8 & 0xFF)))
+                    .andExpect(status().isOk())
+                    .andReturn();
+
+            forward(40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51);
+            MvcResult second = mockMvc().perform(get(TransactionMenuController.TRANSACTIONS_PATH)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(body)
+                            .param(TransactionMenuController.EIBAID_PARAM,
+                                    String.valueOf(CicsAid.DFHPF8 & 0xFF)))
+                    .andExpect(status().isOk())
+                    .andReturn();
+
+            // No session was created on either request, and none could have been consulted.
+            assertThat(first.getRequest().getSession(false)).isNull();
+            assertThat(second.getRequest().getSession(false)).isNull();
+            // Byte-identical answers. The clock is fixed, so the two heading fields agree too; had any
+            // part of the position been remembered on the server, the second page would differ.
+            assertThat(second.getResponse().getContentAsString())
+                    .isEqualTo(first.getResponse().getContentAsString());
+            assertThat(first.getResponse().getContentAsString()).contains(idOf(41), idOf(50));
+        }
+
+        @Test
+        @DisplayName("a hand-crafted cursor is honoured with no prior page to have produced it")
+        void aHandCraftedCursorIsHonoured() {
+            forward(40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51);
+            TransactionListRequest request = request(true);
+            // Page four of a browse this instance has never served: nothing on the server knows that
+            // transaction 40 was ever displayed, and it does not need to.
+            request.setCursor(cursor(4, idOf(31), idOf(40), true, " ", blank16()));
+
+            TransactionListResponse response = controller.listTransactions(request, CicsAid.DFHPF8);
+
+            // :260-262 anchors on CDEMO-CT00-TRNID-LAST, :285-287 steps over the record at that key,
+            // and :306-307 counts the page that follows it.
+            verify(repository).startBrowse(idOf(40), BrowseDirection.FORWARD);
+            assertThat(rowIds(response)).containsExactly(idOf(41), idOf(42), idOf(43), idOf(44),
+                    idOf(45), idOf(46), idOf(47), idOf(48), idOf(49), idOf(50));
+            assertThat(response.getCursor().getPageNum()).isEqualTo(5);
+            assertThat(response.getCursor().getTrnidFirst()).isEqualTo(idOf(41));
+            assertThat(response.getCursor().getTrnidLast()).isEqualTo(idOf(50));
+            assertThat(response.getCursor().isNextPageYes())
+                    .as("transaction 51 was read as the look-ahead at :308")
+                    .isTrue();
+        }
+
+        @Test
+        @DisplayName("both 88-levels of CDEMO-CT00-NEXT-PAGE-FLG are driven (:307, :309-313, G50)")
+        void bothStatesOfTheNextPageFlagAreDriven() {
+            // 'Y' - the look-ahead at :308 found a record, so :310 SET NEXT-PAGE-YES.
+            aFullPageAndMore();
+            TransactionListResponse more =
+                    controller.listTransactions(request(true), CicsAid.DFHENTER);
+            assertThat(more.getCursor().isNextPageYes()).isTrue();
+            assertThat(more.getCursor().isNextPageNo()).isFalse();
+            assertThat(more.getCursor().getNextPageFlg()).isEqualTo(TransactionListCursor.NEXT_PAGE_YES)
+                    .isEqualTo("Y");
+
+            // 'N' - the look-ahead reported end of file, so :312 SET NEXT-PAGE-NO.
+            forward(1, 2, 3, 4, 5, 6, 7, 8, 9, 10);
+            TransactionListResponse last =
+                    controller.listTransactions(request(true), CicsAid.DFHENTER);
+            assertThat(last.getCursor().isNextPageNo()).isTrue();
+            assertThat(last.getCursor().isNextPageYes()).isFalse();
+            assertThat(last.getCursor().getNextPageFlg()).isEqualTo(TransactionListCursor.NEXT_PAGE_NO)
+                    .isEqualTo("N");
+            // And 'N' is the declared VALUE at :66, which is what a fresh work area starts from.
+            assertThat(new TransactionListCursor().getNextPageFlg()).isEqualTo("N");
+        }
+
+        // -----------------------------------------------------------------------------------------
+        // Gate G9 - the fifty-nine payload members, named and typed exactly as the copybook has them.
+        // -----------------------------------------------------------------------------------------
+
+        @Test
+        @DisplayName("the fifty-nine fields are the copybook's, verbatim, in order and at width")
+        void theFieldsAreTheCopybooksVerbatim() {
+            List<String> names = copybookFieldNames();
+            List<Integer> widths = copybookFieldWidths();
+            assertThat(names).hasSize(59);
+            assertThat(widths).hasSize(59);
+
+            assertThat(TransactionListResponse.fieldPrefixes()).containsExactlyElementsOf(names);
+            assertThat(TransactionListRequest.FIELD_NAMES).containsExactlyElementsOf(names);
+            assertThat(TransactionListResponse.FIELD_COUNT).isEqualTo(59);
+            assertThat(TransactionListRequest.FIELD_COUNT).isEqualTo(59);
+
+            for (int index = 0; index < names.size(); index++) {
+                assertThat(TransactionListResponse.declaredLength(names.get(index)))
+                        .as("%s is PIC X(%d)", names.get(index), widths.get(index))
+                        .isEqualTo(widths.get(index));
+            }
+
+            // Eight heading and control fields, ten rows of five, one error line - and the widths sum
+            // to the payload the group item carries.
+            assertThat(TransactionListResponse.HEADER_FIELD_COUNT).isEqualTo(8);
+            assertThat(TransactionListResponse.ROW_FIELD_COUNT).isEqualTo(5);
+            assertThat(TransactionListResponse.ERROR_FIELD_COUNT).isEqualTo(1);
+            int declared = 0;
+            for (Integer width : widths) {
+                declared += width;
+            }
+            assertThat(TransactionListResponse.PAYLOAD_WIDTH_TOTAL).isEqualTo(declared);
+        }
+
+        @Test
+        @DisplayName("the three inconsistent suffix widths are preserved and never harmonised (B4)")
+        void theInconsistentSuffixesArePreserved() {
+            List<String> names = copybookFieldNames();
+
+            // SEL0001..SEL0010 carry FOUR digits; TRNID01, TDATE01 and TDESC01 carry TWO; TAMT001
+            // carries THREE. The copybook is inconsistent and the contract is the copybook.
+            assertThat(names.stream().filter(name -> name.startsWith("SEL")).toList())
+                    .hasSize(10)
+                    .allSatisfy(name -> assertThat(name).matches("SEL\\d{4}").hasSize(7));
+            assertThat(names.stream().filter(name -> name.startsWith("TRNID")
+                            && !name.equals("TRNIDIN")).toList())
+                    .hasSize(10)
+                    .allSatisfy(name -> assertThat(name).matches("TRNID\\d{2}").hasSize(7));
+            assertThat(names.stream().filter(name -> name.startsWith("TDATE")).toList())
+                    .hasSize(10)
+                    .allSatisfy(name -> assertThat(name).matches("TDATE\\d{2}").hasSize(7));
+            assertThat(names.stream().filter(name -> name.startsWith("TDESC")).toList())
+                    .hasSize(10)
+                    .allSatisfy(name -> assertThat(name).matches("TDESC\\d{2}").hasSize(7));
+            assertThat(names.stream().filter(name -> name.startsWith("TAMT")).toList())
+                    .hasSize(10)
+                    .allSatisfy(name -> assertThat(name).matches("TAMT\\d{3}").hasSize(7));
+
+            // The plausible harmonised forms are not fields, and asking for one fails loudly rather
+            // than reading or writing nothing at all.
+            for (String harmonised : List.of("TAMT01", "TAMT0001", "SEL01", "SEL001", "TRNID001",
+                    "TDATE001", "TDESC001")) {
+                assertThatIllegalArgumentException()
+                        .as("%s is not a field of this map", harmonised)
+                        .isThrownBy(() -> TransactionListResponse.declaredLength(harmonised));
+            }
+        }
+
+        @Test
+        @DisplayName("every one of the fifty-nine members is a String on both sides of the wire")
+        void everyPayloadMemberIsAString() throws Exception {
+            forward(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11);
+            TransactionListRequest request = request(true);
+            request.setTrnidin(idOf(4));
+            TransactionListResponse response = controller.listTransactions(request, CicsAid.DFHENTER);
+            ObjectMapper mapper = new ObjectMapper();
+            JsonNode requestNode = mapper.valueToTree(request);
+            JsonNode responseNode = mapper.valueToTree(response);
+
+            for (String prefix : copybookFieldNames()) {
+                // PIC X(n) is characters, so every item is a String: an amount that arrived as a JSON
+                // number would have lost the edit mask, and a page number as a number would have lost
+                // its zero fill.
+                assertThat(response.payloadValue(prefix)).as("response %s", prefix)
+                        .isInstanceOf(String.class);
+                assertThat(request.getPayloadValue(prefix)).as("request %s", prefix)
+                        .isInstanceOf(String.class);
+                assertThat(getterOf(TransactionListResponse.class, prefix, "O"))
+                        .as("response getter for %s", prefix)
+                        .isEqualTo(String.class);
+                assertThat(getterOf(TransactionListRequest.class, prefix, ""))
+                        .as("request getter for %s", prefix)
+                        .isEqualTo(String.class);
+                assertThat(memberOf(responseNode, prefix + "O").isTextual())
+                        .as("serialized response %sO", prefix).isTrue();
+                assertThat(memberOf(requestNode, prefix).isTextual())
+                        .as("serialized request %sI", prefix).isTrue();
+            }
+
+            // The mask is twelve characters of PIC +99999999.99 - WS-TRAN-AMT at :56, moved into
+            // TAMT00nI at :396-442 - and never the record's own PIC S9(09)V99.
+            assertThat(response.getRowAmount(1)).isEqualTo("+00000001.01")
+                    .hasSize(TransactionListResponse.TAMT_LENGTH);
+            assertThat(memberOf(responseNode, "TAMT001O").asText()).isEqualTo("+00000001.01");
+        }
+
+        /** The declared return type of a payload accessor, so its Java type is assertable. */
+        private Class<?> getterOf(Class<?> payload, String fieldPrefix, String suffix)
+                throws ReflectiveOperationException {
+            String camel = fieldPrefix.substring(0, 1)
+                    + fieldPrefix.substring(1).toLowerCase(Locale.ROOT);
+            return payload.getMethod("get" + camel + suffix).getReturnType();
+        }
+
+        /** One serialized member, located without depending on the accessor's capitalisation. */
+        private JsonNode memberOf(JsonNode payload, String itemName) {
+            List<String> matches = new ArrayList<>();
+            payload.fieldNames().forEachRemaining(member -> {
+                if (member.equalsIgnoreCase(itemName)) {
+                    matches.add(member);
+                }
+            });
+            assertThat(matches).as("exactly one member named %s", itemName).hasSize(1);
+            return payload.get(matches.get(0));
+        }
+
+        @Test
+        @DisplayName("the xxxL length item is signed, because the program moves -1 into it")
+        void theLengthItemIsSigned() throws Exception {
+            // COMP PIC S9(4) - app/cpy-bms/COTRN00.CPY:19 and its fifty-eight siblings. The S is not
+            // decoration: COTRN00C moves -1 into TRNIDINL at thirteen sites - :105, :131, :201, :216,
+            // :221, :243, :265, :610, :617, :644, :651, :678 and :685 - and an unsigned item could not
+            // hold it.
+            assertThat(TransactionListRequest.CURSOR_POSITION_REQUEST).isEqualTo((short) -1);
+            assertThat(TransactionListRequest.class.getField("CURSOR_POSITION_REQUEST").getType())
+                    .isEqualTo(short.class);
+            assertThat(FieldMetadata.class.getMethod("getLengthItem").getReturnType())
+                    .isEqualTo(short.class);
+            assertThat(FieldMetadata.LENGTH_ITEM_BYTES).as("COMP PIC S9(4) is two bytes").isEqualTo(2);
+
+            TransactionListRequest request = request(true);
+            FieldMetadata metadata = request.getMetadata(TransactionListRequest.TRNIDIN_FIELD);
+            assertThat(metadata.getLengthItem()).isEqualTo(FieldMetadata.LENGTH_ITEM_NONE);
+            assertThat(metadata.isCursorPositionRequested()).isFalse();
+
+            metadata.requestCursorPosition();
+
+            assertThat(metadata.getLengthItem()).isEqualTo((short) -1);
+            assertThat(metadata.isCursorPositionRequested()).isTrue();
+
+            // And the run itself performs the move, on the field :105 names.
+            TransactionListRequest running = request(true);
+            controller.listTransactions(running, CicsAid.DFHPF12);
+            assertThat(running.getMetadata(TransactionListRequest.TRNIDIN_FIELD).getLengthItem())
+                    .isEqualTo((short) -1);
+            assertThat(running.getCursorPositionField())
+                    .isEqualTo(TransactionListRequest.TRNIDIN_FIELD);
+        }
+
+        // -----------------------------------------------------------------------------------------
+        // Gate G33 - the OCCURS hazard. COBOL rows are 1-based, Java rows are 0-based, and the two
+        // EVALUATE WS-IDX blocks at :390-445 and :452-505 are where the conversion has to be right.
+        // -----------------------------------------------------------------------------------------
+
+        @Test
+        @DisplayName("COBOL row 1 is Java row 0 and COBOL row 10 is Java row 9 (gate G33)")
+        void theFirstAndLastRowsMapExactly() {
+            aFullPageAndMore();
+
+            TransactionListResponse response =
+                    controller.listTransactions(request(true), CicsAid.DFHENTER);
+
+            // rowIds walks FIRST_ROW..LAST_ROW, so its list index is the Java index and its position
+            // in the walk is the COBOL WS-IDX.
+            List<String> ids = rowIds(response);
+            assertThat(TransactionListResponse.FIRST_ROW).isEqualTo(1);
+            assertThat(TransactionListResponse.LAST_ROW).isEqualTo(10);
+            assertThat(ids.get(0)).as("WHEN 1 at :391 - the first record read")
+                    .isEqualTo(response.getRowTransactionId(TransactionListResponse.FIRST_ROW))
+                    .isEqualTo(idOf(1));
+            assertThat(ids.get(9)).as("WHEN 10 at :438 - the tenth record read")
+                    .isEqualTo(response.getRowTransactionId(TransactionListResponse.LAST_ROW))
+                    .isEqualTo(idOf(10));
+
+            // The first row's five prefixes are row one's, not row zero's.
+            assertThat(TransactionListResponse.rowFieldPrefixes(1))
+                    .containsExactly("SEL0001", "TRNID01", "TDATE01", "TDESC01", "TAMT001");
+            assertThat(TransactionListResponse.rowFieldPrefixes(10))
+                    .containsExactly("SEL0010", "TRNID10", "TDATE10", "TDESC10", "TAMT010");
+            // And row one's fields are the first five after the eight heading and control fields.
+            assertThat(TransactionListResponse.fieldPrefixes()
+                    .subList(TransactionListResponse.HEADER_FIELD_COUNT,
+                            TransactionListResponse.HEADER_FIELD_COUNT
+                                    + TransactionListResponse.ROW_FIELD_COUNT))
+                    .containsExactlyElementsOf(TransactionListResponse.rowFieldPrefixes(1));
+        }
+
+        @ParameterizedTest(name = "row {0} is on the page and carries its own record")
+        @ValueSource(ints = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10})
+        @DisplayName("each of the ten WHEN arms fills its own row and no other (:390-442)")
+        void everyRowArmFillsItsOwnRow(int oneBasedRow) {
+            aFullPageAndMore();
+
+            TransactionListResponse response =
+                    controller.listTransactions(request(true), CicsAid.DFHENTER);
+
+            assertThat(response.getRowTransactionId(oneBasedRow)).isEqualTo(idOf(oneBasedRow));
+            assertThat(response.getRowAmount(oneBasedRow))
+                    .isEqualTo(controller.editedAmount(new BigDecimal(oneBasedRow + ".01")));
+            assertThat(response.getRowDescription(oneBasedRow))
+                    .isEqualTo(CODEC.movePicX("TRANSACTION " + oneBasedRow,
+                            TransactionListResponse.TDESC_LENGTH));
+            assertThat(response.getRowTransactionDate(oneBasedRow)).isEqualTo("07/19/22");
+        }
+
+        @ParameterizedTest(name = "row {0} is off the page")
+        @ValueSource(ints = {0, 11})
+        @DisplayName("COBOL indexes 0 and 11 are unreachable: rejected here, CONTINUE there (G33)")
+        void rowsZeroAndElevenAreUnreachable(int offPage) {
+            TransactionListResponse response = new TransactionListResponse();
+
+            // The accessors reject, because they have no WHEN OTHER to reproduce and returning the
+            // wrong row silently is the failure this gate exists to catch.
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> response.getRowTransactionId(offPage));
+            assertThatIllegalArgumentException().isThrownBy(() -> response.getRowAmount(offPage));
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> TransactionListResponse.rowFieldPrefixes(offPage));
+            // The request side refuses a subscript the same way, and names it a subscript: its guard
+            // raises IndexOutOfBoundsException, which is what an OCCURS subscript outside its range is.
+            assertThatExceptionOfType(IndexOutOfBoundsException.class)
+                    .isThrownBy(() -> TransactionListRequest.requireValidRow(offPage))
+                    .withMessageContaining("1-based");
+            assertThatExceptionOfType(IndexOutOfBoundsException.class)
+                    .isThrownBy(() -> TransactionListRequest.selectionFieldName(offPage));
+            assertThat(TransactionListRequest.requireValidRow(TransactionListResponse.FIRST_ROW))
+                    .as("the guard returns the subscript unchanged so it reads inline")
+                    .isEqualTo(1);
+            assertThat(TransactionListRequest.requireValidRow(TransactionListResponse.LAST_ROW))
+                    .isEqualTo(10);
+
+            // The two paragraph reproductions do NOT reject: :443 and :503 are WHEN OTHER CONTINUE, so
+            // an index off the page changes nothing at all.
+            Map<String, String> before = new LinkedHashMap<>(response.payloadFieldValues());
+            response.initializeTranData(offPage);
+            response.populateTranData(CODEC, offPage, idOf(1), "07/19/22", "TRANSACTION 1",
+                    "+00000001.01");
+            assertThat(response.payloadFieldValues()).isEqualTo(before);
+
+            // The loop bound itself is ten: the eleventh index is where PROCESS-PAGE-FORWARD stops.
+            aFullPageAndMore();
+            WorkArea ws = new WorkArea();
+            controller.listTransactions(request(true), CicsAid.DFHENTER, ws);
+            assertThat(ws.idx()).as(":297 leaves WS-IDX at eleven, one past the last row")
+                    .isEqualTo(11);
+        }
+
+        // -----------------------------------------------------------------------------------------
+        // Gate G34 - COTRN0AO REDEFINES COTRN0AI (COTRN00.CPY:373): two typed views, one backing span.
+        // -----------------------------------------------------------------------------------------
+
+        @Test
+        @DisplayName("the REDEFINES pair round-trips through both views over one backing span (G34)")
+        void theRedefinesPairRoundTrips() {
+            forward(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11);
+            TransactionListRequest request = request(true);
+            request.setTrnidin(idOf(7));
+            request.setSelection(3, "S");
+            request.setTransactionId(3, idOf(3));
+            request.setCursor(cursor(2, idOf(11), idOf(20), true, "S", idOf(13)));
+
+            // The input view, written and read back over its own image.
+            byte[] requestImage = request.toFixedWidth(StandardCharsets.US_ASCII);
+            assertThat(requestImage).hasSize(TransactionListRequest.SYMBOLIC_MAP_LENGTH);
+            TransactionListRequest requestAgain =
+                    TransactionListRequest.fromFixedWidth(requestImage, StandardCharsets.US_ASCII);
+            for (String prefix : copybookFieldNames()) {
+                assertThat(requestAgain.getPayloadValue(prefix)).as("xxxI %s", prefix)
+                        .isEqualTo(request.getPayloadValue(prefix));
+            }
+
+            // The output view, over its own image, with every item preserved.
+            TransactionListResponse response = controller.listTransactions(request, CicsAid.DFHENTER);
+            byte[] responseImage = response.toFixedWidth(CODEC);
+            assertThat(responseImage).hasSize(TransactionListResponse.RECORD_LENGTH);
+            TransactionListResponse responseAgain =
+                    TransactionListResponse.fromFixedWidth(responseImage, StandardCharsets.US_ASCII);
+            for (String prefix : copybookFieldNames()) {
+                assertThat(responseAgain.payloadValue(prefix)).as("xxxO %s", prefix)
+                        .isEqualTo(response.payloadValue(prefix));
+            }
+
+            // And the two views of one field really are one span: what RECEIVE MAP put into TRNIDINI is
+            // what the TRNIDINO accessor reads, before :325 clears it.
+            TransactionListResponse received = new TransactionListResponse();
+            controller.receiveTrnlstScreen(request, new WorkArea(), received);
+            assertThat(received.getTrnidinO()).isEqualTo(request.getTrnidin()).isEqualTo(idOf(7));
+            assertThat(received.getRowSelection(3)).isEqualTo(request.getSelection(3)).isEqualTo("S");
+        }
+
+        @Test
+        @DisplayName("the cursor and the commarea round-trip over their own spans too (G34)")
+        void theCursorAndCommareaRoundTrip() {
+            TransactionListCursor cursor = TransactionMenuController.cursorOf(
+                    cursor(9, idOf(81), idOf(90), true, "S", idOf(85)));
+
+            byte[] cursorImage = cursor.toFixedWidth(CODEC);
+            assertThat(cursorImage).hasSize(TransactionListCursor.CURSOR_LENGTH);
+            TransactionListCursor cursorAgain =
+                    TransactionListCursor.fromFixedWidth(cursorImage, StandardCharsets.US_ASCII);
+            assertThat(cursorAgain.getTrnidFirst()).isEqualTo(idOf(81));
+            assertThat(cursorAgain.getTrnidLast()).isEqualTo(idOf(90));
+            assertThat(cursorAgain.getPageNum()).isEqualTo(9);
+            assertThat(cursorAgain.getNextPageFlg()).isEqualTo("Y");
+            assertThat(cursorAgain.isNextPageYes()).isTrue();
+            assertThat(cursorAgain.getTrnSelFlg()).isEqualTo("S");
+            assertThat(cursorAgain.getTrnSelected()).isEqualTo(idOf(85));
+            assertThat(cursorAgain.isRowSelected()).isTrue();
+
+            PaginationCursor inbound = cursor(9, idOf(81), idOf(90), true, "S", idOf(85));
+            byte[] inboundImage = inbound.toFixedWidth(StandardCharsets.US_ASCII);
+            assertThat(inboundImage).hasSize(PaginationCursor.CURSOR_LENGTH);
+            assertThat(PaginationCursor.fromFixedWidth(inboundImage, StandardCharsets.US_ASCII))
+                    .isEqualTo(inbound);
+
+            NavigationContext context = NavigationContext.empty()
+                    .withPgmReenter()
+                    .withFromTranid(TransactionMenuController.LIT_THIS_TRANID)
+                    .withFromProgram(TransactionMenuController.LIT_THIS_PGM)
+                    .withToProgram(TransactionMenuController.LIT_TRAN_VIEW_PGM);
+            byte[] contextImage = context.toFixedWidth(CODEC);
+            assertThat(contextImage).hasSize(NavigationContext.COMMAREA_LENGTH);
+            assertThat(NavigationContext.fromFixedWidth(CODEC, contextImage)).isEqualTo(context);
+        }
+
+        // -----------------------------------------------------------------------------------------
+        // Gates G38 and G30 - the highlight belongs to the re-enter path, and the invalid-key text is
+        // the copybook's fifty bytes and not the forty-byte title literal that reads like it.
+        // -----------------------------------------------------------------------------------------
+
+        @Test
+        @DisplayName("the CSSETATY highlight is DFHRED plus '*' and belongs to re-entry alone (G38)")
+        void theHighlightBelongsToReentryAlone() {
+            // The shared rule: a field that is not OK and blank is highlighted when, and only when,
+            // the program is being re-entered - app/cpy/CSSETATY.cpy:18-26.
+            FieldHighlight onReenter = FieldAttributeSetter.resolveFromFlags(true, true, true,
+                    TransactionListResponse.TRNIDIN, TransactionListResponse.MAP_NAME);
+            assertThat(onReenter.colourItemAssigned()).isTrue();
+            assertThat(onReenter.outputItemAssigned()).isTrue();
+            assertThat(onReenter.colourItemValue()).isEqualTo(BmsAttributes.DFHRED);
+            assertThat(onReenter.outputItemValue()).isEqualTo(FieldAttributeSetter.ASTERISK)
+                    .isEqualTo("*");
+            assertThat(onReenter.colourItemName())
+                    .isEqualTo(TransactionListResponse.TRNIDIN
+                            + FieldAttributeSetter.COLOUR_ITEM_SUFFIX);
+
+            FieldHighlight onEnter = FieldAttributeSetter.resolveFromFlags(true, true, false,
+                    TransactionListResponse.TRNIDIN, TransactionListResponse.MAP_NAME);
+            assertThat(onEnter.untouched()).as("the same blank field, painted on first entry").isTrue();
+            assertThat(onEnter.colourItemAssigned()).isFalse();
+            assertThat(onEnter.outputItemAssigned()).isFalse();
+
+            // What COTRN00C does with that rule is nothing: it copies neither CSSETATY nor DFHATTR, so
+            // no path of this screen writes a colour. Preserving that is the parity requirement - a
+            // highlight this program never applies would be a new behaviour (practice B5).
+            forward(1);
+            TransactionListResponse painted =
+                    controller.listTransactions(request(true), CicsAid.DFHENTER);
+            for (String prefix : copybookFieldNames()) {
+                assertThat(painted.isFieldHighlighted(prefix)).as("%s", prefix).isFalse();
+                assertThat(painted.attributesOf(prefix).isColourRed()).as("%s", prefix).isFalse();
+            }
+
+            // And MOVE LOW-VALUES TO COTRN0AO at :114 is on the ENTER path alone, so a highlight that
+            // arrived on the payload survives a re-entry and is cleared by a first entry.
+            TransactionListResponse carried = new TransactionListResponse();
+            carried.applyHighlight(TransactionListResponse.TRNIDIN, onReenter);
+            assertThat(carried.isFieldHighlighted(TransactionListResponse.TRNIDIN)).isTrue();
+            assertThat(carried.attributesOf(TransactionListResponse.TRNIDIN).isColourRed()).isTrue();
+            controller.moveLowValuesToOutputMap(carried);
+            assertThat(carried.isFieldHighlighted(TransactionListResponse.TRNIDIN))
+                    .as(":114 resets every attribute, and it runs on the ENTER path only")
+                    .isFalse();
+            assertThat(carried.attributesOf(TransactionListResponse.TRNIDIN).isLowValues()).isTrue();
+        }
+
+        @Test
+        @DisplayName("CCDA-MSG-INVALID-KEY is the copybook's fifty bytes, and not the X(40) title")
+        void theInvalidKeyTextIsTheCopybooksFiftyBytes() {
+            // app/cpy/CSMSG01Y.cpy:20-21 - forty characters of content, nine spaces inside the quotes
+            // and one more supplied by PIC X(50).
+            assertThat(SystemMessages.CCDA_MSG_INVALID_KEY)
+                    .isEqualTo("Invalid key pressed. Please see below..." + " ".repeat(10))
+                    .hasSize(50);
+            assertThat(SystemMessages.CCDA_MSG_INVALID_KEY.strip())
+                    .isEqualTo("Invalid key pressed. Please see below...")
+                    .hasSize(40);
+
+            // Deliberately distinct from COTTL01Y's X(40) courtesy line, which is a different literal
+            // in a different copybook and belongs to no path of this screen.
+            assertThat(ScreenTitles.CCDA_THANK_YOU)
+                    .isEqualTo("Thank you for using CCDA application... ")
+                    .hasSize(ScreenTitles.TITLE_LENGTH)
+                    .hasSize(40)
+                    .isNotEqualTo(SystemMessages.CCDA_MSG_INVALID_KEY)
+                    .isNotEqualTo(SystemMessages.CCDA_MSG_THANK_YOU);
+
+            // And the WHEN OTHER arm at :129-133 puts exactly those fifty bytes on the error line,
+            // space-padded into ERRMSG's X(78) and truncated nowhere.
+            WorkArea ws = new WorkArea();
+            TransactionListResponse response =
+                    controller.listTransactions(request(true), CicsAid.DFHPF12, ws);
+
+            assertThat(ws.isErrFlgOn()).isTrue();
+            assertThat(response.getErrmsgO())
+                    .hasSize(TransactionListResponse.ERRMSG_LENGTH)
+                    .startsWith(SystemMessages.CCDA_MSG_INVALID_KEY)
+                    .isEqualTo(CODEC.movePicX(SystemMessages.CCDA_MSG_INVALID_KEY,
+                            TransactionListResponse.ERRMSG_LENGTH));
+            assertThat(response.getErrmsgO().substring(0, 50))
+                    .isEqualTo(SystemMessages.CCDA_MSG_INVALID_KEY);
+        }
+
+        @Test
+        @DisplayName("the selection navigates by naming COTRN01C in the payload, never by forwarding")
+        void theSelectionNamesTheNextProgramInThePayload() {
+            TransactionListRequest request = request(true);
+            request.setSelection(3, "S");
+            request.setTransactionId(3, idOf(3));
+
+            TransactionListResponse response = controller.listTransactions(request, CicsAid.DFHENTER);
+
+            // :188-195 is an XCTL, and the stateless projection of an XCTL is a response field the
+            // client acts on (gate G40). The sibling screen's payload types are deliberately not
+            // imported here: the target travels as a plain program name.
+            assertThat(response.getNextProgram().strip()).isEqualTo("COTRN01C")
+                    .isEqualTo(TransactionMenuController.LIT_TRAN_VIEW_PGM);
+            assertThat(response.getCursor().getTrnSelFlg()).isEqualTo("S");
+            assertThat(response.getCursor().getTrnSelected()).isEqualTo(idOf(3));
+            assertThat(response.getNavigationContext().isEnter())
+                    .as(":191 MOVE 0 TO CDEMO-PGM-CONTEXT - the next screen is entered fresh")
+                    .isTrue();
+            // Nothing was browsed: the transfer happens before PROCESS-ENTER-KEY reaches the browse.
+            verify(repository, never()).startBrowse(any(BrowseDirection.class));
+            verify(repository, never()).startBrowse(anyString(), any(BrowseDirection.class));
+        }
+    }
+
 }

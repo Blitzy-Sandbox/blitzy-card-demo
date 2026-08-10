@@ -1,0 +1,94 @@
+{
+  "program": "CBSTM03B",
+  "caseId": "case16",
+  "description": "FD-ACCT-DATA is declared TWICE - app/cbl/CBSTM03B.CBL:63 gives it PIC X(318) inside FD-TRNXFILE-REC and :78 gives it PIC X(289) inside FD-ACCTFILE-REC. That is legal COBOL because the two live in different FD records, and in Java they are distinct fields on distinct types. This case reads both in one run so that the two spans are stated side by side: the TRNXFILE area carries 350 bytes whose data span is bytes 33 to 350, and the ACCTFILE area carries 300 bytes whose data span is bytes 12 to 300. The values differ, the widths differ, and a translation that conflated the two names would have to fail one of them.",
+  "unitKind": "COMPONENT",
+  "inputs": {
+    "TRNXFILE": {
+      "rows": [
+        "05000244537657400000000058866561010001POS TERM  Purchase at Blick-Rippin                                                                            0000001838H800000000Blick-Rippin                                      East Julien                                       87157     2022-06-10 19:27:53.000000                                              "
+      ]
+    },
+    "ACCTFILE": {
+      "fixture": "acctdata.txt",
+      "fromRow": 0,
+      "rowCount": 2
+    }
+  },
+  "jobParameters": {},
+  "screenRequest": null,
+  "expectedResponse": null,
+  "expectedWrites": [
+    {
+      "dataset": "M03BAREA",
+      "rowIndex": 0,
+      "fields": {
+        "LK-M03B-DD": "TRNXFILE",
+        "LK-M03B-OPER": "O",
+        "LK-M03B-RC": "00"
+      },
+      "expectedBytes": "TRNXFILEO00                         000{                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        "
+    },
+    {
+      "dataset": "M03BAREA",
+      "rowIndex": 1,
+      "fields": {
+        "LK-M03B-DD": "TRNXFILE",
+        "LK-M03B-OPER": "R",
+        "LK-M03B-RC": "00"
+      },
+      "expectedBytes": "TRNXFILER00                         000{05000244537657400000000058866561010001POS TERM  Purchase at Blick-Rippin                                                                            0000001838H800000000Blick-Rippin                                      East Julien                                       87157     2022-06-10 19:27:53.000000                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        "
+    },
+    {
+      "dataset": "M03BAREA",
+      "rowIndex": 2,
+      "fields": {
+        "LK-M03B-DD": "ACCTFILE",
+        "LK-M03B-OPER": "O",
+        "LK-M03B-RC": "00"
+      },
+      "expectedBytes": "ACCTFILEO00                         000{                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        "
+    },
+    {
+      "dataset": "M03BAREA",
+      "rowIndex": 3,
+      "fields": {
+        "LK-M03B-DD": "ACCTFILE",
+        "LK-M03B-OPER": "K",
+        "LK-M03B-RC": "00"
+      },
+      "expectedBytes": "ACCTFILEK0000000000001              001A00000000001Y00000001940{00000020200{00000010200{2014-11-202025-05-202025-05-2000000000000{00000000000{A000000000                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        "
+    }
+  ],
+  "expectedFinalState": [
+    {
+      "dataset": "TRNXFILE",
+      "rowIndex": 0,
+      "fields": {},
+      "expectedBytes": "05000244537657400000000058866561010001POS TERM  Purchase at Blick-Rippin                                                                            0000001838H800000000Blick-Rippin                                      East Julien                                       87157     2022-06-10 19:27:53.000000                                              "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 0,
+      "fields": {},
+      "expectedBytes": "00000000001Y00000001940{00000020200{00000010200{2014-11-202025-05-202025-05-2000000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 1,
+      "fields": {},
+      "expectedBytes": "00000000002Y00000001580{00000061300{00000054480{2013-06-192024-08-112024-08-1100000000000{00000000000{A000000000                                                                                                                                                                                            "
+    }
+  ],
+  "expectedReturnCode": 0,
+  "expectedMessages": [],
+  "normalisations": [],
+  "expectedDatasets": [
+    {
+      "dataset": "M03BAREA",
+      "channel": "WRITES",
+      "rowCount": 4,
+      "recordLength": 1040
+    }
+  ]
+}

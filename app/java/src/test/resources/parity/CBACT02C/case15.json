@@ -1,0 +1,234 @@
+{
+  "program": "CBACT02C",
+  "caseId": "case15",
+  "description": "The whole file is read successfully and then 9000-CARDFILE-CLOSE fails. The close paragraph at app/cbl/CBACT02C.cbl:136-152 spells its arithmetic with ADD and SUBTRACT where the open uses MOVE - ADD 8 TO ZERO GIVING APPL-RESULT at :137, SUBTRACT APPL-RESULT FROM APPL-RESULT at :140, ADD 12 TO ZERO GIVING APPL-RESULT at :142 - and the effects are identical to MOVE 8, MOVE 0 and MOVE 12. Here the CLOSE reports the '9' permanent-error status, so :139 takes its ELSE, APPL-RESULT becomes 12, and the error arm at :147-150 emits 'ERROR CLOSING CARDFILE', the image '9000' and 'ABENDING PROGRAM'. The decisive expectation is the absence of the end banner: :85 sits after PERFORM 9000-CARDFILE-CLOSE at :83, so a failing close means the program never announces that it finished. Fifty-four lines out - one banner, fifty records, three error lines - and RETURN-CODE 12.",
+  "unitKind": "BATCH_JOB",
+  "inputs": {
+    "CARDFILE": {
+      "fixture": "carddata.txt"
+    }
+  },
+  "jobParameters": {},
+  "expectedWrites": [],
+  "expectedFinalState": [],
+  "expectedReturnCode": 12,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "START OF EXECUTION OF PROGRAM CBACT02C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "050002445376574000000000050747Aniya Von                                         2023-03-09Y                                                           "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "068358619817151600000000027567Ward Jones                                        2025-07-13Y                                                           "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "092387719324733000000000002028Enrico Rosenbaum                                  2024-08-11Y                                                           "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "092798710863623200000000020003Carter Veum                                       2024-03-13Y                                                           "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "098249621362979500000000012075Maci Robel                                        2023-07-07Y                                                           "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "101408656522435000000000044640Irving Emard                                      2024-01-17Y                                                           "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "114216769287893100000000037625Shany Walker                                      2023-10-24Y                                                           "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "156140910649160000000000035031Angelica Dach                                     2025-09-23Y                                                           "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "274530372000209000000000039033Aliyah Berge                                      2025-09-08Y                                                           "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "276083679710756500000000024859Stefanie Dickinson                                2025-02-11Y                                                           "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "287196825281249000000000006775Ignacio Douglas                                   2025-10-08Y                                                           "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "294013936230044900000000022876Allene Brown                                      2025-12-28Y                                                           "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "298809135309431200000000004795Delbert Parisian                                  2023-12-16Y                                                           "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "326076361233756000000000010342Maybell Mann                                      2023-01-27Y                                                           "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "376628198415515400000000041622Lucinda Dach                                      2023-04-24Y                                                           "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "394024601614148900000000019375Hadley Hamill                                     2025-07-23Y                                                           "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "399916924637588500000000003317Larry Homenick                                    2024-01-10Y                                                           "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "401150089177736700000000013390Mariane Fadel                                     2024-08-04Y                                                           "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "438527147662781900000000034709Faustino Schmidt                                  2025-10-06Y                                                           "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "453478410271395100000000036644Toney Gerhold                                     2024-12-23Y                                                           "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "485945261287706500000000007321Cooper Mayert                                     2024-12-13Y                                                           "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "540709985047986600000000021524Jerrold Maggio                                    2023-01-06Y                                                           "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "565683054498121600000000046196Cindy Cremin                                      2025-06-20Y                                                           "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "567118447850584400000000018137Emile White                                       2023-09-10Y                                                           "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "578735122887933900000000047067Rigoberto Hoeger                                  2025-08-23Y                                                           "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "597511751661607700000000042426Heather Nienow                                    2025-09-19Y                                                           "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "600961915067452600000000005021Treva Schowalter                                  2025-03-09Y                                                           "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "634925033164850900000000015735Aubree Hermann                                    2025-06-09Y                                                           "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "650353518179599200000000048413Lyric Pacocha                                     2025-02-06Y                                                           "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "650923036255381600000000030236Layla Ullrich                                     2024-06-27Y                                                           "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "672300046320776400000000028486Hester Hane                                       2024-05-09Y                                                           "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "672705519061601400000000016641Carroll Bergstrom                                 2024-01-25Y                                                           "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "683267604769808700000000033983Bernice Herman                                    2025-10-07Y                                                           "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "702663761503227700000000031920Lucious O'Connell                                 2025-06-08Y                                                           "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "705826726183775200000000043401Britney Waters                                    2025-08-29Y                                                           "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "709414275105555100000000032659Stephany Fisher                                   2025-05-19Y                                                           "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "725150814918888300000000029717Rickie Daugherty                                  2024-06-04Y                                                           "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "737933563466114200000000045134Dixie Beier                                       2025-07-09Y                                                           "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "742768486342320900000000011892Hayden Pfannerstill                               2025-03-12Y                                                           "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "744387098889753000000000038708Angela Ankunding                                  2023-07-23Y                                                           "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "804058041034868000000000026971Marjory Stracke                                   2024-12-19Y                                                           "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "811254583423973500000000023440Johnson Ruecker                                   2025-03-18Y                                                           "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "826259360247307600000000049457Immanuel Bednar                                   2023-09-17Y                                                           "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "851786695820600800000000014955Chelsea Marks                                     2025-12-11Y                                                           "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "893136935189478300000000008230Kelsie Dicki                                      2024-05-20Y                                                           "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "905629793166401100000000025931Elliott Howell                                    2025-07-10Y                                                           "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "934910747586921400000000017218Sigrid Mann                                       2025-03-01Y                                                           "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "950173372142989300000000009725Melvin Ondricka                                   2024-12-27Y                                                           "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "968029415460369700000000001045Immanuel Kessler                                  2025-05-20Y                                                           "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "980558340899658800000000040908Davon Emmerich                                    2023-10-27Y                                                           "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ERROR CLOSING CARDFILE"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "FILE STATUS IS: NNNN9000"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ABENDING PROGRAM"
+    }
+  ],
+  "normalisations": []
+}

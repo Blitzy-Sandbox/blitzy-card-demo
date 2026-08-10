@@ -10,10 +10,10 @@ import com.vsergeychik.carddemo.config.BatchConfig.JobContracts;
 import com.vsergeychik.carddemo.config.BatchConfig.StepContract;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBinding;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBindings;
-import com.vsergeychik.carddemo.customer.CustomerFileReaderJob.SysoutSink;
 import com.vsergeychik.carddemo.customer.CustomerRepository.CustomerFile;
 import com.vsergeychik.carddemo.customer.CustomerService.Execution;
 import com.vsergeychik.carddemo.customer.CustomerService.Sysout;
+import com.vsergeychik.carddemo.customer.CustomerService.SysoutSink;
 import com.vsergeychik.carddemo.customer.model.CustomerRecord;
 
 import org.junit.jupiter.api.DisplayName;
@@ -274,7 +274,7 @@ class CustomerFileReaderJobTest {
         CustomerRepository repository = new CustomerRepository(seeded(rows), bindings(), ASCII,
                 RecordImageForm.CHARACTER);
         return new CustomerFileReaderJob(scaffolding(jobContracts()), new CustomerService(repository),
-                repository, sink == null ? new AbsentBean<>() : new PresentBean<>(sink));
+                sink == null ? new AbsentBean<>() : new PresentBean<>(sink));
     }
 
     /**
@@ -299,7 +299,7 @@ class CustomerFileReaderJobTest {
         }
         Mockito.when(file.readNext()).thenReturn(first, rest);
         return new CustomerFileReaderJob(scaffolding(jobContracts()), new CustomerService(repository),
-                repository, new PresentBean<>(sink));
+                new PresentBean<>(sink));
     }
 
     /**
@@ -376,13 +376,11 @@ class CustomerFileReaderJobTest {
             BatchConfig batch = scaffolding(jobContracts());
 
             assertThatNullPointerException().isThrownBy(() ->
-                    new CustomerFileReaderJob(null, service, repository, new AbsentBean<>()));
+                    new CustomerFileReaderJob(null, service, new AbsentBean<>()));
             assertThatNullPointerException().isThrownBy(() ->
-                    new CustomerFileReaderJob(batch, null, repository, new AbsentBean<>()));
+                    new CustomerFileReaderJob(batch, null, new AbsentBean<>()));
             assertThatNullPointerException().isThrownBy(() ->
-                    new CustomerFileReaderJob(batch, service, null, new AbsentBean<>()));
-            assertThatNullPointerException().isThrownBy(() ->
-                    new CustomerFileReaderJob(batch, service, repository, null));
+                    new CustomerFileReaderJob(batch, service, null));
         }
 
         @Test
@@ -397,13 +395,20 @@ class CustomerFileReaderJobTest {
         }
 
         @Test
-        @DisplayName("the standard-output sink demands an explicit code page, and is one")
-        void theDefaultSinkNeedsACharset() {
-            assertThatNullPointerException()
-                    .isThrownBy(() -> CustomerFileReaderJob.standardOutput(null));
-            assertThat(CustomerFileReaderJob.standardOutput(ASCII))
-                    .as("a sink over the standard output file descriptor, not over a mutable global")
-                    .isNotNull();
+        @DisplayName("the default SYSOUT is the service's own, and the job declares no sink of its own")
+        void theDefaultSinkIsTheServices() {
+            SysoutSink resolved = job(List.of(), null).sysoutSink();
+
+            assertThat(resolved)
+                    .as("CBCUS01C's SYSOUT belongs to the translation of CBCUS01C, so the job "
+                            + "defaults to the service's sink rather than building one")
+                    .isInstanceOf(CustomerService.PrintStreamSysoutSink.class);
+            assertThat(((CustomerService.PrintStreamSysoutSink) resolved).stream())
+                    .isSameAs(System.out);
+            assertThat(CustomerFileReaderJob.class.getDeclaredClasses())
+                    .as("a sink type declared here too would be a second definition of one "
+                            + "program's output, and a spooled line could drift from an asserted one")
+                    .isEmpty();
         }
 
         @Test
@@ -450,7 +455,7 @@ class CustomerFileReaderJobTest {
 
             assertThatIllegalStateException()
                     .isThrownBy(() -> new CustomerFileReaderJob(wrong,
-                            new CustomerService(repository), repository, new AbsentBean<>()))
+                            new CustomerService(repository), new AbsentBean<>()))
                     .withMessageContaining(CustomerService.PROGRAM_ID)
                     .withMessageContaining("READCUST.jcl");
         }
@@ -465,7 +470,7 @@ class CustomerFileReaderJobTest {
 
             assertThatIllegalStateException()
                     .isThrownBy(() -> new CustomerFileReaderJob(gated,
-                            new CustomerService(repository), repository, new AbsentBean<>()))
+                            new CustomerService(repository), new AbsentBean<>()))
                     .withMessageContaining("COND")
                     .withMessageContaining("bypass");
         }
@@ -484,7 +489,7 @@ class CustomerFileReaderJobTest {
 
             assertThatIllegalStateException()
                     .isThrownBy(() -> new CustomerFileReaderJob(extra,
-                            new CustomerService(repository), repository, new AbsentBean<>()))
+                            new CustomerService(repository), new AbsentBean<>()))
                     .withMessageContaining("does not declare the step sequence of "
                             + "app/jcl/READCUST.jcl:L6")
                     .withMessageContaining("configured: [STEP05/CBCUS01C, STEP06/CBCUS01C]")
@@ -513,7 +518,7 @@ class CustomerFileReaderJobTest {
 
             assertThatIllegalStateException()
                     .isThrownBy(() -> new CustomerFileReaderJob(empty,
-                            new CustomerService(repository), repository, new AbsentBean<>()));
+                            new CustomerService(repository), new AbsentBean<>()));
         }
     }
 

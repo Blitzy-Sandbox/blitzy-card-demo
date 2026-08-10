@@ -1,0 +1,17 @@
+{
+  "program": "CSUTLDTC",
+  "caseId": "case02",
+  "description": "CSUTLDTC, the called date-validation subprogram, invoked as the @Service it became. LS-DATE='19/07/2022' and LS-DATE-FORMAT='DD/MM/YYYY' are this case's two LINKAGE SECTION parameters (L84-L85); LS-RESULT PIC X(80) (L86) is the output and is asserted below as the single WS_MESSAGE_80 line. This program opens no file and is reached by no JCL, so it seeds no dataset, writes no record and takes no job parameter - its entire observable behaviour is the 80 bytes L97 moves into LS-RESULT and the severity L98 moves into RETURN-CODE. Expected values are STATICALLY DERIVED from the 01 WS-MESSAGE declaration at L42-L57 and the group move at L122, never captured from a COBOL run, which is impossible here. Arm 1 again under a SECOND mask, which is what proves WS-DATE-FMT at offset 66 is echoed from LS-DATE-FORMAT rather than hard-coded, and that the picture string genuinely drives field order: the day now precedes the year and the delimiter is a solidus. Same calendar day as case01, so a difference between the two can only come from the mask.",
+  "unitKind": "SERVICE",
+  "inputs": {},
+  "expectedWrites": [],
+  "expectedFinalState": [],
+  "expectedReturnCode": 0,
+  "expectedMessages": [
+    {
+      "channel": "WS_MESSAGE_80",
+      "text": "0000Mesg Code: 0000 Date is valid   TstDate: \u0000\n19/07/20 Mask used:DD/MM/YYYY    "
+    }
+  ],
+  "normalisations": []
+}

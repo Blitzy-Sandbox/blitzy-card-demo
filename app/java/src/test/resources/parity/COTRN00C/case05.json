@@ -1,0 +1,120 @@
+{
+  "program": "COTRN00C",
+  "caseId": "case05",
+  "description": "An EMPTY result. TRANSACT exists at its declared 350-byte width and holds no row, which is a different assertion from a case that never mentions the dataset - only this one reaches the first-read end-of-data branch. STARTBR positions at LOW-VALUES and its probe read finds nothing, so STARTBR-TRANSACT-FILE takes its end-of-data arm at :605-611: SET TRANSACT-EOF, 'You are at the top of the page...', MOVE -1 TO TRNIDINL, SEND. Note what that arm does NOT do - it never sets WS-ERR-FLG - which is why :283 still lets execution continue. The blanking loop at :289 is skipped because TRANSACT-EOF is already true, the paging loop makes no iteration, and at :316 WS-IDX is still 1 so 'IF WS-IDX > 1' is FALSE and the page number stays ZERO. An implementation that bumped it unconditionally would show page one over an empty list. MAIN-PARA's first-entry branch performs BOTH PROCESS-ENTER-KEY at :115 AND SEND-TRNLST-SCREEN at :116, so this path sends one more time than PROCESS-PAGE-FORWARD does on its own - the last send is :116's and it re-paints the same screen with WS-MESSAGE unchanged.",
+  "unitKind": "CONTROLLER_POJO",
+  "inputs": {
+    "TRANSACT": {
+      "empty": true,
+      "recordLength": 350,
+      "copybook": "CVTRA05Y"
+    }
+  },
+  "screenRequest": {
+    "eibcalen": 218,
+    "pinnedClock": "2022-07-19T23:12:34",
+    "charset": "US-ASCII",
+    "commarea": {
+      "CDEMO-FROM-TRANID": "CM00",
+      "CDEMO-FROM-PROGRAM": "COMEN01C",
+      "CDEMO-TO-TRANID": "CT00",
+      "CDEMO-TO-PROGRAM": "COTRN00C",
+      "CDEMO-USER-ID": "USER0001",
+      "CDEMO-USER-TYPE": "U",
+      "CDEMO-PGM-CONTEXT": "0",
+      "CDEMO-CUST-ID": "000000000",
+      "CDEMO-CUST-FNAME": "                         ",
+      "CDEMO-CUST-MNAME": "                         ",
+      "CDEMO-CUST-LNAME": "                         ",
+      "CDEMO-ACCT-ID": "00000000000",
+      "CDEMO-ACCT-STATUS": " ",
+      "CDEMO-CARD-NUM": "0000000000000000",
+      "CDEMO-LAST-MAP": "       ",
+      "CDEMO-LAST-MAPSET": "       ",
+      "CDEMO-CT00-TRNID-FIRST": "                ",
+      "CDEMO-CT00-TRNID-LAST": "                ",
+      "CDEMO-CT00-PAGE-NUM": "00000000",
+      "CDEMO-CT00-NEXT-PAGE-FLG": "N",
+      "CDEMO-CT00-TRN-SEL-FLG": " ",
+      "CDEMO-CT00-TRN-SELECTED": "                "
+    },
+    "mapFields": {},
+    "forcedOutcomes": {},
+    "aid": "DFHENTER"
+  },
+  "expectedResponse": {
+    "nextMapset": "COTRN00",
+    "nextMap": "COTRN0A",
+    "navigation": {
+      "CDEMO-FROM-TRANID": "CM00",
+      "CDEMO-FROM-PROGRAM": "COMEN01C",
+      "CDEMO-TO-TRANID": "CT00",
+      "CDEMO-TO-PROGRAM": "COTRN00C",
+      "CDEMO-USER-ID": "USER0001",
+      "CDEMO-USER-TYPE": "U",
+      "CDEMO-PGM-CONTEXT": "1",
+      "CDEMO-CUST-ID": "000000000",
+      "CDEMO-CUST-FNAME": "                         ",
+      "CDEMO-CUST-MNAME": "                         ",
+      "CDEMO-CUST-LNAME": "                         ",
+      "CDEMO-ACCT-ID": "00000000000",
+      "CDEMO-ACCT-STATUS": " ",
+      "CDEMO-CARD-NUM": "0000000000000000",
+      "CDEMO-LAST-MAP": "       ",
+      "CDEMO-LAST-MAPSET": "       ",
+      "CDEMO-CT00-TRNID-FIRST": "                ",
+      "CDEMO-CT00-TRNID-LAST": "                ",
+      "CDEMO-CT00-PAGE-NUM": "00000000",
+      "CDEMO-CT00-NEXT-PAGE-FLG": "N",
+      "CDEMO-CT00-TRN-SEL-FLG": " ",
+      "CDEMO-CT00-TRN-SELECTED": "                "
+    },
+    "sends": [
+      {
+        "fields": {
+          "TITLE01O": "      AWS Mainframe Modernization       ",
+          "TITLE02O": "              CardDemo                  ",
+          "TRNNAMEO": "CT00",
+          "PGMNAMEO": "COTRN00C",
+          "CURDATEO": "07/19/22",
+          "CURTIMEO": "23:12:34"
+        }
+      },
+      {
+        "fields": {
+          "TITLE01O": "      AWS Mainframe Modernization       ",
+          "TITLE02O": "              CardDemo                  ",
+          "TRNNAMEO": "CT00",
+          "PGMNAMEO": "COTRN00C",
+          "CURDATEO": "07/19/22",
+          "CURTIMEO": "23:12:34"
+        }
+      },
+      {
+        "fields": {
+          "TITLE01O": "      AWS Mainframe Modernization       ",
+          "TITLE02O": "              CardDemo                  ",
+          "TRNNAMEO": "CT00",
+          "PGMNAMEO": "COTRN00C",
+          "CURDATEO": "07/19/22",
+          "CURTIMEO": "23:12:34"
+        }
+      }
+    ],
+    "cursorField": "TRNIDINL",
+    "termination": "RETURN_TRANSID"
+  },
+  "expectedWrites": [],
+  "expectedFinalState": [],
+  "expectedReturnCode": 0,
+  "expectedMessages": [
+    {
+      "channel": "WS_MESSAGE_80",
+      "text": "You are at the top of the page...                                               "
+    },
+    {
+      "channel": "SCREEN_ERRMSG_78",
+      "text": "You are at the top of the page...                                             "
+    }
+  ]
+}

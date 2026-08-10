@@ -1,0 +1,153 @@
+{
+  "program": "CBACT04C",
+  "caseId": "case06",
+  "description": "The extremes of the declared range, in one account. TRAN-CAT-BAL is PIC S9(09)V99, so the largest value it can hold is 999999999.99: at fifteen percent that is an exact quotient of 12499999.999875 and a stored 12499999.99, which fits TRAN-AMT's own S9(09)V99 exactly and would overflow anything narrower. The second category takes the smallest non-zero balance a scale-2 field can carry, 0.01, at the twenty-five percent discgrp.txt row 1 declares for category 0002, and the whole of its 0.000208... is discarded. Both records belong to account 1, so there is no break between them and no rewrite at all - the accumulated 12499999.99 is carried in WS-TOTAL-INT to a flush that :219-221 never performs. The two identifiers ascend with WS-TRANID-SUFFIX because :474 increments it before every write.",
+  "unitKind": "BATCH_JOB",
+  "inputs": {
+    "TCATBALF": {
+      "rows": [
+        "000000000010100019999999999I0000000000000000000000",
+        "000000000010100020000000000A0000000000000000000000"
+      ]
+    },
+    "ACCTFILE": {
+      "rows": [
+        "00000000001Y00000001940{00000020200{00000010200{2014-11-202025-05-202025-05-2000000000000{00000000000{A000000000A000000000                                                                                                                                                                                  "
+      ]
+    },
+    "XREFFILE": {
+      "rows": [
+        "968029415460369700000000100000000001"
+      ]
+    },
+    "XREFFIL1": {
+      "rows": [
+        "968029415460369700000000100000000001"
+      ]
+    },
+    "DISCGRP": {
+      "fixture": "discgrp.txt",
+      "fromRow": 0,
+      "rowCount": 2
+    }
+  },
+  "jobParameters": {
+    "parmDate": "2022071800"
+  },
+  "expectedWrites": [
+    {
+      "dataset": "SYSTRAN",
+      "rowIndex": 0,
+      "expectedBytes": "2022071800000001010005System    Int. for a/c 00000000001                                                                            0124999999I000000000                                                                                                              96802941546036972022-07-19-23.12.34.0000002022-07-19-23.12.34.000000                    "
+    },
+    {
+      "dataset": "SYSTRAN",
+      "rowIndex": 1,
+      "expectedBytes": "2022071800000002010005System    Int. for a/c 00000000001                                                                            0000000000{000000000                                                                                                              96802941546036972022-07-19-23.12.34.0000002022-07-19-23.12.34.000000                    "
+    }
+  ],
+  "expectedFinalState": [
+    {
+      "dataset": "TCATBALF",
+      "rowIndex": 0,
+      "expectedBytes": "000000000010100019999999999I0000000000000000000000"
+    },
+    {
+      "dataset": "TCATBALF",
+      "rowIndex": 1,
+      "expectedBytes": "000000000010100020000000000A0000000000000000000000"
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 0,
+      "expectedBytes": "00000000001Y00000001940{00000020200{00000010200{2014-11-202025-05-202025-05-2000000000000{00000000000{A000000000A000000000                                                                                                                                                                                  "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 0,
+      "expectedBytes": "968029415460369700000000100000000001              "
+    },
+    {
+      "dataset": "XREFFIL1",
+      "rowIndex": 0,
+      "expectedBytes": "968029415460369700000000100000000001              "
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 0,
+      "expectedBytes": "A00000000001000100150{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 1,
+      "expectedBytes": "A00000000001000200250{0000000000000000000000000000"
+    }
+  ],
+  "expectedReturnCode": 0,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "START OF EXECUTION OF PROGRAM CBACT04C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "000000000010100019999999999I0000000000000000000000"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "000000000010100020000000000A0000000000000000000000"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "END OF EXECUTION OF PROGRAM CBACT04C"
+    }
+  ],
+  "normalisations": [
+    {
+      "dataset": "XREFFILE",
+      "kind": "CARDXREF_FILLER_PAD_36_TO_50"
+    },
+    {
+      "dataset": "XREFFIL1",
+      "kind": "CARDXREF_FILLER_PAD_36_TO_50"
+    }
+  ],
+  "expectedDatasets": [
+    {
+      "dataset": "SYSTRAN",
+      "channel": "WRITES",
+      "rowCount": 2,
+      "recordLength": 350
+    },
+    {
+      "dataset": "TCATBALF",
+      "channel": "FINAL_STATE",
+      "rowCount": 2,
+      "recordLength": 50
+    },
+    {
+      "dataset": "ACCTFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 300
+    },
+    {
+      "dataset": "XREFFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 50
+    },
+    {
+      "dataset": "XREFFIL1",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 50
+    },
+    {
+      "dataset": "DISCGRP",
+      "channel": "FINAL_STATE",
+      "rowCount": 2,
+      "recordLength": 50
+    }
+  ]
+}

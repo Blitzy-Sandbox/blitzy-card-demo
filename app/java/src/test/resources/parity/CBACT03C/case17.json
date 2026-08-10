@@ -1,0 +1,61 @@
+{
+  "program": "CBACT03C",
+  "caseId": "case17",
+  "description": "The single highest key in the cluster, fixture row 49 - 9805583408996588/000000040/00000000040. The boundary case at the top of the browse taken on its own, so the first READ returns the last record and the second returns '10'. Read together with case03, which seeds row 0 alone, the two say that the position of a record within the cluster changes nothing about how it is displayed: both runs emit four lines and the record image is the row's own bytes in both.",
+  "unitKind": "BATCH_JOB",
+  "inputs": {
+    "XREFFILE": {
+      "fixture": "cardxref.txt",
+      "fromRow": 49,
+      "rowCount": 1
+    }
+  },
+  "jobParameters": {},
+  "expectedWrites": [],
+  "expectedFinalState": [
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 0,
+      "fields": {
+        "XREF-CARD-NUM": "9805583408996588",
+        "XREF-CUST-ID": "000000040",
+        "XREF-ACCT-ID": "00000000040",
+        "FILLER": "              "
+      },
+      "expectedBytes": "980558340899658800000004000000000040              "
+    }
+  ],
+  "expectedReturnCode": 0,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "START OF EXECUTION OF PROGRAM CBACT03C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "980558340899658800000004000000000040              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "980558340899658800000004000000000040              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "END OF EXECUTION OF PROGRAM CBACT03C"
+    }
+  ],
+  "normalisations": [
+    {
+      "dataset": "XREFFILE",
+      "kind": "CARDXREF_FILLER_PAD_36_TO_50"
+    }
+  ],
+  "expectedDatasets": [
+    {
+      "dataset": "XREFFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 50
+    }
+  ]
+}

@@ -1,0 +1,17 @@
+{
+  "program": "CSUTLDTC",
+  "caseId": "case05",
+  "description": "CSUTLDTC, the called date-validation subprogram, invoked as the @Service it became. LS-DATE='2022-07-19' and LS-DATE-FORMAT='          ' are this case's two LINKAGE SECTION parameters (L84-L85); LS-RESULT PIC X(80) (L86) is the output and is asserted below as the single WS_MESSAGE_80 line. This program opens no file and is reached by no JCL, so it seeds no dataset, writes no record and takes no job parameter - its entire observable behaviour is the 80 bytes L97 moves into LS-RESULT and the severity L98 moves into RETURN-CODE. Expected values are STATICALLY DERIVED from the 01 WS-MESSAGE declaration at L42-L57 and the group move at L122, never captured from a COBOL run, which is impossible here. Arm 2: FC-INSUFFICIENT-DATA, 88-level VALUE X'000309CB59C3C5C5' (L63), whose halfwords decode to severity 3 and message 2507. Reached with a BLANK format mask - every one of the ten bytes is a literal delimiter, so the picture declares no year, no month and no day, and no Lillian value can be derived from it. Note that the condition is attributed to the picture string: the date itself is the perfectly good one from case01, and WS-DATE at offset 45 still reports it.",
+  "unitKind": "SERVICE",
+  "inputs": {},
+  "expectedWrites": [],
+  "expectedFinalState": [],
+  "expectedReturnCode": 3,
+  "expectedMessages": [
+    {
+      "channel": "WS_MESSAGE_80",
+      "text": "0003Mesg Code: 2507 Insufficient    TstDate: \u0000\n2022-07- Mask used:              "
+    }
+  ],
+  "normalisations": []
+}

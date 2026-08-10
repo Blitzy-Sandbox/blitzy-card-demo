@@ -15,6 +15,7 @@ import static org.mockito.Mockito.when;
 import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.FileStatus.Outcome;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.FieldSpan;
+import com.vsergeychik.carddemo.common.FixedWidthRecord.PictureKind;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.RecordLayout;
 import com.vsergeychik.carddemo.common.PhysicalSequence;
 import com.vsergeychik.carddemo.common.RecordImageForm;
@@ -62,7 +63,7 @@ import org.springframework.stereotype.Repository;
  * Proves the {@code DALYTRAN} repository against {@code app/cbl/CBTRN02C.cbl},
  * {@code app/cbl/CBTRN01C.cbl}, {@code app/cpy/CVTRA06Y.cpy} and {@code app/jcl/POSTTRAN.jcl}.
  *
- * <p>Four obligations, and each is asserted here rather than described:
+ * <p>Seven obligations, and each is asserted here rather than described:
  * <ul>
  *   <li><strong>The ladder has exactly three arms.</strong> {@code '00'} carries a record, {@code '10'}
  *       carries none, and everything else carries the status verbatim. All three are driven, plus the
@@ -74,8 +75,36 @@ import org.springframework.stereotype.Repository;
  *       {@code FILLER X(20)} included, and a row of any other width is refused rather than padded;</li>
  *   <li><strong>The amount is exact.</strong> {@code DALYTRAN-AMT PIC S9(09)V99} decodes at scale 2 with
  *       its sign taken from the zoned overpunch in the trailing byte - including the fifty rows of the
- *       shipped fixture that carry a negative one.</li>
+ *       shipped fixture that carry a negative one;</li>
+ *   <li><strong>Every offset is re-derived, not restated.</strong> {@code DeclaredOffsets} walks the
+ *       fourteen entries of {@code CVTRA06Y} and asserts each begins at the running sum of the
+ *       {@code PICTURE} widths before it, so the geometry is proved by addition and the total 350 is a
+ *       consequence rather than an assumption. The type discipline goes with it: {@code -TYPE-CD} is
+ *       {@code PIC X(02)} and therefore a {@code String}, {@code -CAT-CD} is {@code PIC 9(04)} and
+ *       therefore an {@code int};</li>
+ *   <li><strong>The expiry slice is ten bytes, taken from the front.</strong>
+ *       {@code app/cbl/CBTRN02C.cbl:L414} compares {@code ACCT-EXPIRAION-DATE} - the copybook's own
+ *       misspelling - against {@code DALYTRAN-ORIG-TS (1:10)}, and both arms of that guard are driven.
+ *       {@code ExpiryDateSlice} also shows what a slip costs: comparing the whole twenty-six-byte
+ *       timestamp, or slicing one byte late, silently turns a valid same-day transaction into reject
+ *       reason 103;</li>
+ *   <li><strong>The stored bytes are what the caller receives.</strong>
+ *       {@code app/cbl/CBTRN01C.cbl:L168} performs {@code DISPLAY DALYTRAN-RECORD} and
+ *       {@code app/cbl/CBTRN02C.cbl:L447} performs {@code MOVE DALYTRAN-RECORD TO REJECT-TRAN-DATA},
+ *       so the rejects image is the record's own bytes and not a re-rendering of its decoded fields.
+ *       {@code VerbatimRecordImage} pins the hazard on real data - see below.</li>
  * </ul>
+ *
+ * <h2>Why one shipped row is pinned by position</h2>
+ * <p>{@code app/data/ASCII/dailytran.txt} holds six rows whose {@code DALYTRAN-AMT} ends in
+ * <code>'&#125;'</code>, the zoned overpunch meaning "negative, final digit zero". Row 1 - transaction
+ * {@code 0000000001774260}, amount image {@code 0000009190}<code>&#125;</code> - is pinned field by
+ * field so that a fixture edited from under this suite fails loudly rather than quietly testing nothing.
+ * <code>'&#125;'</code> is the one character in the encoding a numeric round trip cannot be trusted to
+ * reproduce, because {@link BigDecimal} has no signed zero: when the magnitude is zero as well, decoding
+ * to a {@code BigDecimal} and storing it back renders <code>'&#123;'</code> instead, and the two images
+ * compare equal in value while being different records. That is asserted in both directions, on the six
+ * shipped rows and on a composed outright negative zero, which is the sharpest form of it.
  *
  * <h2>Why there is a hand-built backend rather than a stubbed template</h2>
  * <p>Every other dataset in the module is read through {@code JdbcTemplate.query}, which a single
@@ -119,6 +148,50 @@ class DalyTranRepositoryTest {
 
     /** Rows of the shipped fixture whose {@code DALYTRAN-AMT} carries a negative overpunch, measured. */
     private static final int FIXTURE_NEGATIVE_AMOUNTS = 50;
+
+    /**
+     * The 0-based positions of the shipped rows whose {@code DALYTRAN-AMT} ends in
+     * <code>'&#125;'</code>, measured over {@code app/data/ASCII/dailytran.txt}.
+     *
+     * <p><code>'&#125;'</code> is the zoned overpunch for "negative, final digit zero" - the one
+     * character in the whole encoding that a numeric round trip cannot be trusted to reproduce, because
+     * {@link BigDecimal} has no signed zero to carry the sign in when the magnitude is zero too. There
+     * are exactly six such rows, and they are pinned by position rather than searched for so that a
+     * fixture edited from under this suite fails loudly instead of quietly testing nothing.
+     */
+    private static final List<Integer> FIXTURE_NEGATIVE_ZERO_DIGIT_ROWS =
+            List.of(1, 54, 86, 149, 164, 209);
+
+    /** The 0-based position of the shipped row this suite pins field by field. */
+    private static final int PINNED_ROW = 1;
+
+    /** {@code DALYTRAN-ID} of the pinned row. */
+    private static final String PINNED_ID = "0000000001774260";
+
+    /** {@code DALYTRAN-AMT} of the pinned row, stored characters and overpunch included. */
+    private static final String PINNED_AMT_IMAGE = "0000009190}";
+
+    /** What {@link #PINNED_AMT_IMAGE} decodes to: nine integer digits and two fractional, signed. */
+    private static final String PINNED_AMT_VALUE = "-919.00";
+
+    /** {@code DALYTRAN-ORIG-TS} of the pinned row, all twenty-six characters. */
+    private static final String PINNED_ORIG_TS = "2022-06-10 19:27:53.000000";
+
+    /** {@code DALYTRAN-ORIG-TS (1:10)} of the pinned row - the ten bytes the expiry check compares. */
+    private static final String PINNED_ORIG_DT = "2022-06-10";
+
+    /**
+     * A {@code DALYTRAN-AMT} image that is negative zero outright: every digit zero, sign negative.
+     *
+     * <p>No shipped row holds this - the six negative-zero-digit rows all carry a non-zero magnitude -
+     * so it is composed here. It is the sharpest form of the hazard: the sign has nowhere to survive in
+     * the decoded value, which is precisely why the raw image, and not the decoded amount, is what the
+     * rejects record is built from.
+     */
+    private static final String NEGATIVE_ZERO_AMT_IMAGE = "0000000000}";
+
+    /** The same magnitude and the same sign digit, positive: what a numeric round trip produces. */
+    private static final String POSITIVE_ZERO_AMT_IMAGE = "0000000000{";
 
     // =============================================================================================
     // Fixtures and helpers.
@@ -889,7 +962,7 @@ class DalyTranRepositoryTest {
     // =============================================================================================
 
     @Nested
-    @DisplayName("READ ... INTO - the three-armed guard of app/cbl/CBTRN02C.cbl:L345-L369")
+    @DisplayName("READ ... INTO - the three-armed guard of app/cbl/CBTRN02C.cbl:L345-L369 (gate G47)")
     class TheGuardInSourceOrder {
 
         @Test
@@ -1343,6 +1416,513 @@ class DalyTranRepositoryTest {
             assertThat(negatives)
                     .as("50 of the 300 shipped rows carry a negative zoned overpunch")
                     .isEqualTo(FIXTURE_NEGATIVE_AMOUNTS);
+        }
+    }
+
+    // =============================================================================================
+    // The declared geometry, re-derived rather than restated.
+    // =============================================================================================
+
+    @Nested
+    @DisplayName("The declared offsets - re-derived from app/cpy/CVTRA06Y.cpy by addition")
+    class DeclaredOffsets {
+
+        @Test
+        @DisplayName("every span begins where the previous one ends, and the fourteenth ends at 350")
+        void everySpanBeginsWhereThePreviousOneEnds() {
+            List<FieldSpan> spans = DalyTranRecord.LAYOUT.storageSpans();
+            int runningOffset = 0;
+
+            for (FieldSpan span : spans) {
+                assertThat(span.offset())
+                        .as("%s must begin at the sum of every preceding PICTURE width", span.name())
+                        .isEqualTo(runningOffset);
+                runningOffset += span.length();
+                assertThat(span.endOffsetExclusive()).isEqualTo(runningOffset);
+            }
+
+            assertThat(spans).hasSize(14);
+            assertThat(runningOffset)
+                    .as("16+2+4+10+100+11+9+50+50+10+16+26+26+20, which CVTRA06Y states as RECLN = 350")
+                    .isEqualTo(DalyTranRecord.RECORD_LENGTH)
+                    .isEqualTo(350);
+        }
+
+        @ParameterizedTest(name = "{0} PIC width {2} at offset {1}")
+        @CsvSource({
+            "DALYTRAN-ID,              0,  16",
+            "DALYTRAN-TYPE-CD,        16,   2",
+            "DALYTRAN-CAT-CD,         18,   4",
+            "DALYTRAN-SOURCE,         22,  10",
+            "DALYTRAN-DESC,           32, 100",
+            "DALYTRAN-AMT,           132,  11",
+            "DALYTRAN-MERCHANT-ID,   143,   9",
+            "DALYTRAN-MERCHANT-NAME, 152,  50",
+            "DALYTRAN-MERCHANT-CITY, 202,  50",
+            "DALYTRAN-MERCHANT-ZIP,  252,  10",
+            "DALYTRAN-CARD-NUM,      262,  16",
+            "DALYTRAN-ORIG-TS,       278,  26",
+            "DALYTRAN-PROC-TS,       304,  26"
+        })
+        @DisplayName("each named copybook entry is declared at the offset and width the copybook gives")
+        void eachCopybookEntryIsDeclaredWhereTheCopybookPutsIt(String name, int offset, int length) {
+            assertThat(DalyTranRecord.LAYOUT.hasSpan(name))
+                    .as("CVTRA06Y declares %s, so the layout must name it identically", name)
+                    .isTrue();
+            FieldSpan span = DalyTranRecord.LAYOUT.span(name);
+
+            assertThat(span.offset()).isEqualTo(offset);
+            assertThat(span.length()).isEqualTo(length);
+            assertThat(span.offset() + span.length()).isLessThanOrEqualTo(350);
+        }
+
+        @Test
+        @DisplayName("the thirteen named entries are referable, and the fourteenth - FILLER - is not")
+        void fillerOccupiesStorageWithoutBeingReferable() {
+            List<FieldSpan> spans = DalyTranRecord.LAYOUT.storageSpans();
+
+            assertThat(spans).hasSize(14);
+            assertThat(spans).filteredOn(span -> span.kind() == PictureKind.FILLER).hasSize(1);
+            assertThat(DalyTranRecord.LAYOUT.hasSpan("FILLER"))
+                    .as("CVTRA06Y's trailing entry is un-prefixed FILLER, and COBOL gives no way to "
+                            + "name it - so the layout must not offer one either")
+                    .isFalse();
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> DalyTranRecord.LAYOUT.span("FILLER"))
+                    .withMessageContaining("FILLER is not referable");
+            assertThat(DalyTranRecord.LAYOUT.hasSpan("DALYTRAN-ID"))
+                    .as("the other thirteen are referable, which is the contrasting arm")
+                    .isTrue();
+            assertThat(spans).contains(DalyTranRecord.FILLER);
+        }
+
+        @Test
+        @DisplayName("DALYTRAN-TYPE-CD is PIC X(02), so it is a String and never a number")
+        void theTypeCodeIsCharacterData() throws NoSuchMethodException {
+            assertThat(DalyTranRecord.DALYTRAN_TYPE_CD.kind()).isEqualTo(PictureKind.ALPHANUMERIC);
+            assertThat(DalyTranRecord.class.getMethod("dalytranTypeCd").getReturnType())
+                    .as("PIC X(02) holds codes such as \"03\", and a leading zero is data, not padding")
+                    .isEqualTo(String.class);
+
+            DalyTranRecord record = repositoryWithoutBackend().decode(fixtureRows().get(PINNED_ROW));
+            assertThat(record.dalytranTypeCd()).isEqualTo("03");
+        }
+
+        @Test
+        @DisplayName("DALYTRAN-CAT-CD is PIC 9(04), so it is an int, and its image keeps the zeroes")
+        void theCategoryCodeIsAnUnsignedNumber() throws NoSuchMethodException {
+            assertThat(DalyTranRecord.DALYTRAN_CAT_CD.kind()).isEqualTo(PictureKind.UNSIGNED_NUMERIC);
+            assertThat(DalyTranRecord.class.getMethod("dalytranCatCd").getReturnType())
+                    .isEqualTo(int.class);
+
+            DalyTranRecord record = repositoryWithoutBackend().decode(fixtureRows().get(PINNED_ROW));
+            assertThat(record.dalytranCatCd()).isEqualTo(1);
+            assertThat(record.dalytranCatCdImage())
+                    .as("the stored image is zero-filled to four, which the int cannot express")
+                    .isEqualTo("0001");
+        }
+
+        @Test
+        @DisplayName("DALYTRAN-AMT is PIC S9(09)V99: signed, scale 2, and eleven bytes wide")
+        void theAmountIsSignedAndScaledTwo() throws NoSuchMethodException {
+            assertThat(DalyTranRecord.DALYTRAN_AMT.kind()).isEqualTo(PictureKind.SIGNED_SCALED);
+            assertThat(DalyTranRecord.class.getMethod("dalytranAmt").getReturnType())
+                    .as("a monetary field is BigDecimal - never double, never float (gate G22)")
+                    .isEqualTo(BigDecimal.class);
+            assertThat(DalyTranRecord.DALYTRAN_AMT_INTEGER_DIGITS
+                    + DalyTranRecord.DALYTRAN_AMT_SCALE)
+                    .as("nine integer digits plus two fractional occupy eleven bytes; the sign is "
+                            + "overpunched into the trailing one rather than stored separately")
+                    .isEqualTo(DalyTranRecord.DALYTRAN_AMT_LENGTH);
+            assertThat(DalyTranRecord.DALYTRAN_AMT_SCALE).isEqualTo(2);
+        }
+
+        @Test
+        @DisplayName("the trailing entry is FILLER, which is why the widths sum to 350 (gate G21)")
+        void theTrailingEntryIsFiller() {
+            assertThat(DalyTranRecord.FILLER.kind()).isEqualTo(PictureKind.FILLER);
+            assertThat(DalyTranRecord.FILLER.offset()).isEqualTo(330);
+            assertThat(DalyTranRecord.FILLER.length()).isEqualTo(20);
+
+            DalyTranRecord record = repositoryWithoutBackend().decode(fixtureRows().get(PINNED_ROW));
+            assertThat(record.filler())
+                    .as("un-prefixed FILLER X(20) is not referable in COBOL but is present and blank")
+                    .isEqualTo(" ".repeat(20));
+            assertThat(record.rawSpanBytes(DalyTranRecord.FILLER))
+                    .containsOnly(" ".getBytes(ASCII)[0]);
+        }
+
+        @Test
+        @DisplayName("the fourteen raw spans, concatenated in order, reproduce the whole 350 bytes")
+        void theRawSpansAccountForEveryByteWithNoGapAndNoOverlap() {
+            String shipped = fixtureRows().get(PINNED_ROW);
+            DalyTranRecord record = repositoryWithoutBackend().decode(shipped);
+            StringBuilder rebuilt = new StringBuilder();
+
+            for (FieldSpan span : DalyTranRecord.LAYOUT.storageSpans()) {
+                String raw = record.rawSpan(span);
+                assertThat(raw).as("%s is stored at its full declared width, untrimmed", span.name())
+                        .hasSize(span.length());
+                assertThat(record.rawSpanBytes(span)).isEqualTo(raw.getBytes(ASCII));
+                rebuilt.append(raw);
+            }
+
+            assertThat(rebuilt.toString())
+                    .as("no gap and no overlap: the spans tile the record exactly")
+                    .isEqualTo(shipped);
+        }
+
+        @Test
+        @DisplayName("a descriptor borrowed from another copybook is refused, not read at face value")
+        void aForeignSpanIsRefused() {
+            DalyTranRecord record = repositoryWithoutBackend().decode(fixtureRows().get(PINNED_ROW));
+            FieldSpan foreign = FieldSpan.alphanumeric("TRAN-AMT", 132, 11);
+
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> record.rawSpan(foreign))
+                    .withMessageContaining("CVTRA06Y");
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> record.rawSpanBytes(foreign));
+            assertThatNullPointerException().isThrownBy(() -> record.rawSpan(null));
+        }
+    }
+
+    // =============================================================================================
+    // The expiry-date slice - app/cbl/CBTRN02C.cbl:L414.
+    // =============================================================================================
+
+    @Nested
+    @DisplayName("DALYTRAN-ORIG-TS (1:10) - the slice reject reason 103 turns on")
+    class ExpiryDateSlice {
+
+        /**
+         * Reproduces the guard of {@code app/cbl/CBTRN02C.cbl:L414-L420}.
+         *
+         * <p>{@code IF ACCT-EXPIRAION-DATE >= DALYTRAN-ORIG-TS (1:10)} continues; otherwise it moves
+         * {@code 103} and {@code 'TRANSACTION RECEIVED AFTER ACCT EXPIRATION'}. COBOL compares
+         * alphanumeric operands character by character after padding the shorter with spaces, which for
+         * two {@code yyyy-MM-dd} strings of equal length is a plain lexicographic comparison - and
+         * lexicographic order coincides with chronological order in that format, which is why the COBOL
+         * gets away with never parsing a date.
+         *
+         * @param acctExpiraionDate {@code ACCT-EXPIRAION-DATE PIC X(10)}, misspelling preserved
+         * @param origDateSlice     the slice taken from {@code DALYTRAN-ORIG-TS}
+         * @return {@code 0} to continue, or {@code 103} for the reject reason
+         */
+        private int validationFailReason(String acctExpiraionDate, String origDateSlice) {
+            int width = Math.max(acctExpiraionDate.length(), origDateSlice.length());
+            String left = picX(acctExpiraionDate, width);
+            String right = picX(origDateSlice, width);
+            return left.compareTo(right) >= 0 ? 0 : 103;
+        }
+
+        @Test
+        @DisplayName("the slice is the leading ten characters of the twenty-six-byte timestamp")
+        void theSliceIsTheLeadingTenCharacters() {
+            DalyTranRecord record = repositoryWithoutBackend().decode(fixtureRows().get(PINNED_ROW));
+
+            assertThat(record.dalytranOrigTs()).isEqualTo(PINNED_ORIG_TS).hasSize(26);
+            assertThat(record.dalytranOrigDt())
+                    .as("COBOL's (1:10) is 1-based and inclusive, so it is Java's substring(0, 10)")
+                    .isEqualTo(PINNED_ORIG_DT)
+                    .isEqualTo(record.dalytranOrigTs().substring(0, 10))
+                    .hasSize(10);
+        }
+
+        @Test
+        @DisplayName("the slice starts where the timestamp starts, and the ten comes from the (1:10)")
+        void theSliceGeometryIsDerivedByAddition() {
+            assertThat(DalyTranRecord.DALYTRAN_ORIG_DT_OFFSET)
+                    .as("a reference modifier does not move the field: (1:10) begins at character 1")
+                    .isEqualTo(DalyTranRecord.DALYTRAN_ORIG_TS_OFFSET)
+                    .isEqualTo(16 + 2 + 4 + 10 + 100 + 11 + 9 + 50 + 50 + 10 + 16)
+                    .isEqualTo(278);
+            assertThat(DalyTranRecord.DALYTRAN_ORIG_DT_LENGTH).isEqualTo(10);
+            assertThat(DalyTranRecord.DALYTRAN_ORIG_DT_LENGTH)
+                    .as("a slice cannot reach past the field it slices")
+                    .isLessThanOrEqualTo(DalyTranRecord.DALYTRAN_ORIG_TS_LENGTH);
+        }
+
+        @Test
+        @DisplayName("every shipped row's slice is its own timestamp's leading ten bytes")
+        void everyShippedRowsSliceAgreesWithItsTimestamp() {
+            DalyTranRepository repository = repositoryWithoutBackend();
+
+            for (String row : fixtureRows()) {
+                DalyTranRecord record = repository.decode(row);
+                assertThat(record.dalytranOrigDt())
+                        .isEqualTo(row.substring(DalyTranRecord.DALYTRAN_ORIG_DT_OFFSET,
+                                DalyTranRecord.DALYTRAN_ORIG_DT_OFFSET
+                                        + DalyTranRecord.DALYTRAN_ORIG_DT_LENGTH));
+            }
+        }
+
+        @ParameterizedTest(name = "expiry {0} vs slice 2022-06-10 gives reason {1}")
+        @CsvSource({
+            "2022-06-11, 0",
+            "2022-06-10, 0",
+            "2099-12-31, 0",
+            "2022-06-09, 103",
+            "2021-12-31, 103",
+            "1999-01-01, 103"
+        })
+        @DisplayName("both arms of the L414 guard are driven: continue, and reject reason 103 (gate G50)")
+        void bothArmsOfTheExpiryGuardAreDriven(String acctExpiraionDate, int expectedReason) {
+            DalyTranRecord record = repositoryWithoutBackend().decode(fixtureRows().get(PINNED_ROW));
+
+            assertThat(validationFailReason(acctExpiraionDate, record.dalytranOrigDt()))
+                    .isEqualTo(expectedReason);
+        }
+
+        @Test
+        @DisplayName("comparing the whole timestamp instead of the slice would reject a same-day tran")
+        void comparingTheWholeTimestampWouldChangeTheRejectReason() {
+            DalyTranRecord record = repositoryWithoutBackend().decode(fixtureRows().get(PINNED_ROW));
+            String sameDayExpiry = PINNED_ORIG_DT;
+
+            assertThat(validationFailReason(sameDayExpiry, record.dalytranOrigDt()))
+                    .as("the account expires on the very day of the transaction, so L414 continues")
+                    .isZero();
+            assertThat(validationFailReason(sameDayExpiry, record.dalytranOrigTs()))
+                    .as("padded to twenty-six the expiry holds a space where the timestamp holds '1', "
+                            + "so the guard inverts and reason 103 is moved instead - which is exactly "
+                            + "the silent divergence the (1:10) slice exists to prevent")
+                    .isEqualTo(103);
+        }
+
+        @Test
+        @DisplayName("a slice taken one byte late would let a long-expired account accept the tran")
+        void aSliceTakenOneByteLateWouldChangeTheRejectReason() {
+            String shipped = fixtureRows().get(PINNED_ROW);
+            DalyTranRecord record = repositoryWithoutBackend().decode(shipped);
+            String slippedByOne = shipped.substring(DalyTranRecord.DALYTRAN_ORIG_DT_OFFSET + 1,
+                    DalyTranRecord.DALYTRAN_ORIG_DT_OFFSET + 1
+                            + DalyTranRecord.DALYTRAN_ORIG_DT_LENGTH);
+            String expiredLongAgo = "1999-01-01";
+
+            assertThat(slippedByOne)
+                    .as("dropping the leading '2' shifts a space in at the end")
+                    .isEqualTo("022-06-10 ");
+            assertThat(validationFailReason(expiredLongAgo, record.dalytranOrigDt()))
+                    .as("an account that expired in 1999 cannot accept a 2022 transaction")
+                    .isEqualTo(103);
+            assertThat(validationFailReason(expiredLongAgo, slippedByOne))
+                    .as("but against the slipped slice '1' outranks '0', so the guard would continue "
+                            + "and a long-expired account would silently accept the transaction - "
+                            + "a false accept, which is the more dangerous direction of the two")
+                    .isZero();
+        }
+    }
+
+    // =============================================================================================
+    // The verbatim record image. app/cbl/CBTRN01C.cbl:L168 displays it; app/cbl/CBTRN02C.cbl:L447
+    // copies it into REJECT-TRAN-DATA X(350). Both need the stored bytes, not a re-rendering of them.
+    // =============================================================================================
+
+    @Nested
+    @DisplayName("The verbatim 350-byte image - the bytes the rejects record is built from")
+    class VerbatimRecordImage {
+
+        @Test
+        @DisplayName("the pinned shipped row is the one carrying the negative-zero-digit overpunch")
+        void thePinnedRowIsTheOneWithTheNegativeZeroDigitOverpunch() {
+            String shipped = fixtureRows().get(PINNED_ROW);
+
+            assertThat(shipped).hasSize(DalyTranRepository.RECORD_LENGTH);
+            assertThat(shipped.substring(DalyTranRecord.DALYTRAN_ID_OFFSET,
+                    DalyTranRecord.DALYTRAN_ID_OFFSET + DalyTranRecord.DALYTRAN_ID_LENGTH))
+                    .isEqualTo(PINNED_ID);
+            assertThat(shipped.substring(DalyTranRecord.DALYTRAN_AMT_OFFSET,
+                    DalyTranRecord.DALYTRAN_AMT_OFFSET + DalyTranRecord.DALYTRAN_AMT_LENGTH))
+                    .isEqualTo(PINNED_AMT_IMAGE);
+            assertThat(shipped.charAt(DalyTranRecord.DALYTRAN_AMT_OFFSET
+                    + DalyTranRecord.DALYTRAN_AMT_LENGTH - 1))
+                    .as("offset 142 - the trailing byte the zoned sign is overpunched into")
+                    .isEqualTo('}');
+        }
+
+        @Test
+        @DisplayName("all six negative-zero-digit rows are where they were measured to be")
+        void allSixNegativeZeroDigitRowsAreWhereTheyWereMeasured() {
+            List<String> rows = fixtureRows();
+            List<Integer> observed = new ArrayList<>();
+
+            for (int index = 0; index < rows.size(); index++) {
+                if (rows.get(index).charAt(DalyTranRecord.DALYTRAN_AMT_OFFSET
+                        + DalyTranRecord.DALYTRAN_AMT_LENGTH - 1) == '}') {
+                    observed.add(index);
+                }
+            }
+
+            assertThat(observed).isEqualTo(FIXTURE_NEGATIVE_ZERO_DIGIT_ROWS).hasSize(6);
+            assertThat(observed).contains(PINNED_ROW);
+        }
+
+        @Test
+        @DisplayName("the pinned row survives open, readNext and rawImage() byte for byte")
+        void thePinnedRowSurvivesTheReadPathByteIdentical() {
+            List<String> rows = fixtureRows();
+            String shipped = rows.get(PINNED_ROW);
+            Backend backend = Backend.serving(rows);
+            DalyTranRepository repository = repository(backend);
+
+            DalytranFile file = repository.open();
+            DalyTranRecord record = null;
+            for (int index = 0; index <= PINNED_ROW; index++) {
+                ReadResult result = repository.readNext(file);
+                assertThat(result.isFound()).isTrue();
+                assertThat(result.status()).isEqualTo(FileStatus.OK);
+                record = result.dalyTran().orElseThrow();
+            }
+
+            assertThat(record).isNotNull();
+            assertThat(record.rawImage())
+                    .as("the record the caller receives is the bytes the dataset held, not a rendering")
+                    .isEqualTo(shipped.getBytes(ASCII))
+                    .hasSize(DalyTranRepository.RECORD_LENGTH);
+            assertThat(record.displayImage()).isEqualTo(shipped);
+            assertThat(record.rawImage()[DalyTranRecord.DALYTRAN_AMT_OFFSET
+                    + DalyTranRecord.DALYTRAN_AMT_LENGTH - 1])
+                    .isEqualTo("}".getBytes(ASCII)[0]);
+            assertThat(record.dalytranId()).isEqualTo(PINNED_ID);
+            assertThat(record.dalytranAmt()).isEqualTo(new BigDecimal(PINNED_AMT_VALUE));
+            assertThat(record.dalytranAmt().scale()).isEqualTo(DalyTranRepository.AMOUNT_SCALE);
+            assertThat(repository.close(file)).isEqualTo(FileStatus.OK);
+        }
+
+        @Test
+        @DisplayName("all three hundred rows survive rawImage() byte for byte, overpunches included")
+        void everyShippedRowSurvivesByteIdentical() {
+            DalyTranRepository repository = repositoryWithoutBackend();
+            List<String> rows = fixtureRows();
+
+            for (String row : rows) {
+                DalyTranRecord record = repository.decode(row);
+                assertThat(record.rawImage()).isEqualTo(row.getBytes(ASCII));
+                assertThat(record.rawSpan(DalyTranRecord.DALYTRAN_AMT))
+                        .as("the stored amount characters, never a re-rendering of the decoded value")
+                        .isEqualTo(row.substring(DalyTranRecord.DALYTRAN_AMT_OFFSET,
+                                DalyTranRecord.DALYTRAN_AMT_OFFSET
+                                        + DalyTranRecord.DALYTRAN_AMT_LENGTH));
+            }
+
+            assertThat(rows).hasSize(FIXTURE_RECORDS);
+        }
+
+        @Test
+        @DisplayName("a negative zero loses its sign in BigDecimal, yet keeps it in the raw image")
+        void aNegativeZeroKeepsItsSignOnlyInTheRawImage() {
+            DalyTranRepository repository = repositoryWithoutBackend();
+            String negativeZeroRow = image(PINNED_ID, NEGATIVE_ZERO_AMT_IMAGE, "0927987108636232");
+
+            DalyTranRecord record = repository.decode(negativeZeroRow);
+
+            assertThat(record.dalytranAmt().signum())
+                    .as("BigDecimal has no signed zero, so the sign cannot survive the decode")
+                    .isZero();
+            assertThat(record.hasZeroDalytranAmt()).isTrue();
+            assertThat(record.dalytranAmt()).isEqualTo(new BigDecimal("0.00"));
+            assertThat(record.dalytranAmtImage())
+                    .as("the stored characters still say negative, because they were never re-rendered")
+                    .isEqualTo(NEGATIVE_ZERO_AMT_IMAGE);
+            assertThat(record.rawImage()).isEqualTo(negativeZeroRow.getBytes(ASCII));
+        }
+
+        @Test
+        @DisplayName("re-encoding the decoded amount turns '}' into '{' - so rejects copy the raw image")
+        void reEncodingTheDecodedAmountLosesTheOverpunch() {
+            DalyTranRepository repository = repositoryWithoutBackend();
+            String negativeZeroRow = image(PINNED_ID, NEGATIVE_ZERO_AMT_IMAGE, "0927987108636232");
+            DalyTranRecord asRead = repository.decode(negativeZeroRow);
+
+            DalyTranRecord roundTripped = asRead.copy();
+            roundTripped.moveDalytranAmt(asRead.dalytranAmt());
+
+            assertThat(roundTripped.dalytranAmtImage())
+                    .as("MOVE of a zero-signum BigDecimal stores the positive overpunch")
+                    .isEqualTo(POSITIVE_ZERO_AMT_IMAGE);
+            assertThat(roundTripped.dalytranAmt())
+                    .as("the two images have equal numeric value, which is what makes this silent")
+                    .isEqualTo(asRead.dalytranAmt());
+            assertThat(roundTripped)
+                    .as("equal values, different records: DalyTranRecord compares bytes, not values")
+                    .isNotEqualTo(asRead);
+            assertThat(roundTripped.rawImage()).isNotEqualTo(asRead.rawImage());
+            assertThat(asRead.rawImage())
+                    .as("REJECT-TRAN-DATA X(350) is a MOVE of DALYTRAN-RECORD - "
+                            + "app/cbl/CBTRN02C.cbl:L447 - so it must carry these bytes, not those")
+                    .isEqualTo(negativeZeroRow.getBytes(ASCII));
+        }
+
+        @Test
+        @DisplayName("carrying the stored image across instead of the value preserves the overpunch")
+        void carryingTheStoredImageAcrossPreservesTheOverpunch() {
+            DalyTranRepository repository = repositoryWithoutBackend();
+            String negativeZeroRow = image(PINNED_ID, NEGATIVE_ZERO_AMT_IMAGE, "0927987108636232");
+            DalyTranRecord asRead = repository.decode(negativeZeroRow);
+
+            DalyTranRecord carried = asRead.copy();
+            carried.writeDalytranAmtImage(asRead.dalytranAmtImage());
+
+            assertThat(carried.dalytranAmtImage()).isEqualTo(NEGATIVE_ZERO_AMT_IMAGE);
+            assertThat(carried).isEqualTo(asRead);
+            assertThat(carried.rawImage()).isEqualTo(asRead.rawImage());
+        }
+
+        @Test
+        @DisplayName("the six shipped negative-zero-digit rows all re-encode unchanged")
+        void theSixShippedNegativeZeroDigitRowsReEncodeUnchanged() {
+            DalyTranRepository repository = repositoryWithoutBackend();
+            List<String> rows = fixtureRows();
+
+            for (int index : FIXTURE_NEGATIVE_ZERO_DIGIT_ROWS) {
+                String shipped = rows.get(index);
+                DalyTranRecord asRead = repository.decode(shipped);
+                DalyTranRecord roundTripped = asRead.copy();
+                roundTripped.moveDalytranAmt(asRead.dalytranAmt());
+
+                assertThat(asRead.dalytranAmt().signum())
+                        .as("row %d carries a non-zero magnitude, so its sign does survive", index)
+                        .isNegative();
+                assertThat(roundTripped.dalytranAmtImage())
+                        .as("a negative amount whose final digit is zero re-encodes as '}' again")
+                        .isEqualTo(asRead.dalytranAmtImage());
+                assertThat(roundTripped.rawImage()).isEqualTo(shipped.getBytes(ASCII));
+            }
+        }
+
+        @Test
+        @DisplayName("'{' and '}' are equal in value and unequal as records, in both directions")
+        void thePositiveAndNegativeZeroImagesAreDistinctRecords() {
+            DalyTranRepository repository = repositoryWithoutBackend();
+            DalyTranRecord negative = repository.decode(
+                    image(PINNED_ID, NEGATIVE_ZERO_AMT_IMAGE, "0927987108636232"));
+            DalyTranRecord positive = repository.decode(
+                    image(PINNED_ID, POSITIVE_ZERO_AMT_IMAGE, "0927987108636232"));
+
+            assertThat(negative.dalytranAmt()).isEqualTo(positive.dalytranAmt());
+            assertThat(negative.hasZeroDalytranAmt()).isTrue();
+            assertThat(positive.hasZeroDalytranAmt()).isTrue();
+            assertThat(negative).isNotEqualTo(positive);
+            assertThat(positive).isNotEqualTo(negative);
+            assertThat(negative.rawImage()).isNotEqualTo(positive.rawImage());
+        }
+
+        @Test
+        @DisplayName("the exposed image is a copy, so a caller cannot edit the record through it")
+        void theExposedImageIsACopy() {
+            DalyTranRepository repository = repositoryWithoutBackend();
+            String shipped = fixtureRows().get(PINNED_ROW);
+            DalyTranRecord record = repository.decode(shipped);
+
+            byte[] exposed = record.rawImage();
+            exposed[DalyTranRecord.DALYTRAN_AMT_OFFSET
+                    + DalyTranRecord.DALYTRAN_AMT_LENGTH - 1] = "{".getBytes(ASCII)[0];
+
+            assertThat(record.rawImage())
+                    .as("DISPLAY DALYTRAN-RECORD must not be able to alter DALYTRAN-RECORD")
+                    .isEqualTo(shipped.getBytes(ASCII));
+            assertThat(record.dalytranAmtImage()).isEqualTo(PINNED_AMT_IMAGE);
         }
     }
 

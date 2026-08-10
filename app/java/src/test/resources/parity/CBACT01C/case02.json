@@ -1,0 +1,36 @@
+{
+  "program": "CBACT01C",
+  "caseId": "case02",
+  "description": "The account master exists and holds no record. The first READ at app/cbl/CBACT01C.cbl:L93 reports '10', so 1000-ACCTFILE-GET-NEXT moves 16 into APPL-RESULT, the 88 APPL-EOF condition at L107 holds, END-OF-FILE becomes 'Y' at L108, and the mainline's second IF END-OF-FILE = 'N' guard at L77 suppresses the raw display for the read that found nothing. The whole of SYSOUT is therefore the two banners, and the dataset-level expectation states what no row expectation can: the dataset was opened and holds zero rows at its declared 300-byte width.",
+  "unitKind": "BATCH_JOB",
+  "inputs": {
+    "ACCTFILE": {
+      "empty": true,
+      "recordLength": 300,
+      "copybook": "CVACT01Y"
+    }
+  },
+  "jobParameters": {},
+  "expectedWrites": [],
+  "expectedFinalState": [],
+  "expectedReturnCode": 0,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "START OF EXECUTION OF PROGRAM CBACT01C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "END OF EXECUTION OF PROGRAM CBACT01C"
+    }
+  ],
+  "normalisations": [],
+  "expectedDatasets": [
+    {
+      "dataset": "ACCTFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 0,
+      "recordLength": 300
+    }
+  ]
+}

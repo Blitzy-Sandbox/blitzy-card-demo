@@ -1,0 +1,17 @@
+{
+  "program": "CSUTLDTC",
+  "caseId": "case18",
+  "description": "CSUTLDTC, the called date-validation subprogram, invoked as the @Service it became. LS-DATE='ABCD-EF-GH' and LS-DATE-FORMAT='YYYY-MM-DD' are this case's two LINKAGE SECTION parameters (L84-L85); LS-RESULT PIC X(80) (L86) is the output and is asserted below as the single WS_MESSAGE_80 line. This program opens no file and is reached by no JCL, so it seeds no dataset, writes no record and takes no job parameter - its entire observable behaviour is the 80 bytes L97 moves into LS-RESULT and the severity L98 moves into RETURN-CODE. Expected values are STATICALLY DERIVED from the 01 WS-MESSAGE declaration at L42-L57 and the group move at L122, never captured from a COBOL run, which is impossible here. Arm 8: FC-NON-NUMERIC-DATA, 88-level VALUE X'000309D859C3C5C5' (L69) - severity 3, message 2520, which IBM documents as non-numeric data found where numeric data was expected. Every numeric position of a well-formed mask holds a letter. The delimiters still line up, so the failure is about the field contents rather than the layout.",
+  "unitKind": "SERVICE",
+  "inputs": {},
+  "expectedWrites": [],
+  "expectedFinalState": [],
+  "expectedReturnCode": 3,
+  "expectedMessages": [
+    {
+      "channel": "WS_MESSAGE_80",
+      "text": "0003Mesg Code: 2520 Nonnumeric data TstDate: \u0000\nABCD-EF- Mask used:YYYY-MM-DD    "
+    }
+  ],
+  "normalisations": []
+}

@@ -1269,6 +1269,37 @@ public final class CardSelectResponse {
      */
     private String nextMap;
 
+    /**
+     * The {@code DFHMDF} label of the field {@code 1300-SETUP-SCREEN-ATTRS} aimed the cursor at, or
+     * {@code null} when no cursor request has been recorded on this turn.
+     *
+     * <p>{@code app/cbl/COCRDSLC.cbl:514-524} is an ordered {@code EVALUATE TRUE} that always issues
+     * exactly one {@code MOVE -1}: to {@code ACCTSIDL OF CCRDSLAI} at {@code :518}, to
+     * {@code CARDSIDL OF CCRDSLAI} at {@code :521}, or to {@code ACCTSIDL} again on the
+     * {@code WHEN OTHER} arm at {@code :523}. The {@code EXEC CICS SEND MAP} at {@code :569-576}
+     * carries {@code CURSOR}, so where that {@code -1} landed is what the operator sees and is
+     * therefore observable behaviour, not decoration.
+     *
+     * <p>It is held here rather than only on the request's {@code xxxL} metadata because the request
+     * the controller edits is its own defensive copy: nothing the caller keeps a reference to sees the
+     * move. Publishing it through {@link #screenMetadata()} is what keeps the cursor in the payload
+     * instead of in server-side state (rule R6), and it is the same shape the sibling
+     * {@code CardListResponse} already publishes for the {@code COCRDLI} and {@code COCRDSL} maps -
+     * which matters, because {@code COCRDSL} is the one symbolic map two programs consume and the two
+     * projections of it must not drift apart.
+     *
+     * <p><strong>Not a payload member and never serialised directly.</strong> Every field on the wire
+     * beside the fifteen must trace to a {@code DFHMDF} definition (gate G9), and a cursor request
+     * traces to an {@code xxxL} length item rather than to a field, so inventing a sixteenth sibling
+     * for it would break that rule. It travels under {@link ScreenMetadata#cursorField()} instead,
+     * which is what the envelope is for.
+     *
+     * <p>Not reset by {@link #initializeGroup()}. {@code MOVE LOW-VALUES TO CCRDSLAO} at {@code :428}
+     * blanks the <em>output</em> group; the length items it would have to clear live in
+     * {@code CCRDSLAI}, which that statement does not name.
+     */
+    private String cursorField;
+
     // =================================================================================================
     // Construction. No Spring context, no builder, no framework: a controller test, a MockMvc test and
     // the COCRDSLC parity test all construct an instance directly (practice B10).
@@ -1393,9 +1424,14 @@ public final class CardSelectResponse {
         }
         this.cardScreenState = new CardScreenState(other.cardScreenState);
         this.navigationContext = other.navigationContext;
+        // A record, so sharing it is safe - and it must be carried, or a copy would return a trailer of
+        // twelve spaces where the original returned the caller's twelve bytes, shortening the area the
+        // next turn receives from 172 to 160. CardSelectRequest's copy constructor makes the same point.
+        this.thisProgCommarea = other.thisProgCommarea;
         this.nextProgram = other.nextProgram;
         this.nextMapset = other.nextMapset;
         this.nextMap = other.nextMap;
+        this.cursorField = other.cursorField;
     }
 
     /**
@@ -2121,8 +2157,12 @@ public final class CardSelectResponse {
      * {@code screenMetadata} instead of not travelling at all.
      *
      * <p>{@code messageColour} is {@code ERRMSGC}, taken from the quads rather than stored twice.
-     * {@code cursorField} is {@code null}: {@code COCRDSLC} issues no {@code MOVE -1} to any
-     * {@code xxxL} item, so there is no cursor request to report and none is invented.
+     * {@code cursorField} is {@code getCursorField()} - the {@code DFHMDF} label
+     * {@code 1300-SETUP-SCREEN-ATTRS} aimed the cursor at. It is {@code null} only until that paragraph
+     * has run, because {@code app/cbl/COCRDSLC.cbl:514-524} always issues exactly one {@code MOVE -1}
+     * and the {@code SEND MAP} at {@code :569-576} carries {@code CURSOR}. On a path that never paints
+     * the screen - the {@code XCTL} at {@code :331} and the {@code SEND TEXT} at {@code :839} - no
+     * cursor request was made and {@code null} is the faithful report rather than a filled-in slot.
      *
      * @return the metadata; never {@code null}
      */
@@ -2137,10 +2177,45 @@ public final class CardSelectResponse {
                             quad.getHilight(),
                             quad.getValidn()));
         }
-        return ScreenMetadata.of(null,
+        return ScreenMetadata.of(cursorField,
                 attributes.get(ScreenField.ERRMSG).getColour(),
                 false,
                 quads);
+    }
+
+    /**
+     * The {@code DFHMDF} label of the field {@code 1300-SETUP-SCREEN-ATTRS} aimed the cursor at, or
+     * {@code null} when this turn made no cursor request.
+     *
+     * <p>The label, not the {@code xxxL} item name, because that is the shape
+     * {@link ScreenMetadata#cursorField()} publishes across all seventeen screens. A reader who needs the
+     * symbolic-map length item appends the {@code L} suffix BMS appends, so {@code ACCTSID} is the
+     * {@code MOVE -1} target {@code ACCTSIDL}.
+     *
+     * <p>{@link JsonIgnore}, and deliberately: this is not one of the fifteen {@code xxxI}-derived
+     * members, so it does not belong beside them on the wire. It reaches a client through
+     * {@link #screenMetadata()}, exactly as the sibling {@code CardListResponse} publishes its own.
+     *
+     * @return the label, for example {@code ACCTSID}; or {@code null} for no cursor request
+     */
+    @JsonIgnore
+    public String getCursorField() {
+        return cursorField;
+    }
+
+    /**
+     * Records where {@code MOVE -1 TO xxxL OF CCRDSLAI} aimed the cursor, so
+     * {@link #screenMetadata()} can publish it.
+     *
+     * <p>Stored verbatim and never validated against the fifteen labels: the value is written by
+     * {@code 1300-SETUP-SCREEN-ATTRS} from a {@link ScreenField} constant, so an invented label cannot
+     * arrive from inside this module, and rejecting one from outside it would add a failure mode the
+     * screen does not have.
+     *
+     * @param cursorField the {@code DFHMDF} label, or {@code null} for no cursor request
+     */
+    public void setCursorField(String cursorField) {
+        this.cursorField = cursorField;
     }
 
     /**

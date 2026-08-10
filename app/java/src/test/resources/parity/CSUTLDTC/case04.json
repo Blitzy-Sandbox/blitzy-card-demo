@@ -1,0 +1,17 @@
+{
+  "program": "CSUTLDTC",
+  "caseId": "case04",
+  "description": "CSUTLDTC, the called date-validation subprogram, invoked as the @Service it became. LS-DATE='2022-07-1 ' and LS-DATE-FORMAT='YYYY-MM-DD' are this case's two LINKAGE SECTION parameters (L84-L85); LS-RESULT PIC X(80) (L86) is the output and is asserted below as the single WS_MESSAGE_80 line. This program opens no file and is reached by no JCL, so it seeds no dataset, writes no record and takes no job parameter - its entire observable behaviour is the 80 bytes L97 moves into LS-RESULT and the severity L98 moves into RETURN-CODE. Expected values are STATICALLY DERIVED from the 01 WS-MESSAGE declaration at L42-L57 and the group move at L122, never captured from a COBOL run, which is impossible here. Arm 1 through the input TOLERANCES the conversion documents: the leading zero of the day is omitted and the field is closed by a blank instead. This case exists because the tolerance is easy to lose - a stricter reimplementation would report 2520 here - and because it also fixes the L122 group-move span: the surviving eight bytes are '2022-07-', so the omitted digit sits in the two bytes the move truncates away and is invisible in the message even though it was accepted.",
+  "unitKind": "SERVICE",
+  "inputs": {},
+  "expectedWrites": [],
+  "expectedFinalState": [],
+  "expectedReturnCode": 0,
+  "expectedMessages": [
+    {
+      "channel": "WS_MESSAGE_80",
+      "text": "0000Mesg Code: 0000 Date is valid   TstDate: \u0000\n2022-07- Mask used:YYYY-MM-DD    "
+    }
+  ],
+  "normalisations": []
+}

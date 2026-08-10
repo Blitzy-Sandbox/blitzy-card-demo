@@ -2,25 +2,37 @@ package com.vsergeychik.carddemo.user;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.vsergeychik.carddemo.common.BmsAttributes;
 import com.vsergeychik.carddemo.common.CicsAid;
 import com.vsergeychik.carddemo.common.CicsResponse;
+import com.vsergeychik.carddemo.common.DateHeader;
+import com.vsergeychik.carddemo.common.FieldAttributeSetter;
+import com.vsergeychik.carddemo.common.FieldAttributeSetter.FieldHighlight;
+import com.vsergeychik.carddemo.common.FieldAttributeSetter.FieldValidationState;
 import com.vsergeychik.carddemo.common.FileStatus;
+import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.NavigationContext;
 import com.vsergeychik.carddemo.common.ScreenResponse;
+import com.vsergeychik.carddemo.common.PfKeyResolver;
 import com.vsergeychik.carddemo.common.PfKeyResolver.AidKey;
 import com.vsergeychik.carddemo.common.ScreenTitles;
 import com.vsergeychik.carddemo.common.SystemMessages;
+import com.vsergeychik.carddemo.config.WebConfig;
 import com.vsergeychik.carddemo.user.SecUserRepository.HeldRecord;
 import com.vsergeychik.carddemo.user.SecUserRepository.ReadResult;
 import com.vsergeychik.carddemo.user.SecUserRepository.WriteResult;
@@ -31,27 +43,45 @@ import com.vsergeychik.carddemo.user.UserUpdateController.Send;
 import com.vsergeychik.carddemo.user.dto.UserUpdateRequest;
 import com.vsergeychik.carddemo.user.dto.UserUpdateResponse;
 import com.vsergeychik.carddemo.user.model.SecUserRecord;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Size;
+import java.lang.annotation.Annotation;
 import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
+import java.lang.reflect.RecordComponent;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.http.MediaType;
 import org.springframework.http.converter.json.MappingJackson2HttpMessageConverter;
+import org.springframework.mock.web.MockHttpServletResponse;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
+import org.springframework.web.bind.annotation.PutMapping;
 
 /**
  * {@link UserUpdateController} - the {@code COUSR02C} / {@code CU02} update-user screen.
@@ -87,6 +117,120 @@ import org.springframework.test.web.servlet.setup.MockMvcBuilders;
  *       ({@code :227}) exactly as the legacy program compares it - hashing would be a behaviour
  *       change.</li>
  * </ol>
+ *
+ * <h2>The paragraph map: every line range this class asserts against</h2>
+ *
+ * <p>The screen's identity comes from {@code app/csd/CARDDEMO.CSD:469-470} -
+ * {@code DEFINE TRANSACTION(CU02) GROUP(CARDDEMO)} followed by {@code PROGRAM(COUSR02C)} - which AAP
+ * section 0.3.9 maps to {@code PUT /api/users/{userId}}. Everything else comes from
+ * {@code app/cbl/COUSR02C.cbl}, and every bare {@code :nnn} below and throughout this class is a line
+ * in that file:
+ *
+ * <table border="1">
+ *   <caption>COBOL line range to the group that asserts it</caption>
+ *   <tr><th>Lines</th><th>What lives there</th><th>Asserted by</th></tr>
+ *   <tr><td>{@code :35-47}</td><td>{@code WS-VARIABLES} and three of the six {@code 88}-levels</td>
+ *       <td>{@link Construction}</td></tr>
+ *   <tr><td>{@code :50-57}</td><td>the 34-byte {@code 05 CDEMO-CU02-INFO} extension</td>
+ *       <td>{@link Cu02InfoTests}, {@link CommareaGeometry}</td></tr>
+ *   <tr><td>{@code :85}</td><td>{@code SET USR-MODIFIED-NO TO TRUE} on every entry</td>
+ *       <td>{@link ChangeDetection#theModifiedFlagDoesNotLeakBetweenRequests()}</td></tr>
+ *   <tr><td>{@code :90-105}</td><td>{@code EIBCALEN = 0}, first entry, and the arrival auto-lookup</td>
+ *       <td>{@link MainPara}</td></tr>
+ *   <tr><td>{@code :108-131}</td><td>{@code EVALUATE EIBAID} - six arms</td>
+ *       <td>{@link AidDispatchOrder}</td></tr>
+ *   <tr><td>{@code :143-172}</td><td>{@code PROCESS-ENTER-KEY}, incl. {@code :167-170} painting the
+ *       record and {@code :169} painting the <em>stored</em> password</td>
+ *       <td>{@link ProcessEnterKey}, {@link ScreenContract}</td></tr>
+ *   <tr><td>{@code :177-213}</td><td>{@code UPDATE-USER-INFO}'s ordered five-arm blank chain</td>
+ *       <td>{@link UpdateUserInfo}, {@link LowValuesGuardChain}</td></tr>
+ *   <tr><td>{@code :219-243}</td><td>the four independent change tests and the modification gate</td>
+ *       <td>{@link ChangeDetection}</td></tr>
+ *   <tr><td>{@code :250-261}</td><td>{@code RETURN-TO-PREV-SCREEN}</td>
+ *       <td>{@link ReturnToPrevScreen}</td></tr>
+ *   <tr><td>{@code :296-315}</td><td>{@code POPULATE-HEADER-INFO}</td>
+ *       <td>{@link HeaderInfo}, {@link DeterministicHeader}</td></tr>
+ *   <tr><td>{@code :320-353}</td><td>{@code READ-USER-SEC-FILE} - the held read and its three arms</td>
+ *       <td>{@link DatasetContract}, {@link ProcessEnterKey}</td></tr>
+ *   <tr><td>{@code :358-390}</td><td>{@code UPDATE-USER-SEC-FILE} - the keyless rewrite, three arms</td>
+ *       <td>{@link DatasetContract}, {@link UpdateUserSecFile}</td></tr>
+ *   <tr><td>{@code :395-411}</td><td>{@code CLEAR-CURRENT-SCREEN} and {@code INITIALIZE-ALL-FIELDS}</td>
+ *       <td>{@link MainPara#pf4ClearsTheScreen()}</td></tr>
+ * </table>
+ *
+ * <p>The remaining contracts come from {@code app/cpy-bms/COUSR02.CPY} and {@code app/bms/COUSR02.bms}
+ * (the twelve field names and widths - {@link ScreenContract}), {@code app/cpy/CSUSR01Y.cpy} (the
+ * 80-byte record - {@link DatasetContract}, {@link SeededUsrsec}), {@code app/cpy/COCOM01Y.cpy} (the
+ * 160-byte communication area - {@link CommareaGeometry}) and {@code app/jcl/DUSRSECJ.jcl:34-44} (the
+ * in-stream seed - {@link SeededUsrsec}).
+ *
+ * <h2>Governing rules: there are none, so the bar is enterprise best practice</h2>
+ *
+ * <p>{@code review_rules} returns exactly one line for this project - <em>"No user rules provided."</em>
+ * - and that single line is the whole document. No rule therefore forces any file into scope, and no
+ * rule is invented here. The absence is explicitly <strong>not</strong> treated as licence to lower the
+ * bar: the binding constraints are the enterprise best-practice substitutes catalogued in the Agent
+ * Action Plan section 0.10.2, and the ones that govern this file are named at their point of use:
+ *
+ * <ul>
+ *   <li><strong>B1/B2 - a closed, pinned test stack.</strong> JUnit Jupiter, Mockito, AssertJ and
+ *       Spring Test, all at the versions the parent BOM manages. Nothing else is imported: no
+ *       Testcontainers, no Spring Security, no persistence provider, no COBOL parser.</li>
+ *   <li><strong>B3 - reference inputs are immutable.</strong> {@code app/cbl/COUSR02C.cbl},
+ *       {@code app/cpy-bms/COUSR02.CPY}, {@code app/bms/COUSR02.bms}, {@code app/cpy/CSUSR01Y.cpy},
+ *       {@code app/cpy/COCOM01Y.cpy}, {@code app/jcl/DUSRSECJ.jcl:34-44} and
+ *       {@code app/csd/CARDDEMO.CSD:469-470} are read and cited here, and written by nothing (gate
+ *       <strong>G5</strong>).</li>
+ *   <li><strong>B4 - conflicts are documented, never silently corrected.</strong> See the gate
+ *       <strong>G43</strong> note immediately below, and {@link MigrationConstraints} which asserts
+ *       its non-applicability rather than assuming it.</li>
+ *   <li><strong>B5 - legacy behaviour is preserved, including its defects.</strong> This is the
+ *       defining practice for this screen. {@code PF3} saves before it exits ({@code :111-119}); the
+ *       {@code NORMAL} arm of {@code READ-USER-SEC-FILE} opens with a vestigial {@code CONTINUE}
+ *       ({@code :335}); and the four change tests sit outside any {@code IF NOT ERR-FLG-ON} guard
+ *       ({@code :219-234}). All three are pinned as they are.</li>
+ *   <li><strong>B6 - the security posture is neither weakened nor unrequestedly strengthened.</strong>
+ *       {@code SEC-USR-PWD PIC X(08)} is compared and stored in clear text (gate
+ *       <strong>G41</strong>), and {@code :169} paints the <em>stored</em> password back onto the map,
+ *       so {@link UserUpdateResponse#passwd()} must carry it. Introducing a digest would delete
+ *       observable behaviour and would need a framework this migration excludes.</li>
+ *   <li><strong>B7 - deterministic and non-interactive.</strong> A fixed {@link Clock} is injected
+ *       everywhere, so {@code POPULATE-HEADER-INFO} renders identically on every run; there is no
+ *       randomness, no wall-clock read and no dependence on test ordering (gate
+ *       <strong>G54</strong>).</li>
+ *   <li><strong>B8 - explicit over implicit.</strong> No wildcard import (gate <strong>G52</strong>),
+ *       an explicitly named {@link Charset} rather than the platform default, and no dataset-name
+ *       literal anywhere (gate <strong>G46</strong>).</li>
+ *   <li><strong>B9 - no static mutable state</strong> (gate <strong>G53</strong>). Every fixture is
+ *       built per test, the controller is constructed per test, and
+ *       {@link Construction#noStaticMutableState()} proves the production type holds none either -
+ *       which is also why {@code MAIN-PARA}'s reset at {@code :85} cannot leak between requests.</li>
+ *   <li><strong>B12 - environmental limits are documented, not absorbed.</strong> See the provenance
+ *       note above: every expectation is statically derived, and that deviation is open risk
+ *       <strong>R-A</strong>.</li>
+ * </ul>
+ *
+ * <h2>Gate G43 has no subject in this package, and that is asserted rather than assumed</h2>
+ *
+ * <p>Gate <strong>G43</strong> requires optimistic concurrency reproducing
+ * {@code 9300-CHECK-CHANGE-IN-REC} field for field. That paragraph exists in {@code COACTUPC} and
+ * {@code COCRDUPC}, so the gate is scoped to the {@code account} and {@code card} packages.
+ * {@code COUSR02C} has no such paragraph: it takes a held read at {@code :322-331} with
+ * {@code UPDATE}, compares the typed fields against the record area it just read, and rewrites the
+ * held record at {@code :360-366} with no {@code RIDFLD}. The concurrency control is the CICS lock,
+ * not a re-read-and-compare and not a version column. Adding either would be a schema and behaviour
+ * change that AAP section 0.7.4 forbids, so
+ * {@link MigrationConstraints#noOptimisticConcurrencyArtefactExists()} asserts their
+ * <em>absence</em>.
+ *
+ * <h2>This screen tests RESP with {@code DFHRESP()}, where {@code COSGN00C} uses raw numerics</h2>
+ *
+ * <p>{@code COUSR02C:333-353} and {@code :368-390} both write {@code WHEN DFHRESP(NORMAL)} and
+ * {@code WHEN DFHRESP(NOTFND)}. {@code COSGN00C:211-257} writes the equivalent test against the raw
+ * numbers {@code 0} and {@code 13} instead. The two spellings are the same condition, and
+ * {@link com.vsergeychik.carddemo.common.FileStatus} unifies them: one status vocabulary, so a
+ * repository outcome reads the same whichever form the calling program used.
+ * {@link DatasetContract#theTwoRespSpellingsUnifyThroughFileStatus()} states that once.
  */
 @DisplayName("UserUpdateController - the COUSR02C / CU02 update-user screen")
 class UserUpdateControllerTest {
@@ -167,6 +311,25 @@ class UserUpdateControllerTest {
         return Cu02Info.initial();
     }
 
+    /**
+     * The same terminal input area, carrying a stated {@code EIBAID} token.
+     *
+     * <p>An absent token resolves to {@link CicsAid#DFHENTER}, because a bare transmit is {@code ENTER}.
+     * A test that means to reach {@code UPDATE-USER-INFO} over HTTP therefore has to say so: the
+     * {@code ENTER} arm at {@code :109-110} runs {@code PROCESS-ENTER-KEY}, whose guard tests only
+     * {@code USRIDINI}, so a blank <em>name</em> would sail past it and reach the read.
+     *
+     * @param request the payload to re-issue
+     * @param token   the five-character token, one of {@link AidKey#token()}
+     * @return the same payload carrying that token
+     */
+    private static UserUpdateRequest withAid(UserUpdateRequest request, String token) {
+        return new UserUpdateRequest(request.trnName(), request.title01(), request.curDate(),
+                request.pgmName(), request.title02(), request.curTime(), request.usrIdIn(),
+                request.fName(), request.lName(), request.passwd(), request.usrType(),
+                request.errMsg(), request.navigationContext(), token, request.cu02Info());
+    }
+
     /** The same terminal input area, carrying a stated {@code 05 CDEMO-CU02-INFO}. */
     private static UserUpdateRequest withExtension(UserUpdateRequest request, Cu02Info info) {
         return new UserUpdateRequest(request.trnName(), request.title01(), request.curDate(),
@@ -199,6 +362,64 @@ class UserUpdateControllerTest {
     private ProgramState reentryWith(UserUpdateRequest request, byte aid) {
         return controller.handle(request, UserUpdateController.PASSED_COMMAREA_LENGTH, aid,
                 noSelection());
+    }
+
+    /** Stub {@code :360-366} as a successful rewrite of the held record. */
+    private void stubSuccessfulRewrite() {
+        when(repository.rewrite(any(SecUserRecord.class))).thenReturn(WriteResult.written());
+    }
+
+    /** The record the single {@code REWRITE} at {@code :360} was handed. */
+    private SecUserRecord rewrittenRecord() {
+        ArgumentCaptor<SecUserRecord> captor = ArgumentCaptor.forClass(SecUserRecord.class);
+        verify(repository).rewrite(captor.capture());
+        return captor.getValue();
+    }
+
+    /**
+     * A {@code MockMvc} over this controller alone.
+     *
+     * <p>Standalone rather than {@code @WebMvcTest}: the decision path is asserted by calling
+     * {@link UserUpdateController#handle} directly, and the only reason to raise an HTTP layer at all is
+     * to exercise the rules that live in the adapter - the path-variable binding, the JSON projection,
+     * and the status codes the dispatcher itself produces. A standalone setup registers exactly one
+     * handler, so a request with the wrong method has nowhere else to land and the {@code 405} is the
+     * dispatcher's own answer rather than an artefact of some other controller's mapping.
+     *
+     * @param mapper the mapper the message converter is to use; the same instance the assertions read
+     * @return a dispatcher carrying only {@code PUT /api/users/&#123;userId&#125;}
+     */
+    private MockMvc httpOver(ObjectMapper mapper) {
+        return MockMvcBuilders.standaloneSetup(controller)
+                .setMessageConverters(new MappingJackson2HttpMessageConverter(mapper))
+                .build();
+    }
+
+    /**
+     * Every property name reachable anywhere in a JSON tree, at any depth.
+     *
+     * <p>Used to prove a negative: that no {@code xxxL}, {@code xxxF} or {@code xxxA} item of the
+     * symbolic map appears as a payload member. A shallow field list would miss one nested inside
+     * {@code cu02Info} or {@code navigationContext}, so the walk is recursive.
+     *
+     * @param node the tree to walk; may be any node type
+     * @return every field name in the tree, in encounter order
+     */
+    private static Set<String> propertyNames(JsonNode node) {
+        Set<String> names = new LinkedHashSet<>();
+        collectPropertyNames(node, names);
+        return names;
+    }
+
+    private static void collectPropertyNames(JsonNode node, Set<String> into) {
+        if (node.isObject()) {
+            node.properties().forEach(entry -> {
+                into.add(entry.getKey());
+                collectPropertyNames(entry.getValue(), into);
+            });
+        } else if (node.isArray()) {
+            node.forEach(child -> collectPropertyNames(child, into));
+        }
     }
 
     // =================================================================================================
@@ -662,8 +883,7 @@ class UserUpdateControllerTest {
 
             reentryWith(screen(USER_ID, "Sam", "Spade", "PWDBBBBB", "U", reenter()), CicsAid.DFHPF5);
 
-            org.mockito.ArgumentCaptor<SecUserRecord> captor =
-                    org.mockito.ArgumentCaptor.forClass(SecUserRecord.class);
+            ArgumentCaptor<SecUserRecord> captor = ArgumentCaptor.forClass(SecUserRecord.class);
             verify(repository).rewrite(captor.capture());
             assertThat(captor.getValue().secUsrPwd()).isEqualTo("PWDBBBBB");
         }
@@ -1504,6 +1724,1715 @@ class UserUpdateControllerTest {
             String withoutPassword =
                     screen(USER_ID, "Sam", "Spade", null, "U", reenter()).toString();
             assertThat(withoutPassword).contains("passwd=null");
+        }
+    }
+
+    // =================================================================================================
+    // The screen contract - the twelve DFHMDF fields, and the four items that are NOT payload - G9
+    // =================================================================================================
+
+    /**
+     * The payload shape, taken from {@code app/cpy-bms/COUSR02.CPY} and {@code app/bms/COUSR02.bms}.
+     *
+     * <p>Gate <strong>G9</strong>: every payload field must trace to a {@code DFHMDF} definition, and
+     * every field length must trace to a symbolic-map {@code xxxI} {@code PICTURE} clause. Three
+     * independent counts agree on twelve - twelve {@code xxxI} items, twelve {@code xxxO} items, and
+     * twelve of the twenty-nine {@code DFHMDF} definitions carrying a name - so twelve is asserted as a
+     * number and not merely as a list length.
+     *
+     * <p>The four items that are deliberately <em>not</em> screen fields are the communication area, its
+     * 34-byte extension, the resolved {@code EIBAID} token, and - on the response - the navigation
+     * triple. They are conversation state, which rule R6 requires to travel in the payload.
+     */
+    @Nested
+    @DisplayName("The screen contract - twelve DFHMDF fields, their widths, and what is NOT one")
+    class ScreenContract {
+
+        @Test
+        @DisplayName("G9 - twelve xxxI items in map order, with USRIDINI seventh, before the names")
+        void theTwelveInputItemsAreInMapOrder() {
+            assertThat(UserUpdateRequest.MAP_FIELD_COUNT).isEqualTo(12);
+            assertThat(UserUpdateRequest.MAP_FIELD_NAMES).containsExactly("TRNNAMEI",
+                    "TITLE01I",
+                    "CURDATEI",
+                    "PGMNAMEI",
+                    "TITLE02I",
+                    "CURTIMEI",
+                    "USRIDINI",
+                    "FNAMEI",
+                    "LNAMEI",
+                    "PASSWDI",
+                    "USRTYPEI",
+                    "ERRMSGI");
+
+            // The trap this pins: COUSR02 names its identifier USRIDIN and places it SEVENTH, ahead of
+            // both names. COUSR01 names its own USERID and places it NINTH, after them. A DTO built by
+            // analogy with the neighbouring screen would have both the name and the position wrong.
+            assertThat(UserUpdateRequest.MAP_FIELD_NAMES.indexOf(UserUpdateRequest.USRIDIN_FIELD))
+                    .isEqualTo(6)
+                    .isLessThan(UserUpdateRequest.MAP_FIELD_NAMES
+                            .indexOf(UserUpdateRequest.FNAME_FIELD));
+            assertThat(UserUpdateRequest.USRIDIN_FIELD).isEqualTo("USRIDINI").doesNotContain("USERID");
+        }
+
+        @Test
+        @DisplayName("G9 - twelve xxxO items in the same order, each the same width as its xxxI item")
+        void theTwelveOutputItemsMirrorTheInputItems() {
+            assertThat(UserUpdateResponse.MAP_FIELD_COUNT)
+                    .isEqualTo(UserUpdateRequest.MAP_FIELD_COUNT);
+            assertThat(UserUpdateResponse.MAP_FIELD_NAMES).containsExactly("TRNNAMEO",
+                    "TITLE01O",
+                    "CURDATEO",
+                    "PGMNAMEO",
+                    "TITLE02O",
+                    "CURTIMEO",
+                    "USRIDINO",
+                    "FNAMEO",
+                    "LNAMEO",
+                    "PASSWDO",
+                    "USRTYPEO",
+                    "ERRMSGO");
+
+            // Same field, same width, opposite direction - one DFHMDF LENGTH governs both halves.
+            assertThat(UserUpdateResponse.TRN_NAME_LENGTH).isEqualTo(UserUpdateRequest.TRNNAME_LENGTH);
+            assertThat(UserUpdateResponse.TITLE01_LENGTH).isEqualTo(UserUpdateRequest.TITLE01_LENGTH);
+            assertThat(UserUpdateResponse.CUR_DATE_LENGTH).isEqualTo(UserUpdateRequest.CURDATE_LENGTH);
+            assertThat(UserUpdateResponse.PGM_NAME_LENGTH).isEqualTo(UserUpdateRequest.PGMNAME_LENGTH);
+            assertThat(UserUpdateResponse.TITLE02_LENGTH).isEqualTo(UserUpdateRequest.TITLE02_LENGTH);
+            assertThat(UserUpdateResponse.CUR_TIME_LENGTH).isEqualTo(UserUpdateRequest.CURTIME_LENGTH);
+            assertThat(UserUpdateResponse.USR_ID_IN_LENGTH).isEqualTo(UserUpdateRequest.USRIDIN_LENGTH);
+            assertThat(UserUpdateResponse.FNAME_LENGTH).isEqualTo(UserUpdateRequest.FNAME_LENGTH);
+            assertThat(UserUpdateResponse.LNAME_LENGTH).isEqualTo(UserUpdateRequest.LNAME_LENGTH);
+            assertThat(UserUpdateResponse.PASSWD_LENGTH).isEqualTo(UserUpdateRequest.PASSWD_LENGTH);
+            assertThat(UserUpdateResponse.USR_TYPE_LENGTH).isEqualTo(UserUpdateRequest.USRTYPE_LENGTH);
+            assertThat(UserUpdateResponse.ERR_MSG_LENGTH).isEqualTo(UserUpdateRequest.ERRMSG_LENGTH);
+        }
+
+        @ParameterizedTest(name = "{0} is PIC X({1})")
+        @CsvSource({"TRNNAMEI, 4", "TITLE01I, 40", "CURDATEI, 8", "PGMNAMEI, 8", "TITLE02I, 40",
+            "CURTIMEI, 8", "USRIDINI, 8", "FNAMEI, 20", "LNAMEI, 20", "PASSWDI, 8", "USRTYPEI, 1",
+            "ERRMSGI, 78"})
+        @DisplayName("G9 - each declared width is the one app/cpy-bms/COUSR02.CPY states")
+        void eachDeclaredWidthIsTheSymbolicMapsWidth(String field, int width) {
+            Map<String, Integer> declared = Map.ofEntries(
+                    Map.entry("TRNNAMEI", UserUpdateRequest.TRNNAME_LENGTH),
+                    Map.entry("TITLE01I", UserUpdateRequest.TITLE01_LENGTH),
+                    Map.entry("CURDATEI", UserUpdateRequest.CURDATE_LENGTH),
+                    Map.entry("PGMNAMEI", UserUpdateRequest.PGMNAME_LENGTH),
+                    Map.entry("TITLE02I", UserUpdateRequest.TITLE02_LENGTH),
+                    Map.entry("CURTIMEI", UserUpdateRequest.CURTIME_LENGTH),
+                    Map.entry("USRIDINI", UserUpdateRequest.USRIDIN_LENGTH),
+                    Map.entry("FNAMEI", UserUpdateRequest.FNAME_LENGTH),
+                    Map.entry("LNAMEI", UserUpdateRequest.LNAME_LENGTH),
+                    Map.entry("PASSWDI", UserUpdateRequest.PASSWD_LENGTH),
+                    Map.entry("USRTYPEI", UserUpdateRequest.USRTYPE_LENGTH),
+                    Map.entry("ERRMSGI", UserUpdateRequest.ERRMSG_LENGTH));
+
+            assertThat(declared.get(field)).isEqualTo(width);
+        }
+
+        @Test
+        @DisplayName("CURTIME here is X(08), not COSGN00's X(09) - one character narrower")
+        void curTimeIsEightNotNine() {
+            // app/cpy-bms/COUSR02.CPY declares CURTIMEI PIC X(8) and app/bms/COUSR02.bms gives CURTIME
+            // LENGTH=8. COSGN00 declares nine for the same-looking HH:MM:SS field. The controller writes
+            // exactly HH:MM:SS - eight characters - so a nine-wide DTO would carry a trailing space that
+            // the map has no column for.
+            assertThat(UserUpdateRequest.CURTIME_LENGTH).isEqualTo(8).isNotEqualTo(9);
+            assertThat(EXPECTED_TIME).hasSize(UserUpdateRequest.CURTIME_LENGTH);
+            assertThat(EXPECTED_DATE).hasSize(UserUpdateRequest.CURDATE_LENGTH);
+        }
+
+        @Test
+        @DisplayName("every @Size max equals its xxxI width, and no width is left unconstrained")
+        void everySizeMaximumIsTheDeclaredWidth() {
+            RecordComponent[] components = UserUpdateRequest.class.getRecordComponents();
+            assertThat(components).hasSize(UserUpdateRequest.MAP_FIELD_COUNT + 3);
+
+            List<Integer> widths = List.of(UserUpdateRequest.TRNNAME_LENGTH,
+                    UserUpdateRequest.TITLE01_LENGTH,
+                    UserUpdateRequest.CURDATE_LENGTH,
+                    UserUpdateRequest.PGMNAME_LENGTH,
+                    UserUpdateRequest.TITLE02_LENGTH,
+                    UserUpdateRequest.CURTIME_LENGTH,
+                    UserUpdateRequest.USRIDIN_LENGTH,
+                    UserUpdateRequest.FNAME_LENGTH,
+                    UserUpdateRequest.LNAME_LENGTH,
+                    UserUpdateRequest.PASSWD_LENGTH,
+                    UserUpdateRequest.USRTYPE_LENGTH,
+                    UserUpdateRequest.ERRMSG_LENGTH);
+
+            for (int index = 0; index < UserUpdateRequest.MAP_FIELD_COUNT; index++) {
+                Size size = components[index].getAccessor().getAnnotation(Size.class);
+                assertThat(size)
+                        .as("%s must declare its DFHMDF LENGTH", components[index].getName())
+                        .isNotNull();
+                assertThat(size.max())
+                        .as("%s max", components[index].getName())
+                        .isEqualTo(widths.get(index));
+            }
+
+            // The three non-screen components: the communication area and the extension carry no width
+            // of their own, and the AID token is CCARD-AID PIC X(5).
+            assertThat(components[12].getAccessor().getAnnotation(Size.class)).isNull();
+            assertThat(components[13].getAccessor().getAnnotation(Size.class).max())
+                    .isEqualTo(PfKeyResolver.AID_TOKEN_LENGTH);
+            assertThat(components[14].getAccessor().getAnnotation(Size.class)).isNull();
+        }
+
+        @Test
+        @DisplayName("no @NotBlank and no @NotNull: a blank field is a MESSAGE, never a 400")
+        void theRequestDeclaresNoPresenceConstraint() {
+            // COUSR02C:180-208 answers a blank field with a screen and a message, which is a successful
+            // pseudo-conversational turn. A presence constraint would make the framework answer 400
+            // before UPDATE-USER-INFO ran, and the five ordered messages would become unreachable.
+            List<Annotation> declared = new ArrayList<>();
+            for (RecordComponent component : UserUpdateRequest.class.getRecordComponents()) {
+                declared.addAll(List.of(component.getAccessor().getAnnotations()));
+            }
+            for (Field field : UserUpdateRequest.class.getDeclaredFields()) {
+                declared.addAll(List.of(field.getAnnotations()));
+            }
+
+            assertThat(declared).isNotEmpty();
+            assertThat(declared)
+                    .extracting(Annotation::annotationType)
+                    .doesNotContain(NotBlank.class, NotNull.class);
+        }
+
+        @Test
+        @DisplayName("over HTTP a blank first name is 200 with 'First Name can NOT be empty...'")
+        void aBlankFieldIsAnOkResponseCarryingTheMessage() throws Exception {
+            ObjectMapper mapper = new ObjectMapper();
+            // PFK05, because UPDATE-USER-INFO is the paragraph that owns the five-arm chain. The default
+            // ENTER arm runs PROCESS-ENTER-KEY, whose guard at :146 tests only USRIDINI.
+            UserUpdateRequest blankFirstName = withAid(
+                    screen(USER_ID, "  ", "Spade", STORED_PWD, "U", reenter()), AidKey.PFK05.token());
+
+            httpOver(mapper).perform(put("/api/users/{userId}", USER_ID)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(mapper.writeValueAsString(blankFirstName))
+                            .param(UserUpdateController.EIBCALEN_PARAM,
+                                    String.valueOf(UserUpdateController.PASSED_COMMAREA_LENGTH)))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.errMsg")
+                            .value(errMsgImage(UserUpdateController.MSG_FIRST_NAME_EMPTY)));
+
+            // A blank field is a completed pseudo-conversational turn, not a rejected request: 200 with a
+            // message, and no dataset access at all.
+            verify(repository, never()).readForUpdate(anyString());
+            verify(repository, never()).rewrite(any(SecUserRecord.class));
+        }
+
+        @Test
+        @DisplayName("a blank field is never a 400 - the payload declares no presence constraint")
+        void aBlankFieldIsNeverABadRequest() throws Exception {
+            ObjectMapper mapper = new ObjectMapper();
+            MockMvc http = httpOver(mapper);
+
+            // The four fields HTTP can blank. The fifth - the user id - cannot be blanked in the body,
+            // because :649 of the adapter copies the URI's identity over USRIDIN before MAIN-PARA runs;
+            // the id arm at :180 is therefore driven by direct invocation, in LowValuesGuardChain.
+            List<UserUpdateRequest> blanks = List.of(
+                    withAid(screen(USER_ID, "  ", "Spade", STORED_PWD, "U", reenter()),
+                            AidKey.PFK05.token()),
+                    withAid(screen(USER_ID, "Sam", "  ", STORED_PWD, "U", reenter()),
+                            AidKey.PFK05.token()),
+                    withAid(screen(USER_ID, "Sam", "Spade", "  ", "U", reenter()),
+                            AidKey.PFK05.token()),
+                    withAid(screen(USER_ID, "Sam", "Spade", STORED_PWD, " ", reenter()),
+                            AidKey.PFK05.token()));
+
+            for (UserUpdateRequest blank : blanks) {
+                MvcResult answered = http.perform(put("/api/users/{userId}", USER_ID)
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .content(mapper.writeValueAsString(blank)))
+                        .andExpect(status().isOk())
+                        .andReturn();
+                assertThat(answered.getResponse().getContentAsString())
+                        .contains("can NOT be empty...");
+            }
+
+            verify(repository, never()).readForUpdate(anyString());
+            verify(repository, never()).rewrite(any(SecUserRecord.class));
+        }
+
+        @Test
+        @DisplayName("B6 - the response carries PASSWDO, and it is the STORED value in clear text")
+        void theResponseCarriesThePlaintextPassword() throws Exception {
+            // COUSR02C:169 is MOVE SEC-USR-PWD TO PASSWDI OF COUSR2AI. The screen shows the password
+            // that is on file so the operator can see what they are about to change. Omitting it would
+            // delete observable behaviour; hashing it would change it. Both are refused (practice B6,
+            // gate G41). This is the only response in the user package that legitimately carries one:
+            // SignOnResponse carries none, and UserDeleteResponse has no password component at all.
+            stubFoundRead();
+            ObjectMapper mapper = new ObjectMapper();
+
+            httpOver(mapper).perform(put("/api/users/{userId}", USER_ID)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(mapper.writeValueAsString(populated(reenter()))))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.passwd").value(STORED_PWD));
+
+            assertThat(UserUpdateResponse.class.getRecordComponents())
+                    .extracting(RecordComponent::getName)
+                    .contains("passwd");
+            assertThat(UserUpdateResponse.PASSWD_FIELD).isEqualTo("PASSWDO");
+        }
+
+        @Test
+        @DisplayName("no xxxL, xxxF or xxxA item is a JSON member - they are metadata, not payload")
+        void theLengthFlagAndAttributeItemsAreNotPayload() throws Exception {
+            stubFoundRead();
+            ObjectMapper mapper = new ObjectMapper();
+
+            MvcResult result = httpOver(mapper).perform(put("/api/users/{userId}", USER_ID)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(mapper.writeValueAsString(populated(reenter()))))
+                    .andExpect(status().isOk())
+                    .andReturn();
+
+            Set<String> members =
+                    propertyNames(mapper.readTree(result.getResponse().getContentAsString()));
+            assertThat(members).isNotEmpty();
+
+            // For each of the twelve screen fields, neither the COBOL spelling of its xxxL / xxxF /
+            // xxxA companions nor a camel-cased rendering of them may appear anywhere in the tree.
+            for (String inputName : UserUpdateRequest.MAP_FIELD_NAMES) {
+                String base = inputName.substring(0, inputName.length() - 1);
+                for (String suffix : List.of("L", "F", "A")) {
+                    String cobol = base + suffix;
+                    for (String member : members) {
+                        assertThat(member.toUpperCase(Locale.ROOT))
+                                .as("%s is a symbolic-map %s item and must stay metadata", cobol, suffix)
+                                .isNotEqualTo(cobol);
+                    }
+                }
+            }
+
+            // The twelve that ARE payload are present, under their Java names.
+            assertThat(members).contains("trnName", "title01", "curDate", "pgmName", "title02",
+                    "curTime", "usrIdIn", "fName", "lName", "passwd", "usrType", "errMsg");
+        }
+
+        @Test
+        @DisplayName("the cursor and the colour travel as METADATA, exactly as xxxL and xxxC do")
+        void theCursorAndColourAreMetadataRatherThanScreenFields() {
+            // MOVE -1 TO USRIDINL is a cursor request, and MOVE DFHRED TO ERRMSGC is an attribute
+            // assignment. Both are reported on ProgramState and in the envelope's metadata, and neither
+            // becomes a screen field - which is what keeps the twelve at twelve.
+            ProgramState state = reentryWith(populated(reenter()), CicsAid.DFHPF4);
+
+            assertThat(state.cursorFieldName()).isEqualTo("USRIDINL");
+            assertThat(UserUpdateController.ERR_MSG_COLOUR_ITEM).isEqualTo("ERRMSGC");
+            assertThat(state.response().fieldValues().keySet())
+                    .containsExactlyElementsOf(UserUpdateResponse.MAP_FIELD_NAMES)
+                    .doesNotContain("USRIDINL", "ERRMSGC");
+        }
+
+        @Test
+        @DisplayName("the route is PUT /api/users/{userId}, from app/csd/CARDDEMO.CSD:469-470")
+        void theRouteIsThePutMapping() throws Exception {
+            Method mapped = UserUpdateController.class.getMethod("updateUser",
+                    String.class, UserUpdateRequest.class, Integer.class);
+            PutMapping mapping = mapped.getAnnotation(PutMapping.class);
+
+            assertThat(mapping).isNotNull();
+            assertThat(mapping.path()).containsExactly("/api/users/{userId}");
+            assertThat(mapping.consumes()).containsExactly(MediaType.APPLICATION_JSON_VALUE);
+            assertThat(mapping.produces()).containsExactly(MediaType.APPLICATION_JSON_VALUE);
+        }
+
+        @Test
+        @DisplayName("the path answers PUT only: POST and DELETE on it are 405")
+        void anyOtherMethodOnThePathIsMethodNotAllowed() throws Exception {
+            ObjectMapper mapper = new ObjectMapper();
+            String body = mapper.writeValueAsString(populated(reenter()));
+            MockMvc http = httpOver(mapper);
+
+            http.perform(post("/api/users/{userId}", USER_ID)
+                            .contentType(MediaType.APPLICATION_JSON).content(body))
+                    .andExpect(status().isMethodNotAllowed());
+            http.perform(delete("/api/users/{userId}", USER_ID)
+                            .contentType(MediaType.APPLICATION_JSON).content(body))
+                    .andExpect(status().isMethodNotAllowed());
+
+            // 405 is the dispatcher refusing the verb, so nothing behind it ran.
+            verify(repository, never()).readForUpdate(anyString());
+            verify(repository, never()).rewrite(any(SecUserRecord.class));
+        }
+    }
+
+    // =================================================================================================
+    // EVALUATE EIBAID :108-131 - the six arms, in source order, and the PF3 defect - G30, practice B5
+    // =================================================================================================
+
+    /**
+     * The {@code EVALUATE EIBAID} at {@code app/cbl/COUSR02C.cbl:108-131}, arm by arm and in order.
+     *
+     * <p>Gate <strong>G30</strong> requires the {@code WHEN} order to be preserved with
+     * {@code WHEN OTHER} last. {@code EVALUATE} is ordered - the first matching {@code WHEN} wins - and
+     * COBOL has no fall-through, so each arm is asserted to produce its own outcome <em>and</em> not to
+     * produce the outcomes of the arms after it.
+     *
+     * <p><strong>The highest-value assertion in this file lives here.</strong> {@code PF3} is
+     * conventionally "exit without saving", and this program does the opposite: {@code :112} performs
+     * {@code UPDATE-USER-INFO} before {@code :119} transfers. The neighbouring delete screen proves this
+     * is a property of this program and not a house style - {@code app/cbl/COUSR03C.cbl:111-118} has the
+     * identical {@code WHEN DFHPF3} routing block with <strong>no</strong>
+     * {@code PERFORM DELETE-USER-INFO} in front of it, which {@code UserDeleteControllerTest} asserts
+     * from its side. Practice B5 forbids reconciling the two: the pair of tests documents a real
+     * inconsistency in the legacy system rather than hiding it.
+     *
+     * <p>This program does not copy {@code CSSTRPFY}; it tests {@code EIBAID} inline. The Java side
+     * routes through {@link PfKeyResolver} for all seventeen screens, so the resolver's booleans are
+     * asserted to give the same answers the inline tests give.
+     */
+    @Nested
+    @DisplayName("EVALUATE EIBAID :108-131 - six arms in order, and PF3 saves before it exits")
+    class AidDispatchOrder {
+
+        @Test
+        @DisplayName("arm 1 :109-110 DFHENTER looks the user up and neither saves nor transfers")
+        void armOneIsEnter() {
+            stubFoundRead();
+
+            ProgramState state = reentryWith(populated(reenter()), CicsAid.DFHENTER);
+
+            verify(repository).readForUpdate(USER_ID);
+            verify(repository, never()).rewrite(any(SecUserRecord.class));
+            assertThat(state.transferred()).isFalse();
+            assertThat(state.errFlgOn()).isFalse();
+            assertThat(PfKeyResolver.isEnter(CicsAid.DFHENTER)).isTrue();
+        }
+
+        @Test
+        @DisplayName("arm 2 :111-119 DFHPF3 SAVES FIRST - the rewrite happens, then the transfer")
+        void armTwoIsPf3AndItSavesBeforeItExits() {
+            stubFoundRead();
+            stubSuccessfulRewrite();
+
+            ProgramState state = reentryWith(
+                    screen(USER_ID, "Samuel", "Spade", STORED_PWD, "U", reenter()), CicsAid.DFHPF3);
+
+            // The order is the assertion: UPDATE-USER-INFO at :112 runs to completion, including its
+            // REWRITE, and only then does :119 transfer. A "cancel" implementation would call neither.
+            InOrder sequence = inOrder(repository);
+            sequence.verify(repository).readForUpdate(USER_ID);
+            sequence.verify(repository).rewrite(any(SecUserRecord.class));
+            sequence.verifyNoMoreInteractions();
+
+            assertThat(rewrittenRecord().secUsrFname()).isEqualTo(padded("Samuel", 20));
+            assertThat(state.transferred()).isTrue();
+            assertThat(state.termination()).isEqualTo(UserUpdateController.TERMINATION_XCTL);
+            assertThat(PfKeyResolver.isPf3(CicsAid.DFHPF3)).isTrue();
+        }
+
+        @Test
+        @DisplayName("arm 3 :120-121 DFHPF4 clears and repaints - no read, no rewrite, no transfer")
+        void armThreeIsPf4() {
+            ProgramState state = reentryWith(populated(reenter()), CicsAid.DFHPF4);
+
+            assertThat(state.transferred()).isFalse();
+            assertThat(state.errFlgOn()).isFalse();
+            assertThat(state.sendCount()).isEqualTo(1);
+            verify(repository, never()).readForUpdate(anyString());
+            verify(repository, never()).rewrite(any(SecUserRecord.class));
+            assertThat(PfKeyResolver.isPf4(CicsAid.DFHPF4)).isTrue();
+        }
+
+        @Test
+        @DisplayName("arm 4 :122-123 DFHPF5 saves and STAYS - it is the only save that does not transfer")
+        void armFourIsPf5AndItStays() {
+            stubFoundRead();
+            stubSuccessfulRewrite();
+
+            ProgramState state = reentryWith(
+                    screen(USER_ID, "Samuel", "Spade", STORED_PWD, "U", reenter()), CicsAid.DFHPF5);
+
+            verify(repository).rewrite(any(SecUserRecord.class));
+            assertThat(state.transferred()).isFalse();
+            assertThat(state.termination())
+                    .isEqualTo(UserUpdateController.TERMINATION_RETURN_TRANSID);
+            assertThat(state.returnTransid()).isEqualTo(UserUpdateController.WS_TRANID);
+            assertThat(PfKeyResolver.isPf5(CicsAid.DFHPF5)).isTrue();
+        }
+
+        @Test
+        @DisplayName("arm 5 :124-126 DFHPF12 transfers to COADM01C and never reaches the dataset")
+        void armFiveIsPf12() {
+            ProgramState state = reentryWith(
+                    screen(USER_ID, "Samuel", "Spade", STORED_PWD, "U", reenter()), CicsAid.DFHPF12);
+
+            assertThat(state.transferred()).isTrue();
+            assertThat(state.nextProgram()).isEqualTo(padded(UserUpdateController.LIT_ADMIN_PGM, 8));
+            verify(repository, never()).readForUpdate(anyString());
+            verify(repository, never()).rewrite(any(SecUserRecord.class));
+            assertThat(PfKeyResolver.isPf12(CicsAid.DFHPF12)).isTrue();
+        }
+
+        @ParameterizedTest(name = "arm 6 :127-130 - AID 0x{0} is an invalid key")
+        @CsvSource({"6D", "6C", "6E", "6B", "F7", "F8", "F1", "40"})
+        @DisplayName("arm 6 :127-130 WHEN OTHER - CLEAR, PA1-PA3 and every unnamed PF key")
+        void armSixIsWhenOther(String hex) {
+            byte aid = (byte) Integer.parseInt(hex, 16);
+
+            ProgramState state = reentryWith(populated(reenter()), aid);
+
+            assertThat(state.errFlgOn()).isTrue();
+            assertThat(state.wsMessage())
+                    .isEqualTo(padded(SystemMessages.CCDA_MSG_INVALID_KEY, 80));
+            assertThat(state.transferred()).isFalse();
+            verify(repository, never()).readForUpdate(anyString());
+            verify(repository, never()).rewrite(any(SecUserRecord.class));
+        }
+
+        @Test
+        @DisplayName("the eight unhandled AIDs above are the ones this screen names nowhere")
+        void theUnhandledAidsAreTheOnesTheSourceNamesNowhere() {
+            // Named at :109-126: DFHENTER, DFHPF3, DFHPF4, DFHPF5, DFHPF12. Everything else falls to
+            // :127. CLEAR and the three PA keys are the ones most likely to be mistaken for handled,
+            // because neighbouring screens in this application do handle some of them.
+            assertThat(List.of(CicsAid.DFHCLEAR, CicsAid.DFHPA1, CicsAid.DFHPA2, CicsAid.DFHPA3,
+                            CicsAid.DFHPF7, CicsAid.DFHPF8, CicsAid.DFHPF1, CicsAid.DFHNULL))
+                    .doesNotContain(CicsAid.DFHENTER, CicsAid.DFHPF3, CicsAid.DFHPF4, CicsAid.DFHPF5,
+                            CicsAid.DFHPF12);
+        }
+
+        @Test
+        @DisplayName("PF3 and PF5 both rewrite; only PF3 transfers - and PF12 rewrites nothing")
+        void thePf3Pf5Pf12DistinctionIsThreeWay() {
+            stubFoundRead();
+            stubSuccessfulRewrite();
+            UserUpdateRequest modified =
+                    screen(USER_ID, "Samuel", "Spade", STORED_PWD, "U", reenter());
+
+            ProgramState viaPf5 = reentryWith(modified, CicsAid.DFHPF5);
+            assertThat(viaPf5.transferred()).isFalse();
+
+            ProgramState viaPf3 = reentryWith(modified, CicsAid.DFHPF3);
+            assertThat(viaPf3.transferred()).isTrue();
+
+            ProgramState viaPf12 = reentryWith(modified, CicsAid.DFHPF12);
+            assertThat(viaPf12.transferred()).isTrue();
+
+            // Two rewrites in total, from PF5 and PF3. PF12 contributed none: :125-126 transfers without
+            // performing UPDATE-USER-INFO, which is exactly the shape PF3 does NOT have.
+            verify(repository, times(2)).rewrite(any(SecUserRecord.class));
+        }
+
+        @Test
+        @DisplayName(":113-117 the PF3 fallback: blank caller -> COADM01C, named caller -> the caller")
+        void thePf3FallbackHasBothArms() {
+            stubFoundRead();
+            stubSuccessfulRewrite();
+            UserUpdateRequest modifiedFields =
+                    screen(USER_ID, "Samuel", "Spade", STORED_PWD, "U", reenter());
+
+            // CDEMO-FROM-PROGRAM = SPACES: the ELSE at :113 is not taken.
+            assertThat(reentryWith(modifiedFields, CicsAid.DFHPF3).nextProgram())
+                    .isEqualTo(padded(UserUpdateController.LIT_ADMIN_PGM, 8));
+
+            // CDEMO-FROM-PROGRAM names the list screen: :116-117 echoes it.
+            UserUpdateRequest fromTheList = screen(USER_ID, "Samuel", "Spade", STORED_PWD, "U",
+                    reenter().withFromProgram("COUSR00C"));
+            assertThat(reentryWith(fromTheList, CicsAid.DFHPF3).nextProgram())
+                    .isEqualTo(padded("COUSR00C", 8));
+        }
+
+        @ParameterizedTest(name = "PfKeyResolver resolves {0} to itself")
+        @EnumSource(value = AidKey.class, names = {"ENTER", "PFK03", "PFK04", "PFK05", "PFK12"})
+        @DisplayName("PfKeyResolver reproduces the inline EIBAID tests - COUSR02C copies no CSSTRPFY")
+        void theResolverAgreesWithTheInlineTests(AidKey key) {
+            // Both dataset calls are stubbed because PFK03 and PFK05 both perform UPDATE-USER-INFO,
+            // which reads and may rewrite; the other three keys touch neither.
+            stubFoundRead();
+            stubSuccessfulRewrite();
+            byte aid = UserUpdateController.resolveAttentionIdentifier(key.token());
+
+            assertThat(PfKeyResolver.resolve(aid)).contains(key);
+            assertThat(PfKeyResolver.isAid(aid, aid)).isTrue();
+            assertThat(reentryWith(populated(reenter()), aid).aidKey()).contains(key);
+        }
+    }
+
+    // =================================================================================================
+    // The communication area and its 34-byte extension - G22, G37, G50
+    // =================================================================================================
+
+    /**
+     * The geometry of what travels between turns: 160 shared bytes plus 34 that belong to this program.
+     *
+     * <p>{@code app/cpy/COCOM01Y.cpy} is exactly 160 bytes and is copied by all seventeen online
+     * programs, so {@link NavigationContext} must stay exactly that size. The six items
+     * {@code app/cbl/COUSR02C.cbl:50-58} appends belong to {@code CU02} alone and therefore live on the
+     * {@code CU02} DTO pair rather than being folded into the shared type - folding them in would widen
+     * the copybook for sixteen programs that never declared them.
+     */
+    @Nested
+    @DisplayName("CARDDEMO-COMMAREA 160 + CDEMO-CU02-INFO 34 = the 194 bytes CU02 passes")
+    class CommareaGeometry {
+
+        @Test
+        @DisplayName("NavigationContext is exactly 160 bytes, and the extension is not part of it")
+        void theSharedCommareaStaysAtOneHundredAndSixty() {
+            assertThat(NavigationContext.COMMAREA_LENGTH).isEqualTo(160);
+
+            // The item sizes account for all 160 with nothing left over and nothing double-counted.
+            assertThat(NavigationContext.GENERAL_INFO_LENGTH
+                    + NavigationContext.CUSTOMER_INFO_LENGTH
+                    + NavigationContext.ACCOUNT_INFO_LENGTH
+                    + NavigationContext.CARD_INFO_LENGTH
+                    + NavigationContext.MORE_INFO_LENGTH)
+                    .isEqualTo(NavigationContext.COMMAREA_LENGTH);
+
+            // And none of the six CU02 items is a component of the shared type.
+            assertThat(NavigationContext.class.getRecordComponents())
+                    .extracting(RecordComponent::getName)
+                    .doesNotContain("usridFirst", "usridLast", "pageNum", "nextPageFlg", "usrSelFlg",
+                            "usrSelected");
+        }
+
+        @Test
+        @DisplayName("the extension adds 34, so EIBCALEN on a passed commarea is 194")
+        void theExtensionMakesTheCommareaOneHundredAndNinetyFour() {
+            assertThat(Cu02Info.LENGTH).isEqualTo(34);
+            assertThat(UserUpdateController.PASSED_COMMAREA_LENGTH)
+                    .isEqualTo(NavigationContext.COMMAREA_LENGTH + Cu02Info.LENGTH)
+                    .isEqualTo(194);
+            assertThat(UserUpdateController.NO_COMMAREA_LENGTH).isZero();
+
+            // Both carriers expose the extension, because line 94 restores it and line 260 hands it back.
+            assertThat(UserUpdateRequest.class.getRecordComponents())
+                    .extracting(RecordComponent::getName).contains("cu02Info");
+            assertThat(UserUpdateResponse.class.getRecordComponents())
+                    .extracting(RecordComponent::getName).contains("cu02Info");
+        }
+
+        @Test
+        @DisplayName("G22 - CDEMO-CU02-PAGE-NUM PIC 9(08) is an int, never a floating-point type")
+        void thePageNumberIsIntegral() {
+            RecordComponent pageNum = null;
+            for (RecordComponent component : Cu02Info.class.getRecordComponents()) {
+                if ("pageNum".equals(component.getName())) {
+                    pageNum = component;
+                }
+            }
+
+            assertThat(pageNum).isNotNull();
+            assertThat(pageNum.getType()).isEqualTo(int.class)
+                    .isNotEqualTo(double.class)
+                    .isNotEqualTo(float.class);
+
+            // No component of either carrier, nor of the record, is a floating-point type: a PIC 9 or
+            // PIC 9V9 value rendered through a double could not round-trip its declared digits.
+            for (Class<?> type : List.of(UserUpdateRequest.class, UserUpdateResponse.class,
+                    Cu02Info.class, SecUserRecord.class, NavigationContext.class)) {
+                for (RecordComponent component : type.getRecordComponents()) {
+                    assertThat(component.getType())
+                            .as("%s.%s", type.getSimpleName(), component.getName())
+                            .isNotIn(double.class, float.class, Double.class, Float.class);
+                }
+            }
+        }
+
+        @Test
+        @DisplayName("G50 - both 88 states of CDEMO-CU02-NEXT-PAGE-FLG are reachable and distinct")
+        void bothNextPageStatesAreReachable() {
+            Cu02Info more = new Cu02Info("USER0001", "USER0007", 1, Cu02Info.NEXT_PAGE_YES, "S",
+                    USER_ID);
+            Cu02Info noMore = new Cu02Info("USER0008", "USER0010", 2, Cu02Info.NEXT_PAGE_NO, " ",
+                    USER_ID);
+
+            assertThat(more.nextPageFlg()).isEqualTo(Cu02Info.NEXT_PAGE_YES).isEqualTo("Y");
+            assertThat(noMore.nextPageFlg()).isEqualTo(Cu02Info.NEXT_PAGE_NO).isEqualTo("N");
+            assertThat(Cu02Info.NEXT_PAGE_YES).isNotEqualTo(Cu02Info.NEXT_PAGE_NO);
+
+            // VALUE 'N' at :54 is the initialised state, so NEXT-PAGE-NO is what a cold start sees.
+            assertThat(Cu02Info.initial().nextPageFlg()).isEqualTo(Cu02Info.NEXT_PAGE_NO);
+
+            // Both survive the turn untouched: COUSR02C reads CDEMO-CU02-USR-SELECTED at :99 and writes
+            // none of the other five, so a paging position taken on the list screen is still correct
+            // when the operator goes back to it.
+            stubFoundRead();
+            assertThat(controller.handle(populated(reenter()),
+                            UserUpdateController.PASSED_COMMAREA_LENGTH, CicsAid.DFHENTER, more)
+                    .cu02Info().nextPageFlg()).isEqualTo(Cu02Info.NEXT_PAGE_YES);
+            assertThat(controller.handle(populated(reenter()),
+                            UserUpdateController.PASSED_COMMAREA_LENGTH, CicsAid.DFHENTER, noMore)
+                    .cu02Info().nextPageFlg()).isEqualTo(Cu02Info.NEXT_PAGE_NO);
+        }
+
+        @Test
+        @DisplayName("G50 - both CDEMO-PGM-CONTEXT states drive the two arms of :95")
+        void bothProgramContextStatesDriveTheEntryArms() {
+            assertThat(NavigationContext.PGM_CONTEXT_ENTER).isZero();
+            assertThat(NavigationContext.PGM_CONTEXT_REENTER).isEqualTo(1);
+            assertThat(enter().isEnter()).isTrue();
+            assertThat(enter().isReenter()).isFalse();
+            assertThat(reenter().isReenter()).isTrue();
+            assertThat(reenter().isEnter()).isFalse();
+
+            // CDEMO-PGM-ENTER takes the first-entry arm, which paints without receiving the map, so the
+            // AID is never evaluated and an invalid key cannot be reported.
+            ProgramState first = controller.handle(populated(enter()),
+                    UserUpdateController.PASSED_COMMAREA_LENGTH, CicsAid.DFHPF7, noSelection());
+            assertThat(first.errFlgOn()).isFalse();
+            assertThat(first.commarea().isReenter()).isTrue();
+
+            // CDEMO-PGM-REENTER takes the re-entry arm, which does evaluate it.
+            ProgramState again = reentryWith(populated(reenter()), CicsAid.DFHPF7);
+            assertThat(again.errFlgOn()).isTrue();
+        }
+    }
+
+    // =================================================================================================
+    // UPDATE-USER-INFO :179-213 - the ordered chain against LOW-VALUES as well as SPACES - G30
+    // =================================================================================================
+
+    /**
+     * The same five-arm chain as {@link UpdateUserInfo}, driven by the <em>other</em> empty state.
+     *
+     * <p>{@code WHEN USRIDINI OF COUSR2AI = SPACES OR LOW-VALUES} is one condition with two figurative
+     * constants, and the two are physically different bytes: {@code X'40'} repeated for {@code SPACES}
+     * and {@code X'00'} repeated for {@code LOW-VALUES}. {@code SPACES} is what an operator produces by
+     * typing over a field and blanking it; {@code LOW-VALUES} is what {@code :97}
+     * ({@code MOVE LOW-VALUES TO COUSR2AO}) leaves and what a field the 3270 never transmitted arrives
+     * as. A chain tested only against spaces would pass while silently treating an untransmitted field
+     * as populated - which would send an all-{@code X'00'} name to the dataset.
+     *
+     * <p>An absent JSON member models the untransmitted field, and
+     * {@link UserUpdateController#receivedImage(String, int)} renders it as {@code LOW-VALUES} at the
+     * declared width. Both halves of the {@code OR} therefore reach the same {@code WHEN}.
+     */
+    @Nested
+    @DisplayName("UPDATE-USER-INFO :179-213 - LOW-VALUES reaches the same arm SPACES does")
+    class LowValuesGuardChain {
+
+        @ParameterizedTest(name = "{0} untransmitted -> \"{1}\", cursor on {2}")
+        @CsvSource({
+            "usrIdIn, User ID can NOT be empty..., USRIDIN",
+            "fName,   First Name can NOT be empty..., FNAME",
+            "lName,   Last Name can NOT be empty..., LNAME",
+            "passwd,  Password can NOT be empty..., PASSWD",
+            "usrType, User Type can NOT be empty..., USRTYPE"
+        })
+        @DisplayName("each arm fires on LOW-VALUES exactly as it fires on SPACES")
+        void eachArmFiresOnLowValues(String absentField, String message, ScreenField cursor) {
+            ProgramState state = reentryWith(screen(
+                    "usrIdIn".equals(absentField) ? null : USER_ID,
+                    "fName".equals(absentField) ? null : "Sam",
+                    "lName".equals(absentField) ? null : "Spade",
+                    "passwd".equals(absentField) ? null : STORED_PWD,
+                    "usrType".equals(absentField) ? null : "U",
+                    reenter()), CicsAid.DFHPF5);
+
+            assertThat(state.errFlgOn()).isTrue();
+            assertThat(state.wsMessage()).isEqualTo(padded(message, 80));
+            assertThat(state.cursorRequestedOn(cursor)).isTrue();
+            assertThat(state.sendCount()).isEqualTo(1);
+            verify(repository, never()).readForUpdate(anyString());
+            verify(repository, never()).rewrite(any(SecUserRecord.class));
+        }
+
+        @Test
+        @DisplayName("the two empty states are different bytes, and both satisfy the same condition")
+        void spacesAndLowValuesAreDifferentBytesAndBothCount() {
+            String spaces = UserUpdateController.spaces(UserUpdateRequest.FNAME_LENGTH);
+            String lowValues = UserUpdateController.receivedImage(null, UserUpdateRequest.FNAME_LENGTH);
+
+            assertThat(spaces).isNotEqualTo(lowValues);
+            assertThat(spaces.charAt(0)).isEqualTo(' ');
+            assertThat(lowValues.charAt(0)).isEqualTo('\u0000');
+            assertThat(UserUpdateController.isSpacesOrLowValues(spaces)).isTrue();
+            assertThat(UserUpdateController.isSpacesOrLowValues(lowValues)).isTrue();
+
+            // A mixture is neither, so a field holding one real character is populated however the rest
+            // of it is filled - which is why the guard tests the whole field and not just its first byte.
+            assertThat(UserUpdateController.isSpacesOrLowValues("\u0000   ")).isFalse();
+        }
+
+        @Test
+        @DisplayName("first blank wins across the two states too: an absent id outranks a blank name")
+        void theChainShortCircuitsAcrossBothEmptyStates() {
+            ProgramState state = reentryWith(screen(null, "  ", "  ", null, null, reenter()),
+                    CicsAid.DFHPF5);
+
+            assertThat(state.wsMessage())
+                    .isEqualTo(padded(UserUpdateController.MSG_USER_ID_EMPTY, 80));
+            assertThat(state.cursorRequestedOn(ScreenField.USRIDIN)).isTrue();
+            assertThat(state.cursorRequestedOn(ScreenField.FNAME)).isFalse();
+        }
+
+        @Test
+        @DisplayName(":210-212 WHEN OTHER puts the cursor on FNAMEL and CONTINUEs into the read")
+        void whenOtherFallsThroughToTheRead() {
+            stubFoundRead();
+            stubSuccessfulRewrite();
+
+            ProgramState state = reentryWith(
+                    screen(USER_ID, "Samuel", "Spade", STORED_PWD, "U", reenter()), CicsAid.DFHPF5);
+
+            // No message from the chain, the cursor parked on FNAMEL by :211, and :215 onwards reached.
+            assertThat(state.errFlgOn()).isFalse();
+            assertThat(state.cursorRequestedOn(ScreenField.FNAME)).isTrue();
+            verify(repository).readForUpdate(USER_ID);
+        }
+
+        @Test
+        @DisplayName("the id arm comes FIRST here - COUSR01C puts its names ahead of its identifier")
+        void theIdentifierArmIsFirstOnThisScreen() {
+            // COUSR02C:180 tests USRIDINI before :186 tests FNAMEI. COUSR01C orders the same five checks
+            // with the names first. A screen blank in the id AND the first name therefore reports
+            // different messages on the two programs, and this pins which one belongs to CU02.
+            ProgramState state = reentryWith(screen("  ", "  ", "Spade", STORED_PWD, "U", reenter()),
+                    CicsAid.DFHPF5);
+
+            assertThat(state.wsMessage())
+                    .isEqualTo(padded(UserUpdateController.MSG_USER_ID_EMPTY, 80))
+                    .isNotEqualTo(padded(UserUpdateController.MSG_FIRST_NAME_EMPTY, 80));
+        }
+    }
+
+    // =================================================================================================
+    // :219-243 - the four INDEPENDENT change tests. This is the branch core of the program. G50
+    // =================================================================================================
+
+    /**
+     * The four comparisons at {@code app/cbl/COUSR02C.cbl:219-234} and the gate at {@code :236}.
+     *
+     * <p><strong>They are four separate {@code IF} statements, not an {@code IF/ELSE} chain.</strong>
+     * Each one that finds a difference performs its own {@code MOVE} and sets
+     * {@code USR-MODIFIED-YES}, and control then falls to the next {@code IF} regardless. All
+     * 2<sup>4</sup> = 16 combinations are therefore reachable, and a test suite covering only "one field
+     * changed" and "nothing changed" would leave most of this program's branch surface untouched - which
+     * matters directly for the package's 0.90 branch gate (<strong>G49</strong>).
+     *
+     * <p><strong>The comparisons are made on space-padded {@code PIC X} images.</strong>
+     * {@code FNAMEI} is {@code PIC X(20)} and {@code SEC-USR-FNAME} is {@code PIC X(20)}, so a typed
+     * {@code 'Sam'} is {@code 'Sam'} followed by seventeen spaces on both sides of the {@code NOT =}. A
+     * Java implementation that trimmed before comparing would find {@code "Sam"} unequal to
+     * {@code "Sam                 "}, report a modification that did not happen, and rewrite the record
+     * on every visit. Both halves of that are asserted here.
+     */
+    @Nested
+    @DisplayName(":219-243 - four independent IFs, sixteen combinations, and the padded comparison")
+    class ChangeDetection {
+
+        @BeforeEach
+        void stubTheDataset() {
+            stubFoundRead();
+            stubSuccessfulRewrite();
+        }
+
+        /** The stored record, as {@link #storedUser()} holds it, at declared widths. */
+        private SecUserRecord stored() {
+            return storedUser();
+        }
+
+        @Test
+        @DisplayName(":219-220 only the first name changed: only SEC-USR-FNAME differs on the rewrite")
+        void onlyTheFirstNameChanges() {
+            reentryWith(screen(USER_ID, "Samuel", "Spade", STORED_PWD, "U", reenter()),
+                    CicsAid.DFHPF5);
+
+            SecUserRecord written = rewrittenRecord();
+            assertThat(written.secUsrFname()).isEqualTo(padded("Samuel", 20))
+                    .isNotEqualTo(stored().secUsrFname());
+            assertThat(written.secUsrLname()).isEqualTo(stored().secUsrLname());
+            assertThat(written.secUsrPwd()).isEqualTo(stored().secUsrPwd());
+            assertThat(written.secUsrType()).isEqualTo(stored().secUsrType());
+            assertThat(written.secUsrId()).isEqualTo(stored().secUsrId());
+            assertThat(written.secUsrFiller()).isEqualTo(stored().secUsrFiller());
+        }
+
+        @Test
+        @DisplayName(":223-224 only the last name changed: only SEC-USR-LNAME differs on the rewrite")
+        void onlyTheLastNameChanges() {
+            reentryWith(screen(USER_ID, "Sam", "Spadey", STORED_PWD, "U", reenter()), CicsAid.DFHPF5);
+
+            SecUserRecord written = rewrittenRecord();
+            assertThat(written.secUsrLname()).isEqualTo(padded("Spadey", 20))
+                    .isNotEqualTo(stored().secUsrLname());
+            assertThat(written.secUsrFname()).isEqualTo(stored().secUsrFname());
+            assertThat(written.secUsrPwd()).isEqualTo(stored().secUsrPwd());
+            assertThat(written.secUsrType()).isEqualTo(stored().secUsrType());
+        }
+
+        @Test
+        @DisplayName(":227-228 only the password changed: only SEC-USR-PWD differs, in clear text")
+        void onlyThePasswordChanges() {
+            reentryWith(screen(USER_ID, "Sam", "Spade", "PWDBBBBB", "U", reenter()), CicsAid.DFHPF5);
+
+            SecUserRecord written = rewrittenRecord();
+            assertThat(written.secUsrPwd()).isEqualTo("PWDBBBBB")
+                    .isNotEqualTo(stored().secUsrPwd())
+                    .hasSize(SecUserRecord.SEC_USR_PWD_LENGTH);
+            assertThat(written.secUsrFname()).isEqualTo(stored().secUsrFname());
+            assertThat(written.secUsrLname()).isEqualTo(stored().secUsrLname());
+            assertThat(written.secUsrType()).isEqualTo(stored().secUsrType());
+        }
+
+        @Test
+        @DisplayName(":231-232 only the user type changed: only SEC-USR-TYPE differs on the rewrite")
+        void onlyTheUserTypeChanges() {
+            reentryWith(screen(USER_ID, "Sam", "Spade", STORED_PWD, "A", reenter()), CicsAid.DFHPF5);
+
+            SecUserRecord written = rewrittenRecord();
+            assertThat(written.secUsrType()).isEqualTo("A").isNotEqualTo(stored().secUsrType());
+            assertThat(written.secUsrFname()).isEqualTo(stored().secUsrFname());
+            assertThat(written.secUsrLname()).isEqualTo(stored().secUsrLname());
+            assertThat(written.secUsrPwd()).isEqualTo(stored().secUsrPwd());
+        }
+
+        @Test
+        @DisplayName("two fields changed at once produce ONE rewrite carrying BOTH changes")
+        void twoChangesProduceOneRewriteCarryingBoth() {
+            // Proof that :219 and :231 are separate IFs: an IF/ELSE chain would apply the first
+            // difference and leave the second on the screen, so the record on file would end up
+            // half-updated with no error reported.
+            reentryWith(screen(USER_ID, "Samuel", "Spade", STORED_PWD, "A", reenter()),
+                    CicsAid.DFHPF5);
+
+            SecUserRecord written = rewrittenRecord();
+            assertThat(written.secUsrFname()).isEqualTo(padded("Samuel", 20));
+            assertThat(written.secUsrType()).isEqualTo("A");
+            assertThat(written.secUsrLname()).isEqualTo(stored().secUsrLname());
+            assertThat(written.secUsrPwd()).isEqualTo(stored().secUsrPwd());
+            verify(repository, times(1)).rewrite(any(SecUserRecord.class));
+        }
+
+        @Test
+        @DisplayName("all four changed at once still produce ONE rewrite carrying all four")
+        void allFourChangesProduceOneRewrite() {
+            reentryWith(screen(USER_ID, "Samuel", "Spadey", "PWDBBBBB", "A", reenter()),
+                    CicsAid.DFHPF5);
+
+            SecUserRecord written = rewrittenRecord();
+            assertThat(written.secUsrFname()).isEqualTo(padded("Samuel", 20));
+            assertThat(written.secUsrLname()).isEqualTo(padded("Spadey", 20));
+            assertThat(written.secUsrPwd()).isEqualTo("PWDBBBBB");
+            assertThat(written.secUsrType()).isEqualTo("A");
+            // The key and the filler are carried forward untouched: the screen has no field for either,
+            // so :219-234 cannot have changed them.
+            assertThat(written.secUsrId()).isEqualTo(stored().secUsrId());
+            assertThat(written.secUsrFiller()).isEqualTo(stored().secUsrFiller());
+        }
+
+        @ParameterizedTest(name = "combination {0} of 16")
+        @ValueSource(ints = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15})
+        @DisplayName("all sixteen combinations are reachable, and modified is true for exactly fifteen")
+        void allSixteenCombinationsAreReachable(int mask) {
+            boolean firstNameChanged = (mask & 1) != 0;
+            boolean lastNameChanged = (mask & 2) != 0;
+            boolean passwordChanged = (mask & 4) != 0;
+            boolean userTypeChanged = (mask & 8) != 0;
+
+            ProgramState state = reentryWith(screen(USER_ID,
+                    firstNameChanged ? "Samuel" : "Sam",
+                    lastNameChanged ? "Spadey" : "Spade",
+                    passwordChanged ? "PWDBBBBB" : STORED_PWD,
+                    userTypeChanged ? "A" : "U",
+                    reenter()), CicsAid.DFHPF5);
+
+            boolean anythingChanged = mask != 0;
+            assertThat(state.usrModifiedYes()).isEqualTo(anythingChanged);
+            assertThat(state.wsUsrModified()).isEqualTo(anythingChanged
+                    ? UserUpdateController.USR_MODIFIED_YES
+                    : UserUpdateController.USR_MODIFIED_NO);
+
+            if (anythingChanged) {
+                SecUserRecord written = rewrittenRecord();
+                assertThat(written.secUsrFname())
+                        .isEqualTo(padded(firstNameChanged ? "Samuel" : "Sam", 20));
+                assertThat(written.secUsrLname())
+                        .isEqualTo(padded(lastNameChanged ? "Spadey" : "Spade", 20));
+                assertThat(written.secUsrPwd()).isEqualTo(passwordChanged ? "PWDBBBBB" : STORED_PWD);
+                assertThat(written.secUsrType()).isEqualTo(userTypeChanged ? "A" : "U");
+                assertThat(state.wsMessage())
+                        .isEqualTo(UserUpdateController.updatedConfirmation(USER_ID));
+            } else {
+                verify(repository, never()).rewrite(any(SecUserRecord.class));
+                assertThat(state.wsMessage())
+                        .isEqualTo(padded(UserUpdateController.MSG_PLEASE_MODIFY, 80));
+                assertThat(state.errMsgColour()).isEqualTo(BmsAttributes.DFHRED);
+            }
+        }
+
+        @Test
+        @DisplayName("G50 - both 88 states of WS-USR-MODIFIED are driven, and both are one character")
+        void bothModifiedStatesAreDriven() {
+            assertThat(reentryWith(screen(USER_ID, "Samuel", "Spade", STORED_PWD, "U", reenter()),
+                    CicsAid.DFHPF5).usrModifiedYes()).isTrue();
+            assertThat(reentryWith(populated(reenter()), CicsAid.DFHPF5).usrModifiedYes()).isFalse();
+
+            assertThat(UserUpdateController.USR_MODIFIED_YES).isEqualTo("Y").hasSize(1);
+            assertThat(UserUpdateController.USR_MODIFIED_NO).isEqualTo("N").hasSize(1);
+            assertThat(UserUpdateController.USR_MODIFIED_YES)
+                    .isNotEqualTo(UserUpdateController.USR_MODIFIED_NO);
+        }
+
+        @Test
+        @DisplayName(":85 SET USR-MODIFIED-NO runs on every entry, so nothing leaks between requests")
+        void theModifiedFlagDoesNotLeakBetweenRequests() {
+            // MAIN-PARA line 85 resets the flag before anything else happens. One controller instance
+            // serves every request - practice B9 forbids a field for it - so a leak would make the
+            // request after a successful save rewrite an unmodified record.
+            ProgramState modified = reentryWith(
+                    screen(USER_ID, "Samuel", "Spade", STORED_PWD, "U", reenter()), CicsAid.DFHPF5);
+            assertThat(modified.usrModifiedYes()).isTrue();
+
+            ProgramState unmodified = reentryWith(populated(reenter()), CicsAid.DFHPF5);
+            assertThat(unmodified.usrModifiedYes()).isFalse();
+            assertThat(unmodified.wsMessage())
+                    .isEqualTo(padded(UserUpdateController.MSG_PLEASE_MODIFY, 80));
+
+            // Exactly one rewrite in total - the first request's. The second contributed none.
+            verify(repository, times(1)).rewrite(any(SecUserRecord.class));
+
+            // And the error flag resets on the same line, so an invalid key does not stay reported.
+            assertThat(reentryWith(populated(reenter()), CicsAid.DFHPF7).errFlgOn()).isTrue();
+            assertThat(reentryWith(populated(reenter()), CicsAid.DFHPF4).errFlgOn()).isFalse();
+        }
+
+        @Test
+        @DisplayName("the comparison is on the PADDED image: 'Sam' equals a stored 'Sam' at width 20")
+        void theComparisonIsOnThePaddedImage() {
+            FixedWidthCodec pictureRules =
+                    new FixedWidthCodec(UserUpdateController.WORKING_STORAGE_CHARSET);
+            String typed = pictureRules.movePicX("Sam", UserUpdateRequest.FNAME_LENGTH);
+            String onFile = stored().secUsrFname();
+
+            // Both sides are twenty characters, and they are equal - so :219 finds no difference.
+            assertThat(typed).hasSize(UserUpdateRequest.FNAME_LENGTH).isEqualTo(onFile);
+
+            // The counter-proof: a trim-then-compare implementation would compare "Sam" against the
+            // twenty-character image, find them unequal, and report a modification that did not happen.
+            assertThat("Sam").isNotEqualTo(onFile);
+            assertThat(onFile.trim()).isEqualTo("Sam");
+
+            // Driven through the program, the padded comparison is what decides.
+            ProgramState state = reentryWith(populated(reenter()), CicsAid.DFHPF5);
+            assertThat(state.usrModifiedYes()).isFalse();
+            verify(repository, never()).rewrite(any(SecUserRecord.class));
+        }
+
+        @Test
+        @DisplayName("trailing spaces the operator typed are not a modification either")
+        void trailingSpacesAreNotAModification() {
+            // 'Sam   ' typed into a PIC X(20) field is the same twenty bytes as 'Sam' typed into it, so
+            // the MOVE at :220 would be a no-op and :221 must not fire.
+            ProgramState state = reentryWith(
+                    screen(USER_ID, "Sam      ", "Spade   ", STORED_PWD, "U", reenter()),
+                    CicsAid.DFHPF5);
+
+            assertThat(state.usrModifiedYes()).isFalse();
+            assertThat(state.wsMessage())
+                    .isEqualTo(padded(UserUpdateController.MSG_PLEASE_MODIFY, 80));
+            verify(repository, never()).rewrite(any(SecUserRecord.class));
+        }
+
+        @Test
+        @DisplayName("the comparison is case sensitive: COUSR02C has no FUNCTION UPPER-CASE")
+        void theComparisonIsCaseSensitive() {
+            // COSGN00C:132 and :135 fold their inputs with FUNCTION UPPER-CASE. COUSR02C does not, so
+            // 'sam' against a stored 'Sam' IS a modification and must be written as typed.
+            reentryWith(screen(USER_ID, "sam", "Spade", STORED_PWD, "U", reenter()), CicsAid.DFHPF5);
+
+            SecUserRecord written = rewrittenRecord();
+            assertThat(written.secUsrFname()).isEqualTo(padded("sam", 20))
+                    .isNotEqualTo(padded("SAM", 20));
+        }
+    }
+
+    // =================================================================================================
+    // The dataset contract - a held read, a keyless rewrite, and one status vocabulary - G47
+    // =================================================================================================
+
+    /**
+     * How this program reaches {@code USRSEC}, and what the repository is therefore obliged to expose.
+     *
+     * <p>{@code READ-USER-SEC-FILE} at {@code :322-331} carries {@code RIDFLD(SEC-USR-ID)},
+     * {@code KEYLENGTH(LENGTH OF SEC-USR-ID)} and - decisively - {@code UPDATE}. That makes it a
+     * <em>locking</em> read, so it maps to {@link SecUserRepository#readForUpdate(String)} and not to
+     * {@link SecUserRepository#read(String)}.
+     *
+     * <p>{@code UPDATE-USER-SEC-FILE} at {@code :360-366} carries {@code DATASET}, {@code FROM} and
+     * {@code LENGTH} and <strong>no {@code RIDFLD} at all</strong>. It rewrites whatever record the task
+     * is holding. A repository method taking a key would be a different command with different
+     * semantics: it could address a record the task never read and never locked. So the method takes
+     * only the record, and a {@code readForUpdate} must have preceded it.
+     *
+     * <p>Gate <strong>G47</strong> requires each {@link FileStatus} outcome to be exercised per call
+     * site. Both call sites - the {@code ENTER} lookup at {@code :163} and the save at {@code :217} -
+     * are driven through all three of their arms, here and in {@link ProcessEnterKey} and
+     * {@link UpdateUserSecFile}.
+     */
+    @Nested
+    @DisplayName("The dataset contract - READ ... UPDATE, a keyless REWRITE, one status vocabulary")
+    class DatasetContract {
+
+        @Test
+        @DisplayName(":360 the REWRITE takes NO key - every rewrite overload takes only the record")
+        void theRewriteTakesNoKey() throws Exception {
+            List<Method> rewrites = new ArrayList<>();
+            for (Method method : SecUserRepository.class.getDeclaredMethods()) {
+                if ("rewrite".equals(method.getName()) && Modifier.isPublic(method.getModifiers())) {
+                    rewrites.add(method);
+                }
+            }
+
+            assertThat(rewrites).hasSize(1);
+            Method rewrite = rewrites.get(0);
+            assertThat(rewrite.getParameterTypes()).containsExactly(SecUserRecord.class);
+            assertThat(rewrite.getReturnType()).isEqualTo(WriteResult.class);
+
+            // No key operand of any shape: no String, no long, no int.
+            for (Class<?> parameter : rewrite.getParameterTypes()) {
+                assertThat(parameter).isNotIn(String.class, long.class, int.class, Long.class,
+                        Integer.class);
+            }
+
+            // Contrast: the READ does carry a RIDFLD, so readForUpdate does take the key.
+            assertThat(SecUserRepository.class.getMethod("readForUpdate", String.class)
+                    .getReturnType()).isEqualTo(ReadResult.class);
+        }
+
+        @Test
+        @DisplayName("a REWRITE is always preceded by the READ ... UPDATE that took the hold")
+        void theReadAlwaysPrecedesTheRewrite() {
+            stubFoundRead();
+            stubSuccessfulRewrite();
+
+            reentryWith(screen(USER_ID, "Samuel", "Spade", STORED_PWD, "U", reenter()),
+                    CicsAid.DFHPF5);
+
+            InOrder sequence = inOrder(repository);
+            sequence.verify(repository).readForUpdate(USER_ID);
+            sequence.verify(repository).rewrite(any(SecUserRecord.class));
+            sequence.verifyNoMoreInteractions();
+
+            // And the unlocking read is never used on this screen: :328 has UPDATE on the command.
+            verify(repository, never()).read(anyString());
+        }
+
+        @Test
+        @DisplayName("the rewrite is handed the record the read returned, with the key it was read by")
+        void theRewriteCarriesTheRecordTheReadReturned() {
+            stubFoundRead();
+            stubSuccessfulRewrite();
+
+            reentryWith(screen(USER_ID, "Samuel", "Spade", STORED_PWD, "U", reenter()),
+                    CicsAid.DFHPF5);
+
+            SecUserRecord written = rewrittenRecord();
+            assertThat(written.secUsrId()).isEqualTo(USER_ID);
+            assertThat(written.secUsrId()).hasSize(SecUserRecord.SEC_USR_ID_LENGTH);
+            // Eighty bytes on the wire, filler included: LENGTH(LENGTH OF SEC-USER-DATA) at :363.
+            assertThat(SecUserRecord.encode(written, UserUpdateController.WORKING_STORAGE_CHARSET))
+                    .hasSize(SecUserRecord.RECORD_LENGTH);
+        }
+
+        @Test
+        @DisplayName("B5 - the vestigial CONTINUE at :335 stays a no-op: the arm still does all three")
+        void theVestigialContinueChangesNothing() {
+            // WHEN DFHRESP(NORMAL) opens with a bare CONTINUE at :335 and then does three real things at
+            // :336-339. CONTINUE is a no-op in COBOL - it does NOT end the arm - so tidying it away, or
+            // reading it as an early exit, would each change what the operator sees. The assertion is
+            // that all three statements after it still take effect, in order.
+            stubFoundRead();
+
+            ProgramState state = reentryWith(populated(reenter()), CicsAid.DFHENTER);
+
+            assertThat(state.wsMessage())
+                    .as(":336-337 MOVE 'Press PF5 key to save your updates ...' TO WS-MESSAGE")
+                    .isEqualTo(padded(UserUpdateController.MSG_PRESS_PF5, 80));
+            assertThat(state.sends().get(0).errMsgColour())
+                    .as(":338 MOVE DFHNEUTR TO ERRMSGC")
+                    .isEqualTo(BmsAttributes.DFHNEUTR);
+            assertThat(state.sendCount())
+                    .as(":339 PERFORM SEND-USRUPD-SCREEN, then :171 sends again")
+                    .isEqualTo(2);
+            // And the record area was filled, which is the INTO(SEC-USER-DATA) the arm depends on.
+            assertThat(state.secUserData().secUsrFname()).isEqualTo(padded("Sam", 20));
+            assertThat(state.errFlgOn()).isFalse();
+        }
+
+        @Test
+        @DisplayName("the two RESP spellings unify: DFHRESP(NOTFND) here, raw 13 in COSGN00C")
+        void theTwoRespSpellingsUnifyThroughFileStatus() {
+            // COUSR02C:334-340 and :369-377 write WHEN DFHRESP(NORMAL) / WHEN DFHRESP(NOTFND).
+            // COSGN00C:222 and :247 write WHEN 0 / WHEN 13 for the identical conditions. One vocabulary
+            // in common.FileStatus resolves both, so a repository outcome reads the same either way.
+            assertThat(FileStatus.NORMAL).isZero();
+            assertThat(FileStatus.NOTFND).isEqualTo(13);
+            assertThat(FileStatus.outcomeOfCicsResp(FileStatus.NORMAL))
+                    .isEqualTo(FileStatus.outcomeOfStatus(FileStatus.OK));
+            assertThat(FileStatus.outcomeOfCicsResp(FileStatus.NOTFND))
+                    .isEqualTo(FileStatus.outcomeOfStatus(FileStatus.NOT_FOUND));
+
+            // Both directions of the file carry the same classification for the same condition.
+            assertThat(ReadResult.notFound().isNotFound()).isTrue();
+            assertThat(WriteResult.notFound().isNotFound()).isTrue();
+            assertThat(ReadResult.notFound().statusImage())
+                    .isEqualTo(WriteResult.notFound().statusImage());
+        }
+
+        @Test
+        @DisplayName("G47 - the read's three arms are each reached from the ENTER call site at :163")
+        void theReadsThreeArmsAreEachReachedFromTheLookup() {
+            when(repository.readForUpdate(anyString())).thenReturn(ReadResult.found(storedUser()));
+            assertThat(reentryWith(populated(reenter()), CicsAid.DFHENTER).wsMessage())
+                    .isEqualTo(padded(UserUpdateController.MSG_PRESS_PF5, 80));
+
+            when(repository.readForUpdate(anyString())).thenReturn(ReadResult.notFound());
+            assertThat(reentryWith(populated(reenter()), CicsAid.DFHENTER).wsMessage())
+                    .isEqualTo(padded(UserUpdateController.MSG_USER_NOT_FOUND, 80));
+
+            when(repository.readForUpdate(anyString()))
+                    .thenReturn(ReadResult.of(FileStatus.END_OF_FILE, CicsResponse.reported(20, 0)));
+            ProgramState other = reentryWith(populated(reenter()), CicsAid.DFHENTER);
+            assertThat(other.wsMessage())
+                    .isEqualTo(padded(UserUpdateController.MSG_UNABLE_TO_LOOKUP, 80));
+            assertThat(other.displayLines()).containsExactly(displayLine(20, 0));
+        }
+
+        @Test
+        @DisplayName("G47 - the rewrite's three arms are each reached from the save call site at :237")
+        void theRewritesThreeArmsAreEachReachedFromTheSave() {
+            stubFoundRead();
+            UserUpdateRequest modified =
+                    screen(USER_ID, "Samuel", "Spade", STORED_PWD, "U", reenter());
+
+            when(repository.rewrite(any(SecUserRecord.class))).thenReturn(WriteResult.written());
+            assertThat(reentryWith(modified, CicsAid.DFHPF5).wsMessage())
+                    .isEqualTo(UserUpdateController.updatedConfirmation(USER_ID));
+
+            when(repository.rewrite(any(SecUserRecord.class))).thenReturn(WriteResult.notFound());
+            assertThat(reentryWith(modified, CicsAid.DFHPF5).wsMessage())
+                    .isEqualTo(padded(UserUpdateController.MSG_USER_NOT_FOUND, 80));
+
+            when(repository.rewrite(any(SecUserRecord.class)))
+                    .thenReturn(WriteResult.of(FileStatus.DUPLICATE, CicsResponse.reported(14, 0)));
+            ProgramState other = reentryWith(modified, CicsAid.DFHPF5);
+            assertThat(other.wsMessage())
+                    .isEqualTo(padded(UserUpdateController.MSG_UNABLE_TO_UPDATE, 80));
+            assertThat(other.displayLines()).contains(displayLine(14, 0));
+        }
+
+        @Test
+        @DisplayName(":372-374 DELIMITED BY SPACE trims the key: 'AB' gives no interior padding")
+        void theConfirmationTrimsTheKeyAtItsFirstSpace() {
+            SecUserRecord shortKey = SecUserRecord.of("AB", "Sam", "Spade", STORED_PWD, "U",
+                    UserUpdateController.WORKING_STORAGE_CHARSET);
+            when(repository.readForUpdate(anyString())).thenReturn(ReadResult.found(shortKey));
+            stubSuccessfulRewrite();
+
+            ProgramState state = reentryWith(
+                    screen("AB", "Samuel", "Spade", STORED_PWD, "U", reenter()), CicsAid.DFHPF5);
+
+            assertThat(state.wsMessage())
+                    .isEqualTo(padded("User AB has been updated ...", 80))
+                    .doesNotContain("User AB      has");
+            // The key itself is still eight bytes on the record; only the message trims it.
+            assertThat(rewrittenRecord().secUsrId()).isEqualTo(padded("AB", 8));
+        }
+    }
+
+    // =================================================================================================
+    // The seed - there is NO USRSEC fixture file; the seed is in-stream in app/jcl/DUSRSECJ.jcl
+    // =================================================================================================
+
+    /**
+     * The shape of the {@code USRSEC} seed, which is a {@code DD *} stream and not a fixture file.
+     *
+     * <p>{@code app/data/ASCII} holds exactly nine files and none of them is a security-user dataset.
+     * The seed is in-stream in {@code app/jcl/DUSRSECJ.jcl}: {@code //SYSUT1   DD *} at line 34, then ten
+     * records on lines 35-44, each exactly <strong>57</strong> characters - {@code SEC-USR-ID X(08)} plus
+     * {@code SEC-USR-FNAME X(20)} plus {@code SEC-USR-LNAME X(20)} plus {@code SEC-USR-PWD X(08)} plus
+     * {@code SEC-USR-TYPE X(01)}. The stream omits {@code SEC-USR-FILLER X(23)} entirely, so every row
+     * must be right-padded from 57 to the 80 bytes {@code app/cpy/CSUSR01Y.cpy} declares before it can be
+     * compared byte for byte. Dropping the filler instead would shorten the record and move every
+     * subsequent offset.
+     *
+     * <p>All ten seeded rows carry the identical eight-character password literal, which exactly fills
+     * {@code PIC X(08)}. A password-change test therefore has to supply a deliberately different value,
+     * which is why {@link #STORED_PWD} is an obvious placeholder rather than the seed's own literal.
+     */
+    @Nested
+    @DisplayName("The USRSEC seed - app/jcl/DUSRSECJ.jcl:34-44, ten rows of 57 padded to 80")
+    class SeededUsrsec {
+
+        /** The first seeded row's five named values, from {@code app/jcl/DUSRSECJ.jcl:35}. */
+        private static final String SEED_ID = "ADMIN001";
+        private static final String SEED_FIRST_NAME = "MARGARET";
+        private static final String SEED_LAST_NAME = "GOLD";
+        private static final String SEED_TYPE = "A";
+
+        /** A key no seeded row carries, so a lookup for it is {@code DFHRESP(NOTFND)}. */
+        private static final String ABSENT_ID = "NOSUCH01";
+
+        @Test
+        @DisplayName("the seeded row is 57 named characters, right-padded to the declared 80")
+        void theSeedRowIsFiftySevenPaddedToEighty() {
+            SecUserRecord seeded = SecUserRecord.of(SEED_ID, SEED_FIRST_NAME, SEED_LAST_NAME,
+                    STORED_PWD, SEED_TYPE, UserUpdateController.WORKING_STORAGE_CHARSET);
+
+            int named = SecUserRecord.SEC_USR_ID_LENGTH
+                    + SecUserRecord.SEC_USR_FNAME_LENGTH
+                    + SecUserRecord.SEC_USR_LNAME_LENGTH
+                    + SecUserRecord.SEC_USR_PWD_LENGTH
+                    + SecUserRecord.SEC_USR_TYPE_LENGTH;
+            assertThat(named).isEqualTo(57);
+            assertThat(named + SecUserRecord.SEC_USR_FILLER_LENGTH)
+                    .isEqualTo(SecUserRecord.RECORD_LENGTH);
+
+            // The stream supplies the 57; the codec supplies the 23 the stream omits.
+            assertThat(seeded.secUsrFiller())
+                    .hasSize(SecUserRecord.SEC_USR_FILLER_LENGTH)
+                    .isBlank();
+            assertThat(SecUserRecord.encode(seeded, UserUpdateController.WORKING_STORAGE_CHARSET))
+                    .hasSize(SecUserRecord.RECORD_LENGTH);
+
+            // Right-padding a 57-character row to 80 is exactly what the codec does, stated explicitly.
+            FixedWidthCodec codec =
+                    new FixedWidthCodec(UserUpdateController.WORKING_STORAGE_CHARSET);
+            String stream = SEED_ID + padded(SEED_FIRST_NAME, 20) + padded(SEED_LAST_NAME, 20)
+                    + STORED_PWD + SEED_TYPE;
+            assertThat(stream).hasSize(57);
+            assertThat(codec.padToDeclaredWidth(stream, SecUserRecord.RECORD_LENGTH))
+                    .hasSize(SecUserRecord.RECORD_LENGTH)
+                    .startsWith(stream);
+        }
+
+        @Test
+        @DisplayName("a seeded administrator is found and painted, type and all")
+        void aSeededAdministratorIsPainted() {
+            SecUserRecord seeded = SecUserRecord.of(SEED_ID, SEED_FIRST_NAME, SEED_LAST_NAME,
+                    STORED_PWD, SEED_TYPE, UserUpdateController.WORKING_STORAGE_CHARSET);
+            when(repository.readForUpdate(SEED_ID)).thenReturn(ReadResult.found(seeded));
+
+            ProgramState state = reentryWith(
+                    screen(SEED_ID, "typed", "over", "TYPEDPWD", "U", reenter()), CicsAid.DFHENTER);
+
+            assertThat(state.fName()).isEqualTo(padded(SEED_FIRST_NAME, 20));
+            assertThat(state.lName()).isEqualTo(padded(SEED_LAST_NAME, 20));
+            assertThat(state.usrType()).isEqualTo(SEED_TYPE);
+            // :169 paints the STORED password over whatever the operator typed.
+            assertThat(state.passwd()).isEqualTo(STORED_PWD).isNotEqualTo("TYPEDPWD");
+        }
+
+        @Test
+        @DisplayName("changing a seeded administrator's first name is the modification that fires")
+        void changingTheSeededFirstNameIsAModification() {
+            SecUserRecord seeded = SecUserRecord.of(SEED_ID, SEED_FIRST_NAME, SEED_LAST_NAME,
+                    STORED_PWD, SEED_TYPE, UserUpdateController.WORKING_STORAGE_CHARSET);
+            when(repository.readForUpdate(SEED_ID)).thenReturn(ReadResult.found(seeded));
+            stubSuccessfulRewrite();
+
+            ProgramState state = reentryWith(
+                    screen(SEED_ID, "MARGARETHE", SEED_LAST_NAME, STORED_PWD, SEED_TYPE, reenter()),
+                    CicsAid.DFHPF5);
+
+            assertThat(state.usrModifiedYes()).isTrue();
+            assertThat(rewrittenRecord().secUsrFname()).isEqualTo(padded("MARGARETHE", 20));
+            assertThat(state.wsMessage())
+                    .isEqualTo(padded("User " + SEED_ID + " has been updated ...", 80));
+        }
+
+        @Test
+        @DisplayName("a key no seeded row carries is DFHRESP(NOTFND): 'User ID NOT found...'")
+        void anAbsentKeyIsNotFound() {
+            when(repository.readForUpdate(ABSENT_ID)).thenReturn(ReadResult.notFound());
+
+            ProgramState state = reentryWith(
+                    screen(ABSENT_ID, "Sam", "Spade", STORED_PWD, "U", reenter()), CicsAid.DFHENTER);
+
+            verify(repository).readForUpdate(ABSENT_ID);
+            assertThat(state.errFlgOn()).isTrue();
+            assertThat(state.wsMessage())
+                    .isEqualTo(padded(UserUpdateController.MSG_USER_NOT_FOUND, 80));
+            assertThat(state.cursorRequestedOn(ScreenField.USRIDIN)).isTrue();
+            assertThat(ABSENT_ID).hasSize(SecUserRecord.SEC_USR_ID_LENGTH);
+        }
+    }
+
+    // =================================================================================================
+    // CSSETATY - the error highlight, which applies ONLY in REENTER - G38
+    // =================================================================================================
+
+    /**
+     * The {@code CSSETATY} highlight rule, and why the re-entry flag has to be passed explicitly.
+     *
+     * <p>{@code app/cpy/CSSETATY.cpy} moves {@link BmsAttributes#DFHRED} onto a field's colour item and
+     * an asterisk onto its output item when the field failed validation <em>and</em> the program is in
+     * its re-entry state. On first entry the map has not been received, nothing has been typed, and there
+     * is nothing to have failed - so a highlight painted then would mark fields the operator has not
+     * touched.
+     *
+     * <p>{@link FieldAttributeSetter} therefore takes the re-entry state as an explicit {@code boolean}
+     * parameter rather than reading it from anywhere. Gate <strong>G38</strong> requires both states to
+     * be exercised, and both are, on the same failing field.
+     */
+    @Nested
+    @DisplayName("CSSETATY - DFHRED and '*' in REENTER, and nothing at all on first entry")
+    class ErrorHighlight {
+
+        @Test
+        @DisplayName("G38 - a blank field in REENTER takes DFHRED on its colour item and '*' on output")
+        void aFailingFieldIsHighlightedOnReentry() {
+            FieldHighlight highlighted =
+                    FieldAttributeSetter.resolve(FieldValidationState.BLANK, true, "FNAME",
+                            UserUpdateResponse.MAP_NAME);
+
+            assertThat(highlighted.untouched()).isFalse();
+            assertThat(highlighted.colourItemAssigned()).isTrue();
+            assertThat(highlighted.colourItemValue()).isEqualTo(BmsAttributes.DFHRED);
+            assertThat(highlighted.outputItemAssigned()).isTrue();
+            assertThat(highlighted.outputItemValue()).isEqualTo(FieldAttributeSetter.ASTERISK);
+
+            // The items it names are the map's own, spelled as app/cpy-bms/COUSR02.CPY spells them.
+            assertThat(highlighted.colourItemName())
+                    .isEqualTo("FNAME" + FieldAttributeSetter.COLOUR_ITEM_SUFFIX);
+            assertThat(highlighted.outputItemName())
+                    .isEqualTo("FNAME" + FieldAttributeSetter.OUTPUT_ITEM_SUFFIX);
+        }
+
+        @Test
+        @DisplayName("G38 - the same blank field on FIRST entry is left completely untouched")
+        void nothingIsHighlightedOnFirstEntry() {
+            FieldHighlight untouched =
+                    FieldAttributeSetter.resolve(FieldValidationState.BLANK, false, "FNAME",
+                            UserUpdateResponse.MAP_NAME);
+
+            assertThat(untouched.untouched()).isTrue();
+            assertThat(untouched.colourItemAssigned()).isFalse();
+            assertThat(untouched.outputItemAssigned()).isFalse();
+        }
+
+        @ParameterizedTest(name = "{0} in REENTER")
+        @EnumSource(FieldValidationState.class)
+        @DisplayName("only a failing state highlights: OK is untouched even in REENTER")
+        void onlyAFailingStateHighlights(FieldValidationState state) {
+            FieldHighlight resolved = FieldAttributeSetter.resolve(state, true);
+
+            if (state == FieldValidationState.OK) {
+                assertThat(resolved.untouched()).isTrue();
+            } else {
+                assertThat(resolved.colourItemAssigned()).isTrue();
+                assertThat(resolved.colourItemValue()).isEqualTo(BmsAttributes.DFHRED);
+            }
+
+            // The two raw 88-level outcomes reach the same answer as the state vocabulary does.
+            assertThat(FieldAttributeSetter.resolveFromFlags(state.notOk(), state.blank(), true))
+                    .isEqualTo(resolved);
+        }
+
+        @Test
+        @DisplayName("the message colour the program itself sets is the one the screen carries")
+        void theProgramsOwnColoursAreTheOnesItSets() {
+            // COUSR02C sets ERRMSGC three times and only three times: DFHNEUTR on a successful read
+            // (:338), DFHRED on an unmodified record (:241), and DFHGREEN on a completed update (:371).
+            // No other colour appears in the program, so no other colour may appear on a send.
+            stubFoundRead();
+            assertThat(reentryWith(populated(reenter()), CicsAid.DFHENTER).errMsgColour())
+                    .isEqualTo(BmsAttributes.DFHNEUTR);
+            assertThat(reentryWith(populated(reenter()), CicsAid.DFHPF5).errMsgColour())
+                    .isEqualTo(BmsAttributes.DFHRED);
+
+            stubSuccessfulRewrite();
+            assertThat(reentryWith(screen(USER_ID, "Samuel", "Spade", STORED_PWD, "U", reenter()),
+                    CicsAid.DFHPF5).errMsgColour()).isEqualTo(BmsAttributes.DFHGREEN);
+
+            // And an untouched screen keeps the map's default rather than inventing a colour.
+            assertThat(reentryWith(populated(reenter()), CicsAid.DFHPF4).errMsgColour())
+                    .isEqualTo(BmsAttributes.DFHDFCOL);
+        }
+    }
+
+    // =================================================================================================
+    // POPULATE-HEADER-INFO against the fixed clock, and the bean that publishes one - practice B7
+    // =================================================================================================
+
+    /**
+     * Determinism: one {@link Clock}, read once, and never the wall clock.
+     *
+     * <p>{@code POPULATE-HEADER-INFO} at {@code :296-315} reads {@code FUNCTION CURRENT-DATE} and paints
+     * {@code CURDATEO} and {@code CURTIMEO} from it. A test that let it read the real clock could not
+     * assert either field, and a parity comparison could not either. Practice B7 therefore requires the
+     * clock to be injected, and {@link WebConfig} publishes exactly one {@link Clock} bean for
+     * production to supply while a test supplies a fixed one.
+     */
+    @Nested
+    @DisplayName("POPULATE-HEADER-INFO :296-315 - a fixed Clock, so the header is reproducible")
+    class DeterministicHeader {
+
+        @Test
+        @DisplayName("the header equals what common.DateHeader renders from the same fixed instant")
+        void theHeaderMatchesTheSharedRenderer() {
+            DateHeader expected = DateHeader.from(
+                    new FixedWidthCodec(UserUpdateController.WORKING_STORAGE_CHARSET), FIXED_CLOCK);
+            ProgramState state = reentryWith(populated(reenter()), CicsAid.DFHPF4);
+
+            assertThat(state.curDate()).isEqualTo(expected.wsCurdateMmDdYy()).isEqualTo(EXPECTED_DATE);
+            assertThat(state.curTime()).isEqualTo(expected.wsCurtimeHhMmSs()).isEqualTo(EXPECTED_TIME);
+            assertThat(state.curDate()).hasSize(DateHeader.WS_CURDATE_MM_DD_YY_LENGTH);
+            assertThat(state.curTime()).hasSize(DateHeader.WS_CURTIME_HH_MM_SS_LENGTH);
+        }
+
+        @Test
+        @DisplayName("two calls a notional second apart still render the same header, because it is fixed")
+        void repeatedCallsRenderTheSameHeader() {
+            ProgramState first = reentryWith(populated(reenter()), CicsAid.DFHPF4);
+            ProgramState second = reentryWith(populated(reenter()), CicsAid.DFHPF4);
+
+            assertThat(second.curDate()).isEqualTo(first.curDate());
+            assertThat(second.curTime()).isEqualTo(first.curTime());
+        }
+
+        @Test
+        @DisplayName("config.WebConfig publishes exactly one Clock bean, which is this seam")
+        void theClockSeamIsAPublishedBean() throws Exception {
+            Method clockBean = WebConfig.class.getMethod("clock");
+
+            assertThat(clockBean.getReturnType()).isEqualTo(Clock.class);
+            assertThat(clockBean.getParameterCount()).isZero();
+            assertThat(clockBean.getAnnotations())
+                    .extracting(annotation -> annotation.annotationType().getName())
+                    .anyMatch(name -> name.endsWith(".Bean"));
+
+            long clockBeanCount = 0;
+            for (Method method : WebConfig.class.getDeclaredMethods()) {
+                if (Clock.class.equals(method.getReturnType())) {
+                    clockBeanCount++;
+                }
+            }
+            assertThat(clockBeanCount).isEqualTo(1);
+        }
+    }
+
+    // =================================================================================================
+    // The migration constraints this screen has to satisfy - G22, G37, G40, G41, G43, G44, G46, G53
+    // =================================================================================================
+
+    /**
+     * The constraints that are best stated as negatives, each asserted rather than assumed.
+     *
+     * <p>Gate <strong>G43</strong> is the interesting one, because it does <em>not</em> apply here and
+     * practice B4 requires that to be recorded rather than glossed over. See the class-level note: the
+     * gate names {@code 9300-CHECK-CHANGE-IN-REC}, which exists in {@code COACTUPC} and
+     * {@code COCRDUPC} and in no {@code user} program. Reproducing it on this screen would be inventing
+     * a feature the legacy program does not have, and a version column would be a schema change that
+     * AAP section 0.7.4 forbids outright. The absence is therefore the requirement.
+     */
+    @Nested
+    @DisplayName("Migration constraints - no concurrency artefact, no session, no security framework")
+    class MigrationConstraints {
+
+        @Test
+        @DisplayName("G43 does NOT apply: no version column, no ETag and no re-read-and-compare exists")
+        void noOptimisticConcurrencyArtefactExists() {
+            // 1. No version, revision, timestamp or ETag component on any carrier or on the record.
+            for (Class<?> type : List.of(UserUpdateRequest.class, UserUpdateResponse.class,
+                    Cu02Info.class, SecUserRecord.class)) {
+                for (RecordComponent component : type.getRecordComponents()) {
+                    String name = component.getName().toLowerCase(Locale.ROOT);
+                    assertThat(name)
+                            .as("%s.%s", type.getSimpleName(), component.getName())
+                            .doesNotContain("version")
+                            .doesNotContain("revision")
+                            .doesNotContain("etag")
+                            .doesNotContain("lastmodified")
+                            .doesNotContain("optimistic");
+                }
+            }
+
+            // 2. No 9300-CHECK-CHANGE-IN-REC equivalent on the controller. The concurrency control is the
+            //    CICS lock the READ ... UPDATE at :328 takes, and nothing else.
+            for (Method method : UserUpdateController.class.getDeclaredMethods()) {
+                String name = method.getName().toLowerCase(Locale.ROOT);
+                assertThat(name)
+                        .as("%s suggests a change-in-record check COUSR02C does not perform",
+                                method.getName())
+                        .doesNotContain("checkchange")
+                        .doesNotContain("changeinrec")
+                        .doesNotContain("concurren");
+            }
+
+            // 3. One read and one rewrite per save - never a second, confirming read.
+            stubFoundRead();
+            stubSuccessfulRewrite();
+            reentryWith(screen(USER_ID, "Samuel", "Spade", STORED_PWD, "U", reenter()),
+                    CicsAid.DFHPF5);
+            verify(repository, times(1)).readForUpdate(USER_ID);
+            verify(repository, times(1)).rewrite(any(SecUserRecord.class));
+        }
+
+        @Test
+        @DisplayName("G44 - no persistence provider is even on the classpath to be annotated with")
+        void noPersistenceArtefactExists() {
+            List<Annotation> annotations = new ArrayList<>();
+            annotations.addAll(List.of(UserUpdateController.class.getAnnotations()));
+            for (Method method : UserUpdateController.class.getDeclaredMethods()) {
+                annotations.addAll(List.of(method.getAnnotations()));
+            }
+            for (Class<?> type : List.of(UserUpdateRequest.class, UserUpdateResponse.class,
+                    SecUserRecord.class)) {
+                annotations.addAll(List.of(type.getAnnotations()));
+            }
+
+            for (Annotation annotation : annotations) {
+                assertThat(annotation.annotationType().getName())
+                        .doesNotContain("persistence")
+                        .doesNotContain("hibernate");
+            }
+            assertThatThrownBy(() -> Class.forName("jakarta.persistence.Entity"))
+                    .isInstanceOf(ClassNotFoundException.class);
+        }
+
+        @Test
+        @DisplayName("G41/B6 - no encoder, digest, token or security type is reachable from this screen")
+        void noSecurityFrameworkTypeIsReachable() {
+            List<String> forbidden = List.of("PasswordEncoder", "BCrypt", "MessageDigest",
+                    "org.springframework.security", "Jwt", "Cipher", "SecretKey");
+
+            List<String> reachable = new ArrayList<>();
+            for (Class<?> type : List.of(UserUpdateController.class, UserUpdateRequest.class,
+                    UserUpdateResponse.class, SecUserRecord.class)) {
+                for (Method method : type.getDeclaredMethods()) {
+                    reachable.add(method.getReturnType().getName());
+                    reachable.add(method.getName());
+                    for (Class<?> parameter : method.getParameterTypes()) {
+                        reachable.add(parameter.getName());
+                    }
+                }
+                for (Annotation annotation : type.getAnnotations()) {
+                    reachable.add(annotation.annotationType().getName());
+                }
+            }
+
+            for (String name : reachable) {
+                for (String marker : forbidden) {
+                    assertThat(name)
+                            .as("%s suggests %s; strengthening the comparison at :227 would change "
+                                    + "observable behaviour and is out of scope", name, marker)
+                            .doesNotContain(marker);
+                }
+            }
+        }
+
+        @Test
+        @DisplayName("G37 - no HttpSession is created, no cookie set, and no state kept server-side")
+        void nothingIsRetainedServerSide() throws Exception {
+            stubFoundRead();
+            ObjectMapper mapper = new ObjectMapper();
+
+            MvcResult result = httpOver(mapper).perform(put("/api/users/{userId}", USER_ID)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(mapper.writeValueAsString(populated(reenter()))))
+                    .andExpect(status().isOk())
+                    .andReturn();
+
+            assertThat(result.getRequest().getSession(false))
+                    .as("COUSR02C is pseudo-conversational: state travels in the payload (rule R6)")
+                    .isNull();
+            MockHttpServletResponse response = result.getResponse();
+            assertThat(response.getCookies()).isEmpty();
+            assertThat(response.getHeaderNames()).doesNotContain("Set-Cookie");
+
+            // The conversation is in the body: the commarea and its extension both come back out.
+            JsonNode body = mapper.readTree(response.getContentAsString());
+            assertThat(body.has("navigationContext")).isTrue();
+            assertThat(body.has("cu02Info")).isTrue();
+        }
+
+        @Test
+        @DisplayName("G40 - navigation is a RESPONSE FIELD: no redirect, no forward, no Location header")
+        void navigationIsAResponseFieldRatherThanARedirect() throws Exception {
+            ObjectMapper mapper = new ObjectMapper();
+            // The cold start at :90-92, which is the one path that transfers on a bare first request.
+            UserUpdateRequest noCommarea = screen(USER_ID, "Sam", "Spade", STORED_PWD, "U", null);
+
+            httpOver(mapper).perform(put("/api/users/{userId}", USER_ID)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(mapper.writeValueAsString(noCommarea)))
+                    .andExpect(status().isOk())
+                    .andExpect(header().doesNotExist("Location"))
+                    .andExpect(jsonPath("$.nextProgram")
+                            .value(UserUpdateController.LIT_SIGNON_PGM));
+
+            // An XCTL is 200 with a named target, never 3xx: the client decides what to call next.
+            MvcResult transferred = httpOver(mapper).perform(put("/api/users/{userId}", USER_ID)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(mapper.writeValueAsString(noCommarea)))
+                    .andReturn();
+            assertThat(transferred.getResponse().getStatus()).isEqualTo(200);
+            assertThat(transferred.getResponse().getForwardedUrl()).isNull();
+            assertThat(transferred.getResponse().getRedirectedUrl()).isNull();
+        }
+
+        @Test
+        @DisplayName("G46 - no dataset name literal appears in any of the controller's constants")
+        void noDatasetNameLiteralIsUsed() throws IllegalAccessException {
+            // The DSNAME lives in app/csd/CARDDEMO.CSD:89 and, for this module, only in
+            // application.yml. What COUSR02C holds at :39 is WS-USRSEC-FILE PIC X(08) VALUE 'USRSEC  ' -
+            // the eight-character CICS FILE name the DATASET operand of :323 and :361 names, which is
+            // not a dataset name.
+            //
+            // The two probes are qualifier FRAGMENTS rather than dataset names, so their absence is
+            // checkable without this file itself embedding a usable name.
+            String highLevelQualifiers = "AWS" + ".M2.";
+            String clusterSuffix = "VSAM" + ".KSDS";
+
+            int inspected = 0;
+            for (Field field : UserUpdateController.class.getDeclaredFields()) {
+                if (Modifier.isStatic(field.getModifiers()) && field.getType() == String.class) {
+                    field.setAccessible(true);
+                    assertThat((String) field.get(null))
+                            .as("constant %s must not embed a dataset name", field.getName())
+                            .doesNotContain(highLevelQualifiers)
+                            .doesNotContain(clusterSuffix);
+                    inspected++;
+                }
+            }
+            assertThat(inspected)
+                    .as("the controller's string constants must actually have been inspected")
+                    .isGreaterThanOrEqualTo(15);
+
+            assertThat(UserUpdateController.WS_USRSEC_FILE)
+                    .isEqualTo(SecUserRepository.CICS_FILE_NAME_IMAGE)
+                    .hasSize(8);
+            assertThat(UserUpdateController.WS_USRSEC_FILE.trim()).isEqualTo("USRSEC");
+        }
+
+        @Test
+        @DisplayName("G53 - two independent requests cannot see each other's WORKING-STORAGE")
+        void independentRequestsDoNotInterfere() {
+            // One controller instance, two calls whose data has nothing in common. If any WORKING-STORAGE
+            // item were a field rather than per-call state, the second call would inherit the first's
+            // error flag, message, record area and cursor.
+            stubFoundRead();
+
+            ProgramState failing = reentryWith(populated(reenter()), CicsAid.DFHPF7);
+            ProgramState succeeding = reentryWith(populated(reenter()), CicsAid.DFHENTER);
+
+            assertThat(failing.errFlgOn()).isTrue();
+            assertThat(succeeding.errFlgOn()).isFalse();
+            assertThat(succeeding.wsMessage())
+                    .isEqualTo(padded(UserUpdateController.MSG_PRESS_PF5, 80));
+            assertThat(succeeding.displayLines()).isEmpty();
+            assertThat(failing.secUserData().secUsrFname()).isBlank();
+            assertThat(succeeding.secUserData().secUsrFname()).isEqualTo(padded("Sam", 20));
+
+            // Neither state object is the other, and neither is the controller's.
+            assertThat(succeeding).isNotSameAs(failing);
+            for (Field field : UserUpdateController.class.getDeclaredFields()) {
+                if (!Modifier.isStatic(field.getModifiers())) {
+                    assertThat(Modifier.isFinal(field.getModifiers()))
+                            .as("instance field %s must be final", field.getName())
+                            .isTrue();
+                }
+            }
         }
     }
 }

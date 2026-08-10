@@ -1,0 +1,34 @@
+{
+  "program": "CBACT02C",
+  "caseId": "case07",
+  "description": "0000-CARDFILE-OPEN reports '23' - a record-not-found response from the OPEN - and the program abends before reading anything. app/cbl/CBACT02C.cbl:118-134 is deliberately two-armed: :121 tests CARDFILE-STATUS = '00' and every other status, '23' included, falls to :124 MOVE 12 TO APPL-RESULT. There is no APPL-EOF arm in the open paragraph - that exists only in the read paragraph at :107 - so the guard at :126 takes its ELSE and the three-statement error arm runs in source order: DISPLAY 'ERROR OPENING CARDFILE' at :129, MOVE CARDFILE-STATUS TO IO-STATUS at :130, PERFORM 9910-DISPLAY-IO-STATUS at :131 which emits the numeric-arm image '0023' (:170-172, '0000' overlaid at position three by the two status characters), and PERFORM 9999-ABEND-PROGRAM at :132 which DISPLAYs 'ABENDING PROGRAM' at :155 and CALLs 'CEE3ABD' at :158. RETURN-CODE is the 12 the guard chain put in APPL-RESULT. The whole card master is seeded, and not one row of it is read: a dataset can exist and still refuse to open.",
+  "unitKind": "BATCH_JOB",
+  "inputs": {
+    "CARDFILE": {
+      "fixture": "carddata.txt"
+    }
+  },
+  "jobParameters": {},
+  "expectedWrites": [],
+  "expectedFinalState": [],
+  "expectedReturnCode": 12,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "START OF EXECUTION OF PROGRAM CBACT02C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ERROR OPENING CARDFILE"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "FILE STATUS IS: NNNN0023"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ABENDING PROGRAM"
+    }
+  ],
+  "normalisations": []
+}

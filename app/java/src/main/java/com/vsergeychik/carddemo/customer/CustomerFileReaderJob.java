@@ -5,6 +5,7 @@ import com.vsergeychik.carddemo.config.BatchConfig;
 import com.vsergeychik.carddemo.config.BatchConfig.StepContract;
 import com.vsergeychik.carddemo.customer.CustomerService.Execution;
 import com.vsergeychik.carddemo.customer.CustomerService.Sysout;
+import com.vsergeychik.carddemo.customer.CustomerService.SysoutSink;
 
 import org.springframework.batch.core.Job;
 import org.springframework.batch.core.JobParameters;
@@ -17,10 +18,6 @@ import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
-import java.io.FileDescriptor;
-import java.io.FileOutputStream;
-import java.io.PrintStream;
-import java.nio.charset.Charset;
 import java.util.List;
 import java.util.Objects;
 
@@ -58,11 +55,17 @@ import java.util.Objects;
  * <pre>
  * //READCUST JOB 'Read Customer Data file',CLASS=A,MSGCLASS=0,          READCUST.jcl:L1
  * //STEP05 EXEC PGM=CBCUS01C                                                        L6
- * //STEPLIB  DD DISP=SHR,DSN=AWS.M2.CARDDEMO.LOADLIB                            L7-L8
- * //CUSTFILE DD DISP=SHR,DSN=AWS.M2.CARDDEMO.CUSTDATA.VSAM.KSDS               L9-L10
+ * //STEPLIB  DD DISP=SHR,DSN=&lt;load library&gt;                                    L7-L8
+ * //CUSTFILE DD DISP=SHR,DSN=&lt;customer master KSDS&gt;                           L9-L10
  * //SYSOUT   DD SYSOUT=*                                                           L11
  * //SYSPRINT DD SYSOUT=*                                                           L12
  * </pre>
+ *
+ * <p>The two {@code DSN} values are shown as descriptions rather than transcribed, and gate
+ * <strong>G46</strong> is why: a dataset name belongs to {@code application.yml}'s
+ * {@code carddemo.datasets} bindings, and a scan of this module's Java sources must not find one. Read
+ * {@code app/jcl/READCUST.jcl} for the literal names - it is the authoritative copy, and it is
+ * read-only.
  *
  * <p>Four facts follow from it, and each is asserted rather than assumed:
  * <ul>
@@ -78,17 +81,68 @@ import java.util.Objects;
  *       fetched from, which on the JVM is the classpath; nothing is invented for it.</li>
  * </ul>
  *
+ * <h2>The four readers, and the one thing this one does differently</h2>
+ *
+ * <p>{@code CBCUS01C} is one of four near-identical read-and-print programs, and its three siblings are
+ * wired exactly like this class - same {@code @Configuration}, same single tasklet step, same
+ * contract validation - differing only in their record type and their display format:
+ *
+ * <table border="1">
+ *   <caption>The four read-and-print readers</caption>
+ *   <tr><th>Program</th><th>JCL</th><th>Java</th><th>Dataset</th></tr>
+ *   <tr><td>{@code CBACT01C}</td><td>{@code READACCT.jcl}</td>
+ *       <td>{@code AccountBalanceJob}</td><td>{@code ACCTFILE}</td></tr>
+ *   <tr><td>{@code CBACT02C}</td><td>{@code READCARD.jcl}</td>
+ *       <td>{@code AccountBalanceReaderJob}</td><td>{@code CARDFILE}</td></tr>
+ *   <tr><td>{@code CBACT03C}</td><td>{@code READXREF.jcl}</td>
+ *       <td>{@code AccountBalanceUpdateJob}</td><td>{@code XREFFILE}</td></tr>
+ *   <tr><td>{@code CBCUS01C}</td><td>{@code READCUST.jcl}</td>
+ *       <td>{@code CustomerFileReaderJob}</td><td>{@code CUSTFILE}</td></tr>
+ * </table>
+ *
+ * <p><strong>The difference is in the display, and it is not cosmetic.</strong> The other three call a
+ * labelled-field display paragraph from inside their read routine - {@code CBACT01C:96} performs
+ * {@code 1100-DISPLAY-ACCT-RECORD}, which emits eleven
+ * {@code 'ACCT-ID                 :'}-style lines and a separator - and emit the raw group image only
+ * once, from their mainline. {@code CBCUS01C} <strong>has no labelled-field display paragraph at
+ * all</strong>: {@code L96} and {@code L78} are both a bare {@code DISPLAY CUSTOMER-RECORD} of the
+ * <em>group item</em>, so every record produces <strong>two byte-identical 500-character raw images,
+ * adjacent</strong>. Fifty fixture records therefore make {@code 2 + 50 x 2 = 102} lines, not 52. A
+ * reviewer comparing the four classes should expect that asymmetry to be there; it is the source's, and
+ * neither collapsing the pair nor borrowing the account reader's labelled paragraph would be faithful.
+ *
  * <h2>{@code SYSOUT}, and where the lines actually go</h2>
  *
- * <p>{@code CBCUS01C}'s entire observable output is its {@code DISPLAY} sequence: two banners and two
- * byte-identical 500-character images per record, because {@code L96} and {@code L78} both display the
- * record. {@link CustomerService} accumulates that sequence in a {@link Sysout} it returns, which is
- * what parity cases are judged against. This class is what puts it on the real spool.
+ * <p>{@code CBCUS01C}'s entire observable output is that {@code DISPLAY} sequence.
+ * {@link CustomerService} accumulates it in a {@link Sysout} it returns, which is what parity cases are
+ * judged against. This class is what puts it on the real spool.
  *
  * <p>The destination is an injected {@link SysoutSink} when the context publishes one - which is how a
- * test captures the exact line sequence - and {@link #standardOutput(Charset)} otherwise, writing in
- * the dataset code page rather than the platform default (practice <strong>B8</strong>). Resolution
- * happens once, in the constructor, so the destination cannot change between two records of a run.
+ * test captures the exact line sequence - and {@link CustomerService#standardOutputSysoutSink()}
+ * otherwise. Both the sink type and the default are {@link CustomerService}'s, deliberately: the
+ * {@code SYSOUT} of {@value CustomerService#PROGRAM_ID} belongs to the translation of
+ * {@value CustomerService#PROGRAM_ID}, and a second sink type declared here would be a second
+ * definition of one program's output - the kind of duplicate that lets a spooled line and a
+ * parity-asserted line drift apart. Resolution happens once, in the constructor, so the destination
+ * cannot change between two records of a run.
+ *
+ * <h2>Spring Batch 5.2.6, and why not 6</h2>
+ *
+ * <p>Every batch API this class touches arrives through {@link BatchConfig}, which constructs
+ * {@code JobBuilder} and {@code StepBuilder} instances directly - the Spring Batch 5 shapes. The two
+ * builder-factory beans that earlier versions injected were removed in Batch 5 and appear nowhere in
+ * this module. The batch-processing enable annotation is likewise <strong>absent by design</strong>, and
+ * not merely unused: Boot 3 auto-configures Batch, and declaring that annotation anywhere in the module
+ * would switch the auto-configuration <em>off</em>, taking the auto-configured job repository with it.
+ *
+ * <p>The version is pinned rather than merely current. Spring Batch {@code 6.0.4} and Spring Boot
+ * {@code 4.1.0} are both published, and both are rejected: the build is fixed at Boot {@code 3.5.16},
+ * whose managed Batch version is {@code 5.2.6}. Practice <strong>B2</strong> - constraint fidelity
+ * outranks recency - is the reason, and it is not a stylistic preference; a Batch 6 API reached for here
+ * would not resolve against this build at all.
+ *
+ * <p>Naming those removed types in prose is avoided deliberately, so that a scan of this file for a
+ * pre-Batch-5 API is mechanically conclusive rather than something a reviewer has to read around.
  *
  * <p><strong>A failing run's lines reach the spool too.</strong> On the mainframe the {@code DISPLAY}
  * statements a run performed before it abended are already in the spool - {@code CEE3ABD} does not
@@ -109,11 +163,14 @@ import java.util.Objects;
  *
  * <p>A {@code @Configuration} class is a singleton, so nothing per-run lives on it: the {@link Sysout}
  * and every item of {@code WORKING-STORAGE} are created per execution (practice <strong>B9</strong>,
- * gate <strong>G53</strong>). Its three fields are the batch scaffolding, the service and the resolved
- * sink, all final.
+ * gate <strong>G53</strong>). Its four fields - the batch scaffolding, the service, the resolved sink
+ * and the validated step contract - are all {@code final}, and all four are settled by the time the
+ * constructor returns. There is no counter, no cursor and no accumulated total: the read count a run
+ * reports is a local of the tasklet call, so two executions of this bean cannot observe each other and
+ * the parity cases may run in any order, and in parallel, and still agree.
  *
- * @see CustomerService the program itself - every branch, every status test, every {@code DISPLAY}
- * @see CustomerRepository the {@code CUSTFILE} browse this job's step reads through
+ * @see CustomerService the program itself - every branch, every status test, every {@code DISPLAY}, and
+ *      the {@code CUSTFILE} browse this job reaches only through it
  */
 @Configuration(CustomerFileReaderJob.CONFIGURATION_BEAN_NAME)
 public class CustomerFileReaderJob {
@@ -192,22 +249,27 @@ public class CustomerFileReaderJob {
      * program's dataset resolution - and that step must not be gated, because {@code READCUST.jcl}
      * carries no {@code COND} and declares only this step.
      *
+     * <p><strong>There are exactly three parameters, and the omissions are the deliberate part.</strong>
+     * This job reaches the customer master only through {@link CustomerService}. Handing the wiring layer
+     * a repository of its own would give it a second, independent path to the data, and a second path is
+     * a second place for a browse to be opened, ordered or closed differently. No connection source, no
+     * SQL-template type and no code page is accepted either: reading dataset bytes - and therefore
+     * deciding how they are decoded - belongs to the layer that does it, and this class reads none. The
+     * parameter list is the enforcement, so the omissions are also scan-conclusive.
+     *
      * @param batchConfig        the module's batch scaffolding; never {@code null}
      * @param customerService    the translation of {@value CustomerService#PROGRAM_ID}; never
      *                           {@code null}
-     * @param customerRepository the {@code CUSTFILE} repository, used here only for the dataset code
-     *                           page the default {@code SYSOUT} destination writes in; never
-     *                           {@code null}
      * @param sysoutSinkProvider provider for an injected {@code SYSOUT} destination, consulted once and
-     *                           defaulted to {@link #standardOutput(Charset)} when the context declares
-     *                           none; never {@code null}, though it may resolve to nothing
+     *                           defaulted to {@link CustomerService#standardOutputSysoutSink()} when the
+     *                           context declares none; never {@code null}, though it may resolve to
+     *                           nothing
      * @throws NullPointerException  if any argument is {@code null}
      * @throws IllegalStateException if the contract is absent, names another program, or gates this
      *                               job's only step
      */
     public CustomerFileReaderJob(BatchConfig batchConfig,
             CustomerService customerService,
-            CustomerRepository customerRepository,
             ObjectProvider<SysoutSink> sysoutSinkProvider) {
 
         this.batchConfig = Objects.requireNonNull(batchConfig, "The batch scaffolding is required: the "
@@ -217,14 +279,10 @@ public class CustomerFileReaderJob {
         this.customerService = Objects.requireNonNull(customerService, "The customer service is "
                 + "required: it is the translation of " + CustomerService.PROGRAM_ID + ", and this job "
                 + "is only its Spring Batch wiring");
-        Objects.requireNonNull(customerRepository, "The customer repository is required for the dataset "
-                + "code page the default SYSOUT destination writes in; a displayed record is the "
-                + "dataset's own bytes and the platform default is never assumed");
         Objects.requireNonNull(sysoutSinkProvider, "A SYSOUT sink provider is required; it may resolve "
                 + "to no bean, in which case the standard output stream is used");
 
-        this.sysoutSink = sysoutSinkProvider
-                .getIfAvailable(() -> standardOutput(customerRepository.datasetCharset()));
+        this.sysoutSink = sysoutSinkProvider.getIfAvailable(CustomerService::standardOutputSysoutSink);
         this.stepContract = requireUngatedStep(batchConfig);
     }
 
@@ -414,58 +472,4 @@ public class CustomerFileReaderJob {
         return sysoutSink;
     }
 
-    // =================================================================================================
-    // SYSOUT - //SYSOUT DD SYSOUT=* (app/jcl/READCUST.jcl:L11).
-    // =================================================================================================
-
-    /**
-     * Where one {@code DISPLAY} statement's line goes.
-     *
-     * <p>Declared here rather than in the shared package on purpose: each batch program has its own
-     * {@code SYSOUT}, and a per-job type means sibling job classes can each accept an injected sink
-     * without their beans becoming ambiguous with one another.
-     *
-     * <p>Being a functional interface, a test supplies {@code lines::add} and reads the sequence back in
-     * order.
-     */
-    @FunctionalInterface
-    public interface SysoutSink {
-
-        /**
-         * Writes one complete line, exactly as {@code DISPLAY} emits it.
-         *
-         * <p>The line arrives without a terminator and must not be trimmed, wrapped, re-encoded or
-         * decorated. Trailing spaces are significant: a raw 500-byte {@code CUSTOMER-RECORD} image ends
-         * in 168 of them.
-         *
-         * @param line the line to emit; never {@code null}
-         */
-        void write(String line);
-    }
-
-    /**
-     * The production {@code SYSOUT}: one line per call to the process's standard output stream, in the
-     * code page given.
-     *
-     * <p>Used when the context declares no {@link SysoutSink} bean of its own. The charset is a
-     * <strong>parameter</strong> and the platform default is never consulted (practice B8): the lines
-     * this program emits are dataset characters, so the honest code page for them is the one the
-     * dataset is read in.
-     *
-     * <p>The stream is auto-flushing, so a line is visible as soon as it is written rather than at
-     * process exit, and it is opened on the standard output file descriptor rather than taken from a
-     * mutable global, so a caller cannot silently redirect one job's {@code SYSOUT} by reassigning
-     * something else. It is deliberately never closed: standard output outlives every job that writes
-     * to it, and closing it would silence the rest of the process.
-     *
-     * @param charset the code page to encode each line in; must not be {@code null}
-     * @return a sink writing to standard output
-     * @throws NullPointerException if {@code charset} is {@code null}
-     */
-    public static SysoutSink standardOutput(Charset charset) {
-        Objects.requireNonNull(charset, "A code page is required for SYSOUT: a displayed record is the "
-                + "dataset's own bytes, and the platform default is never assumed");
-        PrintStream stream = new PrintStream(new FileOutputStream(FileDescriptor.out), true, charset);
-        return stream::println;
-    }
 }

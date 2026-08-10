@@ -1,0 +1,200 @@
+{
+  "program": "CBSTM03B",
+  "caseId": "case20",
+  "description": "Four independent two-byte FILE STATUS areas - app/cbl/CBSTM03B.CBL:83-97, gate G47. One 01 group per SELECT, so a failure on one file cannot perturb another's status, and nothing in the program shares a status between paragraphs. All four files are opened, then CUSTFILE alone is closed and read by key while closed, which reports '47'. The three reads that follow - sequential on TRNXFILE, sequential on XREFFILE, keyed on ACCTFILE - each report '00', and a final keyed read of the still-closed CUSTFILE reports '47' again. Ten calls in one ordered transcript, so the independence is visible as an interleaving rather than asserted in the abstract.",
+  "unitKind": "COMPONENT",
+  "inputs": {
+    "TRNXFILE": {
+      "rows": [
+        "05000244537657400000000058866561010001POS TERM  Purchase at Blick-Rippin                                                                            0000001838H800000000Blick-Rippin                                      East Julien                                       87157     2022-06-10 19:27:53.000000                                              ",
+        "05000244537657400000000329724245010001POS TERM  Purchase at Reichel Group                                                                           0000000140{800000000Reichel Group                                     Port Romanfort                                    95843     2022-06-10 19:27:53.000000                                              "
+      ]
+    },
+    "XREFFILE": {
+      "fixture": "cardxref.txt",
+      "fromRow": 0,
+      "rowCount": 2
+    },
+    "CUSTFILE": {
+      "fixture": "custdata.txt",
+      "fromRow": 0,
+      "rowCount": 2
+    },
+    "ACCTFILE": {
+      "fixture": "acctdata.txt",
+      "fromRow": 0,
+      "rowCount": 2
+    }
+  },
+  "jobParameters": {},
+  "screenRequest": null,
+  "expectedResponse": null,
+  "expectedWrites": [
+    {
+      "dataset": "M03BAREA",
+      "rowIndex": 0,
+      "fields": {
+        "LK-M03B-DD": "TRNXFILE",
+        "LK-M03B-OPER": "O",
+        "LK-M03B-RC": "00"
+      },
+      "expectedBytes": "TRNXFILEO00                         000{                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        "
+    },
+    {
+      "dataset": "M03BAREA",
+      "rowIndex": 1,
+      "fields": {
+        "LK-M03B-DD": "XREFFILE",
+        "LK-M03B-OPER": "O",
+        "LK-M03B-RC": "00"
+      },
+      "expectedBytes": "XREFFILEO00                         000{                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        "
+    },
+    {
+      "dataset": "M03BAREA",
+      "rowIndex": 2,
+      "fields": {
+        "LK-M03B-DD": "CUSTFILE",
+        "LK-M03B-OPER": "O",
+        "LK-M03B-RC": "00"
+      },
+      "expectedBytes": "CUSTFILEO00                         000{                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        "
+    },
+    {
+      "dataset": "M03BAREA",
+      "rowIndex": 3,
+      "fields": {
+        "LK-M03B-DD": "ACCTFILE",
+        "LK-M03B-OPER": "O",
+        "LK-M03B-RC": "00"
+      },
+      "expectedBytes": "ACCTFILEO00                         000{                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        "
+    },
+    {
+      "dataset": "M03BAREA",
+      "rowIndex": 4,
+      "fields": {
+        "LK-M03B-DD": "CUSTFILE",
+        "LK-M03B-OPER": "C",
+        "LK-M03B-RC": "00"
+      },
+      "expectedBytes": "CUSTFILEC00                         000{                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        "
+    },
+    {
+      "dataset": "M03BAREA",
+      "rowIndex": 5,
+      "fields": {
+        "LK-M03B-DD": "CUSTFILE",
+        "LK-M03B-OPER": "K",
+        "LK-M03B-RC": "47"
+      },
+      "expectedBytes": "CUSTFILEK47000000001                000I                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        "
+    },
+    {
+      "dataset": "M03BAREA",
+      "rowIndex": 6,
+      "fields": {
+        "LK-M03B-DD": "TRNXFILE",
+        "LK-M03B-OPER": "R",
+        "LK-M03B-RC": "00"
+      },
+      "expectedBytes": "TRNXFILER00                         000{05000244537657400000000058866561010001POS TERM  Purchase at Blick-Rippin                                                                            0000001838H800000000Blick-Rippin                                      East Julien                                       87157     2022-06-10 19:27:53.000000                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        "
+    },
+    {
+      "dataset": "M03BAREA",
+      "rowIndex": 7,
+      "fields": {
+        "LK-M03B-DD": "XREFFILE",
+        "LK-M03B-OPER": "R",
+        "LK-M03B-RC": "00"
+      },
+      "expectedBytes": "XREFFILER00                         000{050002445376574000000005000000000050                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    "
+    },
+    {
+      "dataset": "M03BAREA",
+      "rowIndex": 8,
+      "fields": {
+        "LK-M03B-DD": "ACCTFILE",
+        "LK-M03B-OPER": "K",
+        "LK-M03B-RC": "00"
+      },
+      "expectedBytes": "ACCTFILEK0000000000001              001A00000000001Y00000001940{00000020200{00000010200{2014-11-202025-05-202025-05-2000000000000{00000000000{A000000000                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        "
+    },
+    {
+      "dataset": "M03BAREA",
+      "rowIndex": 9,
+      "fields": {
+        "LK-M03B-DD": "CUSTFILE",
+        "LK-M03B-OPER": "K",
+        "LK-M03B-RC": "47"
+      },
+      "expectedBytes": "CUSTFILEK47000000001                000I                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        "
+    }
+  ],
+  "expectedFinalState": [
+    {
+      "dataset": "TRNXFILE",
+      "rowIndex": 0,
+      "fields": {},
+      "expectedBytes": "05000244537657400000000058866561010001POS TERM  Purchase at Blick-Rippin                                                                            0000001838H800000000Blick-Rippin                                      East Julien                                       87157     2022-06-10 19:27:53.000000                                              "
+    },
+    {
+      "dataset": "TRNXFILE",
+      "rowIndex": 1,
+      "fields": {},
+      "expectedBytes": "05000244537657400000000329724245010001POS TERM  Purchase at Reichel Group                                                                           0000000140{800000000Reichel Group                                     Port Romanfort                                    95843     2022-06-10 19:27:53.000000                                              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 0,
+      "fields": {},
+      "expectedBytes": "050002445376574000000005000000000050              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 1,
+      "fields": {},
+      "expectedBytes": "068358619817151600000002700000000027              "
+    },
+    {
+      "dataset": "CUSTFILE",
+      "rowIndex": 0,
+      "fields": {},
+      "expectedBytes": "000000001Immanuel                 Madeline                 Kessler                  618 Deshaun Route                                 Apt. 802                                          Altenwerthshire                                   NCUSA12546     (908)119-8310  (373)693-8684  020973888000000000000493684371961-06-080053581756Y274                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTFILE",
+      "rowIndex": 1,
+      "fields": {},
+      "expectedBytes": "000000002Enrico                   April                    Rosenbaum                4917 Myrna Flats                                  Apt. 453                                          West Bernita                                      INUSA22770     (429)706-9510  (744)950-5272  587518382000000000005062103711961-10-080069194009Y268                                                                                                                                                                        "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 0,
+      "fields": {},
+      "expectedBytes": "00000000001Y00000001940{00000020200{00000010200{2014-11-202025-05-202025-05-2000000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 1,
+      "fields": {},
+      "expectedBytes": "00000000002Y00000001580{00000061300{00000054480{2013-06-192024-08-112024-08-1100000000000{00000000000{A000000000                                                                                                                                                                                            "
+    }
+  ],
+  "expectedReturnCode": 0,
+  "expectedMessages": [],
+  "normalisations": [
+    {
+      "dataset": "XREFFILE",
+      "kind": "CARDXREF_FILLER_PAD_36_TO_50"
+    }
+  ],
+  "expectedDatasets": [
+    {
+      "dataset": "M03BAREA",
+      "channel": "WRITES",
+      "rowCount": 10,
+      "recordLength": 1040
+    }
+  ]
+}

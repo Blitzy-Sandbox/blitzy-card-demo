@@ -1,0 +1,76 @@
+{
+  "program": "CBACT03C",
+  "caseId": "case20",
+  "description": "The two extremes of the record's three fields, in ascending key order. The first row is all zeros: XREF-CUST-ID 9(09) and XREF-ACCT-ID 9(11) at their minimum, and a card number of sixteen zero characters. The second is at the maximum every picture allows - 999999999 and 99999999999 - with a fourteen-digit card number space-padded to its declared X(16) width, because a COBOL PIC X field is left justified and space filled and those two trailing spaces are part of the field's value rather than absent from it. Both rows are pinned field by field as well as whole, so three things are asserted that no fixture row can assert: that the numeric spans keep their leading zeros instead of being rendered as integers, that XREF-ACCT-ID's eleven digits survive a range an int cannot hold, and that XREF-CARD-NUM is read untrimmed.",
+  "unitKind": "BATCH_JOB",
+  "inputs": {
+    "XREFFILE": {
+      "rows": [
+        "000000000000000000000000000000000000              ",
+        "41111111111111  99999999999999999999              "
+      ]
+    }
+  },
+  "jobParameters": {},
+  "expectedWrites": [],
+  "expectedFinalState": [
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 0,
+      "fields": {
+        "XREF-CARD-NUM": "0000000000000000",
+        "XREF-CUST-ID": "000000000",
+        "XREF-ACCT-ID": "00000000000",
+        "FILLER": "              "
+      },
+      "expectedBytes": "000000000000000000000000000000000000              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 1,
+      "fields": {
+        "XREF-CARD-NUM": "41111111111111  ",
+        "XREF-CUST-ID": "999999999",
+        "XREF-ACCT-ID": "99999999999",
+        "FILLER": "              "
+      },
+      "expectedBytes": "41111111111111  99999999999999999999              "
+    }
+  ],
+  "expectedReturnCode": 0,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "START OF EXECUTION OF PROGRAM CBACT03C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "000000000000000000000000000000000000              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "000000000000000000000000000000000000              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "41111111111111  99999999999999999999              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "41111111111111  99999999999999999999              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "END OF EXECUTION OF PROGRAM CBACT03C"
+    }
+  ],
+  "normalisations": [],
+  "expectedDatasets": [
+    {
+      "dataset": "XREFFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 2,
+      "recordLength": 50
+    }
+  ]
+}

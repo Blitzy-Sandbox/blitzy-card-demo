@@ -1,0 +1,17 @@
+{
+  "program": "CSUTLDTC",
+  "caseId": "case15",
+  "description": "CSUTLDTC, the called date-validation subprogram, invoked as the @Service it became. LS-DATE='2022-07-19' and LS-DATE-FORMAT='QQQQ-MM-DD' are this case's two LINKAGE SECTION parameters (L84-L85); LS-RESULT PIC X(80) (L86) is the output and is asserted below as the single WS_MESSAGE_80 line. This program opens no file and is reached by no JCL, so it seeds no dataset, writes no record and takes no job parameter - its entire observable behaviour is the 80 bytes L97 moves into LS-RESULT and the severity L98 moves into RETURN-CODE. Expected values are STATICALLY DERIVED from the 01 WS-MESSAGE declaration at L42-L57 and the group move at L122, never captured from a COBOL run, which is impossible here. Arm 7: FC-BAD-PIC-STRING, 88-level VALUE X'000309D659C3C5C5' (L68) - severity 3, message 2518. A letter that begins no recognised token makes the PICTURE STRING itself invalid, which is reported before the input date is examined at all. The date is the good one from case01, and WS-DATE still reports it, so this case also proves the message is assembled from both parameters even when only one of them is at fault.",
+  "unitKind": "SERVICE",
+  "inputs": {},
+  "expectedWrites": [],
+  "expectedFinalState": [],
+  "expectedReturnCode": 3,
+  "expectedMessages": [
+    {
+      "channel": "WS_MESSAGE_80",
+      "text": "0003Mesg Code: 2518 Bad Pic String  TstDate: \u0000\n2022-07- Mask used:QQQQ-MM-DD    "
+    }
+  ],
+  "normalisations": []
+}

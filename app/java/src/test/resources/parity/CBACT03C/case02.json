@@ -1,0 +1,36 @@
+{
+  "program": "CBACT03C",
+  "caseId": "case02",
+  "description": "An XREFFILE that exists and holds no row: the only way to reach FILE STATUS '10' on the FIRST READ at :93, which drives the :98 arm, MOVE 16 TO APPL-RESULT at :99, the 88 APPL-EOF condition at :63 in its TRUE state and MOVE 'Y' TO END-OF-FILE at :108 before a single record has been displayed. The PERFORM UNTIL at :74 therefore runs exactly one iteration and the guard at :77 suppresses the :78 display, so the observable output is the two banners alone and nothing else. An empty dataset is a positive statement - the file was opened and read - and is not the same as a case that never mentioned the dataset.",
+  "unitKind": "BATCH_JOB",
+  "inputs": {
+    "XREFFILE": {
+      "empty": true,
+      "recordLength": 50,
+      "copybook": "CVACT03Y"
+    }
+  },
+  "jobParameters": {},
+  "expectedWrites": [],
+  "expectedFinalState": [],
+  "expectedReturnCode": 0,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "START OF EXECUTION OF PROGRAM CBACT03C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "END OF EXECUTION OF PROGRAM CBACT03C"
+    }
+  ],
+  "normalisations": [],
+  "expectedDatasets": [
+    {
+      "dataset": "XREFFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 0,
+      "recordLength": 50
+    }
+  ]
+}

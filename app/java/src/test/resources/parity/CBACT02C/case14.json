@@ -1,0 +1,48 @@
+{
+  "program": "CBACT02C",
+  "caseId": "case14",
+  "description": "Three records are read and displayed, then the fourth READ reports '23'. The interaction this case exists for is that the error arm must not retract what the loop already emitted: the three 150-character lines stand, in ascending key order, and the error triple follows them. That the abend happens inside 1000-CARDFILE-GET-NEXT and not at the top of the mainline is what makes the ordering observable - app/cbl/CBACT02C.cbl:110-113 runs after :78 has already written three lines. Six lines out, and no end banner, because PERFORM 9999-ABEND-PROGRAM at :113 never returns to :83 or :85. RETURN-CODE is 12 from :101.",
+  "unitKind": "BATCH_JOB",
+  "inputs": {
+    "CARDFILE": {
+      "fixture": "carddata.txt",
+      "fromRow": 0,
+      "rowCount": 3
+    }
+  },
+  "jobParameters": {},
+  "expectedWrites": [],
+  "expectedFinalState": [],
+  "expectedReturnCode": 12,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "START OF EXECUTION OF PROGRAM CBACT02C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "050002445376574000000000050747Aniya Von                                         2023-03-09Y                                                           "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "068358619817151600000000027567Ward Jones                                        2025-07-13Y                                                           "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "092387719324733000000000002028Enrico Rosenbaum                                  2024-08-11Y                                                           "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ERROR READING CARDFILE"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "FILE STATUS IS: NNNN0023"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ABENDING PROGRAM"
+    }
+  ],
+  "normalisations": []
+}

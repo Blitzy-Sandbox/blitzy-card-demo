@@ -1,0 +1,151 @@
+{
+  "program": "COUSR00C",
+  "caseId": "case03",
+  "description": "A short page: the same first-entry path as case02 over four records, so the forward loop at :300-306 ends on end of file rather than on the subscript. READNEXT reports ENDFILE on its fifth call, so :302's guard fails, POPULATE-USER-DATA is not performed and WS-IDX stops at 5 - which is why rows 5 to 10 stay at the spaces :292-296 blanked them to, and why row 5 is blank rather than holding a fifth record. :308 is false, so the ELSE at :317-322 runs: NEXT-PAGE-NO, and because WS-IDX is 5 and therefore greater than 1, the COMPUTE at :320-321 still counts the short page as page 1 (gate G28). Note that INITIALIZE-USER-DATA at :446-501 blanks USRIDnn, FNAMEnn, LNAMEnn and UTYPEnn only - never the SELnnnn cell - so the selection column is untouched by the blanking pass.",
+  "unitKind": "CONTROLLER_POJO",
+  "inputs": {
+    "USRSEC": {
+      "rows": [
+        "ADMIN001MARGARET            GOLD                PASSWORDA",
+        "ADMIN002RUSSELL             RUSSELL             PASSWORDA",
+        "ADMIN003RAYMOND             WHITMORE            PASSWORDA",
+        "ADMIN004EMMANUEL            CASGRAIN            PASSWORDA"
+      ]
+    }
+  },
+  "screenRequest": {
+    "eibcalen": 194,
+    "aid": "DFHENTER",
+    "pinnedClock": "2022-07-19T23:12:34",
+    "charset": "US-ASCII",
+    "commarea": {
+      "CDEMO-PGM-CONTEXT": "0"
+    },
+    "mapFields": {},
+    "forcedOutcomes": {}
+  },
+  "expectedResponse": {
+    "navigation": {
+      "CDEMO-FROM-TRANID": "    ",
+      "CDEMO-FROM-PROGRAM": "        ",
+      "CDEMO-TO-TRANID": "    ",
+      "CDEMO-TO-PROGRAM": "        ",
+      "CDEMO-USER-ID": "        ",
+      "CDEMO-USER-TYPE": " ",
+      "CDEMO-PGM-CONTEXT": "1",
+      "CDEMO-CUST-ID": "000000000",
+      "CDEMO-CUST-FNAME": "                         ",
+      "CDEMO-CUST-MNAME": "                         ",
+      "CDEMO-CUST-LNAME": "                         ",
+      "CDEMO-ACCT-ID": "00000000000",
+      "CDEMO-ACCT-STATUS": " ",
+      "CDEMO-CARD-NUM": "0000000000000000",
+      "CDEMO-LAST-MAP": "       ",
+      "CDEMO-LAST-MAPSET": "       ",
+      "CDEMO-CU00-USRID-FIRST": "ADMIN001",
+      "CDEMO-CU00-USRID-LAST": "        ",
+      "CDEMO-CU00-PAGE-NUM": "00000001",
+      "CDEMO-CU00-NEXT-PAGE-FLG": "N",
+      "CDEMO-CU00-USR-SEL-FLG": " ",
+      "CDEMO-CU00-USR-SELECTED": "        "
+    },
+    "sends": [
+      {
+        "fields": {
+          "TRNNAMEO": "CU00",
+          "TITLE01O": "      AWS Mainframe Modernization       ",
+          "CURDATEO": "07/19/22",
+          "PGMNAMEO": "COUSR00C",
+          "TITLE02O": "              CardDemo                  ",
+          "CURTIMEO": "23:12:34",
+          "PAGENUMO": "00000001",
+          "USRIDINO": "        ",
+          "SEL0001O": " ",
+          "USRID01O": "ADMIN001",
+          "FNAME01O": "MARGARET            ",
+          "LNAME01O": "GOLD                ",
+          "UTYPE01O": "A",
+          "SEL0002O": " ",
+          "USRID02O": "ADMIN002",
+          "FNAME02O": "RUSSELL             ",
+          "LNAME02O": "RUSSELL             ",
+          "UTYPE02O": "A",
+          "SEL0003O": " ",
+          "USRID03O": "ADMIN003",
+          "FNAME03O": "RAYMOND             ",
+          "LNAME03O": "WHITMORE            ",
+          "UTYPE03O": "A",
+          "SEL0004O": " ",
+          "USRID04O": "ADMIN004",
+          "FNAME04O": "EMMANUEL            ",
+          "LNAME04O": "CASGRAIN            ",
+          "UTYPE04O": "A",
+          "SEL0005O": " ",
+          "USRID05O": "        ",
+          "FNAME05O": "                    ",
+          "LNAME05O": "                    ",
+          "UTYPE05O": " ",
+          "SEL0006O": " ",
+          "USRID06O": "        ",
+          "FNAME06O": "                    ",
+          "LNAME06O": "                    ",
+          "UTYPE06O": " ",
+          "SEL0007O": " ",
+          "USRID07O": "        ",
+          "FNAME07O": "                    ",
+          "LNAME07O": "                    ",
+          "UTYPE07O": " ",
+          "SEL0008O": " ",
+          "USRID08O": "        ",
+          "FNAME08O": "                    ",
+          "LNAME08O": "                    ",
+          "UTYPE08O": " ",
+          "SEL0009O": " ",
+          "USRID09O": "        ",
+          "FNAME09O": "                    ",
+          "LNAME09O": "                    ",
+          "UTYPE09O": " ",
+          "SEL0010O": " ",
+          "USRID10O": "        ",
+          "FNAME10O": "                    ",
+          "LNAME10O": "                    ",
+          "UTYPE10O": " ",
+          "ERRMSGO": "You have reached the bottom of the page...                                    "
+        }
+      }
+    ],
+    "cursorField": "USRIDINL",
+    "termination": "RETURN_TRANSID"
+  },
+  "expectedWrites": [],
+  "expectedFinalState": [
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 0,
+      "expectedBytes": "ADMIN001MARGARET            GOLD                PASSWORDA                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 1,
+      "expectedBytes": "ADMIN002RUSSELL             RUSSELL             PASSWORDA                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 2,
+      "expectedBytes": "ADMIN003RAYMOND             WHITMORE            PASSWORDA                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 3,
+      "expectedBytes": "ADMIN004EMMANUEL            CASGRAIN            PASSWORDA                       "
+    }
+  ],
+  "expectedReturnCode": 0,
+  "expectedMessages": [],
+  "normalisations": [
+    {
+      "dataset": "USRSEC",
+      "kind": "USRSEC_FILLER_PAD_57_TO_80"
+    }
+  ]
+}

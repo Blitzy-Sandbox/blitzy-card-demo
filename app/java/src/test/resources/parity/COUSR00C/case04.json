@@ -1,0 +1,130 @@
+{
+  "program": "COUSR00C",
+  "caseId": "case04",
+  "description": "An empty USRSEC on a first entry: STARTBR's WHEN DFHRESP(NOTFND) arm at :600-606. No key is at or after LOW-VALUES because the file holds no record, so the browse never opens. The arm opens with a bare CONTINUE, and the statements after it DO execute - USER-SEC-EOF is set, 'You are at the top of the page...' is painted and the map is sent - which is the single easiest thing to get wrong here. It raises no error flag, so :286 still admits the rest of PROCESS-PAGE-FORWARD: :288 is false for ENTER so no record is discarded, :292's guard fails so the ten rows keep the spaces :117 left them at, the loop at :300 never iterates, and in the ELSE at :317-322 WS-IDX is still 1 so the page number is NOT incremented and stays 00000000. That zero is the assertion: an empty file leaves the operator on page zero, not page one.",
+  "unitKind": "CONTROLLER_POJO",
+  "inputs": {
+    "USRSEC": {
+      "empty": true,
+      "recordLength": 80,
+      "copybook": "CSUSR01Y"
+    }
+  },
+  "screenRequest": {
+    "eibcalen": 194,
+    "aid": "DFHENTER",
+    "pinnedClock": "2022-07-19T23:12:34",
+    "charset": "US-ASCII",
+    "commarea": {
+      "CDEMO-PGM-CONTEXT": "0"
+    },
+    "mapFields": {},
+    "forcedOutcomes": {}
+  },
+  "expectedResponse": {
+    "navigation": {
+      "CDEMO-FROM-TRANID": "    ",
+      "CDEMO-FROM-PROGRAM": "        ",
+      "CDEMO-TO-TRANID": "    ",
+      "CDEMO-TO-PROGRAM": "        ",
+      "CDEMO-USER-ID": "        ",
+      "CDEMO-USER-TYPE": " ",
+      "CDEMO-PGM-CONTEXT": "1",
+      "CDEMO-CUST-ID": "000000000",
+      "CDEMO-CUST-FNAME": "                         ",
+      "CDEMO-CUST-MNAME": "                         ",
+      "CDEMO-CUST-LNAME": "                         ",
+      "CDEMO-ACCT-ID": "00000000000",
+      "CDEMO-ACCT-STATUS": " ",
+      "CDEMO-CARD-NUM": "0000000000000000",
+      "CDEMO-LAST-MAP": "       ",
+      "CDEMO-LAST-MAPSET": "       ",
+      "CDEMO-CU00-USRID-FIRST": "        ",
+      "CDEMO-CU00-USRID-LAST": "        ",
+      "CDEMO-CU00-PAGE-NUM": "00000000",
+      "CDEMO-CU00-NEXT-PAGE-FLG": "N",
+      "CDEMO-CU00-USR-SEL-FLG": " ",
+      "CDEMO-CU00-USR-SELECTED": "        "
+    },
+    "sends": [
+      {
+        "fields": {
+          "TRNNAMEO": "CU00",
+          "TITLE01O": "      AWS Mainframe Modernization       ",
+          "CURDATEO": "07/19/22",
+          "PGMNAMEO": "COUSR00C",
+          "TITLE02O": "              CardDemo                  ",
+          "CURTIMEO": "23:12:34",
+          "PAGENUMO": "00000000",
+          "USRIDINO": "        ",
+          "SEL0001O": " ",
+          "USRID01O": "        ",
+          "FNAME01O": "                    ",
+          "LNAME01O": "                    ",
+          "UTYPE01O": " ",
+          "SEL0002O": " ",
+          "USRID02O": "        ",
+          "FNAME02O": "                    ",
+          "LNAME02O": "                    ",
+          "UTYPE02O": " ",
+          "SEL0003O": " ",
+          "USRID03O": "        ",
+          "FNAME03O": "                    ",
+          "LNAME03O": "                    ",
+          "UTYPE03O": " ",
+          "SEL0004O": " ",
+          "USRID04O": "        ",
+          "FNAME04O": "                    ",
+          "LNAME04O": "                    ",
+          "UTYPE04O": " ",
+          "SEL0005O": " ",
+          "USRID05O": "        ",
+          "FNAME05O": "                    ",
+          "LNAME05O": "                    ",
+          "UTYPE05O": " ",
+          "SEL0006O": " ",
+          "USRID06O": "        ",
+          "FNAME06O": "                    ",
+          "LNAME06O": "                    ",
+          "UTYPE06O": " ",
+          "SEL0007O": " ",
+          "USRID07O": "        ",
+          "FNAME07O": "                    ",
+          "LNAME07O": "                    ",
+          "UTYPE07O": " ",
+          "SEL0008O": " ",
+          "USRID08O": "        ",
+          "FNAME08O": "                    ",
+          "LNAME08O": "                    ",
+          "UTYPE08O": " ",
+          "SEL0009O": " ",
+          "USRID09O": "        ",
+          "FNAME09O": "                    ",
+          "LNAME09O": "                    ",
+          "UTYPE09O": " ",
+          "SEL0010O": " ",
+          "USRID10O": "        ",
+          "FNAME10O": "                    ",
+          "LNAME10O": "                    ",
+          "UTYPE10O": " ",
+          "ERRMSGO": "You are at the top of the page...                                             "
+        }
+      }
+    ],
+    "cursorField": "USRIDINL",
+    "termination": "RETURN_TRANSID"
+  },
+  "expectedWrites": [],
+  "expectedFinalState": [],
+  "expectedReturnCode": 0,
+  "expectedMessages": [],
+  "normalisations": [],
+  "expectedDatasets": [
+    {
+      "dataset": "USRSEC",
+      "channel": "FINAL_STATE",
+      "rowCount": 0,
+      "recordLength": 80
+    }
+  ]
+}

@@ -1,0 +1,383 @@
+{
+  "program": "COCRDLIC",
+  "caseId": "case16",
+  "description": "2220-EDIT-CARD's rejection arm at :1052-1062, the account filter's mirror with one deliberate difference. The card paragraph moves its message only IF WS-ERROR-MSG-OFF [:1056-1060]; the account paragraph has no such guard. Here the account filter was left blank, so the message line is still off and the card message is moved. 1300-SETUP-SCREEN-ATTRS reaches WHEN FLG-CARDFILTER-NOT-OK at :858 and echoes the rejected sixteen characters back, and :877-879 reddens CARDSIDC and aims the cursor at CARDSIDL. The account field takes the WHEN CDEMO-ACCT-ID = 0 arm at :849 and comes back LOW-VALUES; the previous page's rows are repainted from the restored WS-SCREEN-DATA exactly as in case15, and they are protected rather than reddened because both filter rejections set FLG-PROTECT-SELECT-ROWS-YES.",
+  "unitKind": "CONTROLLER_POJO",
+  "inputs": {
+    "CARDDAT": {
+      "fixture": "carddata.txt",
+      "rowCount": 50
+    }
+  },
+  "screenRequest": {
+    "eibcalen": 160,
+    "pinnedClock": "2022-07-19T23:12:34",
+    "charset": "US-ASCII",
+    "commarea": {
+      "CDEMO-FROM-TRANID": "CCLI",
+      "CDEMO-FROM-PROGRAM": "COCRDLIC",
+      "CDEMO-USER-TYPE": "U",
+      "CDEMO-PGM-CONTEXT": "0",
+      "CDEMO-LAST-MAP": "CCRDLIA",
+      "CDEMO-LAST-MAPSET": "COCRDLI"
+    },
+    "mapFields": {
+      "ACCTNO1I": "00000000050",
+      "CRDNUM1I": "0500024453765740",
+      "CRDSTS1I": "Y",
+      "ACCTNO2I": "00000000027",
+      "CRDNUM2I": "0683586198171516",
+      "CRDSTS2I": "Y",
+      "ACCTNO3I": "00000000002",
+      "CRDNUM3I": "0923877193247330",
+      "CRDSTS3I": "Y",
+      "ACCTNO4I": "00000000020",
+      "CRDNUM4I": "0927987108636232",
+      "CRDSTS4I": "Y",
+      "ACCTNO5I": "00000000012",
+      "CRDNUM5I": "0982496213629795",
+      "CRDSTS5I": "Y",
+      "ACCTNO6I": "00000000044",
+      "CRDNUM6I": "1014086565224350",
+      "CRDSTS6I": "Y",
+      "ACCTNO7I": "00000000037",
+      "CRDNUM7I": "1142167692878931",
+      "CRDSTS7I": "Y",
+      "CARDSIDI": "4111-1111-ABCD"
+    },
+    "forcedOutcomes": {},
+    "aid": "DFHENTER"
+  },
+  "expectedResponse": {
+    "navigation": {
+      "CDEMO-FROM-TRANID": "CCLI",
+      "CDEMO-FROM-PROGRAM": "COCRDLIC",
+      "CDEMO-TO-TRANID": "    ",
+      "CDEMO-TO-PROGRAM": "        ",
+      "CDEMO-USER-ID": "        ",
+      "CDEMO-USER-TYPE": "U",
+      "CDEMO-PGM-CONTEXT": "0",
+      "CDEMO-CUST-ID": "000000000",
+      "CDEMO-CUST-FNAME": "                         ",
+      "CDEMO-CUST-MNAME": "                         ",
+      "CDEMO-CUST-LNAME": "                         ",
+      "CDEMO-ACCT-ID": "00000000000",
+      "CDEMO-ACCT-STATUS": " ",
+      "CDEMO-CARD-NUM": "0000000000000000",
+      "CDEMO-LAST-MAP": "CCRDLIA",
+      "CDEMO-LAST-MAPSET": "COCRDLI"
+    },
+    "sends": [
+      {
+        "fields": {
+          "TRNNAMEO": "CCLI",
+          "TITLE01O": "      AWS Mainframe Modernization       ",
+          "CURDATEO": "07/19/22",
+          "PGMNAMEO": "COCRDLIC",
+          "TITLE02O": "              CardDemo                  ",
+          "CURTIMEO": "23:12:34",
+          "PAGENOO": "1  ",
+          "ACCTSIDO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "CARDSIDO": "4111-1111-ABCD  ",
+          "CRDSEL1O": "\u0000",
+          "ACCTNO1O": "00000000050",
+          "CRDNUM1O": "0500024453765740",
+          "CRDSTS1O": "Y",
+          "CRDSEL2O": "\u0000",
+          "CRDSTP2O": "\u0000",
+          "ACCTNO2O": "00000000027",
+          "CRDNUM2O": "0683586198171516",
+          "CRDSTS2O": "Y",
+          "CRDSEL3O": "\u0000",
+          "CRDSTP3O": "\u0000",
+          "ACCTNO3O": "00000000002",
+          "CRDNUM3O": "0923877193247330",
+          "CRDSTS3O": "Y",
+          "CRDSEL4O": "\u0000",
+          "CRDSTP4O": "\u0000",
+          "ACCTNO4O": "00000000020",
+          "CRDNUM4O": "0927987108636232",
+          "CRDSTS4O": "Y",
+          "CRDSEL5O": "\u0000",
+          "CRDSTP5O": "\u0000",
+          "ACCTNO5O": "00000000012",
+          "CRDNUM5O": "0982496213629795",
+          "CRDSTS5O": "Y",
+          "CRDSEL6O": "\u0000",
+          "CRDSTP6O": "\u0000",
+          "ACCTNO6O": "00000000044",
+          "CRDNUM6O": "1014086565224350",
+          "CRDSTS6O": "Y",
+          "CRDSEL7O": "\u0000",
+          "CRDSTP7O": "\u0000",
+          "ACCTNO7O": "00000000037",
+          "CRDNUM7O": "1142167692878931",
+          "CRDSTS7O": "Y",
+          "INFOMSGO": "                                             ",
+          "ERRMSGO": "CARD ID FILTER,IF SUPPLIED MUST BE A 16 DIGIT NUMBER                          "
+        },
+        "attributes": {
+          "CARDSIDC": "DFHRED",
+          "INFOMSGC": "DFHBMDAR"
+        }
+      }
+    ],
+    "cursorField": "CARDSIDL",
+    "termination": "RETURN_TRANSID"
+  },
+  "expectedWrites": [],
+  "expectedFinalState": [
+    {
+      "dataset": "CARDDAT",
+      "rowIndex": 0,
+      "expectedBytes": "050002445376574000000000050747Aniya Von                                         2023-03-09Y                                                           "
+    },
+    {
+      "dataset": "CARDDAT",
+      "rowIndex": 1,
+      "expectedBytes": "068358619817151600000000027567Ward Jones                                        2025-07-13Y                                                           "
+    },
+    {
+      "dataset": "CARDDAT",
+      "rowIndex": 2,
+      "expectedBytes": "092387719324733000000000002028Enrico Rosenbaum                                  2024-08-11Y                                                           "
+    },
+    {
+      "dataset": "CARDDAT",
+      "rowIndex": 3,
+      "expectedBytes": "092798710863623200000000020003Carter Veum                                       2024-03-13Y                                                           "
+    },
+    {
+      "dataset": "CARDDAT",
+      "rowIndex": 4,
+      "expectedBytes": "098249621362979500000000012075Maci Robel                                        2023-07-07Y                                                           "
+    },
+    {
+      "dataset": "CARDDAT",
+      "rowIndex": 5,
+      "expectedBytes": "101408656522435000000000044640Irving Emard                                      2024-01-17Y                                                           "
+    },
+    {
+      "dataset": "CARDDAT",
+      "rowIndex": 6,
+      "expectedBytes": "114216769287893100000000037625Shany Walker                                      2023-10-24Y                                                           "
+    },
+    {
+      "dataset": "CARDDAT",
+      "rowIndex": 7,
+      "expectedBytes": "156140910649160000000000035031Angelica Dach                                     2025-09-23Y                                                           "
+    },
+    {
+      "dataset": "CARDDAT",
+      "rowIndex": 8,
+      "expectedBytes": "274530372000209000000000039033Aliyah Berge                                      2025-09-08Y                                                           "
+    },
+    {
+      "dataset": "CARDDAT",
+      "rowIndex": 9,
+      "expectedBytes": "276083679710756500000000024859Stefanie Dickinson                                2025-02-11Y                                                           "
+    },
+    {
+      "dataset": "CARDDAT",
+      "rowIndex": 10,
+      "expectedBytes": "287196825281249000000000006775Ignacio Douglas                                   2025-10-08Y                                                           "
+    },
+    {
+      "dataset": "CARDDAT",
+      "rowIndex": 11,
+      "expectedBytes": "294013936230044900000000022876Allene Brown                                      2025-12-28Y                                                           "
+    },
+    {
+      "dataset": "CARDDAT",
+      "rowIndex": 12,
+      "expectedBytes": "298809135309431200000000004795Delbert Parisian                                  2023-12-16Y                                                           "
+    },
+    {
+      "dataset": "CARDDAT",
+      "rowIndex": 13,
+      "expectedBytes": "326076361233756000000000010342Maybell Mann                                      2023-01-27Y                                                           "
+    },
+    {
+      "dataset": "CARDDAT",
+      "rowIndex": 14,
+      "expectedBytes": "376628198415515400000000041622Lucinda Dach                                      2023-04-24Y                                                           "
+    },
+    {
+      "dataset": "CARDDAT",
+      "rowIndex": 15,
+      "expectedBytes": "394024601614148900000000019375Hadley Hamill                                     2025-07-23Y                                                           "
+    },
+    {
+      "dataset": "CARDDAT",
+      "rowIndex": 16,
+      "expectedBytes": "399916924637588500000000003317Larry Homenick                                    2024-01-10Y                                                           "
+    },
+    {
+      "dataset": "CARDDAT",
+      "rowIndex": 17,
+      "expectedBytes": "401150089177736700000000013390Mariane Fadel                                     2024-08-04Y                                                           "
+    },
+    {
+      "dataset": "CARDDAT",
+      "rowIndex": 18,
+      "expectedBytes": "438527147662781900000000034709Faustino Schmidt                                  2025-10-06Y                                                           "
+    },
+    {
+      "dataset": "CARDDAT",
+      "rowIndex": 19,
+      "expectedBytes": "453478410271395100000000036644Toney Gerhold                                     2024-12-23Y                                                           "
+    },
+    {
+      "dataset": "CARDDAT",
+      "rowIndex": 20,
+      "expectedBytes": "485945261287706500000000007321Cooper Mayert                                     2024-12-13Y                                                           "
+    },
+    {
+      "dataset": "CARDDAT",
+      "rowIndex": 21,
+      "expectedBytes": "540709985047986600000000021524Jerrold Maggio                                    2023-01-06Y                                                           "
+    },
+    {
+      "dataset": "CARDDAT",
+      "rowIndex": 22,
+      "expectedBytes": "565683054498121600000000046196Cindy Cremin                                      2025-06-20Y                                                           "
+    },
+    {
+      "dataset": "CARDDAT",
+      "rowIndex": 23,
+      "expectedBytes": "567118447850584400000000018137Emile White                                       2023-09-10Y                                                           "
+    },
+    {
+      "dataset": "CARDDAT",
+      "rowIndex": 24,
+      "expectedBytes": "578735122887933900000000047067Rigoberto Hoeger                                  2025-08-23Y                                                           "
+    },
+    {
+      "dataset": "CARDDAT",
+      "rowIndex": 25,
+      "expectedBytes": "597511751661607700000000042426Heather Nienow                                    2025-09-19Y                                                           "
+    },
+    {
+      "dataset": "CARDDAT",
+      "rowIndex": 26,
+      "expectedBytes": "600961915067452600000000005021Treva Schowalter                                  2025-03-09Y                                                           "
+    },
+    {
+      "dataset": "CARDDAT",
+      "rowIndex": 27,
+      "expectedBytes": "634925033164850900000000015735Aubree Hermann                                    2025-06-09Y                                                           "
+    },
+    {
+      "dataset": "CARDDAT",
+      "rowIndex": 28,
+      "expectedBytes": "650353518179599200000000048413Lyric Pacocha                                     2025-02-06Y                                                           "
+    },
+    {
+      "dataset": "CARDDAT",
+      "rowIndex": 29,
+      "expectedBytes": "650923036255381600000000030236Layla Ullrich                                     2024-06-27Y                                                           "
+    },
+    {
+      "dataset": "CARDDAT",
+      "rowIndex": 30,
+      "expectedBytes": "672300046320776400000000028486Hester Hane                                       2024-05-09Y                                                           "
+    },
+    {
+      "dataset": "CARDDAT",
+      "rowIndex": 31,
+      "expectedBytes": "672705519061601400000000016641Carroll Bergstrom                                 2024-01-25Y                                                           "
+    },
+    {
+      "dataset": "CARDDAT",
+      "rowIndex": 32,
+      "expectedBytes": "683267604769808700000000033983Bernice Herman                                    2025-10-07Y                                                           "
+    },
+    {
+      "dataset": "CARDDAT",
+      "rowIndex": 33,
+      "expectedBytes": "702663761503227700000000031920Lucious O'Connell                                 2025-06-08Y                                                           "
+    },
+    {
+      "dataset": "CARDDAT",
+      "rowIndex": 34,
+      "expectedBytes": "705826726183775200000000043401Britney Waters                                    2025-08-29Y                                                           "
+    },
+    {
+      "dataset": "CARDDAT",
+      "rowIndex": 35,
+      "expectedBytes": "709414275105555100000000032659Stephany Fisher                                   2025-05-19Y                                                           "
+    },
+    {
+      "dataset": "CARDDAT",
+      "rowIndex": 36,
+      "expectedBytes": "725150814918888300000000029717Rickie Daugherty                                  2024-06-04Y                                                           "
+    },
+    {
+      "dataset": "CARDDAT",
+      "rowIndex": 37,
+      "expectedBytes": "737933563466114200000000045134Dixie Beier                                       2025-07-09Y                                                           "
+    },
+    {
+      "dataset": "CARDDAT",
+      "rowIndex": 38,
+      "expectedBytes": "742768486342320900000000011892Hayden Pfannerstill                               2025-03-12Y                                                           "
+    },
+    {
+      "dataset": "CARDDAT",
+      "rowIndex": 39,
+      "expectedBytes": "744387098889753000000000038708Angela Ankunding                                  2023-07-23Y                                                           "
+    },
+    {
+      "dataset": "CARDDAT",
+      "rowIndex": 40,
+      "expectedBytes": "804058041034868000000000026971Marjory Stracke                                   2024-12-19Y                                                           "
+    },
+    {
+      "dataset": "CARDDAT",
+      "rowIndex": 41,
+      "expectedBytes": "811254583423973500000000023440Johnson Ruecker                                   2025-03-18Y                                                           "
+    },
+    {
+      "dataset": "CARDDAT",
+      "rowIndex": 42,
+      "expectedBytes": "826259360247307600000000049457Immanuel Bednar                                   2023-09-17Y                                                           "
+    },
+    {
+      "dataset": "CARDDAT",
+      "rowIndex": 43,
+      "expectedBytes": "851786695820600800000000014955Chelsea Marks                                     2025-12-11Y                                                           "
+    },
+    {
+      "dataset": "CARDDAT",
+      "rowIndex": 44,
+      "expectedBytes": "893136935189478300000000008230Kelsie Dicki                                      2024-05-20Y                                                           "
+    },
+    {
+      "dataset": "CARDDAT",
+      "rowIndex": 45,
+      "expectedBytes": "905629793166401100000000025931Elliott Howell                                    2025-07-10Y                                                           "
+    },
+    {
+      "dataset": "CARDDAT",
+      "rowIndex": 46,
+      "expectedBytes": "934910747586921400000000017218Sigrid Mann                                       2025-03-01Y                                                           "
+    },
+    {
+      "dataset": "CARDDAT",
+      "rowIndex": 47,
+      "expectedBytes": "950173372142989300000000009725Melvin Ondricka                                   2024-12-27Y                                                           "
+    },
+    {
+      "dataset": "CARDDAT",
+      "rowIndex": 48,
+      "expectedBytes": "968029415460369700000000001045Immanuel Kessler                                  2025-05-20Y                                                           "
+    },
+    {
+      "dataset": "CARDDAT",
+      "rowIndex": 49,
+      "expectedBytes": "980558340899658800000000040908Davon Emmerich                                    2023-10-27Y                                                           "
+    }
+  ],
+  "expectedReturnCode": 0,
+  "expectedMessages": []
+}

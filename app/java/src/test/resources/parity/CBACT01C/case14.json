@@ -1,0 +1,36 @@
+{
+  "program": "CBACT01C",
+  "caseId": "case14",
+  "description": "The fatal read arm again, from the other direction: a stored row one byte WIDER than app/cpy/CVACT01Y.cpy declares. The guard is a width equality and not a lower bound, so 301 bytes is refused exactly as 122 was, and the program takes the same ELSE arm at app/cbl/CBACT01C.cbl:L109-L114 with the same three lines and the same RETURN-CODE 12. Stated separately from case13 because a decoder that read the first 300 bytes and ignored the rest would pass that one and fail this one.",
+  "unitKind": "BATCH_JOB",
+  "inputs": {
+    "ACCTFILE": {
+      "rows": [
+        "00000000701Y00000001940{00000020200{00000010200{2014-11-202025-05-202025-05-2000000000000{00000000000{A000000000                                                                                                                                                                                            !"
+      ]
+    }
+  },
+  "jobParameters": {},
+  "expectedWrites": [],
+  "expectedFinalState": [],
+  "expectedReturnCode": 12,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "START OF EXECUTION OF PROGRAM CBACT01C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ERROR READING ACCOUNT FILE"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "FILE STATUS IS: NNNN9000"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ABENDING PROGRAM"
+    }
+  ],
+  "normalisations": []
+}

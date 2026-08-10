@@ -1,0 +1,36 @@
+{
+  "program": "CBACT02C",
+  "caseId": "case16",
+  "description": "A failing close over an empty file: the shortest error path in the program, and the one that proves the close is unconditional. app/cbl/CBACT02C.cbl:83 performs 9000-CARDFILE-CLOSE immediately after the loop at :74-81, whatever the loop did, so a file that yielded no record still gets closed and a close failure still abends. Four lines out: the start banner, then 'ERROR CLOSING CARDFILE', the image '9000' and 'ABENDING PROGRAM'. No record line, because the first READ reported '10'; no end banner, because :85 is past the abend. RETURN-CODE 12.",
+  "unitKind": "BATCH_JOB",
+  "inputs": {
+    "CARDFILE": {
+      "empty": true,
+      "recordLength": 150,
+      "copybook": "CVACT02Y"
+    }
+  },
+  "jobParameters": {},
+  "expectedWrites": [],
+  "expectedFinalState": [],
+  "expectedReturnCode": 12,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "START OF EXECUTION OF PROGRAM CBACT02C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ERROR CLOSING CARDFILE"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "FILE STATUS IS: NNNN9000"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ABENDING PROGRAM"
+    }
+  ],
+  "normalisations": []
+}

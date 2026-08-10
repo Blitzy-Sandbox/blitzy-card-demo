@@ -1,0 +1,56 @@
+{
+  "program": "CBACT02C",
+  "caseId": "case05",
+  "description": "The tail seven rows, 43 through 49: a mid-volume slice that reaches the end of the file after several successful reads. It pins iteration order, which a single-record case cannot: the seven lines must appear in ascending key order exactly as carddata.txt holds them, because app/cbl/CBACT02C.cbl:31 declares ACCESS MODE IS SEQUENTIAL and :93 simply READs, so the file is walked in key order and each DISPLAY at :78 happens before the next READ at :93. Nine lines out: the two banners and the seven records.",
+  "unitKind": "BATCH_JOB",
+  "inputs": {
+    "CARDFILE": {
+      "fixture": "carddata.txt",
+      "fromRow": 43,
+      "rowCount": 7
+    }
+  },
+  "jobParameters": {},
+  "expectedWrites": [],
+  "expectedFinalState": [],
+  "expectedReturnCode": 0,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "START OF EXECUTION OF PROGRAM CBACT02C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "851786695820600800000000014955Chelsea Marks                                     2025-12-11Y                                                           "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "893136935189478300000000008230Kelsie Dicki                                      2024-05-20Y                                                           "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "905629793166401100000000025931Elliott Howell                                    2025-07-10Y                                                           "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "934910747586921400000000017218Sigrid Mann                                       2025-03-01Y                                                           "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "950173372142989300000000009725Melvin Ondricka                                   2024-12-27Y                                                           "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "968029415460369700000000001045Immanuel Kessler                                  2025-05-20Y                                                           "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "980558340899658800000000040908Davon Emmerich                                    2023-10-27Y                                                           "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "END OF EXECUTION OF PROGRAM CBACT02C"
+    }
+  ],
+  "normalisations": []
+}

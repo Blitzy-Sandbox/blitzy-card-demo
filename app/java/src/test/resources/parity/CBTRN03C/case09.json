@@ -1,0 +1,61 @@
+{
+  "program": "CBTRN03C",
+  "caseId": "case09",
+  "description": "DATEPARM is a DATASET, not a PARM, and an empty one produces an empty report. app/jcl/TRANREPT.jcl:73-74 binds DD DATEPARM to a dataset and the job declares no PARM at all, so 0550-DATEPARM-READ at :220-243 is the only source of the reporting range. Seeded empty, that READ reports '10', the EVALUATE takes its second arm and moves 16 to APPL-RESULT, and the APPL-EOF test at :235 moves 'Y' to END-OF-FILE before the loop has run once. So TRANFILE is never read even though it holds a perfectly good in-range record, no 'Reporting from' line is displayed because that line is on the APPL-AOK arm, and the program ends normally with RETURN-CODE 0.",
+  "unitKind": "BATCH_JOB",
+  "inputs": {
+    "TRANFILE": {
+      "rows": [
+        "TRN0000000000001010001POS TERM  A statically derived fixture transaction                                                            0000001000{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-03-15-11.22.33.4444442022-03-15-11.22.33.444444                    "
+      ]
+    },
+    "CARDXREF": {
+      "fixture": "cardxref.txt"
+    },
+    "TRANTYPE": {
+      "fixture": "trantype.txt"
+    },
+    "TRANCATG": {
+      "fixture": "trancatg.txt"
+    },
+    "DATEPARM": {
+      "empty": true,
+      "recordLength": 80,
+      "copybook": "CBTRN03C"
+    }
+  },
+  "jobParameters": {},
+  "expectedWrites": [],
+  "expectedFinalState": [],
+  "expectedReturnCode": 0,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "START OF EXECUTION OF PROGRAM CBTRN03C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "END OF EXECUTION OF PROGRAM CBTRN03C"
+    }
+  ],
+  "normalisations": [
+    {
+      "dataset": "CARDXREF",
+      "kind": "CARDXREF_FILLER_PAD_36_TO_50"
+    }
+  ],
+  "expectedDatasets": [
+    {
+      "dataset": "TRANREPT",
+      "channel": "WRITES",
+      "rowCount": 0,
+      "recordLength": 133
+    },
+    {
+      "dataset": "TRANREPT",
+      "channel": "FINAL_STATE",
+      "rowCount": 0,
+      "recordLength": 133
+    }
+  ]
+}
