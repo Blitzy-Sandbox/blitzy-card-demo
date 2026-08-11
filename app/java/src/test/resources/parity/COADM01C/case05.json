@@ -1,7 +1,7 @@
 {
   "program": "COADM01C",
   "caseId": "case05",
-  "description": "A re-entry with OPTIONI '1x', which is the only input that reaches the first term of the guard at app/cbl/COADM01C.cbl:127, WS-OPTION IS NOT NUMERIC. Byte 2 is not a space so the scan stops at WS-IDX 2, both bytes cross the JUST RIGHT move unchanged, the INSPECT replaces no space, and line 124's MOVE WS-OPTION-X TO WS-OPTION sends PIC X(02) to PIC 9(02) at equal widths - so the two characters cross unchanged and WS-OPTION really does come to hold '1x'. That is what gives IS NOT NUMERIC something to detect, and it is why OPTIONO echoes '1x' rather than a digit pair. The second and third terms are never evaluated on this input.",
+  "description": "The last-active-element assertion of the OCCURS 9 admin menu table, gate G33, made on the first-entry paint that composes it - the mirror of case04, which makes the first-element assertion on the rejection path. 'Last' here means subscript 4 and not subscript 9: app/cpy/COADM02Y.cpy:20 values CDEMO-ADMIN-OPT-COUNT at 4 while the table that redefines the valued storage is declared OCCURS 9 TIMES at :45, and the loop at app/cbl/COADM01C.cbl:228-229 is PERFORM VARYING WS-IDX FROM 1 BY 1 UNTIL WS-IDX > CDEMO-ADMIN-OPT-COUNT - so the bound is the ACTIVE COUNT and never the TABLE SIZE. Subscript 4 is Java list position 3 and lands in screen slot OPTN004O through the WHEN 4 arm at :245-246; a 0-based write of the 1-based subscript would put entry 4's label in OPTN005O and leave OPTN004O unpainted, and OPTN003O is pinned beside OPTN004O so a one-slot shift at the top of the range fails loudly here instead of being merely suspected. Both this fixture and case04 necessarily carry all twelve lines, because FieldDiffer compares a send in both directions and a field the case does not pin is itself a difference; what differs is which element each exists to prove and which paragraph path composed it. Each line is derived mechanically from app/cpy/COADM02Y.cpy rather than transcribed from a screen: CDEMO-ADMIN-OPT-NUM is PIC 9(02), so entry 4 renders '04' WITH its leading zero and not '4'; CDEMO-ADMIN-OPT-NAME is PIC X(35), so 'User Delete (Security)' keeps the thirteen trailing spaces of its literal and is NOT trimmed; and :231 blanks WS-ADMIN-OPT-TXT PIC X(40) before the STRING at :233-236 writes 2 + 2 + 35 = 39 characters, so character 40 stays the space :231 put there and the field reads with fourteen spaces after the closing parenthesis - STRING overwrites only what it writes. The loop terminating at 4 is asserted here and not assumed. OPTN005O through OPTN012O come back as the unpainted X'00' image that MOVE LOW-VALUES TO COADM1AO at :89 leaves - X'00' and not spaces - because BUILD-MENU-OPTIONS never reaches them: the five unvalued table slots 5 to 9 have arms in the EVALUATE at :238-261 that cannot fire while the count is 4, and OPTN011O and OPTN012O have no arm at all even though app/cpy-bms/COADM01.CPY declares both. A translation that iterated to the table size rather than to the active count would render five slots out of storage the copybook never valued, and this case must fail if it does. The WHEN OTHER CONTINUE at :259-260 is a genuine no-op default and is preserved exactly as found rather than tidied away, because dead code is behaviour here. The ninth and final slot of the table is not this case's subject, and the distinction between the last ACTIVE entry and the last SLOT is the whole reason this case says which one it means: slot 9 is approached from the other side by case06, where a subscript of 05 is rejected by the second term of the guard at :128 before any transfer happens, and it is pinned as never-written here and by case12, case13 and case14. This is the ENTER first paint: CDEMO-PGM-CONTEXT arrives 0, so :87's IF NOT CDEMO-PGM-REENTER is true, :88 SETs it to 1 - the single mutation the outbound area carries - :89 clears COADM1AO and :90 performs SEND-MENU-SCREEN, which performs BUILD-MENU-OPTIONS at :175. No option is read and no validation runs on this path, and that is what makes the two-space OPTIONI declared here worth declaring: the same two spaces on the re-entry path of case04 are normalised by :117-124 into the '00' that OPTIONO echoes, whereas here :89 discards them and OPTIONO comes back as the two-byte X'00' image, because the only statement that writes it is :125 inside PROCESS-ENTER-KEY and that paragraph never runs. The plan's phrasing of that field as 'two spaces' is the value the client typed, not the value the field returns; the returned image is taken from the source. EIBAID is declared as DFHENTER because that is the key that raised the transaction, and the EVALUATE at :93 is not reached on this path, so no arm of it is asserted. The arrival is the one COUSR00C composes on its way back: app/cbl/COUSR00C.cbl:125-126 moves 'COADM01C' into CDEMO-TO-PROGRAM on its DFHPF3 arm, and :508-515 then moves its own WS-TRANID 'CU00' (:37) into CDEMO-FROM-TRANID, 'COUSR00C' into CDEMO-FROM-PROGRAM and ZEROS into CDEMO-PGM-CONTEXT before the XCTL - app/csd/CARDDEMO.CSD:449-450 confirming CU00 is COUSR00C's transaction. So this is a repaint after a round trip through the first menu option rather than the arrival from sign-on that case12, case13, case14 and case19 carry, and the menu composes identically: the option table is a copybook constant, so where the administrator came from cannot change one byte of it. Nothing in the communication area is mutated except the context flag, which is what a stateless translation has to be able to show - every value the program knows travelled in the payload and none of it in a session (G37). Only the thirteen COADM1AO items a service run observably produces are pinned, the twelve menu lines and the echoed option, and the unit is called directly with no HTTP in the path (G51). The six header items POPULATE-HEADER-INFO fills at :202-221 and the seventy-eight-byte ERRMSGO that :177 narrows WS-MESSAGE into belong to the controller projection and are pinned by case02, case15 and case20; manufacturing them here would be this fixture doing the controller's work. That is also why the message is the eighty-byte WS-MESSAGE of :38, blank because :79 moved SPACES into it and nothing on this path writes it again. ERRMSGC is the mapset's declared COLOR=RED at app/bms/COADM01.bms:154-157 and not an error highlight - COADM01C does not copy CSSETATY, and DFHRED appears nowhere in its 268 lines - while the one statement that ever overrides it is the DFHGREEN of :148 on the coming-soon path case08 drives. This is the ENTER half of gate G38, and nothing is highlighted because nothing on this path can be. Every width comes from the xxxI PICTURE clauses of app/cpy-bms/COADM01.CPY - OPTN00nI PIC X(40) and OPTIONI PIC X(2) - and never from the LENGTH= operand of the mapset. The clock is pinned to 2022-07-19T23:12:32, the instant COADM01C's own version footer at :267 carries, so one clock governs all twenty cases in this directory even where, as here, the header it would reach is not part of the projection; US-ASCII is named explicitly rather than left to a platform default. Every expected value above is STATICALLY DERIVED - read out of the COBOL paragraph that produces it and cross-checked against the copybook byte layout of app/cpy/COADM02Y.cpy, the xxxI PICTURE clauses of app/cpy-bms/COADM01.CPY and the DFHMDF definitions of app/bms/COADM01.bms - and NOT captured from an execution of the legacy program, which is empirically impossible in this environment: no z/OS or CICS runtime, an indexed file handler the available compiler reports as disabled, no Language Environment CEE services, and DFHAID, DFHBMSCA and DFHATTR absent from the repository. ParityHarness's class documentation is the authoritative statement of that provenance, and the substitution is escalated rather than absorbed - risk R-A.",
   "unitKind": "SERVICE",
   "inputs": {},
   "screenRequest": {
@@ -10,15 +10,15 @@
     "pinnedClock": "2022-07-19T23:12:32",
     "charset": "US-ASCII",
     "commarea": {
-      "CDEMO-FROM-TRANID": "CC00",
-      "CDEMO-FROM-PROGRAM": "COSGN00C",
+      "CDEMO-FROM-TRANID": "CU00",
+      "CDEMO-FROM-PROGRAM": "COUSR00C",
       "CDEMO-TO-PROGRAM": "COADM01C",
       "CDEMO-USER-ID": "ADMIN001",
       "CDEMO-USER-TYPE": "A",
-      "CDEMO-PGM-CONTEXT": "1"
+      "CDEMO-PGM-CONTEXT": "0"
     },
     "mapFields": {
-      "OPTIONI": "1x"
+      "OPTIONI": "  "
     },
     "forcedOutcomes": {}
   },
@@ -26,8 +26,8 @@
     "nextMapset": "COADM01",
     "nextMap": "COADM1A",
     "navigation": {
-      "CDEMO-FROM-TRANID": "CC00",
-      "CDEMO-FROM-PROGRAM": "COSGN00C",
+      "CDEMO-FROM-TRANID": "CU00",
+      "CDEMO-FROM-PROGRAM": "COUSR00C",
       "CDEMO-TO-TRANID": "    ",
       "CDEMO-TO-PROGRAM": "COADM01C",
       "CDEMO-USER-ID": "ADMIN001",
@@ -58,7 +58,7 @@
           "OPTN010O": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
           "OPTN011O": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
           "OPTN012O": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
-          "OPTIONO": "1x"
+          "OPTIONO": "\u0000\u0000"
         },
         "attributes": {
           "ERRMSGC": "DFHRED"
@@ -73,7 +73,7 @@
   "expectedMessages": [
     {
       "channel": "WS_MESSAGE_80",
-      "text": "Please enter a valid option number...                                           "
+      "text": "                                                                                "
     }
   ],
   "normalisations": []

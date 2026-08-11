@@ -1,19 +1,37 @@
 {
   "program": "CBCUS01C",
   "caseId": "case11",
-  "description": "The very first READ fails, so no record is ever displayed. app/cbl/CBCUS01C.cbl:L93 reports '30' - a permanent I/O error - which is neither '00' at L94 nor '10' at L98, so L101 moves 12 into APPL-RESULT, the 88 APPL-AOK test at L104 fails, the 88 APPL-EOF test at L107 fails too, and the WHEN OTHER arm runs: DISPLAY 'ERROR READING CUSTOMER FILE', the rendered status, then the abend. Three records are seeded and none is delivered, which makes the absence of any record line an assertion rather than a consequence of an empty dataset. RETURN-CODE 12; the closing banner is never reached.",
+  "description": "The record width and the trailing FILLER, at a scale a reviewer can check by hand - this is the case parity/CBCUS01C discharges gates G19 and G21 through, and both are the whole point of it. Three records are seeded and the run is clean, so app/cbl/CBCUS01C.cbl displays each of them twice and emits 1 + (3 x 2) + 1 = 8 lines: the L71 banner, the three record pairs, and the L85 banner. Every one of the six record lines is exactly 500 characters. That width is not taken from prose: app/cpy/CVCUS01Y.cpy declares CUSTOMER-RECORD as nineteen items whose PICTURE widths were summed by hand (practice B11) as 9+25+25+25+50+50+50+2+3+10+15+15+9+20+10+10+1+3+168 = 500, and app/jcl/CUSTFILE.jcl independently defines the cluster with RECORDSIZE(500 500) and KEYS(9 0). DISPLAY CUSTOMER-RECORD at L96, and again at L78, writes that whole group as raw bytes, so a line is never 499, never 501 and never trimmed. The nineteenth item is FILLER PIC X(168) at offsets 333-500, and it is what this case exists to catch. FILLER must be emitted as spaces, because dropping it breaks every downstream offset and the total record width. Positions 333-500 of all three rows are spaces, so every record line ends in a space, and both failure modes a codec can have here surface at once: a codec that treated FILLER as a skippable gap would emit 332 characters and fail the width check outright, and a codec that filled the span with anything other than spaces - nulls, zeros, a sentinel - would still be 500 wide but would differ byte for byte. FieldDiffer carries a width-mismatch diff kind and performs total-width self-checks, so each arrives as an explicit diff rather than as a confusing value mismatch somewhere downstream. Three dissimilar rows are seeded rather than one, so the 500-byte invariant cannot be satisfied by coincidence - they differ in how much of each span is populated. CUST-ID 000000001 is Immanuel, Madeline and Kessler in North Carolina, with a nine-digit SSN that opens with a zero, 020973888, and a FICO of 274. CUST-ID 000000026 carries the fixture-wide minimum FICO, 001, in the PIC 9(03) span at 330-332 - the item immediately before the FILLER, so a mis-rendered numeric there shifts the FILLER span visibly instead of hiding inside it. CUST-ID 000000050 has notably short name fields - Aniya, Alba and Von, five, four and three characters inside three 25-byte spans, and the shortest total in the whole fixture - so most of those 75 bytes are trailing spaces, and its zip is 04257 followed by five more. A codec that trimmed trailing spaces fails on that row first and hardest. The three rows are not contiguous, so they are declared inline rather than as a fixture slice: the fixture shape narrows by fromRow and rowCount and can only express a contiguous run. Every byte of all three is copied verbatim out of the real app/data/ASCII/custdata.txt (gate G16) and none is synthesized; that fixture matches its copybook width exactly, so no normalisation is declared. The bytes are US-ASCII, stated rather than assumed (practice B8). The dataset is addressed by the binding key CUSTFILE alone - the name the SELECT at app/cbl/CBCUS01C.cbl:29 assigns it and the name app/jcl/READCUST.jcl STEP05 mounts on its single CUSTFILE DD - so no dataset name reaches the case (gate G46), and because that step is a bare EXEC PGM= with no PARM anywhere the job parameters are empty. The case runs on the ordinary path with no arranged backend failure, which is what makes six record images reachable at all: the OPEN at L120 reports 00, the three READs at L93 report 00, the fourth reports 10 and takes the L98 end-of-file arm - which moves Y into END-OF-FILE and so suppresses the mainline display at L78, meaning the end-of-file read contributes no line whatsoever - and the CLOSE at L138 reports 00 (gate G47). RETURN-CODE is never referenced in the program 178 lines, so GOBACK at L87 returns 0, no abend expectation belongs here, and the CALL CEE3ABD site at L158 is out of reach: gate G35 is deliberately not exercised by this case. expectedWrites is empty as the positive assertion that no WRITE, no REWRITE and no DELETE is issued, and the same three images are pinned on the final-state channel, read back out of the relation rather than echoed from the seed, which is how the case asserts that a dataset opened INPUT is left exactly as it was found. The dataset-level expectation states the count and the width together - three rows of 500 bytes on the FINAL_STATE channel - because a row-level expectation alone cannot assert a width. R1 caveat: CustomerFileReaderJob is a Spring Batch job by mandated name only and CustomerRepository is a repository by mandated name only; the source Function header reads Read and print customer data file, the program computes nothing and it writes no dataset. The duplicate display stays duplicated rather than harmonised into one line (practice B5), because L96 and L78 display the same record area with no statement between them that could change it. Per requirement I1 the date-of-birth item is the hyphenated CUST-DOB-YYYY-MM-DD that app/cpy/CVCUS01Y.cpy declares at its line 19, occupying 309-318; the differently spelled item at the same offset in app/cpy/CUSTREC.cpy belongs to a separate copybook that the statement programs model as their own type, and the two are never conflated here. Baseline provenance (practice B12): these expected values are STATICALLY DERIVED from the control flow of app/cbl/CBCUS01C.cbl, the byte layout app/cpy/CVCUS01Y.cpy declares, the step and DD contract in app/jcl/READCUST.jcl, the cluster definition in app/jcl/CUSTFILE.jcl and the real 50-row app/data/ASCII/custdata.txt fixture. They were NEVER captured from, recorded against or replayed from a live COBOL execution: running the legacy programs is empirically impossible in this environment, as AAP section 0.7.6 establishes with eight independently verified blockers, and the substitution of provenance is escalated as risk R-A rather than absorbed silently. Gates discharged: G15 (one of the twenty cases this program owns), G16 (seeded from the real fixture), G18 (the diff count must be zero across all twenty), G19 (this folder dedicated record-width assertion - six lines of exactly 500 characters, the width CVCUS01Y declares and CUSTFILE.jcl confirms), G21 (this folder dedicated FILLER assertion - X(168) at 333-500 present and space-filled on every line, so an omitted FILLER shortens the line to 332 and fails immediately), G47 (the 00 open, three 00 reads, the 10 end-of-file and the 00 close) and G51 (the unit is CustomerFileReaderJob driven at tasklet level with CustomerService as the decision-holding collaborator, with no JobLauncher and no HTTP layer in the path).",
   "unitKind": "BATCH_JOB",
   "inputs": {
     "CUSTFILE": {
-      "fixture": "custdata.txt",
-      "fromRow": 0,
-      "rowCount": 3
+      "rows": [
+        "000000001Immanuel                 Madeline                 Kessler                  618 Deshaun Route                                 Apt. 802                                          Altenwerthshire                                   NCUSA12546     (908)119-8310  (373)693-8684  020973888000000000000493684371961-06-080053581756Y274                                                                                                                                                                        ",
+        "000000026Marjory                  Damien                   Stracke                  30161 Bogan Canyon                                Suite 916                                         Walshberg                                         ILUSA59945     (584)772-2867  (819)733-9809  840478806000000000009474116261990-03-170060808858Y001                                                                                                                                                                        ",
+        "000000050Aniya                    Alba                     Von                      1588 Nienow Cape                                  Suite 187                                         New Aricchester                                   ORUSA04257     (325)301-0827  (493)985-9283  931248469000000000000303878241960-12-010074883577Y623                                                                                                                                                                        "
+      ]
     }
   },
   "jobParameters": {},
   "expectedWrites": [],
-  "expectedFinalState": [],
-  "expectedReturnCode": 12,
+  "expectedFinalState": [
+    {
+      "dataset": "CUSTFILE",
+      "rowIndex": 0,
+      "expectedBytes": "000000001Immanuel                 Madeline                 Kessler                  618 Deshaun Route                                 Apt. 802                                          Altenwerthshire                                   NCUSA12546     (908)119-8310  (373)693-8684  020973888000000000000493684371961-06-080053581756Y274                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTFILE",
+      "rowIndex": 1,
+      "expectedBytes": "000000026Marjory                  Damien                   Stracke                  30161 Bogan Canyon                                Suite 916                                         Walshberg                                         ILUSA59945     (584)772-2867  (819)733-9809  840478806000000000009474116261990-03-170060808858Y001                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTFILE",
+      "rowIndex": 2,
+      "expectedBytes": "000000050Aniya                    Alba                     Von                      1588 Nienow Cape                                  Suite 187                                         New Aricchester                                   ORUSA04257     (325)301-0827  (493)985-9283  931248469000000000000303878241960-12-010074883577Y623                                                                                                                                                                        "
+    }
+  ],
+  "expectedReturnCode": 0,
   "expectedMessages": [
     {
       "channel": "DISPLAY_LINE",
@@ -21,16 +39,40 @@
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "ERROR READING CUSTOMER FILE"
+      "text": "000000001Immanuel                 Madeline                 Kessler                  618 Deshaun Route                                 Apt. 802                                          Altenwerthshire                                   NCUSA12546     (908)119-8310  (373)693-8684  020973888000000000000493684371961-06-080053581756Y274                                                                                                                                                                        "
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "FILE STATUS IS: NNNN0030"
+      "text": "000000001Immanuel                 Madeline                 Kessler                  618 Deshaun Route                                 Apt. 802                                          Altenwerthshire                                   NCUSA12546     (908)119-8310  (373)693-8684  020973888000000000000493684371961-06-080053581756Y274                                                                                                                                                                        "
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "ABENDING PROGRAM"
+      "text": "000000026Marjory                  Damien                   Stracke                  30161 Bogan Canyon                                Suite 916                                         Walshberg                                         ILUSA59945     (584)772-2867  (819)733-9809  840478806000000000009474116261990-03-170060808858Y001                                                                                                                                                                        "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "000000026Marjory                  Damien                   Stracke                  30161 Bogan Canyon                                Suite 916                                         Walshberg                                         ILUSA59945     (584)772-2867  (819)733-9809  840478806000000000009474116261990-03-170060808858Y001                                                                                                                                                                        "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "000000050Aniya                    Alba                     Von                      1588 Nienow Cape                                  Suite 187                                         New Aricchester                                   ORUSA04257     (325)301-0827  (493)985-9283  931248469000000000000303878241960-12-010074883577Y623                                                                                                                                                                        "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "000000050Aniya                    Alba                     Von                      1588 Nienow Cape                                  Suite 187                                         New Aricchester                                   ORUSA04257     (325)301-0827  (493)985-9283  931248469000000000000303878241960-12-010074883577Y623                                                                                                                                                                        "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "END OF EXECUTION OF PROGRAM CBCUS01C"
     }
   ],
-  "normalisations": []
+  "normalisations": [],
+  "expectedDatasets": [
+    {
+      "dataset": "CUSTFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 3,
+      "recordLength": 500
+    }
+  ]
 }

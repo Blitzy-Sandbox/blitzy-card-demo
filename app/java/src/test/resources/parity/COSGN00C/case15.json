@@ -1,7 +1,7 @@
 {
   "program": "COSGN00C",
   "caseId": "case15",
-  "description": "MOVE ZEROS TO CDEMO-PGM-CONTEXT at :228, shown to be a reset rather than an initialisation. The request arrives carrying CDEMO-PGM-CONTEXT of 1, which asserts 88 CDEMO-PGM-REENTER - the re-entry half of the ENTER/REENTER pair every one of these screens distinguishes - and the program moves ZEROS over it on the way to the XCTL, so the next program is entered with 88 CDEMO-PGM-ENTER true. A translation that wrote the field only when it was already zero, or that passed it through, would pass every other case in this gate and fail this one. The last map and mapset arrive naming this very screen and are left alone, because COSGN00C writes neither: grep returns zero occurrences of CDEMO-LAST-MAP and CDEMO-LAST-MAPSET in the program.\n\nUSRSEC is seeded from app/jcl/DUSRSECJ.jcl:35-44, whose ten in-stream rows are 57 characters where app/cpy/CSUSR01Y.cpy declares 80: SEC-USR-ID X(08) at 0, SEC-USR-FNAME X(20) at 8, SEC-USR-LNAME X(20) at 28, SEC-USR-PWD X(08) at 48, SEC-USR-TYPE X(01) at 56 - which is 57 - then SEC-USR-FILLER X(23) at 57, which is 80. The 23-byte shortfall is supplied once at seed time by the declared USRSEC_FILLER_PAD_57_TO_80 normalisation and never hand-padded, and the 80-character expectedFinalState images prove that span was emitted as 23 spaces - a record missing it would be short by exactly 23. The same job corroborates the target width twice, with DCB=(LRECL=80,RECFM=FB) on SYSUT2 and RECORDSIZE(80,80) KEYS(8,0) on the cluster. The dataset is addressed by its binding key USRSEC - the CICS file name at :39 - and never by a dataset name. expectedWrites is empty as a positive assertion: COSGN00C contains no WRITE, REWRITE or DELETE on any path, and the read at :211-219 does not even specify UPDATE, so it takes no lock and holds no record. expectedReturnCode is 0 because grep -c RETURN-CODE over the program is 0.\n\nDeterminism and the two substitutions. POPULATE-HEADER-INFO opens with MOVE FUNCTION CURRENT-DATE TO WS-CURDATE-DATA at :179, so the clock is pinned rather than read: 2022-07-19T23:12:33, traceable to this program's own version footer at :259 and expressed as a fixed local date-time so no timezone can shift it. Through app/cpy/CSDAT01Y.cpy, WS-CURDATE-MM-DD-YY is MM '/' DD '/' YY with YY taken from WS-CURDATE-YEAR(3:2), giving CURDATEO exactly 07/19/22 at its PIC X(8); WS-CURTIME-HH-MM-SS is HH ':' MM ':' SS, eight bytes, moved into CURTIMEO which app/cpy-bms/COSGN00.CPY:122 declares PIC X(9) - hence 23:12:33 followed by exactly one trailing space. Note that width: the sibling COUSR02 map declares its CURTIMEO PIC X(8) and the two must not be conflated. APPLID and SYSID come from EXEC CICS ASSIGN at :198-204, which has no Java equivalent and which neither application.yml nor application-test.yml binds, so CICSAWS1 and AWS1 space-padded to PIC X(8) are pinned constants standing in for those two calls; all twenty cases use the same pair, and the substitution is stated rather than hidden.\n\nProvenance. Every expected value above is statically derived - by structured reading of app/cbl/COSGN00C.cbl cross-checked against app/cpy/CSUSR01Y.cpy for the record layout, app/cpy/COCOM01Y.cpy for the communication area, app/cpy/COTTL01Y.cpy and app/cpy/CSMSG01Y.cpy and app/cpy/CSDAT01Y.cpy for the literals and the header, app/cpy-bms/COSGN00.CPY with app/bms/COSGN00.bms for the screen field shapes, app/csd/CARDDEMO.CSD for transaction CC00, and app/jcl/DUSRSECJ.jcl:35-44 for the ten seed rows. It was never captured from a live COBOL execution, which is empirically impossible in this environment: there is no z/OS or CICS runtime, the available compiler reports its indexed file handler disabled, no Language Environment CEE* services exist, and DFHAID, DFHBMSCA and DFHATTR are absent from the repository. Only the provenance of the expected values is substituted; the twenty cases, the field-for-field diffing and the diff-count-equals-zero gate all stand.\n\nThe unit is SignOnService, driven as a plain object with a fixture-backed SecUserRepository, and the eleven-field screen is projected by SignOnController, also a plain object - no MockMvc, no HTTP, no servlet container and no JobLauncher in the path. All conversation state travels in the payload, so no server-side session exists to hold any of it. The password stays plaintext because app/cbl/COSGN00C.cbl:223 compares it in plaintext; that is an inherited property of the legacy design and an explicit non-goal of this migration, not something to correct here. Neither the backward-GO TO restructuring gate nor the abend gate applies: grep -c \"GO TO\" and grep -c CEE3ABD over app/cbl/COSGN00C.cbl are both 0, and neither is faked.",
+  "description": "The second wrong-password case, and the one that pins PIC X move-and-compare semantics directly: a password SHORTER than the field it is typed into. app/cpy-bms/COSGN00.CPY:78 declares PASSWDI PIC X(08), corroborated by LENGTH=8 on the PASSWD field at app/bms/COSGN00.bms:175-180, so the four characters PASS do not occupy four bytes - they occupy eight, as PASS followed by four spaces, because an alphanumeric item is left justified and right space padded. The typed value is therefore written out here at its full declared width rather than described, and the four trailing spaces are part of the expectation. FUNCTION UPPER-CASE at :135 leaves it unchanged, being already upper case and spaces not being alphabetic, so WS-USER-PWD PIC X(08) holds PASS followed by four spaces when :223 compares it. The seeded SEC-USR-PWD is PASSWORD, the two eight-byte images differ, and the comparison fails.\n\nWhy this is worth a case of its own. Four plausible translations of :223 pass every other case in this folder and get this one wrong. One that trims the received field compares PASS against PASSWORD - still unequal, but for the wrong reason, and it would then also accept a trailing-space variant of a correct password that COBOL rejects. One that compares with startsWith, or that trims both sides, turns a rejection into a successful sign-on and transfers control. One that pads to the wrong width, or pads on the left as a numeric receiver would, produces an eight-byte image that is not the one the terminal sent. And one that treats a partially filled field as empty takes the blank arm instead. The padded image is asserted explicitly so that each of those four is a difference rather than a coincidence.\n\nThe blank arm does NOT fire, and that distinction is the easiest thing to get wrong here. :123 tests WHEN PASSWDI OF COSGN0AI = SPACES OR LOW-VALUES, which is a test on the WHOLE field and not on its trimmed remainder. PASS followed by four spaces is neither eight spaces nor eight X'00' bytes, so the second arm of the EVALUATE TRUE at :117-130 is not taken even though half the field is blank; :118 is not taken either, the user id being present; and control reaches WHEN OTHER at :128-129, whose body is CONTINUE. That is what separates this case from case07 and case08, which type a password that really is all spaces and do take :123.\n\nThe path, in source order. EIBCALEN is 160 so :80 is false and the ELSE at :84 runs; EIBAID is DFHENTER so :86 selects PROCESS-ENTER-KEY; the EVALUATE falls through to CONTINUE as above; :132-136 upper-cases both typed fields, and :134 writes CDEMO-USER-ID unconditionally - which is why the inbound OLDUSER1 leaves as USER0003 even though the sign-on is refused; WS-ERR-FLG is still at the SET ERR-FLG-OFF of :75, so :138 is satisfied and :139 performs READ-USER-SEC-FILE. The READ at :211-219 is keyed on WS-USER-ID and specifies no UPDATE option, so it takes no lock and holds no record; it is performed exactly once, and it resolves on the tenth seeded row's predecessor - zero-based row 7, USER0003. WS-RESP-CD comes back 0, so the ordered EVALUATE at :221 matches WHEN 0 at :222 and neither WHEN 13 at :247 nor WHEN OTHER at :252 is considered.\n\nThe rejecting branch. :223 fails, so the ELSE at :241-246 runs: :242-243 moves the twenty-nine-character literal Wrong Password. Try again ... into WS-MESSAGE PIC X(80), :244 moves -1 into PASSWDL, and :245 performs SEND-SIGNON-SCREEN. The message reaches the screen through :149, MOVE WS-MESSAGE TO ERRMSGO OF COSGN0AO, and ERRMSGO is PIC X(78) at app/cpy-bms/COSGN00.CPY:152 - so the eighty-byte field is truncated on the right by two bytes, which costs nothing here because both lost bytes are spaces, and the expectation is the twenty-nine characters followed by forty-nine spaces. The comparison at :223 is plaintext, exactly as SEC-USR-PWD PIC X(08) at app/cpy/CSUSR01Y.cpy:21 stores it, and it stays plaintext here: that is an inherited property of the legacy design and an explicit non-goal of this migration, not something to correct, since digesting or otherwise transforming the credential would refuse every seeded row and change the observable outcome, and no security framework is introduced on this path. Note also that the source imposes no minimum password length: a four-character entry is a legitimate input that fails the comparison, not an input that fails a validation, and no length rule may be added to make it fail earlier.\n\nWS-ERR-FLG stays N, and that is a preserved defect rather than an oversight to tidy. The wrong-password ELSE at :241-246 is the only rejecting path in the program that does NOT move 'Y' into WS-ERR-FLG: :92, :119, :124, :248 and :253 all do. It changes no outcome, because :138 was evaluated before the read and the paragraph ends after the send, which is precisely why it survives translation unharmonised. case14 documents the same asymmetry from the full-width side; this case shows it holds for the short-password entry too.\n\nWhat is absent, stated positively. No role and no next program: the XCTL sites at :231-239 live inside the matching branch of :223, so neither of the two target program names it can transfer to appears anywhere in this expectation - there is no nextProgram member at all - and the response names a mapset and a map instead. The transaction leaves by the EXEC CICS RETURN TRANSID(WS-TRANID) COMMAREA(CARDDEMO-COMMAREA) at :98-102, so the pseudo-conversation continues rather than transferring. Four of the five commarea fields :224-228 writes are therefore untouched, and the case is arranged so that each one being wrongly written would show as a difference: CDEMO-FROM-TRANID and CDEMO-FROM-PROGRAM arrive blank and leave blank; CDEMO-USER-TYPE arrives 'A' while the row read carries 'U', so a :227 that ran would flip it; and CDEMO-PGM-CONTEXT arrives 1, asserting 88 CDEMO-PGM-REENTER, and leaves 1, so a :228 that ran unconditionally would zero it. That last pair is this case's share of the ENTER/REENTER distinction every one of these screens draws - it is the only case in the folder that arrives with a non-zero program context - and it proves the MOVE ZEROS is conditional, the complement of the signing-on cases, all of which come back at 0. The eleven fields the program never writes come back exactly as they arrived, which is what statelessness means here: there is no server-side session for any of it to live in.\n\nUSRSEC and its width. The ten rows are the in-stream data of app/jcl/DUSRSECJ.jcl:35-44, verbatim and therefore 57 characters each, where app/cpy/CSUSR01Y.cpy:17-23 declares 80: SEC-USR-ID X(08) at 0, SEC-USR-FNAME X(20) at 8, SEC-USR-LNAME X(20) at 28, SEC-USR-PWD X(08) at 48 and SEC-USR-TYPE X(01) at 56, which is 57, then the named SEC-USR-FILLER X(23) at 57, which is 80. The 23-byte shortfall is supplied once at seed time by the declared USRSEC_FILLER_PAD_57_TO_80 normalisation and is never hand-padded here; the 80-character images prove the span was emitted as 23 spaces, since a record that omitted it would be short by exactly 23. The same job corroborates the target width twice, with DCB=(LRECL=80,RECFM=FB) on SYSUT2 at :48 and RECORDSIZE(80,80) KEYS(8,0) on the cluster at :65-66. Row 7 is decoded into all six named fields as well as its image, so the read is asserted field by field rather than as one string. The dataset is addressed by its binding key USRSEC - the CICS file name at :39 and the FILE definition at app/csd/CARDDEMO.CSD:88 - and never by a dataset name. expectedWrites is empty as a positive assertion: the program contains no WRITE, REWRITE or DELETE on any path, so the file is byte-identical afterwards even though the authentication failed. expectedReturnCode is 0 because grep -c RETURN-CODE over the program is 0.\n\nDeterminism and the two substitutions. This path reaches POPULATE-HEADER-INFO, whose first statement at :179 is MOVE FUNCTION CURRENT-DATE TO WS-CURDATE-DATA, so the clock is pinned rather than read: 2022-07-19T23:12:33, taken from this program's own version footer at :259 and written as a local date-time so no timezone can shift it. Through app/cpy/CSDAT01Y.cpy, WS-CURDATE-MM-DD-YY is MM '/' DD '/' YY with YY from WS-CURDATE-YEAR(3:2), giving CURDATEO exactly 07/19/22 at its PIC X(8); WS-CURTIME-HH-MM-SS is HH ':' MM ':' SS, eight bytes, moved at :196 into CURTIMEO, which app/cpy-bms/COSGN00.CPY:122 declares PIC X(9) - hence 23:12:33 followed by exactly one trailing space. That width is this screen's own and the sibling COUSR02 map's PIC X(8) must not be conflated with it. APPLID and SYSID come from the two EXEC CICS ASSIGN calls at :198-204, which have no Java equivalent and which neither application.yml nor application-test.yml binds, so CICSAWS1 and AWS1 space-padded to PIC X(8) are pinned constants standing in for those calls; all twenty cases use the same pair, and the substitution is stated rather than hidden. The code page is named explicitly as US-ASCII, never left to a platform default.\n\nTwo absences documented rather than silently filled. app/cbl/COSGN00C.cbl:59 is *COPY DFHATTR. with the asterisk in column 7, which makes it a COBOL comment, so no DFHATTR constant applies to this screen; and the program never copies CSSETATY, whose only consumer is COACTUPC, so there is no DFHRED-plus-asterisk runtime highlight to assert and no xxxC, xxxP, xxxH or xxxV item is assigned anywhere. The error emphasis is entirely the -1 cursor request on PASSWDL, carried as validation metadata rather than as a payload member, together with ERRMSG's static COLOR=RED and ATTRB=(ASKIP,BRT,FSET) declared once in app/bms/COSGN00.bms:197-200. The cursor is requested on the password field's length item and on nothing else: the user id is accepted, so the length item behind it receives no request on this path.\n\nProvenance. Every expected value above is statically derived - by structured reading of app/cbl/COSGN00C.cbl cross-checked against app/cpy/CSUSR01Y.cpy for the record layout, app/cpy/COCOM01Y.cpy for the communication area, app/cpy/COTTL01Y.cpy for the two titles, whose line 21 is commented out so line 22 is the active CardDemo value, app/cpy/CSDAT01Y.cpy for the header, app/cpy-bms/COSGN00.CPY with app/bms/COSGN00.bms for the screen field shapes, app/csd/CARDDEMO.CSD for transaction CC00, and app/jcl/DUSRSECJ.jcl:35-44 for the ten seed rows. It was NEVER captured from a live COBOL execution, which is empirically impossible in this environment: there is no z/OS or CICS runtime, the available compiler reports its indexed file handler disabled, no Language Environment CEE* services exist, and DFHAID, DFHBMSCA and DFHATTR are absent from the repository. Only the provenance of the expected values is substituted; the twenty cases, the field-for-field diffing and the diff-count-equals-zero gate all stand.\n\nThe unit is SignOnService, constructed with a fixture-backed SecUserRepository and called as a plain object, and the eleven-field screen is projected by SignOnController, also a plain object - no MockMvc, no HTTP, no servlet container and no JobLauncher in the path. Neither the backward-GO TO restructuring gate nor the abend gate applies: grep -c \"GO TO\" and grep -c CEE3ABD over app/cbl/COSGN00C.cbl are both 0, and neither is faked. No user rules were provided for this project - review_rules returns exactly one line saying so - so the enterprise best-practice substitutes govern instead.",
   "unitKind": "SERVICE",
   "inputs": {
     "USRSEC": {
@@ -25,51 +25,70 @@
     "pinnedClock": "2022-07-19T23:12:33",
     "charset": "US-ASCII",
     "commarea": {
-      "CDEMO-FROM-TRANID": "CC00",
-      "CDEMO-FROM-PROGRAM": "COSGN00C",
-      "CDEMO-TO-TRANID": "    ",
-      "CDEMO-TO-PROGRAM": "        ",
-      "CDEMO-USER-ID": "USER0005",
-      "CDEMO-USER-TYPE": "U",
+      "CDEMO-FROM-TRANID": "    ",
+      "CDEMO-FROM-PROGRAM": "        ",
+      "CDEMO-TO-TRANID": "CC00",
+      "CDEMO-TO-PROGRAM": "COSGN00C",
+      "CDEMO-USER-ID": "OLDUSER1",
+      "CDEMO-USER-TYPE": "A",
       "CDEMO-PGM-CONTEXT": "1",
-      "CDEMO-CUST-ID": "000000000",
-      "CDEMO-CUST-FNAME": "                         ",
-      "CDEMO-CUST-MNAME": "                         ",
-      "CDEMO-CUST-LNAME": "                         ",
-      "CDEMO-ACCT-ID": "00000000000",
-      "CDEMO-ACCT-STATUS": " ",
-      "CDEMO-CARD-NUM": "0000000000000000",
-      "CDEMO-LAST-MAP": "COSGN0A",
-      "CDEMO-LAST-MAPSET": "COSGN00"
+      "CDEMO-CUST-ID": "000000042",
+      "CDEMO-CUST-FNAME": "JOHN                     ",
+      "CDEMO-CUST-MNAME": "Q                        ",
+      "CDEMO-CUST-LNAME": "PUBLIC                   ",
+      "CDEMO-ACCT-ID": "00000000042",
+      "CDEMO-ACCT-STATUS": "Y",
+      "CDEMO-CARD-NUM": "4000000000000042",
+      "CDEMO-LAST-MAP": "COMEN1A",
+      "CDEMO-LAST-MAPSET": "COMEN01"
     },
     "mapFields": {
-      "USERIDI": "USER0005",
-      "PASSWDI": "PASSWORD"
+      "USERIDI": "USER0003",
+      "PASSWDI": "PASS    "
     },
     "forcedOutcomes": {}
   },
   "expectedResponse": {
-    "nextProgram": "COMEN01C",
+    "nextMapset": "COSGN00",
+    "nextMap": "COSGN0A",
     "navigation": {
-      "CDEMO-FROM-TRANID": "CC00",
-      "CDEMO-FROM-PROGRAM": "COSGN00C",
-      "CDEMO-TO-TRANID": "    ",
-      "CDEMO-TO-PROGRAM": "        ",
-      "CDEMO-USER-ID": "USER0005",
-      "CDEMO-USER-TYPE": "U",
-      "CDEMO-PGM-CONTEXT": "0",
-      "CDEMO-CUST-ID": "000000000",
-      "CDEMO-CUST-FNAME": "                         ",
-      "CDEMO-CUST-MNAME": "                         ",
-      "CDEMO-CUST-LNAME": "                         ",
-      "CDEMO-ACCT-ID": "00000000000",
-      "CDEMO-ACCT-STATUS": " ",
-      "CDEMO-CARD-NUM": "0000000000000000",
-      "CDEMO-LAST-MAP": "COSGN0A",
-      "CDEMO-LAST-MAPSET": "COSGN00"
+      "CDEMO-FROM-TRANID": "    ",
+      "CDEMO-FROM-PROGRAM": "        ",
+      "CDEMO-TO-TRANID": "CC00",
+      "CDEMO-TO-PROGRAM": "COSGN00C",
+      "CDEMO-USER-ID": "USER0003",
+      "CDEMO-USER-TYPE": "A",
+      "CDEMO-PGM-CONTEXT": "1",
+      "CDEMO-CUST-ID": "000000042",
+      "CDEMO-CUST-FNAME": "JOHN                     ",
+      "CDEMO-CUST-MNAME": "Q                        ",
+      "CDEMO-CUST-LNAME": "PUBLIC                   ",
+      "CDEMO-ACCT-ID": "00000000042",
+      "CDEMO-ACCT-STATUS": "Y",
+      "CDEMO-CARD-NUM": "4000000000000042",
+      "CDEMO-LAST-MAP": "COMEN1A",
+      "CDEMO-LAST-MAPSET": "COMEN01"
     },
-    "sends": [],
-    "termination": "XCTL"
+    "sends": [
+      {
+        "fields": {
+          "TRNNAMEO": "CC00",
+          "TITLE01O": "      AWS Mainframe Modernization       ",
+          "CURDATEO": "07/19/22",
+          "PGMNAMEO": "COSGN00C",
+          "TITLE02O": "              CardDemo                  ",
+          "CURTIMEO": "23:12:33 ",
+          "APPLIDO": "CICSAWS1",
+          "SYSIDO": "AWS1    ",
+          "USERIDO": "USER0003",
+          "PASSWDO": "PASS    ",
+          "ERRMSGO": "Wrong Password. Try again ...                                                 "
+        },
+        "attributes": {}
+      }
+    ],
+    "cursorField": "PASSWDL",
+    "termination": "RETURN_TRANSID"
   },
   "expectedWrites": [],
   "expectedFinalState": [
@@ -111,6 +130,14 @@
     {
       "dataset": "USRSEC",
       "rowIndex": 7,
+      "fields": {
+        "SEC-USR-ID": "USER0003",
+        "SEC-USR-FNAME": "LAURITZ             ",
+        "SEC-USR-LNAME": "ALME                ",
+        "SEC-USR-PWD": "PASSWORD",
+        "SEC-USR-TYPE": "U",
+        "SEC-USR-FILLER": "                       "
+      },
       "expectedBytes": "USER0003LAURITZ             ALME                PASSWORDU                       "
     },
     {

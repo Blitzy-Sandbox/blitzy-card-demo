@@ -1,8 +1,8 @@
 {
   "program": "COADM01C",
   "caseId": "case20",
-  "description": "The whole screen, all twenty name-labelled fields of mapset COADM01, pinned in one expectation. app/bms/COADM01.bms declares twenty labelled DFHMDF fields and app/cpy-bms/COADM01.CPY gives each an xxxI item whose PICTURE clause is the only source of its width - TRNNAME X(4), TITLE01 X(40), CURDATE X(8), PGMNAME X(8), TITLE02 X(40), CURTIME X(8), OPTN001 to OPTN012 X(40) each, OPTION X(2) and ERRMSG X(78) - and every one of them is stated here at that full width. The xxxL, xxxF and xxxA items are length, flag and attribute metadata rather than payload, so the only one of them that appears is ERRMSGC, carried as an attribute and valued with the DFHBMSCA mnemonic the program moved. The blank-option rejection is the path chosen because it is the only one that populates all four groups at once: the header, the composed menu, the echoed option and a non-blank message. case04 pins the same COBOL path one layer down, at the eighty bytes of WS-MESSAGE.",
-  "unitKind": "CONTROLLER_POJO",
+  "description": "The statelessness round trip, and the strongest statement of gate G37 and rule R6 this directory makes: a valid menu selection carried by a communication area in which ALL SIXTEEN fields of app/cpy/COCOM01Y.cpy hold a distinct, non-default value, so that every field COADM01C does not reference has something to lose. That is why this case exists beside case07, which pins the same COBOL path - the same DFHENTER re-entry through the ELSE at app/cbl/COADM01C.cbl:91-95, the same OPTIONI '1 ', the same transfer to COUSR00C - but populates only six of the sixteen, so its other ten are the spaces and zeros of an empty context and a translation that silently dropped them would still report a clean diff; case11 and case14 populate fifteen, both leaving CDEMO-TO-TRANID blank. Here nothing is left at a default and nothing is left unasserted. Every value is stated at exactly its declared width, and the widths are the copybook's own: 4 + 8 + 4 + 8 + 8 + 1 + 1 for CDEMO-GENERAL-INFO, 9 + 25 + 25 + 25 for CDEMO-CUSTOMER-INFO, 11 + 1 for CDEMO-ACCOUNT-INFO, 16 for CDEMO-CARD-INFO and 7 + 7 for CDEMO-MORE-INFO, which is 34 + 84 + 12 + 16 + 14 and therefore exactly 160 bytes. CDEMO-LAST-MAP and CDEMO-LAST-MAPSET are PIC X(7) at COCOM01Y:43-44 - SEVEN, not eight, the one width in this copybook most easily mistyped, and widening either would make the record 162 bytes - so 'COADM1A' and 'COADM01' are stated at seven characters each, and they differ from one another so that a map-for-mapset transposition cannot pass unnoticed. The identifiers are genuine fixture data rather than invented rows: app/data/ASCII/cardxref.txt carries '9349107475869214', '000000017' and '00000000017' as ONE 36-byte cross-reference record, so the card, customer and account numbers are a coherent triple; the three PIC X(25) names are that customer's own in app/data/ASCII/custdata.txt; and the 'Y' is byte 12 of that account's record in app/data/ASCII/acctdata.txt. No other case in this directory uses account 17, so this context cannot be mistaken for a sibling's in a failure report. CDEMO-TO-TRANID and CDEMO-TO-PROGRAM are deliberately 'CM00' and 'COMEN01C', a real pair from app/csd/CARDDEMO.CSD:399-400 and :235 left by an earlier leg of the conversation, rather than the 'CA00' and 'COADM01C' the siblings carry: 'COADM01C' is precisely the value line 140 writes into CDEMO-FROM-PROGRAM, and a FROM-for-TO transposition between two identical strings would be invisible. Lines 139-141 make EXACTLY THREE mutations, in source order: CDEMO-FROM-TRANID becomes 'CA00', CDEMO-FROM-PROGRAM becomes 'COADM01C', and CDEMO-PGM-CONTEXT becomes zero, so COUSR00C sees ENTER and paints rather than validating. The other THIRTEEN are echoed byte for byte and every one of them is pinned individually, so a difference names the offending field rather than reporting that the context as a whole is wrong; three plus thirteen is sixteen, the complete complement. The evidence is an exhaustive scan of every CDEMO- reference in the program's 268 lines. It yields nine distinct names: four are the option-table items of app/cpy/COADM02Y.cpy - CDEMO-ADMIN-OPT-COUNT, CDEMO-ADMIN-OPT-NUM, CDEMO-ADMIN-OPT-NAME and CDEMO-ADMIN-OPT-PGMNAME - and five are in the communication area, of which CDEMO-PGM-REENTER is the 88-level over CDEMO-PGM-CONTEXT and CDEMO-TO-PROGRAM is read only inside RETURN-TO-SIGNON-SCREEN at lines 160-167, which this path never performs. The program therefore reads no other context field and writes no other, and the state travels in the payload rather than in a session. The XCTL at 142-145 DOES specify COMMAREA(CARDDEMO-COMMAREA), so all 160 bytes are handed to COUSR00C - unlike the sign-on transfer at 165-167, which names a program and passes no communication area at all, and which case10 pins. CDEMO-USER-TYPE is 'A', the CDEMO-USRTYP-ADMIN condition, and it is completely INERT here: COADM01C never reads it, the ADMIN and USER conditions are carried and never tested, and the projection above would be identical in every one of its sixteen fields had the value been 'U'. The user-type authorisation filter belongs to COMEN01C, a DIFFERENT program, whose menu entries carry the X(01) authorisation column of app/cpy/COMEN02Y.cpy; reaching for it here would be inventing behaviour, so the divergence is documented rather than exploited. The user type is echoed, never derived and never looked up: no USRSEC read occurs on any path through this program, SEC-USR-PWD PIC X(08) is not referenced, and no hashing, no token and no filter chain is implied, so the legacy plaintext model is neither weakened nor unrequestedly strengthened. WS-USRSEC-FILE at line 39 and COPY CSUSR01Y at line 58 are dead declarations, preserved exactly as found rather than tidied away; case16 and case17 are the cases that assert that deadness at the unit, and this one simply never touches either. A reviewer grepping this file should know that USRSEC and SEC-USR-PWD appear above only inside those denials: neither is an input, neither is a payload field, the inputs map is empty because COADM01C performs no dataset I/O of any kind, and no credential value appears anywhere in this case. Statelessness has two halves and this case carries one of them. ParityCase offers no repetition or idempotence facility - a case describes one invocation - so the repeated-invocation half lives in case18, which calls one service instance twice and a freshly constructed instance once, requires all three outcomes equal, and checks by reflection that the service holds no assignable field. This case carries the other half, the payload round trip: the whole conversation state goes in through screenRequest and comes back out through the navigation context, field for field, which is the only reason it is comparable at all. An XCTL never returns, and the rest of this expectation says so. Lines 147-154 sit after the inner END-IF on line 146 and are therefore textually reachable, kept out only by the transfer never coming back; a translation that fell through would blank WS-MESSAGE at 147, override the map's COLOR=RED with the green attribute at 148, compose the two-operand STRING at 149-153 and send it at 154, attaching that text to a SUCCESSFUL transfer, which COADM01C never emits. The absence is asserted positively rather than left unstated: the one expected message is the 80-byte WS-MESSAGE of line 38 still holding the spaces line 79 put in it, and the composed text is quoted NOWHERE in this file, so that a search for it across the fixture tree finds case08 - the case that does emit it - and not this one. Nothing is repainted either. SEND-MENU-SCREEN is not performed, so its POPULATE-HEADER-INFO paints no title, transaction, program, date or time and its BUILD-MENU-OPTIONS composes none of the twelve option lines, and the empty send list is the positive assertion of exactly that. With no send there is no ScreenSend to carry an attribute either, so the error-message colour stays the COLOR=RED that app/bms/COADM01.bms declares, which is the map default the translation names BmsAttributes.DFHRED; the green attribute of line 148 is the only attribute byte this program ever writes and it belongs to the path this case does not take. The MOVE LOW-VALUES TO COADM1AO of line 89 is not asserted: it is inside the first-entry branch only and did not run on this re-entry, which is also why OPTN005I through OPTN012I are delivered as the spaces their INITIAL leaves them holding rather than as low values, and they are stated explicitly so that the no-reset state is well defined rather than accidental. Only OPTIONI is read. The normalised OPTIONO of '01' - '1 ' sent into WS-OPTION-X, declared PIC X(02) JUST RIGHT at line 45, landing at the rightmost position and space-filled on the LEFT to give ' 1', then INSPECT REPLACING ALL ' ' BY '0' at 123 giving '01', then WS-OPTION 1 at 124 and the echo at 125 - is asserted at the unit rather than here, because a transfer sends no map for it to travel on. Subscript 1 is Java position 0, the one-based-to-zero-based conversion pinned at the first element, and CDEMO-ADMIN-OPT-PGMNAME(1) is 'COUSR00C' at COADM02Y:27, whose first five characters are 'COUSR' and are not 'DUMMY', which is what selects the transfer arm at line 138; the guard at 127-129 is false in all three terms, so WS-ERR-FLG stays 'N' and line 137 holds. nextMapset and nextMap are deliberately NOT declared: neither XCTL names a map, and which screen COUSR00C paints is COUSR00C's decision, taken after this program has ended, so naming the screen being left would be the one answer that is certainly wrong. The map this run did touch is COADM1A of COADM01, at the RECEIVE on lines 191-197, and it is recorded here in prose for that reason. The unit is the service, constructed and called directly as a plain object with no HTTP layer and no JobLauncher in the path, which is what puts every decision within reach of a branch assertion. The clock is pinned to 2022-07-19T23:12:32, the timestamp COADM01C's own version footer at line 267 carries, so the instant is anchored in the source rather than chosen; all twenty cases in this directory pin that same instant and name US-ASCII explicitly rather than leaving a code page to a platform default. This path paints no header, so the instant changes nothing it asserts; it is declared all the same so that one clock governs the whole directory. Every expected value above is STATICALLY DERIVED - read out of the COBOL paragraph that produces it and cross-checked against the 160-byte layout of app/cpy/COCOM01Y.cpy, the option table of app/cpy/COADM02Y.cpy, the xxxI PICTURE clauses of app/cpy-bms/COADM01.CPY, the transaction and program definitions of app/csd/CARDDEMO.CSD and the three real fixtures named above - and NONE of it was captured from, recorded against or replayed from an execution of the legacy program, which is empirically impossible here: no z/OS or CICS runtime, an indexed file handler the available compiler reports as disabled, no Language Environment CEE services, and DFHAID, DFHBMSCA and DFHATTR absent from the repository. The class documentation of ParityHarness, where the observation is produced, and of ParityCase, where the expectation is modelled, is the authoritative statement of that provenance, and the substitution of provenance - and of provenance alone, since the twenty cases, the field-for-field diffing and the diff-count-equals-zero gate all stand - is escalated for explicit confirmation rather than silently absorbed (risk R-A).",
+  "unitKind": "SERVICE",
   "inputs": {},
   "screenRequest": {
     "eibcalen": 160,
@@ -12,75 +12,64 @@
     "commarea": {
       "CDEMO-FROM-TRANID": "CC00",
       "CDEMO-FROM-PROGRAM": "COSGN00C",
-      "CDEMO-TO-PROGRAM": "COADM01C",
+      "CDEMO-TO-TRANID": "CM00",
+      "CDEMO-TO-PROGRAM": "COMEN01C",
       "CDEMO-USER-ID": "ADMIN001",
       "CDEMO-USER-TYPE": "A",
-      "CDEMO-PGM-CONTEXT": "1"
+      "CDEMO-PGM-CONTEXT": "1",
+      "CDEMO-CUST-ID": "000000017",
+      "CDEMO-CUST-FNAME": "Sigrid                   ",
+      "CDEMO-CUST-MNAME": "Angeline                 ",
+      "CDEMO-CUST-LNAME": "Mann                     ",
+      "CDEMO-ACCT-ID": "00000000017",
+      "CDEMO-ACCT-STATUS": "Y",
+      "CDEMO-CARD-NUM": "9349107475869214",
+      "CDEMO-LAST-MAP": "COADM1A",
+      "CDEMO-LAST-MAPSET": "COADM01"
     },
     "mapFields": {
-      "OPTIONI": "  "
+      "OPTIONI": "1 ",
+      "OPTN005I": "                                        ",
+      "OPTN006I": "                                        ",
+      "OPTN007I": "                                        ",
+      "OPTN008I": "                                        ",
+      "OPTN009I": "                                        ",
+      "OPTN010I": "                                        ",
+      "OPTN011I": "                                        ",
+      "OPTN012I": "                                        "
     },
     "forcedOutcomes": {}
   },
   "expectedResponse": {
-    "nextMapset": "COADM01",
-    "nextMap": "COADM1A",
+    "nextProgram": "COUSR00C",
     "navigation": {
-      "CDEMO-FROM-TRANID": "CC00",
-      "CDEMO-FROM-PROGRAM": "COSGN00C",
-      "CDEMO-TO-TRANID": "    ",
-      "CDEMO-TO-PROGRAM": "COADM01C",
+      "CDEMO-FROM-TRANID": "CA00",
+      "CDEMO-FROM-PROGRAM": "COADM01C",
+      "CDEMO-TO-TRANID": "CM00",
+      "CDEMO-TO-PROGRAM": "COMEN01C",
       "CDEMO-USER-ID": "ADMIN001",
       "CDEMO-USER-TYPE": "A",
-      "CDEMO-PGM-CONTEXT": "1",
-      "CDEMO-CUST-ID": "000000000",
-      "CDEMO-CUST-FNAME": "                         ",
-      "CDEMO-CUST-MNAME": "                         ",
-      "CDEMO-CUST-LNAME": "                         ",
-      "CDEMO-ACCT-ID": "00000000000",
-      "CDEMO-ACCT-STATUS": " ",
-      "CDEMO-CARD-NUM": "0000000000000000",
-      "CDEMO-LAST-MAP": "       ",
-      "CDEMO-LAST-MAPSET": "       "
+      "CDEMO-PGM-CONTEXT": "0",
+      "CDEMO-CUST-ID": "000000017",
+      "CDEMO-CUST-FNAME": "Sigrid                   ",
+      "CDEMO-CUST-MNAME": "Angeline                 ",
+      "CDEMO-CUST-LNAME": "Mann                     ",
+      "CDEMO-ACCT-ID": "00000000017",
+      "CDEMO-ACCT-STATUS": "Y",
+      "CDEMO-CARD-NUM": "9349107475869214",
+      "CDEMO-LAST-MAP": "COADM1A",
+      "CDEMO-LAST-MAPSET": "COADM01"
     },
-    "sends": [
-      {
-        "fields": {
-          "TRNNAMEO": "CA00",
-          "TITLE01O": "      AWS Mainframe Modernization       ",
-          "CURDATEO": "07/19/22",
-          "PGMNAMEO": "COADM01C",
-          "TITLE02O": "              CardDemo                  ",
-          "CURTIMEO": "23:12:32",
-          "OPTN001O": "01. User List (Security)                ",
-          "OPTN002O": "02. User Add (Security)                 ",
-          "OPTN003O": "03. User Update (Security)              ",
-          "OPTN004O": "04. User Delete (Security)              ",
-          "OPTN005O": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
-          "OPTN006O": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
-          "OPTN007O": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
-          "OPTN008O": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
-          "OPTN009O": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
-          "OPTN010O": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
-          "OPTN011O": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
-          "OPTN012O": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
-          "OPTIONO": "00",
-          "ERRMSGO": "Please enter a valid option number...                                         "
-        },
-        "attributes": {
-          "ERRMSGC": "DFHRED"
-        }
-      }
-    ],
-    "termination": "RETURN_TRANSID"
+    "sends": [],
+    "termination": "XCTL"
   },
   "expectedWrites": [],
   "expectedFinalState": [],
   "expectedReturnCode": 0,
   "expectedMessages": [
     {
-      "channel": "SCREEN_ERRMSG_78",
-      "text": "Please enter a valid option number...                                         "
+      "channel": "WS_MESSAGE_80",
+      "text": "                                                                                "
     }
   ],
   "normalisations": []

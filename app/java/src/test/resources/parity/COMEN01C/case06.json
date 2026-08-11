@@ -1,7 +1,7 @@
 {
   "program": "COMEN01C",
   "caseId": "case06",
-  "description": "The third term of the validation guard, app/cbl/COMEN01C.cbl:129 - WS-OPTION = ZEROS - reached with a blank OPTIONI. The descending test-before scan at 117-121 stops at WS-IDX 1 because byte two is a space, line 122 sends one byte into the PIC X(02) JUST RIGHT receiver, and line 123's INSPECT REPLACING ALL ' ' BY '0' turns '  ' into '00' - so the operator who pressed ENTER on an empty field is rejected by the ZEROS term rather than by IS NOT NUMERIC. The rejected value is still echoed to OPTIONO by line 125, normalised to '00'. The ungated filter at 136-137 then subscripts the table with 0, which is BELOW the OCCURS range and which COBOL has no subscript for at all; the bounded read yields nothing and the filter is false, so exactly one screen is painted.",
+  "description": "THE LEADING SPACE THAT JUST RIGHT NEVER MOVES, AND THE TRANSFER THAT NEVER RETURNS. PROCESS-ENTER-KEY dispatching the two-byte option image ' 1' - one space then the digit one - for an administrator: CDEMO-USER-TYPE 'A' arrives in the communication area with CDEMO-PGM-CONTEXT already 1, so app/cbl/COMEN01C.cbl:87 takes the ELSE, line 92 receives the map, and the ordered EVALUATE EIBAID at 93-103 takes its FIRST arm, WHEN DFHENTER - gate G30. WHAT THIS CASE EXISTS FOR is the SCAN-STOPS-AT-BYTE-TWO arm of the four-step normalisation at 117-125. OPTIONI is PIC X(2) (app/cpy-bms/COMEN01.CPY:132), so LENGTH OF OPTIONI is 2 and the descending test-before scan at 117-121 tests OPTIONI(2:1) FIRST: it holds '1', which is NOT spaces, so the UNTIL is satisfied immediately, the loop body never runs, and WS-IDX stays 2. Line 122 therefore moves BOTH bytes into WS-OPTION-X PIC X(02) JUST RIGHT (line 45), and at equal widths JUST RIGHT has nothing to shift - the receiver holds ' 1' exactly as delivered. It is line 123, INSPECT WS-OPTION-X REPLACING ALL ' ' BY '0', that turns the leading space into a zero and yields '01'; line 124 carries that image across into WS-OPTION PIC 9(02) (line 46) at equal widths, so WS-OPTION is 01, and line 125 echoes the NORMALISED '01' into OPTIONO rather than the ' 1' the operator typed. THE PAIRING THIS MUST NOT BE COLLAPSED WITH is the mirror image '1 ': there byte two IS a space, so the scan decrements and leaves on the WS-IDX = 1 condition, line 122 moves only ONE byte, and it is the JUST RIGHT receiver - not INSPECT - that puts the digit at the rightmost position before INSPECT fills the vacated left byte. Both images reach WS-OPTION 01 by structurally different routes, so a translation that trims instead of right-justifying, or that ignores JUST RIGHT because the equal-width case hides it, passes one and fails the other. This fixture deliberately pins the arm where JUST RIGHT is INERT, where a trimming reading cannot hide; the mirror route is driven at unit level by COMEN01CParityTest.theOptionNormalisationReproducesAllFourSteps, whose ' 3' and '3 ' rows assert WS-IDX 2 and 1 and the ' 3' justification, and by MainMenuServiceTest's ' 1' and '1 ' dispatch rows. The three-term guard at 127-129 is false on every term - 01 holds digits, 01 is not greater than the CDEMO-MENU-OPT-COUNT of 10 (app/cpy/COMEN02Y.cpy:21), and 01 is not zero - so no 'Please enter a valid option number...' is composed and WS-ERR-FLG stays as line 77 set it. The ungated filter at 136-137 still evaluates and is settled by its FIRST conjunct alone: 88 CDEMO-USRTYP-USER (app/cpy/COCOM01Y.cpy:28) is false for 'A', so no 'No access - Admin Only option... ' either. Line 145 finds the flag OFF, line 146 finds COACTVWC's leading five bytes to be 'COACT' and not 'DUMMY', and lines 147, 148 and 151 set CDEMO-FROM-TRANID to 'CM00', CDEMO-FROM-PROGRAM to 'COMEN01C' and CDEMO-PGM-CONTEXT back to 0 before the XCTL at 152-155 transfers WITH the communication area to CDEMO-MENU-OPT-PGMNAME(1), which app/cpy/COMEN02Y.cpy:28 values COACTVWC - gate G40, and the 1-based FIRST slot of CDEMO-MENU-OPT OCCURS 12 at :88, which is the lower half of gate G33. Lines 149 and 150 are COMMENTED OUT, so CDEMO-USER-ID and CDEMO-USER-TYPE cross unchanged, and nothing on this path writes CDEMO-TO-PROGRAM - only the PF3 arm at 97 and the signon default at 173 do. THE FALL-THROUGH TRAP is the decisive assertion: an EXEC CICS XCTL never returns, so 157-164 do not execute and neither the MOVE DFHGREEN TO ERRMSGC at 158 nor the STRING at 159-163 happens - that STRING would have run the words together as This option Accountis coming soon ... with NO space before is, because CDEMO-MENU-OPT-NAME(1) is DELIMITED BY SPACE and stops at the first space of the thirty-five-byte 'Account View' literal while the suffix carries no leading space. That image is asserted ABSENT: expectedMessages carries the eighty-byte WS-MESSAGE of line 38 exactly as the SPACES of line 79 left it, so a translation that fell out of the transfer fails on the message. The block stays preserved dead code, neither wired up nor removed. THREE CONTRACT FACTS are stated deliberately rather than left to omission. First, NO mapset and NO map is named: MAP('COMEN1A') and MAPSET('COMEN01') at 190-191 sit inside SEND-MENU-SCREEN, which a transfer never performs, so naming them would tell the client to paint the screen the program is leaving; both are absent here and the differ compares them as absent on each side. Second, sends is empty for the same reason, so the '01' echo cannot travel in a payload and is re-derived from the raw ' 1' and asserted by the service adapter instead. Third, the pinned clock lives in screenRequest.pinnedClock - 2022-07-19T23:12:33, the version footer of app/cbl/COMEN01C.cbl and the one instant all twenty cases in this folder share - because ParityCase admits jobParameters only for a BATCH_JOB. COMEN01C copies no CSSETATY, whose sole consumer is app/cbl/COACTUPC.cbl, so no DFHRED-plus-asterisk highlight appears anywhere in this folder and gate G38 is honoured through the ENTER/REENTER split: this is a REENTER-side case that nonetheless emits no error output, and ERRMSGC keeps the mapset's declared COLOR=RED because line 158 is unreached. The whole conversation travels in the payload, with no server-side forward and no session state - gate G37. CDEMO-USER-TYPE is trusted exactly as it arrives and is never re-read from USRSEC, re-verified or hashed, because line 150 is commented out and the single X(01) comparison at 137 is the entire authorisation mechanism. The unit is admin.MainMenuService driven directly, with no MockMvc, no HTTP and no JobLauncher - gate G51; inputs, expectedWrites and expectedFinalState are empty because COMEN01C declares no SELECT and no FD and issues no file verb; expectedReturnCode is 0 because an online transaction sets none. This re-derivation replaces an earlier case06 that drove a blank OPTIONI: the below-range subscript that blank produced is still driven - by case09's subscript 99 through the out-of-range adapter, and by MainMenuServiceTest's term-3 rows '00' and two spaces plus its bounded-subscript drive over 0, 11, 12, 99, 13, -1 and MAX_VALUE - so nothing gate G33 rests on is lost; the class comment of COMEN01CParityTest that still attributes the below-range drive to case06 is stale as of this file and is recorded here rather than silently edited, because no assertion depends on it. Every value here is STATICALLY DERIVED from the COBOL source, the copybooks and the BMS definitions and was NEVER captured from a live COBOL execution - no such runtime exists in this environment, per the eight verified blockers recorded in 0.7.6 of the plan (risk R-A). No user rules are provided for this project, so the plan's enterprise practices govern instead: B1, B3, B4, B5, B6, B7, B8, B11 and B12.",
   "unitKind": "SERVICE",
   "inputs": {},
   "screenRequest": {
@@ -13,26 +13,25 @@
       "CDEMO-FROM-TRANID": "CC00",
       "CDEMO-FROM-PROGRAM": "COSGN00C",
       "CDEMO-TO-PROGRAM": "COMEN01C",
-      "CDEMO-USER-ID": "USER0001",
-      "CDEMO-USER-TYPE": "U",
+      "CDEMO-USER-ID": "ADMIN001",
+      "CDEMO-USER-TYPE": "A",
       "CDEMO-PGM-CONTEXT": "1"
     },
     "mapFields": {
-      "OPTIONI": "  "
+      "OPTIONI": " 1"
     },
     "forcedOutcomes": {}
   },
   "expectedResponse": {
-    "nextMapset": "COMEN01",
-    "nextMap": "COMEN1A",
+    "nextProgram": "COACTVWC",
     "navigation": {
-      "CDEMO-FROM-TRANID": "CC00",
-      "CDEMO-FROM-PROGRAM": "COSGN00C",
+      "CDEMO-FROM-TRANID": "CM00",
+      "CDEMO-FROM-PROGRAM": "COMEN01C",
       "CDEMO-TO-TRANID": "    ",
       "CDEMO-TO-PROGRAM": "COMEN01C",
-      "CDEMO-USER-ID": "USER0001",
-      "CDEMO-USER-TYPE": "U",
-      "CDEMO-PGM-CONTEXT": "1",
+      "CDEMO-USER-ID": "ADMIN001",
+      "CDEMO-USER-TYPE": "A",
+      "CDEMO-PGM-CONTEXT": "0",
       "CDEMO-CUST-ID": "000000000",
       "CDEMO-CUST-FNAME": "                         ",
       "CDEMO-CUST-MNAME": "                         ",
@@ -43,29 +42,8 @@
       "CDEMO-LAST-MAP": "       ",
       "CDEMO-LAST-MAPSET": "       "
     },
-    "sends": [
-      {
-        "fields": {
-          "OPTN001O": "01. Account View                        ",
-          "OPTN002O": "02. Account Update                      ",
-          "OPTN003O": "03. Credit Card List                    ",
-          "OPTN004O": "04. Credit Card View                    ",
-          "OPTN005O": "05. Credit Card Update                  ",
-          "OPTN006O": "06. Transaction List                    ",
-          "OPTN007O": "07. Transaction View                    ",
-          "OPTN008O": "08. Transaction Add                     ",
-          "OPTN009O": "09. Transaction Reports                 ",
-          "OPTN010O": "10. Bill Payment                        ",
-          "OPTN011O": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
-          "OPTN012O": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
-          "OPTIONO": "00"
-        },
-        "attributes": {
-          "ERRMSGC": "DFHRED"
-        }
-      }
-    ],
-    "termination": "RETURN_TRANSID"
+    "sends": [],
+    "termination": "XCTL"
   },
   "expectedWrites": [],
   "expectedFinalState": [],
@@ -73,7 +51,7 @@
   "expectedMessages": [
     {
       "channel": "WS_MESSAGE_80",
-      "text": "Please enter a valid option number...                                           "
+      "text": "                                                                                "
     }
   ],
   "normalisations": []

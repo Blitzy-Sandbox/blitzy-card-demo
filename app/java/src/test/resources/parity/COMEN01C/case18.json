@@ -1,7 +1,7 @@
 {
   "program": "COMEN01C",
   "caseId": "case18",
-  "description": "COMEN01C performs no dataset access whatsoever - it declares no SELECT and no FD, and its five EXEC CICS statements are one RETURN, two XCTL, one SEND MAP and one RECEIVE MAP, with no READ, STARTBR, READNEXT, WRITE, REWRITE or DELETE anywhere in its 282 lines. That absence is behaviour and it is asserted positively rather than by omission: the security file IS seeded, at the eighty bytes app/cpy/CSUSR01Y.cpy declares, so it is present and readable throughout the run, and both record channels of the fingerprint must still come back completely empty. Seeding without expecting is the point - a case that merely omitted the dataset could not tell 'the unit read nothing' from 'nobody looked'. The rows are the in-stream data of app/jcl/DUSRSECJ.jcl, whose literal password span is the legacy design's placeholder and is never read here.",
+  "description": "MAIN-PARA's EIBCALEN = 0 guard at app/cbl/COMEN01C.cbl:82-84, driven at the SERVICE level - MainMenuService constructed and called as a plain object, with no MockMvc, no servlet container and no JobLauncher in the path (gate G51). Why the state arises: the LINKAGE SECTION declares 01 DFHCOMMAREA with 05 LK-COMMAREA PIC X(01) OCCURS 1 TO 32767 TIMES DEPENDING ON EIBCALEN at lines 67-69, so a reported length of zero means there is genuinely no passed data to copy. COMEN01C is normally reached by EXEC CICS XCTL PROGRAM('COMEN01C') COMMAREA(CARDDEMO-COMMAREA) at app/cbl/COSGN00C.cbl:237 - the admin sibling at :232 targets COADM01C - so a CM00 typed at a clear terminal instead of transferred to arrives with nothing, and the program bounces straight back to sign-on rather than paint a menu for an unidentified user. That makes this a normal, expected route and not an error path, which is why no message is emitted and no flag is raised. The trace: line 77 SET ERR-FLG-OFF TO TRUE, lines 79-80 MOVE SPACES TO WS-MESSAGE and to ERRMSGO OF COMEN1AO, then line 82 takes its true arm. Line 83 moves 'COSGN00C' into CDEMO-FROM-PROGRAM (PIC X(08), app/cpy/COCOM01Y.cpy:22) - FROM, not TO, and the contrast with line 97, which writes CDEMO-TO-PROGRAM (PIC X(08), :24) on the DFHPF3 arm, is deliberate source behaviour reproduced rather than tidied: both assignments are asserted, and an implementation that set only one of the two fails. Line 84 performs RETURN-TO-SIGNON-SCREEN, whose line 172 IF CDEMO-TO-PROGRAM = LOW-VALUES OR SPACES is an abbreviated combined relation - the subject is repeated, so it reads 'equal to LOW-VALUES or equal to SPACES'. CARDDEMO-COMMAREA is un-VALUEd WORKING-STORAGE brought in by COPY COCOM01Y at line 50, so on a cold entry CDEMO-TO-PROGRAM names nothing and the test is TRUE: this is the only case in the directory that takes the line 173 default. case14 reaches the same paragraph from line 97 and case19 leaves through the option transfer at 152-155, so for them line 172 is false and 173 is skipped; all three agree that COSGN00C is the target and differ in how it got there. Lines 175-177 XCTL PROGRAM(CDEMO-TO-PROGRAM) specify NO COMMAREA, which is exactly the condition the sign-on program's own EIBCALEN = 0 test looks for, and the transfer travels as a nextProgram response field with the area in the payload rather than as a server-side forward - gates G37 and G40. What does NOT run: RECEIVE-MENU-SCREEN, so EIBAID is never read and the ordered EVALUATE at lines 93-103 is never reached, which is why no AID is declared here (the harness permits an absent attention identifier only on this route and asserts EIBCALEN = 0 when it is absent; naming one would imply the key mattered, and DFHAID is IBM-supplied and absent from this repository, making common.CicsAid its single reproduction - risk R-D). PROCESS-ENTER-KEY does not run, so lines 117-125 never normalise OPTIONI and line 125 never echoes OPTIONO; OPTIONI is supplied as the two spaces a blank screen field carries and is never consulted. SEND-MENU-SCREEN does not run, so POPULATE-HEADER-INFO paints no header and BUILD-MENU-OPTIONS composes no line: 'sends' is empty, and the twelve OPTN00nO lines and the echoed OPTIONO are therefore not pinned at all rather than pinned as the ten populated lines cases 08 to 14 and case17 assert. WS-MESSAGE is PIC X(80) at line 38, blanked at line 79 and never overwritten on this route, so the emitted line is declared on the WS_MESSAGE_80 channel as eighty spaces - a positive statement that nothing was said, not an omitted key. Line 187's MOVE WS-MESSAGE TO ERRMSGO is inside SEND-MENU-SCREEN and never executes, so no 78-byte SCREEN_ERRMSG_78 line arises here; that narrowing is case16's subject. Nothing is highlighted and nothing may be: COMEN01C does not copy CSSETATY, DFHRED appears nowhere in its 282 lines, red reaches the screen only as ERRMSG's declared COLOR at app/bms/COMEN01.bms:154-157, and the one attribute byte the program ever writes is the DFHGREEN of line 158 on the coming-soon path this case never reaches - so no attribute is pinned, because there is no send to carry one. Both mnemonics are named above as prose only, to record why the highlight has no subject here; this fixture pins no attribute value whatsoever and carries no highlight character anywhere in it. This route precedes the CDEMO-PGM-CONTEXT test entirely and is therefore neither the ENTER nor the REENTER half of gate G38's pairing, which its neighbours honour: case02 is the first-entry half at lines 87-90 and case04 to case15 drive the re-entry arms. Likewise G30 is not exercised here, since the EVALUATE EIBAID is unreached. CDEMO-PGM-CONTEXT stays 0 - line 88 SET CDEMO-PGM-REENTER sits in the ELSE branch and line 151 in the unreached dispatch block - and every other COMMAREA field is pinned at its initialised image, spaces for a PIC X span and zeros for a PIC 9 span, across all sixteen fields of the 160-byte area; that is what 'not written' means in this encoding. nextMapset and nextMap are omitted rather than named: no SEND MAP occurs and neither XCTL names a map - line 153 names CDEMO-MENU-OPT-PGMNAME(WS-OPTION) and line 176 names CDEMO-TO-PROGRAM, both programs - so naming COMEN01 and COMEN1A would tell the client to paint the screen this program is leaving. expectedReturnCode is 0 because COMEN01C is reached by CICS transaction CM00 rather than by EXEC PGM=, contains no CALL 'CEE3ABD' and sets no RETURN-CODE, so gate G35 has no subject; the program contains no GO TO (G32) and no arithmetic verb (G22 to G29) either. The security file is nonetheless SEEDED, at the eighty bytes app/cpy/CSUSR01Y.cpy declares - padded from the fifty-seven characters the in-stream data of app/jcl/DUSRSECJ.jcl carries - and both record channels must still come back completely empty. That is the point of seeding without expecting: COMEN01C declares no SELECT and no FD, and its five EXEC CICS statements are one RETURN, two XCTL, one SEND MAP and one RECEIVE MAP, so a case that merely omitted the dataset could not tell 'the unit read nothing' from 'nobody looked'. empty expectedWrites and empty expectedFinalState are accordingly positive assertions, and gates G19, G21 and G47 have no subject in this program. The literal password span in those rows is the legacy design's own placeholder and is read on no path: this route arises precisely when no authenticated context was passed, and the program's whole answer is to redirect to sign-on - it performs no credential check, no USRSEC lookup and no session invalidation, there being no server-side session to invalidate. The clock is pinned to 2022-07-19T23:12:33, the instant COMEN01C's own version footer at line 281 carries, and every case in this directory pins that same instant and names US-ASCII explicitly rather than leaving a code page to a platform default; POPULATE-HEADER-INFO does not run here, so the instant changes nothing this case asserts and is declared only so that one clock governs the directory. case01 pins the controller projection of this same guard, where an absent request body is how GET /api/menu expresses EIBCALEN = 0 and the 78-byte ERRMSGO is what the controller produces; this case pins the service outcome and the 80-byte WS-MESSAGE behind it, and it is the only case that drives the absent-communication-area input directly, so the two are complementary rather than duplicates. No user-specified rules exist for this project - review_rules returns exactly 'No user rules provided.' - so enterprise practice governs instead and nothing here is relaxed on that account. Every expected value above is STATICALLY DERIVED: read out of the COBOL paragraph that produces it and cross-checked against the 160-byte layout of app/cpy/COCOM01Y.cpy, the xxxI PICTURE clauses of app/cpy-bms/COMEN01.CPY (OPTIONI PIC X(2) at :132, ERRMSGI PIC X(78) at :138) and the DFHMDF definitions of app/bms/COMEN01.bms. None of it was captured from an execution of the legacy program, which is empirically impossible in this environment - no z/OS or CICS runtime, an indexed file handler the available compiler reports as disabled, no Language Environment CEE services, and DFHAID, DFHBMSCA and DFHATTR absent from the repository - and the substitution of provenance is escalated for confirmation rather than absorbed (risk R-A).",
   "unitKind": "SERVICE",
   "inputs": {
     "USRSEC": {
@@ -20,32 +20,26 @@
     }
   },
   "screenRequest": {
-    "eibcalen": 160,
-    "aid": "DFHENTER",
+    "eibcalen": 0,
+    "aid": null,
     "pinnedClock": "2022-07-19T23:12:33",
     "charset": "US-ASCII",
-    "commarea": {
-      "CDEMO-FROM-TRANID": "CC00",
-      "CDEMO-FROM-PROGRAM": "COSGN00C",
-      "CDEMO-TO-PROGRAM": "COMEN01C",
-      "CDEMO-USER-ID": "USER0001",
-      "CDEMO-USER-TYPE": "U",
-      "CDEMO-PGM-CONTEXT": "0"
+    "commarea": {},
+    "mapFields": {
+      "OPTIONI": "  "
     },
-    "mapFields": {},
     "forcedOutcomes": {}
   },
   "expectedResponse": {
-    "nextMapset": "COMEN01",
-    "nextMap": "COMEN1A",
+    "nextProgram": "COSGN00C",
     "navigation": {
-      "CDEMO-FROM-TRANID": "CC00",
+      "CDEMO-FROM-TRANID": "    ",
       "CDEMO-FROM-PROGRAM": "COSGN00C",
       "CDEMO-TO-TRANID": "    ",
-      "CDEMO-TO-PROGRAM": "COMEN01C",
-      "CDEMO-USER-ID": "USER0001",
-      "CDEMO-USER-TYPE": "U",
-      "CDEMO-PGM-CONTEXT": "1",
+      "CDEMO-TO-PROGRAM": "COSGN00C",
+      "CDEMO-USER-ID": "        ",
+      "CDEMO-USER-TYPE": " ",
+      "CDEMO-PGM-CONTEXT": "0",
       "CDEMO-CUST-ID": "000000000",
       "CDEMO-CUST-FNAME": "                         ",
       "CDEMO-CUST-MNAME": "                         ",
@@ -56,29 +50,8 @@
       "CDEMO-LAST-MAP": "       ",
       "CDEMO-LAST-MAPSET": "       "
     },
-    "sends": [
-      {
-        "fields": {
-          "OPTN001O": "01. Account View                        ",
-          "OPTN002O": "02. Account Update                      ",
-          "OPTN003O": "03. Credit Card List                    ",
-          "OPTN004O": "04. Credit Card View                    ",
-          "OPTN005O": "05. Credit Card Update                  ",
-          "OPTN006O": "06. Transaction List                    ",
-          "OPTN007O": "07. Transaction View                    ",
-          "OPTN008O": "08. Transaction Add                     ",
-          "OPTN009O": "09. Transaction Reports                 ",
-          "OPTN010O": "10. Bill Payment                        ",
-          "OPTN011O": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
-          "OPTN012O": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
-          "OPTIONO": "\u0000\u0000"
-        },
-        "attributes": {
-          "ERRMSGC": "DFHRED"
-        }
-      }
-    ],
-    "termination": "RETURN_TRANSID"
+    "sends": [],
+    "termination": "XCTL"
   },
   "expectedWrites": [],
   "expectedFinalState": [],

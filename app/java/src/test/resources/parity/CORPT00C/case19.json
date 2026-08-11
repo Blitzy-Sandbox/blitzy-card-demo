@@ -1,13 +1,14 @@
 {
   "program": "CORPT00C",
   "caseId": "case19",
-  "description": "The one non-zero CSUTLDTC outcome both call sites DELIBERATELY TOLERATE. 14 October 1582 is the day before the Lillian epoch, so CSUTLDTC reports severity '0003' with message number '2513' (FC-UNSUPP-RANGE). The guard at :396-406 is a NOT = test on the message number, so this outcome falls through with no rejection and no message, at :392 and again at :412 - and the range is then submitted. Both dates are the same day on purpose: the tolerance has to hold at both call sites, and a translation that tolerated it at one would pass a case that exercised only the other. All seventeen records carry 1582-10-14 in records 11, 12 and 15. Expected values are STATICALLY DERIVED by reading app/cbl/CORPT00C.cbl, its copybooks, app/bms/CORPT00.bms and app/csd/CARDDEMO.CSD - never captured from a COBOL run, which is impossible in this environment (risk R-A). Java has no transient data queue, so EXEC CICS WRITEQ TD QUEUE('JOBS') at :517 is reproduced through an explicit job-submission port; the eighty-byte content is identical and the dataset key JOBS names the TDQUEUE(JOBS) that app/csd/CARDDEMO.CSD:499-505 defines as RECORDSIZE(80) RECORDFORMAT(FIXED) BLOCKFORMAT(UNBLOCKED) DISPOSITION(MOD).",
+  "description": "Case 19 of 20 pins the ONE non-zero CSUTLDTC outcome that both call sites DELIBERATELY TOLERATE, and it is preserved exactly as found rather than corrected (practice B5). The Custom arm at :256 is taken with CUSTOMI = 'X' and a start date of 1500-01-01 - a real calendar date that passes every one of the six emptiness tests at :258-303 and every one of the six validity tests at :329-379 ('01' is neither > '12' nor > '31', and '1500' is numeric), so nothing in CORPT00C itself can object to it. The only thing that can is CSUTLDTC, and it does: 1500-01-01 precedes the Lillian epoch of 15 October 1582, so CEEDAYS returns FC-UNSUPP-RANGE, whose 88-level VALUE X'000309D159C3C5C5' [app/cbl/CSUTLDTC.cbl:66] decodes as SEVERITY S9(4) BINARY = X'0003' = 3 and MSG-NO S9(4) BINARY = X'09D1' = 2513; both render through the PIC 9(4) REDEFINES views at :44 and :47 as the zero-filled '0003' and '2513', and WS-RESULT PIC X(15) receives 'Unsupp. Range  ' with its two trailing spaces [:137-138]. At the first call site the guard is therefore reached: IF CSUTLDTC-RESULT-SEV-CD = '0000' at :396 is FALSE, control falls to the ELSE at :398, and IF CSUTLDTC-RESULT-MSG-NUM NOT = '2513' at :399 is ALSO FALSE - so the whole body at :400-404 is skipped. No message, no 'Y' into WS-ERR-FLG, no -1 into SDTMML, no send. Execution simply continues and the out-of-range range is SUBMITTED. That is the tolerance, and it is intentional rather than accidental: COTRN02C carries the identical '0000'-or-'2513' rule at its own :397/:400 and :417/:420 sites, so it is a shared convention of this codebase. No range check is added here, '2513' is never upgraded to an error, and the accepted set is never narrowed. The second call site is the contrast that makes the first legible: 2022-07-31 converts, so severity is '0000' at :416 and the arm is CONTINUE - the all-zeros token FC-INVALID-DATE X'0000000000000000' [CSUTLDTC.cbl:62], which despite its name is the SUCCESS token and yields 'Date is valid' [:129-130]. Its inverted name is preserved too. expectedReturnCode is 0 and NOT 3: CSUTLDTC does MOVE WS-SEVERITY-N TO RETURN-CODE in its own run unit, but CORPT00C never reads or propagates that - it reads only bytes 1-4 and 16-19 of CSUTLDTC-RESULT [:132-136] - and CORPT00C contains no CALL 'CEE3ABD' at all, so gate G35 has no subject here. The full 80-byte WS-MESSAGE rendering of the result area is owned by the sibling folder parity/CSUTLDTC and is deliberately not restated or competed with here. After the two calls, :429-436 moves both dates into PARM-START-DATE-1/-2 and PARM-END-DATE-1/-2, moves 'Custom' into WS-REPORT-NAME and, because ERR-FLG-ON is false, performs SUBMIT-JOB-TO-INTRDR; there the blank-confirm guard at :464 is false for CONFIRMI = 'Y' and the ordered EVALUATE at :477-494 matches WHEN CONFIRMI = 'Y' OR 'y' -> CONTINUE, so the write loop runs. Seventeen eighty-byte records reach the queue (gate G42). Both the width and the count are derived mechanically and are auditable (practice B11): the width is RECORDSIZE(80) RECORDFORMAT(FIXED) BLOCKFORMAT(UNBLOCKED) from DEFINE TDQUEUE(JOBS) [app/csd/CARDDEMO.CSD:499-505], and the count and ordering are the seventeen 05-level items of 01 JOB-DATA / 02 JOB-DATA-1 [:81-125] read through 02 JOB-DATA-2 REDEFINES ... 05 JOB-LINES OCCURS 1000 TIMES PIC X(80) [:126-127]. Record 16, '/*EOF', IS emitted: the loop at :498-508 sets END-LOOP-YES at :504 BEFORE performing WIRTE-JOBSUB-TDQ at :507, so the sentinel is itself written. WS-IDX is 1-based and these rowIndex values are 0-based, which is the OCCURS off-by-one the indices below encode. All seventeen lines are written out in full with their trailing spaces present rather than summarised (practice B8), and only three differ from the folder's other submitted cases: record 10 substitutes PARM-START-DATE-1 inside X(18) + X(10) + X(52) [:103-107], record 11 substitutes PARM-END-DATE-1 inside X(16) + X(10) + X(54) [:108-112], and record 14 substitutes both halves of FILLER-3, X(10) + one SPACE + X(10) + X(59) [:117-121]. Record 14 is the cross-folder contract and here it is deliberately unusual: its leading 21 bytes, '1500-01-01 2022-07-31', are byte-for-byte a DATEPARM record of the shape transaction.DateParmReader consumes - startDate PIC X(10), one separator byte, endDate PIC X(10), right-truncated from a PIC X(80) record - so this case is the folder's demonstration that a '2513'-tolerated date reaches the DATEPARM record UNMODIFIED. The downstream CBTRN03C report will therefore be asked to filter from 1500, which is exactly the legacy behaviour and is not sanitised here. On the success path :445-454 then runs: INITIALIZE-ALL-FIELDS blanks the ten input items and WS-MESSAGE and sets the cursor with MOVE -1 TO MONTHLYL, MOVE DFHGREEN TO ERRMSGC OF CORPT0AO at :448 is the program's ONLY colour assignment - so a tolerated out-of-range date still yields a GREEN success message, which is worth stating plainly - and the STRING at :449-452 concatenates WS-REPORT-NAME DELIMITED BY SPACE, which yields the six characters 'Custom' from the PIC X(10) field, with the 34-character literal ' report submitted for printing ...' DELIMITED BY SIZE, giving exactly 40 characters. Those 40 are reported on two channels because MOVE WS-MESSAGE TO ERRMSGO at :560 moves an 80-byte field into a 78-byte receiver: WS_MESSAGE_80 carries the 40 plus 40 spaces, SCREEN_ERRMSG_78 the 40 plus 38, and reporting only one would make that truncating move unobservable. TITLE02O takes the ACTIVE VALUE on app/cpy/COTTL01Y.cpy line 22 because line 21 IS COMMENTED OUT. The unit is reached as a CONTROLLER_POJO: ReportRequestController is constructed directly with an outbound JobSubmissionPort and a util.DateUtilityJob, with no MockMvc, no HTTP, no JobLauncher and no session (gates G37, G51). DateUtilityJob is a @Service and not a Spring Batch Job despite its prompt-mandated name, because no EXEC PGM= in app/jcl or app/proc names CSUTLDTC and it is only ever CALLed - four times, from two online programs (gate G12, rule R1); and it is the REAL service here, never a double, because :396 and :416 branch on what it decides and a stub would replace the decision under test with the decision the stub was told to make. inputs is empty because CORPT00C issues no file command whatsoever - every EXEC CICS in it is WRITEQ TD, SEND, RECEIVE, RETURN or XCTL - so gates G16, G19, G21, G45 and G47 have no subject. jobParameters is empty because it is the only value the frozen contract permits for a CONTROLLER_POJO: ParityCase.freezeJobParameters rejects a non-empty map on any unitKind other than BATCH_JOB, precisely so an expected value cannot be parked among the inputs and compared against itself. The clock is pinned to 2022-07-15T10:30:45 (practice B7) and feeds only the two header items POPULATE-HEADER-INFO builds at :611-628; the Custom arm takes its dates from the screen, so no wall-clock and no random value appears anywhere in the skeleton. The code page is named as US-ASCII rather than defaulted (practice B8). DFHAID, DFHBMSCA and DFHATTR are IBM-supplied and ABSENT from this repository, so DFHENTER and DFHGREEN are named through common.CicsAid and common.BmsAttributes, which reproduce them from IBM CICS documentation (risk R-D). review_rules returns exactly one line, 'No user rules provided.', so ZERO user rules govern this fixture; that absence is not licence to lower the bar and the enterprise practices B1, B3, B5, B7, B8, B11 and B12 are held binding in their place. Every expected value here is STATICALLY DERIVED (practice B12) by structured reading of app/cbl/CORPT00C.cbl and app/cbl/CSUTLDTC.cbl - including the hex 88-level decode above - cross-checked against app/csd/CARDDEMO.CSD, app/cpy-bms/CORPT00.CPY, app/bms/CORPT00.bms, app/cpy/COTTL01Y.cpy, app/cpy/CSDAT01Y.cpy and app/cpy/COCOM01Y.cpy, and was NEVER captured from a live COBOL execution, which is impossible in this environment (risk R-A). Those directories are read-only provenance and not one byte of them is modified (practice B3), and nothing below stands in for work left undone: all seventeen records are real content and both CSUTLDTC outcomes are concrete (practice B1).",
   "unitKind": "CONTROLLER_POJO",
   "inputs": {},
+  "jobParameters": {},
   "screenRequest": {
     "eibcalen": 160,
     "aid": "DFHENTER",
-    "pinnedClock": "2026-08-09T14:05:06",
+    "pinnedClock": "2022-07-15T10:30:45",
     "charset": "US-ASCII",
     "commarea": {
       "CDEMO-FROM-TRANID": "CM00",
@@ -28,13 +29,15 @@
       "CDEMO-LAST-MAPSET": "       "
     },
     "mapFields": {
-      "CUSTOMI": "Y",
-      "SDTMMI": "10",
-      "SDTDDI": "14",
-      "SDTYYYYI": "1582",
-      "EDTMMI": "10",
-      "EDTDDI": "14",
-      "EDTYYYYI": "1582",
+      "MONTHLYI": " ",
+      "YEARLYI": " ",
+      "CUSTOMI": "X",
+      "SDTMMI": "01",
+      "SDTDDI": "01",
+      "SDTYYYYI": "1500",
+      "EDTMMI": "07",
+      "EDTDDI": "31",
+      "EDTYYYYI": "2022",
       "CONFIRMI": "Y"
     },
     "forcedOutcomes": {}
@@ -66,10 +69,10 @@
         "fields": {
           "TRNNAMEO": "CR00",
           "TITLE01O": "      AWS Mainframe Modernization       ",
-          "CURDATEO": "08/09/26",
+          "CURDATEO": "07/15/22",
           "PGMNAMEO": "CORPT00C",
           "TITLE02O": "              CardDemo                  ",
-          "CURTIMEO": "14:05:06",
+          "CURTIMEO": "10:30:45",
           "MONTHLYO": " ",
           "YEARLYO": " ",
           "CUSTOMO": " ",
@@ -175,17 +178,17 @@
       "dataset": "JOBS",
       "rowIndex": 10,
       "fields": {
-        "JCL-RECORD": "PARM-START-DATE,C'1582-10-14'                                                   "
+        "JCL-RECORD": "PARM-START-DATE,C'1500-01-01'                                                   "
       },
-      "expectedBytes": "PARM-START-DATE,C'1582-10-14'                                                   "
+      "expectedBytes": "PARM-START-DATE,C'1500-01-01'                                                   "
     },
     {
       "dataset": "JOBS",
       "rowIndex": 11,
       "fields": {
-        "JCL-RECORD": "PARM-END-DATE,C'1582-10-14'                                                     "
+        "JCL-RECORD": "PARM-END-DATE,C'2022-07-31'                                                     "
       },
-      "expectedBytes": "PARM-END-DATE,C'1582-10-14'                                                     "
+      "expectedBytes": "PARM-END-DATE,C'2022-07-31'                                                     "
     },
     {
       "dataset": "JOBS",
@@ -207,9 +210,9 @@
       "dataset": "JOBS",
       "rowIndex": 14,
       "fields": {
-        "JCL-RECORD": "1582-10-14 1582-10-14                                                           "
+        "JCL-RECORD": "1500-01-01 2022-07-31                                                           "
       },
-      "expectedBytes": "1582-10-14 1582-10-14                                                           "
+      "expectedBytes": "1500-01-01 2022-07-31                                                           "
     },
     {
       "dataset": "JOBS",

@@ -1,37 +1,46 @@
 {
   "program" : "COTRN01C",
   "caseId" : "case04",
-  "description" : "Re-entry with ENTER on a key that exists - :111-114 into PROCESS-ENTER-KEY. CDEMO-PGM-REENTER holds, so RECEIVE-TRNVIEW-SCREEN at :230-238 fills the symbolic map from the payload and the ordered EVALUATE EIBAID at :112 takes its first arm. The read succeeds and :176-192 paints the detail, then the arm ends and control reaches the EXEC CICS RETURN at :136-139 - one send, not two, because :109 belongs to the first-entry branch and is not on this path.",
+  "description" : "Risk R-B, stated before anything else because the class name inverts the behaviour: the prompt-mandated Java class for COTRN01C is TransactionAddController, but this program ADDS NOTHING - it VIEWS. Four independent sources say so: app/cbl/COTRN01C.cbl:5 'Function    : View a Transaction from TRANSACT file', README.md:314 '| CT01 | COTRN01 | COTRN01C | Transaction View |', app/bms/COTRN01.bms:2 'CardDemo - Transaction View' and app/bms/COTRN01.bms:75-79, which paints the literal INITIAL='View Transaction' at POS=(4,30) LENGTH=16 ATTRB=(ASKIP,BRT). Rule R1 governs the resolution - the name comes from the prompt, the behaviour comes from the source - and practice B4 governs the disclosure, so the divergence is documented here and never silently corrected. expectedWrites is empty, no arm of this case asserts an insert, and the half of the swap that genuinely adds a transaction lives in parity/COTRN02C. WHAT THIS CASE PINS - THE DOUBLE SEND. On the entry-from-list path this program sends the map TWICE in one CICS task, and the duplication is VERIFIED SOURCE BEHAVIOUR preserved under practice B5 - not a harness artefact, and not something to be optimised away. The trace is exact. EIBCALEN is 218, so :94 takes its else arm and :98 copies the passed area over CARDDEMO-COMMAREA. CDEMO-PGM-CONTEXT arrives 0, so CDEMO-PGM-REENTER does not hold at :99 and :100 sets it - which is why the echoed context is 1 and not 0. :101 then moves LOW-VALUES over the entire 575-byte COTRN1AO and :102 requests the cursor in TRNIDIN. CDEMO-CT01-TRN-SELECTED is neither spaces nor LOW-VALUES, so the :103-104 guard SUCCEEDS: :105-106 moves the selection into TRNIDINI - which paints TRNIDINO, because app/cpy-bms/COTRN01.CPY:145 declares COTRN1AO REDEFINES COTRN1AI and the two items occupy the same sixteen bytes - and :107 performs PROCESS-ENTER-KEY. Inside it the EVALUATE TRUE at :146 takes WHEN OTHER because the key is non-blank, so :154-155 re-requests the cursor and CONTINUEs rather than raising WS-ERR-FLG; :158-174 blanks the thirteen detail items - TRNIDINI is deliberately NOT among them, so the selection survives - moves TRNIDINI to TRAN-ID and performs READ-TRANSACT-FILE; :280-282 answers DFHRESP(NORMAL) with CONTINUE; and :176-192 projects the record onto the map and performs SEND-TRNVIEW-SCREEN. That is SEND #1, at :191. SEND-TRNVIEW-SCREEN (:213-225) ends with no GO TO, so control returns to the statement after the PERFORM, the :103 IF closes at :108, and :109 performs SEND-TRNVIEW-SCREEN a second time UNCONDITIONALLY - SEND #2, outside the guard and reached whether or not anything was selected. The task then ends at the EXEC CICS RETURN TRANSID(WS-TRANID) of :136-139. Both emissions are declared, in that order, and they are NOT collapsed into one: the send count is behaviour, because a translation that sent once where the COBOL sends twice would have changed what the terminal saw. Their content is IDENTICAL, and provably so rather than by assumption - only two statements run between them, POPULATE-HEADER-INFO, which rebuilds the two header items from this case's PINNED clock and therefore writes the same bytes, and MOVE WS-MESSAGE TO ERRMSGO, which copies a value nothing has changed. HOW THIS CASE STRENGTHENS case03, which pins the same arm. Four assertions here are ones case03 cannot make. First, the selection addresses the THIRD of the three seeded rows rather than the first, so the keyed EXEC CICS READ DATASET(WS-TRANSACT-FILE) INTO(TRAN-RECORD) RIDFLD(TRAN-ID) KEYLENGTH(LENGTH OF TRAN-ID) UPDATE at :269-278 has to compare the record's own sixteen-byte TRAN-ID span; a translation that answered with whatever row came first would pass case03 and fail here. Second, the inbound area is the one COTRN00C actually leaves: app/cbl/COTRN00C.cbl:188-193 moves 'COTRN01C' to CDEMO-TO-PROGRAM, WS-TRANID 'CT00' to CDEMO-FROM-TRANID and WS-PGMNAME 'COTRN00C' to CDEMO-FROM-PROGRAM, zeroes CDEMO-PGM-CONTEXT and XCTLs - and because COTRN00C:61-69 declares CDEMO-CT00-INFO with exactly the same 16 + 16 + 8 + 1 + 1 + 16 shape as CDEMO-CT01-INFO, its CDEMO-CT00-TRN-SELECTED occupies the very bytes COTRN01C reads CDEMO-CT01-TRN-SELECTED from. That byte overlay is the production mechanism behind the :103 guard, and pinning it proves this arm echoes CDEMO-FROM-TRANID, CDEMO-FROM-PROGRAM and CDEMO-TO-PROGRAM UNTOUCHED - which the PF3 arm at :202-203 does not, and which case03 cannot show because it arrives with all three blank. Third, the amount is 100.00, whose stored eleventh byte is the POSITIVE-ZERO overpunch '{' - a byte that looks like punctuation rather than a digit - and one unselected row carries -75.25, whose eleventh byte is 'N', so both overpunch families round-trip through the compared record images. Fourth, the selected row pins its fourteen named spans as well as its whole-record image, so FILLER and TRAN-AMT are asserted as fields and not only as bytes. The four CDEMO-CT01 paging items are left unset on purpose: case19 is the case that populates all six extension items. THE INLINE 350-BYTE TRANSACT ROWS. TRANSACT has no ASCII fixture - app/data/ASCII holds exactly nine files and none is a transaction master - so the three rows are declared inline rather than named, and no tenth fixture is invented. Each is built from app/cpy/CVTRA05Y.cpy by mechanically summing its fourteen spans (practice B11): TRAN-ID X(16) at 1-16, TRAN-TYPE-CD X(02) at 17-18, TRAN-CAT-CD 9(04) at 19-22, TRAN-SOURCE X(10) at 23-32, TRAN-DESC X(100) at 33-132, TRAN-AMT S9(09)V99 at 133-143, TRAN-MERCHANT-ID 9(09) at 144-152, TRAN-MERCHANT-NAME X(50) at 153-202, TRAN-MERCHANT-CITY X(50) at 203-252, TRAN-MERCHANT-ZIP X(10) at 253-262, TRAN-CARD-NUM X(16) at 263-278, TRAN-ORIG-TS X(26) at 279-304, TRAN-PROC-TS X(26) at 305-330 and FILLER X(20) at 331-350 - 350 in all, which is the width the copybook header states and gate G19 requires. Three properties of that layout are asserted rather than assumed. TRAN-AMT is ELEVEN bytes, nine integer digits plus two decimal places, with the SIGN OVERPUNCHED INTO THE TRAILING BYTE: 100.00 stores as 0000001000 followed by '{' from the positive table {ABCDEFGHI, never as twelve bytes and never with a leading sign (gate G23). FILLER is PRESENT and SPACE-FILLED at 331-350; omit it and the total width and every offset after it are wrong, which is why the row-level expectation carries the whole image as well as the named spans (gate G21). And PIC X spans are space-padded while PIC 9 spans are zero-filled, so TRAN-CAT-CD reads 0102 and TRAN-MERCHANT-ID reads 900000203 rather than being left short. Both twenty-six-byte timestamps are PINNED literals in the YYYY-MM-DD HH:MM:SS.mmmmmm shape - 4+1+2+1+2+1+2+1+2+1+2+1+6 = 26 - and never a captured 'now' (practice B7); they carry DIFFERENT dates so that TORIGDTO and TPROCDTO cannot be confused with one another. app/csd/CARDDEMO.CSD:76-87 declares FILE(TRANSACT) with DSNAME(AWS.M2.CARDDEMO.TRANSACT.VSAM.KSDS), UPDATEMODEL(LOCKING) and RECORDFORMAT(V); the record length is treated as copybook-fixed at 350 regardless of the V. THE THIRTEEN-FIELD PROJECTION AND ITS FIVE TRUNCATIONS. :177 moves TRAN-AMT into WS-TRAN-AMT and :178-190 moves thirteen record items onto the map. Five of those moves LOSE BYTES, and the loss is the parity contract rather than a defect to be repaired: TRAN-DESC X(100) loses 40 characters on the right into TDESCO X(60), TRAN-MERCHANT-NAME X(50) loses 20 into MNAMEO X(30), TRAN-MERCHANT-CITY X(50) loses 25 into MCITYO X(25), and each X(26) timestamp keeps only its leading 10 characters into TORIGDTO and TPROCDTO. Every discarded tail here says so in words, so a translation that kept the wrong end would be visibly wrong rather than merely wrong. The eight remaining moves are exact, and two of them are exact ON PURPOSE: CARDNUMO carries all sixteen digits and MIDO all nine, because the source masks neither and introducing a mask would be an unrequested change of behaviour (practice B6). The amount is the sixth: WS-TRAN-AMT is PIC +99999999.99 at COTRN01C:49, so the receiver has EIGHT integer positions against the record's nine and a numeric MOVE truncates on the LEFT; the mask uses 9 rather than Z, so leading zeros ARE emitted and the sign is ALWAYS rendered in position one. 100.00 is comfortably inside eight digits and renders as +00000100.00, exactly twelve characters with nothing lost - the left-truncation edge itself is case17's target and is not restated here. THE HEADER AND THE MESSAGE. The six items POPULATE-HEADER-INFO rebuilds at :245-262 are TITLE01O from CCDA-TITLE01 and TITLE02O from CCDA-TITLE02, both PIC X(40) with their leading and trailing spaces inside the field and TITLE02O taking the ACTIVE app/cpy/COTTL01Y.cpy:22 value rather than the commented-out :21 alternative; TRNNAMEO from WS-TRANID 'CT01' and PGMNAMEO from WS-PGMNAME 'COTRN01C', both declared at :36-37; and CURDATEO and CURTIMEO, PINNED to the same instant case01 through case03 declare, which is also the one the source's own footer at :329 carries. MOVE FUNCTION CURRENT-DATE TO WS-CURDATE-DATA at :245 is non-deterministic, so pinning it is what makes two sends comparable byte for byte at all (practice B7). Neither thank-you literal is emitted on any path of this program, and the two are not interchangeable: COTTL01Y's CCDA-THANK-YOU is PIC X(40) and names 'CCDA application' while CSMSG01Y's CCDA-MSG-THANK-YOU is PIC X(50) and names 'CardDemo application'. ERRMSGO is blank because no error occurred: :91-92 moved SPACES into WS-MESSAGE and into ERRMSGO, nothing on this path replaces either, and :217 moves an 80-byte sender into a 78-byte receiver - so the two message channels are declared separately at 80 and at 78, and ERRMSGO is SEVENTY-EIGHT blanks rather than eighty. There is no DISPLAY line: the DISPLAY 'RESP:' WS-RESP-CD 'REAS:' WS-REAS-CD at :290 belongs to the WHEN OTHER arm of the EVALUATE WS-RESP-CD, which this case does not take - case08 does. STATELESSNESS (rule R6, gate G37). The whole 218-byte area travels in the payload and nothing is held server-side. app/cpy/COCOM01Y.cpy is 34 + 84 + 12 + 16 + 14 = 160 bytes and the CDEMO-CT01-INFO extension at COTRN01C:53-61 is 16 + 16 + 8 + 1 + 1 + 16 = 58, which is 218 in all; the extension is carried as its own field rather than folded into the 160-byte context all seventeen controllers share, and all 22 fields are pinned so none is left unchecked. A field the passed area does not name keeps what its picture gives it - spaces for PIC X, zeros for PIC 9 - which is why CDEMO-CT01-NEXT-PAGE-FLG is blank here rather than the 'N' of its VALUE clause at :57: :98 overwrote WORKING-STORAGE with the caller's bytes. CDEMO-PGM-CONTEXT is the one field this arm changes, from 0 to 1 at :100. There is no EXEC CICS XCTL anywhere on this path, so gate G40 is NOT discharged by this case and no XCTL target is invented; nextProgram carries COTRN01C because the task ends at EXEC CICS RETURN TRANSID(WS-TRANID) and app/csd/CARDDEMO.CSD:429-430 binds TRANSACTION(CT01) to PROGRAM(COTRN01C), while nextMapset and nextMap carry the COTRN01 and COTRN1A the SEND at :219-221 names. termination is RETURN_TRANSID rather than XCTL, and the two are not interchangeable. The keyed read states the UPDATE option at :275 and the program never REWRITEs, WRITEs or DELETEs, so expectedWrites is empty and TRANSACT's final state is asserted UNCHANGED - a read-for-update that never rewrites, and preserving that asymmetry is practice B5. BASELINE PROVENANCE (practice B12). Every expected value here is STATICALLY DERIVED, by structured reading of MAIN-PARA, PROCESS-ENTER-KEY, READ-TRANSACT-FILE, SEND-TRNVIEW-SCREEN and POPULATE-HEADER-INFO cross-checked against the copybook byte layouts (app/cpy/CVTRA05Y.cpy, app/cpy/COCOM01Y.cpy, app/cpy/COTTL01Y.cpy, app/cpy/CSDAT01Y.cpy), the BMS field contract (app/cpy-bms/COTRN01.CPY - 21 xxxI payload items summing to 416, so the group is 12 + 21 x 7 + 416 = 575 bytes) and the transaction and file definitions in app/csd/CARDDEMO.CSD. It was NEVER captured from a live COBOL execution: running the legacy programs is empirically impossible in this environment, which AAP section 0.7.6 establishes with eight independently verified blockers, and the change of provenance is escalated as risk R-A rather than absorbed silently. There are no user-specified rules on this project - review_rules returns exactly 'No user rules provided.' - so AAP section 0.10.2's enterprise practices bind instead, and their absence is not treated as licence to lower the bar. GATES DISCHARGED: G15 (one of exactly twenty cases in parity/COTRN01C), G18 (the diff count must be zero, per module rather than per build), G19 (the 350-byte CVTRA05Y record), G21 (FILLER present and space-filled, proved by the total width), G23 (a scale-2 amount whose sign is overpunched into the trailing byte), G30 (the EVALUATE TRUE at :146 and the EVALUATE WS-RESP-CD at :280 honoured in source order with WHEN OTHER last), G37, G38 (this is the ENTER half of the ENTER/REENTER pair, and because COTRN01C copies no CSSETATY the DFHRED-plus-asterisk highlight applies in neither state - so the attribute map is empty rather than absent by omission), G47 (the '00' / DFHRESP(NORMAL) outcome of the single keyed-read call site) and G51 (the controller is driven as a plain object, with no MockMvc, no TestRestTemplate, no servlet container and no HTTP in the path). Deliberately NOT asserted, because this program or this path has none of them: G32 (zero GO TO), G35 (zero CALL 'CEE3ABD', which is why the return code is 0 and no abend path exists), G39 (no pagination), G40 (no XCTL on this path) and G43 (no 9300-CHECK-CHANGE-IN-REC).",
   "unitKind" : "CONTROLLER_POJO",
   "inputs" : {
     "TRANSACT" : {
-      "rows" : [ "0000000000000001010005POS TERM  GROCERY PURCHASE AT PARITY MARKET WITH A DESCRIPTION THAT OVERFLOWS THE SCREEN FIELD                0000005047G800000001PARITY MARKET NUMBER ONE OF SEVERAL LONG NAMES    SPRINGFIELD MASSACHUSETTS USA                     01103-123441111111111111112022-07-19 23:12:34.1234562022-07-20 01:02:03.654321                    ", "0000000000000002020010ONLINE    REFUND ISSUED BY MERCHANT                                                                           0000000500}800000002PARITY REFUNDS LIMITED                            PORTLAND OREGON                                   97201-000242222222222222222022-07-18 08:00:00.0000012022-07-18 09:30:00.000002                    ", "0000000000000003034444BATCH     LARGE SETTLEMENT                                                                                    1234567891B800000003PARITY SETTLEMENT HOUSE                           NEW YORK NEW YORK                                 10001-000343333333333333332022-07-17 12:00:00.0000032022-07-17 12:00:01.000004                    " ]
+      "rows" : [
+        "0000000000000201010005POS TERM  GROCERY PURCHASE AT THE PARITY MARKET                                                               0000000255{900000201PARITY MARKET NUMBER 0201                         SPRINGFIELD MASSACHUSETTS                         01103-020140000000000002012022-07-13 09:15:00.0002012022-07-13 09:15:01.000201                    ",
+        "0000000000000202020010ONLINE    REFUND ISSUED BY THE PARITY MARKET                                                                  0000000752N900000202PARITY REFUNDS LIMITED 0202                       PORTLAND OREGON                                   97201-020240000000000002022022-07-14 17:40:22.0002022022-07-14 18:05:44.000202                    ",
+        "0000000000000203050102WEB PORTALAIRLINE TICKET BOOKED THROUGH THE PARITY TRAVEL DESK IN 0203-DISCARDED TAIL, TDESCO IS PIC X(60)-   0000001000{900000203PARITY TRAVEL DESK NUMBER 0203-DROPPED BY MNAMEO  BOSTON MASSACHUSETTS 0203-DROPPED BY MCITYO PIC   02108-020340000000000002032022-07-15 06:45:12.0002032022-07-16 21:03:59.100203                    "
+      ]
     }
   },
+  "jobParameters" : {},
   "screenRequest" : {
     "eibcalen" : 218,
-    "aid" : "DFHENTER",
     "pinnedClock" : "2022-07-19T23:12:34",
     "charset" : "US-ASCII",
     "commarea" : {
-      "CDEMO-PGM-CONTEXT" : "1"
+      "CDEMO-FROM-TRANID" : "CT00",
+      "CDEMO-FROM-PROGRAM" : "COTRN00C",
+      "CDEMO-TO-PROGRAM" : "COTRN01C",
+      "CDEMO-USER-ID" : "USER0001",
+      "CDEMO-USER-TYPE" : "U",
+      "CDEMO-PGM-CONTEXT" : "0",
+      "CDEMO-CT01-TRN-SEL-FLG" : "S",
+      "CDEMO-CT01-TRN-SELECTED" : "0000000000000203"
     },
-    "mapFields" : {
-      "TRNIDINI" : "0000000000000001"
-    },
-    "forcedOutcomes" : { }
+    "mapFields" : {},
+    "forcedOutcomes" : {}
   },
   "expectedResponse" : {
     "nextProgram" : "COTRN01C",
     "nextMapset" : "COTRN01",
     "nextMap" : "COTRN1A",
     "navigation" : {
-      "CDEMO-FROM-TRANID" : "    ",
-      "CDEMO-FROM-PROGRAM" : "        ",
+      "CDEMO-FROM-TRANID" : "CT00",
+      "CDEMO-FROM-PROGRAM" : "COTRN00C",
       "CDEMO-TO-TRANID" : "    ",
-      "CDEMO-TO-PROGRAM" : "        ",
-      "CDEMO-USER-ID" : "        ",
-      "CDEMO-USER-TYPE" : " ",
+      "CDEMO-TO-PROGRAM" : "COTRN01C",
+      "CDEMO-USER-ID" : "USER0001",
+      "CDEMO-USER-TYPE" : "U",
       "CDEMO-PGM-CONTEXT" : "1",
       "CDEMO-CUST-ID" : "000000000",
       "CDEMO-CUST-FNAME" : "                         ",
@@ -46,65 +55,118 @@
       "CDEMO-CT01-TRNID-LAST" : "                ",
       "CDEMO-CT01-PAGE-NUM" : "00000000",
       "CDEMO-CT01-NEXT-PAGE-FLG" : " ",
-      "CDEMO-CT01-TRN-SEL-FLG" : " ",
-      "CDEMO-CT01-TRN-SELECTED" : "                "
+      "CDEMO-CT01-TRN-SEL-FLG" : "S",
+      "CDEMO-CT01-TRN-SELECTED" : "0000000000000203"
     },
-    "sends" : [ {
-      "fields" : {
-        "TRNNAMEO" : "CT01",
-        "TITLE01O" : "      AWS Mainframe Modernization       ",
-        "CURDATEO" : "07/19/22",
-        "PGMNAMEO" : "COTRN01C",
-        "TITLE02O" : "              CardDemo                  ",
-        "CURTIMEO" : "23:12:34",
-        "TRNIDINO" : "0000000000000001",
-        "TRNIDO" : "0000000000000001",
-        "CARDNUMO" : "4111111111111111",
-        "TTYPCDO" : "01",
-        "TCATCDO" : "0005",
-        "TRNSRCO" : "POS TERM  ",
-        "TDESCO" : "GROCERY PURCHASE AT PARITY MARKET WITH A DESCRIPTION THAT OV",
-        "TRNAMTO" : "+00000504.77",
-        "TORIGDTO" : "2022-07-19",
-        "TPROCDTO" : "2022-07-20",
-        "MIDO" : "800000001",
-        "MNAMEO" : "PARITY MARKET NUMBER ONE OF SE",
-        "MCITYO" : "SPRINGFIELD MASSACHUSETTS",
-        "MZIPO" : "01103-1234",
-        "ERRMSGO" : "                                                                              "
+    "sends" : [
+      {
+        "fields" : {
+          "TRNNAMEO" : "CT01",
+          "TITLE01O" : "      AWS Mainframe Modernization       ",
+          "CURDATEO" : "07/19/22",
+          "PGMNAMEO" : "COTRN01C",
+          "TITLE02O" : "              CardDemo                  ",
+          "CURTIMEO" : "23:12:34",
+          "TRNIDINO" : "0000000000000203",
+          "TRNIDO" : "0000000000000203",
+          "CARDNUMO" : "4000000000000203",
+          "TTYPCDO" : "05",
+          "TCATCDO" : "0102",
+          "TRNSRCO" : "WEB PORTAL",
+          "TDESCO" : "AIRLINE TICKET BOOKED THROUGH THE PARITY TRAVEL DESK IN 0203",
+          "TRNAMTO" : "+00000100.00",
+          "TORIGDTO" : "2022-07-15",
+          "TPROCDTO" : "2022-07-16",
+          "MIDO" : "900000203",
+          "MNAMEO" : "PARITY TRAVEL DESK NUMBER 0203",
+          "MCITYO" : "BOSTON MASSACHUSETTS 0203",
+          "MZIPO" : "02108-0203",
+          "ERRMSGO" : "                                                                              "
+        },
+        "attributes" : {}
       },
-      "attributes" : { }
-    } ],
+      {
+        "fields" : {
+          "TRNNAMEO" : "CT01",
+          "TITLE01O" : "      AWS Mainframe Modernization       ",
+          "CURDATEO" : "07/19/22",
+          "PGMNAMEO" : "COTRN01C",
+          "TITLE02O" : "              CardDemo                  ",
+          "CURTIMEO" : "23:12:34",
+          "TRNIDINO" : "0000000000000203",
+          "TRNIDO" : "0000000000000203",
+          "CARDNUMO" : "4000000000000203",
+          "TTYPCDO" : "05",
+          "TCATCDO" : "0102",
+          "TRNSRCO" : "WEB PORTAL",
+          "TDESCO" : "AIRLINE TICKET BOOKED THROUGH THE PARITY TRAVEL DESK IN 0203",
+          "TRNAMTO" : "+00000100.00",
+          "TORIGDTO" : "2022-07-15",
+          "TPROCDTO" : "2022-07-16",
+          "MIDO" : "900000203",
+          "MNAMEO" : "PARITY TRAVEL DESK NUMBER 0203",
+          "MCITYO" : "BOSTON MASSACHUSETTS 0203",
+          "MZIPO" : "02108-0203",
+          "ERRMSGO" : "                                                                              "
+        },
+        "attributes" : {}
+      }
+    ],
     "cursorField" : "TRNIDINL",
     "termination" : "RETURN_TRANSID"
   },
-  "expectedWrites" : [ ],
-  "expectedFinalState" : [ {
-    "dataset" : "TRANSACT",
-    "rowIndex" : 0,
-    "expectedBytes" : "0000000000000001010005POS TERM  GROCERY PURCHASE AT PARITY MARKET WITH A DESCRIPTION THAT OVERFLOWS THE SCREEN FIELD                0000005047G800000001PARITY MARKET NUMBER ONE OF SEVERAL LONG NAMES    SPRINGFIELD MASSACHUSETTS USA                     01103-123441111111111111112022-07-19 23:12:34.1234562022-07-20 01:02:03.654321                    "
-  }, {
-    "dataset" : "TRANSACT",
-    "rowIndex" : 1,
-    "expectedBytes" : "0000000000000002020010ONLINE    REFUND ISSUED BY MERCHANT                                                                           0000000500}800000002PARITY REFUNDS LIMITED                            PORTLAND OREGON                                   97201-000242222222222222222022-07-18 08:00:00.0000012022-07-18 09:30:00.000002                    "
-  }, {
-    "dataset" : "TRANSACT",
-    "rowIndex" : 2,
-    "expectedBytes" : "0000000000000003034444BATCH     LARGE SETTLEMENT                                                                                    1234567891B800000003PARITY SETTLEMENT HOUSE                           NEW YORK NEW YORK                                 10001-000343333333333333332022-07-17 12:00:00.0000032022-07-17 12:00:01.000004                    "
-  } ],
+  "expectedWrites" : [],
+  "expectedFinalState" : [
+    {
+      "dataset" : "TRANSACT",
+      "rowIndex" : 0,
+      "expectedBytes" : "0000000000000201010005POS TERM  GROCERY PURCHASE AT THE PARITY MARKET                                                               0000000255{900000201PARITY MARKET NUMBER 0201                         SPRINGFIELD MASSACHUSETTS                         01103-020140000000000002012022-07-13 09:15:00.0002012022-07-13 09:15:01.000201                    "
+    },
+    {
+      "dataset" : "TRANSACT",
+      "rowIndex" : 1,
+      "expectedBytes" : "0000000000000202020010ONLINE    REFUND ISSUED BY THE PARITY MARKET                                                                  0000000752N900000202PARITY REFUNDS LIMITED 0202                       PORTLAND OREGON                                   97201-020240000000000002022022-07-14 17:40:22.0002022022-07-14 18:05:44.000202                    "
+    },
+    {
+      "dataset" : "TRANSACT",
+      "rowIndex" : 2,
+      "fields" : {
+        "TRAN-ID" : "0000000000000203",
+        "TRAN-TYPE-CD" : "05",
+        "TRAN-CAT-CD" : "0102",
+        "TRAN-SOURCE" : "WEB PORTAL",
+        "TRAN-DESC" : "AIRLINE TICKET BOOKED THROUGH THE PARITY TRAVEL DESK IN 0203-DISCARDED TAIL, TDESCO IS PIC X(60)-   ",
+        "TRAN-AMT" : "100.00",
+        "TRAN-MERCHANT-ID" : "900000203",
+        "TRAN-MERCHANT-NAME" : "PARITY TRAVEL DESK NUMBER 0203-DROPPED BY MNAMEO  ",
+        "TRAN-MERCHANT-CITY" : "BOSTON MASSACHUSETTS 0203-DROPPED BY MCITYO PIC   ",
+        "TRAN-MERCHANT-ZIP" : "02108-0203",
+        "TRAN-CARD-NUM" : "4000000000000203",
+        "TRAN-ORIG-TS" : "2022-07-15 06:45:12.000203",
+        "TRAN-PROC-TS" : "2022-07-16 21:03:59.100203",
+        "FILLER" : "                    "
+      },
+      "expectedBytes" : "0000000000000203050102WEB PORTALAIRLINE TICKET BOOKED THROUGH THE PARITY TRAVEL DESK IN 0203-DISCARDED TAIL, TDESCO IS PIC X(60)-   0000001000{900000203PARITY TRAVEL DESK NUMBER 0203-DROPPED BY MNAMEO  BOSTON MASSACHUSETTS 0203-DROPPED BY MCITYO PIC   02108-020340000000000002032022-07-15 06:45:12.0002032022-07-16 21:03:59.100203                    "
+    }
+  ],
   "expectedReturnCode" : 0,
-  "expectedMessages" : [ {
-    "channel" : "WS_MESSAGE_80",
-    "text" : "                                                                                "
-  }, {
-    "channel" : "SCREEN_ERRMSG_78",
-    "text" : "                                                                              "
-  } ],
-  "normalisations" : [ ],
-  "expectedDatasets" : [ {
-    "dataset" : "TRANSACT",
-    "channel" : "FINAL_STATE",
-    "rowCount" : 3,
-    "recordLength" : 350
-  } ]
+  "expectedMessages" : [
+    {
+      "channel" : "WS_MESSAGE_80",
+      "text" : "                                                                                "
+    },
+    {
+      "channel" : "SCREEN_ERRMSG_78",
+      "text" : "                                                                              "
+    }
+  ],
+  "normalisations" : [],
+  "expectedDatasets" : [
+    {
+      "dataset" : "TRANSACT",
+      "channel" : "FINAL_STATE",
+      "rowCount" : 3,
+      "recordLength" : 350
+    }
+  ]
 }

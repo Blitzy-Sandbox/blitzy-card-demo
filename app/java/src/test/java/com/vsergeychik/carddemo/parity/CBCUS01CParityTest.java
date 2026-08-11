@@ -93,7 +93,7 @@ import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException
  * reads {@code Type : BATCH COBOL Program} and {@code Function : Read and print customer data file},
  * and {@code app/jcl/READCUST.jcl} runs it as {@code EXEC PGM=CBCUS01C}. It is a standalone, runnable
  * batch program, not a data-access helper that something else drives.
- * {@link CustomerFileReaderJob} exists precisely to preserve that runnable behaviour, and thirteen of
+ * {@link CustomerFileReaderJob} exists precisely to preserve that runnable behaviour, and fourteen of
  * the twenty cases below reach the program through it, as a Spring Batch tasklet. The divergence is
  * documented rather than resolved by reshaping the program: the names come from the plan and the
  * behaviour comes from the source (rule <strong>R1</strong>, register 0.8.4, practice
@@ -137,14 +137,14 @@ import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException
  * <h2>How the units are reached: no launcher, no HTTP, no context</h2>
  * <p>Two of the four unit kinds are used, and each case states which one it is:
  * <ul>
- *   <li><strong>{@code "unitKind": "BATCH_JOB"}</strong> - thirteen cases. The adapter drives
+ *   <li><strong>{@code "unitKind": "BATCH_JOB"}</strong> - fourteen cases. The adapter drives
  *       {@link CustomerFileReaderJob#customerFileDisplayTasklet()} directly, calling
  *       {@link Tasklet#execute} with a plain {@link StepContribution} and {@link ChunkContext}. There
  *       is no {@code JobLauncher}, no {@code JobLauncherTestUtils}, no job repository write, no
  *       asynchronous executor, no application context and nothing resembling an HTTP layer between
  *       the assertion and the code, so the read order and the display order observed here are the ones
  *       the translated statements produce (gate <strong>G51</strong>).</li>
- *   <li><strong>{@code "unitKind": "SERVICE"}</strong> - seven cases. The adapter constructs
+ *   <li><strong>{@code "unitKind": "SERVICE"}</strong> - six cases. The adapter constructs
  *       {@link CustomerService} and calls
  *       {@link CustomerService#readAndPrintCustomerFileTo(SysoutSink)}, which is the production
  *       streaming entry point and the shortest path there is to the decision logic. Both kinds are
@@ -173,7 +173,7 @@ import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException
  *   <tr><td>arranges nothing, and declares a {@code CUSTFILE}</td>
  *       <td>a private in-memory relation holding the declared rows, read through the real
  *           {@link CustomerRepository}</td>
- *       <td>the ordinary path: {@code '00'} per record, then {@code '10'}. Ten cases</td></tr>
+ *       <td>the ordinary path: {@code '00'} per record, then {@code '10'}. Eleven cases</td></tr>
  *   <tr><td>arranges nothing, and declares no {@code CUSTFILE} at all</td>
  *       <td>a database with no such relation</td>
  *       <td>{@code 0000-CUSTFILE-OPEN}'s fatal arm, from a dataset that is genuinely not
@@ -181,7 +181,7 @@ import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException
  *   <tr><td>arranges an open, read or close outcome</td>
  *       <td>a stubbed repository reporting exactly that status, with the reads assembled from the
  *           case's own declared rows through the real {@link CustomerRecord#decode(String, Charset)}</td>
- *       <td>the {@code WHEN OTHER} arms and both branches of {@code Z-DISPLAY-IO-STATUS}. Nine
+ *       <td>the {@code WHEN OTHER} arms and both branches of {@code Z-DISPLAY-IO-STATUS}. Eight
  *           cases</td></tr>
  * </table>
  * The real relation is used wherever it can be, because it is the only backend against which "the
@@ -348,7 +348,7 @@ class CBCUS01CParityTest {
         /**
          * Nothing is arranged: the case's declared inputs alone decide what happens.
          *
-         * <p>Used by the ten ordinary cases, and also by {@code case08} - whose {@code OPEN} fails
+         * <p>Used by the eleven ordinary cases, and also by {@code case08} - whose {@code OPEN} fails
          * because it declares no {@code CUSTFILE} at all, which is a property of its inputs and not
          * something this table has to say.
          *
@@ -429,19 +429,18 @@ class CBCUS01CParityTest {
     /**
      * One scenario per case, in case order - the arranged input side of all twenty cases.
      *
-     * <p>Eleven cases arrange nothing and differ only in what they seed; nine arrange a failure, and
+     * <p>Twelve cases arrange nothing and differ only in what they seed; eight arrange a failure, and
      * between them they reach all three abend sites and both arms of {@code Z-DISPLAY-IO-STATUS}:
      * <ul>
      *   <li>{@code case09} and {@code case10} fail the {@code OPEN} at {@code L120}, the first with
      *       the numeric status {@code '35'} and the second with the extended status {@code '92'} that
      *       drives the {@code IO-STAT1 = '9'} arm at {@code L162-L168}. {@code case08} fails the same
      *       {@code OPEN} without arranging anything, because it declares no dataset;</li>
-     *   <li>{@code case11} fails the very first {@code READ} with {@code '30'}; {@code case12} fails
-     *       the fourth with {@code '04'}; {@code case13} fails the third with {@code '23'} and
-     *       {@code case14} the fifth with {@code '22'} - two statuses that are ordinary branches in
-     *       the online programs and fatal here, because {@code L94} tests only {@code '00'} and
-     *       {@code L98} only {@code '10'}; and {@code case17} fails the second with the
-     *       permanent-error convention, whose second byte is not a digit at all;</li>
+     *   <li>{@code case12} fails the fourth {@code READ} with {@code '04'}; {@code case13} fails the
+     *       third with {@code '23'} and {@code case14} the fifth with {@code '22'} - two statuses that
+     *       are ordinary branches in the online programs and fatal here, because {@code L94} tests
+     *       only {@code '00'} and {@code L98} only {@code '10'}; and {@code case17} fails the second
+     *       with the permanent-error convention, whose second byte is not a digit at all;</li>
      *   <li>{@code case15} and {@code case16} fail the {@code CLOSE} at {@code L138}, the first with
      *       {@code '42'} after three records and the second with the extended status {@code '96'} on a
      *       run that read nothing.</li>
@@ -474,7 +473,17 @@ class CBCUS01CParityTest {
 
         declared.put("case09", Scenario.openFails("35"));
         declared.put("case10", Scenario.openFails("92"));
-        declared.put("case11", Scenario.readFailsAfter(0, "30"));
+
+        // case11 arranges nothing on purpose. It is this program's dedicated record-width and FILLER
+        // case (gates G19 and G21), and those two are assertions about record images: they need six
+        // 500-character lines to exist, which only the ordinary path produces. An arranged read failure
+        // would abend before the first image was displayed and the case would assert nothing about
+        // either gate. Nothing is lost by arranging nothing here, because the fatal read arm is reached
+        // four more times - case12, case13, case14 and case17 - and the numeric branch of
+        // Z-DISPLAY-IO-STATUS that a status of '30' renders through is the same branch case09's '35',
+        // case12's '04', case13's '23', case14's '22' and case15's '42' already drive.
+        declared.put("case11", Scenario.asDeclared());
+
         declared.put("case12", Scenario.readFailsAfter(3, FileStatus.RECORD_LENGTH_CONFLICT));
         declared.put("case13", Scenario.readFailsAfter(2, FileStatus.NOT_FOUND));
         declared.put("case14", Scenario.readFailsAfter(4, FileStatus.DUPLICATE));
@@ -919,11 +928,11 @@ class CBCUS01CParityTest {
      * The program never writes to the customer master, verified against the repository rather than
      * inferred from the absence of an expectation.
      *
-     * <p>Ten of the twenty cases pin the dataset's final state row by row after reading it back out of a
-     * real relation, which is the strongest form of this assertion. This is the complementary one, and
-     * it is worth having because it answers a different question: not "did the stored rows change" but
-     * "was a write ever attempted at all". A rewrite that failed silently would leave the rows intact
-     * and pass the first check.
+     * <p>Eleven of the twenty cases pin the dataset's final state row by row after reading it back out
+     * of a real relation, which is the strongest form of this assertion. This is the complementary one,
+     * and it is worth having because it answers a different question: not "did the stored rows change"
+     * but "was a write ever attempted at all". A rewrite that failed silently would leave the rows
+     * intact and pass the first check.
      *
      * <p>It matters for this program in particular because {@link CustomerRepository} does publish
      * {@code rewrite}, for the online programs that share the dataset. {@code CBCUS01C} opens
@@ -1156,8 +1165,10 @@ class CBCUS01CParityTest {
      * them in: {@code app/cbl/CBCUS01C.cbl:L29-L33} declares {@code CUSTFILE} as
      * {@code ORGANIZATION INDEXED}, {@code ACCESS MODE SEQUENTIAL}, {@code RECORD KEY FD-CUST-ID}, so
      * key order and not insertion order is what a sequential pass sees, and {@code CUST-ID} occupies
-     * the first nine bytes of the image. {@code case05} seeds three records in descending key order to
-     * pin exactly that.
+     * the first nine bytes of the image. That the browse really does reorder a backwards-loaded
+     * relation is pinned directly, by {@code CustomerRepositoryTest}'s "delivers records in ascending
+     * key order even when the relation is seeded backwards" and its companion assertion that every
+     * browse statement carries an explicit ascending {@code ORDER BY}.
      *
      * <p>Nothing is reported for a case that declared no dataset. {@code case08} has no customer master
      * at all, so there is no state to describe, and describing one would be an invention rather than an
@@ -1225,8 +1236,9 @@ class CBCUS01CParityTest {
      * Stores the case's rows, verbatim and in the order the case declared them.
      *
      * <p>Declaration order is preserved and deliberately not sorted here. A KSDS browse reads in key
-     * order whatever order the records were loaded in, and {@code case05} exists to prove the
-     * translation does the same - so the seed must be free to disagree with the read order.
+     * order whatever order the records were loaded in, so the seed must be free to disagree with the
+     * read order: sorting it here would make the ordering untestable from a case file at all, and it
+     * is {@code CustomerRepositoryTest} that loads a relation backwards and asserts the ascending read.
      *
      * @param template the template over this case's relation
      * @param seeded the dataset as the harness seeded it

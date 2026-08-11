@@ -1,0 +1,122 @@
+{
+  "program": "CBTRN01C",
+  "caseId": "case18",
+  "description": "The third arm of the read ladder, taken on the FIRST read, which is the shortest abend fingerprint this program can produce: four lines and nothing else. 1000-DALYTRAN-GET-NEXT at app/cbl/CBTRN01C.cbl:202-225 reads at :203 and classifies at :204-212 - '00' moves 0, '10' moves 16, and the final ELSE at :210 moves 12 - then the second, separately nested ladder at :213-224 tests APPL-RESULT rather than the status again, so a value of 12 is neither APPL-AOK nor APPL-EOF and falls to :219-222: DISPLAY 'ERROR READING DAILY TRANSACTION FILE', MOVE DALYTRAN-STATUS TO IO-STATUS, PERFORM Z-DISPLAY-IO-STATUS, PERFORM Z-ABEND-PROGRAM. Both ladders take their final ELSE arm in source order, which is what gate G30 asks of them. THE STATUS IS '04', taken from FileStatus.RECORD_LENGTH_CONFLICT and not invented for this case: FileStatus.java declares it as the status a READ reports when it completed and transferred the record but the record's length did not conform to the file's fixed attributes, and 350 is the length CVTRA06Y declares for DALYTRAN-RECORD as RECLN = 350 (practice B11 - the width comes from the copybook, which is what makes a disagreement provable rather than asserted). '04' is a status CBTRN01C never names, so it is fatal here purely because :204 and :207 enumerate only '00' and '10' - the same reason FileStatus.outcomeOfStatus('04') classifies it OTHER, which is the MOVE 12 arm. That also makes this the only case in the folder to reach the 'other' outcome of the DALYTRAN read call site (gate G47); the '00' and '10' arms are case01's and case04's. RENDERED THROUGH THE NUMERIC ARM: Z-DISPLAY-IO-STATUS at :476-489 has two arms, and this case drives the ELSE at :484-487 - MOVE '0000' TO IO-STATUS-04 then MOVE IO-STATUS TO IO-STATUS-04(3:2) - so the four-character IO-STATUS-04 image is '00' followed by the two status characters, which is '0004'. Its first character is '0' and deliberately not '9': the IF arm at :477-483, reached when IO-STATUS is not numeric or IO-STAT1 = '9', renders the second byte's binary value in three digits and belongs to case19, so a case18 that rendered a '9x' image would be asserting case19's branch twice and case18's not at all. PRESERVED SOURCE QUIRK, PRACTICE B5, FIRST OF TWO: the emitted line is 'FILE STATUS IS: NNNN' immediately followed by the image, because :487 displays a literal and a field as two operands and the NNNN is genuinely part of the literal rather than a placeholder the program ever substitutes. The line therefore reads FILE STATUS IS: NNNN0004 and measures 24 characters - the 20-character FileStatus.DISPLAY_PREFIX plus the four-character image. Substituting the digits into the placeholder, or trimming it, changes observable output and is refused. PRESERVED SOURCE QUIRK, PRACTICE B5, SECOND OF TWO: CALL 'CEE3ABD' at :473 terminates the task, so the six CLOSE paragraphs at :188-193 and the closing banner 'END OF EXECUTION OF PROGRAM CBTRN01C' at :195 NEVER EXECUTE and no line for any of them appears below. Six files are left open, which is exactly what an abend does, and tidying that away would be a behaviour change. Because the failure is on the first read, :168 never displays the 350-byte record either - the DISPLAY lives in the mainline and the abend is raised inside the paragraph - and the lookup block at :170-184 is never reached, so there is no 'SUCCESSFUL READ OF XREF', no card, account or customer line, and no account message anywhere in the expectation. RETURN-CODE IS 12 AND NOT 0, 4, 8 OR 16: it is the live APPL-RESULT that :210 moved, carried by AbendException, whose standard shape supplies the two Language Environment parameters this program does set - ABCODE 999 from :472 and TIMING 0 from :471, unlike app/cbl/CBSTM03A.CBL:923 which sets neither - and BatchConfig's listeners carry it onto the step and job exit status and thence the process exit code (gate G35). HOW THE FAULT IS INDUCED, AND THE LIMIT THAT FORCED THE CHOICE (practice B12, stated rather than absorbed): this case takes ROUTE 3 of the three available routes - the status is declared here and supplied adapter-side - and the other two were rejected on evidence, not preference. Route 1, a schema member that forces a per-dataset I/O status, does not exist for a batch case: the only forced-outcome member in the model is ScreenRequest.forcedOutcomes, and ParityCase refuses a screenRequest on a BATCH_JOB outright because a batch job has no screen, so there is no member to set and none was invented. Route 2, expressing the fault through inputs alone by seeding a row that is not 350 bytes, is expressible but produces the WRONG BRANCH: DalyTranRepository.readNext maps every width disagreement to its permanent-error status, IO-STAT1 '9' with a zero feedback code, which renders as FILE STATUS IS: NNNN9000 through the extended arm - case19's arm, and the one this case must not take - and a short row would additionally be refused by the production DalyTranRecord decoder before any status could be reported. So the read status is the adapter's to supply, and the support already exists rather than being requested: CBTRN01CParityTest.Injection.readFailure(goodReads, status) is what its own case10 uses to inject '23' on a second read, and readFailure(0, '04') is this case, with zero good reads before the failure. THE SEEDS ARE DELIBERATELY ORDINARY, so that it is unambiguous that the status ended the run and not the data. DALYTRAN holds one genuine, correctly shaped record - app/data/ASCII/dailytran.txt row 1, zero-based row 0, all 350 bytes of it, DALYTRAN-ID 0000000000683580 with DALYTRAN-CARD-NUM 4859452612877065 at bytes 263-278 - and the READ still reports '04', which is the whole point: a dataset holding a good record is not a defence against a status the ladder does not name. XREFFILE holds cardxref.txt row 21, zero-based 20, resolving that card to customer 000000007 and account 00000000007, and ACCTFILE holds acctdata.txt row 7, zero-based 6, which is that account; both are seeded and NEITHER IS EVER REACHED, because the abend precedes the lookup. The cross-reference row is seeded at the 36 bytes the fixture actually holds and is NOT pre-padded here: the declared CARDXREF_FILLER_PAD_36_TO_50 normalisation supplies CVACT03Y's absent FILLER PIC X(14) once, at seed time, through its single owner (gate G16, risk R-F). CARDFILE, CUSTFILE and TRANFILE are declared empty rather than omitted, each carrying the width and copybook of the rows it would hold - 150 and CVACT02Y, 500 and CVCUS01Y, 350 and CVTRA05Y - because :158, :160 and :162 do open them and an omitted dataset would say nothing about them at all; no READ in the program ever touches CARDFILE or CUSTFILE in any case. Row-level expectations are empty on both channels and that is a positive assertion, not an omission: a scan of the source finds zero WRITE and zero REWRITE statements, all six files are OPEN INPUT, and the six writes-channel dataset expectations say the same thing per dataset at its exact copybook width - DALYTRAN 350, CUSTFILE 500, XREFFILE 50, CARDFILE 150, ACCTFILE 300 and TRANFILE 350 - which is what proves every FILLER span was accounted for, including CVACT01Y's FILLER X(178) and CVACT03Y's FILLER X(14) (gates G19 and G21). The three final-state expectations pin that the seeded rows survived the run untouched at those same widths. R1 AND PRACTICE B4, DOCUMENTED AND NOT 'FIXED': the mandated class name TransactionPostingJob and the source header 'Post the records from daily transaction file' both promise posting, and the verified source posts nothing at all; CBTRN01C is also the migration's orphan, invoked by no EXEC PGM= in app/jcl or app/proc, so jobParameters is empty because there is no PARM for one to come from and the job carries no trigger (gate G13). One further divergence is recorded rather than corrected: CBTRN01CParityTest declares its twenty cases in Java while this fixture directory is being shipped, and its Java-declared case18 is a 9100-CUSTFILE-CLOSE failure rendering NNNN0035, whereas the shipped fixture set numbers its failure paths differently and assigns case18 to this read failure and case19 to the extended-status arm. The two sets must be reconciled at the single adoption seam - that class's cases() method, which is where ParityHarness.casesOf('CBTRN01C') substitutes - and the divergence is written down here so whoever reconciles them is not surprised by it. BASELINE PROVENANCE, PRACTICE B12: every expected value above is STATICALLY DERIVED from app/cbl/CBTRN01C.cbl read paragraph by paragraph - the read ladder at :202-225, Z-ABEND-PROGRAM at :469-473 and Z-DISPLAY-IO-STATUS at :476-489 - cross-checked against the copybook byte layouts in app/cpy and against the real ASCII fixtures. It was NEVER captured from, recorded against or replayed from any execution of the legacy COBOL, because executing it is empirically impossible in this environment: there is no z/OS runtime, the available compiler reports its indexed file handler as disabled, and no Language Environment CEE* services exist at all, so CALL 'CEE3ABD' - the very statement this case exists to pin - cannot be reached. AAP section 0.7.6 records eight independently verified blockers; the substitution changes the PROVENANCE of the expected values and nothing else, and is escalated as risk R-A for explicit user confirmation rather than silently absorbed. Bytes are US-ASCII, stated and never taken from the platform default, and the failure is induced deterministically by a declared status rather than by timing, environment or randomness - CBTRN01C reads no clock, so the fingerprint is identical on every run (practices B7 and B8). review_rules returns exactly one line, \"No user rules provided.\", so no user rule governs this fixture; the binding standard is the enterprise-practice set, and its absence is not licence to assert less. Gates carried: G13, G15, G18, G19, G21, G30, G35, G47 and G51 - the program body is driven directly, with no JobLauncher and no HTTP layer in the path. G32 does not apply: CBTRN01C contains zero GO TO statements.",
+  "unitKind": "BATCH_JOB",
+  "inputs": {
+    "DALYTRAN": {
+      "rows": [
+        "0000000000683580010001POS TERM  Purchase at Abshire-Lowe                                                                            0000005047G800000000Abshire-Lowe                                      North Enoshaven                                   72112     48594526128770652022-06-10 19:27:53.000000                                              "
+      ]
+    },
+    "CUSTFILE": {
+      "empty": true,
+      "recordLength": 500,
+      "copybook": "CVCUS01Y"
+    },
+    "XREFFILE": {
+      "rows": [
+        "485945261287706500000000700000000007"
+      ]
+    },
+    "CARDFILE": {
+      "empty": true,
+      "recordLength": 150,
+      "copybook": "CVACT02Y"
+    },
+    "ACCTFILE": {
+      "rows": [
+        "00000000007Y00000001930{00000020650{00000002640{2012-10-122024-12-132024-12-1300000000000{00000000000{A000000000                                                                                                                                                                                            "
+      ]
+    },
+    "TRANFILE": {
+      "empty": true,
+      "recordLength": 350,
+      "copybook": "CVTRA05Y"
+    }
+  },
+  "jobParameters": {},
+  "expectedWrites": [],
+  "expectedFinalState": [],
+  "expectedReturnCode": 12,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "START OF EXECUTION OF PROGRAM CBTRN01C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ERROR READING DAILY TRANSACTION FILE"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "FILE STATUS IS: NNNN0004"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ABENDING PROGRAM"
+    }
+  ],
+  "normalisations": [
+    {
+      "dataset": "XREFFILE",
+      "kind": "CARDXREF_FILLER_PAD_36_TO_50"
+    }
+  ],
+  "expectedDatasets": [
+    {
+      "dataset": "DALYTRAN",
+      "channel": "WRITES",
+      "rowCount": 0,
+      "recordLength": 350
+    },
+    {
+      "dataset": "CUSTFILE",
+      "channel": "WRITES",
+      "rowCount": 0,
+      "recordLength": 500
+    },
+    {
+      "dataset": "XREFFILE",
+      "channel": "WRITES",
+      "rowCount": 0,
+      "recordLength": 50
+    },
+    {
+      "dataset": "CARDFILE",
+      "channel": "WRITES",
+      "rowCount": 0,
+      "recordLength": 150
+    },
+    {
+      "dataset": "ACCTFILE",
+      "channel": "WRITES",
+      "rowCount": 0,
+      "recordLength": 300
+    },
+    {
+      "dataset": "TRANFILE",
+      "channel": "WRITES",
+      "rowCount": 0,
+      "recordLength": 350
+    },
+    {
+      "dataset": "DALYTRAN",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 350
+    },
+    {
+      "dataset": "XREFFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 50
+    },
+    {
+      "dataset": "ACCTFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 300
+    }
+  ]
+}

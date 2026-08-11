@@ -1,36 +1,31 @@
 {
   "program": "COADM01C",
   "caseId": "case03",
-  "description": "A re-entry with option 1 typed as '1 ', taking PROCESS-ENTER-KEY all the way to the transfer at app/cbl/COADM01C.cbl:138-145. The three-term guard at 127-129 passes, line 138 finds CDEMO-ADMIN-OPT-PGMNAME(1)(1:5) is 'COUSR' and not 'DUMMY', lines 139-141 stamp CDEMO-FROM-TRANID 'CA00', CDEMO-FROM-PROGRAM 'COADM01C' and CDEMO-PGM-CONTEXT zero, and the XCTL names COUSR00C carrying the communication area. An XCTL never returns, so lines 147-154 do not run: no map is sent, WS-MESSAGE stays the spaces line 79 left in it, and the twelve menu lines are never composed. The normalised OPTIONO of '01' is asserted at the unit rather than in \"sends\", because there is no send to carry it.",
+  "description": "The first term of the combined relation at app/cbl/COADM01C.cbl:162, and the sibling of the arm case01 drives. Line 162 reads IF CDEMO-TO-PROGRAM = LOW-VALUES OR SPACES, which COBOL expands as an abbreviated combined relation into 'equal to LOW-VALUES, or equal to SPACES' - two independent terms over one subject, either of which fires line 163's MOVE 'COSGN00C' TO CDEMO-TO-PROGRAM. This case presents that subject as LOW-VALUES: X'00' at all eight bytes, written as \\u0000 eight times over, which is what the un-VALUEd WORKING-STORAGE copy of CARDDEMO-COMMAREA that COPY COCOM01Y brings in at line 50 actually holds when transaction CA00 is typed at a clear screen. case01 presents the same subject as spaces and case10 presents it already populated, so between the three every outcome of the relation is driven: this one its LOW-VALUES term, case01 its SPACES term, and case10 the false outcome that line 97 guarantees by writing a name into the field before the paragraph ever examines it. That the first two carry byte-identical expectations is the point of the pair rather than a redundancy - a translation implementing one term and dropping the other satisfies whichever case it kept and fails the other, and a translation collapsing the relation into a single blank test passes both while having lost a term. Spaces are therefore not substitutable here: they are case01's input, and supplying them would collapse the two cases into one. LOW-VALUES appears exactly twice in the program's 268 lines - line 89 and line 162 - and this is the second of the two: line 89's MOVE LOW-VALUES TO COADM1AO is the output-map reset on the first-entry paint, a different statement about a different receiver, and it sits inside the ELSE of line 82 that this path does not take. The path is the EIBCALEN = 0 guard at 82-84: line 83 moves 'COSGN00C' into CDEMO-FROM-PROGRAM - FROM, where line 97 sets TO, an asymmetry that is in the source and is reproduced - and line 84 performs RETURN-TO-SIGNON-SCREEN. With EIBCALEN = 0 no communication area is handed to the handler at all, which is how absence is represented, so the CDEMO-TO-PROGRAM image declared above is the state of the working-storage area the guard reads rather than something DFHCOMMAREA delivered; it is load-bearing rather than decorative, because the run drives the relation with this exact image through the public AdminMenuService.resolveSignonTarget, which is public precisely because the two terms are not both reachable through handle - this projection's NavigationContext.empty() presents the cold area as spaces where the source presents it as binary zeros - and the run requires the two to converge on the one eight-byte target it named. Three things are observable and all three are pinned. The transfer target is COSGN00C (G40). The XCTL at 165-167 specifies NO COMMAREA, unlike the one at 142-145, which is exactly the condition COSGN00C's own EIBCALEN = 0 test looks for, so nothing is handed on. And the single emitted line is the eighty-byte WS-MESSAGE that line 79 blanked, declared on the WS_MESSAGE_80 channel because a service produces WS-MESSAGE itself and only a controller produces the seventy-eight-byte ERRMSGO that line 177 narrows it into - case01, being a controller case, states the same run's message at that narrower width, and a comparison across channels is refused by the differ. sends is empty and nextMapset and nextMap are deliberately absent: neither EXEC CICS XCTL names a map, and which map the successor paints is the successor's decision. With no send there is likewise no attribute item to carry the COLOR=RED that app/bms/COADM01.bms:154-157 declares for ERRMSG, and none may be invented - the single attribute byte COADM01C ever writes is the DFHGREEN of line 148, on the coming-soon path this case never reaches. CDEMO-PGM-CONTEXT comes back 0, untouched, because nothing on this path writes it and the zero is the cold area's own. The EXEC CICS RETURN at 107-110 is never reached, an XCTL having transferred control, so the termination is XCTL and not RETURN_TRANSID. The unit is AdminMenuService, called as a plain object with no HTTP layer and no JobLauncher in the path (G51), and the invocation is declared in screenRequest because that is where ParityCase requires an online request to live: jobParameters models a JCL PARM and is refused for any unit kind other than BATCH_JOB. EIBAID is declared DFHENTER even though the EVALUATE at line 93 sits inside the ELSE of line 87 and is never reached here; a terminal always presents an attention identifier and this is the one the program treats as ordinary, so nothing asserted here depends on it. OPTIONI arrives as two spaces and comes back as two spaces, because PROCESS-ENTER-KEY does not run and line 125 never writes OPTIONO. No dataset is touched - COADM01C declares no SELECT and no FD and issues no file control command - so inputs, expectedWrites and expectedFinalState are all empty and the return code is 0, and gates G19, G21 and G47 have nothing to bind to. The clock is pinned to 2022-07-19T23:12:32, the timestamp COADM01C's own version footer at line 267 carries, so the instant is anchored in the source rather than chosen, and all twenty cases in this directory pin that same instant and name US-ASCII explicitly rather than leaving a code page to a platform default; this path performs no POPULATE-HEADER-INFO, so the instant changes nothing it asserts and is declared all the same, so that one clock governs the whole directory. One cross-reference is worth stating plainly for whoever compares the pair: the arm this case is measured against is case01, not case02 - case02 as it stands is the first-entry paint at lines 87-90, the ENTER half of gate G38, and it is that paint rather than the sign-on default that its expectation describes. Every expected value above is statically derived - read out of the COBOL paragraph that produces it and cross-checked against the 160-byte layout of app/cpy/COCOM01Y.cpy, the xxxI PICTURE clauses of app/cpy-bms/COADM01.CPY and the DFHMDF definitions of app/bms/COADM01.bms - and none of it was captured from an execution of the legacy program, which is empirically impossible here: no z/OS or CICS runtime, an indexed file handler the available compiler reports as disabled, no Language Environment CEE services, and DFHAID, DFHBMSCA and DFHATTR absent from the repository. ParityHarness's own class documentation is the authoritative statement of that provenance, and the substitution is escalated rather than absorbed (risk R-A).",
   "unitKind": "SERVICE",
   "inputs": {},
   "screenRequest": {
-    "eibcalen": 160,
+    "eibcalen": 0,
     "aid": "DFHENTER",
     "pinnedClock": "2022-07-19T23:12:32",
     "charset": "US-ASCII",
     "commarea": {
-      "CDEMO-FROM-TRANID": "CC00",
-      "CDEMO-FROM-PROGRAM": "COSGN00C",
-      "CDEMO-TO-PROGRAM": "COADM01C",
-      "CDEMO-USER-ID": "ADMIN001",
-      "CDEMO-USER-TYPE": "A",
-      "CDEMO-PGM-CONTEXT": "1"
+      "CDEMO-TO-PROGRAM": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000"
     },
     "mapFields": {
-      "OPTIONI": "1 "
+      "OPTIONI": "  "
     },
     "forcedOutcomes": {}
   },
   "expectedResponse": {
-    "nextProgram": "COUSR00C",
+    "nextProgram": "COSGN00C",
     "navigation": {
-      "CDEMO-FROM-TRANID": "CA00",
-      "CDEMO-FROM-PROGRAM": "COADM01C",
+      "CDEMO-FROM-TRANID": "    ",
+      "CDEMO-FROM-PROGRAM": "COSGN00C",
       "CDEMO-TO-TRANID": "    ",
-      "CDEMO-TO-PROGRAM": "COADM01C",
-      "CDEMO-USER-ID": "ADMIN001",
-      "CDEMO-USER-TYPE": "A",
+      "CDEMO-TO-PROGRAM": "COSGN00C",
+      "CDEMO-USER-ID": "        ",
+      "CDEMO-USER-TYPE": " ",
       "CDEMO-PGM-CONTEXT": "0",
       "CDEMO-CUST-ID": "000000000",
       "CDEMO-CUST-FNAME": "                         ",

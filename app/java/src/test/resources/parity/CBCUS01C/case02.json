@@ -1,23 +1,37 @@
 {
   "program": "CBCUS01C",
   "caseId": "case02",
-  "description": "The customer master exists and holds no record. The first READ at app/cbl/CBCUS01C.cbl:L93 reports '10', so 1000-CUSTFILE-GET-NEXT moves 16 into APPL-RESULT, the 88 APPL-EOF condition at L107 holds, END-OF-FILE becomes 'Y' at L108, and the mainline's second IF END-OF-FILE = 'N' guard at L77 suppresses the display for the read that found nothing - so neither of the two displays fires. The whole of SYSOUT is the two banners, and the dataset-level expectation states what no row expectation can: the dataset was opened and holds zero rows at its declared 500-byte width.",
+  "description": "The minimal single-record clean run, with the duplicate display isolated to its smallest observable form. One record is seeded inline - the first row of app/data/ASCII/custdata.txt verbatim, CUST-ID 000000001, so the seed is genuine fixture data rather than synthesised bytes - and SYSOUT is therefore exactly four lines: 1 START + (1 record x 2 displays) + 1 END. The two record lines are byte-identical because 1000-CUSTFILE-GET-NEXT displays CUSTOMER-RECORD at app/cbl/CBCUS01C.cbl:L96 inside the READ's '00' arm at L94, and the mainline displays the same area again at L78 because END-OF-FILE is still 'N' at its L77 guard - two displays with no statement between them that could change the area. CBACT01C has only the L78 display and CBACT02C has its L96 one commented out; CBACT03C and this program have both, which is a real per-program inconsistency rather than a template artifact and is preserved rather than deduplicated (practice B5). The loop then reads again and gets '10', so L99 moves 16 into APPL-RESULT, the 88 APPL-EOF condition at L107 holds and L108 sets END-OF-FILE to 'Y': that read emits no line of its own and repeats no image, the CLOSE at L138 reports '00' silently, and L85's banner closes the run. The return code is 0 because CBCUS01C never references RETURN-CODE and reaches GOBACK at L87, and no job parameter is declared because app/jcl/READCUST.jcl:L6 is a bare EXEC PGM with no PARM. The image is exactly 500 characters with CVCUS01Y's FILLER X(168) at 333-500 space-filled, so it ends in a space, and it is pinned on both channels - as the two display lines and as the unchanged final-state row, which is how a case states that a program opening CUSTFILE INPUT left the dataset exactly as it found it. case03 pins one record span by span; this one pins the whole image, and the total width is what proves the FILLER was emitted at all. Expected values are statically derived from app/cbl/CBCUS01C.cbl, the CVCUS01Y byte layout, the READCUST.jcl STEP05 contract and the real app/data/ASCII/custdata.txt fixture; they were never captured from a live COBOL execution, which is empirically impossible in this environment (AAP 0.7.6, risk R-A) (practice B12).",
   "unitKind": "BATCH_JOB",
   "inputs": {
     "CUSTFILE": {
-      "empty": true,
-      "recordLength": 500,
-      "copybook": "CVCUS01Y"
+      "rows": [
+        "000000001Immanuel                 Madeline                 Kessler                  618 Deshaun Route                                 Apt. 802                                          Altenwerthshire                                   NCUSA12546     (908)119-8310  (373)693-8684  020973888000000000000493684371961-06-080053581756Y274                                                                                                                                                                        "
+      ]
     }
   },
   "jobParameters": {},
   "expectedWrites": [],
-  "expectedFinalState": [],
+  "expectedFinalState": [
+    {
+      "dataset": "CUSTFILE",
+      "rowIndex": 0,
+      "expectedBytes": "000000001Immanuel                 Madeline                 Kessler                  618 Deshaun Route                                 Apt. 802                                          Altenwerthshire                                   NCUSA12546     (908)119-8310  (373)693-8684  020973888000000000000493684371961-06-080053581756Y274                                                                                                                                                                        "
+    }
+  ],
   "expectedReturnCode": 0,
   "expectedMessages": [
     {
       "channel": "DISPLAY_LINE",
       "text": "START OF EXECUTION OF PROGRAM CBCUS01C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "000000001Immanuel                 Madeline                 Kessler                  618 Deshaun Route                                 Apt. 802                                          Altenwerthshire                                   NCUSA12546     (908)119-8310  (373)693-8684  020973888000000000000493684371961-06-080053581756Y274                                                                                                                                                                        "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "000000001Immanuel                 Madeline                 Kessler                  618 Deshaun Route                                 Apt. 802                                          Altenwerthshire                                   NCUSA12546     (908)119-8310  (373)693-8684  020973888000000000000493684371961-06-080053581756Y274                                                                                                                                                                        "
     },
     {
       "channel": "DISPLAY_LINE",
@@ -29,7 +43,7 @@
     {
       "dataset": "CUSTFILE",
       "channel": "FINAL_STATE",
-      "rowCount": 0,
+      "rowCount": 1,
       "recordLength": 500
     }
   ]

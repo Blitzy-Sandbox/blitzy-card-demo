@@ -1,15 +1,13 @@
 {
   "program": "CBACT01C",
   "caseId": "case19",
-  "description": "ACCT-ACTIVE-STATUS across the three values a PIC X(01) span carries in practice: 'Y', which is what all 50 rows of the shipped fixture hold, 'N', and a space. CBACT01C displays the byte and branches on nothing - there is no 88-level condition on this field anywhere in the program - so all three records must be read, displayed and counted identically.",
+  "description": "The zoned-overpunch and misspelled-field structural probe. It pins two properties that a plausible-looking Java translation gets wrong SILENTLY, and it pins them per field so the failure names the offending span rather than reporting that 300 characters differ. PROPERTY ONE, A SIGNED MONETARY SPAN IS 12 BYTES AND NOT 13: each of the five PIC S9(10)V99 fields occupies exactly p + s = 12 zoned DISPLAY characters with the sign OVERPUNCHED into the trailing one. A codec that reserved a separate sign character for each of the five would build a 305-byte record against a 300-byte layout and fail G19 immediately - but only a case that asserts the width of each span individually explains WHICH fields are responsible and WHY. All five spans are pinned here at their raw 12-character stored images, every one of which ends in the positive-zero overpunch, and none of which is 13 characters long. PROPERTY TWO, THE MISSPELLING IS THE CONTRACT: the copybook spells the field ACCT-EXPIRAION-DATE at app/cpy/CVACT01Y.cpy:L11. That is a genuine misspelling in the source and requirement I1 forbids correcting it, so it is keyed here exactly as the copybook spells it and the conventional spelling appears NOWHERE in this file. Correcting it would leave the diff hunting for a field the decoder never produces - a silent parity break rather than a loud one - and it would break field-for-field diffing across every case in the suite, not just this one. WHY THE TWO DATE SPANS ARE ASSERTED SEPARATELY: in this row, as in every row of the shipped fixture, ACCT-EXPIRAION-DATE at offset 58 and ACCT-REISSUE-DATE at offset 68 hold the SAME value, '2023-12-16'. Two entries are therefore mandatory rather than redundant: pinned as one field, a codec reading the wrong one of the two spans would still pass. Pinned as two, it cannot. WHAT THE FIELD MAP CARRIES, AND WHY THE DECIMALS ARE STATED HERE INSTEAD: ParityCase.ExpectedRecord.fields is a Map of field name to a SINGLE String value, so one form per field is all it can hold. The RAW STORED IMAGE is the form chosen, for two reasons - FieldDiffer canonicalises a signed expectation to bytes and then compares BYTES, so raw is the form it decides on; and the raw form is the one that makes the 12-not-13 width visible at all, which a decimal literal would hide. The decoded quantities are consequently stated in this description, with the conversion shown, so the case gives BOTH views of the same bytes and leaves the relationship between them explicit rather than implied (practice B8). THE DECODED QUANTITIES, all at scale 2: ACCT-CURR-BAL '00000000400{' = 40.00, ACCT-CREDIT-LIMIT '00000035030{' = 3503.00, ACCT-CASH-CREDIT-LIMIT '00000027890{' = 2789.00, ACCT-CURR-CYC-CREDIT '00000000000{' = 0.00, ACCT-CURR-CYC-DEBIT '00000000000{' = 0.00. WORKED RAW-TO-DECIMAL CONVERSION, step by step, for ACCT-CURR-BAL, and derived from these actual bytes rather than copied from any table (practice B11). (1) The picture is PIC S9(10)V99, so the span is p + s = 10 + 2 = 12 character positions and there is NO separate sign position anywhere - which is the only reading under which CVACT01Y sums to its documented RECLN 300. (2) The stored image is '00000000400{'. Its leading 11 characters are the plain digits '00000000400' and its trailing character '{' is the zoned sign overpunch, which carries BOTH the low-order digit AND the sign: under FixedWidthRecord.ZonedSign.POSITIVE_DIGITS = '{ABCDEFGHI', indexed by that low-order digit, '{' is index 0, so it means digit 0 with a POSITIVE sign. (3) The 12 digit positions are therefore '000000004000'. (4) V places the implied decimal point s = 2 digits from the right, so the integer part is the leading 10 digits '0000000040' and the fraction is the trailing 2 '00'. (5) Decoded through common.CobolDecimal at MONETARY_SCALE = 2 with COBOL_ROUNDING = RoundingMode.DOWN, the value is 40.00. (6) WHAT STEPS 2 AND 4 RULE OUT, and both wrong answers are out by exactly a factor of ten in opposite directions. Read the trailing character as a sign character of its OWN and only 11 digits remain: taking those 11 as the whole amount, with the implied V forgotten, gives 400.00 - ten times too LARGE, and this is the misreading FieldDiffer names, which for the span '00000001940{' yields 1940.00 in place of the true 194.00; applying V99 to those same 11 digits instead gives 4.00 - ten times too SMALL, because the low-order digit that the overpunch itself carries has been thrown away with the zone. The correct reading is neither: the trailing character is BOTH the low-order digit AND the sign, which is why 12 characters hold 12 digits and the answer is 40.00. FieldDiffer derives the same arithmetic independently for that different span - '00000001940{' carries digits 000000019400 and denotes 194.00 - so two derivations agree. THE PINNED SPANS, each with its absolute zero-based offset and its length: ACCT-CURR-BAL at offset 12 length 12 holds '00000000400{' which denotes 40.00; ACCT-CREDIT-LIMIT at offset 24 length 12 holds '00000035030{' which denotes 3503.00; ACCT-CASH-CREDIT-LIMIT at offset 36 length 12 holds '00000027890{' which denotes 2789.00; ACCT-EXPIRAION-DATE at offset 58 length 10 holds '2023-12-16'; ACCT-REISSUE-DATE at offset 68 length 10 holds '2023-12-16'; ACCT-CURR-CYC-CREDIT at offset 78 length 12 holds '00000000000{' which denotes 0.00; ACCT-CURR-CYC-DEBIT at offset 90 length 12 holds '00000000000{' which denotes 0.00. That is 80 of the record's 300 bytes named individually. WHY expectedBytes ACCOMPANIES THE SEVEN FIELDS: FieldDiffer.requireCompleteCoverage computes coverage PER BYTE and reports an INCOMPLETE_EXPECTATION difference for any byte no expectation covers, because a byte nobody pinned is a byte that can be wrong while the diff count is zero. Seven named spans leave 220 bytes unaccounted for, so the complete 300-byte record image is pinned alongside them: it discharges the coverage requirement, proves the TOTAL WIDTH and therefore that the trailing FILLER was emitted at all (G21), and lets FieldDiffer compare the remaining six spans from the image while this case's seven-field focus stays intact. Pinning all thirteen by name instead would have made this a second copy of case18, which is the set's record-width and FILLER probe and already does exactly that. THE FULL RECORD LAYOUT, transcribed mechanically from app/cpy/CVACT01Y.cpy as thirteen absolute zero-based spans so a reviewer can diff this table line by line against the copybook (practice B11): ACCT-ID 0/11 PIC 9(11), ACCT-ACTIVE-STATUS 11/1 PIC X(01), ACCT-CURR-BAL 12/12 PIC S9(10)V99, ACCT-CREDIT-LIMIT 24/12 PIC S9(10)V99, ACCT-CASH-CREDIT-LIMIT 36/12 PIC S9(10)V99, ACCT-OPEN-DATE 48/10 PIC X(10), ACCT-EXPIRAION-DATE 58/10 PIC X(10), ACCT-REISSUE-DATE 68/10 PIC X(10), ACCT-CURR-CYC-CREDIT 78/12 PIC S9(10)V99, ACCT-CURR-CYC-DEBIT 90/12 PIC S9(10)V99, ACCT-ADDR-ZIP 102/10 PIC X(10), ACCT-GROUP-ID 112/10 PIC X(10), FILLER 122/178 PIC X(178). The widths sum arithmetically to exactly the declared record length: 11 + 1 + 12 + 12 + 12 + 10 + 10 + 10 + 12 + 12 + 10 + 10 + 178 = 300, which CVACT01Y.cpy:L2 states independently as 'RECLN 300' and app/cbl/CBACT01C.cbl:L38-L40 corroborates a third time by splitting the same record as FD-ACCT-ID PIC 9(11) plus FD-ACCT-DATA PIC X(289), and 11 + 289 = 300. THE OVERPUNCH ALPHABET THIS FIXTURE ACTUALLY EXERCISES: all 250 signed-field instances in acctdata.txt - five spans across fifty rows - end in the positive-zero overpunch, and no other trailing character occurs anywhere in the file. Every value in this dataset is therefore non-negative with a low-order digit of zero, and a NEGATIVE overpunch is simply not present and cannot be inferred from this data. The five trailing characters pinned here are correct stored bytes and not corrupt data (practice B5); they must never be normalised to '0', because the comparison is on bytes precisely so that a lost zone or a lost sign-of-zero cannot pass. FOLDER-BRIEF CORRECTION, and practice B11 governs because the layout table above is derived from the copybook rather than from prose: 'A000000000' belongs to ACCT-ADDR-ZIP at offset 102, NOT to ACCT-GROUP-ID; ACCT-GROUP-ID at offset 112 is TEN SPACES in this row, which is what expectedMessages[11] shows and what the record image carries at 112. R1 CAVEAT, AND WHAT IS AND IS NOT UNDER TEST HERE: the mandated class name AccountBalanceJob does no balance work whatsoever - the source Function header at app/cbl/CBACT01C.cbl:L5 reads 'Read and print account data file'. This case therefore asserts the five monetary spans purely as DECODED DATA. The program performs no arithmetic on any of them: CBACT01C contains zero COMPUTE, zero MULTIPLY, zero DIVIDE and zero ROUNDED, and its only ADD and SUBTRACT verbs - L152, L155 and L157 - operate on APPL-RESULT PIC S9(9) COMP, a status register, never on a monetary field. No rounding behaviour is under test beyond the decode itself, and RoundingMode.DOWN is the only mode named here or reachable in any monetary path, because ROUNDED appears zero times in all 28 programs and COBOL therefore truncates on store (AAP rule R2, gate G24). expectedWrites is left empty, which positively asserts that nothing was written, and the one stored row is asserted UNCHANGED on the final-state channel - read back from the relation rather than echoed from the seed, which is what makes it a real assertion. SEQUENCING, one seeded row: 0000-ACCTFILE-OPEN reports '00'; the first READ reports '00', so APPL-RESULT becomes 0 and 1100-DISPLAY-ACCT-RECORD is performed FROM INSIDE the read paragraph at L96, emitting its eleven labelled lines (L119-L129) and the 49-hyphen separator (L130) BEFORE the mainline's own raw DISPLAY ACCOUNT-RECORD at L78 emits the 300-byte image - that ordering is behaviour, not presentation, and reversing the two blocks would be a difference; the second READ reports '10', so APPL-RESULT becomes 16, the 88 APPL-EOF condition at L107 holds, END-OF-FILE becomes 'Y' at L108 and the mainline's inner IF END-OF-FILE = 'N' guard at L77 suppresses a sixteenth line; 9000-ACCTFILE-CLOSE reports '00'; and GOBACK at L87 leaves RETURN-CODE 0 because the program never touches it. 1 + 13 + 1 = 15 emitted lines. Note that ACCT-ADDR-ZIP is the one span 1100-DISPLAY-ACCT-RECORD never labels, so it appears only inside the raw 300-byte line and in no labelled one - a legacy omission preserved rather than tidied (practice B5). THE SEED is fixture row index 3 of acctdata.txt - account 00000000004 - chosen because its ACCT-CURR-BAL of '00000000400{' carries a distinctive digit pattern that makes an off-by-one span error obvious, and because this is the only case in the set that ISOLATES that row: case01's full-file pass and case16's first ten rows both include it, but neither pins it alone, so a span defect in it would surface there as one difference among many rather than as the whole finding. The dataset is named through the ACCTFILE binding key, which is the DD app/jcl/READACCT.jcl:L25 declares; no dataset name appears anywhere in this file (G46), and ParityCase refuses a dotted one by shape. app/jcl/READACCT.jcl:L22 is a bare EXEC PGM with no PARM, hence the empty jobParameters. The fixture bytes are read as US-ASCII and never as a platform default (practice B8), and acctdata.txt matches its copybook width exactly - 50 rows of exactly 300 bytes - so this case declares no normalisation; the cardxref 36-to-50 pad is not applicable here. SELF-CONSISTENCY PROPERTIES, all asserted PROGRAMMATICALLY when this fixture was written rather than checked by eye: each of the five raw monetary spans is exactly 12 characters and none is 13; each decoded quantity has exactly 2 fractional digits and re-encodes to the very span it came from; the five monetary values in expectedMessages[3], [4], [5], [9] and [10] are byte-identical to the same five spans in the field map, so the two views of the same bytes agree; concatenating the thirteen spans in copybook order reproduces expectedMessages[13], the raw 300-byte line, exactly; and expectedMessages[1] through expectedMessages[13] are byte-identical to case01.json's FOURTH record block, which seeds this same record inside a natural-order full-file pass. BASELINE PROVENANCE (practice B12): every expected value here is STATICALLY DERIVED from the COBOL source, the copybook byte layout, the app/jcl/READACCT.jcl STEP05 DD contract and the real app/data/ASCII/acctdata.txt fixture, which is byte-identical to the test fixture. NOTHING was captured from a live COBOL execution: running the legacy programs is empirically impossible in this environment, as AAP section 0.7.6 establishes with eight independently verified blockers - no z/OS runtime, the available compiler's indexed file handler disabled, and no Language Environment CEE service for the CALL 'CEE3ABD' at app/cbl/CBACT01C.cbl:L173 - and the substitution of provenance is escalated as risk R-A rather than absorbed silently. GATES DISCHARGED: G15 (one of the twenty cases this program owns), G16 (seeded from the real app/data/ASCII fixture), G17 (the comparison is field by field, not whole-string), G18 (the diff count must be zero), G19 (the 300-byte account record width, proved by the five 12-byte signed spans plus the full record image), G21 (the trailing FILLER present and space-filled, proved by the total width), G22 to G24 (the monetary spans decode to scale 2 under truncation, with no binary floating point anywhere), G46 (the dataset is addressed by its binding key alone) and G51 (the job is driven at tasklet level, with no JobLauncher and no HTTP layer in the path).",
   "unitKind": "BATCH_JOB",
   "inputs": {
     "ACCTFILE": {
-      "rows": [
-        "00000000901Y00000001940{00000020200{00000010200{2014-11-202025-05-202025-05-2000000000000{00000000000{A000000000                                                                                                                                                                                            ",
-        "00000000902N00000001940{00000020200{00000010200{2014-11-202025-05-202025-05-2000000000000{00000000000{A000000000                                                                                                                                                                                            ",
-        "00000000903 00000001940{00000020200{00000010200{2014-11-202025-05-202025-05-2000000000000{00000000000{A000000000                                                                                                                                                                                            "
-      ]
+      "fixture": "acctdata.txt",
+      "fromRow": 3,
+      "rowCount": 1
     }
   },
   "jobParameters": {},
@@ -18,17 +16,16 @@
     {
       "dataset": "ACCTFILE",
       "rowIndex": 0,
-      "expectedBytes": "00000000901Y00000001940{00000020200{00000010200{2014-11-202025-05-202025-05-2000000000000{00000000000{A000000000                                                                                                                                                                                            "
-    },
-    {
-      "dataset": "ACCTFILE",
-      "rowIndex": 1,
-      "expectedBytes": "00000000902N00000001940{00000020200{00000010200{2014-11-202025-05-202025-05-2000000000000{00000000000{A000000000                                                                                                                                                                                            "
-    },
-    {
-      "dataset": "ACCTFILE",
-      "rowIndex": 2,
-      "expectedBytes": "00000000903 00000001940{00000020200{00000010200{2014-11-202025-05-202025-05-2000000000000{00000000000{A000000000                                                                                                                                                                                            "
+      "fields": {
+        "ACCT-CURR-BAL": "00000000400{",
+        "ACCT-CREDIT-LIMIT": "00000035030{",
+        "ACCT-CASH-CREDIT-LIMIT": "00000027890{",
+        "ACCT-EXPIRAION-DATE": "2023-12-16",
+        "ACCT-REISSUE-DATE": "2023-12-16",
+        "ACCT-CURR-CYC-CREDIT": "00000000000{",
+        "ACCT-CURR-CYC-DEBIT": "00000000000{"
+      },
+      "expectedBytes": "00000000004Y00000000400{00000035030{00000027890{2012-11-172023-12-162023-12-1600000000000{00000000000{A000000000                                                                                                                                                                                            "
     }
   ],
   "expectedReturnCode": 0,
@@ -39,7 +36,7 @@
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "ACCT-ID                 :00000000901"
+      "text": "ACCT-ID                 :00000000004"
     },
     {
       "channel": "DISPLAY_LINE",
@@ -47,79 +44,27 @@
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "ACCT-CURR-BAL           :00000001940{"
+      "text": "ACCT-CURR-BAL           :00000000400{"
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "ACCT-CREDIT-LIMIT       :00000020200{"
+      "text": "ACCT-CREDIT-LIMIT       :00000035030{"
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "ACCT-CASH-CREDIT-LIMIT  :00000010200{"
+      "text": "ACCT-CASH-CREDIT-LIMIT  :00000027890{"
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "ACCT-OPEN-DATE          :2014-11-20"
+      "text": "ACCT-OPEN-DATE          :2012-11-17"
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "ACCT-EXPIRAION-DATE     :2025-05-20"
+      "text": "ACCT-EXPIRAION-DATE     :2023-12-16"
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "ACCT-REISSUE-DATE       :2025-05-20"
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "ACCT-CURR-CYC-CREDIT    :00000000000{"
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "ACCT-CURR-CYC-DEBIT     :00000000000{"
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "ACCT-GROUP-ID           :          "
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "-------------------------------------------------"
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "00000000901Y00000001940{00000020200{00000010200{2014-11-202025-05-202025-05-2000000000000{00000000000{A000000000                                                                                                                                                                                            "
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "ACCT-ID                 :00000000902"
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "ACCT-ACTIVE-STATUS      :N"
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "ACCT-CURR-BAL           :00000001940{"
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "ACCT-CREDIT-LIMIT       :00000020200{"
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "ACCT-CASH-CREDIT-LIMIT  :00000010200{"
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "ACCT-OPEN-DATE          :2014-11-20"
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "ACCT-EXPIRAION-DATE     :2025-05-20"
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "ACCT-REISSUE-DATE       :2025-05-20"
+      "text": "ACCT-REISSUE-DATE       :2023-12-16"
     },
     {
       "channel": "DISPLAY_LINE",
@@ -139,64 +84,20 @@
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "00000000902N00000001940{00000020200{00000010200{2014-11-202025-05-202025-05-2000000000000{00000000000{A000000000                                                                                                                                                                                            "
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "ACCT-ID                 :00000000903"
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "ACCT-ACTIVE-STATUS      : "
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "ACCT-CURR-BAL           :00000001940{"
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "ACCT-CREDIT-LIMIT       :00000020200{"
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "ACCT-CASH-CREDIT-LIMIT  :00000010200{"
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "ACCT-OPEN-DATE          :2014-11-20"
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "ACCT-EXPIRAION-DATE     :2025-05-20"
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "ACCT-REISSUE-DATE       :2025-05-20"
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "ACCT-CURR-CYC-CREDIT    :00000000000{"
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "ACCT-CURR-CYC-DEBIT     :00000000000{"
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "ACCT-GROUP-ID           :          "
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "-------------------------------------------------"
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "00000000903 00000001940{00000020200{00000010200{2014-11-202025-05-202025-05-2000000000000{00000000000{A000000000                                                                                                                                                                                            "
+      "text": "00000000004Y00000000400{00000035030{00000027890{2012-11-172023-12-162023-12-1600000000000{00000000000{A000000000                                                                                                                                                                                            "
     },
     {
       "channel": "DISPLAY_LINE",
       "text": "END OF EXECUTION OF PROGRAM CBACT01C"
     }
   ],
-  "normalisations": []
+  "normalisations": [],
+  "expectedDatasets": [
+    {
+      "dataset": "ACCTFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 300
+    }
+  ]
 }

@@ -1,27 +1,27 @@
 {
   "program": "CBTRN02C",
   "caseId": "case02",
-  "description": "Stage one rejects: reason 100 'INVALID CARD NUMBER FOUND'. Everything is case01's seed except that XREFFILE holds cardxref row 0 - card 0500024453765740 - instead of the row that resolves dailytran row 0's card, so the READ at :383 reports the INVALID KEY condition and :385-387 store 100 and its text. 1500-VALIDATE-TRAN then takes the ELSE at :374, so 1500-B-LOOKUP-ACCT NEVER RUNS: this is the one short-circuit in the cascade, and the account and category-balance datasets come back byte-identical to their seeds to prove it. :214 increments WS-REJECT-COUNT and 2500-WRITE-REJECT-REC writes exactly 430 bytes - the 350-byte DALYTRAN-RECORD copied verbatim by the group move at :447, then WS-VALIDATION-FAIL-REASON as '0100' and WS-VALIDATION-FAIL-REASON-DESC right-space-padded to its declared 76. Because WS-REJECT-COUNT is greater than zero, :230 moves 4 into RETURN-CODE.",
+  "description": "CBTRN02C's TCATBALF create-on-miss arm and its negative-amount account branch - the two behaviours case01's clean rewrite path cannot reach, exercised together because the fixtures correlate them. SCENARIO. dailytran row 1 carries DALYTRAN-ID 0000000001774260 on card 0927987108636232, type 03, category 0001, DALYTRAN-SOURCE 'OPERATOR  ' and DALYTRAN-AMT -919.00; cardxref row 3 resolves that card to XREF-CUST-ID 000000020 and XREF-ACCT-ID 00000000020; acctdata row 19 is that account with ACCT-CURR-BAL 369.00, ACCT-CREDIT-LIMIT 3767.00, ACCT-EXPIRAION-DATE 2024-03-13 (the copybook's own misspelling, kept verbatim) and both cycle amounts at 0.00; and tcatbal row 19 is key 00000000020010001 - the SAME ACCOUNT AT A DIFFERENT TRANSACTION TYPE, seeded deliberately so that the key this case needs is genuinely absent while the dataset is not empty, and so that the create arm can be seen not to disturb the row that is there. CASCADE - ALL FOUR STAGES PASS. 1500-A-LOOKUP-XREF at :380-392 finds the card, so reason 100 is not set; the reason being still 0, :372-373 runs 1500-B-LOOKUP-ACCT, which finds the account, so reason 101 is not set; :407 finds ACCT-CREDIT-LIMIT >= WS-TEMP-BAL, the stored 00000037670{ read as 3767.00 against -919.00, so reason 102 is not set; and :414 finds ACCT-EXPIRAION-DATE >= DALYTRAN-ORIG-TS (1:10), 2024-03-13 against 2022-06-10 - a 10-byte reference modification of the 26-byte timestamp - so reason 103 is not set. Reason stays 0, so :211-212 posts and nothing is rejected. This program contains no EVALUATE at all, so gate G30 bears on its ordered nested-IF ladders rather than on WHEN arms, and two of those ladders are the point of this case: IF TCATBALF-STATUS = '00' OR '23' ... ELSE at :481-485, and IF WS-CREATE-TRANCAT-REC = 'Y' ... ELSE at :495-499. ARITHMETIC, re-derivable by hand from the raw zoned bytes without running anything. The overpunch convention in these fixtures is a positive final digit 0-9 as { A B C D E F G H I and a negative one as } J K L M N O P Q R, so DALYTRAN-AMT's stored 0000009190} is -919.00 and its final byte is a negative zero. COMPUTE WS-TEMP-BAL at :403-405 is ACCT-CURR-CYC-CREDIT - ACCT-CURR-CYC-DEBIT + DALYTRAN-AMT, that is 00000000000{ minus 00000000000{ plus 0000009190}, so 0.00 - 0.00 + (-919.00) = -919.00. The receiver is WS-TEMP-BAL PIC S9(09)V99 and the keyword ROUNDED appears zero times in this program, so the store truncates: scale exactly 2 with RoundingMode.DOWN, never HALF_UP and never HALF_EVEN (gates G23, G24). THE CREATE ARM. 2700-UPDATE-TCATBAL at :469-471 builds FD-TRAN-CAT-KEY from XREF-ACCT-ID, DALYTRAN-TYPE-CD and DALYTRAN-CAT-CD - 00000000020 then 03 then 0001, exactly 17 characters: 00000000020030001. Every one of tcatbal.txt's fifty keys is type 01 category 0001, so no type-03 key can be there; the READ at :474 therefore takes its INVALID KEY arm, the DISPLAY at :476-477 emits its three operands with no separator of its own - the literal 'TCATBAL record not found for key : ' whose trailing space is inside the literal, then the 17-character key image, then '.. Creating.' - and :478 moves 'Y' into WS-CREATE-TRANCAT-REC. The status ladder at :481-485 TOLERATES '23' alongside '00', so APPL-RESULT stays 0 and nothing abends: a not-found here is a normal, expected outcome rather than an error, and a status outside that pair is the boundary a different case owns (gate G47). :495-496 therefore performs 2700-A-CREATE-TCATBAL-REC, where :504 INITIALIZEs the record, :505-507 move the three key parts and :508 adds the amount to a balance INITIALIZE has just zeroed, so TRAN-CAT-BAL = 0.00 + (-919.00) = -919.00, stored as 0000009190}. FILLER, AND WHY THE TWO CATEGORY-BALANCE ROWS DISAGREE. A COBOL INITIALIZE with no REPLACING sets each named elementary item to its category default - zero for numeric, space for alphanumeric - and SKIPS FILLER, so the created record's FILLER X(22) is whatever the record area already held. The failed READ transferred nothing and this run posts a single record, so the area is still the one the run allocated, and an allocated area carries spaces. The created row's FILLER is therefore TWENTY-TWO SPACES, and the record is exactly 50 bytes with it (gates G19, G21); the SEEDED row at index 0 keeps the fixture's TWENTY-TWO ZEROS untouched, because 2700-A writes a new record and never rewrites that one. The asymmetry against case01 - whose rewrite arm at :527-528 preserves the fixture's zeros - is behaviour, not an inconsistency, which is also why the inputs reproduce the fixture bytes verbatim while this expectation does not. ROW POSITION IS PART OF THE ASSERTION. The created row is pinned at 0-based index 1, AT THE END of the dataset, because every relation is read back in physical-record order - the seed order followed by whatever the run appended. A create therefore appears after the seeded row where a rewrite would have replaced it in place, so the '23' arm is told from the '00' arm by row position before a single byte is compared. THE NEGATIVE-AMOUNT BRANCH. 2800-UPDATE-ACCOUNT-REC at :547 adds the amount to ACCT-CURR-BAL: 00000003690{ plus 0000009190}, so 369.00 + (-919.00) = -550.00, stored as 00000005500}. :548 then finds DALYTRAN-AMT >= 0 FALSE and takes the ELSE at :550-551, so the amount goes to ACCT-CURR-CYC-DEBIT: 0.00 + (-919.00) = -919.00, stored as 00000009190}, and ACCT-CURR-CYC-CREDIT is left at 0.00 as 00000000000{ - pinned precisely so that a translation adding to the wrong accumulator cannot pass. The REWRITE at :554 succeeds, so reason 109 is not stored. 2900-WRITE-TRANSACTION-FILE then adds the 350-byte TRAN-RECORD at :564. The posting order set at :440-442 - category balance, then account, then master - is what these three expectations preserve. PINNED CLOCK. TRAN-PROC-TS is the one wall-clock-derived value in this program: Z-GET-DB2-FORMAT-TIMESTAMP composes DB2-FORMAT-TS PIC X(26) and :438 moves it into TRAN-PROC-TS. It is pinned, never captured: the harness fixes the instant at 2022-07-19T23:12:34 - the analysed revision's own stamp, Ver CardDemo_v1.0-15-g27d6c6f-68 Date 2022-07-19 - and its zero nanosecond makes DB2-MIL 00, giving exactly 2022-07-19-23.12.34.000000, the same value case01 established. That is deliberately not the shape of DALYTRAN-ORIG-TS, which the fixture carries as 2022-06-10 19:27:53.000000 with a space before the time and colons inside it; and DALYTRAN-PROC-TS - 26 spaces on input - is not copied at all, because :425-436 names twelve receivers and that is not one of them. RETURN CODE AND MESSAGES. WS-REJECT-COUNT stays 0, so the IF at :229-231 never moves 4 into RETURN-CODE and the code is 0. Five DISPLAY lines are pinned in emission order, the create notice among them exactly where 2700 emits it - after the record has been read and validated, and before any write. The count lines are byte-exact including the single space before the colon at :227 and the TWO spaces before it at :228. CHANNELS. DALYREJS is opened unconditionally at :198 and nothing is rejected, so it appears on the writes channel as a 430-byte output holding zero rows - a positive assertion that it was created and never written to, which is what DISP=(NEW,CATLG,DELETE) in POSTTRAN.jcl catalogues. All five relations are pinned on the final-state channel, DALYTRAN and XREFFILE included, because a case reporting only the three mutated ones could not tell a run that left its inputs alone from one that quietly wrote to them. The cross-reference row is seeded at its true on-disk width of 36 bytes and widened to the copybook's 50 once, at seed time, by CARDXREF_FILLER_PAD_36_TO_50 (gate G16); nothing is padded at comparison time. POSTTRAN.jcl:23 is EXEC PGM=CBTRN02C with no PARM=, so there are no job parameters, and the unit is reached as a BATCH_JOB at step level with no JobLauncher and no HTTP in the path (gate G51). PROVENANCE. Every expected value here is STATICALLY DERIVED - by structured reading of the COBOL paragraphs cited above, cross-checked against the copybook byte layouts in app/cpy, the DD and PARM contract in app/jcl/POSTTRAN.jcl, and the real ASCII fixtures. It is NOT captured from, recorded against or replayed from any execution of the legacy COBOL: running these programs is empirically impossible in this environment - no z/OS or CICS runtime exists, the available compiler reports its indexed file handler disabled while this program declares four ORGANIZATION INDEXED files, no Language Environment CEE* services are present, and the IBM-supplied DFHAID, DFHBMSCA and DFHATTR copybooks are absent from the repository. Only the provenance of the expected values is substituted; the 20 cases per program, the field-for-field diffing and the diff-count-equals-zero gate all stand, and the substitution is escalated for explicit user confirmation as risk R-A rather than quietly absorbed. No user-specified rules govern this project - review_rules returns 'No user rules provided' - so this fixture is held instead to the enterprise best-practice substitutes: B1 exact derived values with no placeholder anywhere, the 100-byte description and both FILLER spans included; B3 the reference inputs under app/cbl, app/cpy, app/jcl and app/data read only and copied byte for byte; B5 behaviour preserved, the create arm's own outcome rather than one normalised against the rewrite arm; B7 the clock pinned rather than read; B8 explicit field-name-to-value pairs beside the record images, US-ASCII stated rather than inherited from the platform, and money at scale exactly 2 with RoundingMode.DOWN; B11 this derivation written out with the raw zoned bytes so a reviewer can re-check it against the copybooks by hand; and B12 this provenance stated plainly.",
   "unitKind": "BATCH_JOB",
   "inputs": {
     "DALYTRAN": {
       "fixture": "dailytran.txt",
-      "fromRow": 0,
+      "fromRow": 1,
       "rowCount": 1
     },
     "XREFFILE": {
       "fixture": "cardxref.txt",
-      "fromRow": 0,
+      "fromRow": 3,
       "rowCount": 1
     },
     "ACCTFILE": {
       "fixture": "acctdata.txt",
-      "fromRow": 6,
+      "fromRow": 19,
       "rowCount": 1
     },
     "TCATBALF": {
       "fixture": "tcatbal.txt",
-      "fromRow": 6,
+      "fromRow": 19,
       "rowCount": 1
     },
     "TRANFILE": {
@@ -30,36 +30,108 @@
       "copybook": "CVTRA05Y"
     }
   },
-  "expectedWrites": [
-    {
-      "dataset": "DALYREJS",
-      "rowIndex": 0,
-      "expectedBytes": "0000000000683580010001POS TERM  Purchase at Abshire-Lowe                                                                            0000005047G800000000Abshire-Lowe                                      North Enoshaven                                   72112     48594526128770652022-06-10 19:27:53.000000                                              0100INVALID CARD NUMBER FOUND                                                   "
-    }
-  ],
+  "jobParameters": {},
+  "expectedWrites": [],
   "expectedFinalState": [
     {
       "dataset": "DALYTRAN",
       "rowIndex": 0,
-      "expectedBytes": "0000000000683580010001POS TERM  Purchase at Abshire-Lowe                                                                            0000005047G800000000Abshire-Lowe                                      North Enoshaven                                   72112     48594526128770652022-06-10 19:27:53.000000                                              "
+      "fields": {
+        "DALYTRAN-ID": "0000000001774260",
+        "DALYTRAN-TYPE-CD": "03",
+        "DALYTRAN-CAT-CD": "0001",
+        "DALYTRAN-SOURCE": "OPERATOR  ",
+        "DALYTRAN-DESC": "Return item at Nitzsche, Nicolas and Lowe                                                           ",
+        "DALYTRAN-AMT": "-919.00",
+        "DALYTRAN-MERCHANT-ID": "800000000",
+        "DALYTRAN-MERCHANT-NAME": "Nitzsche, Nicolas and Lowe                        ",
+        "DALYTRAN-MERCHANT-CITY": "Fidelshire                                        ",
+        "DALYTRAN-MERCHANT-ZIP": "53378     ",
+        "DALYTRAN-CARD-NUM": "0927987108636232",
+        "DALYTRAN-ORIG-TS": "2022-06-10 19:27:53.000000",
+        "DALYTRAN-PROC-TS": "                          ",
+        "FILLER": "                    "
+      },
+      "expectedBytes": "0000000001774260030001OPERATOR  Return item at Nitzsche, Nicolas and Lowe                                                           0000009190}800000000Nitzsche, Nicolas and Lowe                        Fidelshire                                        53378     09279871086362322022-06-10 19:27:53.000000                                              "
     },
     {
       "dataset": "XREFFILE",
       "rowIndex": 0,
-      "expectedBytes": "050002445376574000000005000000000050              "
+      "fields": {
+        "XREF-CARD-NUM": "0927987108636232",
+        "XREF-CUST-ID": "000000020",
+        "XREF-ACCT-ID": "00000000020",
+        "FILLER": "              "
+      },
+      "expectedBytes": "092798710863623200000002000000000020              "
     },
     {
       "dataset": "ACCTFILE",
       "rowIndex": 0,
-      "expectedBytes": "00000000007Y00000001930{00000020650{00000002640{2012-10-122024-12-132024-12-1300000000000{00000000000{A000000000                                                                                                                                                                                            "
+      "fields": {
+        "ACCT-ID": "00000000020",
+        "ACCT-ACTIVE-STATUS": "Y",
+        "ACCT-CURR-BAL": "-550.00",
+        "ACCT-CREDIT-LIMIT": "3767.00",
+        "ACCT-CASH-CREDIT-LIMIT": "1040.00",
+        "ACCT-OPEN-DATE": "2014-02-27",
+        "ACCT-EXPIRAION-DATE": "2024-03-13",
+        "ACCT-REISSUE-DATE": "2024-03-13",
+        "ACCT-CURR-CYC-CREDIT": "0.00",
+        "ACCT-CURR-CYC-DEBIT": "-919.00",
+        "ACCT-ADDR-ZIP": "A000000000",
+        "ACCT-GROUP-ID": "          ",
+        "FILLER": "                                                                                                                                                                                  "
+      },
+      "expectedBytes": "00000000020Y00000005500}00000037670{00000010400{2014-02-272024-03-132024-03-1300000000000{00000009190}A000000000                                                                                                                                                                                            "
     },
     {
       "dataset": "TCATBALF",
       "rowIndex": 0,
-      "expectedBytes": "000000000070100010000000000{0000000000000000000000"
+      "fields": {
+        "TRANCAT-ACCT-ID": "00000000020",
+        "TRANCAT-TYPE-CD": "01",
+        "TRANCAT-CD": "0001",
+        "TRAN-CAT-BAL": "0.00",
+        "FILLER": "0000000000000000000000"
+      },
+      "expectedBytes": "000000000200100010000000000{0000000000000000000000"
+    },
+    {
+      "dataset": "TCATBALF",
+      "rowIndex": 1,
+      "fields": {
+        "TRANCAT-ACCT-ID": "00000000020",
+        "TRANCAT-TYPE-CD": "03",
+        "TRANCAT-CD": "0001",
+        "TRAN-CAT-BAL": "-919.00",
+        "FILLER": "                      "
+      },
+      "expectedBytes": "000000000200300010000009190}                      "
+    },
+    {
+      "dataset": "TRANFILE",
+      "rowIndex": 0,
+      "fields": {
+        "TRAN-ID": "0000000001774260",
+        "TRAN-TYPE-CD": "03",
+        "TRAN-CAT-CD": "0001",
+        "TRAN-SOURCE": "OPERATOR  ",
+        "TRAN-DESC": "Return item at Nitzsche, Nicolas and Lowe                                                           ",
+        "TRAN-AMT": "-919.00",
+        "TRAN-MERCHANT-ID": "800000000",
+        "TRAN-MERCHANT-NAME": "Nitzsche, Nicolas and Lowe                        ",
+        "TRAN-MERCHANT-CITY": "Fidelshire                                        ",
+        "TRAN-MERCHANT-ZIP": "53378     ",
+        "TRAN-CARD-NUM": "0927987108636232",
+        "TRAN-ORIG-TS": "2022-06-10 19:27:53.000000",
+        "TRAN-PROC-TS": "2022-07-19-23.12.34.000000",
+        "FILLER": "                    "
+      },
+      "expectedBytes": "0000000001774260030001OPERATOR  Return item at Nitzsche, Nicolas and Lowe                                                           0000009190}800000000Nitzsche, Nicolas and Lowe                        Fidelshire                                        53378     09279871086362322022-06-10 19:27:53.0000002022-07-19-23.12.34.000000                    "
     }
   ],
-  "expectedReturnCode": 4,
+  "expectedReturnCode": 0,
   "expectedMessages": [
     {
       "channel": "DISPLAY_LINE",
@@ -67,11 +139,15 @@
     },
     {
       "channel": "DISPLAY_LINE",
+      "text": "TCATBAL record not found for key : 00000000020030001.. Creating."
+    },
+    {
+      "channel": "DISPLAY_LINE",
       "text": "TRANSACTIONS PROCESSED :000000001"
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "TRANSACTIONS REJECTED  :000000001"
+      "text": "TRANSACTIONS REJECTED  :000000000"
     },
     {
       "channel": "DISPLAY_LINE",
@@ -88,7 +164,7 @@
     {
       "dataset": "DALYREJS",
       "channel": "WRITES",
-      "rowCount": 1,
+      "rowCount": 0,
       "recordLength": 430
     },
     {
@@ -112,13 +188,13 @@
     {
       "dataset": "TCATBALF",
       "channel": "FINAL_STATE",
-      "rowCount": 1,
+      "rowCount": 2,
       "recordLength": 50
     },
     {
       "dataset": "TRANFILE",
       "channel": "FINAL_STATE",
-      "rowCount": 0,
+      "rowCount": 1,
       "recordLength": 350
     }
   ]

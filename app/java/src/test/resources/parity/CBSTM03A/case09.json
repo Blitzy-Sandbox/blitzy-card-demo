@@ -1,23 +1,26 @@
 {
   "program": "CBSTM03A",
   "caseId": "case09",
-  "description": "ACCT-CURR-BAL is PIC S9(10)V99 and ST-CURR-BAL is PIC 9(9).99-, so MOVE at L484 truncates the HIGH-ORDER digit: 1234567890.12 is rendered '234567890.12 '. The ACCTFILE row is a real acctdata.txt row with only its balance span replaced, because no shipped row carries ten integer digits.",
+  "description": "The SELF-REFERENTIAL BACKWARD GO TO of 8500-READTRNX-READ and the CARD-BREAK logic it drives, pinned across THREE cards so that both of the paragraph's WS-TRCT write paths are observable in one run. THE MECHANISM IS A PARAGRAPH THAT BRANCHES TO ITS OWN LABEL: 8500-READTRNX-READ (app/cbl/CBSTM03A.CBL:L818-L847) ends in an EVALUATE whose WHEN '00' arm executes GO TO 8500-READTRNX-READ at L840 - the paragraph jumping back to its own entry - so the source carries no PERFORM UNTIL, no PERFORM VARYING and no loop keyword of any kind, and the iteration exists only as that branch. CBSTM03A is the ONLY one of the twenty-eight in-scope programs whose GO TOs are backward and loop-forming, which is why rule R7 and gate G32 require them restructured into explicit loop constructs WITH THE ITERATION ORDER ASSERTED IDENTICAL. Five of the program's fourteen executable GO TO statements are backward - L761, L780, L798 and L852 to 0000-START and L840 to 8500-READTRNX-READ - and this case is the assertion for the L840 one, the table-load loop, which is the only backward branch of the five that iterates over data rather than advancing a state machine. The restructured form is a DO/WHILE and not a WHILE, because the paragraph is entered with a record already in TRNX-RECORD: the body must run before the first read, or the first record is dropped. THE LOOP BODY, IN SOURCE ORDER, FIVE STEPS: (1) the card-break test at L819-L825 - IF WS-SAVE-CARD = TRNX-CARD-NUM then ADD 1 TO TR-CNT (L820), ELSE MOVE TR-CNT TO WS-TRCT (CR-CNT) (L822), ADD 1 TO CR-CNT (L823) and MOVE 1 TO TR-CNT (L824); (2) the store at L827-L829 - MOVE TRNX-CARD-NUM TO WS-CARD-NUM (CR-CNT), MOVE TRNX-ID TO WS-TRAN-NUM (CR-CNT, TR-CNT) and MOVE TRNX-REST TO WS-TRAN-REST (CR-CNT, TR-CNT); (3) the remember at L830 - MOVE TRNX-CARD-NUM TO WS-SAVE-CARD, which is what makes the next pass's comparison a break test rather than a constant; (4) the read at L832-L835 - MOVE 'TRNXFILE' TO WS-M03B-DD, SET M03B-READ TO TRUE, MOVE SPACES TO WS-M03B-FLDT and CALL 'CBSTM03B' USING WS-M03B-AREA, the sequential-read call site at L835; and (5) the dispatch at L837-L847. THE THREE EVALUATE WS-M03B-RC ARMS, IN SOURCE ORDER, WHICH GATE G30 REQUIRES PRESERVED: WHEN '00' (L838-L840) does MOVE WS-M03B-FLDT TO TRNX-RECORD and then the backward GO TO, so it iterates; WHEN '10' (L841-L842) does GO TO 8599-EXIT, so end-of-file is the loop's only normal exit and is NOT an error here; WHEN OTHER (L843-L846) DISPLAYs 'ERROR READING TRNXFILE' and 'RETURN CODE: ' WS-M03B-RC and then PERFORMs 9999-ABEND-PROGRAM. This case takes the first arm five times and the second arm once; WHEN OTHER is the subject of the guard-arm cases and is not reached here, which is exactly why expectedReturnCode is 0. THE SUBTLETY THIS CASE EXISTS TO PIN: WS-TRCT (CR-CNT) IS WRITTEN BY TWO DIFFERENT CODE PATHS. The in-loop write at L822 fires on every card break and records the count of the card just FINISHED; the write at 8599-EXIT:L850 - MOVE TR-CNT TO WS-TRCT (CR-CNT) - records the count of the FINAL card, which no break ever closes because the loop ends on end-of-file instead. A translation that kept only the in-loop write would lose the last card's count and render its statement with no transactions; one that kept only the exit write would lose every earlier card's count and render those statements empty. Practice B5 is decisive here: the duplication is preserved as the COBOL states it and is NOT consolidated into one tidy assignment, because the two writes address different slots at different moments and only their coexistence is correct. This case asserts BOTH: WS-TRCT (1) = 3 and WS-TRCT (2) = 1 come from the in-loop write at L822, and WS-TRCT (3) = 2 comes from the 8599-EXIT write at L850. THE PRIMING KEEPS THE FIRST RECORD OUT OF THE LOOP: 8100-TRNXFILE-OPEN (L730-L762) has already opened the extract at L734 and read its FIRST record at CALL SITE L746 before this paragraph is ever entered, then set MOVE WS-M03B-FLDT TO TRNX-RECORD (L756), MOVE TRNX-CARD-NUM TO WS-SAVE-CARD (L757), MOVE 1 TO CR-CNT (L758), MOVE 0 TO TR-CNT (L759), MOVE 'READTRNX' TO WS-FL-DD (L760) and GO TO 0000-START (L761), whose WHEN 'READTRNX' arm at L311-L312 selects this paragraph. Because WS-SAVE-CARD already holds the first record's card and TR-CNT is zero, the first pass takes the IF arm and lands that record at TR-CNT = 1. So of the seven TRNXFILE reads this run performs, ONE is at L746 and SIX are at L835; the first record is read outside the loop and stored inside it. THE ITERATION TRACE THIS SEED FIXES, RECORD BY RECORD - the ordered evidence gate G32 asks for. Reads are named by call site, and the slot notation is (CR-CNT, TR-CNT), 1-based as COBOL subscripts are. L746 returns record 1 (card 0923877193247330, TRAN000000000001) and priming sets WS-SAVE-CARD to 0923877193247330, CR-CNT 1, TR-CNT 0. PASS 1: equal, TR-CNT 1, store (1,1) TRAN000000000001; L835 returns record 2 with '00', L840 iterates. PASS 2: equal, TR-CNT 2, store (1,2) TRAN000000000002; L835 returns record 3 with '00', L840 iterates. PASS 3: equal, TR-CNT 3, store (1,3) TRAN000000000003; L835 returns record 4 with '00', L840 iterates. PASS 4: 0923877193247330 is NOT 0927987108636232, so the ELSE fires - WS-TRCT (1) = 3 is written at L822, CR-CNT becomes 2, TR-CNT restarts at 1 - store (2,1) TRAN000000000004; L835 returns record 5 with '00', L840 iterates. PASS 5: 0927987108636232 is NOT 0982496213629795, so the ELSE fires again - WS-TRCT (2) = 1 is written at L822, CR-CNT becomes 3, TR-CNT restarts at 1 - store (3,1) TRAN000000000005; L835 returns record 6 with '00', L840 iterates. PASS 6: equal, TR-CNT 2, store (3,2) TRAN000000000006; L835 returns '10', so WHEN '10' takes GO TO 8599-EXIT at L842. 8599-EXIT then writes WS-TRCT (3) = 2 at L850, sets WS-FL-DD to 'XREFFILE' at L851 and returns to the dispatch at L852. SIX passes, SEVEN reads, FIVE firings of the backward GO TO at L840, TWO firings of the in-loop write at L822, ONE firing of the exit write at L850, and CR-CNT 3 with WS-TRCT holding 3, 1 and 2. WHY THREE CARDS AND WHY THREE DIFFERENT COUNTS: every other case in this folder loads at most TWO cards, so this is the only one in which the in-loop write at L822 fires more than once, and the only one whose cross-reference names EVERY card the table load stored. The counts are deliberately unequal - 3, 1 and 2 - so that a count attributed to the wrong slot is visible: with equal counts a table whose second and third rows were transposed would render three identical-looking statements and the defect would pass. They are also ordered 3, 1, 2 rather than ascending, so an implementation that sorted or accumulated instead of grouping is caught. SUBSCRIPTS ARE 1-BASED IN COBOL AND 0-BASED IN JAVA (gate G33): WS-TRNX-TABLE is 05 WS-CARD-TBL OCCURS 51 TIMES holding WS-CARD-NUM PIC X(16) and 10 WS-TRAN-TBL OCCURS 10 TIMES holding WS-TRAN-NUM PIC X(16) and WS-TRAN-REST PIC X(318) (L225-L230), and WS-TRN-TBL-CNTR is 05 WS-TRN-TBL-CTR OCCURS 51 TIMES holding WS-TRCT PIC S9(4) COMP (L231-L233). COBOL slot (1,1) is Java [0][0], (1,3) is [0][2], (2,1) is [1][0] and (3,2) is [2][1]; WS-TRCT (1) is Java [0]. Both tables are cleared once by INITIALIZE WS-TRNX-TABLE WS-TRN-TBL-CNTR at L294, before the dispatch is entered, and never again - so a slot this run does not write stays as INITIALIZE left it. THE READ-BACK EXERCISES BOTH TERMINATION CONDITIONS OF THE OUTER SEARCH: 4000-TRNXFILE-GET's PERFORM VARYING CR-JMP FROM 1 BY 1 UNTIL CR-JMP > CR-CNT OR (WS-CARD-NUM (CR-JMP) > XREF-CARD-NUM) at L417-L419 stops on the SECOND condition for the first two cross-reference records - the table's next card sorts above the one being searched for - and on the FIRST condition for the third, where CR-JMP reaches 4 with CR-CNT 3. The inner PERFORM VARYING TR-JMP FROM 1 BY 1 UNTIL (TR-JMP > WS-TRCT (CR-JMP)) at L422-L423 is what turns each stored count back into transaction lines, so the three counts this case pins are read back through the same subscript arithmetic that stored them. UNIT AND INVOCATION: statement.StatementGenerationJobA as a BATCH_JOB, driven at step/Tasklet level with statement.StatementGenerationJobB constructor-injected as its data-access collaborator - no JobLauncher, no job repository and no HTTP anywhere in the path (gate G51). CBSTM03A declares only its two outputs (SELECT STMT-FILE ASSIGN TO STMTFILE and SELECT HTML-FILE ASSIGN TO HTMLFILE, L39-L40); all four inputs belong to CBSTM03B, which is a called subprogram with no EXEC PGM= anywhere and therefore a @Component rather than a job (gate G12). jobParameters is EMPTY because no step of app/jcl/CREASTMT.JCL declares a PARM - the only PARM in this estate is INTCALC.jcl's PARM='2022071800' - and this program runs as STEP040, EXEC PGM=CBSTM03A,COND=(0,NE) at CREASTMT.JCL:L79. THE SEED. TRNXFILE IS INLINE BECAUSE THERE IS NO TENTH FIXTURE: app/data/ASCII holds exactly nine .txt files and none of them is a statement extract, so the six rows are composed here from app/cpy/COSTM01.CPY at EXACTLY 350 bytes each - TRNX-CARD-NUM X(16) plus TRNX-ID X(16) as the 32-byte composite key that DELDEF01's IDCAMS corroborates with KEYS(32 0) at CREASTMT.JCL:L30 and RECORDSIZE(350 350) at L32, then TRNX-REST as TRNX-TYPE-CD X(02) + TRNX-CAT-CD 9(04) + TRNX-SOURCE X(10) + TRNX-DESC X(100) + TRNX-AMT S9(09)V99 + TRNX-MERCHANT-ID 9(09) + TRNX-MERCHANT-NAME X(50) + TRNX-MERCHANT-CITY X(50) + TRNX-MERCHANT-ZIP X(10) + TRNX-ORIG-TS X(26) + TRNX-PROC-TS X(26) = 298, plus a trailing FILLER X(20) emitted as twenty spaces = 318. The FILLER is emitted rather than omitted, which gate G21 requires and which the total width proves: drop it and every row is 330 and the 32-byte key of the following record shifts. THE ROWS ARE SORTED ASCENDING BY TRNX-CARD-NUM THEN TRNX-ID AND EACH CARD'S ROWS ARE CONTIGUOUS: 0923877193247330 with TRAN000000000001, TRAN000000000002 and TRAN000000000003, then 0927987108636232 with TRAN000000000004, then 0982496213629795 with TRAN000000000005 and TRAN000000000006. That is the order STEP010's SORT FIELDS=(263,16,CH,A,1,16,CH,A) with OUTREC FIELDS=(1:263,16,17:1,262,279:279,50) at L53-L54 produces, and the card-break logic DEPENDS on it: a card whose rows were split by an intervening card would break twice, occupy two slots and have its first group's count overwritten in neither - the case would then encode a misreading of the loop rather than the loop. XREFFILE IS ROWS 2, 3 AND 4 (zero-based) OF app/data/ASCII/cardxref.txt VERBATIM, which are the same three cards in the same ascending order: 0923877193247330 with XREF-CUST-ID 000000002 and XREF-ACCT-ID 00000000002, 0927987108636232 with 000000020 and 00000000020, and 0982496213629795 with 000000012 and 00000000012. The rows stay 36 BYTES here: app/cpy/CVACT03Y.cpy declares CARD-XREF-RECORD as XREF-CARD-NUM X(16) + XREF-CUST-ID 9(09) + XREF-ACCT-ID 9(11) + FILLER X(14) = 50, the fixture omits that FILLER, and parity.ParityCase.Normalisation is the SOLE owner of the 14-space pad - applied once, at seed time, through the declared CARDXREF_FILLER_PAD_36_TO_50 - so the fixture is never edited and the pad is never double-applied (gate G16). ACCTFILE and CUSTFILE are acctdata.txt (50 x 300) and custdata.txt (50 x 500) whole, and because both keyed reads take their keys from the cross-reference rather than from a fixture's first row - 2000-CUSTFILE-GET at L368-L390 on the 9-byte XREF-CUST-ID and 3000-ACCTFILE-GET at L392-L414 on the 11-byte XREF-ACCT-ID, in that order - the three statements are for CUSTOMER 000000002 with ACCOUNT 00000000002 (Enrico April Rosenbaum, FICO 268, ACCT-CURR-BAL rendered 000000158.00), CUSTOMER 000000020 with ACCOUNT 00000000020 (Carter Oren Veum, FICO 493, balance 000000369.00) and CUSTOMER 000000012 with ACCOUNT 00000000012 (Maci Alan Robel, FICO 688, balance 000000176.00). The customer is read through CUSTREC, whose date of birth is CUST-DOB-YYYYMMDD and never CVCUS01Y's hyphenated CUST-DOB-YYYY-MM-DD (requirement I1); the two layouts are otherwise near-identical, which is precisely why the field name is the thing that distinguishes them. Customer 000000002's CUST-ADDR-LINE-3 is 'West Bernita', so ST-ADD3 carries 'West IN USA 22770': STRING CUST-ADDR-LINE-3 DELIMITED BY ' ' at L472 stops at the INTERNAL space, and that defect is preserved rather than corrected (practice B5). COUNTS DERIVED MECHANICALLY, NOT GUESSED (practice B11). Each cross-reference record composes one statement, and each statement writes 19 + N STMTFILE records and 64 + 11N HTMLFILE records, where N is WS-TRCT for that card. STMTFILE is 1 ST-LINE0 (L460), the fifteen writes at L488-L502 in which ST-LINE5 and ST-LINE12 each appear twice and both repeats are preserved, N ST-LINE14 records (L679), then ST-LINE12, ST-LINE14A and ST-LINE15 (L435-L437) - so 19 + N. HTMLFILE is 22 records from 5100-WRITE-HTML-HEADER (L509-L552), 34 from 5200-WRITE-HTML-NMADBS (L568-L669), 11 per transaction (L682-L721) and the 8-record footer (L440-L454) - so 64 + 11N. With N = 3, 1 and 2 that is 22 + 20 + 21 = 63 STMTFILE records and 97 + 75 + 86 = 258 HTMLFILE records, declared in write order at contiguous zero-based row indices 0 through 62 and 0 through 257. The three statements occupy STMTFILE 0-21, 22-41 and 42-62 and HTMLFILE 0-96, 97-171 and 172-257, and expectedDatasets pins both totals and both widths on the WRITES channel. Those counts ARE the WS-TRCT assertion: 63 and 258 are only reachable if the load stored 3, 1 and 2, and any other distribution moves a boundary. expectedFinalState is deliberately empty - CREASTMT.JCL:L87-L96 declares both outputs DISP=(NEW,CATLG,DELETE) and the retained-state channel is the subject of the cases that pin it, not of this one. WIDTHS COME FROM TWO SOURCES EACH (gates G19, G20). STMTFILE is 80 bytes, from 01 FD-STMTFILE-REC PIC X(80) at CBSTM03A.CBL:L45 and from CREASTMT.JCL LINE 89, DCB=(LRECL=80,BLKSIZE=8000,RECFM=FB), under the STMTFILE DD at line 87. LINE 90 OF THAT JCL IS GENUINELY CORRUPTED - verbatim '//         SPACE=(CYL,(1,1),RLSE), 00,RECFM=FB), ATA.VSAM.KSDS', a text-overlay artefact splicing fragments of other lines - and its ' 00,RECFM=FB)' remnant sits directly beneath STMTFILE where it is easily misread as LRECL=100. Line 89 is authoritative, and the JCL is left exactly as it stands: it is the parity oracle, so the hazard is recorded and worked around here rather than corrected there (practice B4). HTMLFILE is 100 bytes, from 01 FD-HTMLFILE-REC PIC X(100) at L47 and from line 94, DCB=(LRECL=100,BLKSIZE=800,RECFM=FB), under the HTMLFILE DD at line 92, which supersedes STEP030's pre-delete LRECL=80,BLKSIZE=3200 at line 69 because the step that CREATES the dataset wins (risk R-G). FIELD GRANULARITY: 01 FD-STMTFILE-REC and 01 FD-HTMLFILE-REC are single elementary items, so each dataset has exactly one addressable span - offset 0 length 80 and offset 0 length 100 - and an expectation naming that span and an expectation on the whole image are the same assertion. Every record here is therefore pinned as a full byte image, which additionally fixes the total width and so proves that every VALUE SPACES and FILLER span was emitted (gates G19, G21). parity.FieldDiffer compares in BOTH directions, so a record this case does not pin is itself a difference - which is what makes 321 pinned images the whole of this run's write order rather than a sample of it. ARITHMETIC AT SCALE 2, TRUNCATING: WS-TOTAL-AMT PIC S9(9)V99 COMP-3 (L64-L65) and WS-TRN-AMT PIC S9(9)V99 DISPLAY (L68) are both scale 2, MOVE ZERO TO WS-TOTAL-AMT at L325 is INSIDE 1000-MAINLINE's loop so each Total EXP is that customer's own total and not a running sum, and ADD TRNX-AMT TO WS-TOTAL-AMT at L429 is the only arithmetic on this path. Every amount is a BigDecimal at scale 2 with RoundingMode.DOWN - never HALF_UP, never HALF_EVEN, never double and never float - because the keyword ROUNDED appears ZERO times in all 28 programs, so COBOL truncates on store. The six seeded TRNX-AMT spans are 11-byte zoned S9(09)V99 images closing on a positive overpunch, and not one persisted numeric in this estate is COMP-3: 0000000111A is 11.11, 0000000222B is 22.22, 0000000333C is 33.33, 0000000444D is 44.44, 0000000555E is 55.55 and 0000000666F is 66.66. ST-TRANAMT PIC Z(9).99- (L137) renders them '       11.11 ', '       22.22 ', '       33.33 ', '       44.44 ', '       55.55 ' and '       66.66 ' in the read order the table preserved, and ST-TOTAL-TRAMT (L142) renders 66.66, 44.44 and 122.21 - three DISTINCT totals, one per statement, so a transaction counted against the wrong card changes a total as well as a line count. Six distinct amounts rather than six equal ones is deliberate for the same reason. MESSAGES ARE ORDERED EVIDENCE TOO: the nine DISPLAY_LINE expectations are compared position by position and byte by byte, and they are the TIOT walk and nothing else - the 36-character job and step line at L270, the 20-character 'DD Names from TIOT: ' header at L275, one 23-character ' -- valid UCB' entry from the in-loop DISPLAY at L279 for each of STEP040's six dataset DDs in JCL declaration order at L83-L96 (STEPLIB, SYSPRINT and SYSOUT at L80-L82 are not data allocations), and the post-loop entry at L290, whose ' -- null  UCB' is byte-different from the in-loop ' --  null UCB' at L281 and whose TIOCDDNM X(08) is blank. The walk runs before the dispatch is entered at all - it precedes OPEN OUTPUT STMT-FILE HTML-FILE at L293 and INITIALIZE WS-TRNX-TABLE WS-TRN-TBL-CNTR at L294 - so the nine lines also pin the boundary between the control-block preamble and the table load this case is about. RETURN CODE: no guard arm is taken. Every open and close reports '00', which the IF WS-M03B-RC = '00' OR '04' tests at L736, L748, L771, L789, L807, L862, L879, L895 and L911 accept; the table-load EVALUATE at L837-L847 takes WHEN '00' five times and WHEN '10' once; the cross-reference EVALUATE at L353-L362 takes WHEN '00' three times and then WHEN '10', which sets END-OF-FILE to 'Y' and ends 1000-MAINLINE's PERFORM UNTIL; the keyed reads at L379-L386 and L403-L410 take WHEN '00' three times each. 9999-ABEND-PROGRAM (L921-L923) is never performed, no CALL 'CEE3ABD' is issued, and expectedReturnCode is 0. DETERMINISM (practice B7): nothing here is read from a clock. The program composes no timestamp of its own, and the two X(26) spans TRNX-ORIG-TS and TRNX-PROC-TS are seed bytes carrying the fixed 2022-07-18 12:00:00.000000 literal the shipped transaction data uses, never a 'now'. No value depends on the host, the locale, the file system or an environment variable, so re-running the case yields the same six passes, the same seven reads and the same 321 records in the same order. Bytes are US-ASCII throughout, matching app/data/ASCII, and never a platform default (practice B8). GOVERNING PRACTICES: review_rules reports that no user rules were provided for this project, so no project rule governs this fixture and none is invented; the enterprise best-practice substitutes B1 through B12 bind instead, and the ones this case leans on are named at the point they apply. PROVENANCE (practice B12): every expected value here is STATICALLY DERIVED - by structured reading of the CBSTM03A paragraphs named above and of CBSTM03B's LK-M03B-AREA linkage contract, cross-checked against the COSTM01, CVACT03Y, CVACT01Y and CUSTREC byte layouts, the CREASTMT.JCL DD, DCB, PARM and COND contracts, and the real ASCII fixtures. It was never captured from, recorded against or replayed from any execution of the legacy COBOL, which is empirically impossible in this environment: there is no z/OS or CICS runtime, the available compiler reports its indexed file handler disabled, it refuses a PROCEDURE DIVISION USING under -x so CBSTM03B cannot be linked, no Language Environment CEE* services exist, and app/cpy/CUSTREC.cpy carries literal TAB characters that break parsing outright. The iteration order asserted here is therefore derived from the source and then held by this case; it is not a recording of a run that cannot be made.",
   "unitKind": "BATCH_JOB",
   "inputs": {
     "TRNXFILE": {
       "rows": [
-        "0500024453765740TRAN000000000001010001POS TERM  Truncation witness                                                                                  0000000010{000000001Blick-Rippin                                      Port Renayfurt                                    60176     2022-07-18 12:00:00.0000002022-07-18 12:00:00.000000                    "
+        "0923877193247330TRAN000000000001010001POS TERM  Card one of three, first transaction                                                                0000000111A000000001Blick-Rippin                                      Port Renayfurt                                    60176     2022-07-18 12:00:00.0000002022-07-18 12:00:00.000000                    ",
+        "0923877193247330TRAN000000000002010001POS TERM  Card one of three, second transaction                                                               0000000222B000000001Blick-Rippin                                      Port Renayfurt                                    60176     2022-07-18 12:00:00.0000002022-07-18 12:00:00.000000                    ",
+        "0923877193247330TRAN000000000003010001POS TERM  Card one of three, third transaction                                                                0000000333C000000001Blick-Rippin                                      Port Renayfurt                                    60176     2022-07-18 12:00:00.0000002022-07-18 12:00:00.000000                    ",
+        "0927987108636232TRAN000000000004010001POS TERM  Card two of three, only transaction                                                                 0000000444D000000001Blick-Rippin                                      Port Renayfurt                                    60176     2022-07-18 12:00:00.0000002022-07-18 12:00:00.000000                    ",
+        "0982496213629795TRAN000000000005010001POS TERM  Card three of three, first transaction                                                              0000000555E000000001Blick-Rippin                                      Port Renayfurt                                    60176     2022-07-18 12:00:00.0000002022-07-18 12:00:00.000000                    ",
+        "0982496213629795TRAN000000000006010001POS TERM  Card three of three, second transaction                                                             0000000666F000000001Blick-Rippin                                      Port Renayfurt                                    60176     2022-07-18 12:00:00.0000002022-07-18 12:00:00.000000                    "
       ]
     },
     "XREFFILE": {
       "fixture": "cardxref.txt",
-      "fromRow": 0,
-      "rowCount": 1
+      "fromRow": 2,
+      "rowCount": 3
     },
     "ACCTFILE": {
-      "rows": [
-        "00000000050Y12345678901B00000061690{00000045870{2011-04-222023-03-092023-03-0900000000000{00000000000{A000000000                                                                                                                                                                                            "
-      ]
+      "fixture": "acctdata.txt"
     },
     "CUSTFILE": {
       "fixture": "custdata.txt"
@@ -35,22 +38,22 @@
     {
       "dataset": "STMTFILE",
       "rowIndex": 1,
-      "expectedBytes": "Aniya Alba Von                                                                  "
+      "expectedBytes": "Enrico April Rosenbaum                                                          "
     },
     {
       "dataset": "STMTFILE",
       "rowIndex": 2,
-      "expectedBytes": "1588 Nienow Cape                                                                "
+      "expectedBytes": "4917 Myrna Flats                                                                "
     },
     {
       "dataset": "STMTFILE",
       "rowIndex": 3,
-      "expectedBytes": "Suite 187                                                                       "
+      "expectedBytes": "Apt. 453                                                                        "
     },
     {
       "dataset": "STMTFILE",
       "rowIndex": 4,
-      "expectedBytes": "New OR USA 04257                                                                "
+      "expectedBytes": "West IN USA 22770                                                               "
     },
     {
       "dataset": "STMTFILE",
@@ -70,17 +73,17 @@
     {
       "dataset": "STMTFILE",
       "rowIndex": 8,
-      "expectedBytes": "Account ID         :00000000050                                                 "
+      "expectedBytes": "Account ID         :00000000002                                                 "
     },
     {
       "dataset": "STMTFILE",
       "rowIndex": 9,
-      "expectedBytes": "Current Balance    :234567890.12                                                "
+      "expectedBytes": "Current Balance    :000000158.00                                                "
     },
     {
       "dataset": "STMTFILE",
       "rowIndex": 10,
-      "expectedBytes": "FICO Score         :623                                                         "
+      "expectedBytes": "FICO Score         :268                                                         "
     },
     {
       "dataset": "STMTFILE",
@@ -110,21 +113,236 @@
     {
       "dataset": "STMTFILE",
       "rowIndex": 16,
-      "expectedBytes": "TRAN000000000001 Truncation witness                               $        1.00 "
+      "expectedBytes": "TRAN000000000001 Card one of three, first transaction             $       11.11 "
     },
     {
       "dataset": "STMTFILE",
       "rowIndex": 17,
-      "expectedBytes": "--------------------------------------------------------------------------------"
+      "expectedBytes": "TRAN000000000002 Card one of three, second transaction            $       22.22 "
     },
     {
       "dataset": "STMTFILE",
       "rowIndex": 18,
-      "expectedBytes": "Total EXP:                                                        $        1.00 "
+      "expectedBytes": "TRAN000000000003 Card one of three, third transaction             $       33.33 "
     },
     {
       "dataset": "STMTFILE",
       "rowIndex": 19,
+      "expectedBytes": "--------------------------------------------------------------------------------"
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 20,
+      "expectedBytes": "Total EXP:                                                        $       66.66 "
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 21,
+      "expectedBytes": "********************************END OF STATEMENT********************************"
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 22,
+      "expectedBytes": "*******************************START OF STATEMENT*******************************"
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 23,
+      "expectedBytes": "Carter Oren Veum                                                                "
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 24,
+      "expectedBytes": "5845 Allison Valleys                                                            "
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 25,
+      "expectedBytes": "Suite 934                                                                       "
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 26,
+      "expectedBytes": "Mitchellmouth MH USA 72362                                                      "
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 27,
+      "expectedBytes": "--------------------------------------------------------------------------------"
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 28,
+      "expectedBytes": "                                 Basic Details                                  "
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 29,
+      "expectedBytes": "--------------------------------------------------------------------------------"
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 30,
+      "expectedBytes": "Account ID         :00000000020                                                 "
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 31,
+      "expectedBytes": "Current Balance    :000000369.00                                                "
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 32,
+      "expectedBytes": "FICO Score         :493                                                         "
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 33,
+      "expectedBytes": "--------------------------------------------------------------------------------"
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 34,
+      "expectedBytes": "                              TRANSACTION SUMMARY                               "
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 35,
+      "expectedBytes": "--------------------------------------------------------------------------------"
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 36,
+      "expectedBytes": "Tran ID         Tran Details                                         Tran Amount"
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 37,
+      "expectedBytes": "--------------------------------------------------------------------------------"
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 38,
+      "expectedBytes": "TRAN000000000004 Card two of three, only transaction              $       44.44 "
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 39,
+      "expectedBytes": "--------------------------------------------------------------------------------"
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 40,
+      "expectedBytes": "Total EXP:                                                        $       44.44 "
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 41,
+      "expectedBytes": "********************************END OF STATEMENT********************************"
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 42,
+      "expectedBytes": "*******************************START OF STATEMENT*******************************"
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 43,
+      "expectedBytes": "Maci Alan Robel                                                                 "
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 44,
+      "expectedBytes": "80501 Isac Cliffs                                                               "
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 45,
+      "expectedBytes": "Suite 623                                                                       "
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 46,
+      "expectedBytes": "Predovicton MN USA 78861                                                        "
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 47,
+      "expectedBytes": "--------------------------------------------------------------------------------"
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 48,
+      "expectedBytes": "                                 Basic Details                                  "
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 49,
+      "expectedBytes": "--------------------------------------------------------------------------------"
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 50,
+      "expectedBytes": "Account ID         :00000000012                                                 "
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 51,
+      "expectedBytes": "Current Balance    :000000176.00                                                "
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 52,
+      "expectedBytes": "FICO Score         :688                                                         "
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 53,
+      "expectedBytes": "--------------------------------------------------------------------------------"
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 54,
+      "expectedBytes": "                              TRANSACTION SUMMARY                               "
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 55,
+      "expectedBytes": "--------------------------------------------------------------------------------"
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 56,
+      "expectedBytes": "Tran ID         Tran Details                                         Tran Amount"
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 57,
+      "expectedBytes": "--------------------------------------------------------------------------------"
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 58,
+      "expectedBytes": "TRAN000000000005 Card three of three, first transaction           $       55.55 "
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 59,
+      "expectedBytes": "TRAN000000000006 Card three of three, second transaction          $       66.66 "
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 60,
+      "expectedBytes": "--------------------------------------------------------------------------------"
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 61,
+      "expectedBytes": "Total EXP:                                                        $      122.21 "
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 62,
       "expectedBytes": "********************************END OF STATEMENT********************************"
     },
     {
@@ -180,7 +398,7 @@
     {
       "dataset": "HTMLFILE",
       "rowIndex": 10,
-      "expectedBytes": "<h3>Statement for Account Number: 00000000050         </h3>                                         "
+      "expectedBytes": "<h3>Statement for Account Number: 00000000002         </h3>                                         "
     },
     {
       "dataset": "HTMLFILE",
@@ -240,22 +458,22 @@
     {
       "dataset": "HTMLFILE",
       "rowIndex": 22,
-      "expectedBytes": "<p style=\"font-size:16px\">Aniya Alba Von  </p>                                                      "
+      "expectedBytes": "<p style=\"font-size:16px\">Enrico April Rosenbaum  </p>                                              "
     },
     {
       "dataset": "HTMLFILE",
       "rowIndex": 23,
-      "expectedBytes": "<p>1588 Nienow Cape  </p>                                                                           "
+      "expectedBytes": "<p>4917 Myrna Flats  </p>                                                                           "
     },
     {
       "dataset": "HTMLFILE",
       "rowIndex": 24,
-      "expectedBytes": "<p>Suite 187  </p>                                                                                  "
+      "expectedBytes": "<p>Apt. 453  </p>                                                                                   "
     },
     {
       "dataset": "HTMLFILE",
       "rowIndex": 25,
-      "expectedBytes": "<p>New OR USA 04257  </p>                                                                           "
+      "expectedBytes": "<p>West IN USA 22770  </p>                                                                          "
     },
     {
       "dataset": "HTMLFILE",
@@ -305,17 +523,17 @@
     {
       "dataset": "HTMLFILE",
       "rowIndex": 35,
-      "expectedBytes": "<p>Account ID         : 00000000050         </p>                                                    "
+      "expectedBytes": "<p>Account ID         : 00000000002         </p>                                                    "
     },
     {
       "dataset": "HTMLFILE",
       "rowIndex": 36,
-      "expectedBytes": "<p>Current Balance    : 234567890.12 </p>                                                           "
+      "expectedBytes": "<p>Current Balance    : 000000158.00 </p>                                                           "
     },
     {
       "dataset": "HTMLFILE",
       "rowIndex": 37,
-      "expectedBytes": "<p>FICO Score         : 623                 </p>                                                    "
+      "expectedBytes": "<p>FICO Score         : 268                 </p>                                                    "
     },
     {
       "dataset": "HTMLFILE",
@@ -435,7 +653,7 @@
     {
       "dataset": "HTMLFILE",
       "rowIndex": 61,
-      "expectedBytes": "<p>Truncation witness                               </p>                                            "
+      "expectedBytes": "<p>Card one of three, first transaction             </p>                                            "
     },
     {
       "dataset": "HTMLFILE",
@@ -450,7 +668,7 @@
     {
       "dataset": "HTMLFILE",
       "rowIndex": 64,
-      "expectedBytes": "<p>        1.00 </p>                                                                                "
+      "expectedBytes": "<p>       11.11 </p>                                                                                "
     },
     {
       "dataset": "HTMLFILE",
@@ -470,12 +688,12 @@
     {
       "dataset": "HTMLFILE",
       "rowIndex": 68,
-      "expectedBytes": "<td colspan=\"3\" style=\"padding:0px 5px;background-color:#1d1d96b3;\">                                "
+      "expectedBytes": "<td style=\"width:25%; padding:0px 5px; background-color:#f2f2f2; text-align:left;\">                 "
     },
     {
       "dataset": "HTMLFILE",
       "rowIndex": 69,
-      "expectedBytes": "<h3>End of Statement</h3>                                                                           "
+      "expectedBytes": "<p>TRAN000000000002</p>                                                                             "
     },
     {
       "dataset": "HTMLFILE",
@@ -485,21 +703,936 @@
     {
       "dataset": "HTMLFILE",
       "rowIndex": 71,
-      "expectedBytes": "</tr>                                                                                               "
+      "expectedBytes": "<td style=\"width:55%; padding:0px 5px; background-color:#f2f2f2; text-align:left;\">                 "
     },
     {
       "dataset": "HTMLFILE",
       "rowIndex": 72,
-      "expectedBytes": "</table>                                                                                            "
+      "expectedBytes": "<p>Card one of three, second transaction            </p>                                            "
     },
     {
       "dataset": "HTMLFILE",
       "rowIndex": 73,
-      "expectedBytes": "</body>                                                                                             "
+      "expectedBytes": "</td>                                                                                               "
     },
     {
       "dataset": "HTMLFILE",
       "rowIndex": 74,
+      "expectedBytes": "<td style=\"width:20%; padding:0px 5px; background-color:#f2f2f2; text-align:right;\">                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 75,
+      "expectedBytes": "<p>       22.22 </p>                                                                                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 76,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 77,
+      "expectedBytes": "</tr>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 78,
+      "expectedBytes": "<tr>                                                                                                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 79,
+      "expectedBytes": "<td style=\"width:25%; padding:0px 5px; background-color:#f2f2f2; text-align:left;\">                 "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 80,
+      "expectedBytes": "<p>TRAN000000000003</p>                                                                             "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 81,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 82,
+      "expectedBytes": "<td style=\"width:55%; padding:0px 5px; background-color:#f2f2f2; text-align:left;\">                 "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 83,
+      "expectedBytes": "<p>Card one of three, third transaction             </p>                                            "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 84,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 85,
+      "expectedBytes": "<td style=\"width:20%; padding:0px 5px; background-color:#f2f2f2; text-align:right;\">                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 86,
+      "expectedBytes": "<p>       33.33 </p>                                                                                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 87,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 88,
+      "expectedBytes": "</tr>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 89,
+      "expectedBytes": "<tr>                                                                                                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 90,
+      "expectedBytes": "<td colspan=\"3\" style=\"padding:0px 5px;background-color:#1d1d96b3;\">                                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 91,
+      "expectedBytes": "<h3>End of Statement</h3>                                                                           "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 92,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 93,
+      "expectedBytes": "</tr>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 94,
+      "expectedBytes": "</table>                                                                                            "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 95,
+      "expectedBytes": "</body>                                                                                             "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 96,
+      "expectedBytes": "</html>                                                                                             "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 97,
+      "expectedBytes": "<!DOCTYPE html>                                                                                     "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 98,
+      "expectedBytes": "<html lang=\"en\">                                                                                    "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 99,
+      "expectedBytes": "<head>                                                                                              "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 100,
+      "expectedBytes": "<meta charset=\"utf-8\">                                                                              "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 101,
+      "expectedBytes": "<title>HTML Table Layout</title>                                                                    "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 102,
+      "expectedBytes": "</head>                                                                                             "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 103,
+      "expectedBytes": "<body style=\"margin:0px;\">                                                                          "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 104,
+      "expectedBytes": "<table  align=\"center\" frame=\"box\" style=\"width:70%; font:12px Segoe UI,sans-serif;\">               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 105,
+      "expectedBytes": "<tr>                                                                                                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 106,
+      "expectedBytes": "<td colspan=\"3\" style=\"padding:0px 5px;background-color:#1d1d96b3;\">                                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 107,
+      "expectedBytes": "<h3>Statement for Account Number: 00000000020         </h3>                                         "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 108,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 109,
+      "expectedBytes": "</tr>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 110,
+      "expectedBytes": "<tr>                                                                                                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 111,
+      "expectedBytes": "<td colspan=\"3\" style=\"padding:0px 5px;background-color:#FFAF33;\">                                  "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 112,
+      "expectedBytes": "<p style=\"font-size:16px\">Bank of XYZ</p>                                                           "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 113,
+      "expectedBytes": "<p>410 Terry Ave N</p>                                                                              "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 114,
+      "expectedBytes": "<p>Seattle WA 99999</p>                                                                             "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 115,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 116,
+      "expectedBytes": "</tr>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 117,
+      "expectedBytes": "<tr>                                                                                                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 118,
+      "expectedBytes": "<td colspan=\"3\" style=\"padding:0px 5px;background-color:#f2f2f2;\">                                  "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 119,
+      "expectedBytes": "<p style=\"font-size:16px\">Carter Oren Veum  </p>                                                    "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 120,
+      "expectedBytes": "<p>5845 Allison Valleys  </p>                                                                       "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 121,
+      "expectedBytes": "<p>Suite 934  </p>                                                                                  "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 122,
+      "expectedBytes": "<p>Mitchellmouth MH USA 72362  </p>                                                                 "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 123,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 124,
+      "expectedBytes": "</tr>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 125,
+      "expectedBytes": "<tr>                                                                                                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 126,
+      "expectedBytes": "<td colspan=\"3\" style=\"padding:0px 5px;background-color:#33FFD1; text-align:center;\">               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 127,
+      "expectedBytes": "<p style=\"font-size:16px\">Basic Details</p>                                                         "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 128,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 129,
+      "expectedBytes": "</tr>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 130,
+      "expectedBytes": "<tr>                                                                                                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 131,
+      "expectedBytes": "<td colspan=\"3\" style=\"padding:0px 5px;background-color:#f2f2f2;\">                                  "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 132,
+      "expectedBytes": "<p>Account ID         : 00000000020         </p>                                                    "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 133,
+      "expectedBytes": "<p>Current Balance    : 000000369.00 </p>                                                           "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 134,
+      "expectedBytes": "<p>FICO Score         : 493                 </p>                                                    "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 135,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 136,
+      "expectedBytes": "</tr>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 137,
+      "expectedBytes": "<tr>                                                                                                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 138,
+      "expectedBytes": "<td colspan=\"3\" style=\"padding:0px 5px;background-color:#33FFD1; text-align:center;\">               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 139,
+      "expectedBytes": "<p style=\"font-size:16px\">Transaction Summary</p>                                                   "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 140,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 141,
+      "expectedBytes": "</tr>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 142,
+      "expectedBytes": "<tr>                                                                                                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 143,
+      "expectedBytes": "<td style=\"width:25%; padding:0px 5px; background-color:#33FF5E; text-align:left;\">                 "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 144,
+      "expectedBytes": "<p style=\"font-size:16px\">Tran ID</p>                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 145,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 146,
+      "expectedBytes": "<td style=\"width:55%; padding:0px 5px; background-color:#33FF5E; text-align:left;\">                 "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 147,
+      "expectedBytes": "<p style=\"font-size:16px\">Tran Details</p>                                                          "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 148,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 149,
+      "expectedBytes": "<td style=\"width:20%; padding:0px 5px; background-color:#33FF5E; text-align:right;\">                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 150,
+      "expectedBytes": "<p style=\"font-size:16px\">Amount</p>                                                                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 151,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 152,
+      "expectedBytes": "</tr>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 153,
+      "expectedBytes": "<tr>                                                                                                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 154,
+      "expectedBytes": "<td style=\"width:25%; padding:0px 5px; background-color:#f2f2f2; text-align:left;\">                 "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 155,
+      "expectedBytes": "<p>TRAN000000000004</p>                                                                             "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 156,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 157,
+      "expectedBytes": "<td style=\"width:55%; padding:0px 5px; background-color:#f2f2f2; text-align:left;\">                 "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 158,
+      "expectedBytes": "<p>Card two of three, only transaction              </p>                                            "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 159,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 160,
+      "expectedBytes": "<td style=\"width:20%; padding:0px 5px; background-color:#f2f2f2; text-align:right;\">                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 161,
+      "expectedBytes": "<p>       44.44 </p>                                                                                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 162,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 163,
+      "expectedBytes": "</tr>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 164,
+      "expectedBytes": "<tr>                                                                                                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 165,
+      "expectedBytes": "<td colspan=\"3\" style=\"padding:0px 5px;background-color:#1d1d96b3;\">                                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 166,
+      "expectedBytes": "<h3>End of Statement</h3>                                                                           "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 167,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 168,
+      "expectedBytes": "</tr>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 169,
+      "expectedBytes": "</table>                                                                                            "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 170,
+      "expectedBytes": "</body>                                                                                             "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 171,
+      "expectedBytes": "</html>                                                                                             "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 172,
+      "expectedBytes": "<!DOCTYPE html>                                                                                     "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 173,
+      "expectedBytes": "<html lang=\"en\">                                                                                    "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 174,
+      "expectedBytes": "<head>                                                                                              "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 175,
+      "expectedBytes": "<meta charset=\"utf-8\">                                                                              "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 176,
+      "expectedBytes": "<title>HTML Table Layout</title>                                                                    "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 177,
+      "expectedBytes": "</head>                                                                                             "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 178,
+      "expectedBytes": "<body style=\"margin:0px;\">                                                                          "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 179,
+      "expectedBytes": "<table  align=\"center\" frame=\"box\" style=\"width:70%; font:12px Segoe UI,sans-serif;\">               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 180,
+      "expectedBytes": "<tr>                                                                                                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 181,
+      "expectedBytes": "<td colspan=\"3\" style=\"padding:0px 5px;background-color:#1d1d96b3;\">                                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 182,
+      "expectedBytes": "<h3>Statement for Account Number: 00000000012         </h3>                                         "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 183,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 184,
+      "expectedBytes": "</tr>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 185,
+      "expectedBytes": "<tr>                                                                                                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 186,
+      "expectedBytes": "<td colspan=\"3\" style=\"padding:0px 5px;background-color:#FFAF33;\">                                  "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 187,
+      "expectedBytes": "<p style=\"font-size:16px\">Bank of XYZ</p>                                                           "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 188,
+      "expectedBytes": "<p>410 Terry Ave N</p>                                                                              "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 189,
+      "expectedBytes": "<p>Seattle WA 99999</p>                                                                             "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 190,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 191,
+      "expectedBytes": "</tr>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 192,
+      "expectedBytes": "<tr>                                                                                                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 193,
+      "expectedBytes": "<td colspan=\"3\" style=\"padding:0px 5px;background-color:#f2f2f2;\">                                  "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 194,
+      "expectedBytes": "<p style=\"font-size:16px\">Maci Alan Robel  </p>                                                     "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 195,
+      "expectedBytes": "<p>80501 Isac Cliffs  </p>                                                                          "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 196,
+      "expectedBytes": "<p>Suite 623  </p>                                                                                  "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 197,
+      "expectedBytes": "<p>Predovicton MN USA 78861  </p>                                                                   "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 198,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 199,
+      "expectedBytes": "</tr>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 200,
+      "expectedBytes": "<tr>                                                                                                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 201,
+      "expectedBytes": "<td colspan=\"3\" style=\"padding:0px 5px;background-color:#33FFD1; text-align:center;\">               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 202,
+      "expectedBytes": "<p style=\"font-size:16px\">Basic Details</p>                                                         "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 203,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 204,
+      "expectedBytes": "</tr>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 205,
+      "expectedBytes": "<tr>                                                                                                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 206,
+      "expectedBytes": "<td colspan=\"3\" style=\"padding:0px 5px;background-color:#f2f2f2;\">                                  "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 207,
+      "expectedBytes": "<p>Account ID         : 00000000012         </p>                                                    "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 208,
+      "expectedBytes": "<p>Current Balance    : 000000176.00 </p>                                                           "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 209,
+      "expectedBytes": "<p>FICO Score         : 688                 </p>                                                    "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 210,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 211,
+      "expectedBytes": "</tr>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 212,
+      "expectedBytes": "<tr>                                                                                                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 213,
+      "expectedBytes": "<td colspan=\"3\" style=\"padding:0px 5px;background-color:#33FFD1; text-align:center;\">               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 214,
+      "expectedBytes": "<p style=\"font-size:16px\">Transaction Summary</p>                                                   "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 215,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 216,
+      "expectedBytes": "</tr>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 217,
+      "expectedBytes": "<tr>                                                                                                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 218,
+      "expectedBytes": "<td style=\"width:25%; padding:0px 5px; background-color:#33FF5E; text-align:left;\">                 "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 219,
+      "expectedBytes": "<p style=\"font-size:16px\">Tran ID</p>                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 220,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 221,
+      "expectedBytes": "<td style=\"width:55%; padding:0px 5px; background-color:#33FF5E; text-align:left;\">                 "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 222,
+      "expectedBytes": "<p style=\"font-size:16px\">Tran Details</p>                                                          "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 223,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 224,
+      "expectedBytes": "<td style=\"width:20%; padding:0px 5px; background-color:#33FF5E; text-align:right;\">                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 225,
+      "expectedBytes": "<p style=\"font-size:16px\">Amount</p>                                                                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 226,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 227,
+      "expectedBytes": "</tr>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 228,
+      "expectedBytes": "<tr>                                                                                                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 229,
+      "expectedBytes": "<td style=\"width:25%; padding:0px 5px; background-color:#f2f2f2; text-align:left;\">                 "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 230,
+      "expectedBytes": "<p>TRAN000000000005</p>                                                                             "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 231,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 232,
+      "expectedBytes": "<td style=\"width:55%; padding:0px 5px; background-color:#f2f2f2; text-align:left;\">                 "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 233,
+      "expectedBytes": "<p>Card three of three, first transaction           </p>                                            "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 234,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 235,
+      "expectedBytes": "<td style=\"width:20%; padding:0px 5px; background-color:#f2f2f2; text-align:right;\">                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 236,
+      "expectedBytes": "<p>       55.55 </p>                                                                                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 237,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 238,
+      "expectedBytes": "</tr>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 239,
+      "expectedBytes": "<tr>                                                                                                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 240,
+      "expectedBytes": "<td style=\"width:25%; padding:0px 5px; background-color:#f2f2f2; text-align:left;\">                 "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 241,
+      "expectedBytes": "<p>TRAN000000000006</p>                                                                             "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 242,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 243,
+      "expectedBytes": "<td style=\"width:55%; padding:0px 5px; background-color:#f2f2f2; text-align:left;\">                 "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 244,
+      "expectedBytes": "<p>Card three of three, second transaction          </p>                                            "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 245,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 246,
+      "expectedBytes": "<td style=\"width:20%; padding:0px 5px; background-color:#f2f2f2; text-align:right;\">                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 247,
+      "expectedBytes": "<p>       66.66 </p>                                                                                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 248,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 249,
+      "expectedBytes": "</tr>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 250,
+      "expectedBytes": "<tr>                                                                                                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 251,
+      "expectedBytes": "<td colspan=\"3\" style=\"padding:0px 5px;background-color:#1d1d96b3;\">                                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 252,
+      "expectedBytes": "<h3>End of Statement</h3>                                                                           "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 253,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 254,
+      "expectedBytes": "</tr>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 255,
+      "expectedBytes": "</table>                                                                                            "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 256,
+      "expectedBytes": "</body>                                                                                             "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 257,
       "expectedBytes": "</html>                                                                                             "
     }
   ],
@@ -553,13 +1686,13 @@
     {
       "dataset": "STMTFILE",
       "channel": "WRITES",
-      "rowCount": 20,
+      "rowCount": 63,
       "recordLength": 80
     },
     {
       "dataset": "HTMLFILE",
       "channel": "WRITES",
-      "rowCount": 75,
+      "rowCount": 258,
       "recordLength": 100
     }
   ]

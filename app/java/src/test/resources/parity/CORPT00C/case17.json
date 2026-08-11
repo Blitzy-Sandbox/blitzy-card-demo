@@ -1,13 +1,13 @@
 {
   "program": "CORPT00C",
   "caseId": "case17",
-  "description": "The month edit at :329-336 firing on its second condition rather than its first. SDTMMI arrives as '13'; NUMVAL-C accepts it and the store leaves it as '13', so IS NOT NUMERIC is false and it is the alphanumeric comparison SDTMMI > '12' that rejects. The comparison is on CHARACTERS, not on the numeric value, and :331 reports 'Start Date - Not a valid Month...' - note the capital M, which the sibling message at :340 does not have. Stage four is never reached, so CSUTLDTC is not called at all on this path. Expected values are STATICALLY DERIVED by reading app/cbl/CORPT00C.cbl, its copybooks, app/bms/CORPT00.bms and app/csd/CARDDEMO.CSD - never captured from a COBOL run, which is impossible in this environment (risk R-A). Java has no transient data queue, so EXEC CICS WRITEQ TD QUEUE('JOBS') at :517 is reproduced through an explicit job-submission port; the eighty-byte content is identical and the dataset key JOBS names the TDQUEUE(JOBS) that app/csd/CARDDEMO.CSD:499-505 defines as RECORDSIZE(80) RECORDFORMAT(FIXED) BLOCKFORMAT(UNBLOCKED) DISPOSITION(MOD).",
+  "description": "The month edit at :329-336 rejecting on its SECOND condition rather than its first, and the first of the folder's two mandatory FUNCTION NUMVAL-C rejection cases (gate G29, reject side). SDTMMI arrives as '13'. Stage two stores it back as '13', so IS NOT NUMERIC is FALSE and it is the alphanumeric comparison SDTMMI > '12' at :330 that rejects - a comparison of two-character strings, which for zero-filled digits coincides with the numeric comparison but is not the same test. The second rejection mechanism, structurally different, is case18's: a value that conforms to nothing normalises to '00', slips past every range test because 00 is not greater than 12, and is caught only by CSUTLDTC. The accepting side of the same intrinsic is case16's. THE PATH IN FULL: EIBCALEN is non-zero and CDEMO-PGM-CONTEXT is '1', so :177 takes its re-enter arm, :183 receives the map and the ordered EVALUATE EIBAID at :184-195 takes WHEN DFHENTER, whose :210 DISPLAY 'PROCESS ENTER KEY' is the third pinned message. The outer EVALUATE TRUE then reaches the Custom arm at :256 because MONTHLYI and YEARLYI are spaces and CUSTOMI is not (gate G30 - the arms are ordered and the first match wins). ALL SIX DATE PARTS ARE NON-BLANK, which is what makes this case reach the code it is about: the ordered blank chain at :258-303 runs out of arms and lands on WHEN OTHER CONTINUE at :301-302, so the six NUMVAL-C blocks at :305-327 are genuinely entered. That is the structural contrast with case14 and case15, where a blank part sends the screen and the block never executes at all, and it is why all ten xxxI items are declared here rather than only the ones the failing edit reads. STAGE TWO IS STRAIGHT-LINE CODE WITH NO EARLY EXIT: each of the six COMPUTE statements is followed immediately by a MOVE of the numeric result back into the same PIC X item, through WS-NUM-99 PIC 99 at :74 for the four two-digit parts and WS-NUM-9999 PIC 9999 at :75 for the two years - '13' to 13 to '13', '15' to '15', '2022' to '2022', '07' to '07', '31' to '31', '2022' to '2022'. All six are therefore normalised BEFORE any validity test runs, and all six normalised values appear in the echo below. THE REJECTION IS TERMINAL. :331-335 moves the thirty-three character literal 'Start Date - Not a valid Month...' - note the capital M, which the sibling message at :340 does not have - into WS-MESSAGE, raises WS-ERR-FLG, moves -1 into SDTMML and performs SEND-TRNRPT-SCREEN, which ends GO TO RETURN-TO-CICS at :580. That is the program's SINGLE GO TO and it is a benign shared terminal, restructured as a return after a shared finalisation step rather than as a jump (rule R7, gate G30). Four consequences follow and each is an assertion here: the five later validity IFs at :338-379 never execute; NEITHER CSUTLDTC call site (:392 and :412) is reached, so util.DateUtilityJob IS NOT INVOKED ON THIS PATH - the suite constructs a real one rather than a stub, so that is a property of the path and not of a test double; the IF NOT ERR-FLG-ON blocks at :434 and :445 are never reached, so there is no DFHGREEN and no submitted-for-printing notice; and no WRITEQ TD occurs, so nothing is submitted. Gate G32 does not apply - CBSTM03A is the only program with backward loop-forming GO TOs. A PRESERVED DEFECT, REPRODUCED AND NOT REPAIRED (practice B5): because WS-NUM-99 and WS-NUM-9999 are numeric-display receivers, the store back into a PIC X item ALWAYS yields digit characters, so the IS NOT NUMERIC halves of all six edits at :329, :338, :347, :355, :364 and :373 are UNREACHABLE through this path. Only the range comparisons - > '12' for a month and > '31' for a day - can ever fail, and the two year edits, which carry no range term at all, can never fail. The dead halves are left exactly as written and are driven directly by CORPT00CParityTest rather than removed. AN HONEST SCOPE NOTE (practice B12): the five sibling arms - start-date day > '31', start-date year, end-date month > '12', end-date day > '31' and end-date year - use the IDENTICAL mechanism to the one this case fires and CANNOT co-fire with it, precisely because the send is terminal. Their remaining branch coverage belongs to the per-module unit tests under src/test/java/com/vsergeychik/carddemo/transaction, not to these twenty parity cases, and this file does not imply otherwise. THE TWO MESSAGE CHANNELS DIFFER BY EXACTLY THE TWO BYTES COBOL LOSES (practice B8): the literal is 33 characters, WS-MESSAGE is PIC X(80) so it is 33 plus 47 spaces, and :560 moves that into ERRMSGO PIC X(78), truncating on the right to 33 plus 45 spaces. Both are pinned, on their own channels, because reporting only one of them would make the truncation unobservable. The three lines are pinned in the order the run emits them - the 80-byte working-storage field, the 78-byte screen field, then the DISPLAY - because the comparison is positional. THE ECHO CARRIES THE POST-NUMVAL-C VALUES, and that is the point of pinning all ten: 01 CORPT0AO REDEFINES CORPT0AI is one buffer, and this path performs no INITIALIZE-ALL-FIELDS, so the normalisation is still visible on the screen that is next sent. case16's success tail blanks all ten at :636-645 and shows spaces instead; here CUSTOMO is 'X', SDTMMO '13', SDTDDO '15', SDTYYYYO '2022', EDTMMO '07', EDTDDO '31', EDTYYYYO '2022', CONFIRMO 'Y', and MONTHLYO and YEARLYO are spaces. CONFIRMI is supplied as 'Y' and is NEVER READ: the confirm test at :478 lives inside SUBMIT-JOB-TO-INTRDR, which this path never enters. THE CURSOR IS METADATA, NOT PAYLOAD: MOVE -1 TO SDTMML at :334 writes the symbolic map's LENGTH item, so it is carried as cursorField and never as a send field - the xxxL, xxxF and xxxA items are length, flag and attribute metadata and only the xxxI and xxxO items are payload (AAP 0.6.3). THE CORRECTED READING OF GATE G38 FOR THIS PROGRAM (practice B12): CORPT00C copies NEITHER CSSETATY NOR CSSTRPFY. Its verified COPY list at :138-149 is COCOM01Y, CORPT00, COTTL01Y, CSDAT01Y, CSMSG01Y, CVTRA05Y, DFHAID and DFHBMSCA, and the only DFH colour constant referenced anywhere in the program is DFHGREEN at :448, on the success path. There is no DFHRED move and no '*' marker in this program, and none is fabricated here. G38 is therefore asserted as three things: the byte-exact ERRMSGO text, the -1 cursor on the offending field, and ERRMSGC left at DFHDFCOL - the unset sentinel, which is the positive assertion that the program made NO programmatic colour assignment and that the red the operator sees is the mapset's own declarative COLOR=RED at app/bms/CORPT00.bms:218-221. The red is declarative, not programmatic. NOTHING IS SUBMITTED, ASSERTED RATHER THAN IMPLIED (negative gate G42): expectedWrites is empty, and an empty expectedWrites is a positive assertion that nothing was written rather than an absence of interest - any record handed to the port would be reported as unaccounted for. expectedDatasets is deliberately empty too, and NOT a zero-row JOBS entry: app/csd/CARDDEMO.CSD:499-505 defines TDQUEUE(JOBS) as OPENTIME(INITIAL) with RECORDSIZE(80) RECORDFORMAT(FIXED) DISPOSITION(MOD) and this program issues no OPEN, so 'opened and wrote nothing' is not a state it can be in and a dataset-level expectation would assert something the COBOL never does. unitKind is CONTROLLER_POJO: ReportRequestController is constructed as a plain object and called once through mainPara, with no MockMvc, no TestRestTemplate, no servlet container and no JobLauncher in the path (gate G51). inputs is empty because every EXEC CICS in this program is WRITEQ TD, SEND, RECEIVE, RETURN or XCTL and no dataset is reachable, so the dataset gates G16, G19, G21, G45 and G47 have no subject here. expectedReturnCode is 0 and is stated rather than defaulted: this is an online program, it sets no RETURN-CODE and it contains no CALL 'CEE3ABD', so G35 does not apply. NOTHING IS LEFT TO THE WALL CLOCK AND NOTHING IS RANDOM (practice B7): the instant is pinned to 2022-07-15T10:30:45 and is read only at :611 through POPULATE-HEADER-INFO, giving CURDATEO 07/15/22 through WS-CURDATE-YEAR(3:2) at :620 and CURTIMEO 10:30:45. The pin deliberately equals case16's, so the two cases' headers are byte-identical and only the arm differs. The code page is named US-ASCII rather than defaulted (practice B8), and every field and value is written out in full at its declared width with its trailing spaces counted - 6 leading and 7 trailing for TITLE01O, 14 leading and 18 trailing for TITLE02O, forty characters each - because app/cpy/COTTL01Y.cpy line 21 is COMMENTED OUT and the active TITLE02 is the CardDemo form, never 'Credit Card Demo Application (CCDA)'. PROVENANCE (practice B12, risk R-A): every expected value here is STATICALLY DERIVED by structured reading of app/cbl/CORPT00C.cbl cross-checked against app/cpy-bms/CORPT00.CPY, app/bms/CORPT00.bms, app/cpy/COTTL01Y.cpy, app/cpy/CSDAT01Y.cpy, app/cpy/COCOM01Y.cpy, app/cbl/CSUTLDTC.cbl and app/csd/CARDDEMO.CSD - every one of them read-only reference material that this migration never writes to (practice B3) - and is NEVER captured from a running COBOL program, which is empirically impossible in this environment. DFHENTER and the colour mnemonics are taken from common.CicsAid and common.BmsAttributes because DFHAID and DFHBMSCA are IBM-supplied and absent from this repository (risk R-D). GOVERNING RULES: review_rules returns exactly one line, 'No user rules provided', so ZERO user rules govern this fixture and enterprise practices B1, B3, B5, B7, B8 and B12 stand in their place; their absence is not licence to lower the bar. B1 in particular: the folder brief makes NUMVAL-C rejection coverage mandatory rather than optional, and this file supplies the range-comparison half of it with a concrete out-of-range value and every field pinned explicitly at its declared width - nothing here is a sketch and nothing is left to be filled in later.",
   "unitKind": "CONTROLLER_POJO",
   "inputs": {},
   "screenRequest": {
     "eibcalen": 160,
     "aid": "DFHENTER",
-    "pinnedClock": "2026-08-09T14:05:06",
+    "pinnedClock": "2022-07-15T10:30:45",
     "charset": "US-ASCII",
     "commarea": {
       "CDEMO-FROM-TRANID": "CM00",
@@ -28,13 +28,15 @@
       "CDEMO-LAST-MAPSET": "       "
     },
     "mapFields": {
-      "CUSTOMI": "Y",
+      "MONTHLYI": " ",
+      "YEARLYI": " ",
+      "CUSTOMI": "X",
       "SDTMMI": "13",
-      "SDTDDI": "01",
-      "SDTYYYYI": "2026",
-      "EDTMMI": "12",
+      "SDTDDI": "15",
+      "SDTYYYYI": "2022",
+      "EDTMMI": "07",
       "EDTDDI": "31",
-      "EDTYYYYI": "2026",
+      "EDTYYYYI": "2022",
       "CONFIRMI": "Y"
     },
     "forcedOutcomes": {}
@@ -66,19 +68,19 @@
         "fields": {
           "TRNNAMEO": "CR00",
           "TITLE01O": "      AWS Mainframe Modernization       ",
-          "CURDATEO": "08/09/26",
+          "CURDATEO": "07/15/22",
           "PGMNAMEO": "CORPT00C",
           "TITLE02O": "              CardDemo                  ",
-          "CURTIMEO": "14:05:06",
+          "CURTIMEO": "10:30:45",
           "MONTHLYO": " ",
           "YEARLYO": " ",
-          "CUSTOMO": "Y",
+          "CUSTOMO": "X",
           "SDTMMO": "13",
-          "SDTDDO": "01",
-          "SDTYYYYO": "2026",
-          "EDTMMO": "12",
+          "SDTDDO": "15",
+          "SDTYYYYO": "2022",
+          "EDTMMO": "07",
           "EDTDDO": "31",
-          "EDTYYYYO": "2026",
+          "EDTYYYYO": "2022",
           "CONFIRMO": "Y",
           "ERRMSGO": "Start Date - Not a valid Month...                                             "
         },

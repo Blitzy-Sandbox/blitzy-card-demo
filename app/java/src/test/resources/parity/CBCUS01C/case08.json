@@ -1,13 +1,46 @@
 {
   "program": "CBCUS01C",
   "caseId": "case08",
-  "description": "The fatal open, from a customer master that is not there to be opened. The case declares no CUSTFILE input at all, which is how it states that - a dataset a case says nothing about is omitted from \"inputs\" entirely. 0000-CUSTFILE-OPEN at app/cbl/CBCUS01C.cbl:L118-L134 moves 8 into APPL-RESULT before the OPEN, sees a status other than '00', moves 12, and takes its ELSE arm: DISPLAY 'ERROR OPENING CUSTFILE', then MOVE CUSTFILE-STATUS TO IO-STATUS and Z-DISPLAY-IO-STATUS, then Z-ABEND-PROGRAM. The status is rendered through the extended branch at L162-L168 because its first byte is '9', giving FILE STATUS IS: NNNN9000, and the CALL 'CEE3ABD' at L158 carries APPL-RESULT 12 out as the RETURN-CODE. No record is read, no display fires, 9000-CUSTFILE-CLOSE is never performed and the L85 banner is never reached.",
+  "description": "The PIC 9 zero-fill case, pinned at the narrowest and most fragile numeric span in CVCUS01Y. One clean record is seeded - row 26 of app/data/ASCII/custdata.txt, addressed as the zero-based fromRow 25 - and it is chosen for one reason: its CUST-FICO-CREDIT-SCORE PIC 9(03) at offsets 330-332 carries 001, the lowest score in the shipped fixture, so all but one of its three characters are leading zeros. Leading zeros are not cosmetic here, they are the field. The plan's COBOL-to-Java type mapping requires a PIC 9(n) span to be zero-filled to width n on write while a PIC X(n) span is space-padded, and a codec that parsed these three characters into an integer and rendered it back without honouring that rule fails this case two different ways: emitting 1 leaves a 498-character record, which shifts every later byte two places left and eats the first two characters of the trailing FILLER, so the total width breaks (gate G19); emitting a right-aligned 1 behind two spaces keeps the width but writes the wrong bytes, because a numeric span pads with zeros and not with spaces. Only 001 passes, and the case states it as the three explicit characters rather than deriving it from a number (practice B8). The span is scale-free - it has no V position, and CVCUS01Y declares no scaled picture anywhere - so this program models no fixed-point type at all, performs no COMPUTE, and nothing here scales a value or discards a fractional digit. The blast radius of a mis-rendered score is pinned on both sides: the field map names all 19 spans including FILLER, whose 168 characters are the span a short numeric field would corrupt first (gate G21), and expectedBytes pins the whole 500-character image. SYSOUT is the two banners from L71 and L85 with the one record displayed twice between them - the display inside the READ's '00' arm at L96 and the mainline's own at L78, both of the same record area within one iteration, which is inherited behaviour kept exactly as it is (practice B5). The next READ reports '10' and emits nothing. CBCUS01C opens CUSTFILE INPUT and issues no WRITE and no REWRITE, so expectedWrites is empty as a positive assertion and the final state is the seeded row unchanged; READCUST.jcl declares no PARM, so there is no job parameter. Provenance, practice B12: every expected value here is statically derived from the COBOL source, the CVCUS01Y byte layout, the READCUST.jcl DD contract and the real app/data/ASCII/custdata.txt fixture. None of it was captured from, recorded against or replayed from any execution of the legacy COBOL, which is empirically impossible in this environment - the substitution is the documented baseline-provenance deviation, risk R-A.",
   "unitKind": "BATCH_JOB",
-  "inputs": {},
+  "inputs": {
+    "CUSTFILE": {
+      "fixture": "custdata.txt",
+      "fromRow": 25,
+      "rowCount": 1
+    }
+  },
   "jobParameters": {},
   "expectedWrites": [],
-  "expectedFinalState": [],
-  "expectedReturnCode": 12,
+  "expectedFinalState": [
+    {
+      "dataset": "CUSTFILE",
+      "rowIndex": 0,
+      "fields": {
+        "CUST-ID": "000000026",
+        "CUST-FIRST-NAME": "Marjory                  ",
+        "CUST-MIDDLE-NAME": "Damien                   ",
+        "CUST-LAST-NAME": "Stracke                  ",
+        "CUST-ADDR-LINE-1": "30161 Bogan Canyon                                ",
+        "CUST-ADDR-LINE-2": "Suite 916                                         ",
+        "CUST-ADDR-LINE-3": "Walshberg                                         ",
+        "CUST-ADDR-STATE-CD": "IL",
+        "CUST-ADDR-COUNTRY-CD": "USA",
+        "CUST-ADDR-ZIP": "59945     ",
+        "CUST-PHONE-NUM-1": "(584)772-2867  ",
+        "CUST-PHONE-NUM-2": "(819)733-9809  ",
+        "CUST-SSN": "840478806",
+        "CUST-GOVT-ISSUED-ID": "00000000000947411626",
+        "CUST-DOB-YYYY-MM-DD": "1990-03-17",
+        "CUST-EFT-ACCOUNT-ID": "0060808858",
+        "CUST-PRI-CARD-HOLDER-IND": "Y",
+        "CUST-FICO-CREDIT-SCORE": "001",
+        "FILLER": "                                                                                                                                                                        "
+      },
+      "expectedBytes": "000000026Marjory                  Damien                   Stracke                  30161 Bogan Canyon                                Suite 916                                         Walshberg                                         ILUSA59945     (584)772-2867  (819)733-9809  840478806000000000009474116261990-03-170060808858Y001                                                                                                                                                                        "
+    }
+  ],
+  "expectedReturnCode": 0,
   "expectedMessages": [
     {
       "channel": "DISPLAY_LINE",
@@ -15,16 +48,24 @@
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "ERROR OPENING CUSTFILE"
+      "text": "000000026Marjory                  Damien                   Stracke                  30161 Bogan Canyon                                Suite 916                                         Walshberg                                         ILUSA59945     (584)772-2867  (819)733-9809  840478806000000000009474116261990-03-170060808858Y001                                                                                                                                                                        "
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "FILE STATUS IS: NNNN9000"
+      "text": "000000026Marjory                  Damien                   Stracke                  30161 Bogan Canyon                                Suite 916                                         Walshberg                                         ILUSA59945     (584)772-2867  (819)733-9809  840478806000000000009474116261990-03-170060808858Y001                                                                                                                                                                        "
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "ABENDING PROGRAM"
+      "text": "END OF EXECUTION OF PROGRAM CBCUS01C"
     }
   ],
-  "normalisations": []
+  "normalisations": [],
+  "expectedDatasets": [
+    {
+      "dataset": "CUSTFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 500
+    }
+  ]
 }

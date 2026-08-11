@@ -1,0 +1,69 @@
+{
+  "program": "COBIL00C",
+  "caseId": "case06",
+  "description": "MAIN-PARA's DFHPF4 clear-screen arm, derived from app/cbl/COBIL00C.cbl:136-137 and the paragraphs it reaches at :552-555, :560-566, :289-301 and :319-338 - transaction CB00 re-entered with the F4 key, which is the REENTER half of gate G38 and the third arm of the AID dispatch. This case establishes the canonical INITIALIZE-ALL-FIELDS post-state that case13, case14, case15 and case16 all reuse, so the exact set of fields it clears is the point of it. IN SOURCE ORDER. :101-102 set ERR-FLG-OFF and USR-MODIFIED-NO, :104-105 move SPACES to WS-MESSAGE and to ERRMSGO OF COBIL0AO, :107 finds EIBCALEN non-zero so the cold-start arm is not taken, :111 copies the travelled area over CARDDEMO-COMMAREA, :112 finds CDEMO-PGM-REENTER true because CDEMO-PGM-CONTEXT arrives 1 - so the whole first-entry block at :113-122 is skipped, which is why MOVE LOW-VALUES TO COBIL0AO at :114 does NOT run here and the three data fields end as SPACES rather than as nulls - and :124 performs RECEIVE-BILLPAY-SCREEN. The EVALUATE EIBAID at :125-142 then selects the third of its four arms: DFHENTER at :126 did not match, DFHPF3 at :128 did not match, DFHPF4 at :136 matched, and WHEN OTHER at :138 is last and is not reached. The order is the behaviour - EVALUATE takes the first matching WHEN and WHEN OTHER is the default - so an implementation that reordered the arms or let one fall through into the next would be a different program (gate G30). WHAT THE ARM DOES. :137 performs CLEAR-CURRENT-SCREEN, which at :552-555 is exactly two performs: INITIALIZE-ALL-FIELDS and then SEND-BILLPAY-SCREEN, in that order. INITIALIZE-ALL-FIELDS at :560-566 moves -1 into ACTIDINL OF COBIL0AI and then moves SPACES into ACTIDINI, CURBALI, CONFIRMI and WS-MESSAGE - four receivers and no more. It does NOT touch TRNNAME, TITLE01, CURDATE, PGMNAME, TITLE02, CURTIME or ERRMSG, and a translation that cleared them as well would be over-clearing: the header six are repopulated a moment later by POPULATE-HEADER-INFO and ERRMSG is written from the just-cleared WS-MESSAGE, so the over-clearing would be invisible on this screen and would corrupt the four cases that reuse this post-state. THE ONE SEND, FIELD BY FIELD. SEND-BILLPAY-SCREEN at :289-301 performs POPULATE-HEADER-INFO at :291 before anything else, so the six header items come from :319-338: TITLE01O and TITLE02O are CCDA-TITLE01 and CCDA-TITLE02 reproduced at their full PIC X(40) width from app/cpy/COTTL01Y.cpy:18-22, six leading and seven trailing blanks on the first and fourteen leading and eighteen trailing on the second, untrimmed because a trimmed title is a different forty bytes; TRNNAMEO is WS-TRANID 'CB00' and PGMNAMEO is WS-PGMNAME 'COBIL00C'; CURDATEO is WS-CURDATE-MM-DD-YY and CURTIMEO is WS-CURTIME-HH-MM-SS, the eight-byte MM/DD/YY and HH:MM:SS groups app/cpy/CSDAT01Y.cpy assembles from FUNCTION CURRENT-DATE at :321. Then :293 moves the eighty-byte WS-MESSAGE - SPACES since :566 cleared it, having already been SPACES from :104 - over the seventy-eight-byte ERRMSGO, so the error line is seventy-eight blanks; the two-byte truncation is the picture difference between PIC X(80) and PIC X(78) and not a shortening of the expectation. ACTIDINO, CURBALO and CONFIRMO are the eleven, fourteen and one bytes of SPACES that :563-565 left. They are addressed here as xxxO items because app/cpy-bms/COBIL00.CPY:79 declares COBIL0AO REDEFINES COBIL0AI, so the input and output views share one span: a MOVE SPACES to ACTIDINI is observable as SPACES in ACTIDINO, and :298 sends FROM(COBIL0AO). THE DISTINCTION FROM case01. Both cases send one screen whose header six are identical, and the difference is precisely those three data fields: case01 reaches :114 and its MOVE LOW-VALUES leaves X'00', while this case reaches :563-565 and its MOVE SPACES leaves X'20'. BMS does not transmit a null field, so a map cleared to LOW-VALUES and one cleared to SPACES are not the same screen, and collapsing the two would lose the only observable difference between a first paint and an F4 clear. To make the clear an assertion rather than a tautology the request seeds what the user had typed - ACTIDINI carrying account 00000000001, a real key from app/data/ASCII/acctdata.txt, and CONFIRMI carrying 'Y' - so the blank expectations prove those values were wiped. Only ACTIDIN, which carries IC, and CONFIRM are UNPROT in app/bms/COBIL00.bms, so those two are the only items a RECEIVE can carry and the only two the request declares; CURBALI is protected and can never be typed. THE CONTEXT STAYS 1. No XCTL occurs on this arm, so RETURN-TO-PREV-SCREEN is never performed and its MOVE ZEROS TO CDEMO-PGM-CONTEXT at :280 is not reached: the context leaves as the 1 it arrived as, and the next invocation takes the re-entry arm again. That is the distinguishing feature of this case against case02, case04 and case05, whose arms do reach :275-284, do zero the context and do terminate on XCTL. Here control falls out of the EVALUATE to the EXEC CICS RETURN TRANSID(WS-TRANID) COMMAREA(CARDDEMO-COMMAREA) at :146-149, which is why the termination is RETURN_TRANSID and why the mapset and map are named rather than a next program. WHAT DOES NOT HAPPEN. No dataset is touched: PROCESS-ENTER-KEY is the only caller of READ-CXACAIX-FILE, READ-ACCTDAT-FILE, UPDATE-ACCTDAT-FILE and WRITE-TRANSACT-FILE, and the DFHPF4 arm does not perform it, so inputs is empty and expectedWrites, expectedFinalState and expectedDatasets are empty by derivation rather than by omission - an empty expectedWrites is the positive assertion that nothing was written, and seeding a row here would assert a read the COBOL does not make. normalisations is empty because no fixture is seeded, and the cardxref 36-to-50 pad therefore has nothing to apply to. The RECEIVE at :308-314 captures RESP(WS-RESP-CD) and RESP2(WS-REAS-CD) and the program never tests either one; that absence is preserved rather than tidied into a check the source does not perform. expectedMessages is empty because this path emits nothing: all six DISPLAY statements in the program - :366, :397, :430, :461, :490 and :541 - sit in the WHEN OTHER arm of a file operation inside PROCESS-ENTER-KEY, and none is reachable from CLEAR-CURRENT-SCREEN. The blank error line is asserted once, as ERRMSGO on the send that produced it, which is where screen text belongs; repeating it on a message channel would assert the same seventy-eight bytes twice while claiming an emission the program never made. The attribute map is empty and must stay empty: COBIL00C copies neither CSSETATY nor CSSTRPFY - its COPY list at :63-85 is COCOM01Y, COBIL00, COTTL01Y, CSDAT01Y, CSMSG01Y, CVACT01Y, CVACT03Y, CVTRA05Y, DFHAID and DFHBMSCA - and DFHRED appears nowhere in its 572 lines, so there is no red-and-asterisk highlight to expect. The only attribute byte the program ever writes is the DFHGREEN of :526, on the transaction-WRITE success arm this path never reaches, so no ERRMSGC override applies here. Highlighting is limited to the -1 cursor, and a cursor is an xxxL length item, which is why ACTIDINL is declared as cursorField rather than as a payload member. Only the ten xxxI/xxxO items of app/cpy-bms/COBIL00.CPY are payload, at the widths their PICTURE clauses declare - TRNNAME 4, TITLE01 40, CURDATE 8, PGMNAME 8, TITLE02 40, CURTIME 8, ACTIDIN 11, CURBAL 14, CONFIRM 1, ERRMSG 78 - and the xxxL, xxxF and xxxA items on the input side and the xxxC, xxxP, xxxH and xxxV items on the output side are validation and highlight metadata that never appear as fields. THERE IS NO MONETARY VALUE ON THIS PATH, and that is worth stating rather than leaving as a silent absence: CURBALI is one of the three fields :564 clears, so whatever balance the screen had been showing is gone before the send, and the program's single COMPUTE at :234 is inside PROCESS-ENTER-KEY, which this arm does not perform. No BigDecimal, no scale and no rounding mode is asserted here; the truncating arithmetic of COBIL00C is the business of the cases that reach :211-235. STATELESSNESS. EIBCALEN is 218 - the 160 bytes app/cpy/COCOM01Y.cpy declares for CARDDEMO-COMMAREA plus the 58 bytes of the CDEMO-CB00-INFO group COBIL00C.cbl:64-72 appends in place. The one commarea item MAIN-PARA reads on this arm is CDEMO-PGM-CONTEXT, which :112 tests, so it is the only one the request declares; CDEMO-CB00-TRN-SELECTED is tested only at :116, inside the skipped first-entry block, and is not read here. The response pins all sixteen shared carriers, none of which this arm writes, so they travel back exactly as they arrived. All of it - the area, the AID and the screen values - travels in the payload, so no server-side session state exists or is implied (gate G37, AAP rule R6). UNIT KIND. The arm under test is the EVALUATE EIBAID at :125-142, which the migration puts in BillPaymentController.payBill, and the header projection and the mapset and map names are the controller's output too. CONTROLLER_POJO is therefore the only kind that can express this case: BillPaymentService takes no AID - its seam is processEnterKey(actIdIn, confirm, commarea) - so a service-kind declaration could not select an arm on EIBAID at all, and it projects only the four fields its own paragraphs write rather than the ten this send carries. CONTROLLER_POJO means the handler constructed and called as a plain Java object: no HTTP, no MockMvc, no TestRestTemplate, no servlet container, no JobLauncher and no application context anywhere in the path, which is what gate G51 asks for, and it is the kind ParityCase requires a screenRequest and an expectedResponse for - which is exactly what this case is made of. The service still owns the effect, through clearCurrentScreen and initializeAllFields; what the controller owns is the dispatch that reaches them and the projection that is observed. PROVENANCE. Every value above is STATICALLY DERIVED - read out of the COBOL paragraph that produces it and cross-checked against the xxxI and xxxO PICTURE clauses of app/cpy-bms/COBIL00.CPY, the DFHMDF definitions and 24-by-80 DFHMDI of app/bms/COBIL00.bms whose trailing legend 'ENTER=Continue  F3=Back  F4=Clear' corroborates the three-AID set, the X(40) VALUE literals of app/cpy/COTTL01Y.cpy, the eight-byte MM/DD/YY and HH:MM:SS groups of app/cpy/CSDAT01Y.cpy, and the 160-byte layout of app/cpy/COCOM01Y.cpy - and it was NOT CAPTURED FROM A LIVE COBOL EXECUTION, not one byte of it, because such a capture is empirically impossible in this environment: no z/OS or CICS runtime, an indexed file handler the available compiler reports as disabled, no Language Environment CEE services, and DFHAID, DFHBMSCA and DFHATTR absent from the repository - which is why the DFHPF4 mnemonic this case declares comes from common.CicsAid, the single reproduction of DFHAID, rather than from a copybook (AAP 0.7.6 documents eight verified blockers, 0.9.11 records the substitution as risk R-A escalated rather than absorbed, and 0.9.12 records the missing copybooks as risk R-D). DETERMINISM. The clock is pinned to 2022-07-19T23:12:32, the instant the program's own version footer at :571 carries, so CURDATEO is 07/19/22 and CURTIMEO is 23:12:32 rather than whatever the wall clock said - the header is derived from an injected Clock and never from a captured now. Two-digit month, day and hour, well away from midnight, and no daylight-saving edge, so neither rendering is ambiguous; every case in this directory pins that same instant. US-ASCII is named explicitly rather than left to a platform default, which for a nine-fixture ASCII corpus and a twelve-dataset EBCDIC one is the difference between a comparison and a coincidence.",
+  "unitKind": "CONTROLLER_POJO",
+  "inputs": {},
+  "jobParameters": {},
+  "screenRequest": {
+    "eibcalen": 218,
+    "aid": "DFHPF4",
+    "pinnedClock": "2022-07-19T23:12:32",
+    "charset": "US-ASCII",
+    "commarea": {
+      "CDEMO-PGM-CONTEXT": "1"
+    },
+    "mapFields": {
+      "ACTIDINI": "00000000001",
+      "CONFIRMI": "Y"
+    },
+    "forcedOutcomes": {}
+  },
+  "expectedResponse": {
+    "nextMapset": "COBIL00",
+    "nextMap": "COBIL0A",
+    "navigation": {
+      "CDEMO-FROM-TRANID": "    ",
+      "CDEMO-FROM-PROGRAM": "        ",
+      "CDEMO-TO-TRANID": "    ",
+      "CDEMO-TO-PROGRAM": "        ",
+      "CDEMO-USER-ID": "        ",
+      "CDEMO-USER-TYPE": " ",
+      "CDEMO-PGM-CONTEXT": "1",
+      "CDEMO-CUST-ID": "000000000",
+      "CDEMO-CUST-FNAME": "                         ",
+      "CDEMO-CUST-MNAME": "                         ",
+      "CDEMO-CUST-LNAME": "                         ",
+      "CDEMO-ACCT-ID": "00000000000",
+      "CDEMO-ACCT-STATUS": " ",
+      "CDEMO-CARD-NUM": "0000000000000000",
+      "CDEMO-LAST-MAP": "       ",
+      "CDEMO-LAST-MAPSET": "       "
+    },
+    "sends": [
+      {
+        "fields": {
+          "TRNNAMEO": "CB00",
+          "TITLE01O": "      AWS Mainframe Modernization       ",
+          "CURDATEO": "07/19/22",
+          "PGMNAMEO": "COBIL00C",
+          "TITLE02O": "              CardDemo                  ",
+          "CURTIMEO": "23:12:32",
+          "ACTIDINO": "           ",
+          "CURBALO": "              ",
+          "CONFIRMO": " ",
+          "ERRMSGO": "                                                                              "
+        },
+        "attributes": {}
+      }
+    ],
+    "cursorField": "ACTIDINL",
+    "termination": "RETURN_TRANSID"
+  },
+  "expectedWrites": [],
+  "expectedFinalState": [],
+  "expectedReturnCode": 0,
+  "expectedMessages": [],
+  "normalisations": [],
+  "expectedDatasets": []
+}

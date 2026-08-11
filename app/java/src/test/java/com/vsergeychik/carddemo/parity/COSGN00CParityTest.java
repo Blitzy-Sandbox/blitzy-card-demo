@@ -319,19 +319,34 @@ final class COSGN00CParityTest {
      *
      * <p>Stated as a property of the case set so that a case which quietly stopped signing on -
      * because a seed row changed, or a password expectation was edited - cannot pass unnoticed.
-     * Changing it is therefore a deliberate act, and the one change made to it is recorded here:
+     * Changing it is therefore a deliberate act, and the three changes made to it are recorded here.
      * {@code case14} exercises the {@code ELSE} at {@code :241-246} rather than the {@code XCTL},
      * so that the wrong-password arm is asserted with a fully populated communication area carried
-     * across it. The administrator target stays driven by {@code case02} and {@code case09}, so
-     * both arms of {@code :230} remain reached.
+     * across it. {@code case15} does the same from the other side of the {@code PIC X} comparison:
+     * it types a password shorter than {@code PASSWDI PIC X(08)}, which is right space padded to
+     * eight bytes and so fails {@code :223} by padding rather than by content. {@code case09}
+     * likewise no longer signs on: it was moved onto the {@code OR LOW-VALUES} half of the second
+     * blank-field arm at {@code :123-127}, which is a rejecting path. Between them the count fell
+     * from seven to five. The administrator target stays driven by {@code case02}, so both arms of
+     * {@code :230} remain reached and {@link #theRoleFieldReplacesTheXctl()} still finds its admin
+     * transfer, and {@code case03}, {@code case10}, {@code case16} and {@code case20} keep the
+     * regular-user target driven.
      */
-    private static final int SUCCESSFUL_SIGN_ONS = 7;
+    private static final int SUCCESSFUL_SIGN_ONS = 5;
 
     /**
      * How many of the twenty reach {@code SEND-SIGNON-SCREEN} at {@code :145-157} and transmit the
      * map - every case that neither signs on nor presses {@code DFHPF3}.
+     *
+     * <p>Fourteen rather than twelve because {@code case09} and {@code case15} paint the screen
+     * instead of transferring: {@code case09} drives the {@code LOW-VALUES} term of {@code :123} and
+     * so leaves through {@code :127}, and {@code case15} is refused by the padded comparison at
+     * {@code :223}. This number and {@link #SUCCESSFUL_SIGN_ONS} move together - the two plus
+     * {@link #PLAIN_TEXT_SENDS} must always total
+     * {@value ParityHarness#CASES_PER_PROGRAM}, which
+     * {@link #theThreeExitsPartitionTheCaseSet()} asserts.
      */
-    private static final int SCREEN_SENDS = 12;
+    private static final int SCREEN_SENDS = 14;
 
     /**
      * How many of the twenty reach {@code SEND-PLAIN-TEXT} at {@code :162-172} - exactly one, the
@@ -1722,6 +1737,17 @@ final class COSGN00CParityTest {
      * image even on a rejected sign-on, and it is asserted here because it is exactly the sort of
      * detail a translation "tidies" by folding the normalisation into the success path.
      *
+     * <p>The two halves of the claim are carried by different cases, and neither half rests on one
+     * case alone. <em>Both fields are normalised</em> is proved by {@code case10}, which types
+     * {@code UsEr0002} and {@code PassWord} so that signing on is impossible unless the id
+     * <strong>and</strong> the password were folded, and by {@code case16}, which types the id in
+     * upper case and the password in lower so that {@code :135-136} is isolated from
+     * {@code :132-134}. <em>It runs unconditionally</em> is proved by the loop above, which pins
+     * {@code CDEMO-USER-ID} on every case that typed an id - and its sharpest witnesses are the
+     * rejecting paths, where a translation that folded the normalisation into the success path would
+     * hand back the raw image instead. {@code case09} is asserted below as one such path: it raises
+     * {@code WS-ERR-FLG} at {@code :124} and still leaves the normalised id in the area.
+     *
      * <p>Note the deliberate asymmetry with the sibling screens: {@code COUSR01C}, which adds a user,
      * contains {@code FUNCTION UPPER-CASE} <em>zero</em> times and stores what was typed. The
      * inconsistency is real, verified source behaviour, so it is preserved on both sides rather than
@@ -1747,11 +1773,10 @@ final class COSGN00CParityTest {
         }
 
         Map<String, ParityCase> byId = casesById();
-        ParityCase lowerCase = byId.get(ParityHarness.caseId(9));
         ParityCase mixedCase = byId.get(ParityHarness.caseId(10));
         ParityCase lowerPasswordOnly = byId.get(ParityHarness.caseId(16));
 
-        for (ParityCase parityCase : List.of(lowerCase, mixedCase, lowerPasswordOnly)) {
+        for (ParityCase parityCase : List.of(mixedCase, lowerPasswordOnly)) {
             String typedId = parityCase.screenRequest().mapFields().get(USERID_INPUT_ITEM);
             String typedPassword = parityCase.screenRequest().mapFields().get(PASSWD_INPUT_ITEM);
             assertThat(parityCase.expectedResponse().nextProgram())
@@ -1771,6 +1796,26 @@ final class COSGN00CParityTest {
                         + "fail here and nowhere else")
                 .isEqualTo(SignOnService.upperCase(
                         lowerPasswordOnly.screenRequest().mapFields().get(USERID_INPUT_ITEM)));
+
+        // The unconditional half of the claim, stated on a case that does NOT sign on. The loop above
+        // would be satisfied vacuously if every case carrying a typed id happened to reach :223, so at
+        // least one rejecting path must be named: case09 raises WS-ERR-FLG at :124, skips
+        // READ-USER-SEC-FILE at :138, and still leaves FUNCTION UPPER-CASE(USERIDI) in CDEMO-USER-ID
+        // because :132-134 sits outside the EVALUATE that rejected it.
+        ParityCase rejectedButNormalised = byId.get(ParityHarness.caseId(9));
+        String rejectedId = rejectedButNormalised.screenRequest().mapFields().get(USERID_INPUT_ITEM);
+        assertThat(rejectedButNormalised.expectedResponse().nextProgram())
+                .as("case09 must not sign on, or it cannot witness that :132-136 runs on a rejected "
+                        + "path")
+                .isNull();
+        assertThat(rejectedId)
+                .as("case09 must type a user id, or :132-134 has nothing to normalise")
+                .isNotNull();
+        assertThat(navigationOf(rejectedButNormalised, NavigationContext.USER_ID_FIELD))
+                .as("case09: the error flag is on, the file was never read, and CDEMO-USER-ID still "
+                        + "carries FUNCTION UPPER-CASE(USERIDI) - which is the whole point of "
+                        + ":132-136 sitting after END-EVALUATE at :130")
+                .isEqualTo(SignOnService.upperCase(rejectedId));
     }
 
     /**
@@ -1942,7 +1987,7 @@ final class COSGN00CParityTest {
         }
 
         assertThat(adminTargets + userTargets)
-                .as("seven of the twenty sign on; a change in that number means a case stopped "
+                .as("five of the twenty sign on; a change in that number means a case stopped "
                         + "exercising the comparison at :223")
                 .isEqualTo(SUCCESSFUL_SIGN_ONS);
         assertThat(adminTargets)
@@ -1964,8 +2009,13 @@ final class COSGN00CParityTest {
      * <p>Every case pins all sixteen {@code CARDDEMO-COMMAREA} fields, at their copybook widths, on
      * whichever side of the conversation the program left them. The five that {@code :224-228} writes
      * are written on the signing-on path only, and {@code CDEMO-PGM-CONTEXT} is reset to the
-     * {@code 88 CDEMO-PGM-ENTER} value there by {@code MOVE ZEROS} at {@code :228} - which
-     * {@code case15} proves by arriving with it set to the re-entry value and leaving with it zero.
+     * {@code 88 CDEMO-PGM-ENTER} value there by {@code MOVE ZEROS} at {@code :228} - which every
+     * signing-on case asserts, and which {@code case15} proves is <em>conditional</em> by arriving
+     * with the field at the {@code 88 CDEMO-PGM-REENTER} value, being refused at {@code :223}, and
+     * leaving with it still at that value. It is the only case in the twenty that arrives with a
+     * non-zero program context, so it carries this screen's share of the {@code ENTER}/{@code
+     * REENTER} distinction, and a translation that hoisted the {@code MOVE ZEROS} out of the
+     * matching branch would zero it and be caught here rather than passing.
      *
      * <p>{@code case14} carries a fully populated inbound area and asserts the complement: the eleven
      * fields {@code COSGN00C} does not write come back exactly as they arrived. A translation holding
@@ -2011,12 +2061,29 @@ final class COSGN00CParityTest {
 
         ParityCase reentered = byId.get(ParityHarness.caseId(15));
         assertThat(reentered.screenRequest().commarea().get(NavigationContext.PGM_CONTEXT_FIELD))
-                .as("case15 must arrive with CDEMO-PGM-CONTEXT at the re-entry value, or the reset "
-                        + "at :228 is not being tested")
+                .as("case15 must arrive with CDEMO-PGM-CONTEXT at the re-entry value, or the "
+                        + "placement of the reset at :228 is not being tested")
                 .isEqualTo("1");
+        assertThat(reentered.expectedResponse().nextProgram())
+                .as("case15 must be refused at :223, or it would not reach past the MOVE ZEROS")
+                .isNull();
         assertThat(navigationOf(reentered, NavigationContext.PGM_CONTEXT_FIELD))
-                .as("case15: :228 resets it, unconditionally, on the way to the XCTL")
-                .isEqualTo("0");
+                .as("case15: :228 sits inside the matching branch of :223, so the refused path "
+                        + "never reaches it and the field leaves exactly as it arrived - which is "
+                        + "what makes the reset asserted for the signing-on cases a property of "
+                        + "that branch rather than of the paragraph")
+                .isEqualTo("1");
+        assertThat(navigationOf(reentered, NavigationContext.USER_TYPE_FIELD))
+                .as("case15 arrives with a user type the row it reads does not carry, so a :227 "
+                        + "that ran outside its branch would overwrite it and be caught")
+                .isEqualTo(NavigationContext.USER_TYPE_ADMIN)
+                .isNotEqualTo(NavigationContext.USER_TYPE_USER);
+        assertThat(navigationOf(reentered, NavigationContext.USER_ID_FIELD).strip())
+                .as("case15: :134 is outside that branch and unconditional, so the stale inbound "
+                        + "user id is overwritten even though the sign-on was refused")
+                .isEqualTo("USER0003")
+                .isNotEqualTo(reentered.screenRequest().commarea()
+                        .get(NavigationContext.USER_ID_FIELD).strip());
 
         ParityCase carried = byId.get(ParityHarness.caseId(14));
         assertThat(carried.screenRequest().commarea())
@@ -2161,7 +2228,7 @@ final class COSGN00CParityTest {
                     .isEmpty();
         }
         assertThat(sends)
-                .as("twelve of the twenty reach SEND-SIGNON-SCREEN at :145-157")
+                .as("thirteen of the twenty reach SEND-SIGNON-SCREEN at :145-157")
                 .isEqualTo(SCREEN_SENDS);
     }
 
@@ -2227,10 +2294,10 @@ final class COSGN00CParityTest {
                 .as("exactly one of the twenty presses PF3")
                 .isEqualTo(PLAIN_TEXT_SENDS);
         assertThat(transfers)
-                .as("seven sign on")
+                .as("five sign on")
                 .isEqualTo(SUCCESSFUL_SIGN_ONS);
         assertThat(painted)
-                .as("twelve paint the screen")
+                .as("fourteen paint the screen")
                 .isEqualTo(SCREEN_SENDS);
         assertThat(transfers + painted + plainText)
                 .as("and the three account for every case: MAIN-PARA reaches exactly one terminal "

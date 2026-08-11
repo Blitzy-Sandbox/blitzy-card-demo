@@ -394,12 +394,12 @@ class COADM01CParityTest {
 
     /** Case identifiers driven through {@link AdminMenuController} as a plain Java object. */
     private static final List<String> CONTROLLER_CASES =
-            List.of("case01", "case02", "case15", "case20");
+            List.of("case01", "case02", "case15");
 
     /** Case identifiers driven through {@link AdminMenuService} with the copybook option table. */
     private static final List<String> SERVICE_CASES =
             List.of("case03", "case04", "case05", "case06", "case07", "case09", "case10", "case11",
-                    "case12", "case13", "case14", "case19");
+                    "case12", "case13", "case14", "case19", "case20");
 
     // =================================================================================================
     // Section 6 - the gate itself.
@@ -515,7 +515,7 @@ class COADM01CParityTest {
      * turns a mis-declared fixture into one failure that names it.
      */
     @Test
-    @DisplayName("declares SERVICE for the sixteen service cases and CONTROLLER_POJO for the four")
+    @DisplayName("declares SERVICE for the seventeen service cases and CONTROLLER_POJO for the three")
     void everyCaseDeclaresTheUnitKindItsAdapterConstructs() {
         for (ParityCase parityCase : cases()) {
             UnitKind expected = CONTROLLER_CASES.contains(parityCase.caseId())
@@ -806,13 +806,15 @@ class COADM01CParityTest {
      */
     private static ParityUnit unitFor(ParityCase parityCase) {
         return switch (parityCase.caseId()) {
-            case "case01", "case02", "case15", "case20" -> COADM01CParityTest::runController;
+            case "case01", "case02", "case15" -> COADM01CParityTest::runController;
+            case "case03" -> COADM01CParityTest::runSignonDefaultingGuard;
             case "case08" -> COADM01CParityTest::runDummyPrefixBranch;
             case "case16" -> COADM01CParityTest::runWithSecurityFileSeeded;
             case "case17" -> COADM01CParityTest::runWithUnusedWorkingStorageChecked;
             case "case18" -> COADM01CParityTest::runThreeTimesForStatelessness;
-            case "case03", "case04", "case05", "case06", "case07", "case09", "case10", "case11",
-                    "case12", "case13", "case14", "case19" -> COADM01CParityTest::runService;
+            case "case04", "case05", "case06", "case07", "case09", "case10", "case11",
+                    "case12", "case13", "case14", "case19",
+                    "case20" -> COADM01CParityTest::runService;
             default -> throw new IllegalArgumentException("Case " + parityCase.caseId()
                     + " of " + PROGRAM + " has no adapter. Every case is dispatched by name and there "
                     + "is no fallback, because a case running through some default adapter would "
@@ -839,6 +841,77 @@ class COADM01CParityTest {
         AdminMenuOutcome outcome = service.handle(input);
 
         assertServiceInvariants(service, input, outcome);
+        recordServiceOutcome(invocation, outcome);
+        return null;
+    }
+
+    /**
+     * {@code case03}: the {@code LOW-VALUES} term of the combined relation at
+     * {@code app/cbl/COADM01C.cbl:162}.
+     *
+     * <p>Runs the {@code EIBCALEN = 0} path exactly as {@link #runService(Invocation)} does - lines 82
+     * to 84 divert to {@code RETURN-TO-SIGNON-SCREEN}, and the transfer that produces is the
+     * observation - and then drives the relation itself with the {@code CDEMO-TO-PROGRAM} image the
+     * case declares. That second step belongs here rather than in the case's expectation because the
+     * relation's two terms are not both reachable through {@code handle}: line 97 has already written
+     * a name on the one path that arrives carrying a communication area, and the cold-start path
+     * arrives with the un-{@code VALUE}d working-storage area, which the source holds as binary zeros
+     * and this projection's {@code NavigationContext#empty()} presents as spaces.
+     * {@link AdminMenuService#resolveSignonTarget(String)} is public for exactly that reason, and this
+     * is the adapter that uses it.
+     *
+     * <p>The declared image is required to be all low-values at the field's declared width, so the
+     * fixture cannot quietly degrade into the spaces {@code case01} declares and collapse the pair
+     * into one case. Both terms are then required to converge on the single target the run named, and
+     * a half-and-half image is required to satisfy neither - which is what stops a translation that
+     * had replaced the relation with one blank test from passing both halves of the pair.
+     *
+     * @param invocation the seeded inputs, the pinned clock and the codec
+     * @return {@code null}, meaning the recorder holds the observation
+     */
+    private static UnitOutcome runSignonDefaultingGuard(Invocation invocation) {
+        AdminMenuService service = service(invocation.codec());
+        AdminMenuInput input = inputOf(invocation);
+
+        AdminMenuOutcome outcome = service.handle(input);
+
+        assertServiceInvariants(service, input, outcome);
+        assertThat(outcome.nextProgramCarriesCommarea())
+                .describedAs("the XCTL at 165-167 specifies NO COMMAREA, unlike the one at 142-145, "
+                        + "and an absent commarea is the condition COSGN00C's own EIBCALEN = 0 test "
+                        + "looks for")
+                .isFalse();
+
+        String declared = invocation.commarea().get(NavigationContext.TO_PROGRAM_FIELD);
+        assertThat(declared)
+                .describedAs("%s exists to drive the LOW-VALUES term of line 162, so it must declare "
+                        + "%s as X'00' at every one of its declared bytes; spaces are case01's input "
+                        + "and would collapse the two cases into one", invocation.caseId(),
+                        NavigationContext.TO_PROGRAM_FIELD)
+                .isEqualTo(ScreenFieldImage.unpainted(NavigationContext.TO_PROGRAM_LENGTH));
+
+        String target = picX(SIGNON_PROGRAM, NavigationContext.TO_PROGRAM_LENGTH);
+        assertThat(service.resolveSignonTarget(declared))
+                .describedAs("term one: a CDEMO-TO-PROGRAM of binary zeros defaults to 'COSGN00C' at "
+                        + "line 163")
+                .isEqualTo(target);
+        assertThat(service.resolveSignonTarget(spaces(NavigationContext.TO_PROGRAM_LENGTH)))
+                .describedAs("term two, which is the term this projection's cold-start area takes and "
+                        + "the one case01 pins; the two converge, and that convergence is why the pair "
+                        + "carries one expectation between them")
+                .isEqualTo(target);
+        assertThat(picX(outcome.nextProgram(), NavigationContext.TO_PROGRAM_LENGTH))
+                .describedAs("and the target both terms produce is the program the run transferred to")
+                .isEqualTo(target);
+
+        String halfAndHalf = ScreenFieldImage.unpainted(NavigationContext.TO_PROGRAM_LENGTH / 2)
+                + spaces(NavigationContext.TO_PROGRAM_LENGTH / 2);
+        assertThat(service.resolveSignonTarget(halfAndHalf))
+                .describedAs("= LOW-VALUES needs every byte zero and = SPACES every byte a space, so a "
+                        + "field that is half of each satisfies neither term and is transferred to "
+                        + "unchanged")
+                .isEqualTo(halfAndHalf);
+
         recordServiceOutcome(invocation, outcome);
         return null;
     }

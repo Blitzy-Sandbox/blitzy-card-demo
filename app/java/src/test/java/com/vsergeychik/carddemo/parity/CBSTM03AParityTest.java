@@ -508,9 +508,9 @@ class CBSTM03AParityTest {
     /**
      * The scenario each case runs under, kept beside the twenty case files it belongs to.
      *
-     * <p>The eleven cases that name {@link CallSite#NONE} with no bypass and no null UCB are not
+     * <p>The thirteen cases that name {@link CallSite#NONE} with no bypass and no null UCB are not
      * uninteresting - they are the ones whose whole assertion is the record sequence, and they differ
-     * from each other only in their seed, which is where a case file belongs. The nine that do name
+     * from each other only in their seed, which is where a case file belongs. The seven that do name
      * something are the guard-arm and gating cases, and each states its one deviation and nothing else.
      *
      * @param caseId the case whose scenario to resolve
@@ -527,8 +527,14 @@ class CBSTM03AParityTest {
             case "case11" -> Scenario.reporting(CallSite.OPEN_TRNXFILE,
                 FileStatus.RECORD_LENGTH_CONFLICT);
 
-            // The five WHEN OTHER / ELSE arms, one per guarded call site (gate G47).
-            case "case12" -> Scenario.reporting(CallSite.OPEN_TRNXFILE, "35");
+            // The ST-CURR-BAL high-order truncation case needs a run that COMPLETES: its subject is
+            // MOVE ACCT-CURR-BAL TO ST-CURR-BAL at L484, so it asserts four whole statements and no
+            // environmental deviation at all. The TRNXFILE open's ELSE arm it used to reach stays
+            // covered by StatementGenerationJobATest.TheAbendPath.theFourOpenGuards, which forces a
+            // bad status at each of the four opens in turn (gates G47, G35).
+            case "case12" -> Scenario.normal();
+
+            // The four WHEN OTHER / ELSE arms, one per remaining guarded call site (gate G47).
             case "case13" -> Scenario.reporting(CallSite.READ_XREFFILE, "37");
             // '10' at the CUSTFILE keyed read is FATAL: L379-L386 has no WHEN '10' arm.
             case "case14" -> Scenario.reporting(CallSite.READ_CUSTFILE, FileStatus.END_OF_FILE);

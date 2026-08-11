@@ -1,13 +1,13 @@
 {
   "program": "CORPT00C",
   "caseId": "case18",
-  "description": "The WHEN OTHER arm of EVALUATE WS-RESP-CD in WIRTE-JOBSUB-TDQ at :528-534, reached by forcing the queue to report DFHRESP(NOTOPEN) = 19. Three things follow and all three are pinned. The first record has ALREADY been handed over when the condition is reported, and the queue is DISPOSITION(MOD) with ERROROPTION(IGNORE), so there is no rollback and exactly one eighty-byte record stands - not seventeen and not none. :529 DISPLAYs 'RESP:' WS-RESP-CD 'REAS:' WS-REAS-CD, both PIC S9(09) COMP, which renders as nine zero-filled digits each. And :530-534 raise the error flag, report 'Unable to Write TDQ (JOBS)...' and send with the cursor on MONTHLYL - which stops the emit loop through the OR ERR-FLG-ON in its UNTIL at :499 and also suppresses the success notice at :445. Expected values are STATICALLY DERIVED by reading app/cbl/CORPT00C.cbl, its copybooks, app/bms/CORPT00.bms and app/csd/CARDDEMO.CSD - never captured from a COBOL run, which is impossible in this environment (risk R-A). Java has no transient data queue, so EXEC CICS WRITEQ TD QUEUE('JOBS') at :517 is reproduced through an explicit job-submission port; the eighty-byte content is identical and the dataset key JOBS names the TDQUEUE(JOBS) that app/csd/CARDDEMO.CSD:499-505 defines as RECORDSIZE(80) RECORDFORMAT(FIXED) BLOCKFORMAT(UNBLOCKED) DISPOSITION(MOD).",
+  "description": "THE SECOND CSUTLDTC CALL SITE REJECTING WHILE THE FIRST ACCEPTS, reached by a malformed month that no numeric edit catches. EDTMMI arrives as 'AB', which conforms to nothing, so FUNCTION NUMVAL-C at :317 yields zero and the MOVE at :319 stores '00' back into the same PIC X(2) item - and '00' then SURVIVES the end-date month edit at :355-356, because IS NOT NUMERIC is false for two digit characters and the alphanumeric comparison '00' > '12' is false as well. The bad month is therefore laundered into a value the edit accepts, WS-END-DATE composes as '2022-00-31' at :384-386, and the only thing left that can reject it is the date validator at :412. That is the silent-divergence shape this folder exists to pin: a malformed input does not fail a numeric test, it is quietly turned into a number and has to be caught downstream. IT IS DELIBERATELY A DIFFERENT MECHANISM FROM case17, whose SDTMMI '13' is caught BY the range comparison and never reaches stage four at all; together they are the two halves of gate G29's rejection side, with case16 the accept side. THE ONLY CASE IN THE FOLDER WHERE SITE ONE ACCEPTS AND SITE TWO REJECTS: the start date '2022-07-01' converts, so :396 takes its '0000' arm and CONTINUEs and the nested guard at :399 is never evaluated, while the end date '2022-00-31' does not, so :416 falls to its ELSE at :418 and :419 finds 2517 NOT = '2513' and rejects with the literal at :420. Both sites are consequently proved independently wired, which no other case in this folder demonstrates - case16 has both accepting, case19 has both tolerated, case17 reaches neither. THE CONVENTION THIS RESTS ON IS STATED RATHER THAN ASSUMED (practice B12): FUNCTION NUMVAL-C's result for an argument that is not a well-formed numeric-edited or currency string is COMPILER-DEFINED, and the reproduction adopts IBM Enterprise COBOL's documented behaviour - leading and trailing spaces ignored, an optional currency sign, optional digit-grouping commas and an optional leading or trailing sign including CR and DB accepted, and A WHOLLY NON-CONFORMING ARGUMENT YIELDING ZERO. The full malformed-input taxonomy is covered across three cases and is enumerated here so no reader has to infer it: ' 7' (leading space), '7 ' (trailing space), '$7' (currency symbol), '+7' and '7-' (leading and trailing sign) all normalise successfully and are case16's accept side; '13' conforms but exceeds the range and is case17's; 'AB' conforms to nothing, yields zero and stores '00', which is this case. An OVER-LONG value is physically impossible in the payload rather than merely untested - app/cpy-bms/CORPT00.CPY declares EDTMMI PIC X(2) and EDTYYYYI PIC X(4), so length is bounded by the field itself, and the xxxL COMP PIC S9(4) items are length METADATA and never payload members (AAP 0.6.3). A PRESERVED DEFECT, REPRODUCED AND NOT REPAIRED (practice B5): the IS NOT NUMERIC halves of all six edits at :329-379 are UNREACHABLE through this path, because the stores at :307 through :327 come out of PIC 99 and PIC 9999 receivers and are therefore always digit characters, so only the range comparisons - > '12' for a month and > '31' for a day - can ever fire. That dead half is exactly why 'AB' survives to stage four, and it is written as found rather than tidied. THE MESSAGE AND ITS TWO WIDTHS (practice B8): the literal at :420 is 'End Date - Not a valid date...' at exactly thirty characters - note the lower-case 'date', which the sibling literal at :356 spells 'Month', so the two differ in more than one word and neither may be paraphrased into the other. It is moved to WS-MESSAGE PIC X(80) as thirty characters plus fifty spaces, and :558 then moves that into ERRMSGO PIC X(78), which truncates on the right to thirty plus forty-eight. Both widths are declared below on their own channels, because comparing an eighty-byte expectation against a seventy-eight-byte observation is how a two-byte truncation defect goes unnoticed. THE ECHO IS THE DIAGNOSTIC: this path never reaches the success tail, so INITIALIZE-ALL-FIELDS never runs and all ten input items are still on the screen when it is sent - which makes EDTMMO = '00' the single most telling value in this file, the visible proof that the operator's 'AB' was silently converted rather than refused. All seventeen output items are pinned, not only the ones that changed. CSUTLDTC IS A CALLED SUBPROGRAM, NOT A JOB (gate G12, implicit requirement I3): it has no EXEC PGM= anywhere in app/jcl, app/proc or app/csd and is reached only from this program and COTRN02C, so the translation is a constructor-injected @Service - and it is invoked REAL here, never stubbed, because a stub would replace the decision under test at :396 and :416 with the decision the stub was told to make. The rejecting outcome is therefore derived rather than dictated: app/cbl/CSUTLDTC.cbl:67 declares 88 FC-INVALID-MONTH VALUE X'000309D559C3C5C5', whose first two bytes X'0003' are SEVERITY S9(4) BINARY = 3 and whose next two X'09D5' are MSG-NO S9(4) BINARY = 2517, both rendered through PIC 9(4) REDEFINES and hence the zero-filled '0003' and '2517'. 2517 is genuinely distinct from the '2513' that :399 and :419 tolerate - that is FC-UNSUPP-RANGE at :66, X'000309D1', and it is case19's - so this case rejects where case19 proceeds. Site one returns the feedback code that app/cbl/CSUTLDTC.cbl:62 spells FC-INVALID-DATE, whose VALUE X'0000000000000000' makes it, despite the name, the SUCCESS outcome. CORPT00C reads only two spans of the eighty-byte result - CSUTLDTC-RESULT-SEV-CD X(04) at :133 and CSUTLDTC-RESULT-MSG-NUM X(04) at :135, that is bytes 1-4 and 16-19 - so those two spans alone decide its behaviour; THE COMPOSITION OF THE FULL EIGHTY-BYTE WS-MESSAGE IS OWNED BY THE SIBLING FOLDER parity/CSUTLDTC and is neither restated nor competed with here (practice B12). THE SEND IS TERMINAL (rule R7): SEND-TRNRPT-SCREEN ends GO TO RETURN-TO-CICS at :580, the program's single GO TO, so control never returns to stage four's caller. :429-436 therefore never run, WS-REPORT-NAME is never set to 'Custom', SUBMIT-JOB-TO-INTRDR is never performed and the success notice at :445 is never reached, so NO WRITEQ TD OCCURS AND NOTHING IS WRITTEN. expectedWrites is empty, and on this contract an empty write list is a POSITIVE assertion that the job-submission port received nothing, which is the negative form of gate G42. expectedDatasets is empty for a related and deliberate reason: the fingerprint carries a JOBS stream only when a record was submitted, so declaring a JOBS row count of zero would assert that an absent stream exists and would diff as a missing dataset rather than as an empty one. Gate G32 does not apply. expectedReturnCode is 0 AND IS STATED RATHER THAN DEFAULTED: CORPT00C is online, sets no RETURN-CODE and contains no CALL 'CEE3ABD', so gate G35 has no subject, and although CSUTLDTC itself does MOVE WS-SEVERITY-N TO RETURN-CODE at its own :98 - which would be 3 for every named error token including this one - THIS PROGRAM NEVER PROPAGATES IT and reads only the severity and message-number characters. Nobody should read the 3 in '0003' as a return code. THE CORRECTED FORM OF GATE G38: ERRMSGC is never assigned on this path, so it stays at the BMS default, and the red of the error line is DECLARATIVE - COLOR=RED on the ERRMSG DFHMDF in app/bms/CORPT00.bms - not programmatic. This program copies neither CSSETATY nor CSSTRPFY, and the only DFH colour constant it names anywhere is DFHGREEN at :448 on the success tail, so there is no DFHRED move and no '*' marker to assert; the default-colour mnemonic below is that absence stated positively. unitKind is CONTROLLER_POJO: ReportRequestController is constructed as a plain object and driven through mainPara, with no MockMvc, no TestRestTemplate, no servlet container and no JobLauncher (gate G51), and inputs is empty because every EXEC CICS in this program is WRITEQ TD, SEND, RECEIVE, RETURN or XCTL and no dataset is reachable at all. Nothing is left to the wall clock and nothing is random (practice B7): 07/15/22 and 10:30:45 are the pinned instant read through :611-628, where :620 takes WS-CURDATE-YEAR(3:2) for the two-digit year, and the code page is named US-ASCII rather than defaulted (practice B8). Titles come from app/cpy/COTTL01Y.cpy, whose line 21 is COMMENTED OUT, so TITLE02O is the CardDemo form at fourteen leading and eighteen trailing spaces and never 'Credit Card Demo Application (CCDA)'. DFHENTER comes from common.CicsAid because DFHAID is IBM-supplied and ABSENT FROM THIS REPOSITORY (risk R-D). review_rules returns exactly one line, 'No user rules provided', so ZERO user rules govern this fixture and enterprise practices B1, B3, B5, B7, B8 and B12 stand in their place; their absence is not licence to lower the bar, and B1 is why this mandatory rejection case carries concrete values throughout rather than a placeholder anywhere. Every expected value is STATICALLY DERIVED by reading app/cbl/CORPT00C.cbl and app/cbl/CSUTLDTC.cbl against app/cpy-bms/CORPT00.CPY, app/bms/CORPT00.bms, app/cpy/COTTL01Y.cpy, app/cpy/CSDAT01Y.cpy and app/cpy/COCOM01Y.cpy, every one of which is READ-ONLY reference (practice B3), and NEVER captured from a running COBOL program, which is impossible in this environment (risk R-A).",
   "unitKind": "CONTROLLER_POJO",
   "inputs": {},
   "screenRequest": {
     "eibcalen": 160,
     "aid": "DFHENTER",
-    "pinnedClock": "2026-08-09T14:05:06",
+    "pinnedClock": "2022-07-15T10:30:45",
     "charset": "US-ASCII",
     "commarea": {
       "CDEMO-FROM-TRANID": "CM00",
@@ -28,16 +28,18 @@
       "CDEMO-LAST-MAPSET": "       "
     },
     "mapFields": {
-      "MONTHLYI": "Y",
+      "MONTHLYI": " ",
+      "YEARLYI": " ",
+      "CUSTOMI": "X",
+      "SDTMMI": "07",
+      "SDTDDI": "01",
+      "SDTYYYYI": "2022",
+      "EDTMMI": "AB",
+      "EDTDDI": "31",
+      "EDTYYYYI": "2022",
       "CONFIRMI": "Y"
     },
-    "forcedOutcomes": {
-      "write": {
-        "outcome": "OTHER",
-        "resp": 19,
-        "resp2": 0
-      }
-    }
+    "forcedOutcomes": {}
   },
   "expectedResponse": {
     "nextProgram": "CORPT00C",
@@ -66,67 +68,47 @@
         "fields": {
           "TRNNAMEO": "CR00",
           "TITLE01O": "      AWS Mainframe Modernization       ",
-          "CURDATEO": "08/09/26",
+          "CURDATEO": "07/15/22",
           "PGMNAMEO": "CORPT00C",
           "TITLE02O": "              CardDemo                  ",
-          "CURTIMEO": "14:05:06",
-          "MONTHLYO": "Y",
+          "CURTIMEO": "10:30:45",
+          "MONTHLYO": " ",
           "YEARLYO": " ",
-          "CUSTOMO": " ",
-          "SDTMMO": "  ",
-          "SDTDDO": "  ",
-          "SDTYYYYO": "    ",
-          "EDTMMO": "  ",
-          "EDTDDO": "  ",
-          "EDTYYYYO": "    ",
+          "CUSTOMO": "X",
+          "SDTMMO": "07",
+          "SDTDDO": "01",
+          "SDTYYYYO": "2022",
+          "EDTMMO": "00",
+          "EDTDDO": "31",
+          "EDTYYYYO": "2022",
           "CONFIRMO": "Y",
-          "ERRMSGO": "Unable to Write TDQ (JOBS)...                                                 "
+          "ERRMSGO": "End Date - Not a valid date...                                                "
         },
         "attributes": {
           "ERRMSGC": "DFHDFCOL"
         }
       }
     ],
-    "cursorField": "MONTHLYL",
+    "cursorField": "EDTMML",
     "termination": "RETURN_TRANSID"
   },
-  "expectedWrites": [
-    {
-      "dataset": "JOBS",
-      "rowIndex": 0,
-      "fields": {
-        "JCL-RECORD": "//TRNRPT00 JOB 'TRAN REPORT',CLASS=A,MSGCLASS=0,                                "
-      },
-      "expectedBytes": "//TRNRPT00 JOB 'TRAN REPORT',CLASS=A,MSGCLASS=0,                                "
-    }
-  ],
+  "expectedWrites": [],
   "expectedFinalState": [],
   "expectedReturnCode": 0,
   "expectedMessages": [
     {
       "channel": "WS_MESSAGE_80",
-      "text": "Unable to Write TDQ (JOBS)...                                                   "
+      "text": "End Date - Not a valid date...                                                  "
     },
     {
       "channel": "SCREEN_ERRMSG_78",
-      "text": "Unable to Write TDQ (JOBS)...                                                 "
+      "text": "End Date - Not a valid date...                                                "
     },
     {
       "channel": "DISPLAY_LINE",
       "text": "PROCESS ENTER KEY"
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "RESP:000000019REAS:000000000"
     }
   ],
   "normalisations": [],
-  "expectedDatasets": [
-    {
-      "dataset": "JOBS",
-      "channel": "WRITES",
-      "rowCount": 1,
-      "recordLength": 80
-    }
-  ]
+  "expectedDatasets": []
 }

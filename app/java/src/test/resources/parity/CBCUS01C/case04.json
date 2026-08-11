@@ -1,37 +1,23 @@
 {
   "program": "CBCUS01C",
   "caseId": "case04",
-  "description": "The last-record boundary. The browse is positioned on the highest key in the file, CUST-ID 000000050, so the very next READ after the one that delivers it is the one that reports '10'. The loop must display that single record twice and then stop: a translation that read one record too many would emit a third image, and one that stopped a record early would emit none. The record is the fiftieth row of the shipped fixture, taken from zero-based row 49, so the bytes are production-shaped rather than constructed.",
+  "description": "An empty customer master, and end-of-file on the very first READ with no successful read before it. app/jcl/READCUST.jcl:L6 is a bare EXEC PGM=CBCUS01C with no PARM, so the run is parameterless. CUSTFILE is declared as a dataset that exists and holds no row rather than as a slice of app/data/ASCII/custdata.txt: the empty condition is the subject here, so the empty declaration is a deliberate, load-bearing expectation and not an unfinished fixture. It is also the only shape that reaches the branch this case pins - a dataset a case says nothing about is omitted from inputs altogether, while a dataset that exists and holds nothing must say so together with its 500-byte width and its CVCUS01Y copybook, and an inline row list with no rows in it declares neither. Trace: 0000-CUSTFILE-OPEN at L118-L134 puts 8 into APPL-RESULT and opens INPUT; an existing empty dataset opens cleanly, so L121 sees '00', L122 moves 0, the 88 APPL-AOK condition at L126 holds and the paragraph CONTINUEs without emitting a line - that transient 8 is overwritten before anything can observe it. The PERFORM UNTIL at L74 tests its condition first, and END-OF-FILE is still 'N' from its VALUE clause at L65, so the body runs exactly once. 1000-CUSTFILE-GET-NEXT reads at L93 and gets '10': L94's test for '00' fails, so the display sitting inside that arm at L96 never runs; L98's test for '10' holds and puts 16 into APPL-RESULT; APPL-AOK is false at L104, so control reaches L107 where 88 APPL-EOF - VALUE 16 - holds, and L108 moves 'Y' into END-OF-FILE. The fatal arm at L110-L113 is not taken, so the read's error literal, the rendered status line from Z-DISPLAY-IO-STATUS and the abend banner from Z-ABEND-PROGRAM are all absent, and CALL 'CEE3ABD' at L158 is never reached. Back in the mainline the second guard at L77 now fails, and that is precisely why no record line appears: the display is not missing from the program, it is refused by the guard. The loop condition is re-evaluated, END-OF-FILE is 'Y', and 9000-CUSTFILE-CLOSE closes at '00', so L140 subtracts APPL-RESULT from itself and leaves 0 - again with no line emitted. The run therefore ends normally instead of abending, and the whole of SYSOUT is the two banners with nothing whatever between them: L71's opening line and L85's closing line, which is the two-banner floor plus zero of the two-line-per-record blocks. APPL-RESULT 16 and the 88 APPL-EOF name that reads it are internal loop-control state and are never an exit code: CBCUS01C contains no reference to RETURN-CODE anywhere, so the expected return code is 0 - not the 16 that APPL-RESULT transiently holds, and not the 12 the three fatal arms leave behind. Because no record is ever displayed, this case asserts no 500-byte record width and no FILLER span; the dataset-level expectation instead states what no row expectation can, that CUSTFILE was opened and holds exactly zero rows at its declared 500-byte width. Provenance: statically derived by structured reading of app/cbl/CBCUS01C.cbl, cross-checked against the CVCUS01Y byte layout and the READCUST.jcl DD contract. It was never captured from, recorded against or replayed from any execution of the legacy COBOL, which is empirically impossible in this environment - see AAP section 0.7.6 and risk R-A.",
   "unitKind": "BATCH_JOB",
   "inputs": {
     "CUSTFILE": {
-      "fixture": "custdata.txt",
-      "fromRow": 49,
-      "rowCount": 1
+      "empty": true,
+      "recordLength": 500,
+      "copybook": "CVCUS01Y"
     }
   },
   "jobParameters": {},
   "expectedWrites": [],
-  "expectedFinalState": [
-    {
-      "dataset": "CUSTFILE",
-      "rowIndex": 0,
-      "expectedBytes": "000000050Aniya                    Alba                     Von                      1588 Nienow Cape                                  Suite 187                                         New Aricchester                                   ORUSA04257     (325)301-0827  (493)985-9283  931248469000000000000303878241960-12-010074883577Y623                                                                                                                                                                        "
-    }
-  ],
+  "expectedFinalState": [],
   "expectedReturnCode": 0,
   "expectedMessages": [
     {
       "channel": "DISPLAY_LINE",
       "text": "START OF EXECUTION OF PROGRAM CBCUS01C"
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "000000050Aniya                    Alba                     Von                      1588 Nienow Cape                                  Suite 187                                         New Aricchester                                   ORUSA04257     (325)301-0827  (493)985-9283  931248469000000000000303878241960-12-010074883577Y623                                                                                                                                                                        "
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "000000050Aniya                    Alba                     Von                      1588 Nienow Cape                                  Suite 187                                         New Aricchester                                   ORUSA04257     (325)301-0827  (493)985-9283  931248469000000000000303878241960-12-010074883577Y623                                                                                                                                                                        "
     },
     {
       "channel": "DISPLAY_LINE",
@@ -43,7 +29,7 @@
     {
       "dataset": "CUSTFILE",
       "channel": "FINAL_STATE",
-      "rowCount": 1,
+      "rowCount": 0,
       "recordLength": 500
     }
   ]
