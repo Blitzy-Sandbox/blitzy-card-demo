@@ -2366,6 +2366,88 @@ class FixedWidthCodecTest {
 
     // =============================================================================================
     @Nested
+    @DisplayName("firstUnrepresentableCodePoint - the question form of encodeImage")
+    class FirstUnrepresentableCodePoint {
+
+        private final FixedWidthCodec ascii = new FixedWidthCodec(ASCII);
+        private final FixedWidthCodec ebcdic = new FixedWidthCodec(EBCDIC);
+
+        @Test
+        @DisplayName("an empty OptionalInt for a value the code page represents in full")
+        void emptyForARepresentableValue() {
+            assertThat(ascii.firstUnrepresentableCodePoint("SMITH JOHN A")).isEmpty();
+        }
+
+        @Test
+        @DisplayName("an empty OptionalInt for the empty string, which has no character to judge")
+        void emptyForTheEmptyString() {
+            assertThat(ascii.firstUnrepresentableCodePoint("")).isEmpty();
+        }
+
+        @ParameterizedTest(name = "US-ASCII cannot represent U+{0}")
+        @ValueSource(strings = {"00E9", "00D1", "20AC", "4E2D"})
+        @DisplayName("reports the code point US-ASCII has no representation for")
+        void reportsTheOffendingCodePoint(String hex) {
+            int codePoint = Integer.parseInt(hex, 16);
+
+            assertThat(ascii.firstUnrepresentableCodePoint(new String(Character.toChars(codePoint))))
+                    .hasValue(codePoint);
+        }
+
+        @Test
+        @DisplayName("reports the FIRST offender, not the last, so the answer is deterministic")
+        void reportsTheFirstOffender() {
+            assertThat(ascii.firstUnrepresentableCodePoint("A\u00E9B\u00D1C")).hasValue(0x00E9);
+        }
+
+        @Test
+        @DisplayName("judges a surrogate pair as the one character it is, naming a code point that is "
+                + "actually in the value rather than a lone surrogate")
+        void judgesASurrogatePairAsOneCharacter() {
+            String emoji = new String(Character.toChars(0x1F600));
+
+            assertThat(emoji).hasSize(2);
+            assertThat(ascii.firstUnrepresentableCodePoint("OK" + emoji)).hasValue(0x1F600);
+            assertThat(ascii.firstUnrepresentableCodePoint(emoji)).hasValue(0x1F600);
+        }
+
+        @Test
+        @DisplayName("answers per code page: IBM037 represents an accented Latin letter US-ASCII "
+                + "cannot, so the question is only meaningful against a stated code page")
+        void answersPerCodePage() {
+            assertThat(ebcdic.firstUnrepresentableCodePoint("JOS\u00C9")).isEmpty();
+            assertThat(ascii.firstUnrepresentableCodePoint("JOS\u00C9")).hasValue(0x00C9);
+        }
+
+        @Test
+        @DisplayName("agrees with encodeImage: it is empty exactly when encodeImage would not refuse")
+        void agreesWithEncodeImage() {
+            for (String value : List.of("PLAIN", "JOS\u00C9", "", "MU\u00D1OZ", "0123456789")) {
+                boolean judgedWritable = ascii.firstUnrepresentableCodePoint(value).isEmpty();
+                boolean actuallyWritable;
+                try {
+                    ascii.encodeImage(value, "a test value");
+                    actuallyWritable = true;
+                } catch (IllegalArgumentException refused) {
+                    actuallyWritable = false;
+                }
+                assertThat(judgedWritable)
+                        .as("the question and the write path must agree for %s",
+                                value.codePoints().boxed().toList())
+                        .isEqualTo(actuallyWritable);
+            }
+        }
+
+        @Test
+        @DisplayName("rejects a null value rather than reporting it as representable")
+        void rejectsNull() {
+            assertThatNullPointerException()
+                    .isThrownBy(() -> ascii.firstUnrepresentableCodePoint(null));
+        }
+    }
+
+    // =============================================================================================
+    @Nested
     @DisplayName("The public API shape - nothing bypasses the truncation-direction choice")
     class PublicApiShape {
 

@@ -1,12 +1,14 @@
 package com.vsergeychik.carddemo.transaction.dto;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.FixedWidthRecord;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.FieldSpan;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.PictureKind;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.RecordLayout;
 import com.vsergeychik.carddemo.common.NavigationContext;
+import com.vsergeychik.carddemo.common.ResponseOnlyMembers;
 import jakarta.validation.constraints.Size;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -284,7 +286,23 @@ import java.util.Objects;
  *                  <strong>Not a map field</strong>: the second of the two mandated exceptions, and
  *                  absent from the symbolic-map image. {@code null} becomes spaces, which is the
  *                  no-key-resolved state
+ *
+ * <h2>Members this request tolerates without declaring</h2>
+ *
+ * <p>The {@code @JsonIgnoreProperties} below names the members the paired response carries that this
+ * request does not declare. They are tolerated so a client can send the body it was just handed straight
+ * back: rule R6 and gate G37 put the whole conversation in the payload, which makes the next request the
+ * previous response. {@code ignoreUnknown} stays at its default of {@code false}, so every <em>other</em>
+ * unrecognised name is still refused with the offending field named in the error envelope. Each tolerated
+ * member is recomputed by the server on every path, so the value that arrives here is discarded and
+ * cannot steer a branch. The names live in {@link com.vsergeychik.carddemo.common.ResponseOnlyMembers},
+ * which explains each one.
  */
+@JsonIgnoreProperties({
+        ResponseOnlyMembers.NEXT_PROGRAM,
+        ResponseOnlyMembers.NEXT_MAPSET,
+        ResponseOnlyMembers.NEXT_MAP,
+        ResponseOnlyMembers.SCREEN_METADATA})
 public record ReportRequestRequest(
         @Size(max = TRNNAME_LENGTH, message = PUBLIC_LENGTH_MESSAGE) String trnname,
         @Size(max = TITLE01_LENGTH, message = PUBLIC_LENGTH_MESSAGE) String title01,

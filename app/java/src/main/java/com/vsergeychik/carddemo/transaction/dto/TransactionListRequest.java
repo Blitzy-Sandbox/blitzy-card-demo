@@ -1,11 +1,13 @@
 package com.vsergeychik.carddemo.transaction.dto;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.FixedWidthRecord;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.FieldSpan;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.RecordLayout;
 import com.vsergeychik.carddemo.common.NavigationContext;
+import com.vsergeychik.carddemo.common.ResponseOnlyMembers;
 
 import jakarta.validation.constraints.Size;
 
@@ -165,9 +167,11 @@ import java.util.Objects;
  *
  * <h2>Serialisation</h2>
  *
- * Member names are chosen so that Jackson's <em>default</em> property derivation yields the copybook
- * base name lower-cased: {@code getTamt001()} yields {@code tamt001}, {@code getSel0010()} yields
- * {@code sel0010}. No naming strategy, {@code @JsonInclude}, {@code @JsonNaming} or
+ * Member names are chosen so that Jackson's <em>default</em> property derivation already yields the
+ * copybook base name lower-cased: {@code getTamt001()} yields {@code tamt001}, {@code getSel0010()}
+ * yields {@code sel0010}. That is the same wire name the paired {@code TransactionListResponse} pins
+ * with {@code @JsonProperty}, so the two sides name the same {@code xxxI} items and a response can be
+ * sent back as the next request. No naming strategy, {@code @JsonInclude}, {@code @JsonNaming} or
  * {@code ObjectMapper} is declared here, because {@code config/WebConfig} owns that module-wide and
  * two competing declarations is how a payload silently changes shape.
  *
@@ -179,7 +183,23 @@ import java.util.Objects;
  * @see TransactionListRequest.FieldMetadata
  * @see NavigationContext
  * @see FixedWidthCodec
+ *
+ * <h2>Members this request tolerates without declaring</h2>
+ *
+ * <p>The {@code @JsonIgnoreProperties} below names the members the paired response carries that this
+ * request does not declare. They are tolerated so a client can send the body it was just handed straight
+ * back: rule R6 and gate G37 put the whole conversation in the payload, which makes the next request the
+ * previous response. {@code ignoreUnknown} stays at its default of {@code false}, so every <em>other</em>
+ * unrecognised name is still refused with the offending field named in the error envelope. Each tolerated
+ * member is recomputed by the server on every path, so the value that arrives here is discarded and
+ * cannot steer a branch. The names live in {@link com.vsergeychik.carddemo.common.ResponseOnlyMembers},
+ * which explains each one.
  */
+@JsonIgnoreProperties({
+        ResponseOnlyMembers.NEXT_PROGRAM,
+        ResponseOnlyMembers.NEXT_MAPSET,
+        ResponseOnlyMembers.NEXT_MAP,
+        ResponseOnlyMembers.SCREEN_METADATA})
 public final class TransactionListRequest {
 
     // =================================================================================================

@@ -10,6 +10,7 @@ import com.vsergeychik.carddemo.common.DateHeader;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.FixedWidthRecord;
 import com.vsergeychik.carddemo.common.NavigationContext;
+import com.vsergeychik.carddemo.common.ScreenFieldImage;
 import com.vsergeychik.carddemo.common.ScreenTitles;
 import com.vsergeychik.carddemo.common.SystemMessages;
 import jakarta.validation.constraints.Size;
@@ -26,6 +27,7 @@ import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.stream.Stream;
 import org.junit.jupiter.api.DisplayName;
@@ -1108,8 +1110,10 @@ class MainMenuResponseTest {
                             .doesNotContain("\"" + member + suffix + "\"")
                             .doesNotContain("\"" + mapField + suffix + "\"");
                 }
-                assertThat(json).as(member + " is payload and must be serialised")
-                        .contains("\"" + member + "\"");
+                // The wire name is the DFHMDF label in lower case - what @JsonProperty pins per AAP
+                // 0.6.3 - and not the Java member, which keeps camel case.
+                assertThat(json).as(mapField + " is payload and must be serialised")
+                        .contains("\"" + mapField.toLowerCase(Locale.ROOT) + "\"");
             }
         }
 
@@ -1799,7 +1803,8 @@ class MainMenuResponseTest {
                     } else {
                         assertThat(response.optionLine(other))
                                 .as("writing slot " + slot + " must not touch slot " + other)
-                                .isNull();
+                                .isEqualTo(ScreenFieldImage.unpainted(
+                                        MainMenuResponse.OPTION_LINE_LENGTH));
                     }
                 }
             }
@@ -2451,16 +2456,22 @@ class MainMenuResponseTest {
         }
 
         @Test
-        @DisplayName("an unset member stays null, which is how \"never written\" is expressed")
-        void anUnsetMemberStaysNull() {
+        @DisplayName("an unset member stays unpainted, which is how \"never written\" is expressed")
+        void anUnsetMemberStaysUnpainted() {
+            // Never null: a fixed-width screen field always has a width, so "never written" is the
+            // LOW-VALUES image at that width - the byte MOVE LOW-VALUES TO COMEN1AO (:89) leaves - and
+            // not an absent member. See common.ScreenFieldImage.
             MainMenuResponse blank = MainMenuResponse.builder().build();
 
             for (String member : PAYLOAD_MEMBERS) {
-                assertThat(payloadMember(blank, member))
+                assertThat(ScreenFieldImage.isUnpainted(payloadMember(blank, member)))
                         .as(member + " has not been written and must not be invented")
-                        .isNull();
+                        .isTrue();
             }
-            assertThat(blank.optionLines()).hasSize(DECLARED_OPTION_SLOTS).containsOnlyNulls();
+            assertThat(blank.optionLines())
+                    .hasSize(DECLARED_OPTION_SLOTS)
+                    .doesNotContainNull()
+                    .allSatisfy(line -> assertThat(ScreenFieldImage.isUnpainted(line)).isTrue());
         }
 
         @Test
@@ -2577,9 +2588,9 @@ class MainMenuResponseTest {
             assertThat(initial.nextMapset()).isEqualTo("COMEN01");
             assertThat(initial.nextMap()).isEqualTo("COMEN1A");
             for (String member : PAYLOAD_MEMBERS) {
-                assertThat(payloadMember(initial, member))
-                        .as(member + " is unwritten on first entry")
-                        .isNull();
+                assertThat(ScreenFieldImage.isUnpainted(payloadMember(initial, member)))
+                        .as(member + " is unwritten on first entry, so it carries the LOW-VALUES image")
+                        .isTrue();
             }
         }
 

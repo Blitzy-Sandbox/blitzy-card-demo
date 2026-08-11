@@ -648,10 +648,21 @@ public class AccountBalanceUpdateJob {
      *
      * <p>It holds no logic of its own on purpose. Everything the COBOL does lives in
      * {@link #execute(SysoutSink, StopSignal)}, which needs neither a {@code JobLauncher} nor an
-     * application context, so every branch of the translation is reachable from a plain unit test. The
-     * tasklet itself contributes no read or write counts: {@code CBACT03C} keeps no counters, and
-     * inventing step metrics here would put numbers in the batch metadata that no legacy artefact can
-     * confirm.
+     * application context, so every branch of the translation is reachable from a plain unit test.
+     *
+     * <p>The one thing it does beyond running the program is report how many records the pass read, by
+     * incrementing the step's read count once per record. That number is <strong>step metadata, not
+     * program output</strong>: {@code CBACT03C} keeps no counter of its own, displays no total, and
+     * nothing it writes changes because this is reported. What it buys is an operator's only view of a
+     * run's volume without reading the {@code SYSOUT} - and the reason it is reported here at all is
+     * that its absence was visible: this job and the card reader beside it recorded
+     * {@code READ_COUNT 0} in {@code BATCH_STEP_EXECUTION} while three sibling reader jobs recorded
+     * their real counts, so a run that had read the whole file was indistinguishable from one that had
+     * read nothing.
+     *
+     * <p>The count is the number of records the browse returned - fifty for the shipped fixture - and
+     * <em>not</em> the number of lines displayed, which is twice that because {@code :78} and
+     * {@code :96} both display the record. A read count is a count of reads.
      *
      * <p>The chunk context is read for one thing: this step execution's {@link StopSignal}, which the
      * pass consults between records. A tasklet that runs once is checked for interruption once by the
@@ -665,7 +676,10 @@ public class AccountBalanceUpdateJob {
      */
     public Tasklet accountBalanceUpdateTasklet() {
         return (contribution, chunkContext) -> {
-            execute(resolveSysoutSink(), StopSignal.of(chunkContext));
+            ExecutionSummary summary = execute(resolveSysoutSink(), StopSignal.of(chunkContext));
+            for (int recorded = 0; recorded < summary.recordsRead(); recorded++) {
+                contribution.incrementReadCount();
+            }
             return RepeatStatus.FINISHED;
         };
     }

@@ -10,6 +10,7 @@ import com.vsergeychik.carddemo.common.FieldAttributeSetter;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.FixedWidthRecord;
 import com.vsergeychik.carddemo.common.NavigationContext;
+import com.vsergeychik.carddemo.common.ScreenFieldImage;
 import com.vsergeychik.carddemo.common.ScreenTitles;
 import com.vsergeychik.carddemo.common.SystemMessages;
 import com.vsergeychik.carddemo.user.model.SecUserRecord;
@@ -278,6 +279,32 @@ class SignOnResponseTest {
      */
     private static final List<String> NAVIGATION_MEMBERS = List.of(
             "role", "nextProgram", "nextMapset", "nextMap", "navigationContext");
+
+    /**
+     * A member's name <strong>on the wire</strong>.
+     *
+     * <p>A screen field answers to its {@code xxxI} item in lower case - that is what
+     * {@code @JsonProperty} pins on the subject and what AAP 0.6.3 requires, "payload field names and
+     * lengths derive from the xxxI items only". A carrier traces to no {@code DFHMDF} field, so no such
+     * rule governs it and it keeps its own component name. Keeping the two apart is the point: a single
+     * list serving both roles would silently assert that the Java identifier and the wire name coincide.
+     *
+     * @param member the Java member name
+     * @return the JSON property name it is published under
+     */
+    private static String wireNameOf(String member) {
+        return RESPONSE_MEMBERS.contains(member) ? member.toLowerCase(Locale.ROOT) : member;
+    }
+
+    /**
+     * {@link #wireNameOf(String)} over a list, preserving order.
+     *
+     * @param members the Java member names
+     * @return their JSON property names
+     */
+    private static List<String> wireNamesOf(List<String> members) {
+        return members.stream().map(SignOnResponseTest::wireNameOf).toList();
+    }
 
     /** {@value #COMPONENT_COUNT} components: {@value #RESPONSE_MAP_MEMBERS} map-derived plus five. */
     private static final int COMPONENT_COUNT = 15;
@@ -1528,8 +1555,10 @@ class SignOnResponseTest {
             // shape is NavigationContext's contract and its own suite's subject; what matters at this
             // boundary is that this payload adds nothing to it and drops nothing from it.
             assertThat(topLevelJsonKeys(populated()))
-                    .as("a record's components are its JSON properties - no rename, no extra, none dropped")
-                    .containsExactlyElementsOf(concat(RESPONSE_MEMBERS, NAVIGATION_MEMBERS))
+                    .as("every screen field is published under its xxxI item in lower case and every "
+                            + "carrier under its own name - no extra, none dropped")
+                    .containsExactlyElementsOf(
+                            concat(wireNamesOf(RESPONSE_MEMBERS), NAVIGATION_MEMBERS))
                     .hasSize(COMPONENT_COUNT);
         }
 
@@ -2020,7 +2049,16 @@ class SignOnResponseTest {
                     .hasSize(SignOnResponse.ERRMSG_LENGTH)
                     .isBlank()
                     .isEqualTo(" ".repeat(SignOnResponse.ERRMSG_LENGTH));
+            // Two different facts, and this test now separates them. empty() is the map before anything
+            // is written, so ERRMSGO holds the LOW-VALUES image; :78's MOVE SPACES is a program ACTION,
+            // and withErrMsg is how the projection performs it. Asserting that empty() already equalled
+            // the :78 result conflated the initial state with the first statement - and on the
+            // EIBCALEN = 0 arm :81's group MOVE LOW-VALUES overwrites :78 anyway, before
+            // SEND-SIGNON-SCREEN moves WS-MESSAGE back in.
             assertThat(SignOnResponse.empty().errMsg())
+                    .as("the map before anything is written - MOVE LOW-VALUES TO COSGN0AO, :81")
+                    .isEqualTo(ScreenFieldImage.unpainted(SignOnResponse.ERRMSG_LENGTH));
+            assertThat(SignOnResponse.empty().withErrMsg(cleared).errMsg())
                     .as("MOVE SPACES TO ERRMSGO, app/cbl/COSGN00C.cbl:78")
                     .isEqualTo(cleared);
         }
@@ -2165,7 +2203,8 @@ class SignOnResponseTest {
             // ACCEPT_EMPTY_STRING_AS_NULL_OBJECT is disabled in WebConfig for exactly this case: an
             // all-spaces PIC X(n) field is real screen data, and a null would fail the canonical
             // constructor on the way back in.
-            SignOnResponse cleared = SignOnResponse.empty();
+            SignOnResponse cleared = SignOnResponse.empty()
+                    .withErrMsg(" ".repeat(SignOnResponse.ERRMSG_LENGTH));
             assertThat(cleared.errMsg()).hasSize(SignOnResponse.ERRMSG_LENGTH).isBlank();
 
             SignOnResponse revived = roundTrip(cleared);
@@ -2206,9 +2245,14 @@ class SignOnResponseTest {
         @Test
         @DisplayName("the property names are the component names verbatim, with no naming strategy")
         void propertyNamesAreUntransformed() {
+            // No naming STRATEGY is in play - no snake_case, no kebab-case, no upper-camel. Each screen
+            // field is published under the one name AAP 0.6.3 allows, its xxxI item in lower case, which
+            // @JsonProperty pins field by field; each carrier keeps its component name.
             assertThat(topLevelJsonKeys(populated()))
-                    .as("no snake_case, no kebab-case, no upper-camel - each key traces 1:1 to an item")
-                    .containsExactlyElementsOf(componentNames());
+                    .as("each key traces 1:1 to an item")
+                    .containsExactlyElementsOf(wireNamesOf(componentNames()));
+            assertThat(topLevelJsonKeys(populated()))
+                    .allSatisfy(key -> assertThat(key).doesNotContain("_").doesNotContain("-"));
         }
     }
 
@@ -2221,16 +2265,16 @@ class SignOnResponseTest {
     class EmptyScreen {
 
         @Test
-        @DisplayName("every map member is spaces of its own declared width")
-        void everyMapMemberIsSpaces() {
+        @DisplayName("every map member is the unpainted image at its own declared width")
+        void everyMapMemberIsUnpainted() {
             List<String> values = mapValuesOf(SignOnResponse.empty());
             for (int index = 0; index < RESPONSE_MAP_MEMBERS; index++) {
                 assertThat(values.get(index))
-                        .as("%s is PIC X(%d) and unset means spaces, never null and never empty",
+                        .as("%s is PIC X(%d) and unset means LOW-VALUES, never null and never empty",
                                 RESPONSE_MAP_ITEMS.get(index), RESPONSE_WIDTHS.get(index))
                         .isNotNull()
                         .hasSize(RESPONSE_WIDTHS.get(index))
-                        .isBlank();
+                        .isEqualTo(ScreenFieldImage.unpainted(RESPONSE_WIDTHS.get(index)));
             }
         }
 
@@ -2269,7 +2313,7 @@ class SignOnResponseTest {
                     codec().movePicX(MSG_WRONG_PASSWORD, SignOnResponse.ERRMSG_LENGTH)))
                     .as("and a derived value cannot affect the next empty()")
                     .isNotEqualTo(SignOnResponse.empty());
-            assertThat(SignOnResponse.empty().errMsg()).isBlank();
+            assertThat(ScreenFieldImage.isUnpainted(SignOnResponse.empty().errMsg())).isTrue();
         }
     }
 

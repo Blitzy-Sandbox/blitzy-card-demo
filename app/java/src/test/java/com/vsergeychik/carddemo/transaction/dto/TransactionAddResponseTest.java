@@ -13,6 +13,7 @@ import com.vsergeychik.carddemo.common.FieldAttributeSetter.FieldValidationState
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.FixedWidthRecord;
 import com.vsergeychik.carddemo.common.NavigationContext;
+import com.vsergeychik.carddemo.common.ScreenFieldImage;
 import com.vsergeychik.carddemo.common.ScreenTitles;
 import com.vsergeychik.carddemo.common.SystemMessages;
 import com.vsergeychik.carddemo.transaction.dto.TransactionAddResponse.AttributeQuad;
@@ -657,12 +658,16 @@ class TransactionAddResponseTest {
 
         @ParameterizedTest
         @EnumSource(ScreenField.class)
-        @DisplayName("a fresh response holds every field space-filled to its declared width")
-        void freshResponseIsSpaceFilled(ScreenField field) {
+        @DisplayName("a fresh response holds every field unpainted at its declared width")
+        void freshResponseIsUnpainted(ScreenField field) {
+            // MOVE LOW-VALUES TO COTRN1AO, app/cbl/COTRN01C.cbl:101 - the clear that precedes the first
+            // paint. INITIALIZE-ALL-FIELDS at :309-326 does move SPACES, but that is a later action on a
+            // screen already in use and is asserted separately.
             TransactionAddResponse response = new TransactionAddResponse();
             assertThat(response.payload(field))
                     .hasSize(field.payloadLength())
-                    .isBlank();
+                    .isEqualTo(ScreenFieldImage.unpainted(field.payloadLength()));
+            assertThat(response.payload(field)).isNotBlank();
         }
 
         @ParameterizedTest
@@ -1417,7 +1422,9 @@ class TransactionAddResponseTest {
             for (ScreenField field : ScreenField.values()) {
                 assertThat(tree)
                         .as("payload member for %s", field)
-                        .containsKey(field.outputItemName().toLowerCase(java.util.Locale.ROOT));
+                        .containsKey(field.outputItemName()
+                                .substring(0, field.outputItemName().length() - 1)
+                                .toLowerCase(java.util.Locale.ROOT));
             }
             assertThat(tree).containsKeys("nextProgram", "nextMapset", "nextMap",
                     "navigationContext", "ct01Info");
@@ -1450,8 +1457,8 @@ class TransactionAddResponseTest {
                     .as("the wire carries the projection and the state, and nothing besides")
                     .hasSize(TransactionAddResponse.PAYLOAD_FIELD_COUNT + 5);
             // The card number and merchant id are on the wire in full (gate G41).
-            assertThat(tree.get("cardnumo")).isEqualTo("4111111111111111");
-            assertThat(tree.get("mido")).isEqualTo("123456789");
+            assertThat(tree.get("cardnum")).isEqualTo("4111111111111111");
+            assertThat(tree.get("mid")).isEqualTo("123456789");
         }
 
         @Test

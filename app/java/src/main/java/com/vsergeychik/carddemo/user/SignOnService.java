@@ -3,6 +3,7 @@ package com.vsergeychik.carddemo.user;
 import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.NavigationContext;
 import com.vsergeychik.carddemo.common.PfKeyResolver;
+import com.vsergeychik.carddemo.common.ScreenFieldImage;
 import com.vsergeychik.carddemo.common.SystemMessages;
 import com.vsergeychik.carddemo.user.model.SecUserRecord;
 
@@ -409,16 +410,11 @@ public class SignOnService {
      */
     private static final char SPACE = ' ';
 
-    /**
-     * The character COBOL's {@code LOW-VALUES} figurative constant fills a field with: the lowest value
-     * in the collating sequence, {@code X'00'}.
-     *
-     * <p>This is what CICS leaves in a symbolic-map {@code xxxI} item for a field the terminal never
-     * transmitted, which is why {@code :118} and {@code :123} test for it in addition to spaces: a field
-     * the user blanked and a field the user never touched are both "empty", and they are not the same
-     * bytes.
-     */
-    private static final char LOW_VALUE = '\u0000';
+    // The LOW-VALUES character itself is ScreenFieldImage.LOW_VALUE. It is not redeclared here: it is
+    // the byte CICS leaves in a symbolic-map xxxI item for a field the terminal never transmitted, which
+    // is why :118 and :123 test for it in addition to spaces - a field the user blanked and a field the
+    // user never touched are both "empty" and are not the same bytes - and one declaration of it is what
+    // keeps the seventeen screens agreeing about that.
 
     /**
      * The lowest and highest characters {@code FUNCTION UPPER-CASE} folds, and the distance it folds
@@ -1640,7 +1636,9 @@ public class SignOnService {
      * @return a run of low-values
      */
     private static String lowValues(int width) {
-        return String.valueOf(LOW_VALUE).repeat(width);
+        // One implementation of the LOW-VALUES image, in common.ScreenFieldImage, so the choice cannot
+        // drift back apart across screens. Any width validation above is this method's own contract.
+        return ScreenFieldImage.unpainted(width);
     }
 
     /**

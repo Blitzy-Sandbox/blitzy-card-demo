@@ -9,6 +9,7 @@ import com.vsergeychik.carddemo.common.FieldAttributeSetter.FieldHighlight;
 import com.vsergeychik.carddemo.common.FileStatus.Outcome;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.NavigationContext;
+import com.vsergeychik.carddemo.common.ScreenFieldImage;
 import com.vsergeychik.carddemo.common.ScreenResponse;
 import com.vsergeychik.carddemo.common.ScreenMetadata;
 import com.vsergeychik.carddemo.common.PfKeyResolver;
@@ -1525,8 +1526,8 @@ final class TransactionMenuControllerTest {
                     .hasSize(TransactionListResponse.FIELD_COUNT);
             for (String prefix : TransactionListResponse.fieldPrefixes()) {
                 assertThat(response.payloadValue(prefix))
-                        .as("%s", prefix)
-                        .isEqualTo(CODEC.movePicX("",
+                        .as("%s - MOVE LOW-VALUES TO COTRN0AO at :114 writes X'00', not spaces", prefix)
+                        .isEqualTo(ScreenFieldImage.unpainted(
                                 TransactionListResponse.declaredLength(prefix)));
                 assertThat(response.attributesOf(prefix).isLowValues()).as("%s", prefix).isTrue();
             }
@@ -1589,7 +1590,10 @@ final class TransactionMenuControllerTest {
                 // The xxxI item is the request member and the xxxO item is the response member: those
                 // two carry the field's value and its authoritative PIC X(n) width.
                 assertThat(named(requestMembers, prefix)).as("request payload %s", prefix).hasSize(1);
-                assertThat(named(responseMembers, prefix + "O")).as("response payload %s", prefix)
+                // Both sides publish the same name: @JsonProperty pins the response to the xxxI item
+                // in lower case (AAP 0.6.3), which is what makes a response acceptable as the next
+                // request. The Java accessor keeps the xxxO spelling.
+                assertThat(named(responseMembers, prefix)).as("response payload %s", prefix)
                         .hasSize(1);
                 // xxxL is the length CICS reports, xxxF the flag byte, xxxA its attribute view, and
                 // xxxC / xxxP / xxxH / xxxV the output-side colour, highlight, hilight and validation
@@ -1752,10 +1756,10 @@ final class TransactionMenuControllerTest {
                             .param(TransactionMenuController.EIBAID_PARAM,
                                     String.valueOf(ENTER_PARAM)))
                     .andExpect(status().isOk())
-                    .andExpect(jsonPath("$.trnnameO").value("CT00"))
-                    .andExpect(jsonPath("$.pagenumO").value("00000001"))
-                    .andExpect(jsonPath("$.trnid01O").value(idOf(1)))
-                    .andExpect(jsonPath("$.trnid10O").value(idOf(10)));
+                    .andExpect(jsonPath("$.trnname").value("CT00"))
+                    .andExpect(jsonPath("$.pagenum").value("00000001"))
+                    .andExpect(jsonPath("$.trnid01").value(idOf(1)))
+                    .andExpect(jsonPath("$.trnid10").value(idOf(10)));
         }
 
         @Test
@@ -1779,7 +1783,7 @@ final class TransactionMenuControllerTest {
                                 .content(body)
                                 .param(name, enter))
                         .andExpect(status().isOk())
-                        .andExpect(jsonPath("$.trnid01O").value(idOf(1)));
+                        .andExpect(jsonPath("$.trnid01").value(idOf(1)));
             }
 
             // The refusals are asserted at the method seam rather than over this harness, which registers
@@ -1840,7 +1844,7 @@ final class TransactionMenuControllerTest {
                             .param(TransactionMenuController.EIBAID_PARAM,
                                     String.valueOf(ENTER_PARAM)))
                     .andExpect(status().isOk())
-                    .andExpect(jsonPath("$.trnid01O").value(idOf(1)))
+                    .andExpect(jsonPath("$.trnid01").value(idOf(1)))
                     .andExpect(jsonPath("$.screenMetadata.cursorField")
                             .value(TransactionListResponse.TRNIDIN))
                     .andExpect(jsonPath("$.screenMetadata.resetAllOutputFields").value(true))
@@ -2417,13 +2421,13 @@ final class TransactionMenuControllerTest {
                             .param("offset", "5"))
                     .andExpect(status().isOk())
                     // Rows four to ten would be blank had any of the above been honoured.
-                    .andExpect(jsonPath("$.trnid01O").value(idOf(1)))
-                    .andExpect(jsonPath("$.trnid03O").value(idOf(3)))
-                    .andExpect(jsonPath("$.trnid04O").value(idOf(4)))
-                    .andExpect(jsonPath("$.trnid10O").value(idOf(10)))
+                    .andExpect(jsonPath("$.trnid01").value(idOf(1)))
+                    .andExpect(jsonPath("$.trnid03").value(idOf(3)))
+                    .andExpect(jsonPath("$.trnid04").value(idOf(4)))
+                    .andExpect(jsonPath("$.trnid10").value(idOf(10)))
                     // And there is no eleventh row to honour a larger size with.
                     .andExpect(jsonPath("$.trnid11O").doesNotExist())
-                    .andExpect(jsonPath("$.pagenumO").value("00000001"));
+                    .andExpect(jsonPath("$.pagenum").value("00000001"));
         }
 
         @Test
@@ -2728,8 +2732,8 @@ final class TransactionMenuControllerTest {
                 assertThat(getterOf(TransactionListRequest.class, prefix, ""))
                         .as("request getter for %s", prefix)
                         .isEqualTo(String.class);
-                assertThat(memberOf(responseNode, prefix + "O").isTextual())
-                        .as("serialized response %sO", prefix).isTrue();
+                assertThat(memberOf(responseNode, prefix).isTextual())
+                        .as("serialized response %s", prefix).isTrue();
                 assertThat(memberOf(requestNode, prefix).isTextual())
                         .as("serialized request %sI", prefix).isTrue();
             }
@@ -2738,7 +2742,8 @@ final class TransactionMenuControllerTest {
             // TAMT00nI at :396-442 - and never the record's own PIC S9(09)V99.
             assertThat(response.getRowAmount(1)).isEqualTo("+00000001.01")
                     .hasSize(TransactionListResponse.TAMT_LENGTH);
-            assertThat(memberOf(responseNode, "TAMT001O").asText()).isEqualTo("+00000001.01");
+            // Published as "tamt001" - the xxxI item in lower case, per AAP 0.6.3.
+            assertThat(memberOf(responseNode, "TAMT001").asText()).isEqualTo("+00000001.01");
         }
 
         /** The declared return type of a payload accessor, so its Java type is assertable. */

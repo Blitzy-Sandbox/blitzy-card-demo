@@ -996,11 +996,25 @@ public final class DatasetRelation {
          * in particular no record content, since a failing operation's record may carry a card number or
          * a government identifier.
          *
+         * <p>The line distinguishes the two cases {@link #of(Throwable)} can produce, because they are
+         * not the same fault and reading them as one sends an operator to the wrong place. When an
+         * {@link SQLException} was found in the cause chain the backend genuinely refused the operation
+         * and reported a {@code SQLSTATE}. When none was found - which is what {@code sqlState} being
+         * {@code null} means - nothing was asked of the backend at all: the failure arose in this
+         * module, above the driver. Calling that "backend refusal: SQLSTATE not reported" reads as a
+         * backend that answered without saying why, and it was the misdiagnosis a QA pass caught on an
+         * unrepresentable screen value, where the transcoder refused the write before any statement was
+         * prepared.
+         *
          * @return the rendered diagnostic
          */
         public String describe() {
-            return "backend refusal: SQLSTATE "
-                    + (sqlState == null ? "not reported" : sqlState)
+            if (sqlState == null) {
+                return "no backend diagnostic: no SQLException in the cause chain, so the failure "
+                        + "arose above the driver rather than in the backend"
+                        + ", raised as " + exceptionType;
+            }
+            return "backend refusal: SQLSTATE " + sqlState
                     + ", vendor code " + vendorCode
                     + ", raised as " + exceptionType;
         }

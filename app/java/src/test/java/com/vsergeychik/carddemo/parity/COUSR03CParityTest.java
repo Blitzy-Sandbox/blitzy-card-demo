@@ -13,6 +13,7 @@ import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.NavigationContext;
 import com.vsergeychik.carddemo.common.PfKeyResolver.AidKey;
+import com.vsergeychik.carddemo.common.ScreenFieldImage;
 import com.vsergeychik.carddemo.user.SecUserRepository;
 import com.vsergeychik.carddemo.user.SecUserRepository.HeldRecord;
 import com.vsergeychik.carddemo.user.SecUserRepository.ReadResult;
@@ -1550,6 +1551,30 @@ class COUSR03CParityTest {
      *                truncated on the right by two bytes, which is the direction line 217 truncates in
      * @return the five items
      */
+    private static Map<String, String> unpaintedExcept(String message) {
+        Map<String, String> fields = new LinkedHashMap<>();
+        // MOVE LOW-VALUES TO COUSR3AO at :97 and nothing after it writes these four, because the guard
+        // at :99 is false and PROCESS-ENTER-KEY never runs. LOW-VALUES, not spaces: :97 moves X'00', and
+        // this expectation previously named the spaces image, which is a different byte. ERRMSGO IS
+        // painted, by MOVE WS-MESSAGE TO ERRMSGO inside SEND-USRDEL-SCREEN at :217.
+        fields.put("USRIDINO", ScreenFieldImage.unpainted(USRIDIN_WIDTH));
+        fields.put("FNAMEO", ScreenFieldImage.unpainted(NAME_WIDTH));
+        fields.put("LNAMEO", ScreenFieldImage.unpainted(NAME_WIDTH));
+        fields.put("USRTYPEO", ScreenFieldImage.unpainted(USRTYPE_WIDTH));
+        fields.put("ERRMSGO", pad(message, ERRMSG_WIDTH));
+        return fields;
+    }
+
+    /**
+     * The five variable items as one send painted them, each at its declared width.
+     *
+     * @param usrIdIn the identifier field
+     * @param fName   the first name
+     * @param lName   the last name
+     * @param usrType the type
+     * @param message the message as {@code ERRMSGO} holds it
+     * @return the five items
+     */
     private static Map<String, String> painted(String usrIdIn,
                                                String fName,
                                                String lName,
@@ -1802,6 +1827,11 @@ class COUSR03CParityTest {
      * {@code LOW-VALUES}, the cursor is put on the only field that can be typed into, and the
      * unconditional send at line 105 paints an empty screen. The guard is load-bearing - without it
      * this path would read the file with a blank key.
+     *
+     * <p>"Empty" here means {@code LOW-VALUES} in the four data items and spaces in the error line, and
+     * the two are different bytes. Line 97's group {@code MOVE} writes {@code X'00'} and nothing on this
+     * path writes those four items afterwards; {@code ERRMSGO} is written, by
+     * {@code MOVE WS-MESSAGE TO ERRMSGO} inside {@code SEND-USRDEL-SCREEN} at line 217.
      */
     private static ParityScenario case02() {
         return new ParityScenario(parityCase("case02",
@@ -1813,7 +1843,7 @@ class COUSR03CParityTest {
                 SEED_ROWS,
                 screenRequest(null, Map.of(), firstEntryCommarea(blanks(USRIDIN_WIDTH)), Map.of()),
                 pseudoConversationalReturn(afterFirstEntry(firstEntryCommarea(blanks(USRIDIN_WIDTH))),
-                        sends(1, painted(blanks(USRIDIN_WIDTH), "", "", "", ""), DFHDFCOL),
+                        sends(1, unpaintedExcept(""), DFHDFCOL),
                         USRIDINL),
                 SEED_ROWS,
                 messages("")),

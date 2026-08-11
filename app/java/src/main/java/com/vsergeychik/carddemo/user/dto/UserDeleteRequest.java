@@ -1,8 +1,10 @@
 package com.vsergeychik.carddemo.user.dto;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.NavigationContext;
+import com.vsergeychik.carddemo.common.ResponseOnlyMembers;
 import com.vsergeychik.carddemo.common.SensitiveDiagnostics;
 import jakarta.validation.constraints.Size;
 import java.nio.charset.StandardCharsets;
@@ -258,41 +260,57 @@ import java.util.Map;
  *                          {@code CCARD-AID PIC X(5)}. Also not a {@code DFHMDF} field, and carried
  *                          for the same reason - the confirm-then-delete flow of lines 108-130 is
  *                          unreachable without it. {@code null} means no key indication was supplied
+ *
+ * <h2>Members this request tolerates without declaring</h2>
+ *
+ * <p>The {@code @JsonIgnoreProperties} below names the members the paired response carries that this
+ * request does not declare. They are tolerated so a client can send the body it was just handed straight
+ * back: rule R6 and gate G37 put the whole conversation in the payload, which makes the next request the
+ * previous response. {@code ignoreUnknown} stays at its default of {@code false}, so every <em>other</em>
+ * unrecognised name is still refused with the offending field named in the error envelope. Each tolerated
+ * member is recomputed by the server on every path, so the value that arrives here is discarded and
+ * cannot steer a branch. The names live in {@link com.vsergeychik.carddemo.common.ResponseOnlyMembers},
+ * which explains each one.
  */
+@JsonIgnoreProperties({
+        ResponseOnlyMembers.NEXT_PROGRAM,
+        ResponseOnlyMembers.NEXT_MAPSET,
+        ResponseOnlyMembers.NEXT_MAP,
+        ResponseOnlyMembers.SCREEN_METADATA})
 public record UserDeleteRequest(
 
         // TRNNAMEI  PIC X(4)  - COUSR03.CPY:24 ; TRNNAME DFHMDF LENGTH=4  POS=(1,7)   ASKIP FSET
-        @Size(max = TRNNAME_LENGTH) String trnName,
+        @Size(max = TRNNAME_LENGTH) @JsonProperty("trnname") String trnName,
 
         // TITLE01I  PIC X(40) - COUSR03.CPY:30 ; TITLE01 DFHMDF LENGTH=40 POS=(1,21)  ASKIP FSET
         @Size(max = TITLE01_LENGTH) String title01,
 
         // CURDATEI  PIC X(8)  - COUSR03.CPY:36 ; CURDATE DFHMDF LENGTH=8  POS=(1,71)  ASKIP FSET
-        @Size(max = CURDATE_LENGTH) String curDate,
+        @Size(max = CURDATE_LENGTH) @JsonProperty("curdate") String curDate,
 
         // PGMNAMEI  PIC X(8)  - COUSR03.CPY:42 ; PGMNAME DFHMDF LENGTH=8  POS=(2,7)   ASKIP FSET
-        @Size(max = PGMNAME_LENGTH) String pgmName,
+        @Size(max = PGMNAME_LENGTH) @JsonProperty("pgmname") String pgmName,
 
         // TITLE02I  PIC X(40) - COUSR03.CPY:48 ; TITLE02 DFHMDF LENGTH=40 POS=(2,21)  ASKIP FSET
         @Size(max = TITLE02_LENGTH) String title02,
 
         // CURTIMEI  PIC X(8)  - COUSR03.CPY:54 ; CURTIME DFHMDF LENGTH=8  POS=(2,71)  ASKIP FSET
-        @Size(max = CURTIME_LENGTH) String curTime,
+        @Size(max = CURTIME_LENGTH) @JsonProperty("curtime") String curTime,
 
         // USRIDINI  PIC X(8)  - COUSR03.CPY:60 ; USRIDIN DFHMDF LENGTH=8  POS=(6,21)  UNPROT IC
-        @Size(max = USRIDIN_LENGTH) String usrIdIn,
+        @Size(max = USRIDIN_LENGTH) @JsonProperty("usridin") String usrIdIn,
 
         // FNAMEI    PIC X(20) - COUSR03.CPY:66 ; FNAME   DFHMDF LENGTH=20 POS=(11,18) ASKIP FSET
-        @Size(max = FNAME_LENGTH) String fName,
+        @Size(max = FNAME_LENGTH) @JsonProperty("fname") String fName,
 
         // LNAMEI    PIC X(20) - COUSR03.CPY:72 ; LNAME   DFHMDF LENGTH=20 POS=(13,18) ASKIP FSET
-        @Size(max = LNAME_LENGTH) String lName,
+        @Size(max = LNAME_LENGTH) @JsonProperty("lname") String lName,
 
         // USRTYPEI  PIC X(1)  - COUSR03.CPY:78 ; USRTYPE DFHMDF LENGTH=1  POS=(15,17) ASKIP FSET
-        @Size(max = USRTYPE_LENGTH) String usrType,
+        @Size(max = USRTYPE_LENGTH) @JsonProperty("usrtype") String usrType,
 
         // ERRMSGI   PIC X(78) - COUSR03.CPY:84 ; ERRMSG  DFHMDF LENGTH=78 POS=(23,1)  ASKIP BRT
-        @Size(max = ERRMSG_LENGTH) String errMsg,
+        @Size(max = ERRMSG_LENGTH) @JsonProperty("errmsg") String errMsg,
 
         // Not a DFHMDF field: CARDDEMO-COMMAREA, carried in the payload because there is no session.
         NavigationContext navigationContext,

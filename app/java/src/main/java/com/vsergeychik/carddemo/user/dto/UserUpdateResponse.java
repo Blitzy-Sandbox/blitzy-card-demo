@@ -1,6 +1,7 @@
 package com.vsergeychik.carddemo.user.dto;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import com.vsergeychik.carddemo.common.NavigationContext;
 import com.vsergeychik.carddemo.common.ScreenMetadata;
 import com.vsergeychik.carddemo.user.dto.UserUpdateRequest.Cu02Info;
@@ -277,7 +278,9 @@ import java.util.Objects;
  *
  * A record's components are its JSON properties, so the payload is exactly these sixteen members
  * and nothing else. <strong>No serialisation annotation appears in this file at all</strong>: no
- * property rename, no naming strategy, no inclusion filter, no custom serialiser, and -
+ * property rename beyond the {@code @JsonProperty} that pins each screen field's wire name to its
+ * {@code xxxI} item in lower case (AAP 0.6.3), no naming strategy, no inclusion filter, no custom
+ * serialiser, and -
  * specifically - nothing that suppresses {@link #passwd()} from the payload, which would defeat the
  * very behaviour documented above. The type deliberately declares no {@code getXxx} or
  * {@code isXxx} accessor either, so there is no derived property for a JSON mapper to auto-detect
@@ -346,18 +349,18 @@ import java.util.Objects;
  *                          {@code CDEMO-LAST-MAPSET}
  * @param nextMap           the map to display next. Seven characters, as {@code CDEMO-LAST-MAP}
  */
-public record UserUpdateResponse(String trnName,
+public record UserUpdateResponse(@JsonProperty("trnname") String trnName,
                                  String title01,
-                                 String curDate,
-                                 String pgmName,
+                                 @JsonProperty("curdate") String curDate,
+                                 @JsonProperty("pgmname") String pgmName,
                                  String title02,
-                                 String curTime,
-                                 String usrIdIn,
-                                 String fName,
-                                 String lName,
+                                 @JsonProperty("curtime") String curTime,
+                                 @JsonProperty("usridin") String usrIdIn,
+                                 @JsonProperty("fname") String fName,
+                                 @JsonProperty("lname") String lName,
                                  String passwd,
-                                 String usrType,
-                                 String errMsg,
+                                 @JsonProperty("usrtype") String usrType,
+                                 @JsonProperty("errmsg") String errMsg,
                                  NavigationContext navigationContext,
                                  String nextProgram,
                                  String nextMapset,

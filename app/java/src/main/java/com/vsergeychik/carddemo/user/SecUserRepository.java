@@ -796,14 +796,34 @@ public class SecUserRepository {
      * diagnostic names the missing constraint. A wrong answer that looked right would be far worse than a
      * reported failure, and no path here produces one.
      *
+     * <p><strong>A unit of work is required, and its absence is refused rather than reported.</strong>
+     * This {@code WRITE} takes no lock, so {@link DatasetUnitOfWork#requireActive(String, String)}'s
+     * reasoning does not reach it; what does reach it is that the pool hands out connections with
+     * auto-commit disabled, so an {@code INSERT} issued outside a boundary executes, reports the row it
+     * added, and is rolled back when the connection is returned - and this method would answer
+     * {@link WriteResult#isWritten()} for a user no later read could find, which {@code COUSR01C} paints as
+     * a successful add. There is no {@code FILE STATUS} meaning "written, then discarded", so nothing is
+     * attempted: see {@link DatasetUnitOfWork#requireActiveToPersist(String, String)}.
+     * {@code UserAddController} is transactional, so the production path already supplies the boundary.
+     *
      * @param record the record to add, complete and already assembled by the caller
      * @return the discriminated outcome; never {@code null}
      * @throws NullPointerException  if {@code record} is {@code null}
-     * @throws IllegalStateException if the backend presents the dataset with no usable record-image column
+     * @throws IllegalStateException if no unit of work is open, in which case nothing has been attempted,
+     *                               or if the backend presents the dataset with no usable record-image
+     *                               column
      */
     public WriteResult add(SecUserRecord record) {
         Objects.requireNonNull(record, "A record is required to add one; a COBOL WRITE writes the record "
                 + "area, and there is no such thing as writing nothing");
+        // Refused before anything is attempted when no unit of work is open. Unlike the rewrite and the
+        // delete this WRITE takes no lock, so the requireActive reasoning does not reach it - but the
+        // pool hands out connections with auto-commit disabled, so the INSERT would execute, report the
+        // row it added, and then be rolled back when the connection returned, leaving COUSR01C painting
+        // 'User has been added ...' for a user that was never stored. See requireActiveToPersist.
+        DatasetUnitOfWork.requireActiveToPersist("A write to the security-user file, which EXEC CICS WRITE "
+                + "issues from the record area COUSR01C has just built (app/cbl/COUSR01C.cbl:L240-L248)",
+                datasetName);
 
         Statements sql;
         try {

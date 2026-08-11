@@ -3,6 +3,7 @@ package com.vsergeychik.carddemo.user.dto;
 import com.fasterxml.jackson.core.JsonGenerator;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.DeserializationFeature;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.vsergeychik.carddemo.common.BmsAttributes;
 import com.vsergeychik.carddemo.common.CicsAid;
@@ -263,6 +264,32 @@ class UserDeleteRequestTest {
     /** The eleven map-derived record components, in {@code 01 COUSR3AI} declaration order. */
     private static final List<String> MAP_MEMBERS = List.of("trnName", "title01", "curDate",
             "pgmName", "title02", "curTime", "usrIdIn", "fName", "lName", "usrType", "errMsg");
+
+    /**
+     * A member's name <strong>on the wire</strong>.
+     *
+     * <p>A screen field answers to its {@code xxxI} item in lower case - that is what
+     * {@code @JsonProperty} pins on the subject and what AAP 0.6.3 requires, "payload field names and
+     * lengths derive from the xxxI items only". A carrier traces to no {@code DFHMDF} field, so no such
+     * rule governs it and it keeps its own component name. Keeping the two apart is the point: a single
+     * list serving both roles would silently assert that the Java identifier and the wire name coincide.
+     *
+     * @param member the Java member name
+     * @return the JSON property name it is published under
+     */
+    private static String wireNameOf(String member) {
+        return MAP_MEMBERS.contains(member) ? member.toLowerCase(Locale.ROOT) : member;
+    }
+
+    /**
+     * {@link #wireNameOf(String)} over a list, preserving order.
+     *
+     * @param members the Java member names
+     * @return their JSON property names
+     */
+    private static List<String> wireNamesOf(List<String> members) {
+        return members.stream().map(UserDeleteRequestTest::wireNameOf).toList();
+    }
 
     /**
      * The {@code xxxI} items those members project, {@code app/cpy-bms/COUSR03.CPY} lines 24, 30, 36,
@@ -537,7 +564,7 @@ class UserDeleteRequestTest {
     }
 
     private static Set<String> expectedJsonMembers() {
-        Set<String> members = new LinkedHashSet<>(MAP_MEMBERS);
+        Set<String> members = new LinkedHashSet<>(wireNamesOf(MAP_MEMBERS));
         members.addAll(STATE_MEMBERS);
         return Set.copyOf(members);
     }
@@ -1610,10 +1637,15 @@ class UserDeleteRequestTest {
             for (String member : List.of("fName", "lName", "usrType")) {
                 RecordComponent component = UserDeleteRequest.class
                         .getRecordComponents()[MAP_MEMBERS.indexOf(member)];
+                assertThat(component.getAccessor().getAnnotation(Size.class))
+                        .as("%s must carry a width bound", member)
+                        .isNotNull();
+                // No presence check of any kind. @JsonProperty is permitted alongside it, and is not a
+                // constraint: it pins the wire name to the xxxI item (AAP 0.6.3) and validates nothing.
                 assertThat(component.getAccessor().getAnnotations())
-                        .as("%s must carry a width bound and nothing more", member)
-                        .hasSize(1);
-                assertThat(component.getAccessor().getAnnotation(Size.class)).isNotNull();
+                        .as("%s must carry a width bound and a wire name, and no presence check", member)
+                        .allSatisfy(annotation -> assertThat(annotation.annotationType())
+                                .isIn(Size.class, JsonProperty.class));
             }
         }
 

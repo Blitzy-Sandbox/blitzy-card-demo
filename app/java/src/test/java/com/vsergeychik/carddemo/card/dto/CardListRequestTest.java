@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -764,7 +765,17 @@ class CardListRequestTest {
         @Test
         @DisplayName("no annotation on the class or its members can inject a page size")
         void noConfigurationPath() {
-            assertThat(Stream.of(CardListRequest.class.getAnnotations())).isEmpty();
+            assertThat(Stream.of(CardListRequest.class.getAnnotations())
+                    .map(annotation -> annotation.annotationType().getName()))
+                    .as("the one class annotation this type carries is the Jackson binding contract "
+                            + "that lets a client send a response body back as the next request (rule "
+                            + "R6, gate G37): it names response-only members and injects nothing. Page "
+                            + "size 7 is behaviour and not configuration (AAP 0.3.9), so it stays a "
+                            + "compile-time constant, and this pins the exact annotation list rather "
+                            + "than merely requiring it to be short")
+                    .containsExactly(JsonIgnoreProperties.class.getName())
+                    .allSatisfy(name -> assertThat(name).doesNotContain("Value")
+                            .doesNotContain("ConfigurationProperties"));
             assertThat(Stream.of(CardListRequest.class.getDeclaredFields())
                     .flatMap(field -> Stream.of(field.getAnnotations()))
                     .map(annotation -> annotation.annotationType().getName()))

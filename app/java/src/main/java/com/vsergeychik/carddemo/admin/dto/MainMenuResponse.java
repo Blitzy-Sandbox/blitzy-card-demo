@@ -1,8 +1,10 @@
 package com.vsergeychik.carddemo.admin.dto;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import com.vsergeychik.carddemo.common.BmsAttributes;
 import com.vsergeychik.carddemo.common.NavigationContext;
+import com.vsergeychik.carddemo.common.ScreenFieldImage;
 import jakarta.validation.constraints.Size;
 import java.util.Arrays;
 import java.util.Collections;
@@ -225,12 +227,12 @@ import java.util.List;
  *                             {@code app/cbl/COMEN01C.cbl:89}
  */
 public record MainMenuResponse(
-        @Size(max = TRN_NAME_LENGTH) String trnName,
+        @Size(max = TRN_NAME_LENGTH) @JsonProperty("trnname") String trnName,
         @Size(max = TITLE_LENGTH) String title01,
-        @Size(max = CUR_DATE_LENGTH) String curDate,
-        @Size(max = PGM_NAME_LENGTH) String pgmName,
+        @Size(max = CUR_DATE_LENGTH) @JsonProperty("curdate") String curDate,
+        @Size(max = PGM_NAME_LENGTH) @JsonProperty("pgmname") String pgmName,
         @Size(max = TITLE_LENGTH) String title02,
-        @Size(max = CUR_TIME_LENGTH) String curTime,
+        @Size(max = CUR_TIME_LENGTH) @JsonProperty("curtime") String curTime,
         @Size(max = OPTION_LINE_LENGTH) String optn001,
         @Size(max = OPTION_LINE_LENGTH) String optn002,
         @Size(max = OPTION_LINE_LENGTH) String optn003,
@@ -244,7 +246,7 @@ public record MainMenuResponse(
         @Size(max = OPTION_LINE_LENGTH) String optn011,
         @Size(max = OPTION_LINE_LENGTH) String optn012,
         @Size(max = OPTION_LENGTH) String option,
-        @Size(max = ERR_MSG_LENGTH) String errMsg,
+        @Size(max = ERR_MSG_LENGTH) @JsonProperty("errmsg") String errMsg,
         NavigationContext navigationContext,
         @Size(max = NEXT_PROGRAM_LENGTH) String nextProgram,
         @Size(max = NEXT_MAPSET_LENGTH) String nextMapset,
@@ -498,8 +500,9 @@ public record MainMenuResponse(
      * {@code MOVE LOW-VALUES TO COMEN1AO} at {@code app/cbl/COMEN01C.cbl:89} - the repaint the program
      * performs on first entry, before {@code SEND-MENU-SCREEN} populates anything.
      *
-     * <p>The twenty screen-text members are left unset, which is the honest representation of a map
-     * area that has been cleared and not yet written to. {@code POPULATE-HEADER-INFO} and
+     * <p>The twenty screen-text members carry the unpainted image at their declared widths, which is
+     * the honest representation of a map area that has been cleared and not yet written to - {@code
+     * X'00'}, the byte line 89 moves, and not spaces. {@code POPULATE-HEADER-INFO} and
      * {@code BUILD-MENU-OPTIONS} fill them, and both live in the service.
      *
      * @return the first-entry response, never {@code null}
@@ -780,7 +783,11 @@ public record MainMenuResponse(
          * COBOL's 1-based slot numbers. Converting in exactly one place - {@link #optionLine(int,
          * String)} - is what keeps the 1-based-to-0-based shift from being repeated twelve times.
          */
-        private final String[] optionLines = new String[OPTION_LINE_COUNT];
+        // Pre-filled with the unpainted image rather than left as a null-filled array, for the same
+        // reason the eight scalar screen members are: OPTN005O through OPTN012O are declared in the map
+        // and cleared by MOVE LOW-VALUES TO COMEN1AO even though COMEN01C never writes them, so they
+        // are addressable and carry X'00' - not absent, and not spaces. See ScreenFieldImage.
+        private final String[] optionLines = newUnpaintedOptionLines();
 
         // The plain pass-through carriers. Each is a direct stand-in for its record component and
         // starts out unset, which represents a map field the program has not written to yet; the map
@@ -788,14 +795,19 @@ public record MainMenuResponse(
         // matching setter below and on the enclosing record's component list. The fields that are NOT
         // plain - the ones carrying a screen-declared default or an index conversion - are documented
         // individually, because for those the default is the thing worth explaining.
-        private String trnName;
-        private String title01;
-        private String curDate;
-        private String pgmName;
-        private String title02;
-        private String curTime;
-        private String option;
-        private String errMsg;
+        // The eight screen members default to the unpainted image at their declared width rather than
+        // to null: MOVE LOW-VALUES TO COMEN1AO (app/cbl/COMEN01C.cbl:89) is what clears this map, and a
+        // fixed-width screen field always has a width and therefore always has an image. A null here
+        // would serialise as JSON null, which says "there is no such field" - never true of a DFHMDF
+        // definition. See ScreenFieldImage.
+        private String trnName = ScreenFieldImage.unpainted(TRN_NAME_LENGTH);
+        private String title01 = ScreenFieldImage.unpainted(TITLE_LENGTH);
+        private String curDate = ScreenFieldImage.unpainted(CUR_DATE_LENGTH);
+        private String pgmName = ScreenFieldImage.unpainted(PGM_NAME_LENGTH);
+        private String title02 = ScreenFieldImage.unpainted(TITLE_LENGTH);
+        private String curTime = ScreenFieldImage.unpainted(CUR_TIME_LENGTH);
+        private String option = ScreenFieldImage.unpainted(OPTION_LENGTH);
+        private String errMsg = ScreenFieldImage.unpainted(ERR_MSG_LENGTH);
 
         /** Defaults to an initial 160-byte communication area rather than {@code null}. */
         private NavigationContext navigationContext = NavigationContext.empty();
@@ -1037,6 +1049,19 @@ public record MainMenuResponse(
                     nextMap,
                     errMsgColor,
                     resetAllOutputFields);
+        }
+
+        /**
+         * The twelve {@code OPTN00nO} lines as {@code MOVE LOW-VALUES TO COMEN1AO}
+         * ({@code app/cbl/COMEN01C.cbl:89}) leaves them: the unpainted image at
+         * {@value MainMenuResponse#OPTION_LINE_LENGTH} characters each.
+         *
+         * @return a new array of {@value MainMenuResponse#OPTION_LINE_COUNT} unpainted lines
+         */
+        private static String[] newUnpaintedOptionLines() {
+            String[] lines = new String[OPTION_LINE_COUNT];
+            Arrays.fill(lines, ScreenFieldImage.unpainted(OPTION_LINE_LENGTH));
+            return lines;
         }
     }
 }

@@ -93,6 +93,23 @@ class CardDemoApplicationTest {
             ROOT_PACKAGE + ".statement",
             ROOT_PACKAGE + ".util");
 
+    /**
+     * The test-only package that holds the stereotyped fixtures, and the one package under the root
+     * that must stay <em>out</em> of the scan list.
+     */
+    private static final String TEST_SUPPORT_PACKAGE = ROOT_PACKAGE + ".testsupport";
+
+    /** The suffix of a compiled class file. */
+    private static final String CLASS_SUFFIX = ".class";
+
+    /** The bytecode descriptor of {@code @Controller}, as it appears in a class file's constant pool. */
+    private static final String CONTROLLER_DESCRIPTOR =
+            "Lorg/springframework/stereotype/Controller;";
+
+    /** The bytecode descriptor of {@code @RestController}, which carries {@code @Controller}. */
+    private static final String REST_CONTROLLER_DESCRIPTOR =
+            "Lorg/springframework/web/bind/annotation/RestController;";
+
     /** Repository-relative path of the module descriptor, used as the checkout marker. */
     private static final String POM_PATH = "app/java/pom.xml";
 
@@ -289,6 +306,129 @@ class CardDemoApplicationTest {
             assertThat(CommandLineRunner.class.isAssignableFrom(CardDemoApplication.class)).isFalse();
             assertThat(CardDemoApplication.class.getInterfaces()).isEmpty();
             assertThat(CardDemoApplication.class.getSuperclass()).isEqualTo(Object.class);
+        }
+    }
+
+    @Nested
+    @DisplayName("The scanned packages hold no test-tree component, so the route table is the shipped "
+            + "one")
+    class TestTreeStaysOutOfComponentScope {
+
+        /**
+         * The one thing the existing whole-context tests structurally cannot catch.
+         *
+         * <p>{@code src/test/java} compiles to {@code target/test-classes}, which is on the classpath
+         * of every test run and of a local run started from this module's build output. A test class
+         * carrying a bean stereotype inside one of the eleven scanned packages is therefore a
+         * component-scan candidate, and it was: a {@code @RestController} fixture nested in a
+         * {@code config} suite joined the context as an eighteenth controller publishing ten
+         * {@code /webconfig-fixture/**} routes, so a locally started application answered a route table
+         * the deployed artifact does not have - and some of those routes abend by design.
+         *
+         * <p>A {@code @SpringBootTest} cannot see this. Spring Boot's test framework contributes a
+         * {@code TypeExcludeFilter} that excludes test classes and everything they enclose, so the
+         * fixture is filtered out of exactly the contexts a test could assert on and is registered in
+         * the plain {@code main} run nobody asserts on. That is why this reads the compiled test output
+         * directly instead: no context, no filter, no class loading - the annotations are read from the
+         * class files themselves.
+         *
+         * @throws IOException if the compiled test output cannot be walked
+         */
+        @Test
+        @DisplayName("no class compiled from the test tree inside a scanned package is a controller")
+        void noTestTreeClassInsideAScannedPackageIsAController() throws IOException {
+            List<String> offenders = new ArrayList<>();
+            Path testOutput = compiledTestOutput();
+            try (Stream<Path> files = Files.walk(testOutput)) {
+                for (Path file : files.filter(path -> path.toString().endsWith(CLASS_SUFFIX))
+                        .toList()) {
+                    String className = classNameOf(testOutput, file);
+                    if (liesInAScannedPackage(className) && declaresAControllerStereotype(file)) {
+                        offenders.add(className);
+                    }
+                }
+            }
+
+            assertThat(offenders)
+                    .as("a controller-shaped test fixture inside a scanned package is offered to every "
+                            + "context refreshed from target/test-classes; put it in "
+                            + "com.vsergeychik.carddemo.testsupport, which is deliberately unscanned")
+                    .isEmpty();
+        }
+
+        /**
+         * The counterpart assertion: the package that holds those fixtures is not scanned.
+         *
+         * <p>Stated separately because the two can fail independently. The check above passes the
+         * moment a fixture moves out of a scanned package; this one fails if the scan list later grows
+         * to cover where it moved to, which would restore the defect without touching a single test.
+         */
+        @Test
+        @DisplayName("the test-support package is not in the scan list, which is why it can hold them")
+        void theTestSupportPackageIsNotScanned() {
+            assertThat(scanBasePackages())
+                    .as("com.vsergeychik.carddemo.testsupport exists precisely to be out of component "
+                            + "scope; scanning it would put its fixtures into the container")
+                    .doesNotContain(TEST_SUPPORT_PACKAGE);
+        }
+
+        /**
+         * Reports whether a class file declares {@code @Controller} or an annotation meta-annotated
+         * with it, {@code @RestController} being the one this module's fixtures used.
+         *
+         * <p>The class file is read as bytes and the annotation descriptors are matched as text, so
+         * nothing is loaded and no static initialiser of a test class runs during this check.
+         *
+         * @param classFile the compiled class to inspect
+         * @return {@code true} when the class declares a controller stereotype
+         * @throws IOException if the class file cannot be read
+         */
+        private boolean declaresAControllerStereotype(Path classFile) throws IOException {
+            String bytes = new String(Files.readAllBytes(classFile), StandardCharsets.ISO_8859_1);
+            return bytes.contains(CONTROLLER_DESCRIPTOR) || bytes.contains(REST_CONTROLLER_DESCRIPTOR);
+        }
+
+        /**
+         * Reports whether a class lies in one of the eleven packages the entry point scans, or beneath
+         * one of them.
+         *
+         * @param className the fully-qualified class name, with {@code $} for nesting
+         * @return {@code true} when component scanning would reach it
+         */
+        private boolean liesInAScannedPackage(String className) {
+            return scanBasePackages().stream()
+                    .anyMatch(scanned -> className.startsWith(scanned + "."));
+        }
+
+        /**
+         * Derives a class name from the path of its class file, relative to the output root.
+         *
+         * @param root      the compiled output root
+         * @param classFile the class file beneath it
+         * @return the fully-qualified class name, with {@code $} retained for nested classes
+         */
+        private String classNameOf(Path root, Path classFile) {
+            String relative = root.relativize(classFile).toString();
+            return relative.substring(0, relative.length() - CLASS_SUFFIX.length())
+                    .replace(java.io.File.separatorChar, '.');
+        }
+
+        /**
+         * The directory this suite's own class file was loaded from, which is the compiled test tree.
+         *
+         * <p>Taken from the code source rather than assembled from a repository-relative path, so the
+         * check follows the build rather than a convention about where the build puts things.
+         *
+         * @return the compiled test output root
+         */
+        private Path compiledTestOutput() {
+            Path location = Path.of(java.net.URI.create(CardDemoApplicationTest.class
+                    .getProtectionDomain().getCodeSource().getLocation().toString()));
+            assertThat(Files.isDirectory(location))
+                    .as("this suite runs from a directory of class files, which is what makes the test "
+                            + "tree walkable; a packaged test jar would need a different reader")
+                    .isTrue();
+            return location;
         }
     }
 

@@ -291,6 +291,32 @@ class UserListRequestTest {
             "sel0009", "usrId09", "fname09", "lname09", "utype09", "sel0010",
             "usrId10", "fname10", "lname10", "utype10", "errMsg");
 
+    /**
+     * A member's name <strong>on the wire</strong>.
+     *
+     * <p>A screen field answers to its {@code xxxI} item in lower case - that is what
+     * {@code @JsonProperty} pins on the subject and what AAP 0.6.3 requires, "payload field names and
+     * lengths derive from the xxxI items only". A carrier traces to no {@code DFHMDF} field, so no such
+     * rule governs it and it keeps its own component name. Keeping the two apart is the point: a single
+     * list serving both roles would silently assert that the Java identifier and the wire name coincide.
+     *
+     * @param member the Java member name
+     * @return the JSON property name it is published under
+     */
+    private static String wireNameOf(String member) {
+        return MAP_MEMBERS.contains(member) ? member.toLowerCase(Locale.ROOT) : member;
+    }
+
+    /**
+     * {@link #wireNameOf(String)} over a list, preserving order.
+     *
+     * @param members the Java member names
+     * @return their JSON property names
+     */
+    private static List<String> wireNamesOf(List<String> members) {
+        return members.stream().map(UserListRequestTest::wireNameOf).toList();
+    }
+
     private static final List<Integer> DECLARED_WIDTHS = List.of(
             4, 40, 8, 8, 40, 8, 8, 8,
             1, 8, 20, 20, 1,
@@ -655,7 +681,7 @@ class UserListRequestTest {
 
     /** The {@value #WIRE_MEMBER_COUNT} names a serialised request must carry, and no others. */
     private static Set<String> expectedJsonMembers() {
-        Set<String> members = new LinkedHashSet<>(MAP_MEMBERS);
+        Set<String> members = new LinkedHashSet<>(wireNamesOf(MAP_MEMBERS));
         members.add("cdemoCu00UsrIdFirst");
         members.add("cdemoCu00UsrIdLast");
         members.add("cdemoCu00PageNum");
@@ -2336,8 +2362,8 @@ class UserListRequestTest {
             // field.
             Set<String> wireNames = jsonTreeOf(populatedRequest()).keySet();
             assertThat(wireNames).doesNotContain("rows");
-            assertThat(wireNames).contains("sel0001", "usrId01", "fname01", "lname01", "utype01",
-                    "sel0010", "usrId10", "fname10", "lname10", "utype10");
+            assertThat(wireNames).contains("sel0001", "usrid01", "fname01", "lname01", "utype01",
+                    "sel0010", "usrid10", "fname10", "lname10", "utype10");
             assertThat(Arrays.stream(UserListRequest.class.getRecordComponents())
                     .map(RecordComponent::getName).toList())
                     .as("internally it is one component, on the wire it is fifty names")
@@ -2711,7 +2737,7 @@ class UserListRequestTest {
             Set<String> wireNames = jsonTreeOf(populatedRequest()).keySet();
             assertThat(wireNames).hasSize(WIRE_MEMBER_COUNT).isEqualTo(EXPECTED_JSON_MEMBERS);
             assertThat(EXPECTED_JSON_MEMBERS).hasSize(WIRE_MEMBER_COUNT);
-            assertThat(wireNames).containsAll(MAP_MEMBERS);
+            assertThat(wireNames).containsAll(wireNamesOf(MAP_MEMBERS));
         }
 
         @Test
@@ -2719,9 +2745,11 @@ class UserListRequestTest {
         void theNamesAreNotTransformed() {
             // A naming strategy that emitted snake_case would rename all fifty-nine fields at once, and
             // a field-for-field diff would then compare nothing to nothing.
+            // The screen fields answer to their xxxI items in lower case; the six CU00 extension
+            // carriers and the two conversation members trace to no DFHMDF field and keep their own names.
             Set<String> wireNames = jsonTreeOf(populatedRequest()).keySet();
-            assertThat(wireNames).contains("trnName", "curDate", "pgmName", "usrIdIn", "pageNum",
-                    "errMsg", "cdemoCu00UsrIdFirst", "cdemoCu00NextPageFlg", "navigationContext");
+            assertThat(wireNames).contains("trnname", "curdate", "pgmname", "usridin", "pagenum",
+                    "errmsg", "cdemoCu00UsrIdFirst", "cdemoCu00NextPageFlg", "navigationContext");
             assertThat(wireNames).doesNotContain("trn_name", "cur_date", "pgm_name", "usr_id_in",
                     "page_num", "err_msg", "cdemo_cu00_usrid_first", "TRNNAME");
         }
@@ -2732,10 +2760,11 @@ class UserListRequestTest {
             List<String> wireOrder = List.copyOf(jsonTreeOf(populatedRequest()).keySet());
             assertThat(wireOrder.subList(0, DFHMDF_NAMED - 1))
                     .as("the header and the fifty row names come first, in the copybook's order")
-                    .containsExactlyElementsOf(MAP_MEMBERS.subList(0, DFHMDF_NAMED - 1));
+                    .containsExactlyElementsOf(
+                            wireNamesOf(MAP_MEMBERS).subList(0, DFHMDF_NAMED - 1));
             assertThat(wireOrder.get(DFHMDF_NAMED - 1))
-                    .as("errMsg closes the map fields, as ERRMSGI closes 01 COUSR0AI")
-                    .isEqualTo("errMsg");
+                    .as("errmsg closes the map fields, as ERRMSGI closes 01 COUSR0AI")
+                    .isEqualTo("errmsg");
             assertThat(wireOrder.subList(DFHMDF_NAMED, WIRE_MEMBER_COUNT))
                     .as("then the CU00 extension, then the conversation")
                     .containsExactly("cdemoCu00UsrIdFirst", "cdemoCu00UsrIdLast", "cdemoCu00PageNum",
@@ -2831,8 +2860,8 @@ class UserListRequestTest {
         void anOverWideWireValueIsRefused() {
             // The constructor's rule applies to a wire body as much as to a Java caller, so a client
             // cannot smuggle a 79-character message past the screen's width by sending JSON.
-            String json = serialise(blankRequest()).replace("\"trnName\":\"    \"",
-                    "\"trnName\":\"TOOLONG\"");
+            String json = serialise(blankRequest()).replace("\"trnname\":\"    \"",
+                    "\"trnname\":\"TOOLONG\"");
             assertThatExceptionOfType(Exception.class)
                     .isThrownBy(() -> deserialise(json))
                     .withStackTraceContaining(UserListRequest.TRNNAME_FIELD);

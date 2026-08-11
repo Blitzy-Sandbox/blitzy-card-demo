@@ -311,6 +311,32 @@ class UserAddResponseTest {
     private static final List<String> NAV_MEMBERS =
             List.of("navigationContext", "nextProgram", "nextMapset", "nextMap");
 
+    /**
+     * A member's name <strong>on the wire</strong>.
+     *
+     * <p>A screen field answers to its {@code xxxI} item in lower case - that is what
+     * {@code @JsonProperty} pins on the subject and what AAP 0.6.3 requires, "payload field names and
+     * lengths derive from the xxxI items only". A carrier traces to no {@code DFHMDF} field, so no such
+     * rule governs it and it keeps its own component name. Keeping the two apart is the point: a single
+     * list serving both roles would silently assert that the Java identifier and the wire name coincide.
+     *
+     * @param member the Java member name
+     * @return the JSON property name it is published under
+     */
+    private static String wireNameOf(String member) {
+        return MAP_MEMBERS.contains(member) ? member.toLowerCase(Locale.ROOT) : member;
+    }
+
+    /**
+     * {@link #wireNameOf(String)} over a list, preserving order.
+     *
+     * @param members the Java member names
+     * @return their JSON property names
+     */
+    private static List<String> wireNamesOf(List<String> members) {
+        return members.stream().map(UserAddResponseTest::wireNameOf).toList();
+    }
+
     // -------------------------------------------------------------------------------------------------
     // The two seven-byte control prefixes. These are the reason the overlay balances, so each component
     // is named separately rather than collapsed into the total.
@@ -763,7 +789,7 @@ class UserAddResponseTest {
 
     /** The sixteen property names the wire form must carry: the twelve map members plus the four nav. */
     private static Set<String> expectedJsonMembers() {
-        Set<String> members = new LinkedHashSet<>(MAP_MEMBERS);
+        Set<String> members = new LinkedHashSet<>(wireNamesOf(MAP_MEMBERS));
         members.addAll(NAV_MEMBERS);
         return Set.copyOf(members);
     }

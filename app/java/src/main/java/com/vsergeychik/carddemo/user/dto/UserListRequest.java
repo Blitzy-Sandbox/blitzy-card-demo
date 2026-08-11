@@ -2,9 +2,11 @@ package com.vsergeychik.carddemo.user.dto;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.annotation.JsonPropertyOrder;
 import com.vsergeychik.carddemo.common.NavigationContext;
+import com.vsergeychik.carddemo.common.ResponseOnlyMembers;
 import com.vsergeychik.carddemo.common.SensitiveDiagnostics;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Size;
@@ -224,6 +226,17 @@ import java.util.Map;
  *                         {@link #hasNavigationContext()}
  * @param aid              the {@code EIBAID} key indication as a token, at most
  *                         {@value #AID_LENGTH} characters
+ *
+ * <h2>Members this request tolerates without declaring</h2>
+ *
+ * <p>The {@code @JsonIgnoreProperties} below names the members the paired response carries that this
+ * request does not declare. They are tolerated so a client can send the body it was just handed straight
+ * back: rule R6 and gate G37 put the whole conversation in the payload, which makes the next request the
+ * previous response. {@code ignoreUnknown} stays at its default of {@code false}, so every <em>other</em>
+ * unrecognised name is still refused with the offending field named in the error envelope. Each tolerated
+ * member is recomputed by the server on every path, so the value that arrives here is discarded and
+ * cannot steer a branch. The names live in {@link com.vsergeychik.carddemo.common.ResponseOnlyMembers},
+ * which explains each one.
  */
 @JsonPropertyOrder({
         "trnName", "title01", "curDate", "pgmName", "title02", "curTime", "pageNum", "usrIdIn",
@@ -236,22 +249,27 @@ import java.util.Map;
         "lname10", "utype10", "errMsg", "cdemoCu00UsrIdFirst", "cdemoCu00UsrIdLast",
         "cdemoCu00PageNum", "cdemoCu00NextPageFlg", "cdemoCu00UsrSelFlg", "cdemoCu00UsrSelected",
         "navigationContext", "aid"})
+@JsonIgnoreProperties({
+        ResponseOnlyMembers.NEXT_PROGRAM,
+        ResponseOnlyMembers.NEXT_MAPSET,
+        ResponseOnlyMembers.NEXT_MAP,
+        ResponseOnlyMembers.SCREEN_METADATA})
 public record UserListRequest(
 
-        @Size(max = UserListRequest.TRNNAME_LENGTH) String trnName,
+        @Size(max = UserListRequest.TRNNAME_LENGTH) @JsonProperty("trnname") String trnName,
         @Size(max = UserListRequest.TITLE01_LENGTH) String title01,
-        @Size(max = UserListRequest.CURDATE_LENGTH) String curDate,
-        @Size(max = UserListRequest.PGMNAME_LENGTH) String pgmName,
+        @Size(max = UserListRequest.CURDATE_LENGTH) @JsonProperty("curdate") String curDate,
+        @Size(max = UserListRequest.PGMNAME_LENGTH) @JsonProperty("pgmname") String pgmName,
         @Size(max = UserListRequest.TITLE02_LENGTH) String title02,
-        @Size(max = UserListRequest.CURTIME_LENGTH) String curTime,
-        @Size(max = UserListRequest.PAGENUM_LENGTH) String pageNum,
-        @Size(max = UserListRequest.USRIDIN_LENGTH) String usrIdIn,
+        @Size(max = UserListRequest.CURTIME_LENGTH) @JsonProperty("curtime") String curTime,
+        @Size(max = UserListRequest.PAGENUM_LENGTH) @JsonProperty("pagenum") String pageNum,
+        @Size(max = UserListRequest.USRIDIN_LENGTH) @JsonProperty("usridin") String usrIdIn,
 
         @JsonIgnore
         @Valid @Size(min = UserListRequest.ROW_COUNT, max = UserListRequest.ROW_COUNT)
         List<UserListRow> rows,
 
-        @Size(max = UserListRequest.ERRMSG_LENGTH) String errMsg,
+        @Size(max = UserListRequest.ERRMSG_LENGTH) @JsonProperty("errmsg") String errMsg,
 
         @Size(max = UserListRequest.CU00_USRID_FIRST_LENGTH) String cdemoCu00UsrIdFirst,
         @Size(max = UserListRequest.CU00_USRID_LAST_LENGTH) String cdemoCu00UsrIdLast,
@@ -1216,7 +1234,7 @@ public record UserListRequest(
      *
      * @return the value as stored on row 1, never {@code null}
      */
-    @JsonProperty("usrId01")
+    @JsonProperty("usrid01")
     public String usrId01() {
         return row(1).usrId();
     }
@@ -1262,7 +1280,7 @@ public record UserListRequest(
      *
      * @return the value as stored on row 2, never {@code null}
      */
-    @JsonProperty("usrId02")
+    @JsonProperty("usrid02")
     public String usrId02() {
         return row(2).usrId();
     }
@@ -1308,7 +1326,7 @@ public record UserListRequest(
      *
      * @return the value as stored on row 3, never {@code null}
      */
-    @JsonProperty("usrId03")
+    @JsonProperty("usrid03")
     public String usrId03() {
         return row(3).usrId();
     }
@@ -1354,7 +1372,7 @@ public record UserListRequest(
      *
      * @return the value as stored on row 4, never {@code null}
      */
-    @JsonProperty("usrId04")
+    @JsonProperty("usrid04")
     public String usrId04() {
         return row(4).usrId();
     }
@@ -1400,7 +1418,7 @@ public record UserListRequest(
      *
      * @return the value as stored on row 5, never {@code null}
      */
-    @JsonProperty("usrId05")
+    @JsonProperty("usrid05")
     public String usrId05() {
         return row(5).usrId();
     }
@@ -1446,7 +1464,7 @@ public record UserListRequest(
      *
      * @return the value as stored on row 6, never {@code null}
      */
-    @JsonProperty("usrId06")
+    @JsonProperty("usrid06")
     public String usrId06() {
         return row(6).usrId();
     }
@@ -1492,7 +1510,7 @@ public record UserListRequest(
      *
      * @return the value as stored on row 7, never {@code null}
      */
-    @JsonProperty("usrId07")
+    @JsonProperty("usrid07")
     public String usrId07() {
         return row(7).usrId();
     }
@@ -1538,7 +1556,7 @@ public record UserListRequest(
      *
      * @return the value as stored on row 8, never {@code null}
      */
-    @JsonProperty("usrId08")
+    @JsonProperty("usrid08")
     public String usrId08() {
         return row(8).usrId();
     }
@@ -1584,7 +1602,7 @@ public record UserListRequest(
      *
      * @return the value as stored on row 9, never {@code null}
      */
-    @JsonProperty("usrId09")
+    @JsonProperty("usrid09")
     public String usrId09() {
         return row(9).usrId();
     }
@@ -1630,7 +1648,7 @@ public record UserListRequest(
      *
      * @return the value as stored on row 10, never {@code null}
      */
-    @JsonProperty("usrId10")
+    @JsonProperty("usrid10")
     public String usrId10() {
         return row(10).usrId();
     }
@@ -1752,65 +1770,65 @@ public record UserListRequest(
      */
     @JsonCreator
     public static UserListRequest fromWire(
-            @JsonProperty("trnName") String trnName,
+            @JsonProperty("trnname") String trnName,
             @JsonProperty("title01") String title01,
-            @JsonProperty("curDate") String curDate,
-            @JsonProperty("pgmName") String pgmName,
+            @JsonProperty("curdate") String curDate,
+            @JsonProperty("pgmname") String pgmName,
             @JsonProperty("title02") String title02,
-            @JsonProperty("curTime") String curTime,
-            @JsonProperty("pageNum") String pageNum,
-            @JsonProperty("usrIdIn") String usrIdIn,
+            @JsonProperty("curtime") String curTime,
+            @JsonProperty("pagenum") String pageNum,
+            @JsonProperty("usridin") String usrIdIn,
             @JsonProperty("sel0001") String sel0001,
-            @JsonProperty("usrId01") String usrId01,
+            @JsonProperty("usrid01") String usrId01,
             @JsonProperty("fname01") String fname01,
             @JsonProperty("lname01") String lname01,
             @JsonProperty("utype01") String utype01,
             @JsonProperty("sel0002") String sel0002,
-            @JsonProperty("usrId02") String usrId02,
+            @JsonProperty("usrid02") String usrId02,
             @JsonProperty("fname02") String fname02,
             @JsonProperty("lname02") String lname02,
             @JsonProperty("utype02") String utype02,
             @JsonProperty("sel0003") String sel0003,
-            @JsonProperty("usrId03") String usrId03,
+            @JsonProperty("usrid03") String usrId03,
             @JsonProperty("fname03") String fname03,
             @JsonProperty("lname03") String lname03,
             @JsonProperty("utype03") String utype03,
             @JsonProperty("sel0004") String sel0004,
-            @JsonProperty("usrId04") String usrId04,
+            @JsonProperty("usrid04") String usrId04,
             @JsonProperty("fname04") String fname04,
             @JsonProperty("lname04") String lname04,
             @JsonProperty("utype04") String utype04,
             @JsonProperty("sel0005") String sel0005,
-            @JsonProperty("usrId05") String usrId05,
+            @JsonProperty("usrid05") String usrId05,
             @JsonProperty("fname05") String fname05,
             @JsonProperty("lname05") String lname05,
             @JsonProperty("utype05") String utype05,
             @JsonProperty("sel0006") String sel0006,
-            @JsonProperty("usrId06") String usrId06,
+            @JsonProperty("usrid06") String usrId06,
             @JsonProperty("fname06") String fname06,
             @JsonProperty("lname06") String lname06,
             @JsonProperty("utype06") String utype06,
             @JsonProperty("sel0007") String sel0007,
-            @JsonProperty("usrId07") String usrId07,
+            @JsonProperty("usrid07") String usrId07,
             @JsonProperty("fname07") String fname07,
             @JsonProperty("lname07") String lname07,
             @JsonProperty("utype07") String utype07,
             @JsonProperty("sel0008") String sel0008,
-            @JsonProperty("usrId08") String usrId08,
+            @JsonProperty("usrid08") String usrId08,
             @JsonProperty("fname08") String fname08,
             @JsonProperty("lname08") String lname08,
             @JsonProperty("utype08") String utype08,
             @JsonProperty("sel0009") String sel0009,
-            @JsonProperty("usrId09") String usrId09,
+            @JsonProperty("usrid09") String usrId09,
             @JsonProperty("fname09") String fname09,
             @JsonProperty("lname09") String lname09,
             @JsonProperty("utype09") String utype09,
             @JsonProperty("sel0010") String sel0010,
-            @JsonProperty("usrId10") String usrId10,
+            @JsonProperty("usrid10") String usrId10,
             @JsonProperty("fname10") String fname10,
             @JsonProperty("lname10") String lname10,
             @JsonProperty("utype10") String utype10,
-            @JsonProperty("errMsg") String errMsg,
+            @JsonProperty("errmsg") String errMsg,
             @JsonProperty("cdemoCu00UsrIdFirst") String cdemoCu00UsrIdFirst,
             @JsonProperty("cdemoCu00UsrIdLast") String cdemoCu00UsrIdLast,
             @JsonProperty("cdemoCu00PageNum") int cdemoCu00PageNum,

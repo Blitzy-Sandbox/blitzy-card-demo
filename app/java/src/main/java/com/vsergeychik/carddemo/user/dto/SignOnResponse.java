@@ -1,6 +1,8 @@
 package com.vsergeychik.carddemo.user.dto;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
 import com.vsergeychik.carddemo.common.NavigationContext;
+import com.vsergeychik.carddemo.common.ScreenFieldImage;
 import java.util.List;
 import java.util.Objects;
 
@@ -195,12 +197,14 @@ import java.util.Objects;
  *
  * <h2>Serialisation, validation, and why every helper here is {@code static}</h2>
  *
- * Jackson policy belongs to {@code config/WebConfig.java}: property names are left untransformed, and
- * trimming, empty-string-to-null coercion and null or empty exclusion are all refused so that
- * space-padded {@code PIC X(n)} values survive a round trip unchanged. This type therefore carries no
- * {@code @JsonProperty} rename, no {@code @JsonNaming}, no {@code @JsonInclude}, no
- * {@code @JsonIgnore} and no custom serialiser - a record's components are its JSON properties, which
- * is all that is needed.
+ * Jackson policy belongs to {@code config/WebConfig.java}: trimming, empty-string-to-null coercion and
+ * null or empty exclusion are all refused so that space-padded {@code PIC X(n)} values survive a round
+ * trip unchanged. What this type declares is one {@code @JsonProperty} per screen field, pinning each
+ * wire name to its {@code xxxI} item in lower case - the presentation contract AAP 0.6.3 fixes, and the
+ * reason a caller sees {@code trnname} rather than the Java identifier {@code trnName}. It is also what
+ * lets the paired request accept this response verbatim, since both sides name the same item. Nothing
+ * else is declared: no {@code @JsonNaming}, no {@code @JsonInclude}, no {@code @JsonIgnore} and no
+ * custom serialiser.
  *
  * <p>That has one consequence worth stating, because it explains the shape of the API below: since no
  * property may be suppressed, no derived <em>instance</em> accessor may be added. An
@@ -270,16 +274,16 @@ import java.util.Objects;
  * @param nextMap           the map the client should render next, {@code PIC X(7)}
  * @param navigationContext the {@code CARDDEMO-COMMAREA} carried between calls, never {@code null}
  */
-public record SignOnResponse(String trnName,
+public record SignOnResponse(@JsonProperty("trnname") String trnName,
                              String title01,
-                             String curDate,
-                             String pgmName,
+                             @JsonProperty("curdate") String curDate,
+                             @JsonProperty("pgmname") String pgmName,
                              String title02,
-                             String curTime,
-                             String applId,
-                             String sysId,
-                             String userId,
-                             String errMsg,
+                             @JsonProperty("curtime") String curTime,
+                             @JsonProperty("applid") String applId,
+                             @JsonProperty("sysid") String sysId,
+                             @JsonProperty("userid") String userId,
+                             @JsonProperty("errmsg") String errMsg,
                              String role,
                              String nextProgram,
                              String nextMapset,
@@ -556,34 +560,47 @@ public record SignOnResponse(String trnName,
     // =================================================================================================
 
     /**
-     * The sign-on screen before anything has been written to it: every character member a run of spaces
-     * of its own declared width, and {@link NavigationContext#empty()} as the communication area.
+     * The sign-on screen before anything has been written to it: every one of the ten screen fields
+     * carrying the unpainted image at its own declared width, and {@link NavigationContext#empty()} as
+     * the communication area.
      *
      * <p>This is the state {@code app/cbl/COSGN00C.cbl:80-83} produces when {@code EIBCALEN} is zero -
-     * {@code MOVE LOW-VALUES TO COSGN0AO}, then {@code SEND-SIGNON-SCREEN}. One honest difference is
-     * worth naming rather than glossing: the COBOL moves {@code LOW-VALUES}, binary zeros, which BMS
-     * reads as "this field was not transmitted", whereas line 78 moves {@code SPACES} specifically to
-     * {@code ERRMSGO}. This type is a JSON payload and not a 3270 buffer, so there is no
-     * "not transmitted" state to represent; every member is spaces of its declared width, which is the
-     * same choice {@link NavigationContext#empty()} documents for the communication area.
+     * {@code MOVE LOW-VALUES TO COSGN0AO}, then {@code SEND-SIGNON-SCREEN}. The unpainted image is
+     * therefore {@code LOW-VALUES}: {@code X'00'} at the declared width, exactly the byte line 81
+     * moves. An earlier revision of this factory substituted spaces on the reasoning that a JSON
+     * payload is not a 3270 buffer and has no "not transmitted" state to represent. That reasoning was
+     * wrong twice over - {@code U+0000} is a perfectly ordinary JSON string character that Jackson
+     * emits as the {@code \\u0000} escape, and a field-for-field diff of the returned map area reports
+     * the substitution - so the byte the source moves is what this factory now produces.
+     * {@link ScreenFieldImage} records that decision once, for all seventeen screens, and lists all
+     * seventeen {@code MOVE LOW-VALUES} sites.
      *
-     * <p>{@link #role()} is a single space, so {@link #isAdminRole(String)} is false for it - no role is
-     * implied before sign-on. {@link #nextProgram()} is spaces too: an unauthenticated response names
-     * no target, because {@code COSGN00C} transfers only from inside the successful branch at line 230.
+     * <p>{@code ERRMSGO} is a separate case and is <em>not</em> special-cased here. Line 78 moves
+     * {@code SPACES} into it unconditionally, at the head of {@code MAIN-PARA}, so on every path
+     * including this one the error line is painted - with a blank value, but painted. That paint
+     * happens in the controller where the source performs it, which leaves this factory free to state
+     * one rule for all ten fields.
+     *
+     * <p>{@link #role()} is a single space and {@link #nextProgram()} is spaces: both are
+     * {@code CARDDEMO-COMMAREA} carriers rather than map fields, so {@link ScreenFieldImage} does not
+     * govern them and {@link NavigationContext#empty()} documents their resting state.
+     * {@link #isAdminRole(String)} is false for a space - no role is implied before sign-on - and an
+     * unauthenticated response names no target, because {@code COSGN00C} transfers only from inside the
+     * successful branch at line 230.
      *
      * @return the initial sign-on response, never {@code null}
      */
     public static SignOnResponse empty() {
-        return new SignOnResponse(spaces(TRNNAME_LENGTH),
-                spaces(TITLE01_LENGTH),
-                spaces(CURDATE_LENGTH),
-                spaces(PGMNAME_LENGTH),
-                spaces(TITLE02_LENGTH),
-                spaces(CURTIME_LENGTH),
-                spaces(APPLID_LENGTH),
-                spaces(SYSID_LENGTH),
-                spaces(USERID_LENGTH),
-                spaces(ERRMSG_LENGTH),
+        return new SignOnResponse(ScreenFieldImage.unpainted(TRNNAME_LENGTH),
+                ScreenFieldImage.unpainted(TITLE01_LENGTH),
+                ScreenFieldImage.unpainted(CURDATE_LENGTH),
+                ScreenFieldImage.unpainted(PGMNAME_LENGTH),
+                ScreenFieldImage.unpainted(TITLE02_LENGTH),
+                ScreenFieldImage.unpainted(CURTIME_LENGTH),
+                ScreenFieldImage.unpainted(APPLID_LENGTH),
+                ScreenFieldImage.unpainted(SYSID_LENGTH),
+                ScreenFieldImage.unpainted(USERID_LENGTH),
+                ScreenFieldImage.unpainted(ERRMSG_LENGTH),
                 spaces(ROLE_LENGTH),
                 spaces(NEXT_PROGRAM_LENGTH),
                 spaces(NEXT_MAPSET_LENGTH),

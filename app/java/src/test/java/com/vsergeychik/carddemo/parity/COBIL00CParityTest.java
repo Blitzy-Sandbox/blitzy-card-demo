@@ -30,6 +30,7 @@ import com.vsergeychik.carddemo.common.FixedWidthRecord.RecordLayout;
 import com.vsergeychik.carddemo.common.NavigationContext;
 import com.vsergeychik.carddemo.common.PfKeyResolver;
 import com.vsergeychik.carddemo.common.PfKeyResolver.AidKey;
+import com.vsergeychik.carddemo.common.ScreenFieldImage;
 import com.vsergeychik.carddemo.config.DatasetUnitOfWork;
 import com.vsergeychik.carddemo.parity.FieldDiffer.DiffResult;
 import com.vsergeychik.carddemo.parity.FieldDiffer.ObservedResponse;
@@ -1399,7 +1400,7 @@ class COBIL00CParityTest {
                 invocation.clock(), privateUnitOfWork());
         BillPaymentController controller = new BillPaymentController(service, invocation.clock());
 
-        BillPaymentResponse payload = controller.payBill(requestOf(invocation));
+        BillPaymentResponse payload = controller.payBill(requestOf(invocation)).screen();
 
         UnitOutcome.Builder recorder = invocation.recorder();
         recorder.response(observedControllerResponse(payload));
@@ -1454,7 +1455,11 @@ class COBIL00CParityTest {
      */
     private static ObservedResponse observedControllerResponse(BillPaymentResponse response) {
         List<ObservedSend> sends = new ArrayList<>();
-        if (response.getNextMap() != null) {
+        // "Did a SEND happen?" is "does the response NAME a map?", not "is the member non-null". The
+        // navigation carriers are CARDDEMO-COMMAREA items and a carrier that names nothing holds spaces
+        // at its declared width, which is what NavigationContext.empty() documents and what all sixteen
+        // sibling screens already emit. Keying on null read a blank carrier as a SEND.
+        if (namesSomething(response.getNextMap())) {
             Map<String, String> fields = new LinkedHashMap<>();
             fields.put("TRNNAMEO", response.getTrnName());
             fields.put("TITLE01O", response.getTitle01());
@@ -1474,10 +1479,42 @@ class COBIL00CParityTest {
                     ? ObservedSend.ofFields(fields)
                     : new ObservedSend(fields, attributes));
         }
-        return new ObservedResponse(response.getNextProgram(), response.getNextMapset(),
-                response.getNextMap(), navigationOf(response.getNavigationContext()), sends,
+        return new ObservedResponse(nameOrAbsent(response.getNextProgram()),
+                nameOrAbsent(response.getNextMapset()),
+                nameOrAbsent(response.getNextMap()),
+                navigationOf(response.getNavigationContext()), sends,
                 cursorItemOf(response.getCursorField()),
-                response.getNextProgram() == null ? Termination.RETURN_TRANSID : Termination.XCTL);
+                namesSomething(response.getNextProgram())
+                        ? Termination.XCTL
+                        : Termination.RETURN_TRANSID);
+    }
+
+    /**
+     * Whether a navigation carrier actually names a target.
+     *
+     * <p>{@code CDEMO-TO-PROGRAM}, {@code CDEMO-LAST-MAPSET} and {@code CDEMO-LAST-MAP} are
+     * {@code PIC X} items of {@code CARDDEMO-COMMAREA}, so "names nothing" is spaces or
+     * {@code LOW-VALUES} at the declared width - the COBOL's own {@code = SPACES OR LOW-VALUES} test -
+     * and not a Java {@code null}. A projection that treated blank as named would report an
+     * {@code XCTL} on a path that only performed {@code EXEC CICS RETURN}.
+     *
+     * @param carrier the carrier's image, possibly {@code null}
+     * @return {@code true} when it holds a value that is neither spaces nor {@code LOW-VALUES}
+     */
+    private static boolean namesSomething(String carrier) {
+        return carrier != null && !carrier.isEmpty()
+                && !ScreenFieldImage.isSpacesOrLowValues(carrier);
+    }
+
+    /**
+     * A navigation carrier as the expected-output model records it: the value where one is named, and
+     * {@code null} - "absent" in a parity case - where the carrier is blank.
+     *
+     * @param carrier the carrier's image, possibly {@code null}
+     * @return the named value, or {@code null}
+     */
+    private static String nameOrAbsent(String carrier) {
+        return namesSomething(carrier) ? carrier : null;
     }
 
     /**
@@ -3398,7 +3435,7 @@ class COBIL00CParityTest {
      */
     private static ObservedResponse paintedBy(BillPaymentController controller,
                                               BillPaymentRequest request) {
-        return observedControllerResponse(controller.payBill(request));
+        return observedControllerResponse(controller.payBill(request).screen());
     }
 
     /**

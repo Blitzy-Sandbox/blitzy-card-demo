@@ -1,10 +1,12 @@
 package com.vsergeychik.carddemo.transaction.dto;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.FieldSpan;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.RecordLayout;
 import com.vsergeychik.carddemo.common.NavigationContext;
+import com.vsergeychik.carddemo.common.ResponseOnlyMembers;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
@@ -221,7 +223,23 @@ import java.util.Objects;
  * @see NavigationContext the {@value NavigationContext#COMMAREA_LENGTH}-byte {@code COCOM01Y}
  *      communication area, shared by all seventeen online programs and never widened
  * @see FixedWidthCodec the single seam through which every declared width is rendered
+ *
+ * <h2>Members this request tolerates without declaring</h2>
+ *
+ * <p>The {@code @JsonIgnoreProperties} below names the members the paired response carries that this
+ * request does not declare. They are tolerated so a client can send the body it was just handed straight
+ * back: rule R6 and gate G37 put the whole conversation in the payload, which makes the next request the
+ * previous response. {@code ignoreUnknown} stays at its default of {@code false}, so every <em>other</em>
+ * unrecognised name is still refused with the offending field named in the error envelope. Each tolerated
+ * member is recomputed by the server on every path, so the value that arrives here is discarded and
+ * cannot steer a branch. The names live in {@link com.vsergeychik.carddemo.common.ResponseOnlyMembers},
+ * which explains each one.
  */
+@JsonIgnoreProperties({
+        ResponseOnlyMembers.NEXT_PROGRAM,
+        ResponseOnlyMembers.NEXT_MAPSET,
+        ResponseOnlyMembers.NEXT_MAP,
+        ResponseOnlyMembers.SCREEN_METADATA})
 public final class TransactionAddRequest {
 
     // =================================================================================================

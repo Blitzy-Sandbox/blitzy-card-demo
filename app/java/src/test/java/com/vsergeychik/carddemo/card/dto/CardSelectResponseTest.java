@@ -1670,7 +1670,8 @@ final class CardSelectResponseTest {
             // Present: one member per display item. Named explicitly, one field at a time - a count
             // would be satisfied by fifteen wrong names.
             for (FieldOracle oracle : fieldOracle()) {
-                String member = oracle.cobolName().toLowerCase(Locale.ROOT);
+                // The wire name is the item without its output-direction suffix, in lower case (AAP 0.6.3).
+                String member = withoutDirectionSuffix(oracle.cobolName());
                 assertThat(json.has(member)).as("JSON member for %s", oracle.cobolName()).isTrue();
                 assertThat(json.get(member).asText()).as("%s image", oracle.cobolName())
                         .hasSize(oracle.width());
@@ -1859,9 +1860,9 @@ final class CardSelectResponseTest {
 
             // ... and the JSON wire.
             JsonNode json = new ObjectMapper().valueToTree(response);
-            assertThat(json.get("acctsido").asText()).isEqualTo(accountId);
-            assertThat(json.get("cardsido").asText()).isEqualTo(cardNumber);
-            assertThat(json.get("crdnameo").asText()).startsWith(embossedName);
+            assertThat(json.get("acctsid").asText()).isEqualTo(accountId);
+            assertThat(json.get("cardsid").asText()).isEqualTo(cardNumber);
+            assertThat(json.get("crdname").asText()).startsWith(embossedName);
 
             // The two diagnostic renderings, and only they, withhold the three identifying fields.
             assertThat(response.toString())
@@ -2034,9 +2035,9 @@ final class CardSelectResponseTest {
             // next-screen triple, and the twelve-byte WS-THIS-PROGCOMMAREA that COMMON-RETURN appends
             // behind the commarea at app/cbl/COCRDSLC.cbl:398-400.
             assertThat(json.keySet()).containsExactlyInAnyOrder(
-                    "trnnameo", "title01o", "curdateo", "pgmnameo", "title02o", "curtimeo",
-                    "acctsido", "cardsido", "crdnameo", "crdstcdo", "expmono", "expyearo",
-                    "infomsgo", "errmsgo", "fkeyso",
+                    "trnname", "title01", "curdate", "pgmname", "title02", "curtime",
+                    "acctsid", "cardsid", "crdname", "crdstcd", "expmon", "expyear",
+                    "infomsg", "errmsg", "fkeys",
                     "cardScreenState", "navigationContext", "nextProgram", "nextMapset", "nextMap",
                     "thisProgCommarea");
             assertThat(json).hasSize(21);
@@ -2073,8 +2074,8 @@ final class CardSelectResponseTest {
             Map<String, Object> json =
                     mapper.readValue(mapper.writeValueAsString(response), Map.class);
 
-            assertThat(json.get("cardsido")).isEqualTo("1234567890123456");
-            assertThat(json.get("acctsido")).isEqualTo("00000000011");
+            assertThat(json.get("cardsid")).isEqualTo("1234567890123456");
+            assertThat(json.get("acctsid")).isEqualTo("00000000011");
             assertThat(json.get("nextMapset")).isEqualTo("COCRDSL");
         }
 
@@ -2097,5 +2098,22 @@ final class CardSelectResponseTest {
                         .hasSize(field.length());
             }
         }
+    }
+
+    /**
+     * A copybook item name rendered as the JSON member it is published under: the item without its
+     * output-direction suffix, lower-cased.
+     *
+     * <p>{@code @JsonProperty} pins every screen field's wire name to its {@code xxxI} item in lower
+     * case, which is the one naming rule AAP 0.6.3 states - "payload field names and lengths derive from
+     * the xxxI items only". The Java accessor keeps the {@code xxxO} spelling, because that is the map
+     * view the type projects; the wire name does not, because the paired request has to accept this
+     * response back field for field.
+     *
+     * @param itemName a symbolic-map item name such as {@code TRNNAMEO} or {@code TRNNAMEI}
+     * @return the JSON member name, such as {@code trnname}
+     */
+    private static String withoutDirectionSuffix(String itemName) {
+        return itemName.substring(0, itemName.length() - 1).toLowerCase(Locale.ROOT);
     }
 }

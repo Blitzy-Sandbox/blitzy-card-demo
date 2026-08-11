@@ -11,6 +11,7 @@ import com.fasterxml.jackson.databind.exc.UnrecognizedPropertyException;
 import com.vsergeychik.carddemo.billing.dto.BillPaymentResponse.CursorField;
 import com.vsergeychik.carddemo.common.BmsAttributes;
 import com.vsergeychik.carddemo.common.NavigationContext;
+import com.vsergeychik.carddemo.common.ScreenFieldImage;
 import java.lang.annotation.Annotation;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
@@ -268,6 +269,15 @@ class BillPaymentResponseTest {
      * data items, the two collapsed presentation-state members, the four navigation members and the
      * six {@code CDEMO-CB00-INFO} members.
      */
+    /**
+     * The two instance members that are deliberately {@code @JsonIgnore}: they derive from the
+     * {@code xxxL} length items and from {@code ERRMSGC}, an attribute item, and AAP 0.6.3 keeps both
+     * kinds out of the payload. {@code BillPaymentController} projects them into
+     * {@code screenMetadata.cursorField} and {@code screenMetadata.messageColour}, which is the shape
+     * the other sixteen screens use.
+     */
+    private static final Set<String> NOT_PUBLISHED = Set.of("cursorField", "messageHighlight");
+
     private static final List<String> WIRE_MEMBERS = List.of("trnName",
             "title01",
             "curDate",
@@ -290,6 +300,37 @@ class BillPaymentResponseTest {
             "nextPageFlg",
             "trnSelFlg",
             "trnSelected");
+
+    /**
+     * The ten screen fields of {@code 01 COBIL0AO}, by Java member name, so {@link #wireNameOf(String)}
+     * can tell them from the twelve members that trace to no {@code DFHMDF} field.
+     */
+    private static final java.util.Set<String> SCREEN_FIELD_MEMBERS = java.util.Set.of(
+            "trnName", "title01", "curDate", "pgmName", "title02", "curTime", "actIdIn", "curBal",
+            "confirm", "errMsg");
+
+    /**
+     * A member's name <strong>on the wire</strong>: a screen field answers to its {@code xxxI} item in
+     * lower case, which {@code @JsonProperty} pins per AAP 0.6.3; the presentation, navigation and
+     * {@code CDEMO-CB00-INFO} carriers trace to no {@code DFHMDF} field and keep their own names.
+     *
+     * @param member the Java member name
+     * @return the JSON property name it is published under
+     */
+    private static String wireNameOf(String member) {
+        return SCREEN_FIELD_MEMBERS.contains(member)
+                ? member.toLowerCase(java.util.Locale.ROOT) : member;
+    }
+
+    /**
+     * {@link #wireNameOf(String)} over a collection, preserving order.
+     *
+     * @param members the Java member names
+     * @return their JSON property names
+     */
+    private static List<String> wireNamesOf(java.util.Collection<String> members) {
+        return members.stream().map(BillPaymentResponseTest::wireNameOf).toList();
+    }
 
     /**
      * The six members of {@code 05 CDEMO-CB00-INFO}, declared at {@code app/cbl/COBIL00C.cbl:64-72}
@@ -705,6 +746,9 @@ class BillPaymentResponseTest {
         void theDeclaredMembersAreExactlyTheWireMembers() {
             assertThat(instanceFieldNames()).containsExactlyElementsOf(WIRE_MEMBERS);
             assertThat(WIRE_MEMBERS).hasSize(22);
+            // Two of the twenty-two are @JsonIgnore and travel as screenMetadata instead - see
+            // NOT_PUBLISHED and theBodyCarriesExactlyTheTwentyMembers.
+            assertThat(NOT_PUBLISHED).hasSize(2).allMatch(WIRE_MEMBERS::contains);
         }
 
         @Test
@@ -788,13 +832,25 @@ class BillPaymentResponseTest {
     class WireFormat {
 
         @Test
-        @DisplayName("the serialised body carries exactly the twenty-two members and nothing else")
-        void theBodyCarriesExactlyTheTwentyTwoMembers() throws Exception {
+        @DisplayName("the serialised body carries exactly the twenty published members and nothing else")
+        void theBodyCarriesExactlyTheTwentyMembers() throws Exception {
             Set<String> published = publishedNames(canonical());
 
-            // Compared as sets, so a failure lists both what is missing and what is unexpected.
-            assertThat(published).containsExactlyInAnyOrderElementsOf(WIRE_MEMBERS);
-            assertThat(published).hasSize(22);
+            // Compared as sets, so a failure lists both what is missing and what is unexpected. The ten
+            // screen fields are published under their xxxI items in lower case (AAP 0.6.3); the ten
+            // carriers under their own names.
+            //
+            // cursorField and messageHighlight are NOT among them. They derive from the xxxL items and
+            // from ERRMSGC, which AAP 0.6.3 keeps out of the payload, and BillPaymentController projects
+            // them into screenMetadata as the other sixteen screens do. Publishing the colour at the top
+            // level as a raw byte - U+00F4 for DFHGREEN, printing as a stray glyph - made this screen the
+            // only one of the seventeen a client had to read differently.
+            List<String> publishedMembers = WIRE_MEMBERS.stream()
+                    .filter(member -> !NOT_PUBLISHED.contains(member))
+                    .toList();
+            assertThat(published).containsExactlyInAnyOrderElementsOf(wireNamesOf(publishedMembers));
+            assertThat(published).hasSize(20);
+            assertThat(published).doesNotContain("cursorField", "messageHighlight");
         }
 
         @Test
@@ -842,8 +898,9 @@ class BillPaymentResponseTest {
             assertThat(published).doesNotContain("actidinL");
             assertThat(publishedLowerCase).doesNotContain("actidinl");
             assertThat(published)
-                    .as("the cursor signal travels as the CursorField indicator")
-                    .contains("cursorField");
+                    .as("the cursor signal is metadata and travels as screenMetadata.cursorField, which "
+                            + "BillPaymentController assembles - it is not a member of this type")
+                    .doesNotContain("cursorField");
         }
 
         @Test
@@ -871,8 +928,10 @@ class BillPaymentResponseTest {
             for (String member : MAP_MEMBER_WIDTHS.keySet()) {
                 assertThat(get(bound, member)).as(member).isEqualTo(get(original, member));
             }
-            assertThat(bound.getCursorField()).isEqualTo(CursorField.ACTIDIN);
-            assertThat(bound.getMessageHighlight()).isEqualTo(MESSAGE_HIGHLIGHT_GREEN);
+            // Both of these are @JsonIgnore, so they do not travel and come back at their declared
+            // initial state rather than at the original's value. That is the point of the annotation.
+            assertThat(bound.getCursorField()).isSameAs(CursorField.NONE);
+            assertThat(bound.getMessageHighlight()).isNull();
             assertThat(bound.getNavigationContext()).isEqualTo(original.getNavigationContext());
             assertThat(bound.getNextProgram()).isEqualTo(BillPaymentResponse.MAIN_MENU_PROGRAM);
             assertThat(bound.getNextMapset()).isEqualTo(BillPaymentResponse.MAPSET_NAME);
@@ -894,7 +953,7 @@ class BillPaymentResponseTest {
             // declared behaviour; it does not ask the type to change.
             assertThatExceptionOfType(UnrecognizedPropertyException.class)
                     .isThrownBy(() -> mapper.readValue(
-                            "{\"actIdIn\":\"00000000011\",\"notAScreenField\":\"x\"}",
+                            "{\"actidin\":\"00000000011\",\"notAScreenField\":\"x\"}",
                             BillPaymentResponse.class))
                     .withMessageContaining("notAScreenField");
         }
@@ -920,44 +979,62 @@ class BillPaymentResponseTest {
         void anEmptyBodyBinds() throws Exception {
             BillPaymentResponse bound = mapper.readValue("{}", BillPaymentResponse.class);
 
+            // Every map member is at its declared width carrying the LOW-VALUES image, which is what
+            // MOVE LOW-VALUES TO COBIL0AO at COBIL00C:114 produces. Never null: a fixed-width screen
+            // field always has a width, and null would say "there is no such field".
             for (String member : MAP_MEMBER_WIDTHS.keySet()) {
-                assertThat(get(bound, member)).as(member).isNull();
+                assertThat(get(bound, member))
+                        .as(member)
+                        .isEqualTo(ScreenFieldImage.unpainted(MAP_MEMBER_WIDTHS.get(member)));
             }
             assertThat(bound.getCursorField())
                     .as("the field initialiser stands - CursorField.NONE means no override, and the "
                             + "terminal then applies the mapset's own IC field at COBIL00.bms:85")
                     .isEqualTo(CursorField.NONE);
-            assertThat(bound.getMessageHighlight()).isNull();
+            assertThat(bound.getMessageHighlight())
+                    .as("@JsonIgnore, so it does not travel and comes back at its initial state")
+                    .isNull();
             assertThat(bound.getNavigationContext()).isNull();
-            assertThat(bound.getNextProgram()).isNull();
-            assertThat(bound.getNextMapset()).isNull();
-            assertThat(bound.getNextMap()).isNull();
-            assertThat(bound.getTrnIdFirst()).isNull();
-            assertThat(bound.getTrnIdLast()).isNull();
+            // The navigation and extension carriers are CARDDEMO-COMMAREA items, so their resting state
+            // is spaces at the declared width - never null. Only navigationContext itself is nullable,
+            // because an absent communication area is how EIBCALEN = 0 is encoded.
+            assertThat(bound.getNextProgram()).isBlank()
+                    .hasSize(NavigationContext.TO_PROGRAM_LENGTH);
+            assertThat(bound.getNextMapset()).isBlank()
+                    .hasSize(NavigationContext.LAST_MAPSET_LENGTH);
+            assertThat(bound.getNextMap()).isBlank()
+                    .hasSize(NavigationContext.LAST_MAP_LENGTH);
+            assertThat(bound.getTrnIdFirst()).isBlank()
+                    .hasSize(BillPaymentResponse.TRN_ID_FIRST_LENGTH);
+            assertThat(bound.getTrnIdLast()).isBlank()
+                    .hasSize(BillPaymentResponse.TRN_ID_LAST_LENGTH);
             assertThat(bound.getPageNum()).isZero();
             assertThat(bound.getNextPageFlg())
                     .as("the VALUE 'N' clause of app/cbl/COBIL00C.cbl:68 survives an empty body")
                     .isEqualTo(BillPaymentResponse.NEXT_PAGE_NO);
-            assertThat(bound.getTrnSelFlg()).isNull();
-            assertThat(bound.getTrnSelected()).isNull();
+            assertThat(bound.getTrnSelFlg()).isBlank()
+                    .hasSize(BillPaymentResponse.TRN_SEL_FLG_LENGTH);
+            assertThat(bound.getTrnSelected()).isBlank()
+                    .hasSize(BillPaymentResponse.TRN_SELECTED_LENGTH);
         }
 
         @Test
         @DisplayName("an explicit null overwrites a defaulted member - the type coalesces nothing")
         void anExplicitNullOverwritesADefaultedMember() throws Exception {
             BillPaymentResponse bound = mapper.readValue(
-                    "{\"errMsg\":null,\"cursorField\":null,\"nextPageFlg\":null}",
+                    "{\"errmsg\":null,\"cursorField\":null,\"nextPageFlg\":null}",
                     BillPaymentResponse.class);
 
             // The setters store what they are given and nothing else - no coalescing, no defaulting at
-            // write time. An explicit null therefore replaces the field initialiser, which is the
-            // behaviour that keeps LOW-VALUES distinguishable from SPACES on the wire: MOVE LOW-VALUES
-            // TO COBIL0AO at COBIL00C:114 and the MOVE SPACES of INITIALIZE-ALL-FIELDS at :562-565
-            // leave a field in two different observable states, and the program tests for both.
+            // write time. An explicit null therefore replaces the field initialiser for every member
+            // Jackson binds. Which is not the same set as before: cursorField is @JsonIgnore now, so no
+            // value in the body reaches it at all and its initialiser stands.
             assertThat(bound.getErrMsg()).isNull();
             assertThat(bound.getCursorField())
-                    .as("an explicit null is not coerced back to NONE")
-                    .isNull();
+                    .as("cursorField is @JsonIgnore, so an explicit null in the body is not even read "
+                            + "and the field initialiser stands - the cursor request travels on "
+                            + "screenMetadata, which BillPaymentController assembles")
+                    .isSameAs(CursorField.NONE);
             assertThat(bound.getNextPageFlg()).isNull();
         }
 
@@ -987,7 +1064,7 @@ class BillPaymentResponseTest {
             // the response additionally carries the cursor indicator, the highlight and the navigation
             // target, and the request additionally carries the attention identifier.
             for (Map.Entry<String, String> value : CANONICAL_MAP_VALUES.entrySet()) {
-                String member = value.getKey();
+                String member = wireNameOf(value.getKey());
                 assertThat(responseBody.has(member)).as("response publishes %s", member).isTrue();
                 assertThat(requestBody.has(member)).as("request publishes %s", member).isTrue();
                 assertThat(responseBody.get(member).asText())
@@ -1002,7 +1079,7 @@ class BillPaymentResponseTest {
         void everyPayloadPropertyIsTextual() throws Exception {
             JsonNode body = mapper.valueToTree(canonical());
 
-            for (String member : MAP_MEMBER_WIDTHS.keySet()) {
+            for (String member : wireNamesOf(MAP_MEMBER_WIDTHS.keySet())) {
                 assertThat(body.get(member).isTextual())
                         .as("%s projects a PIC X item and must be quoted text (gate G22)", member)
                         .isTrue();
@@ -1068,11 +1145,15 @@ class BillPaymentResponseTest {
             BillPaymentResponse bound = mapper.readValue(
                     mapper.writeValueAsString(response), BillPaymentResponse.class);
 
-            // The type declares no @JsonValue and no @JsonProperty on the enum, so Jackson's default
-            // applies and the wire form is the constant name.
-            assertThat(body.get("cursorField").isTextual()).isTrue();
-            assertThat(body.get("cursorField").asText()).isEqualTo(constant.name());
-            assertThat(bound.getCursorField()).isSameAs(constant);
+            // The accessor pair is the whole contract now: the cursor request derives from the MOVE -1 TO
+            // xxxL statements, and AAP 0.6.3 keeps the xxxL items out of the payload, so it is not a
+            // member of this type. BillPaymentController projects it into screenMetadata.cursorField,
+            // where Jackson's default enum handling does render the constant name - asserted there.
+            assertThat(body.has("cursorField")).isFalse();
+            assertThat(response.getCursorField()).isSameAs(constant);
+            assertThat(bound.getCursorField())
+                    .as("it did not travel, so the receiving side is at its initial state")
+                    .isSameAs(CursorField.NONE);
         }
 
         @Test
@@ -1134,12 +1215,20 @@ class BillPaymentResponseTest {
         }
 
         @Test
-        @DisplayName("an unknown enum name in the body is refused rather than bound as null")
-        void anUnknownEnumNameInTheBodyIsRefused() {
+        @DisplayName("an unknown enum name reaching the enum directly is refused, not bound as null")
+        void anUnknownEnumNameIsRefused() throws Exception {
+            // The enum is no longer a JSON member of this type - see everyConstantRoundTripsThroughJson -
+            // so the refusal is asserted against the enum itself, which is where it lives. A wire name
+            // that is not one of the three constants must fail rather than silently become null, because
+            // "the cursor is nowhere" and "the cursor is not overridden" are different facts and only the
+            // second is representable.
             assertThatExceptionOfType(InvalidFormatException.class)
-                    .isThrownBy(() -> mapper.readValue("{\"cursorField\":\"ACTIDINL\"}",
-                            BillPaymentResponse.class))
+                    .isThrownBy(() -> mapper.readValue("\"ACTIDINL\"", CursorField.class))
                     .withMessageContaining("ACTIDINL");
+            assertThat(mapper.readValue("{\"cursorField\":\"ACTIDINL\"}", BillPaymentResponse.class)
+                            .getCursorField())
+                    .as("and on the response the member is ignored outright, so it cannot be poisoned")
+                    .isSameAs(CursorField.NONE);
         }
 
         @Test
@@ -1189,9 +1278,14 @@ class BillPaymentResponseTest {
             // COBIL00C:522-531: the WHEN DFHRESP(NORMAL) arm of WRITE-TRANSACT-FILE performs
             // INITIALIZE-ALL-FIELDS, blanks WS-MESSAGE, moves DFHGREEN into ERRMSGC and only then
             // composes the success text. This is the one path on which the highlight is set.
-            assertThat(bound.getMessageHighlight()).isEqualTo(MESSAGE_HIGHLIGHT_GREEN);
-            assertThat((byte) bound.getMessageHighlight().charAt(0))
+            //
+            // It does not survive JSON, and that is the contract: ERRMSGC is an attribute item, AAP 0.6.3
+            // keeps attribute items out of the payload, and BillPaymentController carries the byte to the
+            // client as the number screenMetadata.messageColour. So the accessor is what is asserted.
+            assertThat(response.getMessageHighlight()).isEqualTo(MESSAGE_HIGHLIGHT_GREEN);
+            assertThat((byte) response.getMessageHighlight().charAt(0))
                     .isEqualTo(BmsAttributes.DFHGREEN);
+            assertThat(bound.getMessageHighlight()).isNull();
         }
 
         @Test
@@ -1213,18 +1307,20 @@ class BillPaymentResponseTest {
         }
 
         @Test
-        @DisplayName("both arms are distinguishable on the wire, and null is published not omitted")
-        void bothArmsAreDistinguishableOnTheWire() throws Exception {
+        @DisplayName("both arms are distinguishable through the accessor, and neither is on the wire")
+        void bothArmsAreDistinguishableThroughTheAccessor() throws Exception {
             JsonNode green = mapper.valueToTree(canonical());
             JsonNode none = mapper.valueToTree(new BillPaymentResponse());
 
-            // The type declares no @JsonInclude, so a null member appears on the wire as null rather
-            // than vanishing - which is what keeps "no override" an observable state rather than an
-            // absence the client has to guess at.
-            assertThat(green.has("messageHighlight")).isTrue();
-            assertThat(none.has("messageHighlight")).isTrue();
-            assertThat(green.get("messageHighlight").isNull()).isFalse();
-            assertThat(none.get("messageHighlight").isNull()).isTrue();
+            // Neither arm publishes a top-level member: ERRMSGC is an attribute item and AAP 0.6.3 keeps
+            // those out of the payload. Publishing it here put the raw DFHGREEN byte on the wire as the
+            // character U+00F4, which no other screen did. The two arms stay distinguishable - through the
+            // accessor, and through screenMetadata.messageColour as a number once the controller has
+            // projected them.
+            assertThat(green.has("messageHighlight")).isFalse();
+            assertThat(none.has("messageHighlight")).isFalse();
+            assertThat(canonical().getMessageHighlight()).isEqualTo(MESSAGE_HIGHLIGHT_GREEN);
+            assertThat(new BillPaymentResponse().getMessageHighlight()).isNull();
         }
 
         @Test
@@ -1331,11 +1427,16 @@ class BillPaymentResponseTest {
                         .as(member)
                         .isEqualTo(String.class);
             }
-            // null means the screen re-displays itself and no transfer is requested, which is what
-            // every SEND-BILLPAY-SCREEN path does.
-            assertThat(fresh.getNextProgram()).isNull();
-            assertThat(fresh.getNextMapset()).isNull();
-            assertThat(fresh.getNextMap()).isNull();
+            // A blank carrier means the screen re-displays itself and no transfer is requested, which is
+            // what every SEND-BILLPAY-SCREEN path does. Blank, not null: these are CARDDEMO-COMMAREA
+            // PIC X items and "names nothing" is spaces at the declared width, which is the same resting
+            // state NavigationContext.empty() documents for the area they belong to.
+            assertThat(fresh.getNextProgram()).isBlank()
+                    .hasSize(NavigationContext.TO_PROGRAM_LENGTH);
+            assertThat(fresh.getNextMapset()).isBlank()
+                    .hasSize(NavigationContext.LAST_MAPSET_LENGTH);
+            assertThat(fresh.getNextMap()).isBlank()
+                    .hasSize(NavigationContext.LAST_MAP_LENGTH);
         }
 
         @Test
@@ -1437,13 +1538,13 @@ class BillPaymentResponseTest {
 
             assertThat(edited).hasSize(BillPaymentResponse.CUR_BAL_LENGTH);
             assertThat(response.getCurBal()).isEqualTo(edited);
-            assertThat(body.get("curBal").isTextual())
+            assertThat(body.get("curbal").isTextual())
                     .as("the balance is a quoted JSON string, never a JSON number")
                     .isTrue();
-            assertThat(body.get("curBal").asText()).isEqualTo(edited);
+            assertThat(body.get("curbal").asText()).isEqualTo(edited);
             assertThat(mapper.writeValueAsString(response))
                     .as("the sign and every leading zero appear verbatim in the serialised body")
-                    .contains("\"curBal\":\"" + edited + "\"");
+                    .contains("\"curbal\":\"" + edited + "\"");
             assertThat(bound.getCurBal()).isEqualTo(edited).hasSize(14);
         }
 
@@ -1829,7 +1930,8 @@ class BillPaymentResponseTest {
             first.setMessageHighlight(MESSAGE_HIGHLIGHT_GREEN);
             first.setPageNum(7);
 
-            assertThat(second.getActIdIn()).isNull();
+            assertThat(second.getActIdIn())
+                    .isEqualTo(ScreenFieldImage.unpainted(BillPaymentResponse.ACT_ID_IN_LENGTH));
             assertThat(second.getCursorField()).isSameAs(CursorField.NONE);
             assertThat(second.getMessageHighlight()).isNull();
             assertThat(second.getPageNum()).isZero();
@@ -2030,20 +2132,31 @@ class BillPaymentResponseTest {
             BillPaymentResponse fresh = new BillPaymentResponse();
 
             for (String member : MAP_MEMBER_WIDTHS.keySet()) {
-                assertThat(get(fresh, member)).as(member).isNull();
+                assertThat(get(fresh, member))
+                        .as(member)
+                        .isEqualTo(ScreenFieldImage.unpainted(MAP_MEMBER_WIDTHS.get(member)));
             }
             assertThat(fresh.getCursorField()).isSameAs(CursorField.NONE);
             assertThat(fresh.getMessageHighlight()).isNull();
             assertThat(fresh.getNavigationContext()).isNull();
-            assertThat(fresh.getNextProgram()).isNull();
-            assertThat(fresh.getNextMapset()).isNull();
-            assertThat(fresh.getNextMap()).isNull();
-            assertThat(fresh.getTrnIdFirst()).isNull();
-            assertThat(fresh.getTrnIdLast()).isNull();
+            // The carriers are CARDDEMO-COMMAREA PIC X items, so their resting state is spaces at the
+            // declared width - never null.
+            assertThat(fresh.getNextProgram()).isBlank()
+                    .hasSize(NavigationContext.TO_PROGRAM_LENGTH);
+            assertThat(fresh.getNextMapset()).isBlank()
+                    .hasSize(NavigationContext.LAST_MAPSET_LENGTH);
+            assertThat(fresh.getNextMap()).isBlank()
+                    .hasSize(NavigationContext.LAST_MAP_LENGTH);
+            assertThat(fresh.getTrnIdFirst()).isBlank()
+                    .hasSize(BillPaymentResponse.TRN_ID_FIRST_LENGTH);
+            assertThat(fresh.getTrnIdLast()).isBlank()
+                    .hasSize(BillPaymentResponse.TRN_ID_LAST_LENGTH);
             assertThat(fresh.getPageNum()).isZero();
             assertThat(fresh.getNextPageFlg()).isEqualTo(BillPaymentResponse.NEXT_PAGE_NO);
-            assertThat(fresh.getTrnSelFlg()).isNull();
-            assertThat(fresh.getTrnSelected()).isNull();
+            assertThat(fresh.getTrnSelFlg()).isBlank()
+                    .hasSize(BillPaymentResponse.TRN_SEL_FLG_LENGTH);
+            assertThat(fresh.getTrnSelected()).isBlank()
+                    .hasSize(BillPaymentResponse.TRN_SELECTED_LENGTH);
         }
 
         @Test

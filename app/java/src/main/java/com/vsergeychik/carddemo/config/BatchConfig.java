@@ -1,5 +1,6 @@
 package com.vsergeychik.carddemo.config;
 
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -2362,6 +2363,7 @@ public class BatchConfig {
                         + "matched exactly, with no case-insensitive or fuzzy fallback. Configured "
                         + "keys: " + keySet() + ".");
             }
+            requireCompleteSteps(jobKey, contract.steps());
             return contract;
         }
 
@@ -2465,15 +2467,10 @@ public class BatchConfig {
                         + "runs a step sequence transcribed from its JCL, and the untriggered "
                         + "CBTRN01C still declares the single step it would run.");
             }
+            requireCompleteSteps(jobKey, steps);
             Set<String> names = new LinkedHashSet<>();
             for (int index = 0; index < steps.size(); index++) {
                 StepContract step = steps.get(index);
-                if (!StringUtils.hasText(step.name()) || !StringUtils.hasText(step.program())) {
-                    throw new IllegalStateException(invalidJob(jobKey) + " its step at position "
-                            + index + " declares no name or no program. Both are transcribed from "
-                            + "the JCL step - the name from the step label and the program from its "
-                            + "EXEC PGM= - and a step missing either cannot be addressed or run.");
-                }
                 if (!names.add(step.name())) {
                     throw new IllegalStateException(invalidJob(jobKey) + " it declares two steps "
                             + "named '" + step.name() + "'. Steps are addressed by name, so a "
@@ -2674,6 +2671,54 @@ public class BatchConfig {
         }
 
         /**
+         * Requires every declared step to carry both the elements a step is addressed and run by: a
+         * name and a program.
+         *
+         * <h2>Why this is checked here and not only inside {@link #validateSteps}</h2>
+         * <p>Because of when each check runs. {@link JobContractValidator} performs the central
+         * validation at context refresh, but it is a bean like any other and nothing sequences it ahead
+         * of the job beans; a job class is routinely constructed first and reads its contract
+         * immediately, {@link JobContract#step(String)} being the usual first thing it does. A step
+         * whose name was omitted therefore reached that lookup before any validation had run, and a
+         * lookup cannot describe a configuration defect - it can only fail to match. Checking
+         * completeness inside {@link #contract(String)}, the single accessor every job class resolves
+         * its contract through, puts this diagnostic ahead of every consumer of a step, whatever order
+         * the container happens to instantiate beans in.
+         *
+         * <p>The message names the exact property path rather than only the position, because the
+         * position alone leaves the reader counting list entries in a YAML document to find the one at
+         * fault. It names each missing element separately, so "no name" and "no program" are
+         * distinguishable, and it says what each element is transcribed from - a configuration error is
+         * cheapest to fix when the diagnostic says where the right value comes from.
+         *
+         * @param jobKey the configuration key, quoted in the diagnostic
+         * @param steps  the declared steps, in declaration order
+         * @throws IllegalStateException if any step omits its name or its program
+         */
+        static void requireCompleteSteps(String jobKey, List<StepContract> steps) {
+            for (int index = 0; index < steps.size(); index++) {
+                StepContract step = steps.get(index);
+                List<String> missing = new ArrayList<>(2);
+                if (!StringUtils.hasText(step.name())) {
+                    missing.add("carddemo.jobs." + jobKey + ".steps[" + index + "].name");
+                }
+                if (!StringUtils.hasText(step.program())) {
+                    missing.add("carddemo.jobs." + jobKey + ".steps[" + index + "].program");
+                }
+                if (!missing.isEmpty()) {
+                    throw new IllegalStateException(invalidJob(jobKey) + " its step at position "
+                            + index + " declares no value for " + String.join(" and ", missing)
+                            + ". Both are transcribed from the JCL step - the name from the step "
+                            + "label and the program from its EXEC PGM= - and a step missing either "
+                            + "cannot be addressed or run. Restore the omitted key: note that a list "
+                            + "in a higher-precedence property source replaces the whole list rather "
+                            + "than merging into it, so restating one element of steps discards every "
+                            + "other element and every other key of the element restated.");
+                }
+            }
+        }
+
+        /**
          * Opens every per-job diagnostic the same way, naming the job at fault.
          *
          * @param jobKey the configuration key whose contract is invalid
@@ -2747,13 +2792,21 @@ public class BatchConfig {
         /**
          * The contract of one step, by name.
          *
+         * <p>The comparison is null-safe in both directions, and deliberately so. A step whose
+         * {@code name} was omitted in configuration is answered by
+         * {@link JobContracts#requireCompleteSteps(String, List)} at the accessor every job class
+         * resolves its contract through, which is where a configuration defect belongs; this method is
+         * a lookup and has no job key to name in a diagnostic. Comparing a declared name that is
+         * absent must therefore not match and must not fail either - it simply is not the step asked
+         * for, and the "declares no step named" message below is the honest answer.
+         *
          * @param stepName the step name as configuration declares it
          * @return the step contract; never {@code null}
          * @throws IllegalStateException if this job declares no step of that name
          */
         public StepContract step(String stepName) {
             return steps.stream()
-                    .filter(step -> step.name().equals(stepName))
+                    .filter(step -> Objects.equals(step.name(), stepName))
                     .findFirst()
                     .orElseThrow(() -> new IllegalStateException("Job '" + program
                             + "' declares no step named '" + stepName + "'. Its steps are "

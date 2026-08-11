@@ -9,7 +9,10 @@ import com.vsergeychik.carddemo.common.AbendException;
 import com.vsergeychik.carddemo.common.DiagnosticText;
 import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.RecordImageForm;
+import com.vsergeychik.carddemo.common.ScreenInputRejectedException;
 
+import jakarta.servlet.RequestDispatcher;
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.ConstraintViolation;
 import jakarta.validation.ConstraintViolationException;
 import jakarta.validation.metadata.ConstraintDescriptor;
@@ -32,11 +35,13 @@ import org.springframework.beans.factory.InitializingBean;
 import org.springframework.boot.autoconfigure.jackson.Jackson2ObjectMapperBuilderCustomizer;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.boot.web.servlet.error.ErrorController;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.dao.DataAccessException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.HttpStatusCode;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.util.StringUtils;
@@ -44,6 +49,8 @@ import org.springframework.validation.FieldError;
 import org.springframework.web.ErrorResponse;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 
@@ -445,6 +452,40 @@ public class WebConfig implements WebMvcConfigurer {
         public static final String MALFORMED_REQUEST_CODE = "MALFORMED_REQUEST";
 
         /**
+         * The stable public code of a request whose fields were read but did not satisfy the widths and
+         * forms the symbolic map declares. Every entry of
+         * {@link CobolErrorResponse#fieldErrors()} names one of them.
+         */
+        public static final String VALIDATION_FAILED_CODE = "VALIDATION_FAILED";
+
+        /**
+         * The generic public detail of a validation failure. The per-field messages carry what is
+         * actually wrong, so this sentence only says where to look.
+         */
+        public static final String VALIDATION_FAILED_DETAIL =
+                "One or more request fields do not match this screen's payload contract. Each "
+                        + "rejected field is named in fieldErrors.";
+
+        /** The stable public code of a value a domain guard refused. */
+        public static final String REJECTED_VALUE_CODE = "REJECTED_VALUE";
+
+        /** The stable public code of a value that could not be converted to its declared type. */
+        public static final String TYPE_MISMATCH_CODE = "TYPE_MISMATCH";
+
+        /** The stable public code of a failure reaching a dataset. */
+        public static final String DATASET_ACCESS_CODE = "DATASET_ACCESS";
+
+        /** The stable public code of a server-side state or configuration fault. */
+        public static final String INTERNAL_STATE_CODE = "INTERNAL_STATE";
+
+        /**
+         * The stable public code of every other failure - an unknown path, a wrong method, an
+         * unsupported media type, an unacceptable {@code Accept} header - whose own status is honoured
+         * and whose detail is withheld.
+         */
+        public static final String REQUEST_NOT_COMPLETED_CODE = "REQUEST_NOT_COMPLETED";
+
+        /**
          * The generic public message of an unreadable request body. It names no property, no parse
          * position, no Java type and no parser: those are the details that would describe the
          * server's internals rather than the caller's mistake.
@@ -564,9 +605,9 @@ public class WebConfig implements WebMvcConfigurer {
          *         transmitted diagnostic where there is one
          */
         @ExceptionHandler(AbendException.class)
-        public ResponseEntity<ErrorResponse> handleAbend(final AbendException abend) {
+        public ResponseEntity<CobolErrorResponse> handleAbend(final AbendException abend) {
             logAbend(abend);
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(abendResponse(abend));
+            return json(HttpStatus.INTERNAL_SERVER_ERROR, abendResponse(abend));
         }
 
         /**
@@ -598,9 +639,12 @@ public class WebConfig implements WebMvcConfigurer {
          * @return the response body: {@link #ABEND_CODE}, {@link #ABEND_MESSAGE}, and the transmitted
          *         diagnostic when the abending paragraph transmitted one
          */
-        static ErrorResponse abendResponse(final AbendException abend) {
+        static CobolErrorResponse abendResponse(final AbendException abend) {
             Objects.requireNonNull(abend, "An abend is required to answer one");
-            return new ErrorResponse(ABEND_CODE, ABEND_MESSAGE,
+            return new CobolErrorResponse(ABEND_CODE,
+                    reasonPhraseOf(HttpStatus.INTERNAL_SERVER_ERROR),
+                    ABEND_MESSAGE,
+                    List.of(),
                     abend.getSourceDiagnostic().orElse(null));
         }
 
@@ -645,10 +689,10 @@ public class WebConfig implements WebMvcConfigurer {
          * @return {@code 400} with the stable malformed-request code and its generic message
          */
         @ExceptionHandler(HttpMessageNotReadableException.class)
-        public ResponseEntity<ErrorResponse> handleUnreadableRequestBody(
+        public ResponseEntity<CobolErrorResponse> handleUnreadableRequestBody(
                 final HttpMessageNotReadableException unreadable) {
             logUnreadableRequestBody(unreadable);
-            return ResponseEntity.badRequest().body(malformedRequestResponse(unreadable));
+            return json(HttpStatus.BAD_REQUEST, malformedRequestResponse(unreadable));
         }
 
         /**
@@ -663,10 +707,13 @@ public class WebConfig implements WebMvcConfigurer {
          * @return the response body: {@link #MALFORMED_REQUEST_CODE} and
          *         {@link #MALFORMED_REQUEST_MESSAGE}, always
          */
-        static ErrorResponse malformedRequestResponse(
+        static CobolErrorResponse malformedRequestResponse(
                 final HttpMessageNotReadableException unreadable) {
             Objects.requireNonNull(unreadable, "A binding failure is required to answer one");
-            return new ErrorResponse(MALFORMED_REQUEST_CODE, MALFORMED_REQUEST_MESSAGE);
+            return CobolErrorResponse.of(MALFORMED_REQUEST_CODE,
+                    HttpStatus.BAD_REQUEST,
+                    MALFORMED_REQUEST_MESSAGE,
+                    unreadableBodyFields(unreadable));
         }
 
         /**
@@ -686,8 +733,10 @@ public class WebConfig implements WebMvcConfigurer {
                 // handed to the logger either, which is what makes the sentence above true: passing it
                 // emits the parser's message - the one place the payload IS quoted - along with its whole
                 // cause chain. Its type is logged instead, which says what refused without saying what
-                // it was reading.
-                final String namedFields = unreadableBodyResponse(unreadable).fieldErrors().stream()
+                // it was reading. The caller now receives these same names in the response envelope,
+                // which is what makes a MALFORMED_REQUEST answer actionable; the log keeps them too,
+                // because the log is where an operator looks when a caller reports one.
+                final String namedFields = unreadableBodyFields(unreadable).stream()
                         .map(FieldMessage::field)
                         .map(DiagnosticText::singleLine)
                         .collect(Collectors.joining(", "));
@@ -712,9 +761,9 @@ public class WebConfig implements WebMvcConfigurer {
          * @return {@code 400} with one entry per rejected field
          */
         @ExceptionHandler(MethodArgumentNotValidException.class)
-        public ResponseEntity<ValidationResponse> handleInvalidRequestBody(
+        public ResponseEntity<CobolErrorResponse> handleInvalidRequestBody(
                 final MethodArgumentNotValidException invalid) {
-            return ResponseEntity.badRequest().body(validationResponse(invalid));
+            return json(HttpStatus.BAD_REQUEST, validationResponse(invalid));
         }
 
         /**
@@ -730,12 +779,15 @@ public class WebConfig implements WebMvcConfigurer {
          * @param invalid the binding failure; must not be {@code null}
          * @return the response body, never {@code null} and never carrying framework detail
          */
-        static ValidationResponse validationResponse(final MethodArgumentNotValidException invalid) {
+        static CobolErrorResponse validationResponse(final MethodArgumentNotValidException invalid) {
             final List<FieldMessage> rejected = invalid.getBindingResult().getFieldErrors().stream()
                     .map(CobolErrorHandler::fieldMessage)
                     .sorted(Comparator.comparing(FieldMessage::field))
                     .toList();
-            return new ValidationResponse(HttpStatus.BAD_REQUEST.getReasonPhrase(), rejected);
+            return CobolErrorResponse.of(VALIDATION_FAILED_CODE,
+                    HttpStatus.BAD_REQUEST,
+                    VALIDATION_FAILED_DETAIL,
+                    rejected);
         }
 
         /**
@@ -746,9 +798,9 @@ public class WebConfig implements WebMvcConfigurer {
          * @return {@code 400} with one entry per violation
          */
         @ExceptionHandler(ConstraintViolationException.class)
-        public ResponseEntity<ValidationResponse> handleConstraintViolation(
+        public ResponseEntity<CobolErrorResponse> handleConstraintViolation(
                 final ConstraintViolationException violations) {
-            return ResponseEntity.badRequest().body(validationResponse(violations));
+            return json(HttpStatus.BAD_REQUEST, validationResponse(violations));
         }
 
         /**
@@ -762,34 +814,26 @@ public class WebConfig implements WebMvcConfigurer {
          * @param violations the violations; must not be {@code null}
          * @return the response body, never {@code null}
          */
-        static ValidationResponse validationResponse(final ConstraintViolationException violations) {
+        static CobolErrorResponse validationResponse(final ConstraintViolationException violations) {
             final List<FieldMessage> rejected = violations.getConstraintViolations().stream()
                     .map(CobolErrorHandler::fieldMessage)
                     .sorted(Comparator.comparing(FieldMessage::field))
                     .toList();
-            return new ValidationResponse(HttpStatus.BAD_REQUEST.getReasonPhrase(), rejected);
+            return CobolErrorResponse.of(VALIDATION_FAILED_CODE,
+                    HttpStatus.BAD_REQUEST,
+                    VALIDATION_FAILED_DETAIL,
+                    rejected);
         }
 
         /**
-         * Maps an unreadable request body - malformed JSON, or a value of the wrong JSON type for the
-         * field it was given to - onto {@code 400 Bad Request}.
+         * Names the fields an unreadable request body failed at, which is what makes a
+         * {@code MALFORMED_REQUEST} answer actionable rather than merely honest.
          *
-         * <p>Needed because Jackson's own message quotes the offending source text, so before this
-         * handler existed the exception reached the framework error page and published a fragment of
-         * the caller's payload. The path Jackson records is field <em>names</em> only, which is
-         * exactly the part worth reporting.
-         *
-         * @param unreadable the failure the message converter raised
-         * @return {@code 400} naming the field the body failed at, and the category of the failure
-         */
-        static ResponseEntity<ValidationResponse> unreadableBodyFieldReport(
-                final HttpMessageNotReadableException unreadable) {
-            return ResponseEntity.badRequest().body(unreadableBodyResponse(unreadable));
-        }
-
-        /**
-         * Builds the body for an unreadable request body, and is the directly testable form of
-         * {@link #handleUnreadableRequestBody(HttpMessageNotReadableException)}.
+         * <p>Before this was wired into {@link #malformedRequestResponse(HttpMessageNotReadableException)}
+         * the envelope named nothing, so a caller who echoed a 54-field screen back and had one member
+         * refused was told only that "the request body could not be read" - and had to bisect the payload
+         * to find out which member. The names were already being computed for the {@code DEBUG} log line;
+         * they now travel to the caller as well.
          *
          * <p>Only {@link JsonMappingException.Reference#getFieldName()} is read from the mapping path,
          * never {@link JsonMappingException#getMessage()} and never the source location, because the
@@ -799,20 +843,20 @@ public class WebConfig implements WebMvcConfigurer {
          * answer: no field is at fault, the document is.
          *
          * @param unreadable the failure; must not be {@code null}
-         * @return the response body, carrying field names and a fixed category message only
+         * @return the identified fields, ordered by name and each carrying a fixed detail, or an empty
+         *         list when the failure identifies none
          */
-        static ValidationResponse unreadableBodyResponse(
+        static List<FieldMessage> unreadableBodyFields(
                 final HttpMessageNotReadableException unreadable) {
-            final List<FieldMessage> rejected =
-                    unreadable.getCause() instanceof JsonMappingException mapping
-                            ? mapping.getPath().stream()
-                                    .map(JsonMappingException.Reference::getFieldName)
-                                    .filter(field -> field != null && !field.isBlank())
-                                    .map(field -> new FieldMessage(field, UNREADABLE_FIELD_DETAIL))
-                                    .sorted(Comparator.comparing(FieldMessage::field))
-                                    .toList()
-                            : List.of();
-            return new ValidationResponse(HttpStatus.BAD_REQUEST.getReasonPhrase(), rejected);
+            Objects.requireNonNull(unreadable, "A binding failure is required to read field names from");
+            return unreadable.getCause() instanceof JsonMappingException mapping
+                    ? mapping.getPath().stream()
+                            .map(JsonMappingException.Reference::getFieldName)
+                            .filter(field -> field != null && !field.isBlank())
+                            .map(field -> new FieldMessage(field, UNREADABLE_FIELD_DETAIL))
+                            .sorted(Comparator.comparing(FieldMessage::field))
+                            .toList()
+                    : List.of();
         }
 
         // There is deliberately NO handler for MethodArgumentTypeMismatchException here.
@@ -858,12 +902,48 @@ public class WebConfig implements WebMvcConfigurer {
          * @return {@code 400} with a fixed, value-free explanation
          */
         @ExceptionHandler(IllegalArgumentException.class)
-        public ResponseEntity<FaultResponse> handleRejectedValue(
+        public ResponseEntity<CobolErrorResponse> handleRejectedValue(
                 final IllegalArgumentException rejected) {
+            if (rejected instanceof ScreenInputRejectedException screenInput) {
+                LOG.warn("Rejected a request because a screen value could not have arrived through a "
+                        + "RECEIVE MAP; responding " + HttpStatus.BAD_REQUEST.value()
+                        + " naming the member but echoing no value"
+                        + "; raised as " + rejected.getClass().getName() + ".");
+                return json(HttpStatus.BAD_REQUEST, screenInputRejectedResponse(screenInput));
+            }
             LOG.warn("Rejected a request because a field value did not fit its COBOL picture; "
                     + "responding " + HttpStatus.BAD_REQUEST.value() + " with no value echoed"
                     + "; raised as " + rejected.getClass().getName() + ".");
-            return ResponseEntity.badRequest().body(rejectedValueResponse());
+            return json(HttpStatus.BAD_REQUEST, rejectedValueResponse());
+        }
+
+        /**
+         * The body for a screen value a received map could not have carried, naming the member at fault.
+         *
+         * <p>This is the one {@link IllegalArgumentException} whose own message <em>is</em> published,
+         * and the reason is structural rather than a judgement about the current wording.
+         * {@link ScreenInputRejectedException} is {@code final} with a private constructor and exactly
+         * two factories, both of which compose their message from a member name, a code page, a Unicode
+         * code point and a statement of what the program writes - never from the value. So there is no
+         * path by which a guard added later can widen this response by wording its message differently,
+         * which is the risk {@link #rejectedValueResponse()} exists to close for the open-ended family.
+         *
+         * <p>Naming the member is the point of the type. These two screens carry 54 and 17 fields, and
+         * a caller told only that "a field value does not fit" has no way to find which - the answer
+         * would be unactionable on a screen that size.
+         *
+         * @param rejected the refusal, carrying the member name and a value-free message
+         * @return {@code 400} with the member named in {@code fieldErrors} and no value echoed
+         */
+        static CobolErrorResponse screenInputRejectedResponse(
+                final ScreenInputRejectedException rejected) {
+            List<FieldMessage> fieldErrors = rejected.member()
+                    .map(member -> List.of(new FieldMessage(member, rejected.getMessage())))
+                    .orElseGet(List::of);
+            return CobolErrorResponse.of(REJECTED_VALUE_CODE,
+                    HttpStatus.BAD_REQUEST,
+                    rejected.getMessage(),
+                    fieldErrors);
         }
 
         /**
@@ -875,8 +955,10 @@ public class WebConfig implements WebMvcConfigurer {
          *
          * @return the response body, identical for every rejected value
          */
-        static FaultResponse rejectedValueResponse() {
-            return new FaultResponse(HttpStatus.BAD_REQUEST.getReasonPhrase(), REJECTED_VALUE_DETAIL);
+        static CobolErrorResponse rejectedValueResponse() {
+            return CobolErrorResponse.of(REJECTED_VALUE_CODE,
+                    HttpStatus.BAD_REQUEST,
+                    REJECTED_VALUE_DETAIL);
         }
 
         /**
@@ -896,7 +978,8 @@ public class WebConfig implements WebMvcConfigurer {
          * @return {@code 500} with a fixed, value-free explanation
          */
         @ExceptionHandler(IllegalStateException.class)
-        public ResponseEntity<FaultResponse> handleInternalState(final IllegalStateException fault) {
+        public ResponseEntity<CobolErrorResponse> handleInternalState(
+                final IllegalStateException fault) {
             LOG.error("A request could not be served because the server is not in a state to serve "
                     + "it; responding " + HttpStatus.INTERNAL_SERVER_ERROR.value()
                     + " with no configuration detail echoed; raised as "
@@ -911,8 +994,9 @@ public class WebConfig implements WebMvcConfigurer {
          *
          * @return the response body, identical for every state fault
          */
-        static FaultResponse internalStateResponse() {
-            return new FaultResponse(HttpStatus.INTERNAL_SERVER_ERROR.getReasonPhrase(),
+        static CobolErrorResponse internalStateResponse() {
+            return CobolErrorResponse.of(INTERNAL_STATE_CODE,
+                    HttpStatus.INTERNAL_SERVER_ERROR,
                     INTERNAL_STATE_DETAIL);
         }
 
@@ -1093,9 +1177,9 @@ public class WebConfig implements WebMvcConfigurer {
          * @param unreadable the parse failure, whose message is intentionally discarded
          * @return {@code 400} carrying {@link #UNREADABLE_BODY_MESSAGE} and nothing else
          */
-        static ResponseEntity<FailureResponse> handleUnreadableBody(
+        static ResponseEntity<CobolErrorResponse> handleUnreadableBody(
                 final HttpMessageNotReadableException unreadable) {
-            return sanitized(HttpStatus.BAD_REQUEST, UNREADABLE_BODY_MESSAGE);
+            return sanitized(MALFORMED_REQUEST_CODE, HttpStatus.BAD_REQUEST, UNREADABLE_BODY_MESSAGE);
         }
 
         /**
@@ -1111,9 +1195,9 @@ public class WebConfig implements WebMvcConfigurer {
          * @return {@code 400} carrying {@link #TYPE_MISMATCH_MESSAGE} and nothing else
          */
         @ExceptionHandler(TypeMismatchException.class)
-        public ResponseEntity<FailureResponse> handleTypeMismatch(
+        public ResponseEntity<CobolErrorResponse> handleTypeMismatch(
                 final TypeMismatchException mismatch) {
-            return sanitized(HttpStatus.BAD_REQUEST, TYPE_MISMATCH_MESSAGE);
+            return sanitized(TYPE_MISMATCH_CODE, HttpStatus.BAD_REQUEST, TYPE_MISMATCH_MESSAGE);
         }
 
         /**
@@ -1130,9 +1214,10 @@ public class WebConfig implements WebMvcConfigurer {
          * @return {@code 500} carrying {@link #DATASET_ACCESS_MESSAGE} and nothing else
          */
         @ExceptionHandler(DataAccessException.class)
-        public ResponseEntity<FailureResponse> handleDataAccessFailure(
+        public ResponseEntity<CobolErrorResponse> handleDataAccessFailure(
                 final DataAccessException failure) {
-            return sanitized(HttpStatus.INTERNAL_SERVER_ERROR, DATASET_ACCESS_MESSAGE);
+            return sanitized(DATASET_ACCESS_CODE, HttpStatus.INTERNAL_SERVER_ERROR,
+                    DATASET_ACCESS_MESSAGE);
         }
 
         /**
@@ -1150,8 +1235,9 @@ public class WebConfig implements WebMvcConfigurer {
          *         {@link #UNEXPECTED_FAILURE_MESSAGE}
          */
         @ExceptionHandler(Exception.class)
-        public ResponseEntity<FailureResponse> handleUnexpectedFailure(final Exception failure) {
-            return sanitized(statusForFailure(failure), UNEXPECTED_FAILURE_MESSAGE);
+        public ResponseEntity<CobolErrorResponse> handleUnexpectedFailure(final Exception failure) {
+            return sanitized(REQUEST_NOT_COMPLETED_CODE, statusForFailure(failure),
+                    UNEXPECTED_FAILURE_MESSAGE);
         }
 
         /**
@@ -1183,9 +1269,34 @@ public class WebConfig implements WebMvcConfigurer {
          *                exception
          * @return the response entity carrying {@link #sanitizedBody(HttpStatusCode, String)}
          */
-        static ResponseEntity<FailureResponse> sanitized(final HttpStatusCode status,
+        static ResponseEntity<CobolErrorResponse> sanitized(final String code,
+                final HttpStatusCode status,
                 final String message) {
-            return ResponseEntity.status(status).body(sanitizedBody(status, message));
+            return json(status, sanitizedBody(code, status, message));
+        }
+
+        /**
+         * Answers with the one error envelope and <strong>pins the response content type to JSON</strong>,
+         * which is what stops content negotiation from turning an error into something this API does not
+         * speak.
+         *
+         * <p>The pin is load-bearing rather than decorative. Spring writes a {@code @ResponseBody} value
+         * through the media type the {@code Accept} header negotiated <em>unless</em> the response already
+         * carries a concrete {@code Content-Type}, in which case that type is used and no negotiation
+         * happens. Without the pin, a caller sending {@code Accept: text/html} to a JSON-only API got no
+         * error body at all: the negotiation failed, the container's error dispatch took over, and Boot's
+         * whitelabel page answered a REST call with HTML. With it, every failure on every route is
+         * answered by this envelope, whatever the caller asked to be given.
+         *
+         * @param status the status to answer with
+         * @param body   the envelope to carry
+         * @return the response entity, always {@code application/json}
+         */
+        static ResponseEntity<CobolErrorResponse> json(final HttpStatusCode status,
+                final CobolErrorResponse body) {
+            return ResponseEntity.status(status)
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .body(body);
         }
 
         /**
@@ -1201,8 +1312,10 @@ public class WebConfig implements WebMvcConfigurer {
          * @param message the fixed message to carry
          * @return the body, which cannot contain anything the failure supplied
          */
-        static FailureResponse sanitizedBody(final HttpStatusCode status, final String message) {
-            return new FailureResponse(status.value(), reasonPhraseOf(status), message);
+        static CobolErrorResponse sanitizedBody(final String code,
+                final HttpStatusCode status,
+                final String message) {
+            return CobolErrorResponse.of(code, status, message);
         }
 
         /**
@@ -1223,108 +1336,217 @@ public class WebConfig implements WebMvcConfigurer {
         }
 
         /**
-         * The body of a {@code 500} raised by an abend.
+         * <strong>The one error body this API answers with.</strong>
          *
-         * <p>Used for both a {@code 500} raised by an abend and a {@code 400} raised by an unreadable
-         * request body. Three members, and the first two are constants this module authored. There is
-         * still no member for a program name, a return code, an exception message, a property path or a
-         * parse position, so no such value can be added to a body by accident.
+         * <h2>Why one shape and not five</h2>
+         * This boundary previously published four different record shapes plus Spring Boot's own
+         * {@code /error} body, so a client had to recognise {@code {code,message}},
+         * {@code {error,fieldErrors}}, {@code {status,error,message}}, {@code {error,detail}} and
+         * {@code {timestamp,status,error}} to handle the failures of a single API - and three of those
+         * shapes named no field, so a caller could not tell which member of a 54-field screen had been
+         * refused. One shape removes both problems: every failure is described the same way, and every
+         * failure that concerns a field names it.
          *
-         * <p>{@link #abendData} is the one member that carries anything from the failure, and it carries
-         * exactly one thing: the fixed-width area the <em>COBOL</em> transmitted before abending, per
-         * {@link AbendException#getSourceDiagnostic()}. It is not a general-purpose detail slot - see
-         * {@link CobolErrorHandler#abendResponse(AbendException)} for what may and may not reach it.
+         * <h2>The members, and what each is for</h2>
+         * <ul>
+         *   <li>{@link #code} - the stable token a client branches on, never prose to be parsed. One of
+         *       {@link CobolErrorHandler#ABEND_CODE}, {@link CobolErrorHandler#MALFORMED_REQUEST_CODE},
+         *       {@link CobolErrorHandler#VALIDATION_FAILED_CODE},
+         *       {@link CobolErrorHandler#REJECTED_VALUE_CODE},
+         *       {@link CobolErrorHandler#TYPE_MISMATCH_CODE},
+         *       {@link CobolErrorHandler#DATASET_ACCESS_CODE},
+         *       {@link CobolErrorHandler#INTERNAL_STATE_CODE} or
+         *       {@link CobolErrorHandler#REQUEST_NOT_COMPLETED_CODE}.</li>
+         *   <li>{@link #error} - the registered HTTP reason phrase of the status this body travels with,
+         *       and the empty string for a status that has none. Never invented prose, and never a COBOL
+         *       literal: the parity-relevant text of an online program is the message the program moved
+         *       into its own {@code ERRMSG} field, which travels in that screen's payload on a
+         *       {@code 200} and never here.</li>
+         *   <li>{@link #detail} - one of this class's fixed sentences, chosen by the handler from the
+         *       failure's <em>type</em> and never derived from its message. No exception text, no
+         *       property path, no parse position, no SQL fragment, no filesystem path and no
+         *       configuration value can reach it (practice <strong>B6</strong>).</li>
+         *   <li>{@link #fieldErrors} - one entry per field the failure identified, ordered by field
+         *       name so the body is deterministic for a given failure. <strong>Always present, and
+         *       empty means "this failure identified no field"</strong> - not "every field passed".
+         *       {@link #code} is what says which family refused; the empty list is not evidence that a
+         *       field-by-field examination happened.</li>
+         *   <li>{@link #abendData} - the <em>only</em> optional member, and the only member carrying
+         *       anything from the failure: the fixed-width area the COBOL itself transmitted before
+         *       abending, per {@link AbendException#getSourceDiagnostic()}. It is published because
+         *       {@code app/cbl/COCRDSLC.cbl:865-869} issues {@code EXEC CICS SEND FROM(ABEND-DATA)}
+         *       before {@code EXEC CICS ABEND ABCODE('9999')}, so on a terminal the operator reads those
+         *       bytes and replacing them with a constant would change observable behaviour. It is safe
+         *       to publish because every field of {@code ABEND-DATA} is source-authored - a
+         *       {@code CSMSG02Y} literal, a {@code PROGRAM-ID} literal, or spaces. It is not a
+         *       general-purpose detail slot; see
+         *       {@link CobolErrorHandler#abendResponse(AbendException)}.</li>
+         * </ul>
          *
-         * <p>The record is annotated {@code NON_NULL} rather than relying on
+         * <h2>Why {@code NON_NULL} here and {@code always} for the screens</h2>
+         * The record is annotated {@code NON_NULL} rather than relying on
          * {@code spring.jackson.default-property-inclusion}, which this module sets to {@code always}
          * because an all-spaces screen field is meaningful and must not be dropped. That reasoning is
-         * about payload projections; an error body is not one. Here the member's absence is meaningful
-         * instead: the nine {@code CALL 'CEE3ABD'} sites transmit no such area, and a body carrying
-         * {@code "abendData": null} would claim they transmitted an empty one. Omitted, those bodies stay
-         * exactly the two constants they were.
+         * about payload projections; an error body is not one. Here an absent member is meaningful
+         * instead: the nine {@code CALL 'CEE3ABD'} sites transmit no {@code ABEND-DATA}, and a body
+         * carrying {@code "abendData": null} would claim they transmitted an empty one.
          *
-         * @param code      the stable code a client branches on: {@link CobolErrorHandler#ABEND_CODE} or
-         *                  {@link CobolErrorHandler#MALFORMED_REQUEST_CODE}
-         * @param message   the generic sentence for that code, carrying no internal state
-         * @param abendData the source-authored fixed-width diagnostic the abending paragraph
-         *                  transmitted, or {@code null} when it transmitted none - in which case the
-         *                  member does not appear in the body at all
+         * @param code        the stable code a client branches on
+         * @param error       the registered reason phrase of the status, or the empty string
+         * @param detail      the fixed sentence for the failure's family
+         * @param fieldErrors the fields this failure identified, possibly empty, never {@code null}
+         * @param abendData   the source-authored fixed-width diagnostic an abending paragraph
+         *                    transmitted, or {@code null} when there was none - in which case the
+         *                    member does not appear in the body at all
          */
         @JsonInclude(JsonInclude.Include.NON_NULL)
-        public record ErrorResponse(String code, String message, String abendData) {
+        public record CobolErrorResponse(String code,
+                                         String error,
+                                         String detail,
+                                         List<FieldMessage> fieldErrors,
+                                         String abendData) {
 
             /**
-             * The two-member form, for a failure that has no source-authored diagnostic to publish -
-             * every {@code CALL 'CEE3ABD'} abend, and every unreadable request body.
+             * Normalises {@code fieldErrors} to an immutable list, accepting {@code null} as "no field
+             * was identified" so that no builder has to pass {@link List#of()} to say nothing.
              *
-             * @param code    the stable code a client branches on
-             * @param message the generic sentence for that code
+             * @throws NullPointerException if {@code fieldErrors} contains a {@code null} entry
              */
-            public ErrorResponse(String code, String message) {
-                this(code, message, null);
+            public CobolErrorResponse {
+                fieldErrors = fieldErrors == null ? List.of() : List.copyOf(fieldErrors);
+            }
+
+            /**
+             * A body that identifies no field.
+             *
+             * @param code   the stable code a client branches on
+             * @param status the status this body travels with, which supplies the reason phrase
+             * @param detail the fixed sentence for the failure's family
+             * @return the body, with an empty {@code fieldErrors} and no {@code abendData}
+             */
+            static CobolErrorResponse of(final String code,
+                    final HttpStatusCode status,
+                    final String detail) {
+                return new CobolErrorResponse(code, reasonPhraseOf(status), detail, List.of(), null);
+            }
+
+            /**
+             * A body that names the fields the failure identified.
+             *
+             * @param code        the stable code a client branches on
+             * @param status      the status this body travels with, which supplies the reason phrase
+             * @param detail      the fixed sentence for the failure's family
+             * @param fieldErrors the identified fields, already ordered by name
+             * @return the body, with no {@code abendData}
+             */
+            static CobolErrorResponse of(final String code,
+                    final HttpStatusCode status,
+                    final String detail,
+                    final List<FieldMessage> fieldErrors) {
+                return new CobolErrorResponse(code, reasonPhraseOf(status), detail, fieldErrors, null);
             }
         }
 
         /**
-         * The body of a {@code 400} raised by a validation failure.
+         * One field a failure identified, within {@link CobolErrorResponse#fieldErrors()}.
          *
-         * @param error       the standard HTTP reason phrase for the status. It is deliberately the
-         *                    reason phrase and not invented prose: no COBOL literal is claimed here,
-         *                    because the parity-relevant text is the per-field message and, on a
-         *                    screen, the error field the controller fills
-         * @param fieldErrors one entry per rejected field, ordered by field name
-         */
-        public record ValidationResponse(String error, List<FieldMessage> fieldErrors) {
-        }
-
-        /**
-         * One rejected field within a validation failure.
-         *
-         * @param field   the field or property path that failed
-         * @param message the validator's own message for that field
+         * @param field   the field or property path that failed - the name the caller sent, never a
+         *                Java identifier invented by the framework
+         * @param message what is wrong with it: the validator's own message, or one of this class's
+         *                fixed field details. Never the rejected value
          */
         public record FieldMessage(String field, String message) {
         }
 
+    }
+
+    /**
+     * The container's error path, answered as JSON by this API rather than as a framework page.
+     *
+     * <h2>What this replaces, and why</h2>
+     * Spring Boot registers {@code BasicErrorController} for {@code /error} and gives it two mappings:
+     * one that produces JSON and one that produces {@code text/html} backed by the whitelabel view. A
+     * servlet container reaches that path by <em>forwarding</em> to it whenever a response is completed
+     * with an error status and no handler produced a body, so an API that speaks only JSON still ended
+     * up answering {@code Accept: text/html} with
+     * {@code <html><body><h1>Whitelabel Error Page</h1>...}, and a direct
+     * {@code GET /error} - the path is a real, registered mapping - answered {@code 500} with
+     * {@code {"timestamp":...,"status":999,"error":"None"}}, a third body shape carrying a status code
+     * that does not exist.
+     *
+     * <p>Declaring an {@link ErrorController} bean suppresses Boot's own: its auto-configuration is
+     * conditional on no such bean being present. So this class is not an addition alongside the
+     * whitelabel page, it is a replacement for it, and {@code server.error.whitelabel.enabled=false} in
+     * {@code application.yml} states the same intent from the configuration side.
+     *
+     * <h2>Why the mapping declares no {@code produces}</h2>
+     * A {@code produces} restriction would make this mapping unmatchable for exactly the request that
+     * needs it most - the one whose {@code Accept} header the API cannot satisfy. With no restriction the
+     * mapping always matches, and {@link CobolErrorHandler#json(HttpStatusCode, CobolErrorHandler.CobolErrorResponse)}
+     * pins the response to {@code application/json} so the body is written whatever was asked for.
+     *
+     * <h2>What it publishes</h2>
+     * The same envelope every other failure uses, carrying
+     * {@link CobolErrorHandler#REQUEST_NOT_COMPLETED_CODE} and
+     * {@link CobolErrorHandler#UNEXPECTED_FAILURE_MESSAGE} - and nothing from the request. No timestamp
+     * (non-deterministic output in a module whose responses are compared byte for byte), no path, no
+     * exception, no trace: the detail belongs in the server log, which is the same boundary
+     * {@link CobolErrorHandler} draws.
+     *
+     * <p>The status is the one the container recorded for the failure it is rendering, taken from the
+     * {@code jakarta.servlet.error.status_code} request attribute. A request that arrives at this path
+     * <em>without</em> that attribute was not forwarded here by an error - it asked for this path
+     * directly - and is answered {@code 500} rather than with an invented code, because no failure
+     * status exists to report.
+     */
+    @RestController
+    public static class CobolErrorEndpoint implements ErrorController {
+
         /**
-         * The body of a sanitized failure: a status, its reason phrase, and one of this class's fixed
-         * message constants.
-         *
-         * <p>It is a separate shape from {@link ValidationResponse} rather than that record with an
-         * empty {@code fieldErrors} list, and the distinction is meaningful. An empty list would
-         * assert that the request was examined field by field and every field passed - which is
-         * exactly what did not happen when a body could not be parsed at all.
-         *
-         * @param status  the numeric HTTP status, always the status of the response carrying this body
-         * @param error   the registered reason phrase for that status, or the empty string where the
-         *                status has none. Never invented prose
-         * @param message one of {@link #UNREADABLE_BODY_MESSAGE},
-         *                {@link #TYPE_MISMATCH_MESSAGE}, {@link #DATASET_ACCESS_MESSAGE} or
-         *                {@link #UNEXPECTED_FAILURE_MESSAGE}. It is chosen by the handler and is
-         *                never derived from the failure, so no exception message, class name, SQL
-         *                fragment, filesystem path or configuration value can appear here
+         * Constructs the endpoint. It is stateless and holds no field, so one instance serves every
+         * request.
          */
-        /**
-         * The body of a failure that names no field: a value a domain guard rejected, or a
-         * server-side state fault.
-         *
-         * <p>Two components and no third. There is deliberately nowhere here for an exception
-         * message, a field value or a configuration value to go, so a guard added later cannot widen
-         * what this boundary publishes merely by wording its message differently. Both builders that
-         * produce one - {@link CobolErrorHandler#rejectedValueResponse()} and
-         * {@link CobolErrorHandler#internalStateResponse()} - take no argument at all, which is the
-         * structural form of that guarantee rather than a convention to be remembered.
-         *
-         * @param error  the standard HTTP reason phrase for the status carrying this body
-         * @param detail a fixed sentence describing the category of the failure, identical for every
-         *               occurrence of that category and carrying no value
-         */
-        public record FaultResponse(String error, String detail) {
+        public CobolErrorEndpoint() {
+            // Intentionally empty. Every value in the response comes from the request attribute the
+            // container set, or from a constant on CobolErrorHandler.
         }
 
-        public record FailureResponse(int status, String error, String message) {
+        /**
+         * Renders the container's error dispatch as this API's one error envelope.
+         *
+         * @param request the forwarded request, read only for
+         *                {@code jakarta.servlet.error.status_code}; must not be {@code null}
+         * @return the envelope, always {@code application/json}, carrying the recorded status
+         * @throws NullPointerException if {@code request} is {@code null}
+         */
+        @RequestMapping("${server.error.path:${error.path:/error}}")
+        public ResponseEntity<CobolErrorHandler.CobolErrorResponse> renderError(
+                final HttpServletRequest request) {
+            Objects.requireNonNull(request, "A request is required to render its error status");
+            return CobolErrorHandler.json(statusOf(request),
+                    CobolErrorHandler.CobolErrorResponse.of(
+                            CobolErrorHandler.REQUEST_NOT_COMPLETED_CODE,
+                            statusOf(request),
+                            CobolErrorHandler.UNEXPECTED_FAILURE_MESSAGE));
+        }
+
+        /**
+         * The status the container recorded for the failure being rendered.
+         *
+         * @param request the forwarded request; must not be {@code null}
+         * @return the recorded status when the attribute is present and is a valid HTTP status, and
+         *         {@link HttpStatus#INTERNAL_SERVER_ERROR} otherwise
+         */
+        static HttpStatusCode statusOf(final HttpServletRequest request) {
+            Objects.requireNonNull(request, "A request is required to read its error status");
+            final Object recorded = request.getAttribute(RequestDispatcher.ERROR_STATUS_CODE);
+            if (recorded instanceof Integer status && HttpStatus.resolve(status) != null) {
+                return HttpStatus.valueOf(status);
+            }
+            return HttpStatus.INTERNAL_SERVER_ERROR;
         }
     }
+
 
     /**
      * The {@code CORPT00C} job-submission port's contract, bound from

@@ -24,8 +24,6 @@
   },
   "expectedResponse": {
     "nextProgram": "COSGN00C",
-    "nextMapset": "COMEN01",
-    "nextMap": "COMEN1A",
     "navigation": {
       "CDEMO-FROM-TRANID": "CC00",
       "CDEMO-FROM-PROGRAM": "COSGN00C",

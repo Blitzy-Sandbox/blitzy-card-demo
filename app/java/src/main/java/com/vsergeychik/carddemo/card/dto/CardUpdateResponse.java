@@ -1,6 +1,7 @@
 package com.vsergeychik.carddemo.card.dto;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import com.vsergeychik.carddemo.card.dto.CardUpdateRequest.CardDetails;
 import com.vsergeychik.carddemo.card.dto.CardUpdateRequest.CardUpdateRecord;
 import com.vsergeychik.carddemo.card.dto.CardUpdateRequest.CommArea;
@@ -1346,6 +1347,7 @@ public final class CardUpdateResponse {
      * @return the item at exactly {@value #TRNNAMEO_LENGTH} characters, untrimmed
      */
     @Size(max = TRNNAMEO_LENGTH)
+    @JsonProperty("trnname")
     public String getTrnnameo() {
         return payload.get(TRNNAME);
     }
@@ -1368,6 +1370,7 @@ public final class CardUpdateResponse {
      * @return the item at exactly {@value #TITLE01O_LENGTH} characters, untrimmed
      */
     @Size(max = TITLE01O_LENGTH)
+    @JsonProperty("title01")
     public String getTitle01o() {
         return payload.get(TITLE01);
     }
@@ -1390,6 +1393,7 @@ public final class CardUpdateResponse {
      * @return the item at exactly {@value #CURDATEO_LENGTH} characters, untrimmed
      */
     @Size(max = CURDATEO_LENGTH)
+    @JsonProperty("curdate")
     public String getCurdateo() {
         return payload.get(CURDATE);
     }
@@ -1412,6 +1416,7 @@ public final class CardUpdateResponse {
      * @return the item at exactly {@value #PGMNAMEO_LENGTH} characters, untrimmed
      */
     @Size(max = PGMNAMEO_LENGTH)
+    @JsonProperty("pgmname")
     public String getPgmnameo() {
         return payload.get(PGMNAME);
     }
@@ -1434,6 +1439,7 @@ public final class CardUpdateResponse {
      * @return the item at exactly {@value #TITLE02O_LENGTH} characters, untrimmed
      */
     @Size(max = TITLE02O_LENGTH)
+    @JsonProperty("title02")
     public String getTitle02o() {
         return payload.get(TITLE02);
     }
@@ -1456,6 +1462,7 @@ public final class CardUpdateResponse {
      * @return the item at exactly {@value #CURTIMEO_LENGTH} characters, untrimmed
      */
     @Size(max = CURTIMEO_LENGTH)
+    @JsonProperty("curtime")
     public String getCurtimeo() {
         return payload.get(CURTIME);
     }
@@ -1483,6 +1490,7 @@ public final class CardUpdateResponse {
      * @return the item at exactly {@value #ACCTSIDO_LENGTH} characters, untrimmed
      */
     @Size(max = ACCTSIDO_LENGTH)
+    @JsonProperty("acctsid")
     public String getAcctsido() {
         return payload.get(ACCTSID);
     }
@@ -1510,6 +1518,7 @@ public final class CardUpdateResponse {
      * @return the item at exactly {@value #CARDSIDO_LENGTH} characters, untrimmed
      */
     @Size(max = CARDSIDO_LENGTH)
+    @JsonProperty("cardsid")
     public String getCardsido() {
         return payload.get(CARDSID);
     }
@@ -1533,6 +1542,7 @@ public final class CardUpdateResponse {
      * @return the item at exactly {@value #CRDNAMEO_LENGTH} characters, untrimmed
      */
     @Size(max = CRDNAMEO_LENGTH)
+    @JsonProperty("crdname")
     public String getCrdnameo() {
         return payload.get(CRDNAME);
     }
@@ -1555,6 +1565,7 @@ public final class CardUpdateResponse {
      * @return the item at exactly {@value #CRDSTCDO_LENGTH} character, untrimmed
      */
     @Size(max = CRDSTCDO_LENGTH)
+    @JsonProperty("crdstcd")
     public String getCrdstcdo() {
         return payload.get(CRDSTCD);
     }
@@ -1579,6 +1590,7 @@ public final class CardUpdateResponse {
      * @return the item at exactly {@value #EXPMONO_LENGTH} characters, untrimmed
      */
     @Size(max = EXPMONO_LENGTH)
+    @JsonProperty("expmon")
     public String getExpmono() {
         return payload.get(EXPMON);
     }
@@ -1601,6 +1613,7 @@ public final class CardUpdateResponse {
      * @return the item at exactly {@value #EXPYEARO_LENGTH} characters, untrimmed
      */
     @Size(max = EXPYEARO_LENGTH)
+    @JsonProperty("expyear")
     public String getExpyearo() {
         return payload.get(EXPYEAR);
     }
@@ -1629,6 +1642,7 @@ public final class CardUpdateResponse {
      * @return the item at exactly {@value #EXPDAYO_LENGTH} characters, untrimmed
      */
     @Size(max = EXPDAYO_LENGTH)
+    @JsonProperty("expday")
     public String getExpdayo() {
         return payload.get(EXPDAY);
     }
@@ -1657,6 +1671,7 @@ public final class CardUpdateResponse {
      * @return the item at exactly {@value #INFOMSGO_LENGTH} characters, untrimmed
      */
     @Size(max = INFOMSGO_LENGTH)
+    @JsonProperty("infomsg")
     public String getInfomsgo() {
         return payload.get(INFOMSG);
     }
@@ -1686,6 +1701,7 @@ public final class CardUpdateResponse {
      * @return the item at exactly {@value #ERRMSGO_LENGTH} characters, untrimmed
      */
     @Size(max = ERRMSGO_LENGTH)
+    @JsonProperty("errmsg")
     public String getErrmsgo() {
         return payload.get(ERRMSG);
     }
@@ -1713,6 +1729,7 @@ public final class CardUpdateResponse {
      * @return the item at exactly {@value #FKEYSO_LENGTH} characters, untrimmed
      */
     @Size(max = FKEYSO_LENGTH)
+    @JsonProperty("fkeys")
     public String getFkeyso() {
         return payload.get(FKEYS);
     }
@@ -1741,6 +1758,7 @@ public final class CardUpdateResponse {
      * @return the item at exactly {@value #FKEYSCO_LENGTH} characters, untrimmed
      */
     @Size(max = FKEYSCO_LENGTH)
+    @JsonProperty("fkeysc")
     public String getFkeysco() {
         return payload.get(FKEYSC);
     }

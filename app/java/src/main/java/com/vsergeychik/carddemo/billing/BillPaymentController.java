@@ -4,6 +4,7 @@ import com.vsergeychik.carddemo.billing.BillPaymentService.PaymentState;
 import com.vsergeychik.carddemo.billing.dto.BillPaymentRequest;
 import com.vsergeychik.carddemo.billing.dto.BillPaymentResponse;
 import com.vsergeychik.carddemo.billing.dto.BillPaymentResponse.CursorField;
+import com.vsergeychik.carddemo.common.BmsAttributes;
 import com.vsergeychik.carddemo.common.CicsAid;
 import com.vsergeychik.carddemo.common.DateHeader;
 import com.vsergeychik.carddemo.common.FileStatus;
@@ -11,6 +12,9 @@ import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.NavigationContext;
 import com.vsergeychik.carddemo.common.PfKeyResolver;
 import com.vsergeychik.carddemo.common.PfKeyResolver.AidKey;
+import com.vsergeychik.carddemo.common.ScreenFieldImage;
+import com.vsergeychik.carddemo.common.ScreenMetadata;
+import com.vsergeychik.carddemo.common.ScreenResponse;
 import com.vsergeychik.carddemo.common.ScreenTitles;
 import jakarta.validation.Valid;
 import java.time.Clock;
@@ -436,17 +440,70 @@ public final class BillPaymentController {
      * global error mapper - a payload that breaches a declared field width, or a body that will not
      * parse.
      *
+     * <p>The payload is a {@link ScreenResponse}, the same envelope the other sixteen screens answer
+     * with: the ten map members unwrapped at the top level, and everything that is <em>about</em> the
+     * screen rather than on it - the cursor request and the message colour - gathered under
+     * {@code screenMetadata}. Both of those derive from items AAP 0.6.3 keeps out of the payload: the
+     * cursor from the {@code MOVE -1 TO xxxL} statements, the colour from {@code ERRMSGC}. This screen
+     * previously published them as two extra top-level members, one of them the raw {@code DFHGREEN}
+     * byte rendered as the character {@code "ô"}, which made it the only screen of the seventeen a
+     * client had to read differently.
+     *
      * @param request the inbound screen and communication area, or {@code null} for the cold start;
      *                validated against the symbolic map's declared widths
-     * @return the outbound screen: the ten map members, the cursor indicator, the message colour, the
-     *         communication area to send back next time, the six communication-area extension members,
-     *         and the navigation triple naming where the client goes if control transferred. Never
-     *         {@code null}
+     * @return the outbound screen: the ten map members, the communication area to send back next time,
+     *         the six communication-area extension members, the navigation triple naming where the
+     *         client goes if control transferred, and {@code screenMetadata} carrying the cursor
+     *         request and the message colour. Never {@code null}
      */
     @PostMapping(path = BILL_PAY_PATH, produces = MediaType.APPLICATION_JSON_VALUE)
-    public BillPaymentResponse payBill(
+    public ScreenResponse<BillPaymentResponse> payBill(
             @Valid @RequestBody(required = false) final BillPaymentRequest request) {
-        return mainPara(Objects.requireNonNullElse(request, new BillPaymentRequest())).response();
+        final BillPaymentRequest received =
+                Objects.requireNonNullElse(request, new BillPaymentRequest());
+        final BillPaymentResponse response = mainPara(received).response();
+        return ScreenResponse.of(response, screenMetadataOf(response, received));
+    }
+
+    /**
+     * Projects the two facts that are about the screen rather than on it into the shared metadata shape.
+     *
+     * <p>Three components, each read from where the source puts it:
+     *
+     * <ul>
+     *   <li><strong>The cursor field.</strong> {@link BillPaymentResponse.CursorField} collapses the
+     *       program's seventeen {@code MOVE -1 TO xxxL} statements, and its constant names are the
+     *       {@code DFHMDF} labels themselves. {@link BillPaymentResponse.CursorField#NONE} means no
+     *       statement ran on this path, so the terminal applies the mapset's own {@code IC} field, and
+     *       that is reported as {@code null} - the same "no override" encoding the other sixteen
+     *       screens use.</li>
+     *   <li><strong>The message colour.</strong> {@code ERRMSGC}, whose only writer in the whole
+     *       573-line program is {@code MOVE DFHGREEN TO ERRMSGC OF COBIL0AO} at
+     *       {@code app/cbl/COBIL00C.cbl:526}. Where nothing wrote it, it holds what
+     *       {@code MOVE LOW-VALUES TO COBIL0AO} at {@code :114} left - which is
+     *       {@link BmsAttributes#DFHDFCOL}, the map's declared attribute standing unchanged, and reports
+     *       as {@code 0}.</li>
+     *   <li><strong>The repaint signal.</strong> {@code MOVE LOW-VALUES TO COBIL0AO} at {@code :114}
+     *       runs on exactly one arm: a communication area arrived ({@code EIBCALEN} non-zero, encoded
+     *       here as a non-{@code null} area) and it is not yet marked re-enter. Derived from the request
+     *       rather than carried on the response, because it is a property of which arm was taken.</li>
+     * </ul>
+     *
+     * @param response the projected screen, whose cursor and colour accessors are read
+     * @param received the payload as it arrived, which decides whether the {@code :114} clear ran
+     * @return the metadata, never {@code null}
+     */
+    private static ScreenMetadata screenMetadataOf(final BillPaymentResponse response,
+                                                   final BillPaymentRequest received) {
+        final CursorField cursor = response.getCursorField();
+        final String cursorLabel = cursor == null || cursor == CursorField.NONE ? null : cursor.name();
+        final String highlight = response.getMessageHighlight();
+        final byte colour = highlight == null || highlight.isEmpty()
+                ? BmsAttributes.DFHDFCOL
+                : (byte) highlight.charAt(0);
+        final NavigationContext passed = received.getNavigationContext();
+        final boolean lowValuesMoved = passed != null && !passed.isReenter();
+        return ScreenMetadata.of(cursorLabel, colour, lowValuesMoved);
     }
 
     // =================================================================================================
@@ -530,9 +587,9 @@ public final class BillPaymentController {
         // WORKING-STORAGE initial state. Note what else does not run: the symbolic map is never cleared
         // and POPULATE-HEADER-INFO is never performed, because SEND-BILLPAY-SCREEN is the only caller of
         // it and this arm does not send. The nine map members other than the message therefore stay in
-        // their uninitialised state, which this payload represents as an absent member, and the six
-        // communication-area extension members stay at their own declared initial values rather than
-        // echoing anything a client may have sent alongside a missing area.
+        // their uninitialised state, which this payload represents as the LOW-VALUES image at each
+        // declared width, and the six communication-area extension members stay at their own declared
+        // initial values rather than echoing anything a client may have sent alongside a missing area.
         // ---------------------------------------------------------------------------------------------
         if (passed == null) {
             final PaymentState state = new PaymentState(codec, NavigationContext.empty());
@@ -612,9 +669,10 @@ public final class BillPaymentController {
         final NavigationContext commarea = passed.withPgmReenter();
 
         // :114  MOVE LOW-VALUES TO COBIL0AO - the whole overlay. On the payload the nine unwritten
-        //       members are already absent, which is how this projection represents LOW-VALUES; on the
-        //       working storage the four data fields are set to it explicitly, at their declared widths,
-        //       so that the SPACES-versus-LOW-VALUES tests downstream see what the source sees.
+        //       members already hold the LOW-VALUES image at their declared widths, because that is what
+        //       a BillPaymentResponse starts as; on the working storage the four data fields are set to
+        //       it explicitly, at their declared widths, so that the SPACES-versus-LOW-VALUES tests
+        //       downstream see what the source sees.
         final PaymentState state = new PaymentState(codec, commarea);
         state.setActIdIn(lowValues(BillPaymentResponse.ACT_ID_IN_LENGTH));
         state.setCurBal(lowValues(BillPaymentResponse.CUR_BAL_LENGTH));
@@ -985,12 +1043,46 @@ public final class BillPaymentController {
                       final BillPaymentRequest request,
                       final NavigationContext commarea) {
         response.setNavigationContext(commarea);
-        response.setTrnIdFirst(request.getTrnIdFirst());
-        response.setTrnIdLast(request.getTrnIdLast());
+        response.setTrnIdFirst(echoAtWidth(request.getTrnIdFirst(),
+                BillPaymentResponse.TRN_ID_FIRST_LENGTH));
+        response.setTrnIdLast(echoAtWidth(request.getTrnIdLast(),
+                BillPaymentResponse.TRN_ID_LAST_LENGTH));
         response.setPageNum(request.getPageNum());
-        response.setNextPageFlg(request.getNextPageFlg());
-        response.setTrnSelFlg(request.getTrnSelFlg());
-        response.setTrnSelected(request.getTrnSelected());
+        response.setNextPageFlg(echoAtWidth(request.getNextPageFlg(),
+                BillPaymentResponse.NEXT_PAGE_FLG_LENGTH));
+        response.setTrnSelFlg(echoAtWidth(request.getTrnSelFlg(),
+                BillPaymentResponse.TRN_SEL_FLG_LENGTH));
+        response.setTrnSelected(echoAtWidth(request.getTrnSelected(),
+                BillPaymentResponse.TRN_SELECTED_LENGTH));
+    }
+
+    /**
+     * Echoes one member of the {@code CDEMO-CB00-INFO} extension at its declared width.
+     *
+     * <p>These are communication-area items, not {@code DFHMDF} fields, so the symbolic-map rule that
+     * {@link #materialise(String, int)} applies is not theirs: they are echoed at the width
+     * {@code app/cbl/COBIL00C.cbl:64-72} declares, filled with blanks when the client stated nothing,
+     * which is the image {@link BillPaymentResponse}'s own constructor gives them and the image every
+     * other screen's carriers use. A fixed-width COBOL item is never absent, so {@code null} is never
+     * the answer - that is what QA finding 7 counted, four of its sixteen {@code null} members being
+     * exactly these.
+     *
+     * <p>Blanks rather than {@code LOW-VALUES} is behaviourally neutral here and deliberate. The one
+     * member this program reads, {@code CDEMO-CB00-TRN-SELECTED}, is tested at {@code :116-117} as
+     * {@code NOT = SPACES AND LOW-VALUES} - the two together - and
+     * {@link #isSpacesOrLowValues(String)} reproduces that, so neither image can steer the branch. What
+     * blanks buy is that billpay's carriers read the same as the other sixteen screens' carriers, which
+     * is the divergence the finding is about.
+     *
+     * @param value the value the client stated, or {@code null} when it stated nothing
+     * @param width the width {@code CDEMO-CB00-INFO} declares for the member
+     * @return exactly {@code width} characters, never {@code null}
+     */
+    private String echoAtWidth(final String value, final int width) {
+        if (value == null) {
+            return spaces(width);
+        }
+        return codec.movePicX(value, width);
     }
 
     // =================================================================================================
@@ -1144,7 +1236,9 @@ public final class BillPaymentController {
      * @return exactly {@code width} {@code X'00'} characters
      */
     static String lowValues(final int width) {
-        return String.valueOf(LOW_VALUE).repeat(width);
+        // One implementation of the LOW-VALUES image, in common.ScreenFieldImage, so the choice cannot
+        // drift back apart across screens. Any width validation above is this method's own contract.
+        return ScreenFieldImage.unpainted(width);
     }
 
     // =================================================================================================

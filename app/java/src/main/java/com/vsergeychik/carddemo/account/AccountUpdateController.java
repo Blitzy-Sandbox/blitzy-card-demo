@@ -16,6 +16,7 @@ import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.NavigationContext;
 import com.vsergeychik.carddemo.common.PfKeyResolver;
+import com.vsergeychik.carddemo.common.ScreenInputRejectedException;
 import com.vsergeychik.carddemo.common.ScreenMetadata;
 import com.vsergeychik.carddemo.common.ScreenResponse;
 import com.vsergeychik.carddemo.common.ScreenTitles;
@@ -3177,20 +3178,34 @@ public class AccountUpdateController {
      * untouched, because {@code ABEND-ROUTINE} cancels the handler at {@code :4219-4221} before abending
      * and so cannot re-enter itself.
      *
+     * <p>Two things are deliberately outside that handler. Ahead of it,
+     * {@link ScreenInputRejectedException#requireRepresentable} judges the received map against the
+     * screen code page, because a character that code page cannot represent is a value no
+     * {@code RECEIVE MAP} could have delivered - only a hand-built payload reaches it - and answering
+     * the caller's own mistake as a transaction abend is wrong. Sweeping before the flow begins also
+     * means the refusal precedes every read and every write, so nothing partial is left behind. Inside
+     * it, a {@link ScreenInputRejectedException} raised deeper in the flow is rethrown for the same
+     * reason: {@code ABEND-ROUTINE} is for a unit of work that genuinely did not complete, not for a
+     * payload describing a conversation this program cannot be in.
+     *
      * @param request  the terminal input area and carried state
      * @param eibcalen {@code EIBCALEN}
      * @param eibAid   {@code EIBAID}
      * @return the painted screen, its input area and the cursor field
-     * @throws AbendException if the interaction abends
+     * @throws ScreenInputRejectedException if the payload carries a value a received map could not have
+     * @throws AbendException               if the interaction abends
      */
     PaintedScreen handle(AccountUpdateRequest request, int eibcalen, byte eibAid) {
         Objects.requireNonNull(request, "A request is required: COACTUPC is entered with a terminal "
                 + "input area, and an absent one is spaces rather than nothing");
+        ScreenInputRejectedException.requireRepresentable(request.fieldValues(), codec());
         Conversation task = new Conversation();
         try {
             main0000(request, task, eibcalen, eibAid);
         } catch (AbendException alreadyAbending) {
             throw alreadyAbending;
+        } catch (ScreenInputRejectedException callersInput) {
+            throw callersInput;
         } catch (RuntimeException abend) {
             throw abendRoutine(task, abend);
         }

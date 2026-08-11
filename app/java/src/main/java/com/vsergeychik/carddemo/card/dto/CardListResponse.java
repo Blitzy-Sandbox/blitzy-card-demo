@@ -1,6 +1,7 @@
 package com.vsergeychik.carddemo.card.dto;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import com.vsergeychik.carddemo.card.dto.CardListRequest.PageCursor;
 import com.vsergeychik.carddemo.common.DiagnosticText;
 import com.vsergeychik.carddemo.common.BmsAttributes;
@@ -1718,6 +1719,7 @@ public final class CardListResponse {
      *
      * @return the four-character transaction identifier, untrimmed
      */
+    @JsonProperty("trnname")
     public String getTrnnameo() {
         return field(TRNNAMEO_ITEM);
     }
@@ -1737,6 +1739,7 @@ public final class CardListResponse {
      *
      * @return the upper title line, untrimmed
      */
+    @JsonProperty("title01")
     public String getTitle01o() {
         return field(TITLE01O_ITEM);
     }
@@ -1755,6 +1758,7 @@ public final class CardListResponse {
      *
      * @return the {@code mm/dd/yy} date, untrimmed
      */
+    @JsonProperty("curdate")
     public String getCurdateo() {
         return field(CURDATEO_ITEM);
     }
@@ -1773,6 +1777,7 @@ public final class CardListResponse {
      *
      * @return the eight-character program name, untrimmed
      */
+    @JsonProperty("pgmname")
     public String getPgmnameo() {
         return field(PGMNAMEO_ITEM);
     }
@@ -1791,6 +1796,7 @@ public final class CardListResponse {
      *
      * @return the lower title line, untrimmed
      */
+    @JsonProperty("title02")
     public String getTitle02o() {
         return field(TITLE02O_ITEM);
     }
@@ -1809,6 +1815,7 @@ public final class CardListResponse {
      *
      * @return the {@code hh:mm:ss} time, untrimmed
      */
+    @JsonProperty("curtime")
     public String getCurtimeo() {
         return field(CURTIMEO_ITEM);
     }
@@ -1829,6 +1836,7 @@ public final class CardListResponse {
      *
      * @return the three-character page number image, untrimmed
      */
+    @JsonProperty("pageno")
     public String getPagenoo() {
         return field(PAGENOO_ITEM);
     }
@@ -1851,6 +1859,7 @@ public final class CardListResponse {
      *
      * @return the eleven-character account filter, untrimmed
      */
+    @JsonProperty("acctsid")
     public String getAcctsido() {
         return field(ACCTSIDO_ITEM);
     }
@@ -1874,6 +1883,7 @@ public final class CardListResponse {
      *
      * @return the sixteen-character card filter, untrimmed
      */
+    @JsonProperty("cardsid")
     public String getCardsido() {
         return field(CARDSIDO_ITEM);
     }
@@ -1903,6 +1913,7 @@ public final class CardListResponse {
      *
      * @return the one-character selection value for row 1
      */
+    @JsonProperty("crdsel1")
     public String getCrdsel1o() {
         return field(CRDSEL1O_ITEM);
     }
@@ -1921,6 +1932,7 @@ public final class CardListResponse {
      *
      * @return the eleven-character account number of row 1
      */
+    @JsonProperty("acctno1")
     public String getAcctno1o() {
         return field(ACCTNO1O_ITEM);
     }
@@ -1939,6 +1951,7 @@ public final class CardListResponse {
      *
      * @return the sixteen-character card number of row 1, in the clear as the map carries it
      */
+    @JsonProperty("crdnum1")
     public String getCrdnum1o() {
         return field(CRDNUM1O_ITEM);
     }
@@ -1957,6 +1970,7 @@ public final class CardListResponse {
      *
      * @return the one-character card status of row 1
      */
+    @JsonProperty("crdsts1")
     public String getCrdsts1o() {
         return field(CRDSTS1O_ITEM);
     }
@@ -1984,6 +1998,7 @@ public final class CardListResponse {
      *
      * @return the one-character selection value for row 2
      */
+    @JsonProperty("crdsel2")
     public String getCrdsel2o() {
         return field(CRDSEL2O_ITEM);
     }
@@ -2000,6 +2015,7 @@ public final class CardListResponse {
      *
      * @return the one-character hidden selection type for row 2
      */
+    @JsonProperty("crdstp2")
     public String getCrdstp2o() {
         return field(CRDSTP2O_ITEM);
     }
@@ -2015,6 +2031,7 @@ public final class CardListResponse {
      *
      * @return the eleven-character account number of row 2
      */
+    @JsonProperty("acctno2")
     public String getAcctno2o() {
         return field(ACCTNO2O_ITEM);
     }
@@ -2030,6 +2047,7 @@ public final class CardListResponse {
      *
      * @return the sixteen-character card number of row 2, in the clear as the map carries it
      */
+    @JsonProperty("crdnum2")
     public String getCrdnum2o() {
         return field(CRDNUM2O_ITEM);
     }
@@ -2045,6 +2063,7 @@ public final class CardListResponse {
      *
      * @return the one-character card status of row 2
      */
+    @JsonProperty("crdsts2")
     public String getCrdsts2o() {
         return field(CRDSTS2O_ITEM);
     }
@@ -2060,6 +2079,7 @@ public final class CardListResponse {
      *
      * @return the one-character selection value for row 3
      */
+    @JsonProperty("crdsel3")
     public String getCrdsel3o() {
         return field(CRDSEL3O_ITEM);
     }
@@ -2075,6 +2095,7 @@ public final class CardListResponse {
      *
      * @return the one-character hidden selection type for row 3
      */
+    @JsonProperty("crdstp3")
     public String getCrdstp3o() {
         return field(CRDSTP3O_ITEM);
     }
@@ -2090,6 +2111,7 @@ public final class CardListResponse {
      *
      * @return the eleven-character account number of row 3
      */
+    @JsonProperty("acctno3")
     public String getAcctno3o() {
         return field(ACCTNO3O_ITEM);
     }
@@ -2105,6 +2127,7 @@ public final class CardListResponse {
      *
      * @return the sixteen-character card number of row 3, in the clear as the map carries it
      */
+    @JsonProperty("crdnum3")
     public String getCrdnum3o() {
         return field(CRDNUM3O_ITEM);
     }
@@ -2120,6 +2143,7 @@ public final class CardListResponse {
      *
      * @return the one-character card status of row 3
      */
+    @JsonProperty("crdsts3")
     public String getCrdsts3o() {
         return field(CRDSTS3O_ITEM);
     }
@@ -2135,6 +2159,7 @@ public final class CardListResponse {
      *
      * @return the one-character selection value for row 4
      */
+    @JsonProperty("crdsel4")
     public String getCrdsel4o() {
         return field(CRDSEL4O_ITEM);
     }
@@ -2150,6 +2175,7 @@ public final class CardListResponse {
      *
      * @return the one-character hidden selection type for row 4
      */
+    @JsonProperty("crdstp4")
     public String getCrdstp4o() {
         return field(CRDSTP4O_ITEM);
     }
@@ -2165,6 +2191,7 @@ public final class CardListResponse {
      *
      * @return the eleven-character account number of row 4
      */
+    @JsonProperty("acctno4")
     public String getAcctno4o() {
         return field(ACCTNO4O_ITEM);
     }
@@ -2180,6 +2207,7 @@ public final class CardListResponse {
      *
      * @return the sixteen-character card number of row 4, in the clear as the map carries it
      */
+    @JsonProperty("crdnum4")
     public String getCrdnum4o() {
         return field(CRDNUM4O_ITEM);
     }
@@ -2195,6 +2223,7 @@ public final class CardListResponse {
      *
      * @return the one-character card status of row 4
      */
+    @JsonProperty("crdsts4")
     public String getCrdsts4o() {
         return field(CRDSTS4O_ITEM);
     }
@@ -2210,6 +2239,7 @@ public final class CardListResponse {
      *
      * @return the one-character selection value for row 5
      */
+    @JsonProperty("crdsel5")
     public String getCrdsel5o() {
         return field(CRDSEL5O_ITEM);
     }
@@ -2225,6 +2255,7 @@ public final class CardListResponse {
      *
      * @return the one-character hidden selection type for row 5
      */
+    @JsonProperty("crdstp5")
     public String getCrdstp5o() {
         return field(CRDSTP5O_ITEM);
     }
@@ -2240,6 +2271,7 @@ public final class CardListResponse {
      *
      * @return the eleven-character account number of row 5
      */
+    @JsonProperty("acctno5")
     public String getAcctno5o() {
         return field(ACCTNO5O_ITEM);
     }
@@ -2255,6 +2287,7 @@ public final class CardListResponse {
      *
      * @return the sixteen-character card number of row 5, in the clear as the map carries it
      */
+    @JsonProperty("crdnum5")
     public String getCrdnum5o() {
         return field(CRDNUM5O_ITEM);
     }
@@ -2270,6 +2303,7 @@ public final class CardListResponse {
      *
      * @return the one-character card status of row 5
      */
+    @JsonProperty("crdsts5")
     public String getCrdsts5o() {
         return field(CRDSTS5O_ITEM);
     }
@@ -2285,6 +2319,7 @@ public final class CardListResponse {
      *
      * @return the one-character selection value for row 6
      */
+    @JsonProperty("crdsel6")
     public String getCrdsel6o() {
         return field(CRDSEL6O_ITEM);
     }
@@ -2300,6 +2335,7 @@ public final class CardListResponse {
      *
      * @return the one-character hidden selection type for row 6
      */
+    @JsonProperty("crdstp6")
     public String getCrdstp6o() {
         return field(CRDSTP6O_ITEM);
     }
@@ -2315,6 +2351,7 @@ public final class CardListResponse {
      *
      * @return the eleven-character account number of row 6
      */
+    @JsonProperty("acctno6")
     public String getAcctno6o() {
         return field(ACCTNO6O_ITEM);
     }
@@ -2330,6 +2367,7 @@ public final class CardListResponse {
      *
      * @return the sixteen-character card number of row 6, in the clear as the map carries it
      */
+    @JsonProperty("crdnum6")
     public String getCrdnum6o() {
         return field(CRDNUM6O_ITEM);
     }
@@ -2345,6 +2383,7 @@ public final class CardListResponse {
      *
      * @return the one-character card status of row 6
      */
+    @JsonProperty("crdsts6")
     public String getCrdsts6o() {
         return field(CRDSTS6O_ITEM);
     }
@@ -2360,6 +2399,7 @@ public final class CardListResponse {
      *
      * @return the one-character selection value for row 7, the last row
      */
+    @JsonProperty("crdsel7")
     public String getCrdsel7o() {
         return field(CRDSEL7O_ITEM);
     }
@@ -2375,6 +2415,7 @@ public final class CardListResponse {
      *
      * @return the one-character hidden selection type for row 7
      */
+    @JsonProperty("crdstp7")
     public String getCrdstp7o() {
         return field(CRDSTP7O_ITEM);
     }
@@ -2390,6 +2431,7 @@ public final class CardListResponse {
      *
      * @return the eleven-character account number of row 7
      */
+    @JsonProperty("acctno7")
     public String getAcctno7o() {
         return field(ACCTNO7O_ITEM);
     }
@@ -2405,6 +2447,7 @@ public final class CardListResponse {
      *
      * @return the sixteen-character card number of row 7, in the clear as the map carries it
      */
+    @JsonProperty("crdnum7")
     public String getCrdnum7o() {
         return field(CRDNUM7O_ITEM);
     }
@@ -2420,6 +2463,7 @@ public final class CardListResponse {
      *
      * @return the one-character card status of row 7
      */
+    @JsonProperty("crdsts7")
     public String getCrdsts7o() {
         return field(CRDSTS7O_ITEM);
     }
@@ -2449,6 +2493,7 @@ public final class CardListResponse {
      *
      * @return the forty-five-character information line, untrimmed
      */
+    @JsonProperty("infomsg")
     public String getInfomsgo() {
         return field(INFOMSGO_ITEM);
     }
@@ -2472,6 +2517,7 @@ public final class CardListResponse {
      *
      * @return the seventy-eight-character error line, untrimmed
      */
+    @JsonProperty("errmsg")
     public String getErrmsgo() {
         return field(ERRMSGO_ITEM);
     }

@@ -1,8 +1,11 @@
 package com.vsergeychik.carddemo.transaction.dto;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.vsergeychik.carddemo.common.DiagnosticText;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
+import com.vsergeychik.carddemo.common.ResponseOnlyMembers;
+import com.vsergeychik.carddemo.common.ScreenFieldImage;
 import com.vsergeychik.carddemo.common.SensitiveDiagnostics;
 import com.vsergeychik.carddemo.common.FixedWidthRecord;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.FieldSpan;
@@ -277,7 +280,23 @@ import java.util.Objects;
  *
  * @see NavigationContext
  * @see FixedWidthCodec
+ *
+ * <h2>Members this request tolerates without declaring</h2>
+ *
+ * <p>The {@code @JsonIgnoreProperties} below names the members the paired response carries that this
+ * request does not declare. They are tolerated so a client can send the body it was just handed straight
+ * back: rule R6 and gate G37 put the whole conversation in the payload, which makes the next request the
+ * previous response. {@code ignoreUnknown} stays at its default of {@code false}, so every <em>other</em>
+ * unrecognised name is still refused with the offending field named in the error envelope. Each tolerated
+ * member is recomputed by the server on every path, so the value that arrives here is discarded and
+ * cannot steer a branch. The names live in {@link com.vsergeychik.carddemo.common.ResponseOnlyMembers},
+ * which explains each one.
  */
+@JsonIgnoreProperties({
+        ResponseOnlyMembers.NEXT_PROGRAM,
+        ResponseOnlyMembers.NEXT_MAPSET,
+        ResponseOnlyMembers.NEXT_MAP,
+        ResponseOnlyMembers.SCREEN_METADATA})
 public final class TransactionViewRequest {
 
     // =================================================================================================
@@ -2580,8 +2599,10 @@ public final class TransactionViewRequest {
      * @throws IllegalArgumentException if {@code length} is negative
      */
     public static String lowValues(int length) {
+        // One implementation of the LOW-VALUES image, in common.ScreenFieldImage, so the choice cannot
+        // drift back apart across screens. Any width validation above is this method's own contract.
         requireNonNegative(length, "LOW-VALUES");
-        return "\u0000".repeat(length);
+        return ScreenFieldImage.unpainted(length);
     }
 
     /**

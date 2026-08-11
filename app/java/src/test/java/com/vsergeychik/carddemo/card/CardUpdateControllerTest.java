@@ -36,6 +36,7 @@ import com.vsergeychik.carddemo.common.CicsAid;
 import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.NavigationContext;
+import com.vsergeychik.carddemo.common.ScreenInputRejectedException;
 import com.vsergeychik.carddemo.common.PfKeyResolver;
 import com.vsergeychik.carddemo.common.PfKeyResolver.AidKey;
 import com.vsergeychik.carddemo.common.ScreenMetadata;
@@ -282,8 +283,11 @@ class CardUpdateControllerTest {
      * <p>Supplying the snapshot matters even for tests that never look at it. {@code 1200:671-672}
      * moves {@code CCUP-OLD-ACCTID} and {@code CCUP-OLD-CARDID} into {@code CDEMO-ACCT-ID PIC 9(11)}
      * and {@code CDEMO-CARD-NUM PIC 9(16)}, so an initialised - blank - snapshot is eleven spaces
-     * arriving at a zoned {@code DISPLAY} receiver, and the program abends. Which is faithful: CICS
-     * would never reach {@code 'S'} without having fetched first.
+     * arriving at a zoned {@code DISPLAY} receiver. CICS would never reach {@code 'S'} without having
+     * fetched first, so there is no COBOL behaviour to be faithful to there; a hand-built payload that
+     * does is refused as {@link ScreenInputRejectedException} by
+     * {@link CardUpdateController#requireFetchedKey}, ahead of the two {@code MOVE}s, rather than
+     * abending the transaction over the caller's own input. See {@link CommareaConsistency}.
      *
      * @param action the state byte to carry
      * @return the trailer as the previous turn would have returned it
@@ -3069,9 +3073,9 @@ class CardUpdateControllerTest {
                     .andExpect(status().isOk())
                     // ScreenResponse declares @JsonUnwrapped on the screen, so the seventeen items sit at the
                     // top level of the body with the metadata beside them - not under a "screen" node.
-                    .andExpect(jsonPath("$.trnnameo").value("CCUP"))
-                    .andExpect(jsonPath("$.pgmnameo").value("COCRDUPC"))
-                    .andExpect(jsonPath("$.cardsido").value(CARD_NUMBER))
+                    .andExpect(jsonPath("$.trnname").value("CCUP"))
+                    .andExpect(jsonPath("$.pgmname").value("COCRDUPC"))
+                    .andExpect(jsonPath("$.cardsid").value(CARD_NUMBER))
                     .andExpect(jsonPath("$.screenMetadata").exists());
         }
 
@@ -3692,7 +3696,7 @@ class CardUpdateControllerTest {
                             + "skipping it by spelling is why the colour byte is reached by field name")
                     .containsExactly(CardUpdateResponse.FKEYSC);
             assertThat(checked).isEqualTo(fields.size() * 7 - 1);
-            assertThat(responseJson.has("fkeysco"))
+            assertThat(responseJson.has("fkeysc"))
                     .as("while the payload item of the FIELD FKEYSC is present, at its own name")
                     .isTrue();
             assertThat(requestJson.has("fkeysc"))
@@ -4034,6 +4038,152 @@ class CardUpdateControllerTest {
             assertThat(PfKeyResolver.isPf3(CicsAid.DFHPF5))
                     .as("and they are distinct: PF5 saves, PF3 leaves")
                     .isFalse();
+        }
+    }
+
+    @Nested
+    @DisplayName("A value a RECEIVE MAP could not have delivered is the caller's error, not an abend")
+    class ScreenInputRefusal {
+
+        @Test
+        @DisplayName("An unrepresentable character is refused rather than routed to ABEND-ROUTINE by "
+                + "the HANDLE ABEND declarative at :370-372")
+        void anUnrepresentableCharacterIsNotAnAbend() {
+            CardUpdateRequest received =
+                    request(ACCOUNT_NUMBER, CARD_NUMBER, reentered(), CommArea.initialised());
+            received.setCrdname("JOS\u00C9 MU\u00D1OZ");
+
+            assertThatThrownBy(() -> controller.handle(received, 0, CicsAid.DFHENTER))
+                    .isInstanceOf(ScreenInputRejectedException.class)
+                    .isNotInstanceOf(AbendException.class);
+        }
+
+        @Test
+        @DisplayName("It names the offending field and its xxxI item, and echoes no value")
+        void itNamesTheFieldAndNotTheValue() {
+            CardUpdateRequest received =
+                    request(ACCOUNT_NUMBER, CARD_NUMBER, reentered(), CommArea.initialised());
+            received.setCrdname("JOS\u00C9");
+
+            assertThatThrownBy(() -> controller.handle(received, 0, CicsAid.DFHENTER))
+                    .isInstanceOf(ScreenInputRejectedException.class)
+                    .satisfies(thrown -> {
+                        ScreenInputRejectedException rejected = (ScreenInputRejectedException) thrown;
+                        assertThat(rejected.member()).contains("CRDNAME");
+                        assertThat(rejected.getMessage()).contains("CRDNAMEI").contains("U+00C9");
+                    });
+        }
+
+        @Test
+        @DisplayName("The sweep runs before the repository is touched, so nothing partial is written")
+        void theSweepPrecedesEveryDatasetAccess() {
+            CardUpdateRequest received =
+                    request(ACCOUNT_NUMBER, CARD_NUMBER, reentered(), fetchedTrailer(ChangeAction.showDetails()));
+            received.setCrdname("JOS\u00C9");
+
+            assertThatThrownBy(() -> controller.handle(received, 0, CicsAid.DFHENTER))
+                    .isInstanceOf(ScreenInputRejectedException.class);
+
+            verifyNoInteractions(repository, service);
+        }
+
+        @Test
+        @DisplayName("A representable payload passes the sweep untouched")
+        void aRepresentablePayloadIsUntouched() {
+            CardUpdateRequest received =
+                    request(ACCOUNT_NUMBER, CARD_NUMBER, reentered(), CommArea.initialised());
+            received.setCrdname("JOHN Q PUBLIC");
+
+            assertThat(controller.handle(received, 0, CicsAid.DFHENTER)).isNotNull();
+        }
+    }
+
+    @Nested
+    @DisplayName("requireFetchedKey - a commarea the program itself could not have written")
+    class CommareaConsistency {
+
+        @Test
+        @DisplayName("A blank CCUP-OLD-ACCTID with a processing action is refused as the caller's "
+                + "error: the only writer of that member is :1006-1007, which writes eleven digits")
+        void aBlankFetchedAccountKeyIsRefused() {
+            assertThatThrownBy(() -> CardUpdateController.requireFetchedKey(
+                    "           ", CardDetails.ACCTID_LENGTH, "commArea.oldDetails.acctid",
+                    "the eleven digits of the fetched account identifier"))
+                    .isInstanceOf(ScreenInputRejectedException.class)
+                    .isNotInstanceOf(AbendException.class)
+                    .satisfies(thrown -> assertThat(((ScreenInputRejectedException) thrown).member())
+                            .contains("commArea.oldDetails.acctid"));
+        }
+
+        @Test
+        @DisplayName("An absent value is refused the same way, because a PIC 9 receiver cannot hold it "
+                + "either")
+        void anAbsentFetchedKeyIsRefused() {
+            assertThatThrownBy(() -> CardUpdateController.requireFetchedKey(
+                    null, CardDetails.ACCTID_LENGTH, "commArea.oldDetails.acctid", "eleven digits"))
+                    .isInstanceOf(ScreenInputRejectedException.class);
+        }
+
+        @Test
+        @DisplayName("A non-digit anywhere in the span is refused, at the front, the middle and the end")
+        void aNonDigitAnywhereIsRefused() {
+            for (String value : new String[] {"A0000000001", "00000A00001", "0000000000A"}) {
+                assertThatThrownBy(() -> CardUpdateController.requireFetchedKey(
+                        value, CardDetails.ACCTID_LENGTH, "commArea.oldDetails.acctid", "digits"))
+                        .as("value %s", value)
+                        .isInstanceOf(ScreenInputRejectedException.class);
+            }
+        }
+
+        @Test
+        @DisplayName("The digits a real fetch leaves behind pass, so the guard costs a genuine "
+                + "conversation nothing")
+        void theDigitsARealFetchLeavesBehindPass() {
+            CardUpdateController.requireFetchedKey(ACCOUNT_NUMBER, CardDetails.ACCTID_LENGTH,
+                    "commArea.oldDetails.acctid", "eleven digits");
+            CardUpdateController.requireFetchedKey(CARD_NUMBER, CardDetails.CARDID_LENGTH,
+                    "commArea.oldDetails.cardid", "sixteen digits");
+        }
+
+        @Test
+        @DisplayName("A short value is zero-... no: a short value is space-padded by the PIC X move and "
+                + "so is refused, because eleven digits is what the member holds")
+        void aShortValueIsRefusedBecausePicXPadsWithSpaces() {
+            assertThatThrownBy(() -> CardUpdateController.requireFetchedKey(
+                    "11", CardDetails.ACCTID_LENGTH, "commArea.oldDetails.acctid", "eleven digits"))
+                    .isInstanceOf(ScreenInputRejectedException.class);
+        }
+
+        @Test
+        @DisplayName("Driven through 1200-EDIT-MAP-INPUTS' card-data path: a blank snapshot answers the "
+                + "caller's refusal rather than the 500 the abend handler would otherwise produce")
+        void drivenThroughEditMapInputsItIsARefusalNotAnAbend() {
+            // The card-data path at :668-714, reached because the state is not CCUP-DETAILS-NOT-FETCHED,
+            // is where :671-672 moves the two snapshot keys into the PIC 9 commarea items. The snapshot
+            // here is CommArea.initialised()'s - blank - which is the state a hand-built payload asking
+            // for a processing action without having fetched arrives in.
+            Conversation task = taskWithValidKeys(ChangeAction.showDetails());
+            task.setOldDetails(CardDetails.initialised(DetailGroup.OLD));
+
+            assertThatThrownBy(() -> controller.editMapInputs1200(task))
+                    .isInstanceOf(ScreenInputRejectedException.class)
+                    .isNotInstanceOf(AbendException.class)
+                    .satisfies(thrown -> assertThat(((ScreenInputRejectedException) thrown).member())
+                            .contains("commArea.oldDetails.acctid"));
+        }
+
+        @Test
+        @DisplayName("The same path with the digits a real fetch left behind proceeds normally, so the "
+                + "guard changes nothing for a genuine conversation")
+        void theSamePathWithARealSnapshotProceeds() {
+            Conversation task = taskWithValidKeys(ChangeAction.showDetails());
+            task.setOldDetails(oldDetails());
+            task.setNewDetails(newDetails());
+
+            controller.editMapInputs1200(task);
+
+            assertThat(task.carddemoCommarea.acctId()).isEqualTo(Long.parseLong(ACCOUNT_NUMBER));
+            assertThat(task.carddemoCommarea.cardNum()).isEqualTo(Long.parseLong(CARD_NUMBER));
         }
     }
 }

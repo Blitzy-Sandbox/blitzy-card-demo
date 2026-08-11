@@ -16,6 +16,7 @@ import com.vsergeychik.carddemo.common.FixedWidthRecord;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.FieldSpan;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.RecordLayout;
 import com.vsergeychik.carddemo.common.NavigationContext;
+import com.vsergeychik.carddemo.common.ScreenFieldImage;
 import com.vsergeychik.carddemo.common.ScreenTitles;
 import com.vsergeychik.carddemo.common.SystemMessages;
 import com.vsergeychik.carddemo.transaction.dto.TransactionViewResponse.Ct02Info;
@@ -851,12 +852,14 @@ class TransactionViewResponseTest {
 
         @ParameterizedTest
         @EnumSource(ScreenField.class)
-        @DisplayName("a fresh response holds spaces at every declared width")
-        void freshResponseIsSpaces(ScreenField field) {
+        @DisplayName("a fresh response holds LOW-VALUES at every declared width")
+        void freshResponseIsUnpainted(ScreenField field) {
+            // MOVE LOW-VALUES TO COTRN2AO, app/cbl/COTRN02C.cbl:122. moveSpacesToOutputMap() is the
+            // separate MOVE SPACES shape CLEAR-CURRENT-SCREEN needs at :145, and it is asserted there.
             TransactionViewResponse response = new TransactionViewResponse();
             assertThat(response.getOutputItem(field))
                     .hasSize(field.width())
-                    .isBlank();
+                    .isEqualTo(ScreenFieldImage.unpainted(field.width()));
         }
 
         @ParameterizedTest
@@ -1152,7 +1155,8 @@ class TransactionViewResponseTest {
             assertThat(response.applyHighlight(highlight)).isTrue();
 
             assertThat(response.getMetadata(field).getColour()).isEqualTo(BmsAttributes.DFHRED);
-            assertThat(response.getOutputItem(field)).isBlank();
+            assertThat(response.getOutputItem(field))
+                    .isEqualTo(ScreenFieldImage.unpainted(field.width()));
         }
 
         @ParameterizedTest
@@ -1761,7 +1765,7 @@ class TransactionViewResponseTest {
         void allPayloadMembersAreSerialised() throws Exception {
             String json = mapper.writeValueAsString(populated());
             for (ScreenField field : ScreenField.values()) {
-                String property = field.outputItemName().toLowerCase(java.util.Locale.ROOT);
+                String property = withoutDirectionSuffix(field.outputItemName());
                 assertThat(json).as(property).contains("\"" + property + "\"");
             }
         }
@@ -2816,7 +2820,7 @@ class TransactionViewResponseTest {
             first.getMetadata(ScreenField.ERRMSG).setColour(BmsAttributes.DFHRED);
             first.getCt02Info().setPageNum(9);
 
-            assertThat(second.getErrmsgo()).isEqualTo(" ".repeat(78));
+            assertThat(second.getErrmsgo()).isEqualTo(ScreenFieldImage.unpainted(78));
             assertThat(second.getMetadata(ScreenField.ERRMSG).getColour())
                     .isEqualTo(BmsAttributes.DFHDFCOL);
             assertThat(second.getCt02Info().getPageNum()).isZero();
@@ -2919,7 +2923,7 @@ class TransactionViewResponseTest {
             for (ScreenField field : ScreenField.values()) {
                 assertThat(members)
                         .as("%s is a payload member", field.outputItemName())
-                        .contains(field.outputItemName().toLowerCase(Locale.ROOT));
+                        .contains(withoutDirectionSuffix(field.outputItemName()));
                 assertThat(members).as("%s metadata must not be a payload member", field.label())
                         .doesNotContain(field.label().toLowerCase(Locale.ROOT) + "l",
                                 field.label().toLowerCase(Locale.ROOT) + "f",
@@ -3036,5 +3040,22 @@ class TransactionViewResponseTest {
                 Arguments.of("metadata",
                         (Consumer<TransactionViewResponse>) r -> r.getMetadata(ScreenField.TRNAMT)
                                 .setColour(BmsAttributes.DFHRED)));
+    }
+
+    /**
+     * A copybook item name rendered as the JSON member it is published under: the item without its
+     * output-direction suffix, lower-cased.
+     *
+     * <p>{@code @JsonProperty} pins every screen field's wire name to its {@code xxxI} item in lower
+     * case, which is the one naming rule AAP 0.6.3 states - "payload field names and lengths derive from
+     * the xxxI items only". The Java accessor keeps the {@code xxxO} spelling, because that is the map
+     * view the type projects; the wire name does not, because the paired request has to accept this
+     * response back field for field.
+     *
+     * @param itemName a symbolic-map item name such as {@code TRNNAMEO} or {@code TRNNAMEI}
+     * @return the JSON member name, such as {@code trnname}
+     */
+    private static String withoutDirectionSuffix(String itemName) {
+        return itemName.substring(0, itemName.length() - 1).toLowerCase(Locale.ROOT);
     }
 }

@@ -1,6 +1,7 @@
 package com.vsergeychik.carddemo.card.dto;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import com.vsergeychik.carddemo.common.DiagnosticText;
 import com.vsergeychik.carddemo.common.BmsAttributes;
 import com.vsergeychik.carddemo.common.SensitiveDiagnostics;
@@ -1509,6 +1510,7 @@ public final class CardSelectResponse {
      *
      * @return the image, exactly {@value #TRNNAMEO_LENGTH} characters
      */
+    @JsonProperty("trnname")
     public String getTrnnameo() {
         return trnnameo;
     }
@@ -1529,6 +1531,7 @@ public final class CardSelectResponse {
      *
      * @return the image, exactly {@value #TITLE01O_LENGTH} characters
      */
+    @JsonProperty("title01")
     public String getTitle01o() {
         return title01o;
     }
@@ -1550,6 +1553,7 @@ public final class CardSelectResponse {
      *
      * @return the image, exactly {@value #CURDATEO_LENGTH} characters
      */
+    @JsonProperty("curdate")
     public String getCurdateo() {
         return curdateo;
     }
@@ -1570,6 +1574,7 @@ public final class CardSelectResponse {
      *
      * @return the image, exactly {@value #PGMNAMEO_LENGTH} characters
      */
+    @JsonProperty("pgmname")
     public String getPgmnameo() {
         return pgmnameo;
     }
@@ -1590,6 +1595,7 @@ public final class CardSelectResponse {
      *
      * @return the image, exactly {@value #TITLE02O_LENGTH} characters
      */
+    @JsonProperty("title02")
     public String getTitle02o() {
         return title02o;
     }
@@ -1610,6 +1616,7 @@ public final class CardSelectResponse {
      *
      * @return the image, exactly {@value #CURTIMEO_LENGTH} characters
      */
+    @JsonProperty("curtime")
     public String getCurtimeo() {
         return curtimeo;
     }
@@ -1635,6 +1642,7 @@ public final class CardSelectResponse {
      *
      * @return the image, exactly {@value #ACCTSIDO_LENGTH} characters
      */
+    @JsonProperty("acctsid")
     public String getAcctsido() {
         return acctsido;
     }
@@ -1658,6 +1666,7 @@ public final class CardSelectResponse {
      *
      * @return the image, exactly {@value #CARDSIDO_LENGTH} characters
      */
+    @JsonProperty("cardsid")
     public String getCardsido() {
         return cardsido;
     }
@@ -1679,6 +1688,7 @@ public final class CardSelectResponse {
      *
      * @return the image, exactly {@value #CRDNAMEO_LENGTH} characters
      */
+    @JsonProperty("crdname")
     public String getCrdnameo() {
         return crdnameo;
     }
@@ -1699,6 +1709,7 @@ public final class CardSelectResponse {
      *
      * @return the image, exactly {@value #CRDSTCDO_LENGTH} character
      */
+    @JsonProperty("crdstcd")
     public String getCrdstcdo() {
         return crdstcdo;
     }
@@ -1719,6 +1730,7 @@ public final class CardSelectResponse {
      *
      * @return the image, exactly {@value #EXPMONO_LENGTH} characters
      */
+    @JsonProperty("expmon")
     public String getExpmono() {
         return expmono;
     }
@@ -1739,6 +1751,7 @@ public final class CardSelectResponse {
      *
      * @return the image, exactly {@value #EXPYEARO_LENGTH} characters
      */
+    @JsonProperty("expyear")
     public String getExpyearo() {
         return expyearo;
     }
@@ -1761,6 +1774,7 @@ public final class CardSelectResponse {
      *
      * @return the image, exactly {@value #INFOMSGO_LENGTH} characters
      */
+    @JsonProperty("infomsg")
     public String getInfomsgo() {
         return infomsgo;
     }
@@ -1782,6 +1796,7 @@ public final class CardSelectResponse {
      *
      * @return the image, exactly {@value #ERRMSGO_LENGTH} characters
      */
+    @JsonProperty("errmsg")
     public String getErrmsgo() {
         return errmsgo;
     }
@@ -1803,6 +1818,7 @@ public final class CardSelectResponse {
      *
      * @return the image, exactly {@value #FKEYSO_LENGTH} characters
      */
+    @JsonProperty("fkeys")
     public String getFkeyso() {
         return fkeyso;
     }

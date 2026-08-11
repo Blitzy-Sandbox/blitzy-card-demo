@@ -182,16 +182,16 @@ class CardListResponseTest {
      * metadata and never payload.
      */
     private static final List<String> EXPECTED_JSON_MEMBERS = List.of(
-            "trnnameo", "title01o", "curdateo", "pgmnameo", "title02o", "curtimeo", "pagenoo",
-            "acctsido", "cardsido",
-            "crdsel1o", "acctno1o", "crdnum1o", "crdsts1o",
-            "crdsel2o", "crdstp2o", "acctno2o", "crdnum2o", "crdsts2o",
-            "crdsel3o", "crdstp3o", "acctno3o", "crdnum3o", "crdsts3o",
-            "crdsel4o", "crdstp4o", "acctno4o", "crdnum4o", "crdsts4o",
-            "crdsel5o", "crdstp5o", "acctno5o", "crdnum5o", "crdsts5o",
-            "crdsel6o", "crdstp6o", "acctno6o", "crdnum6o", "crdsts6o",
-            "crdsel7o", "crdstp7o", "acctno7o", "crdnum7o", "crdsts7o",
-            "infomsgo", "errmsgo");
+            "trnname", "title01", "curdate", "pgmname", "title02", "curtime", "pageno",
+            "acctsid", "cardsid",
+            "crdsel1", "acctno1", "crdnum1", "crdsts1",
+            "crdsel2", "crdstp2", "acctno2", "crdnum2", "crdsts2",
+            "crdsel3", "crdstp3", "acctno3", "crdnum3", "crdsts3",
+            "crdsel4", "crdstp4", "acctno4", "crdnum4", "crdsts4",
+            "crdsel5", "crdstp5", "acctno5", "crdnum5", "crdsts5",
+            "crdsel6", "crdstp6", "acctno6", "crdnum6", "crdsts6",
+            "crdsel7", "crdstp7", "acctno7", "crdnum7", "crdsts7",
+            "infomsg", "errmsg");
 
     /**
      * The six non-field carriers that travel beside the 45 payload members, written out as literals.
@@ -2298,10 +2298,10 @@ class CardListResponseTest {
             JsonNode body = new ObjectMapper().valueToTree(response);
             String image = new String(response.toFixedWidth(ASCII), ASCII);
 
-            assertThat(body.get("crdnum1o").asText())
+            assertThat(body.get("crdnum1").asText())
                     .as("the 3270 shows the number in the clear and the payload must too")
                     .isEqualTo("4111111111111111");
-            assertThat(body.get("cardsido").asText()).isEqualTo("4111111111111111");
+            assertThat(body.get("cardsid").asText()).isEqualTo("4111111111111111");
             assertThat(image).contains("4111111111111111");
             assertThat(body.toString()).doesNotContain("REDACTED");
             assertThat(response.getCrdnum1o()).isEqualTo("4111111111111111");
@@ -2473,13 +2473,16 @@ class CardListResponseTest {
             // The row-1 asymmetry, restated on the wire: crdstp1o is not a JSON member because
             // CRDSTP1O is not an item. crdstp2o through crdstp7o are.
             assertThat(EXPECTED_JSON_MEMBERS).doesNotContain("crdstp1o")
-                    .contains("crdstp2o", "crdstp3o", "crdstp4o", "crdstp5o", "crdstp6o",
-                            "crdstp7o");
+                    .contains("crdstp2", "crdstp3", "crdstp4", "crdstp5", "crdstp6",
+                            "crdstp7");
             // Every name is the lower-case form of a real item, and no name carries an attribute
             // suffix. Checking the direction "literal -> type" is safe; it is only the reverse
             // direction, building the expectation FROM the type, that would be circular.
             for (String member : EXPECTED_JSON_MEMBERS) {
-                assertThat(member).isLowerCase().endsWith("o");
+                // Lower case, and WITHOUT the output-direction suffix: @JsonProperty pins each wire name
+                // to the xxxI item (AAP 0.6.3), so a member ending in the suffix would be the xxxO
+                // spelling leaking onto the wire. crdstp2..crdstp7 legitimately end in a digit.
+                assertThat(member).isLowerCase();
             }
         }
 
@@ -2499,8 +2502,8 @@ class CardListResponseTest {
         void cardNumbersAreNotMasked() throws Exception {
             ObjectMapper mapper = new ObjectMapper();
             String json = mapper.writeValueAsString(populated());
-            assertThat(json).contains("\"crdnum1o\":\"4111111111111111\"")
-                    .contains("\"acctno1o\":\"00000000011\"");
+            assertThat(json).contains("\"crdnum1\":\"4111111111111111\"")
+                    .contains("\"acctno1\":\"00000000011\"");
         }
     }
 

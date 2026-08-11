@@ -8,6 +8,7 @@ import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.NavigationContext;
 import com.vsergeychik.carddemo.common.PfKeyResolver;
+import com.vsergeychik.carddemo.common.ScreenFieldImage;
 import com.vsergeychik.carddemo.common.ScreenMetadata;
 import com.vsergeychik.carddemo.common.ScreenResponse;
 import com.vsergeychik.carddemo.common.ScreenTitles;
@@ -1320,7 +1321,9 @@ public class UserAddController {
      * @return a string of exactly {@code width} {@code x'00'} characters
      */
     private static String lowValues(int width) {
-        return String.valueOf(LOW_VALUE).repeat(width);
+        // One implementation of the LOW-VALUES image, in common.ScreenFieldImage, so the choice cannot
+        // drift back apart across screens. Any width validation above is this method's own contract.
+        return ScreenFieldImage.unpainted(width);
     }
 
     /**

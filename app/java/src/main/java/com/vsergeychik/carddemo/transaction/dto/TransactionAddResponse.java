@@ -1,6 +1,7 @@
 package com.vsergeychik.carddemo.transaction.dto;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import com.vsergeychik.carddemo.common.BmsAttributes;
 import com.vsergeychik.carddemo.common.DateHeader;
 import com.vsergeychik.carddemo.common.FieldAttributeSetter;
@@ -10,6 +11,7 @@ import com.vsergeychik.carddemo.common.FixedWidthRecord;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.FieldSpan;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.RecordLayout;
 import com.vsergeychik.carddemo.common.NavigationContext;
+import com.vsergeychik.carddemo.common.ScreenFieldImage;
 import com.vsergeychik.carddemo.transaction.dto.TransactionAddRequest.Ct01Info;
 import com.vsergeychik.carddemo.common.ScreenTitles;
 import com.vsergeychik.carddemo.common.SystemMessages;
@@ -808,21 +810,30 @@ public final class TransactionAddResponse {
     // =================================================================================================
 
     /**
-     * Creates a response in the state {@code COTRN01C} holds after {@code INITIALIZE-ALL-FIELDS}
-     * ({@code app/cbl/COTRN01C.cbl:309-326}): every payload item space-filled to its declared width,
-     * every attribute item at its {@linkplain AttributeQuad#defaults() no-change default}, the
-     * navigation targets set to this screen's own mapset and map, an empty
-     * {@link NavigationContext} and a fresh cursor.
+     * Creates a response in the state {@code COTRN01C} holds after
+     * {@code MOVE LOW-VALUES TO COTRN1AO} ({@code app/cbl/COTRN01C.cbl:101}): every payload item
+     * carrying the unpainted image at its declared width, every attribute item at its
+     * {@linkplain AttributeQuad#defaults() no-change default}, the navigation targets set to this
+     * screen's own mapset and map, an empty {@link NavigationContext} and a fresh cursor.
      *
-     * <p>Space-filled rather than {@code null}: a COBOL alphanumeric item has no absent state, and
-     * {@code MOVE SPACES} is what the program actually performs. {@link #getNextProgram()} starts
-     * space-filled rather than guessing a target, because the COBOL only defaults
+     * <p>{@code LOW-VALUES} and not {@code SPACES}, and the distinction is the whole point. Line 101
+     * is what clears the map before the first paint, and it moves {@code X'00'}.
+     * {@code INITIALIZE-ALL-FIELDS} at {@code :309-326} <em>does</em> move {@code SPACES}, but that is
+     * a later, deliberate action a program performs on a screen it has already been using - it is
+     * available separately as {@link #initializeAllFields()} and is not the resting state of a fresh
+     * object. An earlier revision of this constructor used the {@code INITIALIZE-ALL-FIELDS} image for
+     * both, which conflated "never painted" with "painted blank". {@link ScreenFieldImage} records the
+     * distinction once, for all seventeen screens.
+     *
+     * <p>An image rather than {@code null} in either case: a COBOL alphanumeric item has no absent
+     * state. {@link #getNextProgram()} starts space-filled rather than guessing a target, because it is
+     * a {@code CARDDEMO-COMMAREA} carrier and not a map field, and because the COBOL only defaults
      * {@code CDEMO-TO-PROGRAM} to {@code COSGN00C} at the moment it transfers
-     * ({@code app/cbl/COTRN01C.cbl:200-201}), and that decision belongs to the controller.
+     * ({@code app/cbl/COTRN01C.cbl:200-201}), a decision that belongs to the controller.
      */
     public TransactionAddResponse() {
         for (ScreenField field : ScreenField.values()) {
-            payloadItems.put(field, spaces(field.payloadLength()));
+            payloadItems.put(field, ScreenFieldImage.unpainted(field.payloadLength()));
             attributeItems.put(field, AttributeQuad.defaults());
         }
         this.nextProgram = spaces(NEXT_PROGRAM_LENGTH);
@@ -843,6 +854,7 @@ public final class TransactionAddResponse {
      *
      * @return the value, always exactly 4 characters
      */
+    @JsonProperty("trnname")
     public String getTrnnameo() {
         return payloadItems.get(ScreenField.TRNNAMEO);
     }
@@ -862,6 +874,7 @@ public final class TransactionAddResponse {
      *
      * @return the value, always exactly 40 characters
      */
+    @JsonProperty("title01")
     public String getTitle01o() {
         return payloadItems.get(ScreenField.TITLE01O);
     }
@@ -881,6 +894,7 @@ public final class TransactionAddResponse {
      *
      * @return the value, always exactly 8 characters
      */
+    @JsonProperty("curdate")
     public String getCurdateo() {
         return payloadItems.get(ScreenField.CURDATEO);
     }
@@ -900,6 +914,7 @@ public final class TransactionAddResponse {
      *
      * @return the value, always exactly 8 characters
      */
+    @JsonProperty("pgmname")
     public String getPgmnameo() {
         return payloadItems.get(ScreenField.PGMNAMEO);
     }
@@ -919,6 +934,7 @@ public final class TransactionAddResponse {
      *
      * @return the value, always exactly 40 characters
      */
+    @JsonProperty("title02")
     public String getTitle02o() {
         return payloadItems.get(ScreenField.TITLE02O);
     }
@@ -938,6 +954,7 @@ public final class TransactionAddResponse {
      *
      * @return the value, always exactly 8 characters
      */
+    @JsonProperty("curtime")
     public String getCurtimeo() {
         return payloadItems.get(ScreenField.CURTIMEO);
     }
@@ -958,6 +975,7 @@ public final class TransactionAddResponse {
      *
      * @return the value, always exactly 16 characters
      */
+    @JsonProperty("trnidin")
     public String getTrnidino() {
         return payloadItems.get(ScreenField.TRNIDINO);
     }
@@ -977,6 +995,7 @@ public final class TransactionAddResponse {
      *
      * @return the value, always exactly 16 characters
      */
+    @JsonProperty("trnid")
     public String getTrnido() {
         return payloadItems.get(ScreenField.TRNIDO);
     }
@@ -999,6 +1018,7 @@ public final class TransactionAddResponse {
      *
      * @return the value, always exactly 16 characters
      */
+    @JsonProperty("cardnum")
     public String getCardnumo() {
         return payloadItems.get(ScreenField.CARDNUMO);
     }
@@ -1018,6 +1038,7 @@ public final class TransactionAddResponse {
      *
      * @return the value, always exactly 2 characters
      */
+    @JsonProperty("ttypcd")
     public String getTtypcdo() {
         return payloadItems.get(ScreenField.TTYPCDO);
     }
@@ -1037,6 +1058,7 @@ public final class TransactionAddResponse {
      *
      * @return the value, always exactly 4 characters
      */
+    @JsonProperty("tcatcd")
     public String getTcatcdo() {
         return payloadItems.get(ScreenField.TCATCDO);
     }
@@ -1056,6 +1078,7 @@ public final class TransactionAddResponse {
      *
      * @return the value, always exactly 10 characters
      */
+    @JsonProperty("trnsrc")
     public String getTrnsrco() {
         return payloadItems.get(ScreenField.TRNSRCO);
     }
@@ -1075,6 +1098,7 @@ public final class TransactionAddResponse {
      *
      * @return the value, always exactly 60 characters
      */
+    @JsonProperty("tdesc")
     public String getTdesco() {
         return payloadItems.get(ScreenField.TDESCO);
     }
@@ -1098,6 +1122,7 @@ public final class TransactionAddResponse {
      *
      * @return the value, always exactly 12 characters
      */
+    @JsonProperty("trnamt")
     public String getTrnamto() {
         return payloadItems.get(ScreenField.TRNAMTO);
     }
@@ -1119,6 +1144,7 @@ public final class TransactionAddResponse {
      *
      * @return the value, always exactly 10 characters
      */
+    @JsonProperty("torigdt")
     public String getTorigdto() {
         return payloadItems.get(ScreenField.TORIGDTO);
     }
@@ -1140,6 +1166,7 @@ public final class TransactionAddResponse {
      *
      * @return the value, always exactly 10 characters
      */
+    @JsonProperty("tprocdt")
     public String getTprocdto() {
         return payloadItems.get(ScreenField.TPROCDTO);
     }
@@ -1160,6 +1187,7 @@ public final class TransactionAddResponse {
      *
      * @return the value, always exactly 9 characters
      */
+    @JsonProperty("mid")
     public String getMido() {
         return payloadItems.get(ScreenField.MIDO);
     }
@@ -1179,6 +1207,7 @@ public final class TransactionAddResponse {
      *
      * @return the value, always exactly 30 characters
      */
+    @JsonProperty("mname")
     public String getMnameo() {
         return payloadItems.get(ScreenField.MNAMEO);
     }
@@ -1198,6 +1227,7 @@ public final class TransactionAddResponse {
      *
      * @return the value, always exactly 25 characters
      */
+    @JsonProperty("mcity")
     public String getMcityo() {
         return payloadItems.get(ScreenField.MCITYO);
     }
@@ -1217,6 +1247,7 @@ public final class TransactionAddResponse {
      *
      * @return the value, always exactly 10 characters
      */
+    @JsonProperty("mzip")
     public String getMzipo() {
         return payloadItems.get(ScreenField.MZIPO);
     }
@@ -1239,6 +1270,7 @@ public final class TransactionAddResponse {
      *
      * @return the value, always exactly 78 characters
      */
+    @JsonProperty("errmsg")
     public String getErrmsgo() {
         return payloadItems.get(ScreenField.ERRMSGO);
     }

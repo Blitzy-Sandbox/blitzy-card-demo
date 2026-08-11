@@ -38,6 +38,8 @@ import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.NavigationContext;
 import com.vsergeychik.carddemo.common.PfKeyResolver;
 import com.vsergeychik.carddemo.common.PfKeyResolver.AidKey;
+import com.vsergeychik.carddemo.common.ScreenFieldImage;
+import com.vsergeychik.carddemo.common.ScreenResponse;
 import com.vsergeychik.carddemo.common.ScreenTitles;
 import com.vsergeychik.carddemo.common.SystemMessages;
 import com.vsergeychik.carddemo.config.WebConfig;
@@ -286,9 +288,8 @@ class BillPaymentControllerTest {
      * items (gate G9).
      */
     private static final Set<String> RESPONSE_MEMBERS = Set.of(
-            "trnName", "title01", "curDate", "pgmName", "title02", "curTime",
-            "actIdIn", "curBal", "confirm", "errMsg",
-            "cursorField", "messageHighlight",
+            "trnname", "title01", "curdate", "pgmname", "title02", "curtime",
+            "actidin", "curbal", "confirm", "errmsg",
             "navigationContext", "nextProgram", "nextMapset", "nextMap",
             "trnIdFirst", "trnIdLast", "pageNum", "nextPageFlg", "trnSelFlg", "trnSelected");
 
@@ -300,8 +301,8 @@ class BillPaymentControllerTest {
      * a member of its own.
      */
     private static final Set<String> REQUEST_MEMBERS = Set.of(
-            "trnName", "title01", "curDate", "pgmName", "title02", "curTime",
-            "actIdIn", "curBal", "confirm", "errMsg",
+            "trnname", "title01", "curdate", "pgmname", "title02", "curtime",
+            "actidin", "curbal", "confirm", "errmsg",
             "navigationContext", "aid",
             "trnIdFirst", "trnIdLast", "pageNum", "nextPageFlg", "trnSelFlg", "trnSelected");
 
@@ -352,16 +353,16 @@ class BillPaymentControllerTest {
      */
     private static Map<String, Integer> mapFieldWidths() {
         Map<String, Integer> widths = new LinkedHashMap<>();
-        widths.put("trnName", BillPaymentResponse.TRN_NAME_LENGTH);          // TRNNAMEI  PIC X(4)
+        widths.put("trnname", BillPaymentResponse.TRN_NAME_LENGTH);          // TRNNAMEI  PIC X(4)
         widths.put("title01", BillPaymentResponse.TITLE01_LENGTH);           // TITLE01I  PIC X(40)
-        widths.put("curDate", BillPaymentResponse.CUR_DATE_LENGTH);          // CURDATEI  PIC X(8)
-        widths.put("pgmName", BillPaymentResponse.PGM_NAME_LENGTH);          // PGMNAMEI  PIC X(8)
+        widths.put("curdate", BillPaymentResponse.CUR_DATE_LENGTH);          // CURDATEI  PIC X(8)
+        widths.put("pgmname", BillPaymentResponse.PGM_NAME_LENGTH);          // PGMNAMEI  PIC X(8)
         widths.put("title02", BillPaymentResponse.TITLE02_LENGTH);           // TITLE02I  PIC X(40)
-        widths.put("curTime", BillPaymentResponse.CUR_TIME_LENGTH);          // CURTIMEI  PIC X(8)
-        widths.put("actIdIn", BillPaymentResponse.ACT_ID_IN_LENGTH);         // ACTIDINI  PIC X(11)
-        widths.put("curBal", BillPaymentResponse.CUR_BAL_LENGTH);            // CURBALI   PIC X(14)
+        widths.put("curtime", BillPaymentResponse.CUR_TIME_LENGTH);          // CURTIMEI  PIC X(8)
+        widths.put("actidin", BillPaymentResponse.ACT_ID_IN_LENGTH);         // ACTIDINI  PIC X(11)
+        widths.put("curbal", BillPaymentResponse.CUR_BAL_LENGTH);            // CURBALI   PIC X(14)
         widths.put("confirm", BillPaymentResponse.CONFIRM_LENGTH);           // CONFIRMI  PIC X(1)
-        widths.put("errMsg", BillPaymentResponse.ERR_MSG_LENGTH);            // ERRMSGI   PIC X(78)
+        widths.put("errmsg", BillPaymentResponse.ERR_MSG_LENGTH);            // ERRMSGI   PIC X(78)
         return Collections.unmodifiableMap(widths);
     }
 
@@ -749,7 +750,7 @@ class BillPaymentControllerTest {
                                     reentry(AidKey.ENTER.token(), ACCT_KEY, " "))))
                     .andExpect(status().isOk())
                     .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
-                    .andExpect(jsonPath("$.trnName").value(BillPaymentResponse.TRANSACTION_ID));
+                    .andExpect(jsonPath("$.trnname").value(BillPaymentResponse.TRANSACTION_ID));
         }
 
         @ParameterizedTest(name = "{0} /api/billpay is not answered")
@@ -813,7 +814,9 @@ class BillPaymentControllerTest {
                     .hasSize(1);
             Method handler = mapped.get(0);
             assertThat(handler.getName()).isEqualTo("payBill");
-            assertThat(handler.getReturnType()).isEqualTo(BillPaymentResponse.class);
+            // The shared envelope every screen answers with: the ten map members unwrapped at the top
+            // level, and the cursor request and the message colour gathered under screenMetadata.
+            assertThat(handler.getReturnType()).isEqualTo(ScreenResponse.class);
             PostMapping mapping = handler.getAnnotation(PostMapping.class);
             assertThat(mapping.path()).containsExactly(BillPaymentController.BILL_PAY_PATH);
             assertThat(mapping.produces()).containsExactly(MediaType.APPLICATION_JSON_VALUE);
@@ -864,15 +867,20 @@ class BillPaymentControllerTest {
                 Invocation invocation = controller.mainPara(new BillPaymentRequest());
 
                 assertThat(invocation.state().screensSent()).isZero();
-                // :105 blanked ERRMSGO; nothing else on this arm writes a field.
+                // :105 blanked ERRMSGO; nothing else on this arm writes a field, so the other nine still
+                // hold the LOW-VALUES image MOVE LOW-VALUES TO COBIL0AO (:114) leaves.
                 assertThat(invocation.response().getErrMsg())
                         .isEqualTo(spaces(BillPaymentResponse.ERR_MSG_LENGTH));
-                assertThat(invocation.response().getActIdIn()).isNull();
-                assertThat(invocation.response().getCurBal()).isNull();
-                assertThat(invocation.response().getConfirm()).isNull();
-                // RETURN-TO-PREV-SCREEN is an XCTL, not a SEND, so no map or mapset is named.
-                assertThat(invocation.response().getNextMapset()).isNull();
-                assertThat(invocation.response().getNextMap()).isNull();
+                assertThat(invocation.response().getActIdIn())
+                        .isEqualTo(ScreenFieldImage.unpainted(BillPaymentResponse.ACT_ID_IN_LENGTH));
+                assertThat(invocation.response().getCurBal())
+                        .isEqualTo(ScreenFieldImage.unpainted(BillPaymentResponse.CUR_BAL_LENGTH));
+                assertThat(invocation.response().getConfirm())
+                        .isEqualTo(ScreenFieldImage.unpainted(BillPaymentResponse.CONFIRM_LENGTH));
+                // RETURN-TO-PREV-SCREEN is an XCTL, not a SEND, so no map or mapset is named. These are
+                // CARDDEMO-COMMAREA carriers rather than map fields, so their unnamed state is spaces.
+                assertThat(invocation.response().getNextMapset()).isBlank();
+                assertThat(invocation.response().getNextMap()).isBlank();
             }
 
             @Test
@@ -880,12 +888,20 @@ class BillPaymentControllerTest {
             void leavesTheHeaderUnpainted() {
                 BillPaymentResponse response = controller.mainPara(new BillPaymentRequest()).response();
 
-                assertThat(response.getTitle01()).isNull();
-                assertThat(response.getTitle02()).isNull();
-                assertThat(response.getTrnName()).isNull();
-                assertThat(response.getPgmName()).isNull();
-                assertThat(response.getCurDate()).isNull();
-                assertThat(response.getCurTime()).isNull();
+                // Unpainted means the LOW-VALUES image at the declared width, never null: a fixed-width
+                // screen field always has a width.
+                assertThat(response.getTitle01())
+                        .isEqualTo(ScreenFieldImage.unpainted(BillPaymentResponse.TITLE01_LENGTH));
+                assertThat(response.getTitle02())
+                        .isEqualTo(ScreenFieldImage.unpainted(BillPaymentResponse.TITLE02_LENGTH));
+                assertThat(response.getTrnName())
+                        .isEqualTo(ScreenFieldImage.unpainted(BillPaymentResponse.TRN_NAME_LENGTH));
+                assertThat(response.getPgmName())
+                        .isEqualTo(ScreenFieldImage.unpainted(BillPaymentResponse.PGM_NAME_LENGTH));
+                assertThat(response.getCurDate())
+                        .isEqualTo(ScreenFieldImage.unpainted(BillPaymentResponse.CUR_DATE_LENGTH));
+                assertThat(response.getCurTime())
+                        .isEqualTo(ScreenFieldImage.unpainted(BillPaymentResponse.CUR_TIME_LENGTH));
             }
 
             @Test
@@ -895,10 +911,16 @@ class BillPaymentControllerTest {
 
                 BillPaymentResponse response = controller.mainPara(request).response();
 
-                assertThat(response.getTrnIdFirst()).isNull();
-                assertThat(response.getTrnIdLast()).isNull();
-                assertThat(response.getTrnSelFlg()).isNull();
-                assertThat(response.getTrnSelected()).isNull();
+                // The six extension members are CARDDEMO-COMMAREA carriers, not map fields, so their
+                // un-echoed state is spaces at the declared width - and never null.
+                assertThat(response.getTrnIdFirst()).isBlank()
+                        .hasSize(BillPaymentResponse.TRN_ID_FIRST_LENGTH);
+                assertThat(response.getTrnIdLast()).isBlank()
+                        .hasSize(BillPaymentResponse.TRN_ID_LAST_LENGTH);
+                assertThat(response.getTrnSelFlg()).isBlank()
+                        .hasSize(BillPaymentResponse.TRN_SEL_FLG_LENGTH);
+                assertThat(response.getTrnSelected()).isBlank()
+                        .hasSize(BillPaymentResponse.TRN_SELECTED_LENGTH);
                 assertThat(response.getPageNum()).isZero();
                 // The copybook's own initial value survives: CDEMO-CB00-NEXT-PAGE-FLG PIC X(01)
                 // VALUE 'N' - app/cbl/COBIL00C.cbl:68.
@@ -1197,7 +1219,7 @@ class BillPaymentControllerTest {
                 verify(service, times(1)).processEnterKey(any(), any(), any(NavigationContext.class));
             }
 
-            @ParameterizedTest(name = "{0} with actIdIn=[{1}] confirm=[{2}] consults the core: {3}")
+            @ParameterizedTest(name = "{0} with actidin=[{1}] confirm=[{2}] consults the core: {3}")
             @DisplayName("the ENTER/REENTER split against the two writable fields, as a matrix")
             @CsvSource(value = {
                 // A first entry never consults the core unless :116-117 finds a selection, and :114 has
@@ -1530,7 +1552,10 @@ class BillPaymentControllerTest {
                     controller.mainPara(reentry(AidKey.PFK04.token(), ACCT_KEY, "Y")).response();
 
             assertThat(response.getNavigationContext().isReenter()).isTrue();
-            assertThat(response.getNextProgram()).isNull();
+            assertThat(response.getNextProgram())
+                    .as("no transfer was decided, so the carrier names nothing - spaces, not null")
+                    .isBlank()
+                    .hasSize(NavigationContext.TO_PROGRAM_LENGTH);
         }
     }
 
@@ -1545,13 +1570,18 @@ class BillPaymentControllerTest {
     class CursorAndAttributes {
 
         @Test
-        @DisplayName("the cursor indicator is an enum, and no xxxL member exists to carry it")
-        void theCursorIsAnEnumAndNoLengthItemIsPublished() throws Exception {
+        @DisplayName("the cursor indicator is metadata, and no xxxL member exists to carry it")
+        void theCursorIsMetadataAndNoLengthItemIsPublished() throws Exception {
             Map<String, Object> wire = wireForm(
                     controller.mainPara(reentry(AidKey.PFK04.token(), ACCT_KEY, "Y")).response());
 
-            assertThat(wire).containsKey("cursorField");
-            assertThat(wire.get("cursorField")).isEqualTo(CursorField.ACTIDIN.name());
+            // The cursor request derives from the MOVE -1 TO xxxL statements, and AAP 0.6.3 keeps the xxxL
+            // items out of the payload - so it is not a member of the screen type. It reaches the client on
+            // screenMetadata.cursorField, which payBill assembles; the enum is still the internal carrier
+            // and is still readable through the accessor.
+            assertThat(wire).doesNotContainKey("cursorField");
+            assertThat(controller.mainPara(reentry(AidKey.PFK04.token(), ACCT_KEY, "Y"))
+                    .response().getCursorField()).isSameAs(CursorField.ACTIDIN);
             assertThat(wire).doesNotContainKeys("actIdInL", "confirmL", "ACTIDINL", "CONFIRML");
             assertThat(CursorField.values())
                     .containsExactly(CursorField.NONE, CursorField.ACTIDIN, CursorField.CONFIRM);
@@ -1794,10 +1824,10 @@ class BillPaymentControllerTest {
             // Its source is an edited PICTURE, so the sign, the leading zeros and the decimal point are
             // all part of the value. No monetary quantity is ever a primitive real number in this module,
             // and none is a JSON number on this screen either.
-            assertThat(json).contains("\"curBal\":\"" + EDITED_BALANCE + "\"");
-            assertThat(json).doesNotContain("\"curBal\":" + EDITED_BALANCE);
+            assertThat(json).contains("\"curbal\":\"" + EDITED_BALANCE + "\"");
+            assertThat(json).doesNotContain("\"curbal\":" + EDITED_BALANCE);
             assertThat(wireForm(controller.mainPara(reentry(AidKey.ENTER.token(), ACCT_KEY, "Y"))
-                    .response()).get("curBal")).isInstanceOf(String.class);
+                    .response()).get("curbal")).isInstanceOf(String.class);
         }
 
         @Test
@@ -1827,10 +1857,11 @@ class BillPaymentControllerTest {
                             .content(mapper.writeValueAsString(
                                     reentry(AidKey.ENTER.token(), "", ""))))
                     .andExpect(status().isOk())
-                    .andExpect(jsonPath("$.errMsg").value(codec.movePicX(
+                    .andExpect(jsonPath("$.errmsg").value(codec.movePicX(
                             BillPaymentService.MSG_ACCT_ID_EMPTY,
                             BillPaymentResponse.ERR_MSG_LENGTH)))
-                    .andExpect(jsonPath("$.cursorField").value(CursorField.ACTIDIN.name()));
+                    .andExpect(jsonPath("$.screenMetadata.cursorField")
+                            .value(CursorField.ACTIDIN.name()));
         }
 
         @Test
@@ -1844,7 +1875,8 @@ class BillPaymentControllerTest {
                             .content(mapper.writeValueAsString(
                                     reentry(AidKey.ENTER.token(), ACCT_KEY, " "))))
                     .andExpect(status().isOk())
-                    .andExpect(jsonPath("$.cursorField").value(CursorField.CONFIRM.name()));
+                    .andExpect(jsonPath("$.screenMetadata.cursorField")
+                            .value(CursorField.CONFIRM.name()));
 
             verify(service).processEnterKey(eq(ACCT_KEY), eq(" "), any(NavigationContext.class));
         }
@@ -1891,7 +1923,7 @@ class BillPaymentControllerTest {
                     .andReturn();
 
             String json = result.getResponse().getContentAsString();
-            assertThat(json).contains("\"actIdIn\":\"" + paddedAccount + "\"");
+            assertThat(json).contains("\"actidin\":\"" + paddedAccount + "\"");
             assertThat(json).contains("\"confirm\":\"" + paddedConfirm + "\"");
             BillPaymentResponse returned = mapper.readValue(json, BillPaymentResponse.class);
             assertThat(returned.getActIdIn()).isEqualTo(paddedAccount);
@@ -1906,7 +1938,7 @@ class BillPaymentControllerTest {
             String json = mapper.writeValueAsString(controller.mainPara(firstEntry()).response());
 
             assertThat(json).contains(
-                    "\"errMsg\":\"" + spaces(BillPaymentResponse.ERR_MSG_LENGTH) + "\"");
+                    "\"errmsg\":\"" + spaces(BillPaymentResponse.ERR_MSG_LENGTH) + "\"");
             assertThat(json).contains("\"title01\":\"" + ScreenTitles.CCDA_TITLE01 + "\"");
         }
     }
@@ -2018,7 +2050,7 @@ class BillPaymentControllerTest {
             // 1. the communication area, 2. the ENTER/REENTER context inside it, 3. the screen values.
             assertThat(wire).containsKey("navigationContext");
             assertThat(wireForm(request)).containsKey("aid");
-            assertThat(wire.get("actIdIn")).isEqualTo(ACCT_KEY);
+            assertThat(wire.get("actidin")).isEqualTo(ACCT_KEY);
             Map<String, Object> commarea = wireForm(
                     controller.mainPara(request).response().getNavigationContext());
             assertThat(commarea.get("pgmContext")).isEqualTo(NavigationContext.PGM_CONTEXT_REENTER);
@@ -2451,8 +2483,8 @@ class BillPaymentControllerTest {
                                     reentry(AidKey.ENTER.token(), ACCT_KEY, " "))))
                     .andExpect(status().isOk())
                     .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
-                    .andExpect(jsonPath("$.trnName").value(BillPaymentResponse.TRANSACTION_ID))
-                    .andExpect(jsonPath("$.pgmName").value(BillPaymentResponse.PROGRAM_NAME))
+                    .andExpect(jsonPath("$.trnname").value(BillPaymentResponse.TRANSACTION_ID))
+                    .andExpect(jsonPath("$.pgmname").value(BillPaymentResponse.PROGRAM_NAME))
                     .andExpect(jsonPath("$.nextMapset").value(BillPaymentResponse.MAPSET_NAME))
                     .andExpect(jsonPath("$.nextMap").value(BillPaymentResponse.MAP_NAME));
 
@@ -2486,8 +2518,8 @@ class BillPaymentControllerTest {
                             .content(productionMapper().writeValueAsString(
                                     reentry(AidKey.ENTER.token(), ACCT_KEY, " "))))
                     .andExpect(status().isOk())
-                    .andExpect(jsonPath("$.curDate").value(EXPECTED_CUR_DATE))
-                    .andExpect(jsonPath("$.curTime").value(EXPECTED_CUR_TIME));
+                    .andExpect(jsonPath("$.curdate").value(EXPECTED_CUR_DATE))
+                    .andExpect(jsonPath("$.curtime").value(EXPECTED_CUR_TIME));
         }
 
         @Test
@@ -2497,11 +2529,11 @@ class BillPaymentControllerTest {
                             .contentType(MediaType.APPLICATION_JSON)
                             .content(productionMapper().writeValueAsString(firstEntry())))
                     .andExpect(status().isOk())
-                    .andExpect(jsonPath("$.errMsg")
+                    .andExpect(jsonPath("$.errmsg")
                             .value(spaces(BillPaymentResponse.ERR_MSG_LENGTH)))
                     .andExpect(jsonPath("$.title01").value(ScreenTitles.CCDA_TITLE01))
                     .andExpect(jsonPath("$.title02").value(ScreenTitles.CCDA_TITLE02))
-                    .andExpect(jsonPath("$.actIdIn")
+                    .andExpect(jsonPath("$.actidin")
                             .value(lowValues(BillPaymentResponse.ACT_ID_IN_LENGTH)));
         }
 
@@ -2531,7 +2563,7 @@ class BillPaymentControllerTest {
                             .content(productionMapper().writeValueAsString(
                                     reentry(AidKey.ENTER.token(), "", ""))))
                     .andExpect(status().isOk())
-                    .andExpect(jsonPath("$.errMsg").value(sliceCodec.movePicX(
+                    .andExpect(jsonPath("$.errmsg").value(sliceCodec.movePicX(
                             BillPaymentService.MSG_ACCT_ID_EMPTY,
                             BillPaymentResponse.ERR_MSG_LENGTH)));
         }
@@ -2654,8 +2686,8 @@ class BillPaymentControllerTest {
         @DisplayName("the ten widths are exactly the copybook's, restated once for the reader")
         void theTenWidthsAreExactlyTheCopybooks() {
             assertThat(MAP_FIELD_WIDTHS).containsExactlyInAnyOrderEntriesOf(Map.of(
-                    "trnName", 4, "title01", 40, "curDate", 8, "pgmName", 8, "title02", 40,
-                    "curTime", 8, "actIdIn", 11, "curBal", 14, "confirm", 1, "errMsg", 78));
+                    "trnname", 4, "title01", 40, "curdate", 8, "pgmname", 8, "title02", 40,
+                    "curtime", 8, "actidin", 11, "curbal", 14, "confirm", 1, "errmsg", 78));
             // 4+40+8+8+40+8+11+14+1+78 = 212 data bytes, plus ten seven-byte prologues and the
             // twelve-byte TIOAPFX prefix: 12 + 70 + 212 = 294 bytes of symbolic map.
             assertThat(MAP_FIELD_WIDTHS.values().stream().mapToInt(Integer::intValue).sum())

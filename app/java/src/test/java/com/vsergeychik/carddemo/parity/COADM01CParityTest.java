@@ -17,6 +17,7 @@ import com.vsergeychik.carddemo.common.CicsAid;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.NavigationContext;
 import com.vsergeychik.carddemo.common.PfKeyResolver;
+import com.vsergeychik.carddemo.common.ScreenFieldImage;
 import com.vsergeychik.carddemo.common.ScreenTitles;
 import com.vsergeychik.carddemo.common.SystemMessages;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBinding;
@@ -317,8 +318,20 @@ class COADM01CParityTest {
     // the translation, and each checked against its declared width the moment it is built.
     // =================================================================================================
 
-    /** {@code MOVE SPACES TO WS-ADMIN-OPT-TXT} - {@code app/cbl/COADM01C.cbl:231}, forty spaces. */
-    private static final String BLANK_MENU_LINE = spaces(MENU_LINE_LENGTH);
+    /**
+     * An {@code OPTN00nO} line the program never writes, as
+     * {@code MOVE LOW-VALUES TO COADM1AO} at {@code app/cbl/COADM01C.cbl:89} leaves it: forty
+     * {@code X'00'} characters.
+     *
+     * <p>Note which statement this is <em>not</em>. {@code MOVE SPACES TO WS-ADMIN-OPT-TXT} at
+     * {@code :231} targets a {@code WORKING-STORAGE} item, the composition buffer - not a map field. The
+     * {@code MOVE ... TO OPTN00nO} statements live inside the {@code EVALUATE} arms at {@code :238-261}
+     * and run only for a subscript the loop reaches, so a line past
+     * {@code CDEMO-ADMIN-OPT-COUNT} and a line whose arm is {@code WHEN OTHER / CONTINUE} are
+     * both simply never written. An earlier revision of this constant cited {@code :231} and expected
+     * spaces, conflating the buffer with the field.
+     */
+    private static final String BLANK_MENU_LINE = ScreenFieldImage.unpainted(MENU_LINE_LENGTH);
 
     /** {@code MOVE SPACES TO WS-MESSAGE} - {@code app/cbl/COADM01C.cbl:79}, eighty spaces. */
     private static final String BLANK_WS_MESSAGE = spaces(WS_MESSAGE_LENGTH);
@@ -326,8 +339,12 @@ class COADM01CParityTest {
     /** {@code MOVE SPACES TO ERRMSGO} - {@code app/cbl/COADM01C.cbl:80}, seventy-eight spaces. */
     private static final String BLANK_ERRMSG = spaces(ERRMSG_LENGTH);
 
-    /** {@code OPTIONO} as {@code MOVE LOW-VALUES TO COADM1AO} leaves it - {@code :89}. */
-    private static final String BLANK_OPTION = spaces(OPTION_LENGTH);
+    /**
+     * {@code OPTIONO} as {@code MOVE LOW-VALUES TO COADM1AO} leaves it - {@code :89}, so {@code X'00'}
+     * at its declared width rather than spaces. {@code MOVE WS-OPTION TO OPTIONO} at {@code :125} is
+     * the only writer, and it is inside {@code PROCESS-ENTER-KEY}.
+     */
+    private static final String BLANK_OPTION = ScreenFieldImage.unpainted(OPTION_LENGTH);
 
     /**
      * The twelve {@code OPTN00nO} lines a full paint produces: four composed by

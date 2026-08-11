@@ -70,6 +70,7 @@ import org.springframework.batch.core.Job;
 import org.springframework.batch.core.JobExecution;
 import org.springframework.batch.core.JobInterruptedException;
 import org.springframework.batch.core.Step;
+import org.springframework.batch.core.StepContribution;
 import org.springframework.batch.core.StepExecution;
 import org.springframework.batch.core.repository.JobRepository;
 import org.springframework.batch.core.scope.context.ChunkContext;
@@ -1656,11 +1657,20 @@ class AccountBalanceUpdateJobTest {
             AccountBalanceUpdateJob subject = new AccountBalanceUpdateJob(validBatchConfig(),
                     repositoryOver(fixtureRecords()), ASCII, new SuppliedProvider<>(sysout));
 
+            StepExecution stepExecution = stepExecution();
+            StepContribution contribution = new StepContribution(stepExecution);
+
             RepeatStatus status = subject.accountBalanceUpdateTasklet()
-                    .execute(null, chunkContext(stepExecution()));
+                    .execute(contribution, chunkContext(stepExecution));
 
             assertThat(status).isEqualTo(RepeatStatus.FINISHED);
             assertThat(sysout.lines()).hasSize(102);
+            // The count is of records READ, which is half the lines displayed: :78 and :96 each display
+            // the record the one read delivered. A read count is a count of reads.
+            assertThat(contribution.getReadCount())
+                    .as("BATCH_STEP_EXECUTION.READ_COUNT must show the volume this pass read, so a run "
+                            + "over the whole file is distinguishable from a run over an empty one")
+                    .isEqualTo(fixtureRecords().size());
         }
 
         @Test
@@ -1670,11 +1680,17 @@ class AccountBalanceUpdateJobTest {
             AccountBalanceUpdateJob subject = new AccountBalanceUpdateJob(validBatchConfig(),
                     repositoryOver(List.of()), ASCII, new SuppliedProvider<>(published));
 
-            subject.accountBalanceUpdateTasklet().execute(null, chunkContext(stepExecution()));
+            StepExecution stepExecution = stepExecution();
+            StepContribution contribution = new StepContribution(stepExecution);
+
+            subject.accountBalanceUpdateTasklet().execute(contribution, chunkContext(stepExecution));
 
             assertThat(published.lines()).containsExactly(
                     AccountBalanceUpdateJob.START_OF_EXECUTION,
                     AccountBalanceUpdateJob.END_OF_EXECUTION);
+            assertThat(contribution.getReadCount())
+                    .as("an empty dataset read nothing, and reports nothing")
+                    .isZero();
         }
 
         @Test
@@ -1685,8 +1701,10 @@ class AccountBalanceUpdateJobTest {
             // completes; where those two lines land is the deployment's business.
             AccountBalanceUpdateJob subject = job(repositoryOver(List.of()));
 
+            StepExecution stepExecution = stepExecution();
+
             RepeatStatus status = subject.accountBalanceUpdateTasklet()
-                    .execute(null, chunkContext(stepExecution()));
+                    .execute(new StepContribution(stepExecution), chunkContext(stepExecution));
 
             assertThat(status).isEqualTo(RepeatStatus.FINISHED);
             assertThat(subject.defaultSysoutSink()).isNotNull();
@@ -1788,7 +1806,8 @@ class AccountBalanceUpdateJobTest {
             // Driven exactly as TaskletStep drives it, so this asserts the wiring and not just the
             // program: a tasklet that ignored the chunk context would run the whole pass here.
             assertThatExceptionOfType(StopRequestedException.class).isThrownBy(() ->
-                    subject.accountBalanceUpdateTasklet().execute(null, chunkContext(stepExecution)));
+                    subject.accountBalanceUpdateTasklet()
+                            .execute(new StepContribution(stepExecution), chunkContext(stepExecution)));
 
             assertThat(sysout.lines())
                     .containsExactly(AccountBalanceUpdateJob.START_OF_EXECUTION);

@@ -555,7 +555,7 @@ class DatasetRelationTest {
         }
 
         @Test
-        @DisplayName("a refusal with no SQLException in it reports no SQLSTATE, and does not invent one")
+        @DisplayName("a failure with no SQLException in it reports no SQLSTATE, and does not invent one")
         void noSqlExceptionMeansNoSqlState() {
             BackendDiagnostic diagnostic =
                     BackendDiagnostic.of(new DataAccessResourceFailureException("no cause at all"));
@@ -564,7 +564,42 @@ class DatasetRelationTest {
             assertThat(diagnostic.vendorCode()).isZero();
             assertThat(diagnostic.sqlStateClass()).isEmpty();
             assertThat(diagnostic.isClass(BackendDiagnostic.CONNECTION_EXCEPTION_CLASS)).isFalse();
-            assertThat(diagnostic.describe()).contains("SQLSTATE not reported");
+        }
+
+        @Test
+        @DisplayName("describe() does not call it a backend refusal when no SQLException was found: "
+                + "nothing was asked of the backend, so the failure arose above the driver")
+        void describeDoesNotBlameTheBackendWhenNoSqlExceptionWasFound() {
+            // The line this replaces read "backend refusal: SQLSTATE not reported, vendor code 0" for a
+            // failure the backend was never asked about - which is what an unrepresentable screen value
+            // produces, since the transcoder refuses before any statement is prepared. It sent a reader
+            // looking at the datasource for a fault that is in this module.
+            BackendDiagnostic diagnostic =
+                    BackendDiagnostic.of(new DataAccessResourceFailureException("no cause at all"));
+
+            assertThat(diagnostic.describe())
+                    .doesNotContain("backend refusal")
+                    .doesNotContain("SQLSTATE not reported")
+                    .doesNotContain("vendor code")
+                    .contains("no backend diagnostic")
+                    .contains("no SQLException in the cause chain")
+                    .contains("arose above the driver")
+                    .contains(DataAccessResourceFailureException.class.getName());
+        }
+
+        @Test
+        @DisplayName("describe() does report a backend refusal, with the SQLSTATE and vendor code, "
+                + "when the driver actually reported one")
+        void describeReportsTheBackendWhenTheDriverDid() {
+            BackendDiagnostic diagnostic = BackendDiagnostic.of(new DataAccessResourceFailureException(
+                    "wrapped", new SQLException("deep", "23505", 23505)));
+
+            assertThat(diagnostic.describe())
+                    .contains("backend refusal")
+                    .contains("SQLSTATE 23505")
+                    .contains("vendor code 23505")
+                    .contains(DataAccessResourceFailureException.class.getName())
+                    .doesNotContain("no backend diagnostic");
         }
 
         @ParameterizedTest(name = "SQLSTATE {0} classifies as {1}")

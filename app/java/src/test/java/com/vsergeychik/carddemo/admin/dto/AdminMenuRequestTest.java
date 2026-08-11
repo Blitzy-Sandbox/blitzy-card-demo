@@ -143,6 +143,18 @@ class AdminMenuRequestTest {
             "ERRMSGI");
 
     /**
+     * The same twenty fields as they appear <strong>on the wire</strong>: each {@code xxxI} item
+     * lower-cased with the direction suffix dropped. This is what {@code @JsonProperty} pins on every
+     * screen field and what AAP 0.6.3 requires - "payload field names and lengths derive from the xxxI
+     * items only" - and it is deliberately a different string from the Java member name, which keeps
+     * camel case for Java's own conventions. Derived from {@link #EXPECTED_ITEM_NAMES} rather than transcribed
+     * again, so the wire name still answers to the copybook and not to the implementation.
+     */
+    private static final List<String> EXPECTED_WIRE_NAMES = EXPECTED_ITEM_NAMES.stream()
+            .map(item -> item.substring(0, item.length() - 1).toLowerCase(Locale.ROOT))
+            .toList();
+
+    /**
      * The twenty Java payload member names in the same map order, so element <em>i</em> here is the
      * projection of element <em>i</em> of {@link #EXPECTED_ITEM_NAMES}.
      */
@@ -1372,7 +1384,7 @@ class AdminMenuRequestTest {
 
             // And the twenty that DO belong are all present, so the test cannot pass by serialising
             // nothing at all.
-            for (String member : EXPECTED_MEMBER_NAMES) {
+            for (String member : EXPECTED_WIRE_NAMES) {
                 assertThat(json).as("payload member %s must reach the wire", member)
                         .contains("\"" + member + "\"");
             }

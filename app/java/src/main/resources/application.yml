@@ -262,6 +262,16 @@ spring:
 # endpoint is therefore silenced rather than trusted to be harmless. config/WebConfig.java's
 # CobolErrorHandler is the other half of this decision - it claims the failure families that
 # would otherwise fall through, and answers each with fixed, non-reflective text.
+#
+# THIS API IS JSON-ONLY, SO IT NEVER ANSWERS WITH AN HTML PAGE.
+# whitelabel.enabled: false removes Spring Boot's HTML error view. It matters because a servlet
+# container reaches /error by FORWARDING to it whenever a response carries an error status and no
+# handler produced a body - so a caller sending "Accept: text/html" to a REST-only API was being
+# answered with "<html><body><h1>Whitelabel Error Page</h1>...". config/WebConfig.java's
+# CobolErrorEndpoint is the other half of this decision: it is an ErrorController bean, which
+# suppresses Boot's own BasicErrorController outright, and it answers /error with the same JSON
+# envelope every other failure uses. Both halves are stated, because either one alone would leave
+# the other framework path reachable.
 # ---------------------------------------------------------------------------------------------
 server:
   port: ${CARDDEMO_SERVER_PORT:8080}
@@ -271,6 +281,8 @@ server:
     include-message: never
     include-binding-errors: never
     include-stacktrace: never
+    whitelabel:
+      enabled: false
 
 # =============================================================================================
 #  carddemo.* - the migration's own configuration namespace

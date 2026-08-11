@@ -7,6 +7,7 @@ import com.vsergeychik.carddemo.common.CicsAid;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.NavigationContext;
 import com.vsergeychik.carddemo.common.PfKeyResolver;
+import com.vsergeychik.carddemo.common.ScreenFieldImage;
 import com.vsergeychik.carddemo.common.SystemMessages;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBinding;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBindings;
@@ -1243,12 +1244,13 @@ public class MainMenuService {
             // L88 SET CDEMO-PGM-REENTER TO TRUE, so the next keystroke takes the ELSE branch.
             NavigationContext reentered = context.withPgmReenter();
             // L89 MOVE LOW-VALUES TO COMEN1AO clears every output field before the paint; L90 sends.
-            // OPTIONO is one of the fields cleared, so the echoed option is blank on this path.
+            // OPTIONO is one of the fields cleared, so the echoed option is unpainted on this path -
+            // X'00' at its declared width, the byte the group MOVE actually writes.
             return sendMenuScreen(reentered,
                     errorFlag,
                     wsMessage,
                     MAP_MESSAGE_COLOUR,
-                    spaces(OPTION_LENGTH),
+                    ScreenFieldImage.unpainted(OPTION_LENGTH),
                     true,
                     optionTable,
                     ReceiveOutcome.NOT_PERFORMED);
@@ -1921,7 +1923,19 @@ public class MainMenuService {
      * leave.
      *
      * <p>No screen is painted and no menu line is composed, because neither {@code XCTL} is preceded by
-     * a {@code SEND} - so the twelve lines stay as the spaces they were.
+     * a {@code SEND} - so the twelve lines stay as they were.
+     *
+     * <h4>The mapset and map are blank here, and that is deliberate</h4>
+     * An {@code XCTL} hands control to another program, and which map that program will paint is its
+     * decision, made after this one has ended. Neither statement names a map: line 153 names only
+     * {@code CDEMO-MENU-OPT-PGMNAME(WS-OPTION)} and line 176 only {@code CDEMO-TO-PROGRAM}. Nor does
+     * {@code COMEN01C} ever assign {@code CDEMO-LAST-MAPSET} or {@code CDEMO-LAST-MAP} - the copybook
+     * declares them and the program references neither, confirmed by exhaustive search over
+     * {@code app/cbl/COMEN01C.cbl}, exactly as {@code COADM01C} references neither. Naming
+     * {@value #MAPSET_NAME} and {@value #MAP_NAME} on a transfer would tell the client to paint the
+     * screen it is leaving, which is the one answer that is certainly wrong. Blank means "not stated
+     * here": the client follows the successor named in {@code nextProgram}, and the target's own reply
+     * names its map. The {@code SEND} path is the other case, and it still names this screen.
      *
      * @param targetProgram   the transfer target, at most
      *                        {@value NavigationContext#TO_PROGRAM_LENGTH} characters
@@ -1952,8 +1966,8 @@ public class MainMenuService {
                 false,
                 context,
                 TRANSACTION_ID,
-                MAPSET_NAME,
-                MAP_NAME,
+                spaces(NavigationContext.LAST_MAPSET_LENGTH),
+                spaces(NavigationContext.LAST_MAP_LENGTH),
                 receive);
     }
 
@@ -2208,13 +2222,18 @@ public class MainMenuService {
     }
 
     /**
-     * The twelve {@code OPTN00nO} fields as {@code MOVE SPACES} or {@code MOVE LOW-VALUES} leaves them,
-     * and as they remain on every path that never performs {@code BUILD-MENU-OPTIONS}.
+     * The twelve {@code OPTN00nO} fields as {@code MOVE LOW-VALUES TO COMEN1AO} leaves them, and as they
+     * remain on every path that never performs {@code BUILD-MENU-OPTIONS}.
      *
-     * @return {@value #OPTION_LINE_COUNT} lines of {@value #OPTION_TEXT_LENGTH} spaces
+     * <p>The unpainted image, not spaces: line {@code app/cbl/COMEN01C.cbl:89} moves {@code X'00'}, and a screen field that was
+     * never written carries that byte. {@link ScreenFieldImage} records the choice once for all
+     * seventeen screens and explains why the two figurative constants are not interchangeable.
+     *
+     * @return {@value #OPTION_LINE_COUNT} unpainted lines of {@value #OPTION_TEXT_LENGTH} characters
      */
     private static List<String> blankOptionLines() {
-        return Collections.nCopies(OPTION_LINE_COUNT, spaces(OPTION_TEXT_LENGTH));
+        return Collections.nCopies(OPTION_LINE_COUNT,
+                ScreenFieldImage.unpainted(OPTION_TEXT_LENGTH));
     }
 
     /**

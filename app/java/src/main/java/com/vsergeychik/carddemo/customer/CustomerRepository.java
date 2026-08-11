@@ -922,8 +922,11 @@ public class CustomerRepository {
      * @return the discriminated outcome; never {@code null}
      * @throws NullPointerException     if {@code recordImage} is {@code null}
      * @throws IllegalArgumentException if {@code recordImage} is not exactly {@link #RECORD_LENGTH} bytes
-     * @throws IllegalStateException    if the backend presents the dataset with no usable record-image
-     *                                  column, or - as a
+     * @throws IllegalStateException    if no unit of work is open, in which case nothing has been
+     *                                  attempted - see
+     *                                  {@link DatasetUnitOfWork#requireActiveToPersist(String, String)};
+     *                                  if the backend presents the dataset with no usable record-image
+     *                                  column; or - as a
      *                                  {@link com.vsergeychik.carddemo.common.DatasetIntegrityException} -
      *                                  if the write replaced more rows than the key selected when it was
      *                                  checked, in which case the unit of work is refused rather than a
@@ -957,7 +960,8 @@ public class CustomerRepository {
      * @param record the record to write, complete and already mutated by the caller
      * @return the discriminated outcome; never {@code null}
      * @throws NullPointerException  if {@code record} is {@code null}
-     * @throws IllegalStateException if the backend presents the dataset with no usable record-image column,
+     * @throws IllegalStateException if no unit of work is open, in which case nothing has been attempted;
+     *                               if the backend presents the dataset with no usable record-image column;
      *                               or - as a
      *                               {@link com.vsergeychik.carddemo.common.DatasetIntegrityException} - if
      *                               the write replaced more rows than the key selected when it was checked
@@ -979,19 +983,26 @@ public class CustomerRepository {
      * @return the discriminated outcome; never {@code null}
      */
     private WriteResult rewrite(Statements sql, byte[] image) {
+        // Refused before anything is attempted when no unit of work is open. The pool hands out
+        // connections with auto-commit disabled, so the UPDATE would execute, report the row it replaced,
+        // and then be rolled back on return - and this method would report '00' for a record no later read
+        // could find. COACTUPC's 9600-WRITE-PROCESSING rewrites the account and the customer inside one
+        // CICS task, so the boundary AccountUpdateService opens is the same one this requires.
+        DatasetUnitOfWork.requireActiveToPersist("A rewrite of the customer master, which EXEC CICS "
+                + "REWRITE issues against the record the preceding READ ... UPDATE still holds "
+                + "(app/cbl/COACTUPC.cbl:L4085-L4091, after the locking read at L3921-L3930)",
+                datasetName);
+
         String keyImage = keyImageOf(image);
         String keyPattern = asPrefixPattern(keyImage);
         String maskedKey = SensitiveDiagnostics.maskIdentifier(keyImage);
 
-        // Establish that the key names exactly one row BEFORE any row is replaced. Where a unit of work is
-        // open the probe takes the same row lock the UPDATE will use, so nothing can change between the
-        // two; where none is open nothing can be atomic anyway, and the probe is still what keeps a
-        // fan-out from being discovered only from the affected-row count, after the damage.
-        boolean locking = DatasetUnitOfWork.active();
+        // Establish that the key names exactly one row BEFORE any row is replaced, under the same
+        // FOR UPDATE lock the UPDATE will use so nothing can change between the two. Reading the
+        // affected-row count afterwards would discover a fan-out only after the rows were overwritten.
         int matching;
         try {
-            matching = matchingRowCount(locking ? sql.selectByKeyForUpdate() : sql.selectByKey(),
-                    keyPattern);
+            matching = matchingRowCount(sql.selectByKeyForUpdate(), keyPattern);
         } catch (DataAccessException rejected) {
             return reportWrite(rejected, "establish how many rows the key of a record selects in the "
                     + "customer master dataset '" + datasetName + "' before rewriting it");
@@ -1038,8 +1049,7 @@ public class CustomerRepository {
         throw DatasetUnitOfWork.commitRefusal(
                 "The rewrite of customer " + maskedKey + " in dataset '" + datasetName + "'",
                 rewritten + " rows were replaced where the key selected exactly one when it was checked "
-                        + "under " + (locking ? "a row lock" : "no row lock, because no unit of work was "
-                        + "open"));
+                        + "under a row lock");
     }
 
     /**

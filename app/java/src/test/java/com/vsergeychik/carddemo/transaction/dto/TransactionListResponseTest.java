@@ -18,6 +18,7 @@ import com.vsergeychik.carddemo.common.FixedWidthRecord.FieldSpan;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.PictureKind;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.RecordLayout;
 import com.vsergeychik.carddemo.common.NavigationContext;
+import com.vsergeychik.carddemo.common.ScreenFieldImage;
 import com.vsergeychik.carddemo.common.ScreenTitles;
 import com.vsergeychik.carddemo.common.SystemMessages;
 import com.vsergeychik.carddemo.transaction.dto.TransactionListResponse.FieldAttributes;
@@ -334,14 +335,21 @@ class TransactionListResponseTest {
             assertThat(TransactionListResponse.colourItemName(prefix)).isEqualTo(prefix + "C");
         }
 
-        @ParameterizedTest(name = "{0} initialises to {1} spaces and reads back untrimmed")
+        @ParameterizedTest(name = "{0} initialises to {1} LOW-VALUES and reads back untrimmed")
         @MethodSource("com.vsergeychik.carddemo.transaction.dto."
                 + "TransactionListResponseTest#declaredFields")
-        @DisplayName("every field starts as spaces at its declared width - never null")
-        void everyFieldStartsAsSpaces(String itemName, int width) {
+        @DisplayName("every field starts unpainted at its declared width - never spaces, never null")
+        void everyFieldStartsUnpainted(String itemName, int width) {
+            // MOVE LOW-VALUES TO COTRN0AO, app/cbl/COTRN00C.cbl:114. X'00' and not spaces: the two are
+            // different bytes, and COSGN00C.cbl:118 shows a sibling program whose predicate separates
+            // them. ERRMSGO is the one field this program paints with spaces, and it does so through
+            // clearErrorLine() at :102-103, not at construction.
             TransactionListResponse response = new TransactionListResponse();
             String prefix = itemName.substring(0, itemName.length() - 1);
-            assertThat(response.payloadValue(prefix)).isEqualTo(" ".repeat(width));
+            assertThat(response.payloadValue(prefix))
+                    .isEqualTo(ScreenFieldImage.unpainted(width))
+                    .hasSize(width);
+            assertThat(ScreenFieldImage.isUnpainted(response.payloadValue(prefix))).isTrue();
         }
 
         @ParameterizedTest(name = "{0} rejects a value one character too wide")
@@ -891,7 +899,7 @@ class TransactionListResponseTest {
             assertThat(highlight.untouched()).isTrue();
             assertThat(response.isFieldHighlighted("SEL0005")).isFalse();
             assertThat(response.attributesOf("SEL0005").isLowValues()).isTrue();
-            assertThat(response.getSel0005O()).isEqualTo(" ");
+            assertThat(response.getSel0005O()).isEqualTo(ScreenFieldImage.unpainted(1));
         }
 
         @Test
@@ -1340,7 +1348,7 @@ class TransactionListResponseTest {
 
             String json = mapper.writeValueAsString(response);
             assertThat(json).doesNotContain("null");
-            assertThat(json).contains("\"tamt004O\":\"            \"");
+            assertThat(json).contains("\"tamt004\":\"            \"");
 
             TransactionListResponse back = mapper.readValue(json, TransactionListResponse.class);
             assertThat(back.getTamt004O()).isEqualTo(" ".repeat(12));
@@ -1369,8 +1377,10 @@ class TransactionListResponseTest {
             @SuppressWarnings("unchecked")
             Map<String, Object> members = mapper.readValue(json, Map.class);
             for (String itemName : EXPECTED_ITEM_NAMES) {
-                String member = itemName.substring(0, itemName.length() - 1).toLowerCase()
-                        + itemName.charAt(itemName.length() - 1);
+                // The wire name is the item without its direction suffix, in lower case - what
+                // @JsonProperty pins per AAP 0.6.3. The Java field keeps the suffix, because that is the
+                // map view this type projects.
+                String member = itemName.substring(0, itemName.length() - 1).toLowerCase();
                 assertThat(members).as(itemName).containsKey(member);
             }
             assertThat(members).hasSize(59 + 3 + 2);
@@ -1775,7 +1785,7 @@ class TransactionListResponseTest {
                     .as("the two bytes at k are not part of the quad, which begins at k+3")
                     .isTrue();
             assertThat(back.attributesOf("PAGENUM").colour()).isEqualTo(BmsAttributes.DFHRED);
-            assertThat(back.getPagenumO()).isEqualTo(" ".repeat(8));
+            assertThat(back.getPagenumO()).isEqualTo(ScreenFieldImage.unpainted(8));
         }
 
         @Test
@@ -1898,8 +1908,7 @@ class TransactionListResponseTest {
             Map<String, Object> members = mapper.readValue(json, Map.class);
 
             for (String itemName : EXPECTED_ITEM_NAMES) {
-                String member = itemName.substring(0, itemName.length() - 1).toLowerCase()
-                        + TransactionListResponse.OUTPUT_ITEM_SUFFIX;
+                String member = itemName.substring(0, itemName.length() - 1).toLowerCase();
                 assertThat(members).as("%s is a payload member", itemName).containsKey(member);
             }
             assertThat(response.attributesOf("ERRMSG").colour())
@@ -1944,7 +1953,7 @@ class TransactionListResponseTest {
         @Test
         @DisplayName("a payload item binds on the way in, and no quad value comes with it")
         void onlyPayloadItemsBindOnTheWayIn() throws Exception {
-            String json = "{\"trnidinO\":\"0000000000000001\"}";
+            String json = "{\"trnidin\":\"0000000000000001\"}";
 
             TransactionListResponse back = mapper.readValue(json, TransactionListResponse.class);
 
@@ -1963,8 +1972,8 @@ class TransactionListResponseTest {
             // The colour item is not a payload member, so a caller cannot paint a field red by
             // sending its name. Rejecting the document outright is the stronger outcome: ignoring
             // the member would let a client believe it had been honoured.
-            String withColourItem = "{\"trnidinO\":\"0000000000000001\",\"trnidinC\":\"x\"}";
-            String withLengthItem = "{\"trnidinO\":\"0000000000000001\",\"trnidinL\":\"-1\"}";
+            String withColourItem = "{\"trnidin\":\"0000000000000001\",\"trnidinC\":\"x\"}";
+            String withLengthItem = "{\"trnidin\":\"0000000000000001\",\"trnidinL\":\"-1\"}";
 
             for (String json : List.of(withColourItem, withLengthItem)) {
                 assertThatExceptionOfType(UnrecognizedPropertyException.class)
@@ -2258,8 +2267,9 @@ class TransactionListResponseTest {
                             .as(prefix)
                             .isTrue());
             assertThat(response.getSel0001O())
-                    .as("a NOT-OK highlight never writes the asterisk, not even into a X(1) selector")
-                    .isEqualTo(" ");
+                    .as("a NOT-OK highlight never writes the asterisk, not even into a X(1) selector - "
+                            + "the payload item keeps the LOW-VALUES image :114 left")
+                    .isEqualTo(ScreenFieldImage.unpainted(1));
         }
 
         @Test
@@ -2506,8 +2516,9 @@ class TransactionListResponseTest {
                     .isEqualTo(ScreenTitles.CCDA_TITLE02)
                     .isNotEqualTo(ScreenTitles.CCDA_TITLE01);
             assertThat(response.getErrmsgO())
-                    .as("POPULATE-HEADER-INFO does not touch the error line")
-                    .isEqualTo(" ".repeat(78));
+                    .as("POPULATE-HEADER-INFO does not touch the error line, so it keeps the LOW-VALUES "
+                            + "image a fresh map carries; clearErrorLine() is the :102-103 MOVE SPACES")
+                    .isEqualTo(ScreenFieldImage.unpainted(78));
         }
     }
 

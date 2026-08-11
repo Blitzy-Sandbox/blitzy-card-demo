@@ -8,6 +8,7 @@ import com.vsergeychik.carddemo.common.CicsAid;
 import com.vsergeychik.carddemo.common.DateHeader;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.NavigationContext;
+import com.vsergeychik.carddemo.common.ScreenFieldImage;
 import com.vsergeychik.carddemo.common.ScreenMetadata;
 import com.vsergeychik.carddemo.common.ScreenResponse;
 import com.vsergeychik.carddemo.common.ScreenTitles;
@@ -296,13 +297,21 @@ public class MainMenuController {
     private final FixedWidthCodec codec;
 
     /**
-     * The two-character {@code OPTIONI} field as {@code MOVE SPACES} leaves it.
+     * The two-character {@code OPTIONI} field as a {@code RECEIVE MAP} that was told nothing about it
+     * leaves it.
      *
-     * <p>Produced through {@link FixedWidthCodec#movePicX} rather than by writing two spaces, so the
-     * width comes from {@link MainMenuRequest#OPTION_LENGTH} and the padding rule comes from the one
-     * place that owns it.
+     * <p>{@code X'00'} at the declared width, from {@link ScreenFieldImage#unpainted(int)}. A 3270
+     * transmits only the fields whose modified-data tag is set, and {@code EXEC CICS RECEIVE MAP} leaves
+     * every field that did not arrive at {@code LOW-VALUES} in {@code COMEN1AI} - so an omitted JSON
+     * member stands for a field the operator never touched, and its image is the one CICS would have
+     * left, not spaces the operator never typed. The backwards scan at
+     * {@code app/cbl/COMEN01C.cbl:117-120} tests {@code NOT = SPACES} and so stops at the first
+     * position either way; the {@code INSPECT ... REPLACING ALL ' ' BY '0'} that follows leaves
+     * {@code X'00'} alone, the numeric test at {@code :127} then fails, and the operator sees the same
+     * {@code 'Please enter a valid option...'} the space image produces. What the image does change is
+     * the echoed {@code OPTIONO} on the paths that never write it, which is the whole of the correction.
      */
-    private final String optionSpaces;
+    private final String optionNotTransmitted;
 
     /**
      * The invocation a request with no payload stands for: {@code EIBCALEN = 0}.
@@ -339,16 +348,18 @@ public class MainMenuController {
                         + "date and time header, and reading the wall clock directly would make that "
                         + "header impossible to assert byte for byte");
         this.codec = this.mainMenuService.codec();
-        this.optionSpaces = this.codec.movePicX(SPACE, MainMenuRequest.OPTION_LENGTH);
+        this.optionNotTransmitted = ScreenFieldImage.unpainted(MainMenuRequest.OPTION_LENGTH);
         this.coldStartRequest = coldStartRequest(this.codec);
     }
 
     /**
      * The blank screen a request carrying no payload is treated as having presented.
      *
-     * <p>Every one of the twenty screen fields is space-filled to its declared width through
-     * {@link FixedWidthCodec#movePicX}, because a COBOL {@code PIC X} field is never absent - an empty
-     * one holds spaces. Building it once at construction rather than per request keeps the cold-start
+     * <p>Every one of the twenty screen fields carries the not-transmitted image - {@code X'00'} at
+     * its declared width, from {@link ScreenFieldImage#unpainted(int)} - because that is what
+     * {@code EXEC CICS RECEIVE MAP} leaves in COMEN1AO for a field the terminal did not send, and a
+     * request with no payload sent nothing at all. A {@code PIC X} field is never absent, which is why
+     * an image is supplied rather than {@code null}; spaces would be an image the operator typed. Building it once at construction rather than per request keeps the cold-start
      * path allocation-free, and the record is immutable so the single instance is safe to share.
      *
      * <p>The two members that carry meaning on this path:
@@ -361,18 +372,21 @@ public class MainMenuController {
      *       presented.</li>
      * </ul>
      *
-     * @param codec the codec supplying the space-fill rule and each declared width
+     * @param codec the codec the record's images are sized in; must not be {@code null}. Every width
+     *              is a constant of the request type, so the codec supplies no value here - it is
+     *              required because a screen record has a code page even when every field is unpainted
      * @return the cold-start request, never {@code null}
      */
     private static MainMenuRequest coldStartRequest(final FixedWidthCodec codec) {
-        final String transactionField = codec.movePicX(SPACE, MainMenuRequest.TRN_NAME_LENGTH);
-        final String titleField = codec.movePicX(SPACE, MainMenuRequest.TITLE_LENGTH);
-        final String dateField = codec.movePicX(SPACE, MainMenuRequest.CUR_DATE_LENGTH);
-        final String programField = codec.movePicX(SPACE, MainMenuRequest.PGM_NAME_LENGTH);
-        final String timeField = codec.movePicX(SPACE, MainMenuRequest.CUR_TIME_LENGTH);
-        final String optionLine = codec.movePicX(SPACE, MainMenuRequest.OPTION_LINE_LENGTH);
-        final String optionField = codec.movePicX(SPACE, MainMenuRequest.OPTION_LENGTH);
-        final String messageField = codec.movePicX(SPACE, MainMenuRequest.ERR_MSG_LENGTH);
+        Objects.requireNonNull(codec, "A codec is required to size the cold-start payload");
+        final String transactionField = ScreenFieldImage.unpainted(MainMenuRequest.TRN_NAME_LENGTH);
+        final String titleField = ScreenFieldImage.unpainted(MainMenuRequest.TITLE_LENGTH);
+        final String dateField = ScreenFieldImage.unpainted(MainMenuRequest.CUR_DATE_LENGTH);
+        final String programField = ScreenFieldImage.unpainted(MainMenuRequest.PGM_NAME_LENGTH);
+        final String timeField = ScreenFieldImage.unpainted(MainMenuRequest.CUR_TIME_LENGTH);
+        final String optionLine = ScreenFieldImage.unpainted(MainMenuRequest.OPTION_LINE_LENGTH);
+        final String optionField = ScreenFieldImage.unpainted(MainMenuRequest.OPTION_LENGTH);
+        final String messageField = ScreenFieldImage.unpainted(MainMenuRequest.ERR_MSG_LENGTH);
         return new MainMenuRequest(transactionField,
                 titleField,
                 dateField,
@@ -490,8 +504,9 @@ public class MainMenuController {
      *       moves it into its declared width and then reproduces the backwards space scan, the
      *       {@code JUST RIGHT} receiver and the {@code INSPECT ... REPLACING} in order; trimming or
      *       padding it here would destroy the very input that sequence consumes. The only thing done to
-     *       it is substituting spaces for an omitted JSON member, because a {@code PIC X(2)} field is
-     *       never absent.</li>
+     *       it is substituting the not-transmitted image - {@code X'00'} at the declared width - for
+     *       an omitted JSON member, because a {@code PIC X(2)} field is never absent and a field a
+     *       3270 never sent is the one thing it is not: spaces.</li>
      * </ul>
      *
      * @param received the inbound payload
@@ -501,7 +516,7 @@ public class MainMenuController {
         final NavigationContext inboundCommarea = received.navigationContext();
         return new MainMenuInput(inboundCommarea,
                 received.eibAid(),
-                Objects.requireNonNullElse(received.option(), optionSpaces));
+                Objects.requireNonNullElse(received.option(), optionNotTransmitted));
     }
 
     /**

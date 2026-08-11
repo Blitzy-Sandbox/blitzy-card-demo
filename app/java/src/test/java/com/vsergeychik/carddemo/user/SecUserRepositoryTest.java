@@ -55,6 +55,7 @@ import java.util.Locale;
 import java.util.Optional;
 import java.util.Set;
 import java.util.TreeSet;
+import java.util.function.Supplier;
 import java.util.regex.Pattern;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -337,6 +338,22 @@ class SecUserRepositoryTest {
         TransactionSynchronizationManager.setActualTransactionActive(true);
         try {
             work.run();
+        } finally {
+            TransactionSynchronizationManager.setActualTransactionActive(false);
+        }
+    }
+
+    /**
+     * The same declaration, for work that answers something the caller then asserts on.
+     *
+     * @param work the work to run
+     * @param <T>  what it answers
+     * @return what {@code work} answered
+     */
+    private static <T> T inUnitOfWork(Supplier<T> work) {
+        TransactionSynchronizationManager.setActualTransactionActive(true);
+        try {
+            return work.get();
         } finally {
             TransactionSynchronizationManager.setActualTransactionActive(false);
         }
@@ -1764,8 +1781,9 @@ class SecUserRepositoryTest {
             try (BrowseCursor cursor = repository.startBrowse(SecUserRepository.LOW_VALUES_KEY)) {
                 cursor.readNext();
             }
-            repository.add(SecUserRecord.decode(
-                    row("USER0009", "NEW", "USER", "PASSWORD", "U").getBytes(ASCII), ASCII));
+            transactionOver(counting).executeWithoutResult(status -> repository.add(
+                    SecUserRecord.decode(
+                            row("USER0009", "NEW", "USER", "PASSWORD", "U").getBytes(ASCII), ASCII)));
             transactionOver(counting).executeWithoutResult(status -> {
                 ReadResult held = repository.readForUpdate("ADMIN001");
                 repository.rewrite(held.requireRecord());
@@ -1815,8 +1833,9 @@ class SecUserRepositoryTest {
         @DisplayName("WHEN DFHRESP(NORMAL) - all eighty bytes are stored, filler included")
         void aSuccessfulAddStoresAllEightyBytes() {
             JdbcTemplate template = seeded(seedRows());
-            WriteResult written = repository(template)
-                    .add(record("USER0009", "NEW", "USER", "PASSWORD", "U"));
+            SecUserRepository repository = repository(template);
+            WriteResult written = inUnitOfWork(
+                    () -> repository.add(record("USER0009", "NEW", "USER", "PASSWORD", "U")));
             assertThat(written.isWritten()).isTrue();
             assertThat(written.isNotFound()).isFalse();
             assertThat(written.isDuplicate()).isFalse();
@@ -1839,7 +1858,8 @@ class SecUserRepositoryTest {
             JdbcTemplate template = seeded(seedRows());
             SecUserRepository repository = repository(template);
 
-            WriteResult duplicate = repository.add(record("ADMIN001", "OTHER", "NAME", "PASSWORD", "A"));
+            WriteResult duplicate = inUnitOfWork(
+                    () -> repository.add(record("ADMIN001", "OTHER", "NAME", "PASSWORD", "A")));
             assertThat(duplicate.isDuplicate()).isTrue();
             assertThat(duplicate.isDuplicateRecord()).isTrue();
             assertThat(duplicate.isDuplicateKey()).isFalse();
@@ -1864,8 +1884,9 @@ class SecUserRepositoryTest {
             JdbcTemplate template = emptyRelation("CREATE TABLE \"" + TEST_DSNAME + "\" ("
                     + RECORD_IMAGE_COLUMN + " VARCHAR(" + EIGHTY + ") CHECK ("
                     + RECORD_IMAGE_COLUMN + " NOT LIKE 'ZZZ%'))");
-            WriteResult refused = repository(template)
-                    .add(record("ZZZZZZZZ", "BLOCKED", "BLOCKED", "PASSWORD", "U"));
+            SecUserRepository repository = repository(template);
+            WriteResult refused = inUnitOfWork(
+                    () -> repository.add(record("ZZZZZZZZ", "BLOCKED", "BLOCKED", "PASSWORD", "U")));
             assertThat(refused.isDuplicate()).isTrue();
             assertThat(refused.isDuplicateRecord()).isTrue();
             assertThat(refused.cicsResp()).hasValue(FileStatus.DUPREC);
@@ -1875,15 +1896,17 @@ class SecUserRepositoryTest {
         @Test
         @DisplayName("a backend refusal that is not an integrity violation lands on WHEN OTHER")
         void anUnreachableDatasetLandsOnWhenOther() {
-            assertThat(repository(missingRelation())
-                    .add(record("USER0009", "X", "Y", "PASSWORD", "U")).isOther()).isTrue();
+            SecUserRepository absentRelation = repository(missingRelation());
+            assertThat(inUnitOfWork(() -> absentRelation
+                    .add(record("USER0009", "X", "Y", "PASSWORD", "U")).isOther())).isTrue();
             // A column too narrow for the record: the insert is refused with a data exception, which is
             // NOT an integrity violation and must not be reported as a duplicate. The distinction matters
             // because 'User ID already exist...' and 'Unable to Add User...' are different messages.
             JdbcTemplate narrow = emptyRelation("CREATE TABLE \"" + TEST_DSNAME + "\" ("
                     + RECORD_IMAGE_COLUMN + " VARCHAR(10))");
-            WriteResult refused = repository(narrow)
-                    .add(record("USER0009", "X", "Y", "PASSWORD", "U"));
+            SecUserRepository narrowRepository = repository(narrow);
+            WriteResult refused = inUnitOfWork(
+                    () -> narrowRepository.add(record("USER0009", "X", "Y", "PASSWORD", "U")));
             assertThat(refused.isOther()).isTrue();
             assertThat(refused.isDuplicate()).isFalse();
             assertThat(refused.diagnostic()).isPresent();
@@ -1894,8 +1917,9 @@ class SecUserRepositoryTest {
         void anAddThatWritesNoRowIsNotASilentSuccess() {
             // The mocked template's update answers zero, and its keyed probe answers null - so the add
             // reaches the insert and then finds it changed nothing.
-            WriteResult result = repository(templateAnsweringNull())
-                    .add(record("USER0009", "X", "Y", "PASSWORD", "U"));
+            SecUserRepository repository = repository(templateAnsweringNull());
+            WriteResult result = inUnitOfWork(
+                    () -> repository.add(record("USER0009", "X", "Y", "PASSWORD", "U")));
             assertThat(result.isOther()).isTrue();
             assertThat(result.cicsResp()).hasValue(FileStatus.INVREQ);
         }
@@ -1905,8 +1929,32 @@ class SecUserRepositoryTest {
         void aRefusedProbeIsReported() throws SQLException {
             // The chain describes a usable column, so the statements resolve; the keyed probe then fails.
             JdbcTemplate template = failingAfterDescribe();
-            assertThat(repository(template).add(record("USER0009", "X", "Y", "PASSWORD", "U")).isOther())
+            SecUserRepository repository = repository(template);
+            assertThat(inUnitOfWork(
+                    () -> repository.add(record("USER0009", "X", "Y", "PASSWORD", "U")).isOther()))
                     .isTrue();
+        }
+
+        @Test
+        @DisplayName("outside a unit of work the add is refused, never reported as a stored user")
+        void outsideAUnitOfWorkTheAddIsRefused() {
+            // This WRITE takes no lock, so the locking-read precondition does not reach it - but the pool
+            // hands out connections with auto-commit disabled, so the INSERT would execute, report the row
+            // it added, and be rolled back when the connection was returned, leaving COUSR01C painting
+            // 'User has been added ...' for a user that was never stored.
+            JdbcTemplate template = seeded(seedRows());
+            SecUserRepository repository = repository(template);
+
+            assertThatIllegalStateException()
+                    .isThrownBy(() -> repository.add(record("USER0009", "NEW", "USER", "PASSWORD", "U")))
+                    .withMessageContaining("no transaction is open on this thread")
+                    .withMessageContaining("changes stored records")
+                    .withMessageContaining(TEST_DSNAME);
+
+            assertThat(template.queryForObject("SELECT COUNT(*) FROM \"" + TEST_DSNAME + "\"",
+                    Integer.class))
+                    .as("nothing may be attempted when the change could not be committed")
+                    .isEqualTo(seedRows().size());
         }
 
         @Test

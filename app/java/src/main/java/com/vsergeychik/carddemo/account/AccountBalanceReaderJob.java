@@ -525,11 +525,23 @@ public class AccountBalanceReaderJob {
      * {@link BatchConfig.StopRequestedException} propagates for the same reason and to the same
      * effect, except that the framework reads it as a stop rather than a failure.
      *
+     * <p>The pass's record count is reported to the framework as the step's read count, one increment
+     * per record. It is <strong>step metadata, not program output</strong>: {@code CBACT02C} keeps no
+     * counter, displays no total, and its {@code SYSOUT} is byte-for-byte what it was without this.
+     * It is reported because its absence was itself observable - this job and the cross-reference
+     * reader beside it recorded {@code READ_COUNT 0} in {@code BATCH_STEP_EXECUTION} while three
+     * sibling reader jobs recorded their real counts, so a completed pass over the whole card master
+     * looked exactly like a pass over an empty one. Because an abend propagates rather than returning,
+     * a failed pass reports no count, which is the honest reading: the step did not complete.
+     *
      * @return the tasklet; never {@code null}
      */
     public Tasklet readCardfileTasklet() {
         return (contribution, chunkContext) -> {
-            execute(sysoutSink(), StopSignal.of(chunkContext));
+            int recordsRead = execute(sysoutSink(), StopSignal.of(chunkContext));
+            for (int recorded = 0; recorded < recordsRead; recorded++) {
+                contribution.incrementReadCount();
+            }
             return RepeatStatus.FINISHED;
         };
     }
@@ -627,13 +639,16 @@ public class AccountBalanceReaderJob {
      * {@code WORKING-STORAGE} and two calls cannot interfere.
      *
      * @param sysout where the {@code DISPLAY} output goes; never {@code null}
+     * @return the number of card records read and displayed; {@code 0} for an empty dataset. It is
+     *         step metadata rather than program output - {@code CBACT02C} keeps no counter and
+     *         displays no total - and a caller with no use for it may ignore it
      * @throws NullPointerException if {@code sysout} is {@code null}
      * @throws AbendException       if the open, a read or the close fails, carrying
      *                              {@link #APPL_RESULT_FATAL} as the {@code RETURN-CODE} exactly as
      *                              {@code 9999-ABEND-PROGRAM} does
      */
-    public void execute(SysoutSink sysout) {
-        execute(sysout, StopSignal.RUNNING);
+    public int execute(SysoutSink sysout) {
+        return execute(sysout, StopSignal.RUNNING);
     }
 
     /**
@@ -649,6 +664,7 @@ public class AccountBalanceReaderJob {
      * @param sysout     where the {@code DISPLAY} output goes; never {@code null}
      * @param stopSignal the between-record cancellation probe; {@link StopSignal#RUNNING} for a caller
      *                   outside a step; never {@code null}
+     * @return the number of card records read and displayed; {@code 0} for an empty dataset
      * @throws NullPointerException if {@code sysout} or {@code stopSignal} is {@code null}
      * @throws AbendException       if the open, a read or the close fails, carrying
      *                              {@link #APPL_RESULT_FATAL} as the {@code RETURN-CODE} exactly as
@@ -656,12 +672,12 @@ public class AccountBalanceReaderJob {
      * @throws BatchConfig.StopRequestedException if the step is asked to stop, which abandons the pass
      *                              between records
      */
-    public void execute(SysoutSink sysout, StopSignal stopSignal) {
+    public int execute(SysoutSink sysout, StopSignal stopSignal) {
         Objects.requireNonNull(sysout, "A SYSOUT sink is required to run " + PROGRAM_ID
                 + "; every one of its DISPLAY statements writes through it");
         Objects.requireNonNull(stopSignal, "A stop signal is required; pass StopSignal.RUNNING outside a "
                 + "step, which is what the single-argument overload does");
-        new CardfileRead(cardfileRepository(), datasetCharset, sysout).execute(stopSignal);
+        return new CardfileRead(cardfileRepository(), datasetCharset, sysout).execute(stopSignal);
     }
 
     /**
@@ -728,6 +744,18 @@ public class AccountBalanceReaderJob {
          * here to the same value the {@code VALUE} clause gives it.
          */
         private char endOfFile = END_OF_FILE_NO;
+
+        /**
+         * How many records this pass read, which is also how many lines it displayed.
+         *
+         * <p>It has <strong>no COBOL counterpart</strong>: {@code CBACT02C} declares no counter, tests
+         * none, and displays no total, so nothing this program writes depends on it. It exists so the
+         * step can report a read count in {@code BATCH_STEP_EXECUTION}, which is the one number an
+         * operator can compare against the dataset without reading the whole {@code SYSOUT} - and it
+         * is per-run state on this working-storage object rather than a field on the job bean, exactly
+         * as every other value here is (practice B9, gate G53).
+         */
+        private int recordsRead;
 
         /**
          * {@code 01 CARDFILE-STATUS} - {@code app/cbl/CBACT02C.cbl:46-48}: the two-character status
@@ -812,10 +840,11 @@ public class AccountBalanceReaderJob {
          * {@code PROCEDURE DIVISION} - {@code app/cbl/CBACT02C.cbl:70-87}.
          *
          * @param stopSignal the between-record cancellation probe
+         * @return the number of card records the pass read and displayed
          * @throws AbendException if the open, a read or the close fails
          * @throws BatchConfig.StopRequestedException if the step is asked to stop
          */
-        private void execute(StopSignal stopSignal) {
+        private int execute(StopSignal stopSignal) {
             sysout.write(START_BANNER);                                      // :71
             openCardfile();                                                  // :72
             try {
@@ -823,6 +852,7 @@ public class AccountBalanceReaderJob {
             } finally {
                 releaseBrowse();
             }
+            return recordsRead;
         }
 
         /**
@@ -856,6 +886,13 @@ public class AccountBalanceReaderJob {
                 // :77  IF END-OF-FILE = 'N' - genuinely two-armed: the read above is what sets the
                 // field, and the last read of the file takes the other arm.
                 if (!endOfFile()) {
+                    // NO COBOL COUNTERPART. One tally of the records this pass read, kept so the step
+                    // can report a read count in the batch metadata. CBACT02C keeps no counter and
+                    // displays no total, and nothing it writes depends on this; it is incremented here,
+                    // beside the DISPLAY, because this is the arm a delivered record takes and the read
+                    // that found end of file must not be counted as one.
+                    recordsRead++;
+
                     // :78  DISPLAY CARD-RECORD. The whole 150-byte record area, one line, and the only
                     // per-record output this program produces. The row's own image rather than a
                     // re-encoding of the decoded fields: the two differ in FILLER X(59), which the read

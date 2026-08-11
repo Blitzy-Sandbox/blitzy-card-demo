@@ -25,6 +25,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 import java.util.stream.Collectors;
 import org.junit.jupiter.api.DisplayName;
@@ -166,6 +167,18 @@ class MainMenuRequestTest {
             "OPTN012I",
             "OPTIONI",
             "ERRMSGI");
+
+    /**
+     * The same twenty fields as they appear <strong>on the wire</strong>: each {@code xxxI} item
+     * lower-cased with the direction suffix dropped. This is what {@code @JsonProperty} pins on every
+     * screen field and what AAP 0.6.3 requires - "payload field names and lengths derive from the xxxI
+     * items only" - and it is deliberately a different string from the Java member name, which keeps
+     * camel case for Java's own conventions. Derived from {@link #EXPECTED_ITEM_NAMES} rather than transcribed
+     * again, so the wire name still answers to the copybook and not to the implementation.
+     */
+    private static final List<String> EXPECTED_WIRE_NAMES = EXPECTED_ITEM_NAMES.stream()
+            .map(item -> item.substring(0, item.length() - 1).toLowerCase(Locale.ROOT))
+            .toList();
 
     /**
      * The twenty Java payload member names in the same map order, so element <em>i</em> here is the
@@ -1964,7 +1977,9 @@ class MainMenuRequestTest {
         @Test
         @DisplayName("exactly the twenty screen members plus navigationContext and eibAid")
         void exactlyTwentyTwoKeys() throws Exception {
-            List<String> expected = new ArrayList<>(EXPECTED_MEMBER_NAMES);
+            // The screen fields answer to their xxxI items; the two carriers, which trace to no DFHMDF
+            // field, answer to their component names.
+            List<String> expected = new ArrayList<>(EXPECTED_WIRE_NAMES);
             expected.addAll(EXPECTED_CARRIER_NAMES);
 
             assertThat(keysOf(atDeclaredWidths(" 1", NavigationContext.empty())))

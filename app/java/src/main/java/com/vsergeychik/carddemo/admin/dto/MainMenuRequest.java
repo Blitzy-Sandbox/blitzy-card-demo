@@ -1,7 +1,10 @@
 package com.vsergeychik.carddemo.admin.dto;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import com.vsergeychik.carddemo.common.NavigationContext;
+import com.vsergeychik.carddemo.common.ResponseOnlyMembers;
 import jakarta.validation.constraints.Size;
 import java.util.Arrays;
 import java.util.Collections;
@@ -245,14 +248,30 @@ import java.util.List;
  * @param eibAid     the raw {@code EIBAID} byte that {@code app/cbl/COMEN01C.cbl:93-103} evaluates;
  *                   resolving it to a key token is the shared program-function key resolver's job in
  *                   the service, not this type's
+ *
+ * <h2>Members this request tolerates without declaring</h2>
+ *
+ * <p>The {@code @JsonIgnoreProperties} below names the members the paired response carries that this
+ * request does not declare. They are tolerated so a client can send the body it was just handed straight
+ * back: rule R6 and gate G37 put the whole conversation in the payload, which makes the next request the
+ * previous response. {@code ignoreUnknown} stays at its default of {@code false}, so every <em>other</em>
+ * unrecognised name is still refused with the offending field named in the error envelope. Each tolerated
+ * member is recomputed by the server on every path, so the value that arrives here is discarded and
+ * cannot steer a branch. The names live in {@link com.vsergeychik.carddemo.common.ResponseOnlyMembers},
+ * which explains each one.
  */
+@JsonIgnoreProperties({
+        ResponseOnlyMembers.NEXT_PROGRAM,
+        ResponseOnlyMembers.NEXT_MAPSET,
+        ResponseOnlyMembers.NEXT_MAP,
+        ResponseOnlyMembers.SCREEN_METADATA})
 public record MainMenuRequest(
-        @Size(max = MainMenuRequest.TRN_NAME_LENGTH) String trnName,
+        @Size(max = MainMenuRequest.TRN_NAME_LENGTH) @JsonProperty("trnname") String trnName,
         @Size(max = MainMenuRequest.TITLE_LENGTH) String title01,
-        @Size(max = MainMenuRequest.CUR_DATE_LENGTH) String curDate,
-        @Size(max = MainMenuRequest.PGM_NAME_LENGTH) String pgmName,
+        @Size(max = MainMenuRequest.CUR_DATE_LENGTH) @JsonProperty("curdate") String curDate,
+        @Size(max = MainMenuRequest.PGM_NAME_LENGTH) @JsonProperty("pgmname") String pgmName,
         @Size(max = MainMenuRequest.TITLE_LENGTH) String title02,
-        @Size(max = MainMenuRequest.CUR_TIME_LENGTH) String curTime,
+        @Size(max = MainMenuRequest.CUR_TIME_LENGTH) @JsonProperty("curtime") String curTime,
         @Size(max = MainMenuRequest.OPTION_LINE_LENGTH) String optn001,
         @Size(max = MainMenuRequest.OPTION_LINE_LENGTH) String optn002,
         @Size(max = MainMenuRequest.OPTION_LINE_LENGTH) String optn003,
@@ -266,7 +285,7 @@ public record MainMenuRequest(
         @Size(max = MainMenuRequest.OPTION_LINE_LENGTH) String optn011,
         @Size(max = MainMenuRequest.OPTION_LINE_LENGTH) String optn012,
         @Size(max = MainMenuRequest.OPTION_LENGTH) String option,
-        @Size(max = MainMenuRequest.ERR_MSG_LENGTH) String errMsg,
+        @Size(max = MainMenuRequest.ERR_MSG_LENGTH) @JsonProperty("errmsg") String errMsg,
         NavigationContext navigationContext,
         byte eibAid) {
 

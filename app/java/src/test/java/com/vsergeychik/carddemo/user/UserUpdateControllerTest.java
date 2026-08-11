@@ -1504,7 +1504,7 @@ class UserUpdateControllerTest {
                             .contentType(MediaType.APPLICATION_JSON)
                             .content(mapper.writeValueAsString(arriving)))
                     .andExpect(status().isOk())
-                    .andExpect(jsonPath("$.usrIdIn").value(USER_ID))
+                    .andExpect(jsonPath("$.usridin").value(USER_ID))
                     .andExpect(jsonPath("$.cu02Info.usrSelected").value(USER_ID));
 
             verify(repository).readForUpdate(USER_ID);
@@ -1915,7 +1915,7 @@ class UserUpdateControllerTest {
                             .param(UserUpdateController.EIBCALEN_PARAM,
                                     String.valueOf(UserUpdateController.PASSED_COMMAREA_LENGTH)))
                     .andExpect(status().isOk())
-                    .andExpect(jsonPath("$.errMsg")
+                    .andExpect(jsonPath("$.errmsg")
                             .value(errMsgImage(UserUpdateController.MSG_FIRST_NAME_EMPTY)));
 
             // A blank field is a completed pseudo-conversational turn, not a rejected request: 200 with a
@@ -2010,9 +2010,10 @@ class UserUpdateControllerTest {
                 }
             }
 
-            // The twelve that ARE payload are present, under their Java names.
-            assertThat(members).contains("trnName", "title01", "curDate", "pgmName", "title02",
-                    "curTime", "usrIdIn", "fName", "lName", "passwd", "usrType", "errMsg");
+            // The twelve that ARE payload are present, under their wire names - each one's xxxI item
+            // in lower case, which @JsonProperty pins per AAP 0.6.3.
+            assertThat(members).contains("trnname", "title01", "curdate", "pgmname", "title02",
+                    "curtime", "usridin", "fname", "lname", "passwd", "usrtype", "errmsg");
         }
 
         @Test

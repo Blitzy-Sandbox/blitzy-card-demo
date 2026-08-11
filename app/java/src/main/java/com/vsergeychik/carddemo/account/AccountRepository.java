@@ -780,6 +780,18 @@ public class AccountRepository {
      *       anything is written. See below.</li>
      * </ul>
      *
+     * <p><strong>A unit of work is required, and its absence is refused rather than reported.</strong>
+     * The pool hands out connections with auto-commit disabled on purpose, so an {@code UPDATE} issued
+     * with nothing bound to the thread executes, reports the row it replaced, and is then rolled back
+     * when the connection is returned - which would have this method answer {@code '00'} for a record no
+     * later read could find. There is no {@code FILE STATUS} meaning "written, then discarded", so
+     * nothing is attempted: see
+     * {@link DatasetUnitOfWork#requireActiveToPersist(String, String)}. The batch caller's boundary is
+     * {@link DatasetUnitOfWork#persistVerb(String, java.util.function.Supplier)}, which is what
+     * {@code 1050-UPDATE-ACCOUNT}'s durability against a {@code RECOVERY(NONE)} dataset needs; the online
+     * caller's is {@link DatasetUnitOfWork#execute(String, java.util.function.Supplier)}, which is the
+     * task boundary {@code 9600-WRITE-PROCESSING} performs its account and customer rewrites inside.
+     *
      * <p><strong>Fan-out is precluded, not reported after the fact.</strong> The predicate the rewrite
      * carries selects the rows whose leading {@link #KEY_LENGTH} bytes are the key, and a KSDS primary
      * key is unique, so it names one row. If a deployment's relation does not enforce that uniqueness -
@@ -787,10 +799,10 @@ public class AccountRepository {
      * every matching row with this one record. Discovering that from the affected-row count is
      * discovering it too late: the rows have already been overwritten, and a status returned from there
      * reports damage that the enclosing unit of work then commits on the way out. So the key is
-     * required to name exactly one row <em>first</em>, in the same transaction and - when one is open -
-     * under the same {@code FOR UPDATE} lock the {@code UPDATE} will use, and the write is not issued
-     * at all unless it does. Should the count still come back wrong afterwards, the unit of work is
-     * refused rather than reported: see
+     * required to name exactly one row <em>first</em>, in the same transaction and under the same
+     * {@code FOR UPDATE} lock the {@code UPDATE} will use, and the write is not issued at all unless it
+     * does. Should the count still come back wrong afterwards, the unit of work is refused rather than
+     * reported: see
      * {@link DatasetUnitOfWork#commitRefusal(String, String)}, which explains why that one case cannot
      * be a file status.
      *
@@ -810,8 +822,9 @@ public class AccountRepository {
      * @param record the record to write, complete and already mutated by the caller
      * @return the discriminated outcome; never {@code null}
      * @throws NullPointerException  if {@code record} is {@code null}
-     * @throws IllegalStateException if the backend presents the dataset with no usable record-image
-     *                               column, or - as a
+     * @throws IllegalStateException if no unit of work is open, in which case nothing has been attempted;
+     *                               if the backend presents the dataset with no usable record-image
+     *                               column; or - as a
      *                               {@link com.vsergeychik.carddemo.common.DatasetIntegrityException} -
      *                               if the write replaced more rows than the key selected when it was
      *                               checked, in which case the unit of work is refused rather than a
@@ -843,20 +856,25 @@ public class AccountRepository {
      * @return the discriminated outcome; never {@code null}
      */
     private WriteResult rewrite(Statements sql, AccountRecord record) {
+        // A rewrite with no unit of work open is refused before anything is attempted: the pool hands out
+        // connections with auto-commit disabled, so the UPDATE would execute, report the row it replaced,
+        // and then be rolled back when the connection was returned - and this method would report
+        // FILE STATUS '00' for a record no later read could find. See requireActiveToPersist.
+        DatasetUnitOfWork.requireActiveToPersist("A rewrite of the account master, which REWRITE issues "
+                + "against the record area it was handed (app/cbl/CBACT04C.cbl:L356) and which EXEC CICS "
+                + "REWRITE issues against the record the preceding READ ... UPDATE still holds "
+                + "(app/cbl/COACTUPC.cbl:L4065-L4071)", datasetName);
+
         byte[] recordImage = record.toByteArray();
         String keyPattern = asPrefixPattern(record.keyImage());
         String maskedKey = SensitiveDiagnostics.maskIdentifier(record.keyImage());
 
-        // Establish that the key names exactly one row BEFORE any row is replaced. Where a unit of work
-        // is open the probe takes the same row lock the UPDATE will use, so nothing can change between
-        // the two; where none is open nothing can be atomic anyway - which is what requireActive says
-        // about the locking read - and the probe is still what keeps a fan-out from being discovered
-        // only from the affected-row count, after the damage.
-        boolean locking = DatasetUnitOfWork.active();
+        // Establish that the key names exactly one row BEFORE any row is replaced, under the same
+        // FOR UPDATE lock the UPDATE will use so nothing can change between the two. Reading the
+        // affected-row count afterwards would discover a fan-out only after the rows were overwritten.
         int matching;
         try {
-            matching = matchingRowCount(locking ? sql.selectByKeyForUpdate() : sql.selectByKey(),
-                    keyPattern);
+            matching = matchingRowCount(sql.selectByKeyForUpdate(), keyPattern);
         } catch (DataAccessException rejected) {
             return reportWrite(rejected, "establish how many rows the key of a record selects in the "
                     + "account master dataset '" + datasetName + "' before rewriting it");
@@ -903,8 +921,7 @@ public class AccountRepository {
         throw DatasetUnitOfWork.commitRefusal(
                 "The rewrite of account " + maskedKey + " in dataset '" + datasetName + "'",
                 rewritten + " rows were replaced where the key selected exactly one when it was checked "
-                        + "under " + (locking ? "a row lock" : "no row lock, because no unit of work was "
-                        + "open"));
+                        + "under a row lock");
     }
 
     /**
@@ -1878,7 +1895,11 @@ public class AccountRepository {
          * @param record the record to write, complete and already mutated by the caller
          * @return the discriminated outcome; never {@code null}
          * @throws NullPointerException  if {@code record} is {@code null}
-         * @throws IllegalStateException if this handle has been closed, or - as a
+         * @throws IllegalStateException if this handle has been closed; if no unit of work is open, in
+         *                               which case nothing has been attempted - {@code CBACT04C}'s rewrite
+         *                               reaches this through
+         *                               {@link DatasetUnitOfWork#persistVerb(String,
+         *                               java.util.function.Supplier)}; or - as a
          *                               {@link com.vsergeychik.carddemo.common.DatasetIntegrityException}
          *                               - if the write replaced more rows than the key selected when it
          *                               was checked

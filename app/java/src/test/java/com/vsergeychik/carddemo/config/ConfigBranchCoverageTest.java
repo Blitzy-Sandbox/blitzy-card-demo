@@ -16,7 +16,7 @@ import com.vsergeychik.carddemo.config.BatchConfig.StepContract;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBinding;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBindings;
 import com.vsergeychik.carddemo.config.WebConfig.CobolErrorHandler;
-import com.vsergeychik.carddemo.config.WebConfig.CobolErrorHandler.FailureResponse;
+import com.vsergeychik.carddemo.config.WebConfig.CobolErrorHandler.CobolErrorResponse;
 import com.vsergeychik.carddemo.config.WebConfig.JobSubmissionProperties;
 
 import com.zaxxer.hikari.HikariDataSource;
@@ -622,7 +622,8 @@ class ConfigBranchCoverageTest {
                     .isThrownBy(() -> jobsWith("account-balance-job", new JobContract("CBACT01C",
                             List.of(), List.of(new StepContract(" ", "CBACT01C", false)), null,
                             Map.of())).validate(validCatalogue()))
-                    .withMessageContaining("declares no name or no program");
+                    .withMessageContaining("its step at position 0 declares no value for "
+                            + "carddemo.jobs.account-balance-job.steps[0].name");
             assertThatIllegalStateException()
                     .isThrownBy(() -> jobsWith("account-balance-job", new JobContract("CBACT01C",
                             List.of(), List.of(new StepContract("STEP05", "CBACT01C", false),
@@ -827,13 +828,65 @@ class ConfigBranchCoverageTest {
 
         @Test
         @DisplayName("a step that names a program but no name, and one that names neither, are both "
-                + "refused")
+                + "refused - each naming the property path that is empty")
         void aStepMissingEitherHalfIsRefused() {
             assertThatIllegalStateException()
                     .isThrownBy(() -> jobsWith("account-balance-job", new JobContract("CBACT01C",
                             List.of(), List.of(new StepContract("STEP05", " ", false)), null,
                             Map.of())).validate(validCatalogue()))
-                    .withMessageContaining("declares no name or no program");
+                    .withMessageContaining("its step at position 0 declares no value for "
+                            + "carddemo.jobs.account-balance-job.steps[0].program")
+                    .withMessageContaining("the program from its EXEC PGM=");
+
+            // Both halves absent. One diagnostic naming both property paths, rather than one naming
+            // whichever half happened to be checked first: a reader fixing a partially written step
+            // needs to know everything that is missing from it, not the first thing.
+            assertThatIllegalStateException()
+                    .isThrownBy(() -> jobsWith("account-balance-job", new JobContract("CBACT01C",
+                            List.of(), List.of(new StepContract(null, null, false)), null,
+                            Map.of())).validate(validCatalogue()))
+                    .withMessageContaining("carddemo.jobs.account-balance-job.steps[0].name and "
+                            + "carddemo.jobs.account-balance-job.steps[0].program");
+        }
+
+        /**
+         * The ordering defect the runtime review found, asserted where it actually happens.
+         *
+         * <p>{@code JobContracts.validate} runs at context refresh from a bean that nothing sequences
+         * ahead of the job beans, so a job class routinely reads its contract first - and reading it
+         * starts with a step lookup by name. When a step's {@code name} had been omitted, that lookup
+         * dereferenced it and the context failed with a bare
+         * {@code NullPointerException: Cannot invoke "String.equals(Object)"}, naming no property, no
+         * job and no missing element, from a stack that pointed at the job class rather than at the
+         * configuration. The accessor now checks step completeness before returning a contract, so the
+         * first consumer sees the same descriptive refusal the central validation gives.
+         */
+        @Test
+        @DisplayName("resolving a contract whose step omits its name is refused descriptively, not "
+                + "with a NullPointerException from the first lookup")
+        void resolvingAContractWithAnIncompleteStepIsRefusedBeforeAnyLookup() {
+            JobContracts contracts = jobsWith("account-balance-job", new JobContract("CBACT01C",
+                    List.of(), List.of(new StepContract(null, "CBACT01C", false)), null, Map.of()));
+
+            assertThatIllegalStateException().isThrownBy(() -> contracts.contract("account-balance-job"))
+                    .as("the accessor every job class resolves its contract through")
+                    .withMessageContaining("The carddemo.jobs contract for 'account-balance-job' is "
+                            + "invalid")
+                    .withMessageContaining("carddemo.jobs.account-balance-job.steps[0].name")
+                    .withMessageContaining("the name from the step label");
+
+            // And the lookup itself no longer dereferences a name it was given none of: it reports the
+            // step it cannot find, which is all a lookup can honestly say.
+            JobContract incomplete = new JobContract("CBACT01C", List.of(),
+                    List.of(new StepContract(null, "CBACT01C", false)), null, Map.of());
+
+            assertThatIllegalStateException().isThrownBy(() -> incomplete.step("STEP05"))
+                    .withMessageContaining("declares no step named 'STEP05'");
+
+            // A complete contract resolves through the same accessor untouched, so the check added in
+            // front of it costs a well-formed configuration nothing.
+            assertThatNoException()
+                    .isThrownBy(() -> validJobs().contract("account-balance-job"));
         }
 
         @Test
@@ -1530,14 +1583,15 @@ class ConfigBranchCoverageTest {
             HttpMessageNotReadableException unreadable =
                     new HttpMessageNotReadableException(LEAK, emptyRequest());
 
-            ResponseEntity<FailureResponse> response =
+            ResponseEntity<CobolErrorResponse> response =
                     CobolErrorHandler.handleUnreadableBody(unreadable);
 
             assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
             assertThat(response.getBody()).isNotNull();
-            assertThat(response.getBody().status()).isEqualTo(400);
+            assertThat(response.getBody().code())
+                    .isEqualTo(CobolErrorHandler.MALFORMED_REQUEST_CODE);
             assertThat(response.getBody().error()).isEqualTo("Bad Request");
-            assertThat(response.getBody().message())
+            assertThat(response.getBody().detail())
                     .isEqualTo(CobolErrorHandler.UNREADABLE_BODY_MESSAGE)
                     .doesNotContain(LEAK);
         }
@@ -1547,11 +1601,11 @@ class ConfigBranchCoverageTest {
         void aTypeMismatchIsSanitized() {
             TypeMismatchException mismatch = new TypeMismatchException(LEAK, Integer.class);
 
-            ResponseEntity<FailureResponse> response = handler.handleTypeMismatch(mismatch);
+            ResponseEntity<CobolErrorResponse> response = handler.handleTypeMismatch(mismatch);
 
             assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
             assertThat(response.getBody()).isNotNull();
-            assertThat(response.getBody().message())
+            assertThat(response.getBody().detail())
                     .isEqualTo(CobolErrorHandler.TYPE_MISMATCH_MESSAGE)
                     .doesNotContain(LEAK);
         }
@@ -1562,13 +1616,13 @@ class ConfigBranchCoverageTest {
             DataAccessResourceFailureException failure =
                     new DataAccessResourceFailureException(LEAK);
 
-            ResponseEntity<FailureResponse> response = handler.handleDataAccessFailure(failure);
+            ResponseEntity<CobolErrorResponse> response = handler.handleDataAccessFailure(failure);
 
             assertThat(response.getStatusCode()).isEqualTo(HttpStatus.INTERNAL_SERVER_ERROR);
             assertThat(response.getBody()).isNotNull();
-            assertThat(response.getBody().status()).isEqualTo(500);
+            assertThat(response.getBody().code()).isEqualTo(CobolErrorHandler.DATASET_ACCESS_CODE);
             assertThat(response.getBody().error()).isEqualTo("Internal Server Error");
-            assertThat(response.getBody().message())
+            assertThat(response.getBody().detail())
                     .isEqualTo(CobolErrorHandler.DATASET_ACCESS_MESSAGE)
                     .doesNotContain(LEAK);
         }
@@ -1576,12 +1630,12 @@ class ConfigBranchCoverageTest {
         @Test
         @DisplayName("an unclaimed failure carrying no status becomes 500 with fixed text")
         void anUnclaimedFailureBecomes500() {
-            ResponseEntity<FailureResponse> response =
+            ResponseEntity<CobolErrorResponse> response =
                     handler.handleUnexpectedFailure(new IllegalArgumentException(LEAK));
 
             assertThat(response.getStatusCode()).isEqualTo(HttpStatus.INTERNAL_SERVER_ERROR);
             assertThat(response.getBody()).isNotNull();
-            assertThat(response.getBody().message())
+            assertThat(response.getBody().detail())
                     .isEqualTo(CobolErrorHandler.UNEXPECTED_FAILURE_MESSAGE)
                     .doesNotContain(LEAK);
         }
@@ -1595,12 +1649,12 @@ class ConfigBranchCoverageTest {
             IllegalStateException configurationFault = new IllegalStateException(
                     "No dataset binding is configured for DD name '" + LEAK + "'");
 
-            ResponseEntity<FailureResponse> response =
+            ResponseEntity<CobolErrorResponse> response =
                     handler.handleUnexpectedFailure(configurationFault);
 
             assertThat(response.getStatusCode()).isEqualTo(HttpStatus.INTERNAL_SERVER_ERROR);
             assertThat(response.getBody()).isNotNull();
-            assertThat(response.getBody().message())
+            assertThat(response.getBody().detail())
                     .isEqualTo(CobolErrorHandler.UNEXPECTED_FAILURE_MESSAGE)
                     .doesNotContain(LEAK);
         }
@@ -1611,13 +1665,14 @@ class ConfigBranchCoverageTest {
             ResponseStatusException notFound =
                     new ResponseStatusException(HttpStatus.NOT_FOUND, LEAK);
 
-            ResponseEntity<FailureResponse> response = handler.handleUnexpectedFailure(notFound);
+            ResponseEntity<CobolErrorResponse> response = handler.handleUnexpectedFailure(notFound);
 
             assertThat(response.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
             assertThat(response.getBody()).isNotNull();
-            assertThat(response.getBody().status()).isEqualTo(404);
+            assertThat(response.getBody().code())
+                    .isEqualTo(CobolErrorHandler.REQUEST_NOT_COMPLETED_CODE);
             assertThat(response.getBody().error()).isEqualTo("Not Found");
-            assertThat(response.getBody().message())
+            assertThat(response.getBody().detail())
                     .isEqualTo(CobolErrorHandler.UNEXPECTED_FAILURE_MESSAGE)
                     .doesNotContain(LEAK);
         }
@@ -1638,10 +1693,13 @@ class ConfigBranchCoverageTest {
             HttpStatusCode unregistered = HttpStatusCode.valueOf(599);
 
             assertThat(CobolErrorHandler.reasonPhraseOf(unregistered)).isEmpty();
-            FailureResponse body = CobolErrorHandler.sanitizedBody(unregistered,
+            CobolErrorResponse body = CobolErrorHandler.sanitizedBody(
+                    CobolErrorHandler.REQUEST_NOT_COMPLETED_CODE,
+                    unregistered,
                     CobolErrorHandler.UNEXPECTED_FAILURE_MESSAGE);
-            assertThat(body.status()).isEqualTo(599);
+            assertThat(body.code()).isEqualTo(CobolErrorHandler.REQUEST_NOT_COMPLETED_CODE);
             assertThat(body.error()).isEmpty();
+            assertThat(body.fieldErrors()).isEmpty();
         }
 
         @Test

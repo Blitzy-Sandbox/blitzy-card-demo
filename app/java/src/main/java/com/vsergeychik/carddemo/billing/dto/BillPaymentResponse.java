@@ -1,7 +1,10 @@
 package com.vsergeychik.carddemo.billing.dto;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import com.vsergeychik.carddemo.common.DiagnosticText;
 import com.vsergeychik.carddemo.common.NavigationContext;
+import com.vsergeychik.carddemo.common.ScreenFieldImage;
 import com.vsergeychik.carddemo.common.SensitiveDiagnostics;
 
 /**
@@ -694,7 +697,8 @@ public class BillPaymentResponse {
      * <p>Written by {@code POPULATE-HEADER-INFO} at {@code app/cbl/COBIL00C.cbl:325},
      * {@code MOVE WS-TRANID TO TRNNAMEO OF COBIL0AO}, so its value is {@value #TRANSACTION_ID}.
      */
-    private String trnName;
+    @JsonProperty("trnname")
+    private String trnName = ScreenFieldImage.unpainted(TRN_NAME_LENGTH);
 
     /**
      * {@code TITLE01O PIC X(40)} - the first title line, shown at {@code (1,21)} in yellow.
@@ -704,7 +708,7 @@ public class BillPaymentResponse {
      * shared {@code COTTL01Y} copybook, so the text is supplied by this module's screen-title
      * constants rather than composed here.
      */
-    private String title01;
+    private String title01 = ScreenFieldImage.unpainted(TITLE01_LENGTH);
 
     /**
      * {@code CURDATEO PIC X(8)} - the current date shown at {@code (1,71)} after the {@code 'Date:'}
@@ -717,7 +721,8 @@ public class BillPaymentResponse {
      * shape of the {@code 'mm/dd/yy'} literal the mapset supplies as the field's {@code INITIAL}
      * value.
      */
-    private String curDate;
+    @JsonProperty("curdate")
+    private String curDate = ScreenFieldImage.unpainted(CUR_DATE_LENGTH);
 
     /**
      * {@code PGMNAMEO PIC X(8)} - the program name shown at {@code (2,7)} after the {@code 'Prog:'}
@@ -726,7 +731,8 @@ public class BillPaymentResponse {
      * <p>Written by {@code POPULATE-HEADER-INFO} at {@code app/cbl/COBIL00C.cbl:326},
      * {@code MOVE WS-PGMNAME TO PGMNAMEO OF COBIL0AO}, so its value is {@value #PROGRAM_NAME}.
      */
-    private String pgmName;
+    @JsonProperty("pgmname")
+    private String pgmName = ScreenFieldImage.unpainted(PGM_NAME_LENGTH);
 
     /**
      * {@code TITLE02O PIC X(40)} - the second title line, shown at {@code (2,21)} in yellow.
@@ -735,7 +741,7 @@ public class BillPaymentResponse {
      * {@code MOVE CCDA-TITLE02 TO TITLE02O OF COBIL0AO}, from the same shared {@code COTTL01Y}
      * copybook as {@link #getTitle01()}.
      */
-    private String title02;
+    private String title02 = ScreenFieldImage.unpainted(TITLE02_LENGTH);
 
     /**
      * {@code CURTIMEO PIC X(8)} - the current time shown at {@code (2,71)} after the {@code 'Time:'}
@@ -746,7 +752,8 @@ public class BillPaymentResponse {
      * 334-336. The rendering is {@code HH:MM:SS}, matching the {@code 'hh:mm:ss'} literal the mapset
      * supplies as the field's {@code INITIAL} value.
      */
-    private String curTime;
+    @JsonProperty("curtime")
+    private String curTime = ScreenFieldImage.unpainted(CUR_TIME_LENGTH);
 
     /**
      * {@code ACTIDINO PIC X(11)} - the account identifier, the screen's primary input field, at
@@ -761,7 +768,8 @@ public class BillPaymentResponse {
      * chosen, and at line 563 {@code INITIALIZE-ALL-FIELDS} blanks it. Either way the bytes the
      * program sends are the bytes it wrote, which is why this is a genuine response member.
      */
-    private String actIdIn;
+    @JsonProperty("actidin")
+    private String actIdIn = ScreenFieldImage.unpainted(ACT_ID_IN_LENGTH);
 
     /**
      * {@code CURBALO PIC X(14)} - the account's current balance, shown at {@code (11,32)} after the
@@ -786,7 +794,8 @@ public class BillPaymentResponse {
      * <p>Note that {@code WS-TRAN-AMT PIC +99999999.99} at line 55 is a <em>different</em> mask, two
      * digits narrower, and is not this field.
      */
-    private String curBal;
+    @JsonProperty("curbal")
+    private String curBal = ScreenFieldImage.unpainted(CUR_BAL_LENGTH);
 
     /**
      * {@code CONFIRMO PIC X(1)} - the one-character payment confirmation, at {@code (15,60)} after the
@@ -802,7 +811,7 @@ public class BillPaymentResponse {
      * spaces and {@code LOW-VALUES}, tested as separate {@code WHEN} arms at lines 173-191; anything
      * else takes the {@code WHEN OTHER} arm. Those tests live in the service layer, not here.
      */
-    private String confirm;
+    private String confirm = ScreenFieldImage.unpainted(CONFIRM_LENGTH);
 
     /**
      * {@code ERRMSGO PIC X(78)} - the message line, shown bright red at {@code (23,1)}.
@@ -836,7 +845,8 @@ public class BillPaymentResponse {
      *
      * <p>The colour this text renders in is not fixed: see {@link #getMessageHighlight()}.
      */
-    private String errMsg;
+    @JsonProperty("errmsg")
+    private String errMsg = ScreenFieldImage.unpainted(ERR_MSG_LENGTH);
 
     // =================================================================================================
     // Presentation state that has no xxxO item of its own. Both members below are collapsed metadata
@@ -871,12 +881,18 @@ public class BillPaymentResponse {
      * in the map's declared red", and is the initial state.
      *
      * <p>Carried as a plain {@code String} of {@value #MESSAGE_HIGHLIGHT_LENGTH} character - every
-     * BMS attribute item is {@code PICTURE X} - and deliberately <em>not</em> named after the
-     * {@code ERRMSGC} item it derives from, for the same reason no member here is named after an
-     * {@code xxxL} or {@code xxxA} item. The attribute constants themselves belong to this module's
-     * shared BMS attribute class, which the service consumes; this class only transports the byte, so
-     * it does not depend on that class and its only repository-internal dependency stays
+     * BMS attribute item is {@code PICTURE X}. The attribute constants themselves belong to this
+     * module's shared BMS attribute class, which the service consumes; this class only transports the
+     * byte, so it does not depend on that class and its only repository-internal dependency stays
      * {@link NavigationContext}.
+     *
+     * <p><strong>It is not a JSON member.</strong> It derives from {@code ERRMSGC}, an attribute item,
+     * and AAP 0.6.3 keeps attribute items out of the payload and carries them as metadata instead. The
+     * other sixteen screens report the message colour as a number on {@code screenMetadata}, and this
+     * one does the same: {@link com.vsergeychik.carddemo.billing.BillPaymentController} reads this
+     * accessor and projects it into {@code screenMetadata.messageColour}. Publishing it at the top
+     * level as a raw colour byte rendered as a character - {@code U+00F4} for {@code DFHGREEN},
+     * printing as {@code "ô"} - made this screen the only one of the seventeen doing so.
      */
     private String messageHighlight;
 
@@ -936,7 +952,7 @@ public class BillPaymentResponse {
      * the client reads this member and issues the follow-up call itself, which is what keeps the
      * server free of conversation state.
      */
-    private String nextProgram;
+    private String nextProgram = ScreenFieldImage.spaces(NavigationContext.TO_PROGRAM_LENGTH);
 
     /**
      * The mapset the client should render next, {@value #MAPSET_NAME} whenever this screen
@@ -946,7 +962,7 @@ public class BillPaymentResponse {
      * {@code app/cbl/COBIL00C.cbl:297}. Carried explicitly because a stateless client cannot infer
      * which screen a payload belongs to.
      */
-    private String nextMapset;
+    private String nextMapset = ScreenFieldImage.spaces(NavigationContext.LAST_MAPSET_LENGTH);
 
     /**
      * The map the client should render next, {@value #MAP_NAME} whenever this screen re-displays
@@ -955,7 +971,7 @@ public class BillPaymentResponse {
      * <p>From {@code MAP('COBIL0A')} on the {@code EXEC CICS SEND MAP} at
      * {@code app/cbl/COBIL00C.cbl:296}.
      */
-    private String nextMap;
+    private String nextMap = ScreenFieldImage.spaces(NavigationContext.LAST_MAP_LENGTH);
 
     // =================================================================================================
     // The six CDEMO-CB00-INFO members, echoed back so the client can carry them into the next call.
@@ -970,14 +986,14 @@ public class BillPaymentResponse {
      * <p>Declared by the source and <strong>never read by it</strong>: exhaustive search finds no
      * reference to this item anywhere in the program's procedure division. Carried, not deleted.
      */
-    private String trnIdFirst;
+    private String trnIdFirst = ScreenFieldImage.spaces(TRN_ID_FIRST_LENGTH);
 
     /**
      * {@code CDEMO-CB00-TRNID-LAST PIC X(16)}, declared at {@code app/cbl/COBIL00C.cbl:66}.
      *
      * <p>Declared by the source and <strong>never read by it</strong>. Carried, not deleted.
      */
-    private String trnIdLast;
+    private String trnIdLast = ScreenFieldImage.spaces(TRN_ID_LAST_LENGTH);
 
     /**
      * {@code CDEMO-CB00-PAGE-NUM PIC 9(08)}, declared at {@code app/cbl/COBIL00C.cbl:67}.
@@ -1015,7 +1031,7 @@ public class BillPaymentResponse {
      * <p>Declared by the source and <strong>never read by it</strong>, and carrying no condition name.
      * Carried, not deleted.
      */
-    private String trnSelFlg;
+    private String trnSelFlg = ScreenFieldImage.spaces(TRN_SEL_FLG_LENGTH);
 
     /**
      * {@code CDEMO-CB00-TRN-SELECTED PIC X(16)}, declared at {@code app/cbl/COBIL00C.cbl:72}.
@@ -1028,7 +1044,7 @@ public class BillPaymentResponse {
      *
      * <p>Echoed back so that behaviour survives the next round trip.
      */
-    private String trnSelected;
+    private String trnSelected = ScreenFieldImage.spaces(TRN_SELECTED_LENGTH);
 
     // =================================================================================================
     // Construction. One no-argument constructor and nothing else: the controller fills this object
@@ -1037,14 +1053,25 @@ public class BillPaymentResponse {
     // =================================================================================================
 
     /**
-     * Creates an empty response.
+     * Creates an empty response: every member carrying a declared-width image, and none of them
+     * {@code null}.
      *
-     * <p>All ten map members, both navigation names and five of the six communication-area extension
-     * members start {@code null}; {@link #getCursorField()} starts {@link CursorField#NONE},
-     * {@link #getNextPageFlg()} starts {@value #NEXT_PAGE_NO} per the source's {@code VALUE} clause,
-     * and {@link #getPageNum()} starts zero. Nothing else is defaulted, because a {@code null} member
-     * is the meaningful {@code LOW-VALUES} state that {@code MOVE LOW-VALUES TO COBIL0AO} at
-     * {@code app/cbl/COBIL00C.cbl:114} produces and must remain distinguishable from blanks.
+     * <p>The ten map members start at {@link ScreenFieldImage#unpainted(int)} - {@code X'00'} at each
+     * declared width - which is exactly what {@code MOVE LOW-VALUES TO COBIL0AO} at
+     * {@code app/cbl/COBIL00C.cbl:114} produces. The seven {@code CARDDEMO-COMMAREA} carriers start at
+     * spaces, because they are not map fields and {@link NavigationContext#empty()} documents that
+     * resting state for the area they belong to.
+     *
+     * <p>An earlier revision left all of those {@code null} and called {@code null} "the meaningful
+     * {@code LOW-VALUES} state". It is not: {@code LOW-VALUES} is a run of {@code X'00'} at a declared
+     * width, and {@code null} serialises as JSON {@code null}, which says "there is no such field" -
+     * never true of a {@code DFHMDF} definition. This screen was the only one of the seventeen emitting
+     * {@code null} for a screen field, so a client had to test for it here and nowhere else.
+     * {@link ScreenFieldImage} records the choice once for all seventeen.
+     *
+     * <p>{@link #getCursorField()} starts {@link CursorField#NONE}, {@link #getNextPageFlg()} starts
+     * {@value #NEXT_PAGE_NO} per the source's {@code VALUE} clause, and {@link #getPageNum()} starts
+     * zero.
      */
     public BillPaymentResponse() {
         // Every field carries its declared initial state; there is deliberately nothing to compute
@@ -1267,6 +1294,7 @@ public class BillPaymentResponse {
      * @return one of the three {@link CursorField} constants, {@link CursorField#NONE} unless
      *         assigned; {@code null} only where a caller assigned it explicitly
      */
+    @JsonIgnore
     public CursorField getCursorField() {
         return cursorField;
     }
@@ -1287,6 +1315,7 @@ public class BillPaymentResponse {
      * @return a {@value #MESSAGE_HIGHLIGHT_LENGTH}-character BMS attribute value, or {@code null}
      *         where the program applies no override and the map's declared red stands
      */
+    @JsonIgnore
     public String getMessageHighlight() {
         return messageHighlight;
     }

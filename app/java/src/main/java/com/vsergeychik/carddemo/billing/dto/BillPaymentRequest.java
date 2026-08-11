@@ -1,8 +1,11 @@
 package com.vsergeychik.carddemo.billing.dto;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import com.vsergeychik.carddemo.common.DiagnosticText;
 import com.vsergeychik.carddemo.common.NavigationContext;
+import com.vsergeychik.carddemo.common.ResponseOnlyMembers;
 import com.vsergeychik.carddemo.common.SensitiveDiagnostics;
 import jakarta.validation.constraints.Size;
 
@@ -269,7 +272,23 @@ import jakarta.validation.constraints.Size;
  * completely on its own.
  *
  * @see NavigationContext
+ *
+ * <h2>Members this request tolerates without declaring</h2>
+ *
+ * <p>The {@code @JsonIgnoreProperties} below names the members the paired response carries that this
+ * request does not declare. They are tolerated so a client can send the body it was just handed straight
+ * back: rule R6 and gate G37 put the whole conversation in the payload, which makes the next request the
+ * previous response. {@code ignoreUnknown} stays at its default of {@code false}, so every <em>other</em>
+ * unrecognised name is still refused with the offending field named in the error envelope. Each tolerated
+ * member is recomputed by the server on every path, so the value that arrives here is discarded and
+ * cannot steer a branch. The names live in {@link com.vsergeychik.carddemo.common.ResponseOnlyMembers},
+ * which explains each one.
  */
+@JsonIgnoreProperties({
+        ResponseOnlyMembers.NEXT_PROGRAM,
+        ResponseOnlyMembers.NEXT_MAPSET,
+        ResponseOnlyMembers.NEXT_MAP,
+        ResponseOnlyMembers.SCREEN_METADATA})
 public final class BillPaymentRequest {
 
     // =================================================================================================
@@ -556,6 +575,7 @@ public final class BillPaymentRequest {
      * {@code @Size(max = }{@value #TRN_NAME_LENGTH}{@code )} and nothing more.
      */
     @Size(max = TRN_NAME_LENGTH)
+    @JsonProperty("trnname")
     private String trnName;
 
     /**
@@ -585,6 +605,7 @@ public final class BillPaymentRequest {
      * program's own editing remains the only judge of it.
      */
     @Size(max = CUR_DATE_LENGTH)
+    @JsonProperty("curdate")
     private String curDate;
 
     /**
@@ -598,6 +619,7 @@ public final class BillPaymentRequest {
      * {@code @Size(max = }{@value #PGM_NAME_LENGTH}{@code )} and nothing more.
      */
     @Size(max = PGM_NAME_LENGTH)
+    @JsonProperty("pgmname")
     private String pgmName;
 
     /**
@@ -624,6 +646,7 @@ public final class BillPaymentRequest {
      * format check.
      */
     @Size(max = CUR_TIME_LENGTH)
+    @JsonProperty("curtime")
     private String curTime;
 
     /**
@@ -647,6 +670,7 @@ public final class BillPaymentRequest {
      * arrive here unaltered.
      */
     @Size(max = ACT_ID_IN_LENGTH)
+    @JsonProperty("actidin")
     private String actIdIn;
 
     /**
@@ -677,6 +701,7 @@ public final class BillPaymentRequest {
      * the only shape this member can ever hold.
      */
     @Size(max = CUR_BAL_LENGTH)
+    @JsonProperty("curbal")
     private String curBal;
 
     /**
@@ -726,6 +751,7 @@ public final class BillPaymentRequest {
      * would quietly contradict the truncation the program performs.
      */
     @Size(max = ERR_MSG_LENGTH)
+    @JsonProperty("errmsg")
     private String errMsg;
 
     // =================================================================================================

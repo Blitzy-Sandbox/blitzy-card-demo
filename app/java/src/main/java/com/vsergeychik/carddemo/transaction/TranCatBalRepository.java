@@ -846,8 +846,11 @@ public class TranCatBalRepository {
      * @param record the record to add, complete and already mutated by the caller
      * @return the discriminated outcome; never {@code null}
      * @throws NullPointerException  if {@code record} is {@code null}
-     * @throws IllegalStateException if the backend presents the dataset with no usable record-image
-     *                               column, or - as a
+     * @throws IllegalStateException if no unit of work is open, in which case nothing has been attempted -
+     *                               see
+     *                               {@link DatasetUnitOfWork#requireActiveToPersist(String, String)};
+     *                               if the backend presents the dataset with no usable record-image
+     *                               column; or - as a
      *                               {@link com.vsergeychik.carddemo.common.DatasetIntegrityException} -
      *                               if the insert added more than the one row it was asked to
      */
@@ -877,6 +880,15 @@ public class TranCatBalRepository {
      */
     private WriteResult write(Statements sql, TranCatBalRecord record) {
         byte[] recordImage = requireStorableImage(record, "written");
+        // Refused before anything is attempted when no unit of work is open - after the record itself has
+        // been checked, so a malformed record is still diagnosed as a malformed record. The pool hands out
+        // connections with auto-commit disabled, so the INSERT would execute, report the row it added, and
+        // then be rolled back on return, leaving 2700-A told that a balance record it will go on to
+        // account for was created. CBTRN02C reaches this inside the step's own transaction; see
+        // requireActiveToPersist for the other two boundaries.
+        DatasetUnitOfWork.requireActiveToPersist("A write to the transaction category balance file, which "
+                + "WRITE issues from the record area 2700-A-CREATE-TCATBAL-REC has just built "
+                + "(app/cbl/CBTRN02C.cbl:L510)", datasetName);
         String keyImage = record.tranCatKeyImage();
         String keyPattern = KEY_SPAN.pattern(keyImage);
         String subject = describeKey(keyImage);
@@ -1001,8 +1013,9 @@ public class TranCatBalRepository {
      * @param record the record to write, complete and already mutated by the caller
      * @return the discriminated outcome; never {@code null}
      * @throws NullPointerException  if {@code record} is {@code null}
-     * @throws IllegalStateException if the backend presents the dataset with no usable record-image
-     *                               column, or - as a
+     * @throws IllegalStateException if no unit of work is open, in which case nothing has been attempted;
+     *                               if the backend presents the dataset with no usable record-image
+     *                               column; or - as a
      *                               {@link com.vsergeychik.carddemo.common.DatasetIntegrityException} -
      *                               if the write replaced more rows than the key selected when it was
      *                               checked
@@ -1033,19 +1046,22 @@ public class TranCatBalRepository {
      */
     private WriteResult rewrite(Statements sql, TranCatBalRecord record) {
         byte[] recordImage = requireStorableImage(record, "rewritten");
+        // Refused before anything is attempted when no unit of work is open, for the same reason the
+        // write is: the UPDATE would execute, report the row it replaced, and then be rolled back when the
+        // connection returned to the pool, leaving 2700-B told that an accumulated balance was stored.
+        DatasetUnitOfWork.requireActiveToPersist("A rewrite of the transaction category balance file, "
+                + "which REWRITE issues against the record area 2700-B-UPDATE-TCATBAL-REC has just "
+                + "accumulated into (app/cbl/CBTRN02C.cbl:L528)", datasetName);
         String keyImage = record.tranCatKeyImage();
         String keyPattern = KEY_SPAN.pattern(keyImage);
         String subject = describeKey(keyImage);
 
-        // Establish that the key names exactly one row BEFORE any row is replaced. Where a unit of work
-        // is open the probe takes the same row lock the UPDATE will use, so nothing can change between
-        // the two; where none is open nothing can be atomic anyway, and the probe is still what keeps a
-        // fan-out from being discovered only from the affected-row count, after the damage.
-        boolean locking = DatasetUnitOfWork.active();
+        // Establish that the key names exactly one row BEFORE any row is replaced, under the same
+        // FOR UPDATE lock the UPDATE will use so nothing can change between the two. Reading the
+        // affected-row count afterwards would discover a fan-out only after the rows were overwritten.
         int matching;
         try {
-            matching = matchingRowCount(locking ? sql.selectByKeyForUpdate() : sql.selectByKey(),
-                    keyPattern);
+            matching = matchingRowCount(sql.selectByKeyForUpdate(), keyPattern);
         } catch (DataAccessException rejected) {
             return reportWrite(rejected, "establish how many rows the key of " + subject + " selects in "
                     + "the transaction category balance dataset '" + datasetName + "' before rewriting it");
@@ -1091,8 +1107,7 @@ public class TranCatBalRepository {
         throw DatasetUnitOfWork.commitRefusal(
                 "The rewrite of " + subject + " in dataset '" + datasetName + "'",
                 rewritten + " rows were replaced where the key selected exactly one when it was checked "
-                        + "under " + (locking ? "a row lock" : "no row lock, because no unit of work was "
-                        + "open"));
+                        + "under a row lock");
     }
 
     /**
@@ -2013,7 +2028,9 @@ public class TranCatBalRepository {
          * @param record the record to add, complete and already mutated by the caller
          * @return the discriminated outcome; never {@code null}
          * @throws NullPointerException  if {@code record} is {@code null}
-         * @throws IllegalStateException if this handle has been closed
+         * @throws IllegalStateException if this handle has been closed, or if no unit of work is open - the
+         *                               step's own transaction is the boundary {@code CBTRN02C} reaches
+         *                               this inside
          */
         public WriteResult write(TranCatBalRecord record) {
             requireOpen("write a record");
@@ -2033,7 +2050,9 @@ public class TranCatBalRepository {
          * @param record the record to write, complete and already mutated by the caller
          * @return the discriminated outcome; never {@code null}
          * @throws NullPointerException  if {@code record} is {@code null}
-         * @throws IllegalStateException if this handle has been closed
+         * @throws IllegalStateException if this handle has been closed, or if no unit of work is open - the
+         *                               step's own transaction is the boundary {@code CBTRN02C} reaches
+         *                               this inside
          */
         public WriteResult rewrite(TranCatBalRecord record) {
             requireOpen("rewrite a record");

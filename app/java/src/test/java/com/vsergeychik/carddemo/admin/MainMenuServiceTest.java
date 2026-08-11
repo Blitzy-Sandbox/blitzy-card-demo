@@ -20,6 +20,7 @@ import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.NavigationContext;
 import com.vsergeychik.carddemo.common.PfKeyResolver;
 import com.vsergeychik.carddemo.common.PfKeyResolver.AidKey;
+import com.vsergeychik.carddemo.common.ScreenFieldImage;
 import com.vsergeychik.carddemo.common.SystemMessages;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBinding;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBindings;
@@ -206,8 +207,24 @@ class MainMenuServiceTest {
     /** Eighty spaces: {@code WS-MESSAGE} as {@code app/cbl/COMEN01C.cbl:79} leaves it. */
     private static final String BLANK_MESSAGE = " ".repeat(WS_MESSAGE_WIDTH);
 
-    /** Forty spaces: an {@code OPTN00nO} line the program never writes. */
-    private static final String BLANK_OPTION_LINE = " ".repeat(OPTION_LINE_WIDTH);
+    /**
+     * Forty {@code X'00'} characters: an {@code OPTN00nO} line the program never writes, as
+     * {@code MOVE LOW-VALUES TO COMEN1AO} at {@code app/cbl/COMEN01C.cbl:89} leaves it.
+     *
+     * <p>Not spaces. {@code MOVE SPACES TO WS-MENU-OPT-TXT} at {@code :241} blanks the
+     * {@code WORKING-STORAGE} composition buffer, not the map field; the {@code MOVE ... TO OPTN00nO}
+     * statements are inside the {@code EVALUATE} arms and run only for a subscript the loop reaches, so
+     * a line past {@code CDEMO-MENU-OPT-COUNT} is never written at all.
+     */
+    /**
+     * {@code OPTIONO} as the group {@code MOVE LOW-VALUES} leaves it: two {@code X'00'} characters.
+     * {@code MOVE WS-OPTION TO OPTIONO} at {@code :125} is the only writer and it lives inside
+     * {@code PROCESS-ENTER-KEY}, so on the first-entry paint the field is simply never written.
+     */
+    private static final String BLANK_OPTION_ECHO = ScreenFieldImage.unpainted(2);
+
+    private static final String BLANK_OPTION_LINE =
+            ScreenFieldImage.unpainted(OPTION_LINE_WIDTH);
 
     /** Eight spaces: an {@code XCTL} target on a path that does not transfer. */
     private static final String NO_NEXT_PROGRAM = " ".repeat(PROGRAM_NAME_WIDTH);
@@ -695,8 +712,9 @@ class MainMenuServiceTest {
                     .as("app/cbl/COMEN01C.cbl:88 - SET CDEMO-PGM-REENTER TO TRUE")
                     .isTrue();
             assertThat(outcome.option())
-                    .as("OPTIONO is one of the fields LOW-VALUES cleared, so the echo is blank")
-                    .isEqualTo("  ");
+                    .as("OPTIONO is one of the fields LOW-VALUES cleared, so it holds X'00' at its "
+                            + "declared width - not spaces, which is a different byte")
+                    .isEqualTo(BLANK_OPTION_ECHO);
             assertThat(outcome.message()).isEqualTo(BLANK_MESSAGE);
             assertThat(outcome.errorFlag()).isFalse();
             assertThat(outcome.hasNextProgram()).isFalse();

@@ -14,6 +14,7 @@ import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.FileStatus.Outcome;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.NavigationContext;
+import com.vsergeychik.carddemo.common.ScreenFieldImage;
 import com.vsergeychik.carddemo.common.SystemMessages;
 import com.vsergeychik.carddemo.config.DatasetUnitOfWork;
 import com.vsergeychik.carddemo.transaction.TransactionRepository;
@@ -2053,7 +2054,9 @@ public class BillPaymentService {
      * @return exactly {@code length} {@code X'00'} characters
      */
     private static String lowValues(int length) {
-        return String.valueOf(LOW_VALUES).repeat(length);
+        // One implementation of the LOW-VALUES image, in common.ScreenFieldImage, so the choice cannot
+        // drift back apart across screens. Any width validation above is this method's own contract.
+        return ScreenFieldImage.unpainted(length);
     }
 
 

@@ -28,6 +28,7 @@ import com.vsergeychik.carddemo.common.CicsResponse;
 import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.NavigationContext;
+import com.vsergeychik.carddemo.common.ScreenInputRejectedException;
 import com.vsergeychik.carddemo.common.SystemMessages;
 import com.vsergeychik.carddemo.customer.CustomerRepository;
 import com.vsergeychik.carddemo.customer.model.CustomerRecord;
@@ -4075,6 +4076,61 @@ class AccountUpdateControllerTest {
 
             assertThat(abend.getReturnCode()).isEqualTo(AbendException.RETURN_CODE_IO_ERROR);
             assertThat(abend).hasRootCauseMessage("backend unavailable");
+        }
+    }
+
+    @Nested
+    @DisplayName("A value a RECEIVE MAP could not have delivered is the caller's error, not an abend")
+    class ScreenInputRefusal {
+
+        @Test
+        @DisplayName("An unrepresentable character is refused as ScreenInputRejectedException and never "
+                + "routed to ABEND-ROUTINE, which is what the HANDLE ABEND declarative would otherwise do")
+        void anUnrepresentableCharacterIsNotAnAbend() {
+            AccountUpdateRequest received = AccountUpdateRequest.initial()
+                    .withValue(AccountUpdateRequest.ScreenField.ACSFNAM, "JOS\u00C9");
+
+            assertThatThrownBy(() -> controller.handle(received, 0, CicsAid.DFHENTER))
+                    .isInstanceOf(ScreenInputRejectedException.class)
+                    .isNotInstanceOf(AbendException.class)
+                    .isInstanceOf(IllegalArgumentException.class);
+        }
+
+        @Test
+        @DisplayName("It names the offending field and never echoes the value")
+        void itNamesTheFieldAndNotTheValue() {
+            AccountUpdateRequest received = AccountUpdateRequest.initial()
+                    .withValue(AccountUpdateRequest.ScreenField.ACSLNAM, "MU\u00D1OZ");
+
+            assertThatThrownBy(() -> controller.handle(received, 0, CicsAid.DFHENTER))
+                    .isInstanceOf(ScreenInputRejectedException.class)
+                    .satisfies(thrown -> {
+                        ScreenInputRejectedException rejected = (ScreenInputRejectedException) thrown;
+                        assertThat(rejected.member()).contains("ACSLNAM");
+                        assertThat(rejected.getMessage()).contains("ACSLNAMI").doesNotContain("MU");
+                    });
+        }
+
+        @Test
+        @DisplayName("The refusal precedes every dataset access, so a rejected payload cannot have left "
+                + "a partial change behind")
+        void theRefusalPrecedesEveryDatasetAccess() {
+            AccountUpdateRequest received = request(ACCT, null)
+                    .withValue(AccountUpdateRequest.ScreenField.ACSFNAM, "JOS\u00C9");
+
+            assertThatThrownBy(() -> controller.handle(received, 0, CicsAid.DFHENTER))
+                    .isInstanceOf(ScreenInputRejectedException.class);
+
+            verifyNoInteractions(accounts, xrefs, customers, service);
+        }
+
+        @Test
+        @DisplayName("A payload whose every character the code page represents is untouched by the sweep")
+        void arepresentablePayloadIsUntouched() {
+            AccountUpdateRequest received = AccountUpdateRequest.initial()
+                    .withValue(AccountUpdateRequest.ScreenField.ACSFNAM, "JOSE");
+
+            assertThat(controller.handle(received, 0, CicsAid.DFHENTER)).isNotNull();
         }
     }
 }

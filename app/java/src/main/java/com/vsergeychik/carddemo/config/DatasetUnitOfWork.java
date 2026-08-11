@@ -43,6 +43,10 @@ import org.springframework.transaction.support.TransactionTemplate;
  *       Issuing {@code FOR UPDATE} with nothing to hold the lock is not a smaller guarantee than a real
  *       lock - it is the appearance of one, which is worse, because it silences the question rather than
  *       answering it. A repository that cannot take the lock it was asked for says so.</li>
+ *   <li>{@link #requireActiveToPersist(String, String)} lets a <em>write</em> refuse the same way, for
+ *       the more direct reason that outside a boundary the record is never stored at all: the pool is
+ *       configured {@code auto-commit: false}, so a connection returned to it is rolled back, and the
+ *       row count the statement reported would otherwise be handed back as a completed write.</li>
  * </ul>
  *
  * <h2>Deliberately not an optimistic-locking mechanism</h2>
@@ -255,6 +259,72 @@ public final class DatasetUnitOfWork {
                 + "caller could use it. A read-for-update, the comparison that follows it and the "
                 + "rewrite that follows that are one unit of work in CICS; run them inside "
                 + DatasetUnitOfWork.class.getSimpleName() + ".execute(..) so they are one here too");
+    }
+
+    /**
+     * Requires a unit of work to be open before a record is stored, and refuses the operation when none
+     * is. The mutation-side sibling of {@link #requireActive(String, String)}.
+     *
+     * <h2>Why a separate method, and why a mutation needs one at all</h2>
+     * <p>{@link #requireActive(String, String)} exists because a {@code FOR UPDATE} outside a boundary
+     * holds no lock. A bare {@code WRITE} takes no lock, so that reasoning does not reach it - and yet it
+     * needs a boundary for a different and more direct reason: <strong>without one the record is never
+     * stored, and the verb reports that it was.</strong>
+     *
+     * <p>The mechanism is the pool, not the logic. {@code application.yml} sets
+     * {@code spring.datasource.hikari.auto-commit: false} deliberately - commit boundaries belong to the
+     * Spring Batch step and the service layer, mirroring where the COBOL performs its {@code REWRITE},
+     * so the driver must not commit on its own - and the test profile keeps that setting unchanged for
+     * the same reason. A pooled connection handed out with auto-commit disabled is rolled back when it is
+     * returned, so an {@code INSERT} or {@code UPDATE} issued with nothing bound to the thread executes,
+     * reports the row count it affected, and is then discarded. The repository has no way to observe
+     * that: {@code jdbcTemplate.update(..)} answers {@code 1}, so a verb that trusted the row count would
+     * hand its caller {@code FILE STATUS '00'} for a record that no later read will ever find.
+     *
+     * <h2>Why refusing beats reporting</h2>
+     * <p>A repository normally reports a bad outcome as a {@code FILE STATUS} and lets the caller's guard
+     * chain decide, because that is what the COBOL does. That model needs a status the COBOL can branch
+     * on, and there is none for this: no {@code FILE STATUS} means "the write completed and was then
+     * thrown away", because no mainframe {@code WRITE} can do that. Reporting one of the failure statuses
+     * instead would be a second untruth - the dataset refused nothing - and would send the caller down an
+     * error arm describing a condition that did not occur. So this is a wiring defect, reported as one,
+     * loudly and before anything is attempted. That is the same trade
+     * {@link #requireActive(String, String)} and {@link #commitRefusal(String, String)} both make: a loud
+     * wiring bug is worth far more than a silent correctness one.
+     *
+     * <h2>What a caller does about it</h2>
+     * <p>Supplies the boundary the COBOL already has, choosing the one its program has:
+     * {@link #execute(String, Supplier)} for an online task, whose paragraphs reach a syncpoint together;
+     * {@link #persistVerb(String, Supplier)} for a non-CICS batch verb against a
+     * {@code RECOVERY(NONE)} dataset, which is durable the moment it completes; or the Spring Batch
+     * step's own transaction, which already encloses a chunk's reads, processing and writes.
+     *
+     * <p>Note that this refuses on the thread state alone and issues no statement, so it is as cheap
+     * inside a boundary - one thread-local read - as it is outside one.
+     *
+     * @param operation the operation being attempted, named as the caller's method and its COBOL verb
+     * @param dsname    the dataset the operation would have changed
+     * @throws NullPointerException  if {@code operation} or {@code dsname} is {@code null}
+     * @throws IllegalStateException if no transaction is open, in which case nothing has been attempted
+     */
+    public static void requireActiveToPersist(String operation, String dsname) {
+        Objects.requireNonNull(operation, "An operation name is required to report a missing unit of "
+                + "work against");
+        Objects.requireNonNull(dsname, "A dataset name is required to report a missing unit of work "
+                + "against");
+        if (active()) {
+            return;
+        }
+        throw new IllegalStateException(operation + " on dataset '" + dsname + "' changes stored records, "
+                + "and no transaction is open on this thread, so the change would be rolled back when the "
+                + "connection returned to the pool - the pool is configured auto-commit: false on purpose, "
+                + "because commit boundaries belong to the step and the service layer - while the row "
+                + "count the statement reported would be handed back as a completed write. There is no "
+                + "FILE STATUS meaning 'written, then discarded', so nothing is attempted and this is "
+                + "reported as the wiring defect it is. Run the write inside "
+                + DatasetUnitOfWork.class.getSimpleName() + ".execute(..) for an online task, "
+                + DatasetUnitOfWork.class.getSimpleName() + ".persistVerb(..) for a batch verb, or inside "
+                + "the Spring Batch step's own transaction");
     }
 
     /**

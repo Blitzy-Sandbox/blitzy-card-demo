@@ -1,7 +1,10 @@
 package com.vsergeychik.carddemo.user.dto;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import com.vsergeychik.carddemo.common.NavigationContext;
+import com.vsergeychik.carddemo.common.ResponseOnlyMembers;
 import com.vsergeychik.carddemo.common.SensitiveDiagnostics;
 import jakarta.validation.constraints.Size;
 
@@ -163,13 +166,14 @@ import jakarta.validation.constraints.Size;
  *
  * <h2>Serialisation</h2>
  *
- * The module's web configuration owns Jackson policy - it leaves DTO property names untransformed so
- * each one still traces 1:1 to an {@code xxxI} item, and it declines trimming, empty-string-to-null
- * coercion and null exclusion so that space-padded {@code PIC X(n)} values survive a round trip.
- * This class therefore carries no Jackson annotation at all: no property rename, no naming strategy,
- * no inclusion filter, no ignore and no custom serialiser. A record's components are its JSON
- * properties, and the build compiles with {@code -parameters}, so the canonical constructor binds by
- * component name with nothing further declared.
+ * The module's web configuration owns Jackson policy - it declines trimming, empty-string-to-null
+ * coercion and null exclusion so that space-padded {@code PIC X(n)} values survive a round trip. What
+ * this class declares is one {@code @JsonProperty} per screen field, pinning each wire name to its
+ * {@code xxxI} item in lower case. That is the presentation contract AAP 0.6.3 fixes - "payload field
+ * names and lengths derive from the xxxI items only" - and declaring it here rather than leaning on the
+ * Java identifier is what keeps the wire name stable when the identifier is camel case for Java's own
+ * conventions, and immune to a naming strategy configured later. Nothing else is declared: no naming
+ * strategy, no inclusion filter, no ignore and no custom serialiser.
  *
  * <p>{@link #inEnterState()} and {@link #inReenterState()} are named so that they are not bean
  * getters. That is intentional: they are <em>derived</em> from the communication area rather than
@@ -229,18 +233,35 @@ import jakarta.validation.constraints.Size;
  *                 {@code 'PFK03'} and so on. <strong>Not a map field</strong> - the second mandated
  *                 exception. {@code null} means no key has been resolved, mirroring the empty result
  *                 that key resolution returns for an unrecognised {@code EIBAID}
+ *
+ * <h2>Members this request tolerates without declaring</h2>
+ *
+ * <p>The {@code @JsonIgnoreProperties} below names the members the paired response carries that this
+ * request does not declare. They are tolerated so a client can send the body it was just handed straight
+ * back: rule R6 and gate G37 put the whole conversation in the payload, which makes the next request the
+ * previous response. {@code ignoreUnknown} stays at its default of {@code false}, so every <em>other</em>
+ * unrecognised name is still refused with the offending field named in the error envelope. Each tolerated
+ * member is recomputed by the server on every path, so the value that arrives here is discarded and
+ * cannot steer a branch. The names live in {@link com.vsergeychik.carddemo.common.ResponseOnlyMembers},
+ * which explains each one.
  */
-public record SignOnRequest(@Size(max = TRNNAME_LENGTH) String trnName,
+@JsonIgnoreProperties({
+        ResponseOnlyMembers.NEXT_PROGRAM,
+        ResponseOnlyMembers.NEXT_MAPSET,
+        ResponseOnlyMembers.NEXT_MAP,
+        ResponseOnlyMembers.SCREEN_METADATA,
+        ResponseOnlyMembers.ROLE})
+public record SignOnRequest(@Size(max = TRNNAME_LENGTH) @JsonProperty("trnname") String trnName,
                             @Size(max = TITLE01_LENGTH) String title01,
-                            @Size(max = CURDATE_LENGTH) String curDate,
-                            @Size(max = PGMNAME_LENGTH) String pgmName,
+                            @Size(max = CURDATE_LENGTH) @JsonProperty("curdate") String curDate,
+                            @Size(max = PGMNAME_LENGTH) @JsonProperty("pgmname") String pgmName,
                             @Size(max = TITLE02_LENGTH) String title02,
-                            @Size(max = CURTIME_LENGTH) String curTime,
-                            @Size(max = APPLID_LENGTH) String applId,
-                            @Size(max = SYSID_LENGTH) String sysId,
-                            @Size(max = USERID_LENGTH) String userId,
+                            @Size(max = CURTIME_LENGTH) @JsonProperty("curtime") String curTime,
+                            @Size(max = APPLID_LENGTH) @JsonProperty("applid") String applId,
+                            @Size(max = SYSID_LENGTH) @JsonProperty("sysid") String sysId,
+                            @Size(max = USERID_LENGTH) @JsonProperty("userid") String userId,
                             @Size(max = PASSWD_LENGTH) String passwd,
-                            @Size(max = ERRMSG_LENGTH) String errMsg,
+                            @Size(max = ERRMSG_LENGTH) @JsonProperty("errmsg") String errMsg,
                             NavigationContext navigationContext,
                             @Size(max = AID_LENGTH) String aid) {
 

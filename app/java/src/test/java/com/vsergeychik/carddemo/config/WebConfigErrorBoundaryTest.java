@@ -10,11 +10,10 @@ import com.vsergeychik.carddemo.card.dto.CardUpdateRequest.CardUpdateRecord;
 import com.vsergeychik.carddemo.card.dto.CardUpdateRequest.DetailGroup;
 import com.vsergeychik.carddemo.card.model.CardXrefRecord;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
+import com.vsergeychik.carddemo.common.ScreenInputRejectedException;
 import com.vsergeychik.carddemo.config.WebConfig.CobolErrorHandler;
 import com.vsergeychik.carddemo.transaction.model.TranRecord;
-import com.vsergeychik.carddemo.config.WebConfig.CobolErrorHandler.FailureResponse;
-import com.vsergeychik.carddemo.config.WebConfig.CobolErrorHandler.FaultResponse;
-import com.vsergeychik.carddemo.config.WebConfig.CobolErrorHandler.ValidationResponse;
+import com.vsergeychik.carddemo.config.WebConfig.CobolErrorHandler.CobolErrorResponse;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
@@ -139,18 +138,21 @@ class WebConfigErrorBoundaryTest {
         @Test
         @DisplayName("It reports 400 and names each field on Jackson's mapping path")
         void itNamesEachFieldOnThePath() {
-            // The field-scoped report, which is the projection of an unreadable body this class is
-            // about: 400, the reason phrase, and one entry per named field with a fixed category
-            // message. What a client is answered with over the wire is the narrower constant envelope
-            // asserted by the sibling error-contract test - a body that reads nothing at all from the
-            // failure - so the field names reach the server's own diagnostics and not the caller.
-            ResponseEntity<ValidationResponse> response =
-                    CobolErrorHandler.unreadableBodyFieldReport(unreadableAt("cardNumber"));
+            // The one envelope a client is answered with: 400, the reason phrase, the fixed
+            // malformed-request detail, and one entry per named field. The field names travel to the
+            // caller as well as to the log, which is what makes a MALFORMED_REQUEST answer actionable;
+            // what still never travels is anything Jackson quoted from the payload.
+            ResponseEntity<CobolErrorResponse> response =
+                    new CobolErrorHandler().handleUnreadableRequestBody(unreadableAt("cardNumber"));
 
             assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
             assertThat(response.getBody()).isNotNull();
+            assertThat(response.getBody().code())
+                    .isEqualTo(CobolErrorHandler.MALFORMED_REQUEST_CODE);
             assertThat(response.getBody().error())
                     .isEqualTo(HttpStatus.BAD_REQUEST.getReasonPhrase());
+            assertThat(response.getBody().detail())
+                    .isEqualTo(CobolErrorHandler.MALFORMED_REQUEST_MESSAGE);
             assertThat(response.getBody().fieldErrors()).singleElement()
                     .satisfies(entry -> {
                         assertThat(entry.field()).isEqualTo("cardNumber");
@@ -166,7 +168,7 @@ class WebConfigErrorBoundaryTest {
 
             // Both the exception and its cause quote the payload; neither reaches the body.
             assertThat(unreadable.getMessage()).contains(PAN);
-            ValidationResponse body = CobolErrorHandler.unreadableBodyResponse(unreadable);
+            CobolErrorResponse body = CobolErrorHandler.malformedRequestResponse(unreadable);
 
             assertThat(body.toString()).doesNotContain(PAN);
             assertThat(body.fieldErrors()).noneSatisfy(entry ->
@@ -176,7 +178,7 @@ class WebConfigErrorBoundaryTest {
         @Test
         @DisplayName("Several fields are reported, ordered by name for a deterministic body")
         void severalFieldsAreOrderedByName() {
-            ValidationResponse body = CobolErrorHandler.unreadableBodyResponse(
+            CobolErrorResponse body = CobolErrorHandler.malformedRequestResponse(
                     unreadableAt("expiryDate", "cardNumber", "accountId"));
 
             assertThat(body.fieldErrors()).extracting(
@@ -191,7 +193,7 @@ class WebConfigErrorBoundaryTest {
                     "Required request body is missing " + PAN, new IOException("truncated"),
                     mock(HttpInputMessage.class));
 
-            ValidationResponse body = CobolErrorHandler.unreadableBodyResponse(notJson);
+            CobolErrorResponse body = CobolErrorHandler.malformedRequestResponse(notJson);
 
             assertThat(body.fieldErrors()).isEmpty();
             assertThat(body.error()).isEqualTo(HttpStatus.BAD_REQUEST.getReasonPhrase());
@@ -205,14 +207,15 @@ class WebConfigErrorBoundaryTest {
 
             // A blank name would render as an entry a caller cannot act on, so it is dropped for the
             // same reason an array index is: there is no field to report.
-            assertThat(CobolErrorHandler.unreadableBodyResponse(blankNamed).fieldErrors()).isEmpty();
+            assertThat(CobolErrorHandler.malformedRequestResponse(blankNamed).fieldErrors())
+                    .isEmpty();
         }
 
         @Test
         @DisplayName("A blank name is dropped while its usable siblings are still reported")
         void aBlankNameIsDroppedWhileSiblingsAreReported() {
-            ValidationResponse body =
-                    CobolErrorHandler.unreadableBodyResponse(unreadableAt("cardNumber", " "));
+            CobolErrorResponse body =
+                    CobolErrorHandler.malformedRequestResponse(unreadableAt("cardNumber", " "));
 
             assertThat(body.fieldErrors()).extracting(
                     WebConfig.CobolErrorHandler.FieldMessage::field)
@@ -227,7 +230,7 @@ class WebConfigErrorBoundaryTest {
             HttpMessageNotReadableException indexed = new HttpMessageNotReadableException(
                     "JSON parse error", mapping, mock(HttpInputMessage.class));
 
-            assertThat(CobolErrorHandler.unreadableBodyResponse(indexed).fieldErrors()).isEmpty();
+            assertThat(CobolErrorHandler.malformedRequestResponse(indexed).fieldErrors()).isEmpty();
         }
     }
 
@@ -247,11 +250,11 @@ class WebConfigErrorBoundaryTest {
             MethodArgumentTypeMismatchException mismatch = new MethodArgumentTypeMismatchException(
                     PAN, Long.class, "acctId", null, new NumberFormatException(PAN));
 
-            ResponseEntity<FailureResponse> response = HANDLER.handleTypeMismatch(mismatch);
+            ResponseEntity<CobolErrorResponse> response = HANDLER.handleTypeMismatch(mismatch);
 
             assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
             assertThat(response.getBody()).isNotNull();
-            assertThat(response.getBody().message())
+            assertThat(response.getBody().detail())
                     .isEqualTo(CobolErrorHandler.TYPE_MISMATCH_MESSAGE);
         }
 
@@ -274,7 +277,7 @@ class WebConfigErrorBoundaryTest {
             MethodArgumentTypeMismatchException untyped = new MethodArgumentTypeMismatchException(
                     PAN, null, "cardNum", null, new IllegalStateException("no converter"));
 
-            assertThat(HANDLER.handleTypeMismatch(untyped).getBody().message())
+            assertThat(HANDLER.handleTypeMismatch(untyped).getBody().detail())
                     .isEqualTo(CobolErrorHandler.TYPE_MISMATCH_MESSAGE);
         }
     }
@@ -286,7 +289,7 @@ class WebConfigErrorBoundaryTest {
         @Test
         @DisplayName("It reports 400 - the caller supplied the value, so it is not a server fault")
         void itReportsBadRequest() {
-            ResponseEntity<FaultResponse> response = HANDLER.handleRejectedValue(
+            ResponseEntity<CobolErrorResponse> response = HANDLER.handleRejectedValue(
                     new IllegalArgumentException("A value of 17 character(s) exceeds " + PAN));
 
             assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
@@ -309,7 +312,7 @@ class WebConfigErrorBoundaryTest {
             IllegalArgumentException stillQuotesItsInput =
                     new IllegalArgumentException("CARD-NUM is PIC 9(16), so it cannot hold " + PAN);
 
-            ResponseEntity<FaultResponse> response =
+            ResponseEntity<CobolErrorResponse> response =
                     HANDLER.handleRejectedValue(stillQuotesItsInput);
 
             assertThat(response.getBody()).isNotNull();
@@ -319,9 +322,64 @@ class WebConfigErrorBoundaryTest {
         }
 
         @Test
+        @DisplayName("A screen value a RECEIVE MAP could not have carried names the member, because "
+                + "\"a field does not fit\" is unactionable on a 54-field screen")
+        void aScreenInputRefusalNamesTheMember() {
+            ResponseEntity<CobolErrorResponse> response = HANDLER.handleRejectedValue(
+                    ScreenInputRejectedException.unrepresentable("ACSLNAM", "ACSLNAMI",
+                            StandardCharsets.US_ASCII, 0x00D1));
+
+            assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+            assertThat(response.getBody()).isNotNull();
+            assertThat(response.getBody().code()).isEqualTo(CobolErrorHandler.REJECTED_VALUE_CODE);
+            assertThat(response.getBody().fieldErrors()).singleElement()
+                    .satisfies(field -> {
+                        assertThat(field.field()).isEqualTo("ACSLNAM");
+                        assertThat(field.message()).contains("U+00D1").contains("US-ASCII");
+                    });
+            assertThat(response.getBody().detail()).contains("ACSLNAM").contains("U+00D1");
+        }
+
+        @Test
+        @DisplayName("It is the one IllegalArgumentException whose message is published, and it is safe "
+                + "to publish because the type is final with two value-free factories")
+        void theScreenInputMessageIsSafeToPublishBecauseTheTypeIsSealedShut() {
+            assertThat(java.lang.reflect.Modifier.isFinal(ScreenInputRejectedException.class
+                    .getModifiers()))
+                    .as("a non-final subtype could word its message with the value in it")
+                    .isTrue();
+            for (java.lang.reflect.Constructor<?> constructor
+                    : ScreenInputRejectedException.class.getDeclaredConstructors()) {
+                assertThat(java.lang.reflect.Modifier.isPrivate(constructor.getModifiers()))
+                        .as("every constructor must be private so the factories are the only producers")
+                        .isTrue();
+            }
+            // And the value genuinely does not reach the body, even for a member whose span holds a PAN.
+            ResponseEntity<CobolErrorResponse> response = HANDLER.handleRejectedValue(
+                    ScreenInputRejectedException.inconsistentCommarea("commArea.oldDetails.cardid",
+                            "the sixteen digits of the fetched card number"));
+
+            assertThat(response.getBody()).isNotNull();
+            assertThat(response.getBody().toString()).doesNotContain(PAN);
+        }
+
+        @Test
+        @DisplayName("An ordinary rejected value still says nothing about the value and names no field, "
+                + "so the narrower branch has not widened the open-ended family")
+        void anOrdinaryRejectedValueStillNamesNoField() {
+            ResponseEntity<CobolErrorResponse> response = HANDLER.handleRejectedValue(
+                    new IllegalArgumentException("CARD-NUM cannot hold " + PAN));
+
+            assertThat(response.getBody()).isNotNull();
+            assertThat(response.getBody().fieldErrors()).isEmpty();
+            assertThat(response.getBody().detail())
+                    .isEqualTo(CobolErrorHandler.rejectedValueResponse().detail());
+        }
+
+        @Test
         @DisplayName("A state fault quoting a dataset name is covered by the same barrier")
         void aStateFaultQuotingADatasetNameIsCovered() {
-            ResponseEntity<FaultResponse> response = HANDLER.handleInternalState(
+            ResponseEntity<CobolErrorResponse> response = HANDLER.handleInternalState(
                     new IllegalStateException("carddemo.datasets.CCXREF.dsname is "
                             + "AWS.M2.CARDDEMO.CARDXREF.VSAM.KSDS"));
 
@@ -336,8 +394,8 @@ class WebConfigErrorBoundaryTest {
         void theBodyCannotCarryTheExceptionsText() {
             // The builder takes no argument at all, so there is no path by which a guard added later
             // could widen this response by wording its message differently.
-            FaultResponse first = CobolErrorHandler.rejectedValueResponse();
-            FaultResponse second = CobolErrorHandler.rejectedValueResponse();
+            CobolErrorResponse first = CobolErrorHandler.rejectedValueResponse();
+            CobolErrorResponse second = CobolErrorHandler.rejectedValueResponse();
 
             assertThat(first).isEqualTo(second);
             assertThat(first.toString()).doesNotContain(PAN);
@@ -346,7 +404,7 @@ class WebConfigErrorBoundaryTest {
         @Test
         @DisplayName("A state fault reports 500, because the caller did not cause it")
         void aStateFaultReportsInternalServerError() {
-            ResponseEntity<FaultResponse> response = HANDLER.handleInternalState(
+            ResponseEntity<CobolErrorResponse> response = HANDLER.handleInternalState(
                     new IllegalStateException("Dataset binding for DD name 'CCXREF' is absent"));
 
             assertThat(response.getStatusCode()).isEqualTo(HttpStatus.INTERNAL_SERVER_ERROR);

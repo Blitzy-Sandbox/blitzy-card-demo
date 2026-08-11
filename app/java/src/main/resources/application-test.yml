@@ -70,13 +70,29 @@
 #  Both are reached through the OPTIONAL import declared immediately below, which resolves only
 #  on the test classpath. Consequences, stated plainly:
 #
-#    * under "mvn verify", under @ActiveProfiles("test") and under the documented local run
-#      (-Dspring-boot.run.profiles=test -Dspring-boot.run.useTestClasspath=true), the import
-#      resolves and this profile is complete;
+#    * under "mvn verify" and under @ActiveProfiles("test") the import resolves and this profile
+#      is complete;
 #    * inside the packaged jar the import is absent, so activating "test" there configures no
 #      DataSource and the context does not start. That is the intended outcome: "test" is not a
 #      deployment profile, and failing to start is strictly better than starting against a
 #      credential the artifact carried.
+#
+#  RUNNING THE APPLICATION LOCALLY ON THIS PROFILE  (verified against Boot 3.5.16)
+#  ----------------------------------------------
+#  Activating the profile is not sufficient on its own: this document's import is a CLASSPATH
+#  lookup, so target/test-classes has to be on the classpath of the JVM that runs. It is not
+#  enough to ask the Boot Maven plugin for it -
+#      mvn spring-boot:run -Dspring-boot.run.profiles=test -Dspring-boot.run.useTestClasspath=true
+#  does NOT start this application: the forked JVM does not carry target/test-classes, the import
+#  above therefore resolves to nothing, spring.datasource.url stays unset and startup is refused
+#  by DataSourceConfig - correctly, and with the message that names the property. Run it directly
+#  instead, from app/java, after "mvn -B test-compile":
+#      mvn -B dependency:build-classpath -Dmdep.outputFile=target/cp.txt -Dmdep.includeScope=test
+#      java -cp "target/test-classes:target/classes:$(cat target/cp.txt)" \
+#           com.vsergeychik.carddemo.CardDemoApplication --spring.profiles.active=test
+#  A run started that way reaches the fixture document, builds the in-memory H2 DataSource and
+#  serves the seventeen API routes. Its datasets are empty until something seeds them, which is
+#  why a batch job launched against a fresh in-memory database reads nothing.
 #
 #  KEEP CREDENTIALS AND SEED DATA OUT OF THIS FILE. Add them to
 #  src/test/resources/carddemo-test-fixtures.yml, which is never packaged. TestProfileIsNotPackagedTest

@@ -1823,8 +1823,9 @@ class TransactionAddControllerTest {
                     controllerOver(repository).mainPara(request).response());
 
             for (ScreenField field : ScreenField.values()) {
+                // The wire name is the xxxI item in lower case, with no direction suffix (AAP 0.6.3).
                 String base = field.baseName().toLowerCase(java.util.Locale.ROOT);
-                assertThat(json).contains("\"" + base + "o\"");
+                assertThat(json).contains("\"" + base + "\"");
                 for (String suffix : List.of("l", "f", "a", "c", "p", "h", "v")) {
                     assertThat(json)
                             .as(field.baseName() + suffix + " is metadata, never a payload member")
@@ -2259,10 +2260,10 @@ class TransactionAddControllerTest {
                             .contentType(MediaType.APPLICATION_JSON)
                             .content(mapper.writeValueAsString(request)))
                     .andExpect(status().isOk())
-                    .andExpect(jsonPath("$.trnido").value(KNOWN_TRAN_ID))
-                    .andExpect(jsonPath("$.trnamto").value("+00000504.77"))
+                    .andExpect(jsonPath("$.trnid").value(KNOWN_TRAN_ID))
+                    .andExpect(jsonPath("$.trnamt").value("+00000504.77"))
                     .andExpect(jsonPath("$.nextProgram").value("COTRN01C"))
-                    .andExpect(jsonPath("$.pgmnameo").value("COTRN01C"))
+                    .andExpect(jsonPath("$.pgmname").value("COTRN01C"))
                     // The 21 screen items stay flat at the top level; the metadata joins them as one
                     // sibling member rather than being dropped or mixed into the projection.
                     .andExpect(jsonPath("$.screenMetadata.cursorField").value("TRNIDIN"))
@@ -2289,7 +2290,7 @@ class TransactionAddControllerTest {
                             .contentType(MediaType.APPLICATION_JSON)
                             .content(mapper.writeValueAsString(arriving)))
                     .andExpect(status().isOk())
-                    .andExpect(jsonPath("$.trnidino").value(KNOWN_TRAN_ID));
+                    .andExpect(jsonPath("$.trnidin").value(KNOWN_TRAN_ID));
 
             verify(repository).readForUpdateByTranId(KNOWN_TRAN_ID);
             verify(repository, never()).readForUpdateByTranId("0000000000000099");
@@ -2721,12 +2722,12 @@ class TransactionAddControllerTest {
             // without depending on what either one painted.
             both.perform(get("/api/transactions"))
                     .andExpect(status().isOk())
-                    .andExpect(jsonPath("$.pagenumO").exists())
-                    .andExpect(jsonPath("$.trnamto").doesNotExist());
+                    .andExpect(jsonPath("$.pagenum").exists())
+                    .andExpect(jsonPath("$.trnamt").doesNotExist());
             both.perform(get("/api/transactions/{tranId}", KNOWN_TRAN_ID))
                     .andExpect(status().isOk())
-                    .andExpect(jsonPath("$.trnamto").exists())
-                    .andExpect(jsonPath("$.pagenumO").doesNotExist());
+                    .andExpect(jsonPath("$.trnamt").exists())
+                    .andExpect(jsonPath("$.pagenum").doesNotExist());
         }
 
         @Test

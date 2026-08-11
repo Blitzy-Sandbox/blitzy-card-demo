@@ -8,6 +8,7 @@ import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.NavigationContext;
 import com.vsergeychik.carddemo.common.PfKeyResolver;
+import com.vsergeychik.carddemo.common.ScreenFieldImage;
 import com.vsergeychik.carddemo.common.ScreenMetadata;
 import com.vsergeychik.carddemo.common.ScreenResponse;
 import com.vsergeychik.carddemo.common.PfKeyResolver.AidKey;
@@ -2489,22 +2490,22 @@ public final class UserMenuController {
     static final class SymbolicMap {
 
         /** {@code TRNNAMEI} / {@code TRNNAMEO}, {@code PIC X(4)}. */
-        private String trnName = spaces(UserListResponse.TRNNAME_LENGTH);
+        private String trnName = ScreenFieldImage.unpainted(UserListResponse.TRNNAME_LENGTH);
 
         /** {@code TITLE01I} / {@code TITLE01O}, {@code PIC X(40)}. */
-        private String title01 = spaces(UserListResponse.TITLE01_LENGTH);
+        private String title01 = ScreenFieldImage.unpainted(UserListResponse.TITLE01_LENGTH);
 
         /** {@code CURDATEI} / {@code CURDATEO}, {@code PIC X(8)}, holding {@code MM/DD/YY}. */
-        private String curDate = spaces(UserListResponse.CURDATE_LENGTH);
+        private String curDate = ScreenFieldImage.unpainted(UserListResponse.CURDATE_LENGTH);
 
         /** {@code PGMNAMEI} / {@code PGMNAMEO}, {@code PIC X(8)}. */
-        private String pgmName = spaces(UserListResponse.PGMNAME_LENGTH);
+        private String pgmName = ScreenFieldImage.unpainted(UserListResponse.PGMNAME_LENGTH);
 
         /** {@code TITLE02I} / {@code TITLE02O}, {@code PIC X(40)}. */
-        private String title02 = spaces(UserListResponse.TITLE02_LENGTH);
+        private String title02 = ScreenFieldImage.unpainted(UserListResponse.TITLE02_LENGTH);
 
         /** {@code CURTIMEI} / {@code CURTIMEO}, {@code PIC X(8)}, holding {@code HH:MM:SS}. */
-        private String curTime = spaces(UserListResponse.CURTIME_LENGTH);
+        private String curTime = ScreenFieldImage.unpainted(UserListResponse.CURTIME_LENGTH);
 
         /**
          * {@code PAGENUMI} / {@code PAGENUMO}, {@code PIC X(8)}.
@@ -2512,7 +2513,7 @@ public final class UserMenuController {
          * <p>The rendered form of the {@code PIC 9(08)} page number, zero-filled to eight characters by the
          * numeric {@code MOVE} at {@code :327} and {@code :376}.
          */
-        private String pageNum = spaces(UserListResponse.PAGENUM_LENGTH);
+        private String pageNum = ScreenFieldImage.unpainted(UserListResponse.PAGENUM_LENGTH);
 
         /**
          * {@code USRIDINI} / {@code USRIDINO}, {@code PIC X(8)} - the operator's start key.
@@ -2521,7 +2522,7 @@ public final class UserMenuController {
          * ({@code ATTRB=(FSET,NORM,UNPROT)} at {@code app/bms/COUSR00.bms:95}). Blank is meaningful: it
          * means "start at the beginning of the file".
          */
-        private String usrIdIn = spaces(UserListResponse.USRIDIN_LENGTH);
+        private String usrIdIn = ScreenFieldImage.unpainted(UserListResponse.USRIDIN_LENGTH);
 
         /**
          * {@code SEL0001I} .. {@code SEL0010I}, {@code PIC X(1)} each. Index {@code 0} holds row 1.
@@ -2551,16 +2552,17 @@ public final class UserMenuController {
          * <p>Seventy-eight, against {@code WS-MESSAGE}'s eighty. The two-character difference is the whole
          * reason {@code :526} is a truncating move.
          */
-        private String errMsg = spaces(UserListResponse.ERRMSG_LENGTH);
+        private String errMsg = ScreenFieldImage.unpainted(UserListResponse.ERRMSG_LENGTH);
 
         /**
          * @param width the declared width of one cell
-         * @return ten space-filled cells
+         * @return ten cells at the storage's initial image, which is what {@code 01 COUSR0AO} holds
+         *         before any {@code MOVE} reaches a row
          */
         private static String[] newRow(int width) {
             String[] cells = new String[PAGE_SIZE];
             for (int index = 0; index < PAGE_SIZE; index++) {
-                cells[index] = spaces(width);
+                cells[index] = ScreenFieldImage.unpainted(width);
             }
             return cells;
         }
@@ -2572,26 +2574,33 @@ public final class UserMenuController {
          * ten selection cells and the message line. That is what makes a first entry ignore the screen
          * fields the payload carried and always list from the top with no selection acted on.
          *
-         * <p>Spaces are the faithful Java rendering of {@code LOW-VALUES} here, because this program tests
-         * the two together everywhere it tests either - see {@link UserMenuController#isBlank(String)}.
+         * <p>The image moved in is {@code X'00'} at each field's declared width, from
+         * {@link ScreenFieldImage#unpainted(int)}. That this program happens to test {@code SPACES} and
+         * {@code LOW-VALUES} together wherever it tests either - see
+         * {@link UserMenuController#isBlank(String)} - licenses the two being read alike, not one being
+         * written where the source writes the other: {@code :117} names {@code LOW-VALUES}, the field
+         * comparison in {@code FieldDiffer} is by value, and a substituted byte is reported (gate G21).
+         * {@code ERRMSGO} is included because the move is over the whole group, so the {@code SPACES} that
+         * {@code :105-106} put there moments earlier is overwritten on this arm - and {@code :526} is what
+         * puts a message back when there is one.
          */
         void moveLowValues() {
-            trnName = spaces(UserListResponse.TRNNAME_LENGTH);
-            title01 = spaces(UserListResponse.TITLE01_LENGTH);
-            curDate = spaces(UserListResponse.CURDATE_LENGTH);
-            pgmName = spaces(UserListResponse.PGMNAME_LENGTH);
-            title02 = spaces(UserListResponse.TITLE02_LENGTH);
-            curTime = spaces(UserListResponse.CURTIME_LENGTH);
-            pageNum = spaces(UserListResponse.PAGENUM_LENGTH);
-            usrIdIn = spaces(UserListResponse.USRIDIN_LENGTH);
+            trnName = ScreenFieldImage.unpainted(UserListResponse.TRNNAME_LENGTH);
+            title01 = ScreenFieldImage.unpainted(UserListResponse.TITLE01_LENGTH);
+            curDate = ScreenFieldImage.unpainted(UserListResponse.CURDATE_LENGTH);
+            pgmName = ScreenFieldImage.unpainted(UserListResponse.PGMNAME_LENGTH);
+            title02 = ScreenFieldImage.unpainted(UserListResponse.TITLE02_LENGTH);
+            curTime = ScreenFieldImage.unpainted(UserListResponse.CURTIME_LENGTH);
+            pageNum = ScreenFieldImage.unpainted(UserListResponse.PAGENUM_LENGTH);
+            usrIdIn = ScreenFieldImage.unpainted(UserListResponse.USRIDIN_LENGTH);
             for (int index = 0; index < PAGE_SIZE; index++) {
-                sel[index] = spaces(UserListResponse.SEL_LENGTH);
-                usrId[index] = spaces(UserListResponse.USRID_LENGTH);
-                fname[index] = spaces(UserListResponse.FNAME_LENGTH);
-                lname[index] = spaces(UserListResponse.LNAME_LENGTH);
-                utype[index] = spaces(UserListResponse.UTYPE_LENGTH);
+                sel[index] = ScreenFieldImage.unpainted(UserListResponse.SEL_LENGTH);
+                usrId[index] = ScreenFieldImage.unpainted(UserListResponse.USRID_LENGTH);
+                fname[index] = ScreenFieldImage.unpainted(UserListResponse.FNAME_LENGTH);
+                lname[index] = ScreenFieldImage.unpainted(UserListResponse.LNAME_LENGTH);
+                utype[index] = ScreenFieldImage.unpainted(UserListResponse.UTYPE_LENGTH);
             }
-            errMsg = spaces(UserListResponse.ERRMSG_LENGTH);
+            errMsg = ScreenFieldImage.unpainted(UserListResponse.ERRMSG_LENGTH);
         }
 
         /**

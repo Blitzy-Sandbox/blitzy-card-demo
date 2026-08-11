@@ -5,6 +5,7 @@ import com.vsergeychik.carddemo.common.DateHeader;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.NavigationContext;
 import com.vsergeychik.carddemo.common.PfKeyResolver;
+import com.vsergeychik.carddemo.common.ScreenFieldImage;
 import com.vsergeychik.carddemo.common.ScreenMetadata;
 import com.vsergeychik.carddemo.common.ScreenResponse;
 import com.vsergeychik.carddemo.common.ScreenTitles;
@@ -422,23 +423,42 @@ public class SignOnController {
     }
 
     /**
-     * Builds the space-filled payload that stands in for an absent request body.
+     * Builds the payload that stands in for an absent request body: every screen field at its declared
+     * width carrying the unpainted image.
      *
-     * @param codec the codec supplying the space-fill rule and each declared width
+     * <p>{@code MOVE LOW-VALUES TO COSGN0AO} at {@code app/cbl/COSGN00C.cbl:81} is what a first entry
+     * finds, so {@code X'00'} - not spaces - is what a field nobody typed into holds. The service
+     * already relies on that distinction: {@code SignOnService.receivedFieldImage} maps an absent JSON
+     * member to {@code LOW-VALUES} precisely because CICS leaves an untransmitted input item at
+     * {@code X'00'}, and {@code :118} and {@code :123} then test {@code = SPACES OR LOW-VALUES} as two
+     * separate conditions. An earlier revision of this method space-filled instead, which made a cold
+     * start disagree with an omitted member about the same fact.
+     *
+     * <p>{@code USERIDO} and {@code PASSWDO} are the two fields where this is observable: neither is
+     * ever a {@code MOVE} target anywhere in {@code COSGN00C}, so they are never painted. The six header
+     * fields are overwritten by {@code POPULATE-HEADER-INFO} at {@code :181-197}, {@code APPLIDO} and
+     * {@code SYSIDO} by the two {@code EXEC CICS ASSIGN} calls at {@code :198-204}, and {@code ERRMSGO}
+     * by the unconditional {@code MOVE SPACES TO WS-MESSAGE, ERRMSGO} at {@code :78-79} - so for those
+     * nine the starting image is not visible in the response either way.
+     *
+     * @param codec the codec supplying each declared width; retained in the signature because the
+     *              widths are read through it and a future field may need the {@code MOVE} rule
      * @return the cold-start payload, never {@code null}
+     * @see ScreenFieldImage#unpainted(int)
      */
     private static SignOnRequest coldStartRequest(final FixedWidthCodec codec) {
-        return new SignOnRequest(codec.movePicX(SPACES, SignOnRequest.TRNNAME_LENGTH),
-                codec.movePicX(SPACES, SignOnRequest.TITLE01_LENGTH),
-                codec.movePicX(SPACES, SignOnRequest.CURDATE_LENGTH),
-                codec.movePicX(SPACES, SignOnRequest.PGMNAME_LENGTH),
-                codec.movePicX(SPACES, SignOnRequest.TITLE02_LENGTH),
-                codec.movePicX(SPACES, SignOnRequest.CURTIME_LENGTH),
-                codec.movePicX(SPACES, SignOnRequest.APPLID_LENGTH),
-                codec.movePicX(SPACES, SignOnRequest.SYSID_LENGTH),
-                codec.movePicX(SPACES, SignOnRequest.USERID_LENGTH),
-                codec.movePicX(SPACES, SignOnRequest.PASSWD_LENGTH),
-                codec.movePicX(SPACES, SignOnRequest.ERRMSG_LENGTH),
+        Objects.requireNonNull(codec, "A codec is required to size the cold-start payload");
+        return new SignOnRequest(ScreenFieldImage.unpainted(SignOnRequest.TRNNAME_LENGTH),
+                ScreenFieldImage.unpainted(SignOnRequest.TITLE01_LENGTH),
+                ScreenFieldImage.unpainted(SignOnRequest.CURDATE_LENGTH),
+                ScreenFieldImage.unpainted(SignOnRequest.PGMNAME_LENGTH),
+                ScreenFieldImage.unpainted(SignOnRequest.TITLE02_LENGTH),
+                ScreenFieldImage.unpainted(SignOnRequest.CURTIME_LENGTH),
+                ScreenFieldImage.unpainted(SignOnRequest.APPLID_LENGTH),
+                ScreenFieldImage.unpainted(SignOnRequest.SYSID_LENGTH),
+                ScreenFieldImage.unpainted(SignOnRequest.USERID_LENGTH),
+                ScreenFieldImage.unpainted(SignOnRequest.PASSWD_LENGTH),
+                ScreenFieldImage.unpainted(SignOnRequest.ERRMSG_LENGTH),
                 null,
                 PfKeyResolver.AidKey.ENTER.token());
     }

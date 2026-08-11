@@ -48,6 +48,8 @@ import java.util.Objects;
 import java.util.concurrent.atomic.AtomicInteger;
 import javax.sql.DataSource;
 
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -69,6 +71,7 @@ import org.springframework.context.annotation.AnnotationConfigApplicationContext
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
@@ -353,6 +356,49 @@ class TransactionValidationJobTest {
 
     private static List<String> rows(JdbcTemplate t, String dsname) {
         return t.queryForList("SELECT " + COL + " FROM \"" + dsname + "\"", String.class);
+    }
+
+    // ------------------------------------------------------------------------------ the step's boundary
+
+    /**
+     * Declares the unit of work the step supplies, for the duration of every test in this class.
+     *
+     * <p>{@code CBTRN02C} posts: each accepted record writes or rewrites a category balance, rewrites an
+     * account and adds a transaction, and each rejected one writes a {@code DALYREJS} record. The pool
+     * hands out connections with auto-commit disabled on purpose, so a statement issued with nothing bound
+     * to the thread is rolled back when the connection is returned - and the repositories therefore refuse
+     * a write they cannot commit rather than reporting a record as stored. Under the launcher the step's
+     * own chunk transaction is what satisfies that, and it encloses the reads, the processing and the
+     * writes alike; these tests drive the same paragraphs directly, so they declare the same thing.
+     *
+     * <p>Directly rather than through a real {@code TransactionTemplate} because several tests below run
+     * against mocked JDBC chains that cannot begin a transaction at all, and what the repositories inspect
+     * is exactly this thread state. {@link #withoutUnitOfWork(Runnable)} takes it away again for the tests
+     * that are about its absence.
+     */
+    @BeforeEach
+    void declareTheStepsUnitOfWork() {
+        TransactionSynchronizationManager.setActualTransactionActive(true);
+    }
+
+    /** Ends it, whatever the test did, so no declaration leaks into the next test on this thread. */
+    @AfterEach
+    void endTheStepsUnitOfWork() {
+        TransactionSynchronizationManager.setActualTransactionActive(false);
+    }
+
+    /**
+     * Runs work with the step's unit of work taken away, and always puts it back.
+     *
+     * @param work the work to run outside any unit of work
+     */
+    private static void withoutUnitOfWork(Runnable work) {
+        TransactionSynchronizationManager.setActualTransactionActive(false);
+        try {
+            work.run();
+        } finally {
+            TransactionSynchronizationManager.setActualTransactionActive(true);
+        }
     }
 
     private static TransactionValidationJob job(JdbcTemplate t, DatasetBindings b) {
@@ -2879,6 +2925,38 @@ class TransactionValidationJobTest {
                     assertThat(line).startsWith(TransactionValidationJob.TRANSACTIONS_PROCESSED_PREFIX));
             assertThat(sysout.lines()).doesNotContain("END OF EXECUTION OF PROGRAM CBTRN02C");
             // DISP=(NEW,CATLG,DELETE): the generation an abended run allocated is discarded.
+            assertThat(rows(t, DALYREJS_DS)).isEmpty();
+        }
+
+        @Test
+        @DisplayName("postTransactions refuses to run at all outside a unit of work, before the banner")
+        void postTransactionsRefusesWithNoUnitOfWork() {
+            // The sharpest instance of the whole class of defect. This program posts, so a run with no
+            // boundary open executes every INSERT and UPDATE it performs and has every one of them rolled
+            // back when the connection returns to the pool - while still answering a RunOutcome carrying a
+            // transaction count, a reject count and RETURN-CODE 4. Nothing downstream can detect that.
+            //
+            // It is refused before the opening banner rather than at the first write, so a caller that
+            // forgot the boundary is told what is wrong instead of being handed counters for work that was
+            // discarded, and so a run whose input happens to produce no write is refused just as loudly as
+            // one that would have written.
+            JdbcTemplate t = database();
+            seedResolvableAccount(t);
+            seed(t, DALYTRAN_DS, dalyTranImage(dalyTran("T0000000000000001", CARD, "10.00",
+                    "2025-01-01-00.00.00.000000")));
+            CapturedSysout sysout = new CapturedSysout();
+            TransactionValidationJob job = job(t, bindings());
+
+            withoutUnitOfWork(() -> assertThatIllegalStateException()
+                    .isThrownBy(() -> job.postTransactions(sysout))
+                    .withMessageContaining("no transaction is open on this thread")
+                    .withMessageContaining(TransactionValidationJob.PROGRAM_ID)
+                    .withMessageContaining(TransactionValidationJob.DALYREJS_DD_NAME));
+
+            assertThat(sysout.lines())
+                    .as("nothing was DISPLAYed, so no run appears to have started")
+                    .isEmpty();
+            assertThat(rows(t, TRANSACT_DS)).isEmpty();
             assertThat(rows(t, DALYREJS_DS)).isEmpty();
         }
 

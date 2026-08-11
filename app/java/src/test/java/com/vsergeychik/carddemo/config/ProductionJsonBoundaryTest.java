@@ -192,7 +192,7 @@ final class ProductionJsonBoundaryTest {
                             .content(body(addRequest("John"))))
                     .andExpect(status().isOk())
                     .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
-                    .andExpect(jsonPath("$.errMsg").value(containsString("has been added")));
+                    .andExpect(jsonPath("$.errmsg").value(containsString("has been added")));
 
             verify(secUserRepository).add(any(SecUserRecord.class));
         }
@@ -202,20 +202,22 @@ final class ProductionJsonBoundaryTest {
         void anUnknownMemberIsRefused() throws Exception {
             addUserRoute().perform(post("/api/users")
                             .contentType(MediaType.APPLICATION_JSON)
-                            .content("{\"fName\":\"John\",\"notAField\":\"x\"}"))
+                            .content("{\"fname\":\"John\",\"notAField\":\"x\"}"))
                     .andExpect(status().isBadRequest())
                     .andExpect(jsonPath("$.code").value(CobolErrorHandler.MALFORMED_REQUEST_CODE))
-                    .andExpect(content().string(not(containsString("notAField"))));
+                    // The refused member is named so a caller can act on the answer; its value is not.
+                    .andExpect(jsonPath("$.fieldErrors[0].field").value("notAField"))
+                    .andExpect(content().string(not(containsString("John"))));
 
             verify(secUserRepository, never()).add(any(SecUserRecord.class));
         }
 
         @ParameterizedTest(name = "trailing content: {0}")
         @ValueSource(strings = {
-            "{\"fName\":\"John\"} GARBAGE",
-            "{\"fName\":\"John\"}{\"userId\":\"USR2\"}",
-            "{\"fName\":\"John\"} 42",
-            "{\"fName\":\"John\"} null"
+            "{\"fname\":\"John\"} GARBAGE",
+            "{\"fname\":\"John\"}{\"userid\":\"USR2\"}",
+            "{\"fname\":\"John\"} 42",
+            "{\"fname\":\"John\"} null"
         })
         @DisplayName("POST /api/users: content after the screen is refused rather than discarded")
         void trailingContentIsRefused(String body) throws Exception {
@@ -228,7 +230,7 @@ final class ProductionJsonBoundaryTest {
                             .content(body))
                     .andExpect(status().isBadRequest())
                     .andExpect(jsonPath("$.code").value(CobolErrorHandler.MALFORMED_REQUEST_CODE))
-                    .andExpect(jsonPath("$.message")
+                    .andExpect(jsonPath("$.detail")
                             .value(CobolErrorHandler.MALFORMED_REQUEST_MESSAGE));
 
             verify(secUserRepository, never()).add(any(SecUserRecord.class));
@@ -237,7 +239,7 @@ final class ProductionJsonBoundaryTest {
             // else about the body: the same document, with nothing after it, binds and answers 200.
             addUserRoute().perform(post("/api/users")
                             .contentType(MediaType.APPLICATION_JSON)
-                            .content("{\"fName\":\"John\"}"))
+                            .content("{\"fname\":\"John\"}"))
                     .andExpect(status().isOk());
         }
 
@@ -280,7 +282,7 @@ final class ProductionJsonBoundaryTest {
                     .andExpect(status().isOk())
                     // The blank first name is what the program reports on, which is only possible if the
                     // empty string survived the converter.
-                    .andExpect(jsonPath("$.errMsg").value(containsString("First Name")));
+                    .andExpect(jsonPath("$.errmsg").value(containsString("First Name")));
 
             verify(secUserRepository, never()).add(any(SecUserRecord.class));
         }
@@ -296,10 +298,10 @@ final class ProductionJsonBoundaryTest {
                             .contentType(MediaType.APPLICATION_JSON)
                             .content(body(addRequest(" John", ""))))
                     .andExpect(status().isOk())
-                    .andExpect(jsonPath("$.errMsg").value(containsString("Last Name")))
+                    .andExpect(jsonPath("$.errmsg").value(containsString("Last Name")))
                     .andReturn().getResponse().getContentAsString();
 
-            String firstName = productionMapper().readTree(painted).get("fName").asText();
+            String firstName = productionMapper().readTree(painted).get("fname").asText();
             assertThat(firstName)
                     .as("FNAMEI is PIC X(20): space-padded on the right, and never trimmed on the left")
                     .startsWith(" John")

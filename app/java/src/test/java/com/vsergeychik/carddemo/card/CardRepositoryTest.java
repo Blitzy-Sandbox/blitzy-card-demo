@@ -1622,7 +1622,7 @@ class CardRepositoryTest {
             stubTheRowIsThere();
             when(jdbcTemplate.update(anyString(), any(PreparedStatementSetter.class))).thenReturn(1);
 
-            assertThat(repository.rewrite(updated).isNormal()).isTrue();
+            assertThat(inUnitOfWork(() -> repository.rewrite(updated)).isNormal()).isTrue();
 
             ArgumentCaptor<String> image = ArgumentCaptor.forClass(String.class);
             PreparedStatement prepared = bindRewrite();
@@ -1655,7 +1655,7 @@ class CardRepositoryTest {
                     .withCardActiveStatus("N")
                     .withCardCvvCd(915);
 
-            assertThat(repository.rewrite(mutated).isNormal()).isTrue();
+            assertThat(inUnitOfWork(() -> repository.rewrite(mutated)).isNormal()).isTrue();
 
             // What went onto the wire is what a subsequent read would find, so the re-read is seeded with
             // the very image the rewrite sent rather than with a re-encoding of the record.
@@ -1701,7 +1701,7 @@ class CardRepositoryTest {
             stubTheRowIsThere();
             when(jdbcTemplate.update(anyString(), any(PreparedStatementSetter.class))).thenReturn(1);
 
-            repository.rewrite(cardRecord("12345"));
+            inUnitOfWork(() -> repository.rewrite(cardRecord("12345")));
 
             verify(bindRewrite()).setString(2, "12345           " + "%");
         }
@@ -1714,7 +1714,8 @@ class CardRepositoryTest {
             // precluded rather than discovered from the affected-row count once the rows are gone.
             stubFetch(new FetchedRows(cardRecord(FIRST_FIXTURE_CARD_NUM).encode(codec), selected));
 
-            CardWriteResult result = repository.rewrite(cardRecord(FIRST_FIXTURE_CARD_NUM));
+            CardWriteResult result = inUnitOfWork(
+                    () -> repository.rewrite(cardRecord(FIRST_FIXTURE_CARD_NUM)));
 
             assertThat(result.isNormal()).isFalse();
             assertThat(result.isFailure()).isTrue();
@@ -1732,28 +1733,36 @@ class CardRepositoryTest {
         }
 
         @Test
-        @DisplayName("the count is a plain keyed read outside a unit of work and a locking one inside")
+        @DisplayName("the count is always the locking read, because a rewrite always has a unit of work")
         void theCountIsTakenUnderTheRowLockInsideAUnitOfWork() throws SQLException {
             stubTheRowIsThere();
             when(jdbcTemplate.update(anyString(), any(PreparedStatementSetter.class))).thenReturn(1);
 
-            // Outside a unit of work there is no lock to share, and requiring one would refuse a rewrite
-            // the COBOL performs, so the count is taken with a plain keyed read.
-            assertThat(repository.rewrite(cardRecord(FIRST_FIXTURE_CARD_NUM)).isNormal()).isTrue();
-            assertThat(statementPreparedByTheCount())
-                    .isEqualTo(repository.resolvedStatements().selectByCardNumber())
-                    .doesNotContain("FOR UPDATE");
-
-            // Inside one, the count and the UPDATE must see the same rows, so the count takes the very
-            // lock the UPDATE will use.
-            clearInvocations(jdbcTemplate);
-            stubTheRowIsThere();
-            when(jdbcTemplate.update(anyString(), any(PreparedStatementSetter.class))).thenReturn(1);
+            // The count and the UPDATE must see the same rows, so the count takes the very lock the
+            // UPDATE will use. There is no second, lock-free form to choose between: a rewrite with no
+            // unit of work open is refused rather than issued, so this is the only shape reachable.
             assertThat(inUnitOfWork(() -> repository.rewrite(cardRecord(FIRST_FIXTURE_CARD_NUM)))
                     .isNormal()).isTrue();
             assertThat(statementPreparedByTheCount())
                     .isEqualTo(repository.resolvedStatements().selectForUpdateByCardNumber())
                     .endsWith("FOR UPDATE");
+        }
+
+        @Test
+        @DisplayName("outside a unit of work the rewrite is refused before any statement is issued")
+        void outsideAUnitOfWorkTheRewriteIsRefused() {
+            stubTheRowIsThere();
+            when(jdbcTemplate.update(anyString(), any(PreparedStatementSetter.class))).thenReturn(1);
+
+            // The pool hands out connections with auto-commit disabled, so the UPDATE would execute,
+            // report the row it replaced, and then be rolled back when the connection was returned -
+            // leaving COCRDUPC painting a successful update for a card no later read could find.
+            assertThatIllegalStateException()
+                    .isThrownBy(() -> repository.rewrite(cardRecord(FIRST_FIXTURE_CARD_NUM)))
+                    .withMessageContaining("no transaction is open on this thread")
+                    .withMessageContaining("changes stored records");
+
+            verify(jdbcTemplate, never()).update(anyString(), any(PreparedStatementSetter.class));
         }
 
         /**
@@ -1784,7 +1793,8 @@ class CardRepositoryTest {
             when(jdbcTemplate.update(anyString(), any(PreparedStatementSetter.class))).thenReturn(2);
 
             assertThatExceptionOfType(DatasetIntegrityException.class)
-                    .isThrownBy(() -> repository.rewrite(cardRecord(FIRST_FIXTURE_CARD_NUM)))
+                    .isThrownBy(() -> inUnitOfWork(
+                            () -> repository.rewrite(cardRecord(FIRST_FIXTURE_CARD_NUM))))
                     .withMessageContaining("2 rows were replaced")
                     .withMessageContaining("must not be allowed to stand");
         }
@@ -1809,7 +1819,8 @@ class CardRepositoryTest {
             stubTheRowIsThere();
             when(jdbcTemplate.update(anyString(), any(PreparedStatementSetter.class))).thenReturn(0);
 
-            CardWriteResult result = repository.rewrite(cardRecord(FIRST_FIXTURE_CARD_NUM));
+            CardWriteResult result = inUnitOfWork(
+                    () -> repository.rewrite(cardRecord(FIRST_FIXTURE_CARD_NUM)));
 
             assertThat(result.isFailure()).isTrue();
             assertThat(result.resp()).isEqualTo(FileStatus.INVREQ);
@@ -1824,7 +1835,8 @@ class CardRepositoryTest {
             stubRejection(new DataAccessResourceFailureException("gone",
                     new SQLException("gone", "08003", VENDOR_ERROR_CODE)));
 
-            CardWriteResult result = repository.rewrite(cardRecord(FIRST_FIXTURE_CARD_NUM));
+            CardWriteResult result = inUnitOfWork(
+                    () -> repository.rewrite(cardRecord(FIRST_FIXTURE_CARD_NUM)));
 
             assertThat(result.isFailure()).isTrue();
             assertThat(result.resp()).isEqualTo(FileStatus.NOTOPEN);
@@ -1840,7 +1852,8 @@ class CardRepositoryTest {
                     .thenThrow(new InvalidResultSetAccessException(
                             new SQLException("write refused", "22001", VENDOR_ERROR_CODE)));
 
-            CardWriteResult result = repository.rewrite(cardRecord(FIRST_FIXTURE_CARD_NUM));
+            CardWriteResult result = inUnitOfWork(
+                    () -> repository.rewrite(cardRecord(FIRST_FIXTURE_CARD_NUM)));
 
             assertThat(result.isFailure()).isTrue();
             // SQLSTATE class 22 is a data exception: the value was rejected. Nothing about that says the
@@ -1858,7 +1871,7 @@ class CardRepositoryTest {
                     .thenThrow(new DataAccessResourceFailureException("gone",
                             new SQLException("gone", "08003", VENDOR_ERROR_CODE)));
 
-            assertThat(repository.rewrite(cardRecord(FIRST_FIXTURE_CARD_NUM)).resp())
+            assertThat(inUnitOfWork(() -> repository.rewrite(cardRecord(FIRST_FIXTURE_CARD_NUM)).resp()))
                     .isEqualTo(FileStatus.NOTOPEN);
         }
 
@@ -3144,7 +3157,8 @@ class CardRepositoryTest {
         void rewriteVocabulary() {
             stubFetch(oneRow(cardRecord(FIRST_FIXTURE_CARD_NUM)));
             when(jdbcTemplate.update(anyString(), any(PreparedStatementSetter.class))).thenReturn(1);
-            CardWriteResult written = repository.rewrite(cardRecord(FIRST_FIXTURE_CARD_NUM));
+            CardWriteResult written = inUnitOfWork(
+                    () -> repository.rewrite(cardRecord(FIRST_FIXTURE_CARD_NUM)));
             assertThat(written.isNormal()).isTrue();
             assertThat(written.batchStatus()).contains(FileStatus.OK);
 
@@ -3154,7 +3168,8 @@ class CardRepositoryTest {
             clearInvocations(jdbcTemplate);
             stubDescribe(repository);
             stubFetch(FetchedRows.empty());
-            CardWriteResult refused = repository.rewrite(cardRecord(FIRST_FIXTURE_CARD_NUM));
+            CardWriteResult refused = inUnitOfWork(
+                    () -> repository.rewrite(cardRecord(FIRST_FIXTURE_CARD_NUM)));
             assertThat(refused.isFailure()).isTrue();
             assertThat(refused.resp()).isEqualTo(FileStatus.INVREQ);
             assertThat(refused.batchStatus()).isEmpty();
@@ -3237,7 +3252,7 @@ class CardRepositoryTest {
             repository.readByCardNumber(FIRST_FIXTURE_CARD_NUM);
             repository.readByAccountIdViaAltIndex(FIRST_FIXTURE_ACCT_ID);
             repository.startBrowse(FIRST_FIXTURE_CARD_NUM, BrowseDirection.FORWARD).readNext();
-            repository.rewrite(cardRecord(FIRST_FIXTURE_CARD_NUM));
+            inUnitOfWork(() -> repository.rewrite(cardRecord(FIRST_FIXTURE_CARD_NUM)));
 
             // JdbcTemplate.execute(String) is the route a DDL statement would take. It is never taken.
             verify(jdbcTemplate, never()).execute(anyString());

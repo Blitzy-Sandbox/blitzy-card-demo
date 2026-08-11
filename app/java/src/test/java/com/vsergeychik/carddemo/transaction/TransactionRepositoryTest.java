@@ -82,6 +82,7 @@ import org.springframework.jdbc.core.ResultSetExtractor;
 import org.springframework.jdbc.datasource.DelegatingDataSource;
 import org.springframework.jdbc.datasource.SimpleDriverDataSource;
 import org.springframework.jdbc.support.JdbcTransactionManager;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 /**
  * The behaviour of {@link TransactionRepository}, asserted against a real relational backend for the
@@ -537,6 +538,28 @@ class TransactionRepositoryTest {
         }
     }
 
+    /**
+     * Declares a unit of work around work that answers something, and always undoes the declaration.
+     *
+     * <p>Every write needs one: the pool hands out connections with auto-commit disabled, so an INSERT
+     * issued with nothing bound to the thread is rolled back when the connection is returned, and the
+     * repository refuses rather than reporting a record as stored. Some of the tests below drive mocked
+     * JDBC chains that cannot begin a real transaction at all, and what the repository inspects is exactly
+     * this thread state, so declaring it directly is the honest way to satisfy the precondition.
+     *
+     * @param work the work to run
+     * @param <T>  what it answers
+     * @return what {@code work} answered
+     */
+    private static <T> T inUnitOfWork(java.util.function.Supplier<T> work) {
+        TransactionSynchronizationManager.setActualTransactionActive(true);
+        try {
+            return work.get();
+        } finally {
+            TransactionSynchronizationManager.setActualTransactionActive(false);
+        }
+    }
+
     // =================================================================================================
     // The keyed add.
     // =================================================================================================
@@ -549,7 +572,7 @@ class TransactionRepositoryTest {
         @DisplayName("a record is added at its full 350-byte width, FILLER included (G19, G21)")
         void aRecordIsAddedByteExact() {
             TranRecord written = record("0000000000000001");
-            WriteResult result = repository.write(written);
+            WriteResult result = inUnitOfWork(() -> repository.write(written));
 
             assertThat(result.isWritten()).isTrue();
             assertThat(result.status()).isEqualTo(FileStatus.OK);
@@ -577,7 +600,7 @@ class TransactionRepositoryTest {
         @DisplayName("a stored record decodes back to every field it was written with")
         void aStoredRecordRoundTrips() {
             TranRecord written = record("0000000000000001");
-            assertThat(repository.write(written).isWritten()).isTrue();
+            assertThat(inUnitOfWork(() -> repository.write(written)).isWritten()).isTrue();
 
             TranRecord read = repository.readByTranId("0000000000000001").requireRecord();
             assertThat(read.rawImage()).isEqualTo(written.rawImage());
@@ -591,9 +614,10 @@ class TransactionRepositoryTest {
         @Test
         @DisplayName("an existing key yields '22' with nothing written, and never an exception")
         void anExistingKeyYieldsDuplicate() {
-            assertThat(repository.write(record("0000000000000001")).isWritten()).isTrue();
+            assertThat(inUnitOfWork(() -> repository.write(record("0000000000000001"))).isWritten())
+                    .isTrue();
 
-            WriteResult duplicate = repository.write(record("0000000000000001"));
+            WriteResult duplicate = inUnitOfWork(() -> repository.write(record("0000000000000001")));
 
             assertThat(duplicate.isDuplicate()).isTrue();
             assertThat(duplicate.status()).isEqualTo(FileStatus.DUPLICATE);
@@ -608,7 +632,8 @@ class TransactionRepositoryTest {
         @Test
         @DisplayName("a refused write reports the permanent status and the driver's own diagnosis")
         void aRefusedWriteIsReported() {
-            WriteResult refused = repositoryOverMissingRelations().write(record("0000000000000001"));
+            TransactionRepository missing = repositoryOverMissingRelations();
+            WriteResult refused = inUnitOfWork(() -> missing.write(record("0000000000000001")));
 
             assertThat(refused.isOther()).isTrue();
             assertThat(refused.status()).isEqualTo(TransactionRepository.PERMANENT_ERROR_STATUS);
@@ -620,10 +645,12 @@ class TransactionRepositoryTest {
         @Test
         @DisplayName("the key predicate escapes LIKE metacharacters, so a wildcard key matches nothing")
         void theKeyPredicateEscapesWildcards() {
-            assertThat(repository.write(record("0000000000000001")).isWritten()).isTrue();
+            assertThat(inUnitOfWork(() -> repository.write(record("0000000000000001"))).isWritten())
+                    .isTrue();
 
             // '%' would match every record if it were not escaped, which would make this a duplicate.
-            assertThat(repository.write(record("%%%%%%%%%%%%%%%%")).isWritten()).isTrue();
+            assertThat(inUnitOfWork(() -> repository.write(record("%%%%%%%%%%%%%%%%"))).isWritten())
+                    .isTrue();
             assertThat(repository.readByTranId("%%%%%%%%%%%%%%%%").isFound()).isTrue();
             assertThat(repository.readByTranId("________________").isNotFound()).isTrue();
         }
@@ -633,6 +660,24 @@ class TransactionRepositoryTest {
         void aRecordIsRequired() {
             assertThatNullPointerException().isThrownBy(() -> repository.write(null))
                     .withMessageContaining("TRAN-ID");
+        }
+
+        @Test
+        @DisplayName("outside a unit of work the write is refused, never reported as a posted record")
+        void outsideAUnitOfWorkTheWriteIsRefused() {
+            // The pool hands out connections with auto-commit disabled, so the INSERT would execute,
+            // report the row it added, and then be rolled back when the connection was returned - leaving
+            // CBTRN02C counting a posted transaction and the two online programs painting
+            // 'Transaction added successfully.' and 'Payment successful.' for a record that reached no
+            // dataset. There is no FILE STATUS for that, so nothing is attempted.
+            assertThatIllegalStateException()
+                    .isThrownBy(() -> repository.write(record("0000000000000001")))
+                    .withMessageContaining("no transaction is open on this thread")
+                    .withMessageContaining("changes stored records")
+                    .withMessageContaining(MASTER_DS);
+
+            assertThat(template.queryForObject(
+                    "SELECT COUNT(*) FROM \"" + MASTER_DS + "\"", Integer.class)).isZero();
         }
     }
 
@@ -1613,7 +1658,8 @@ class TransactionRepositoryTest {
                     new SQLException("duplicate key", "23505", 23505)))
                     .when(stub).update(any(PreparedStatementCreator.class));
 
-            WriteResult result = stubbed.write(record("0000000000000001"));
+            WriteResult result = inUnitOfWork(
+                    () -> stubbed.write(record("0000000000000001")));
 
             assertThat(result.isDuplicate()).isTrue();
             assertThat(result.status()).isEqualTo(FileStatus.DUPLICATE);
@@ -1635,7 +1681,8 @@ class TransactionRepositoryTest {
             doThrow(new DuplicateKeyException("the relation enforced the key"))
                     .when(stub).update(any(PreparedStatementCreator.class));
 
-            WriteResult result = stubbed.write(record("0000000000000001"));
+            WriteResult result = inUnitOfWork(
+                    () -> stubbed.write(record("0000000000000001")));
 
             assertThat(result.isDuplicate()).isTrue();
             assertThat(result.cicsResp()).hasValue(FileStatus.DUPREC);
@@ -1652,7 +1699,8 @@ class TransactionRepositoryTest {
             doThrow(new DataAccessResourceFailureException("the backend is unreachable"))
                     .when(stub).update(any(PreparedStatementCreator.class));
 
-            WriteResult result = stubbed.write(record("0000000000000001"));
+            WriteResult result = inUnitOfWork(
+                    () -> stubbed.write(record("0000000000000001")));
 
             assertThat(result.isOther()).isTrue();
             assertThat(result.isDuplicate()).isFalse();
@@ -1667,7 +1715,8 @@ class TransactionRepositoryTest {
                     anyExtractor());
             doReturn(0).when(stub).update(any(PreparedStatementCreator.class));
 
-            WriteResult result = stubbed.write(record("0000000000000001"));
+            WriteResult result = inUnitOfWork(
+                    () -> stubbed.write(record("0000000000000001")));
 
             assertThat(result.isOther()).isTrue();
             assertThat(result.cicsResp()).hasValue(FileStatus.INVREQ);
@@ -2117,6 +2166,8 @@ class TransactionRepositoryTest {
         @DisplayName("the keyed WRITE refuses any width but 350, short or long (G19)")
         void aKeyedAddOfTheWrongWidthIsRefused(int width) {
             WriteResult refused = repository.write(recordEncodingTo(width));
+            // No unit of work is declared and none is needed: the width is established before the
+            // boundary is, so a malformed record is still diagnosed as a malformed record.
 
             assertThat(refused.isWritten()).isFalse();
             assertThat(refused.isDuplicate()).isFalse();
@@ -2280,7 +2331,7 @@ class TransactionRepositoryTest {
             // as a mysteriously reordered report rather than as a bad offset.
             TranRecord written = record("0000000001774260");
             written.moveTranProcTs("2022-07-18 12.34.56.000000");
-            assertThat(repository.write(written).isWritten()).isTrue();
+            assertThat(inUnitOfWork(() -> repository.write(written)).isWritten()).isTrue();
 
             String stored = template.queryForObject(
                     "SELECT \"" + IMAGE_COLUMN + "\" FROM \"" + MASTER_DS + "\"", String.class);
@@ -2329,7 +2380,7 @@ class TransactionRepositoryTest {
             // On the wire: the eleven bytes at 132 are the stored image, overpunch and all.
             TranRecord written = record("0000000000000001");
             written.writeTranAmtImage("0000009190}");
-            assertThat(repository.write(written).isWritten()).isTrue();
+            assertThat(inUnitOfWork(() -> repository.write(written)).isWritten()).isTrue();
 
             String stored = template.queryForObject(
                     "SELECT \"" + IMAGE_COLUMN + "\" FROM \"" + MASTER_DS + "\"", String.class);
@@ -2350,7 +2401,7 @@ class TransactionRepositoryTest {
             // Three excess fraction digits on a positive value, and the digit dropped is a 9: HALF_UP
             // and HALF_EVEN would both carry it and store 504.78, which is a cent of parity failure.
             written.moveTranAmt(new BigDecimal("504.779"));
-            assertThat(repository.write(written).isWritten()).isTrue();
+            assertThat(inUnitOfWork(() -> repository.write(written)).isWritten()).isTrue();
 
             BigDecimal readBack = repository.readByTranId("0000000000000001").requireRecord().tranAmt();
             assertThat(readBack).isEqualByComparingTo(new BigDecimal("504.77"));
@@ -2367,7 +2418,7 @@ class TransactionRepositoryTest {
             // And on the negative side, where DOWN means toward zero and FLOOR would go the other way.
             TranRecord negative = record("0000000000000002");
             negative.moveTranAmt(new BigDecimal("-919.006"));
-            assertThat(repository.write(negative).isWritten()).isTrue();
+            assertThat(inUnitOfWork(() -> repository.write(negative)).isWritten()).isTrue();
 
             TranRecord storedNegative =
                     repository.readByTranId("0000000000000002").requireRecord();
@@ -2396,7 +2447,7 @@ class TransactionRepositoryTest {
             written.writeTranAmtImage("0000000000}");
             byte[] beforeWrite = written.rawImage();
 
-            assertThat(repository.write(written).isWritten()).isTrue();
+            assertThat(inUnitOfWork(() -> repository.write(written)).isWritten()).isTrue();
             TranRecord readBack = repository.readByTranId("0000000000000001").requireRecord();
 
             assertThat(readBack.rawImage()).isEqualTo(beforeWrite);
@@ -2419,7 +2470,7 @@ class TransactionRepositoryTest {
             // Whereas the fixture's real shape round-trips through the value path unchanged.
             TranRecord ordinary = record("0000000000000002");
             ordinary.writeTranAmtImage("0000009190}");
-            assertThat(repository.write(ordinary).isWritten()).isTrue();
+            assertThat(inUnitOfWork(() -> repository.write(ordinary)).isWritten()).isTrue();
             TranRecord ordinaryBack = repository.readByTranId("0000000000000002").requireRecord();
             assertThat(ordinaryBack.tranAmt()).isEqualByComparingTo(new BigDecimal("-919.00"));
             TranRecord ordinaryReEncoded = ordinaryBack.copy();

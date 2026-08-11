@@ -10,6 +10,7 @@ import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.config.BatchConfig;
 import com.vsergeychik.carddemo.config.BatchConfig.StepContract;
+import com.vsergeychik.carddemo.config.DatasetUnitOfWork;
 import com.vsergeychik.carddemo.transaction.model.DalyTranRecord;
 import com.vsergeychik.carddemo.transaction.model.TranCatBalRecord;
 import com.vsergeychik.carddemo.transaction.model.TranRecord;
@@ -897,6 +898,8 @@ public class TransactionValidationJob {
      * Runs the whole program against the injected {@code SYSOUT} sink.
      *
      * @return what the run did: the two counters and the {@code RETURN-CODE}
+     * @throws IllegalStateException if no unit of work is open, as
+     *                               {@link #postTransactions(SysoutSink)} describes
      * @throws AbendException if any file operation the program checks reports a status it treats as fatal
      */
     public RunOutcome postTransactions() {
@@ -914,13 +917,38 @@ public class TransactionValidationJob {
      * closes and the trailer are inside the {@code try}, and the {@code finally} only releases the handles
      * so nothing is left open. A failed run therefore emits neither count line nor the closing banner.
      *
+     * <p><strong>A unit of work must already be open, and this refuses to run without one.</strong> This
+     * program posts: each record it accepts writes or rewrites a transaction category balance, rewrites an
+     * account and adds a transaction, and each record it rejects writes a {@value #DALYREJS_DD_NAME}
+     * record. The pool hands out connections with auto-commit disabled on purpose, so outside a boundary
+     * every one of those statements executes, reports the row it affected, and is rolled back when the
+     * connection is returned - and this method would answer a {@link RunOutcome} carrying a transaction
+     * count, a reject count and {@code RETURN-CODE} {@value #RETURN_CODE_REJECTS_PRESENT} for work that
+     * reached no dataset. Nothing downstream can detect that, so it is refused here, before the opening
+     * banner, rather than discovered later from a dataset that turns out to be empty.
+     *
+     * <p>The step path needs no such call: {@link ChunkDelegate} reads, processes and writes inside the
+     * step's own chunk transaction, which is the boundary a JCL step's syncpoint corresponds to. This
+     * requirement therefore falls only on a direct caller - a test, the parity harness or a diagnostic -
+     * and it is satisfied by wrapping the call in
+     * {@link com.vsergeychik.carddemo.config.DatasetUnitOfWork#execute(String, java.util.function.Supplier)}
+     * or in any transaction of the caller's own.
+     *
      * @param sysout where each {@code DISPLAY} goes; must not be {@code null}
      * @return what the run did; never {@code null}
-     * @throws NullPointerException if {@code sysout} is {@code null}
-     * @throws AbendException       if any file operation the program checks reports a fatal status
+     * @throws NullPointerException  if {@code sysout} is {@code null}
+     * @throws IllegalStateException if no unit of work is open, in which case nothing has been attempted
+     *                               and no {@code DISPLAY} has been emitted
+     * @throws AbendException        if any file operation the program checks reports a fatal status
      */
     public RunOutcome postTransactions(SysoutSink sysout) {
         Objects.requireNonNull(sysout, "A SYSOUT sink is required to run " + PROGRAM_ID);
+        // Refused before the opening banner rather than at the first write, so a caller that forgot the
+        // boundary is told what is wrong instead of being handed counters for work that was discarded.
+        DatasetUnitOfWork.requireActiveToPersist("A run of " + PROGRAM_ID + " (" + JCL_REFERENCE + " "
+                + STEP_NAME + "), which posts every accepted record and writes every rejected one",
+                TCATBALF_DD_NAME + ", " + ACCTFILE_DD_NAME + ", " + TRANFILE_DD_NAME + " and "
+                        + DALYREJS_DD_NAME);
         PostingRun run = newRun(sysout);
         try {
             // DISPLAY 'START OF EXECUTION OF PROGRAM CBTRN02C'.                                      L194

@@ -1260,9 +1260,25 @@ public class TransactionRepository {
      * can detect. So the key is required to be absent first, in the same unit of work when one is open,
      * and only then is the record inserted.
      *
+     * <h2>Why a unit of work is required</h2>
+     *
+     * <p>Because without one the record is not stored and this method would say it was. The pool hands out
+     * connections with auto-commit disabled on purpose - commit boundaries belong to the step and the
+     * service layer, mirroring where the COBOL writes - so an {@code INSERT} issued with nothing bound to
+     * the thread executes, reports the row it added, and is rolled back when the connection is returned.
+     * There is no {@code FILE STATUS} meaning "written, then discarded", so nothing is attempted and the
+     * missing boundary is reported as the wiring defect it is:
+     * {@link DatasetUnitOfWork#requireActiveToPersist(String, String)}. Both online callers already supply
+     * one - {@code TransactionViewController} is transactional and {@code BillPaymentService} opens
+     * {@link DatasetUnitOfWork#execute(String, java.util.function.Supplier)} - {@code CBACT04C}'s
+     * generated-transaction write supplies
+     * {@link DatasetUnitOfWork#persistVerb(String, java.util.function.Supplier)}, and {@code CBTRN02C}
+     * reaches this inside its step's own transaction.
+     *
      * @param record the record to add, carrying its own key; never {@code null}
      * @return the discriminated outcome; never {@code null}
-     * @throws NullPointerException if {@code record} is {@code null}
+     * @throws NullPointerException  if {@code record} is {@code null}
+     * @throws IllegalStateException if no unit of work is open, in which case nothing has been attempted
      */
     public WriteResult write(TranRecord record) {
         Objects.requireNonNull(record, "A transaction record is required to add one: the WRITE is "
@@ -1281,6 +1297,15 @@ public class TransactionRepository {
                     CicsResponse.of(FileStatus.LENGERR),
                     DatasetObservation.recordWidth(image.length));
         }
+        // Refused before anything is attempted when no unit of work is open - after the record itself has
+        // been checked, so a malformed record is still diagnosed as a malformed record. The pool hands out
+        // connections with auto-commit disabled, so the INSERT would execute, report the row it added, and
+        // then be rolled back when the connection returned, and this method would answer '00' - which the
+        // two online programs paint as 'Transaction added successfully.' and 'Payment successful.' and
+        // which the batch poster counts as a posted transaction. See requireActiveToPersist.
+        DatasetUnitOfWork.requireActiveToPersist("A write to the transaction master, which the WRITE at "
+                + "app/cbl/CBTRN02C.cbl:564 and the EXEC CICS WRITE at app/cbl/COTRN02C.cbl:716-724 "
+                + "issue from the record area", masterRelation.dsname());
         try {
             Statements sql = resolveStatements();
             FetchedRows existing = fetch(sql.selectByKey(), KEY_SPAN.pattern(keyImage), SINGLE_ROW);

@@ -726,7 +726,16 @@ class CardUpdateResponseTest {
         void thePairSharesExactlyTheThreeCarriers() {
             List<String> shared = new ArrayList<>(membersOf(new CardUpdateResponse()));
             shared.retainAll(membersOf(new CardUpdateRequest()));
-            assertThat(shared).containsExactlyInAnyOrderElementsOf(SHARED_CARRIERS);
+
+            // The three carriers, and now every screen field too: @JsonProperty pins both views to the
+            // same xxxI item in lower case (AAP 0.6.3), which is what makes a response a legal next
+            // request. Before that, the response spelled each field xxxO and the pair shared only these
+            // three names.
+            assertThat(shared).containsAll(SHARED_CARRIERS);
+            assertThat(shared)
+                    .containsAll(FIELD_NAMES.stream()
+                            .map(name -> name.toLowerCase(java.util.Locale.ROOT)).toList());
+            assertThat(shared).hasSize(SHARED_CARRIERS.size() + FIELD_NAMES.size());
         }
 
         @Test
@@ -737,7 +746,8 @@ class CardUpdateResponseTest {
             assertThat(members).containsAll(SHARED_CARRIERS);
             assertThat(members).contains("nextProgram", "nextMapset", "nextMap");
             for (String name : FIELD_NAMES) {
-                assertThat(members).contains(name.toLowerCase(java.util.Locale.ROOT) + "o");
+                // The wire name is the DFHMDF label in lower case, with no direction suffix (AAP 0.6.3).
+                assertThat(members).contains(name.toLowerCase(java.util.Locale.ROOT));
             }
         }
 
@@ -1096,27 +1106,27 @@ class CardUpdateResponseTest {
 
             // One member per xxxO item. Jackson derives the member name from the getter, so
             // getFkeysco() is "fkeysco" - the 18-byte field's payload, present and separate.
-            assertThat(node.has("trnnameo")).isTrue();
-            assertThat(node.has("title01o")).isTrue();
-            assertThat(node.has("curdateo")).isTrue();
-            assertThat(node.has("pgmnameo")).isTrue();
-            assertThat(node.has("title02o")).isTrue();
-            assertThat(node.has("curtimeo")).isTrue();
-            assertThat(node.has("acctsido")).isTrue();
-            assertThat(node.has("cardsido")).isTrue();
-            assertThat(node.has("crdnameo")).isTrue();
-            assertThat(node.has("crdstcdo")).isTrue();
-            assertThat(node.has("expmono")).isTrue();
-            assertThat(node.has("expyearo")).isTrue();
-            assertThat(node.has("expdayo")).isTrue();
-            assertThat(node.has("infomsgo")).isTrue();
-            assertThat(node.has("errmsgo")).isTrue();
-            assertThat(node.has("fkeyso")).isTrue();
-            assertThat(node.has("fkeysco")).isTrue();
+            assertThat(node.has("trnname")).isTrue();
+            assertThat(node.has("title01")).isTrue();
+            assertThat(node.has("curdate")).isTrue();
+            assertThat(node.has("pgmname")).isTrue();
+            assertThat(node.has("title02")).isTrue();
+            assertThat(node.has("curtime")).isTrue();
+            assertThat(node.has("acctsid")).isTrue();
+            assertThat(node.has("cardsid")).isTrue();
+            assertThat(node.has("crdname")).isTrue();
+            assertThat(node.has("crdstcd")).isTrue();
+            assertThat(node.has("expmon")).isTrue();
+            assertThat(node.has("expyear")).isTrue();
+            assertThat(node.has("expday")).isTrue();
+            assertThat(node.has("infomsg")).isTrue();
+            assertThat(node.has("errmsg")).isTrue();
+            assertThat(node.has("fkeys")).isTrue();
+            assertThat(node.has("fkeysc")).isTrue();
 
             // The card number and the embossed name cross the wire in full - B6.
-            assertThat(node.get("cardsido").asText()).isEqualTo(CARD_NUMBER);
-            assertThat(node.get("crdnameo").asText()).startsWith(EMBOSSED_NAME);
+            assertThat(node.get("cardsid").asText()).isEqualTo(CARD_NUMBER);
+            assertThat(node.get("crdname").asText()).startsWith(EMBOSSED_NAME);
         }
 
         @Test
@@ -1129,7 +1139,13 @@ class CardUpdateResponseTest {
                         CardUpdateResponse.PS_ITEM_SUFFIX, CardUpdateResponse.HILIGHT_ITEM_SUFFIX,
                         CardUpdateResponse.VALIDN_ITEM_SUFFIX)) {
                     String item = label + suffix;
-                    assertThat(members).doesNotContain(item, item.toLowerCase(Locale.ROOT));
+                    assertThat(members).doesNotContain(item);
+                    // FKEYS + C is FKEYSC, which is ALSO a named field of this map, so its lower-case
+                    // form is a legitimate wire name. Every other attribute item's lower-case form must
+                    // be absent, and the FKEYS/FKEYSC pair is asserted by name below.
+                    if (!CardUpdateResponse.namedFieldPrefixes().contains(item)) {
+                        assertThat(members).doesNotContain(item.toLowerCase(Locale.ROOT));
+                    }
                 }
             }
 
@@ -1138,9 +1154,11 @@ class CardUpdateResponseTest {
             // 'FKEYSCC' is the one-byte colour item of the field FKEYSC (:220). Leaking either onto
             // the wire would publish a 3270 attribute byte as if it were card data; losing 'fkeysco'
             // would drop an 18-byte payload field. All three assertions are explicit.
-            assertThat(members).doesNotContain("FKEYSC", "fkeysc", "FKEYSCC", "fkeyscc", "fkeyscp",
+            // With the direction suffix dropped from the wire name, "fkeysc" IS the FKEYSC field and
+            // must be present; what must stay absent is every ATTRIBUTE item of either field.
+            assertThat(members).doesNotContain("FKEYSC", "FKEYSCC", "fkeyscc", "fkeyscp",
                     "fkeysch", "fkeyscv", "fkeysp", "fkeysh", "fkeysv");
-            assertThat(members).contains("fkeysco", "fkeyso");
+            assertThat(members).contains("fkeysc", "fkeys");
         }
 
         @Test

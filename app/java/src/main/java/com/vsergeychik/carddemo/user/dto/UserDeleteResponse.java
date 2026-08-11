@@ -1,6 +1,8 @@
 package com.vsergeychik.carddemo.user.dto;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
 import com.vsergeychik.carddemo.common.NavigationContext;
+import com.vsergeychik.carddemo.common.ScreenFieldImage;
 import com.vsergeychik.carddemo.common.SensitiveDiagnostics;
 import com.vsergeychik.carddemo.user.dto.UserDeleteRequest.Cu03Info;
 import java.util.Objects;
@@ -196,17 +198,17 @@ import java.util.Objects;
  *     {@code app/cbl/COUSR03C.cbl:50-58}, handed back behind the communication area exactly as line 94
  *     restored it; {@code null} is normalised to {@link Cu03Info#initial()}
  */
-public record UserDeleteResponse(String trnName,
+public record UserDeleteResponse(@JsonProperty("trnname") String trnName,
                                  String title01,
-                                 String curDate,
-                                 String pgmName,
+                                 @JsonProperty("curdate") String curDate,
+                                 @JsonProperty("pgmname") String pgmName,
                                  String title02,
-                                 String curTime,
-                                 String usrIdIn,
-                                 String fName,
-                                 String lName,
-                                 String usrType,
-                                 String errMsg,
+                                 @JsonProperty("curtime") String curTime,
+                                 @JsonProperty("usridin") String usrIdIn,
+                                 @JsonProperty("fname") String fName,
+                                 @JsonProperty("lname") String lName,
+                                 @JsonProperty("usrtype") String usrType,
+                                 @JsonProperty("errmsg") String errMsg,
                                  NavigationContext navigationContext,
                                  String nextProgram,
                                  String nextMapset,
@@ -518,13 +520,14 @@ public record UserDeleteResponse(String trnName,
     // =================================================================================================
 
     /**
-     * A freshly initialised screen: every field a run of spaces of its declared width, and a
-     * freshly initialised communication area.
+     * A freshly initialised screen: every screen field carrying the unpainted image at its declared
+     * width, and a freshly initialised communication area.
      *
      * <p>This is the shape {@code MOVE LOW-VALUES TO COUSR3AO} at {@code app/cbl/COUSR03C.cbl:97}
-     * establishes on first entry, rendered as the spaces a {@code PIC X} field holds once the
-     * program has cleared it - the same state {@code INITIALIZE-ALL-FIELDS} at lines 349-356 returns
-     * the screen to after {@code PF4} clears it or a delete succeeds.
+     * establishes on first entry, rendered as the {@code X'00'} that statement actually moves - the
+     * same state {@code INITIALIZE-ALL-FIELDS} at lines 349-356 returns the screen to after
+     * {@code PF4} clears it or a delete succeeds. {@link ScreenFieldImage} records the choice of
+     * {@code LOW-VALUES} over spaces once, for all seventeen screens.
      *
      * <p>Note what this factory deliberately does <strong>not</strong> do: it does not populate
      * {@link #trnName()} with {@value #TRANSACTION_ID} or {@link #pgmName()} with
@@ -535,17 +538,17 @@ public record UserDeleteResponse(String trnName,
      * @return an empty screen payload, never {@code null}
      */
     public static UserDeleteResponse empty() {
-        return new UserDeleteResponse(spaces(TRN_NAME_LENGTH),
-                spaces(TITLE01_LENGTH),
-                spaces(CUR_DATE_LENGTH),
-                spaces(PGM_NAME_LENGTH),
-                spaces(TITLE02_LENGTH),
-                spaces(CUR_TIME_LENGTH),
-                spaces(USR_ID_IN_LENGTH),
-                spaces(F_NAME_LENGTH),
-                spaces(L_NAME_LENGTH),
-                spaces(USR_TYPE_LENGTH),
-                spaces(ERR_MSG_LENGTH),
+        return new UserDeleteResponse(ScreenFieldImage.unpainted(TRN_NAME_LENGTH),
+                ScreenFieldImage.unpainted(TITLE01_LENGTH),
+                ScreenFieldImage.unpainted(CUR_DATE_LENGTH),
+                ScreenFieldImage.unpainted(PGM_NAME_LENGTH),
+                ScreenFieldImage.unpainted(TITLE02_LENGTH),
+                ScreenFieldImage.unpainted(CUR_TIME_LENGTH),
+                ScreenFieldImage.unpainted(USR_ID_IN_LENGTH),
+                ScreenFieldImage.unpainted(F_NAME_LENGTH),
+                ScreenFieldImage.unpainted(L_NAME_LENGTH),
+                ScreenFieldImage.unpainted(USR_TYPE_LENGTH),
+                ScreenFieldImage.unpainted(ERR_MSG_LENGTH),
                 NavigationContext.empty(),
                 spaces(NEXT_PROGRAM_LENGTH),
                 spaces(NEXT_MAPSET_LENGTH),

@@ -1,6 +1,7 @@
 package com.vsergeychik.carddemo.transaction.dto;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import com.vsergeychik.carddemo.common.BmsAttributes;
 import com.vsergeychik.carddemo.common.DateHeader;
 import com.vsergeychik.carddemo.common.FieldAttributeSetter;
@@ -10,6 +11,7 @@ import com.vsergeychik.carddemo.common.FixedWidthRecord;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.FieldSpan;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.RecordLayout;
 import com.vsergeychik.carddemo.common.NavigationContext;
+import com.vsergeychik.carddemo.common.ScreenFieldImage;
 import com.vsergeychik.carddemo.common.ScreenTitles;
 import com.vsergeychik.carddemo.common.SystemMessages;
 import java.nio.charset.Charset;
@@ -155,7 +157,8 @@ import java.util.function.Function;
  * no Lombok or MapStruct (nothing here but Jackson's {@code @JsonIgnore} and the JDK); the COBOL,
  * copybook and BMS sources are read-only; names verbatim; all 59 fields projected even where a code
  * path blanks one; no masking or redaction of any field; no wildcard imports; space padding survives
- * a JSON round trip untrimmed; no locally declared Jackson naming strategy, {@code @JsonInclude},
+ * a JSON round trip untrimmed; each wire name pinned by {@code @JsonProperty} to its {@code xxxI} item
+ * in lower case per AAP 0.6.3, and no locally declared Jackson naming strategy, {@code @JsonInclude},
  * {@code @JsonNaming} or {@code ObjectMapper} - the web configuration owns those module-wide; no
  * static mutable state; constructible and assertable without Spring; and width rendering delegated
  * to {@link FixedWidthCodec}.
@@ -1524,181 +1527,181 @@ public final class TransactionListResponse {
     // =================================================================================================
 
     /** {@code TRNNAMEO PIC X(4)}: the transaction identifier, {@code CT00}. */
-    private String trnnameO = spaces(TRNNAME_LENGTH);
+    private String trnnameO = ScreenFieldImage.unpainted(TRNNAME_LENGTH);
 
     /** {@code TITLE01O PIC X(40)}: the upper title line, from {@link ScreenTitles#CCDA_TITLE01}. */
-    private String title01O = spaces(TITLE01_LENGTH);
+    private String title01O = ScreenFieldImage.unpainted(TITLE01_LENGTH);
 
     /** {@code CURDATEO PIC X(8)}: the current date as {@code MM/DD/YY}. */
-    private String curdateO = spaces(CURDATE_LENGTH);
+    private String curdateO = ScreenFieldImage.unpainted(CURDATE_LENGTH);
 
     /** {@code PGMNAMEO PIC X(8)}: the program name, {@code COTRN00C}. */
-    private String pgmnameO = spaces(PGMNAME_LENGTH);
+    private String pgmnameO = ScreenFieldImage.unpainted(PGMNAME_LENGTH);
 
     /** {@code TITLE02O PIC X(40)}: the lower title line, from {@link ScreenTitles#CCDA_TITLE02}. */
-    private String title02O = spaces(TITLE02_LENGTH);
+    private String title02O = ScreenFieldImage.unpainted(TITLE02_LENGTH);
 
     /** {@code CURTIMEO PIC X(8)}: the current time as {@code HH:MM:SS}. */
-    private String curtimeO = spaces(CURTIME_LENGTH);
+    private String curtimeO = ScreenFieldImage.unpainted(CURTIME_LENGTH);
 
     /** {@code PAGENUMO PIC X(8)}: the displayed page number, alphanumeric on the screen. */
-    private String pagenumO = spaces(PAGENUM_LENGTH);
+    private String pagenumO = ScreenFieldImage.unpainted(PAGENUM_LENGTH);
 
     /** {@code TRNIDINO PIC X(16)}: the browse-start key the user typed, blanked at {@code COTRN00C:325}. */
-    private String trnidinO = spaces(TRNIDIN_LENGTH);
+    private String trnidinO = ScreenFieldImage.unpainted(TRNIDIN_LENGTH);
 
     /** {@code SEL0001O PIC X(1)}: row 1 selector. */
-    private String sel0001O = spaces(SEL_LENGTH);
+    private String sel0001O = ScreenFieldImage.unpainted(SEL_LENGTH);
 
     /** {@code TRNID01O PIC X(16)}: row 1 transaction identifier. */
-    private String trnid01O = spaces(TRNID_LENGTH);
+    private String trnid01O = ScreenFieldImage.unpainted(TRNID_LENGTH);
 
     /** {@code TDATE01O PIC X(8)}: row 1 transaction date. */
-    private String tdate01O = spaces(TDATE_LENGTH);
+    private String tdate01O = ScreenFieldImage.unpainted(TDATE_LENGTH);
 
     /** {@code TDESC01O PIC X(26)}: row 1 description. */
-    private String tdesc01O = spaces(TDESC_LENGTH);
+    private String tdesc01O = ScreenFieldImage.unpainted(TDESC_LENGTH);
 
     /** {@code TAMT001O PIC X(12)}: row 1 edited amount. */
-    private String tamt001O = spaces(TAMT_LENGTH);
+    private String tamt001O = ScreenFieldImage.unpainted(TAMT_LENGTH);
 
     /** {@code SEL0002O PIC X(1)}: row 2 selector. */
-    private String sel0002O = spaces(SEL_LENGTH);
+    private String sel0002O = ScreenFieldImage.unpainted(SEL_LENGTH);
 
     /** {@code TRNID02O PIC X(16)}: row 2 transaction identifier. */
-    private String trnid02O = spaces(TRNID_LENGTH);
+    private String trnid02O = ScreenFieldImage.unpainted(TRNID_LENGTH);
 
     /** {@code TDATE02O PIC X(8)}: row 2 transaction date. */
-    private String tdate02O = spaces(TDATE_LENGTH);
+    private String tdate02O = ScreenFieldImage.unpainted(TDATE_LENGTH);
 
     /** {@code TDESC02O PIC X(26)}: row 2 description. */
-    private String tdesc02O = spaces(TDESC_LENGTH);
+    private String tdesc02O = ScreenFieldImage.unpainted(TDESC_LENGTH);
 
     /** {@code TAMT002O PIC X(12)}: row 2 edited amount. */
-    private String tamt002O = spaces(TAMT_LENGTH);
+    private String tamt002O = ScreenFieldImage.unpainted(TAMT_LENGTH);
 
     /** {@code SEL0003O PIC X(1)}: row 3 selector. */
-    private String sel0003O = spaces(SEL_LENGTH);
+    private String sel0003O = ScreenFieldImage.unpainted(SEL_LENGTH);
 
     /** {@code TRNID03O PIC X(16)}: row 3 transaction identifier. */
-    private String trnid03O = spaces(TRNID_LENGTH);
+    private String trnid03O = ScreenFieldImage.unpainted(TRNID_LENGTH);
 
     /** {@code TDATE03O PIC X(8)}: row 3 transaction date. */
-    private String tdate03O = spaces(TDATE_LENGTH);
+    private String tdate03O = ScreenFieldImage.unpainted(TDATE_LENGTH);
 
     /** {@code TDESC03O PIC X(26)}: row 3 description. */
-    private String tdesc03O = spaces(TDESC_LENGTH);
+    private String tdesc03O = ScreenFieldImage.unpainted(TDESC_LENGTH);
 
     /** {@code TAMT003O PIC X(12)}: row 3 edited amount. */
-    private String tamt003O = spaces(TAMT_LENGTH);
+    private String tamt003O = ScreenFieldImage.unpainted(TAMT_LENGTH);
 
     /** {@code SEL0004O PIC X(1)}: row 4 selector. */
-    private String sel0004O = spaces(SEL_LENGTH);
+    private String sel0004O = ScreenFieldImage.unpainted(SEL_LENGTH);
 
     /** {@code TRNID04O PIC X(16)}: row 4 transaction identifier. */
-    private String trnid04O = spaces(TRNID_LENGTH);
+    private String trnid04O = ScreenFieldImage.unpainted(TRNID_LENGTH);
 
     /** {@code TDATE04O PIC X(8)}: row 4 transaction date. */
-    private String tdate04O = spaces(TDATE_LENGTH);
+    private String tdate04O = ScreenFieldImage.unpainted(TDATE_LENGTH);
 
     /** {@code TDESC04O PIC X(26)}: row 4 description. */
-    private String tdesc04O = spaces(TDESC_LENGTH);
+    private String tdesc04O = ScreenFieldImage.unpainted(TDESC_LENGTH);
 
     /** {@code TAMT004O PIC X(12)}: row 4 edited amount. */
-    private String tamt004O = spaces(TAMT_LENGTH);
+    private String tamt004O = ScreenFieldImage.unpainted(TAMT_LENGTH);
 
     /** {@code SEL0005O PIC X(1)}: row 5 selector. */
-    private String sel0005O = spaces(SEL_LENGTH);
+    private String sel0005O = ScreenFieldImage.unpainted(SEL_LENGTH);
 
     /** {@code TRNID05O PIC X(16)}: row 5 transaction identifier. */
-    private String trnid05O = spaces(TRNID_LENGTH);
+    private String trnid05O = ScreenFieldImage.unpainted(TRNID_LENGTH);
 
     /** {@code TDATE05O PIC X(8)}: row 5 transaction date. */
-    private String tdate05O = spaces(TDATE_LENGTH);
+    private String tdate05O = ScreenFieldImage.unpainted(TDATE_LENGTH);
 
     /** {@code TDESC05O PIC X(26)}: row 5 description. */
-    private String tdesc05O = spaces(TDESC_LENGTH);
+    private String tdesc05O = ScreenFieldImage.unpainted(TDESC_LENGTH);
 
     /** {@code TAMT005O PIC X(12)}: row 5 edited amount. */
-    private String tamt005O = spaces(TAMT_LENGTH);
+    private String tamt005O = ScreenFieldImage.unpainted(TAMT_LENGTH);
 
     /** {@code SEL0006O PIC X(1)}: row 6 selector. */
-    private String sel0006O = spaces(SEL_LENGTH);
+    private String sel0006O = ScreenFieldImage.unpainted(SEL_LENGTH);
 
     /** {@code TRNID06O PIC X(16)}: row 6 transaction identifier. */
-    private String trnid06O = spaces(TRNID_LENGTH);
+    private String trnid06O = ScreenFieldImage.unpainted(TRNID_LENGTH);
 
     /** {@code TDATE06O PIC X(8)}: row 6 transaction date. */
-    private String tdate06O = spaces(TDATE_LENGTH);
+    private String tdate06O = ScreenFieldImage.unpainted(TDATE_LENGTH);
 
     /** {@code TDESC06O PIC X(26)}: row 6 description. */
-    private String tdesc06O = spaces(TDESC_LENGTH);
+    private String tdesc06O = ScreenFieldImage.unpainted(TDESC_LENGTH);
 
     /** {@code TAMT006O PIC X(12)}: row 6 edited amount. */
-    private String tamt006O = spaces(TAMT_LENGTH);
+    private String tamt006O = ScreenFieldImage.unpainted(TAMT_LENGTH);
 
     /** {@code SEL0007O PIC X(1)}: row 7 selector. */
-    private String sel0007O = spaces(SEL_LENGTH);
+    private String sel0007O = ScreenFieldImage.unpainted(SEL_LENGTH);
 
     /** {@code TRNID07O PIC X(16)}: row 7 transaction identifier. */
-    private String trnid07O = spaces(TRNID_LENGTH);
+    private String trnid07O = ScreenFieldImage.unpainted(TRNID_LENGTH);
 
     /** {@code TDATE07O PIC X(8)}: row 7 transaction date. */
-    private String tdate07O = spaces(TDATE_LENGTH);
+    private String tdate07O = ScreenFieldImage.unpainted(TDATE_LENGTH);
 
     /** {@code TDESC07O PIC X(26)}: row 7 description. */
-    private String tdesc07O = spaces(TDESC_LENGTH);
+    private String tdesc07O = ScreenFieldImage.unpainted(TDESC_LENGTH);
 
     /** {@code TAMT007O PIC X(12)}: row 7 edited amount. */
-    private String tamt007O = spaces(TAMT_LENGTH);
+    private String tamt007O = ScreenFieldImage.unpainted(TAMT_LENGTH);
 
     /** {@code SEL0008O PIC X(1)}: row 8 selector. */
-    private String sel0008O = spaces(SEL_LENGTH);
+    private String sel0008O = ScreenFieldImage.unpainted(SEL_LENGTH);
 
     /** {@code TRNID08O PIC X(16)}: row 8 transaction identifier. */
-    private String trnid08O = spaces(TRNID_LENGTH);
+    private String trnid08O = ScreenFieldImage.unpainted(TRNID_LENGTH);
 
     /** {@code TDATE08O PIC X(8)}: row 8 transaction date. */
-    private String tdate08O = spaces(TDATE_LENGTH);
+    private String tdate08O = ScreenFieldImage.unpainted(TDATE_LENGTH);
 
     /** {@code TDESC08O PIC X(26)}: row 8 description. */
-    private String tdesc08O = spaces(TDESC_LENGTH);
+    private String tdesc08O = ScreenFieldImage.unpainted(TDESC_LENGTH);
 
     /** {@code TAMT008O PIC X(12)}: row 8 edited amount. */
-    private String tamt008O = spaces(TAMT_LENGTH);
+    private String tamt008O = ScreenFieldImage.unpainted(TAMT_LENGTH);
 
     /** {@code SEL0009O PIC X(1)}: row 9 selector. */
-    private String sel0009O = spaces(SEL_LENGTH);
+    private String sel0009O = ScreenFieldImage.unpainted(SEL_LENGTH);
 
     /** {@code TRNID09O PIC X(16)}: row 9 transaction identifier. */
-    private String trnid09O = spaces(TRNID_LENGTH);
+    private String trnid09O = ScreenFieldImage.unpainted(TRNID_LENGTH);
 
     /** {@code TDATE09O PIC X(8)}: row 9 transaction date. */
-    private String tdate09O = spaces(TDATE_LENGTH);
+    private String tdate09O = ScreenFieldImage.unpainted(TDATE_LENGTH);
 
     /** {@code TDESC09O PIC X(26)}: row 9 description. */
-    private String tdesc09O = spaces(TDESC_LENGTH);
+    private String tdesc09O = ScreenFieldImage.unpainted(TDESC_LENGTH);
 
     /** {@code TAMT009O PIC X(12)}: row 9 edited amount. */
-    private String tamt009O = spaces(TAMT_LENGTH);
+    private String tamt009O = ScreenFieldImage.unpainted(TAMT_LENGTH);
 
     /** {@code SEL0010O PIC X(1)}: row 10 selector. */
-    private String sel0010O = spaces(SEL_LENGTH);
+    private String sel0010O = ScreenFieldImage.unpainted(SEL_LENGTH);
 
     /** {@code TRNID10O PIC X(16)}: row 10 transaction identifier. */
-    private String trnid10O = spaces(TRNID_LENGTH);
+    private String trnid10O = ScreenFieldImage.unpainted(TRNID_LENGTH);
 
     /** {@code TDATE10O PIC X(8)}: row 10 transaction date. */
-    private String tdate10O = spaces(TDATE_LENGTH);
+    private String tdate10O = ScreenFieldImage.unpainted(TDATE_LENGTH);
 
     /** {@code TDESC10O PIC X(26)}: row 10 description. */
-    private String tdesc10O = spaces(TDESC_LENGTH);
+    private String tdesc10O = ScreenFieldImage.unpainted(TDESC_LENGTH);
 
     /** {@code TAMT010O PIC X(12)}: row 10 edited amount. */
-    private String tamt010O = spaces(TAMT_LENGTH);
+    private String tamt010O = ScreenFieldImage.unpainted(TAMT_LENGTH);
 
     /** {@code ERRMSGO PIC X(78)}: the error line, blanked at {@code COTRN00C:103}. */
-    private String errmsgO = spaces(ERRMSG_LENGTH);
+    private String errmsgO = ScreenFieldImage.unpainted(ERRMSG_LENGTH);
 
     // --- navigation, replacing EXEC CICS XCTL ------------------------------------------------------
 
@@ -1748,16 +1751,22 @@ public final class TransactionListResponse {
     // =================================================================================================
 
     /**
-     * A blank screen: every payload field spaces at its declared width, every attribute quad at low
-     * values, the navigation targets defaulted to this map's own mapset and map, an empty
-     * communication area and a cursor in its declared initial state.
+     * A blank screen: every payload field carrying the unpainted image at its declared width, every
+     * attribute quad at low values, the navigation targets defaulted to this map's own mapset and map,
+     * an empty communication area and a cursor in its declared initial state.
      *
-     * <p>This is the state {@code COTRN00C:114}'s {@code MOVE LOW-VALUES TO COTRN0AO} and
-     * {@code COTRN00C:103}'s {@code MOVE SPACES TO ERRMSGO} leave the group in before the first
-     * screen is painted - with one deliberate difference: the payload items are spaces rather than
-     * low values, because a JSON payload has to carry characters and a blanked field is what every
-     * subsequent {@code MOVE SPACES} produces anyway. The attribute items <em>do</em> carry the low
-     * value, because that is what tells BMS to use the map's default rendering.
+     * <p>This is the state {@code COTRN00C:114}'s {@code MOVE LOW-VALUES TO COTRN0AO} leaves the group
+     * in before the first screen is painted: {@code X'00'} at every declared width, payload items and
+     * attribute quads alike. An earlier revision made the payload items spaces on the reasoning that a
+     * JSON payload has to carry characters - it does, and {@code U+0000} is one, which Jackson emits as
+     * the {@code \u0000} escape.
+     *
+     * <p>{@code COTRN00C:102-103}'s {@code MOVE SPACES TO WS-MESSAGE, ERRMSGO} is a separate statement
+     * and is deliberately <em>not</em> folded in here. It runs unconditionally at the head of
+     * {@code MAIN-PARA}, on every path including the one that never sends the map, so the error line is
+     * painted - blank, but painted - by {@link #clearErrorLine()} where the source performs it. That
+     * leaves this constructor stating one rule for all fifty-nine fields. See {@link ScreenFieldImage}
+     * for why "never painted" and "painted blank" must not share an image.
      */
     public TransactionListResponse() {
         for (String fieldPrefix : FIELD_PREFIXES) {
@@ -1803,10 +1812,15 @@ public final class TransactionListResponse {
     // paragraph reproductions further down do exactly that. A shorter value is accepted and is padded
     // on the right when the image is produced, exactly as a MOVE into a wider PIC X receiver pads.
     //
-    // No @JsonProperty, no @JsonInclude, no @JsonNaming and no ObjectMapper appear here: the web
-    // configuration owns the module's JSON policy, and a local override would silently exempt this one
-    // payload from it. No @JsonIgnore appears on a data field either - nothing is masked, truncated or
-    // redacted, and the response carries every field the screen carries.
+    // @JsonProperty pins each accessor's wire name to its xxxI item in lower case, which is the one
+    // naming rule AAP 0.6.3 states: "payload field names and lengths derive from the xxxI items only".
+    // It is declared per field rather than left to Jackson's derivation from the getter, because the
+    // getter carries the xxxO output-direction suffix that names the map's OUTPUT view - correct as a
+    // Java identifier, wrong as a wire name, since a caller sending this response back must name the
+    // same item the input view names. No @JsonInclude, no @JsonNaming and no ObjectMapper appear here:
+    // the web configuration owns the module's JSON policy, and a local override would silently exempt
+    // this one payload from it. No @JsonIgnore appears on a data field either - nothing is masked,
+    // truncated or redacted, and the response carries every field the screen carries.
     // =================================================================================================
 
     /**
@@ -1815,6 +1829,7 @@ public final class TransactionListResponse {
      *
      * @return the stored value, untrimmed; never {@code null}
      */
+    @JsonProperty("trnname")
     public String getTrnnameO() {
         return trnnameO;
     }
@@ -1836,6 +1851,7 @@ public final class TransactionListResponse {
      *
      * @return the stored value, untrimmed; never {@code null}
      */
+    @JsonProperty("title01")
     public String getTitle01O() {
         return title01O;
     }
@@ -1857,6 +1873,7 @@ public final class TransactionListResponse {
      *
      * @return the stored value, untrimmed; never {@code null}
      */
+    @JsonProperty("curdate")
     public String getCurdateO() {
         return curdateO;
     }
@@ -1878,6 +1895,7 @@ public final class TransactionListResponse {
      *
      * @return the stored value, untrimmed; never {@code null}
      */
+    @JsonProperty("pgmname")
     public String getPgmnameO() {
         return pgmnameO;
     }
@@ -1899,6 +1917,7 @@ public final class TransactionListResponse {
      *
      * @return the stored value, untrimmed; never {@code null}
      */
+    @JsonProperty("title02")
     public String getTitle02O() {
         return title02O;
     }
@@ -1920,6 +1939,7 @@ public final class TransactionListResponse {
      *
      * @return the stored value, untrimmed; never {@code null}
      */
+    @JsonProperty("curtime")
     public String getCurtimeO() {
         return curtimeO;
     }
@@ -1944,6 +1964,7 @@ public final class TransactionListResponse {
      *
      * @return the stored value, untrimmed; never {@code null}
      */
+    @JsonProperty("pagenum")
     public String getPagenumO() {
         return pagenumO;
     }
@@ -1969,6 +1990,7 @@ public final class TransactionListResponse {
      *
      * @return the stored value, untrimmed; never {@code null}
      */
+    @JsonProperty("trnidin")
     public String getTrnidinO() {
         return trnidinO;
     }
@@ -1989,6 +2011,7 @@ public final class TransactionListResponse {
      *
      * @return the stored value, untrimmed; never {@code null}
      */
+    @JsonProperty("sel0001")
     public String getSel0001O() {
         return sel0001O;
     }
@@ -2010,6 +2033,7 @@ public final class TransactionListResponse {
      *
      * @return the stored value, untrimmed; never {@code null}
      */
+    @JsonProperty("trnid01")
     public String getTrnid01O() {
         return trnid01O;
     }
@@ -2030,6 +2054,7 @@ public final class TransactionListResponse {
      *
      * @return the stored value, untrimmed; never {@code null}
      */
+    @JsonProperty("tdate01")
     public String getTdate01O() {
         return tdate01O;
     }
@@ -2050,6 +2075,7 @@ public final class TransactionListResponse {
      *
      * @return the stored value, untrimmed; never {@code null}
      */
+    @JsonProperty("tdesc01")
     public String getTdesc01O() {
         return tdesc01O;
     }
@@ -2070,6 +2096,7 @@ public final class TransactionListResponse {
      *
      * @return the stored value, untrimmed; never {@code null}
      */
+    @JsonProperty("tamt001")
     public String getTamt001O() {
         return tamt001O;
     }
@@ -2090,6 +2117,7 @@ public final class TransactionListResponse {
      *
      * @return the stored value, untrimmed; never {@code null}
      */
+    @JsonProperty("sel0002")
     public String getSel0002O() {
         return sel0002O;
     }
@@ -2110,6 +2138,7 @@ public final class TransactionListResponse {
      *
      * @return the stored value, untrimmed; never {@code null}
      */
+    @JsonProperty("trnid02")
     public String getTrnid02O() {
         return trnid02O;
     }
@@ -2130,6 +2159,7 @@ public final class TransactionListResponse {
      *
      * @return the stored value, untrimmed; never {@code null}
      */
+    @JsonProperty("tdate02")
     public String getTdate02O() {
         return tdate02O;
     }
@@ -2150,6 +2180,7 @@ public final class TransactionListResponse {
      *
      * @return the stored value, untrimmed; never {@code null}
      */
+    @JsonProperty("tdesc02")
     public String getTdesc02O() {
         return tdesc02O;
     }
@@ -2170,6 +2201,7 @@ public final class TransactionListResponse {
      *
      * @return the stored value, untrimmed; never {@code null}
      */
+    @JsonProperty("tamt002")
     public String getTamt002O() {
         return tamt002O;
     }
@@ -2190,6 +2222,7 @@ public final class TransactionListResponse {
      *
      * @return the stored value, untrimmed; never {@code null}
      */
+    @JsonProperty("sel0003")
     public String getSel0003O() {
         return sel0003O;
     }
@@ -2210,6 +2243,7 @@ public final class TransactionListResponse {
      *
      * @return the stored value, untrimmed; never {@code null}
      */
+    @JsonProperty("trnid03")
     public String getTrnid03O() {
         return trnid03O;
     }
@@ -2230,6 +2264,7 @@ public final class TransactionListResponse {
      *
      * @return the stored value, untrimmed; never {@code null}
      */
+    @JsonProperty("tdate03")
     public String getTdate03O() {
         return tdate03O;
     }
@@ -2250,6 +2285,7 @@ public final class TransactionListResponse {
      *
      * @return the stored value, untrimmed; never {@code null}
      */
+    @JsonProperty("tdesc03")
     public String getTdesc03O() {
         return tdesc03O;
     }
@@ -2270,6 +2306,7 @@ public final class TransactionListResponse {
      *
      * @return the stored value, untrimmed; never {@code null}
      */
+    @JsonProperty("tamt003")
     public String getTamt003O() {
         return tamt003O;
     }
@@ -2290,6 +2327,7 @@ public final class TransactionListResponse {
      *
      * @return the stored value, untrimmed; never {@code null}
      */
+    @JsonProperty("sel0004")
     public String getSel0004O() {
         return sel0004O;
     }
@@ -2310,6 +2348,7 @@ public final class TransactionListResponse {
      *
      * @return the stored value, untrimmed; never {@code null}
      */
+    @JsonProperty("trnid04")
     public String getTrnid04O() {
         return trnid04O;
     }
@@ -2330,6 +2369,7 @@ public final class TransactionListResponse {
      *
      * @return the stored value, untrimmed; never {@code null}
      */
+    @JsonProperty("tdate04")
     public String getTdate04O() {
         return tdate04O;
     }
@@ -2350,6 +2390,7 @@ public final class TransactionListResponse {
      *
      * @return the stored value, untrimmed; never {@code null}
      */
+    @JsonProperty("tdesc04")
     public String getTdesc04O() {
         return tdesc04O;
     }
@@ -2370,6 +2411,7 @@ public final class TransactionListResponse {
      *
      * @return the stored value, untrimmed; never {@code null}
      */
+    @JsonProperty("tamt004")
     public String getTamt004O() {
         return tamt004O;
     }
@@ -2390,6 +2432,7 @@ public final class TransactionListResponse {
      *
      * @return the stored value, untrimmed; never {@code null}
      */
+    @JsonProperty("sel0005")
     public String getSel0005O() {
         return sel0005O;
     }
@@ -2410,6 +2453,7 @@ public final class TransactionListResponse {
      *
      * @return the stored value, untrimmed; never {@code null}
      */
+    @JsonProperty("trnid05")
     public String getTrnid05O() {
         return trnid05O;
     }
@@ -2430,6 +2474,7 @@ public final class TransactionListResponse {
      *
      * @return the stored value, untrimmed; never {@code null}
      */
+    @JsonProperty("tdate05")
     public String getTdate05O() {
         return tdate05O;
     }
@@ -2450,6 +2495,7 @@ public final class TransactionListResponse {
      *
      * @return the stored value, untrimmed; never {@code null}
      */
+    @JsonProperty("tdesc05")
     public String getTdesc05O() {
         return tdesc05O;
     }
@@ -2470,6 +2516,7 @@ public final class TransactionListResponse {
      *
      * @return the stored value, untrimmed; never {@code null}
      */
+    @JsonProperty("tamt005")
     public String getTamt005O() {
         return tamt005O;
     }
@@ -2491,6 +2538,7 @@ public final class TransactionListResponse {
      *
      * @return the stored value, untrimmed; never {@code null}
      */
+    @JsonProperty("sel0006")
     public String getSel0006O() {
         return sel0006O;
     }
@@ -2511,6 +2559,7 @@ public final class TransactionListResponse {
      *
      * @return the stored value, untrimmed; never {@code null}
      */
+    @JsonProperty("trnid06")
     public String getTrnid06O() {
         return trnid06O;
     }
@@ -2531,6 +2580,7 @@ public final class TransactionListResponse {
      *
      * @return the stored value, untrimmed; never {@code null}
      */
+    @JsonProperty("tdate06")
     public String getTdate06O() {
         return tdate06O;
     }
@@ -2551,6 +2601,7 @@ public final class TransactionListResponse {
      *
      * @return the stored value, untrimmed; never {@code null}
      */
+    @JsonProperty("tdesc06")
     public String getTdesc06O() {
         return tdesc06O;
     }
@@ -2571,6 +2622,7 @@ public final class TransactionListResponse {
      *
      * @return the stored value, untrimmed; never {@code null}
      */
+    @JsonProperty("tamt006")
     public String getTamt006O() {
         return tamt006O;
     }
@@ -2591,6 +2643,7 @@ public final class TransactionListResponse {
      *
      * @return the stored value, untrimmed; never {@code null}
      */
+    @JsonProperty("sel0007")
     public String getSel0007O() {
         return sel0007O;
     }
@@ -2611,6 +2664,7 @@ public final class TransactionListResponse {
      *
      * @return the stored value, untrimmed; never {@code null}
      */
+    @JsonProperty("trnid07")
     public String getTrnid07O() {
         return trnid07O;
     }
@@ -2631,6 +2685,7 @@ public final class TransactionListResponse {
      *
      * @return the stored value, untrimmed; never {@code null}
      */
+    @JsonProperty("tdate07")
     public String getTdate07O() {
         return tdate07O;
     }
@@ -2651,6 +2706,7 @@ public final class TransactionListResponse {
      *
      * @return the stored value, untrimmed; never {@code null}
      */
+    @JsonProperty("tdesc07")
     public String getTdesc07O() {
         return tdesc07O;
     }
@@ -2671,6 +2727,7 @@ public final class TransactionListResponse {
      *
      * @return the stored value, untrimmed; never {@code null}
      */
+    @JsonProperty("tamt007")
     public String getTamt007O() {
         return tamt007O;
     }
@@ -2691,6 +2748,7 @@ public final class TransactionListResponse {
      *
      * @return the stored value, untrimmed; never {@code null}
      */
+    @JsonProperty("sel0008")
     public String getSel0008O() {
         return sel0008O;
     }
@@ -2711,6 +2769,7 @@ public final class TransactionListResponse {
      *
      * @return the stored value, untrimmed; never {@code null}
      */
+    @JsonProperty("trnid08")
     public String getTrnid08O() {
         return trnid08O;
     }
@@ -2731,6 +2790,7 @@ public final class TransactionListResponse {
      *
      * @return the stored value, untrimmed; never {@code null}
      */
+    @JsonProperty("tdate08")
     public String getTdate08O() {
         return tdate08O;
     }
@@ -2751,6 +2811,7 @@ public final class TransactionListResponse {
      *
      * @return the stored value, untrimmed; never {@code null}
      */
+    @JsonProperty("tdesc08")
     public String getTdesc08O() {
         return tdesc08O;
     }
@@ -2771,6 +2832,7 @@ public final class TransactionListResponse {
      *
      * @return the stored value, untrimmed; never {@code null}
      */
+    @JsonProperty("tamt008")
     public String getTamt008O() {
         return tamt008O;
     }
@@ -2791,6 +2853,7 @@ public final class TransactionListResponse {
      *
      * @return the stored value, untrimmed; never {@code null}
      */
+    @JsonProperty("sel0009")
     public String getSel0009O() {
         return sel0009O;
     }
@@ -2811,6 +2874,7 @@ public final class TransactionListResponse {
      *
      * @return the stored value, untrimmed; never {@code null}
      */
+    @JsonProperty("trnid09")
     public String getTrnid09O() {
         return trnid09O;
     }
@@ -2831,6 +2895,7 @@ public final class TransactionListResponse {
      *
      * @return the stored value, untrimmed; never {@code null}
      */
+    @JsonProperty("tdate09")
     public String getTdate09O() {
         return tdate09O;
     }
@@ -2851,6 +2916,7 @@ public final class TransactionListResponse {
      *
      * @return the stored value, untrimmed; never {@code null}
      */
+    @JsonProperty("tdesc09")
     public String getTdesc09O() {
         return tdesc09O;
     }
@@ -2871,6 +2937,7 @@ public final class TransactionListResponse {
      *
      * @return the stored value, untrimmed; never {@code null}
      */
+    @JsonProperty("tamt009")
     public String getTamt009O() {
         return tamt009O;
     }
@@ -2891,6 +2958,7 @@ public final class TransactionListResponse {
      *
      * @return the stored value, untrimmed; never {@code null}
      */
+    @JsonProperty("sel0010")
     public String getSel0010O() {
         return sel0010O;
     }
@@ -2911,6 +2979,7 @@ public final class TransactionListResponse {
      *
      * @return the stored value, untrimmed; never {@code null}
      */
+    @JsonProperty("trnid10")
     public String getTrnid10O() {
         return trnid10O;
     }
@@ -2931,6 +3000,7 @@ public final class TransactionListResponse {
      *
      * @return the stored value, untrimmed; never {@code null}
      */
+    @JsonProperty("tdate10")
     public String getTdate10O() {
         return tdate10O;
     }
@@ -2951,6 +3021,7 @@ public final class TransactionListResponse {
      *
      * @return the stored value, untrimmed; never {@code null}
      */
+    @JsonProperty("tdesc10")
     public String getTdesc10O() {
         return tdesc10O;
     }
@@ -2972,6 +3043,7 @@ public final class TransactionListResponse {
      *
      * @return the stored value, untrimmed; never {@code null}
      */
+    @JsonProperty("tamt010")
     public String getTamt010O() {
         return tamt010O;
     }
@@ -2997,6 +3069,7 @@ public final class TransactionListResponse {
      *
      * @return the stored value, untrimmed; never {@code null}
      */
+    @JsonProperty("errmsg")
     public String getErrmsgO() {
         return errmsgO;
     }

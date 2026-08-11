@@ -8,6 +8,7 @@ import com.vsergeychik.carddemo.common.FieldAttributeSetter;
 import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.NavigationContext;
+import com.vsergeychik.carddemo.common.ScreenFieldImage;
 import com.vsergeychik.carddemo.common.ScreenMetadata;
 import com.vsergeychik.carddemo.common.ScreenResponse;
 import com.vsergeychik.carddemo.common.PfKeyResolver;
@@ -1568,8 +1569,9 @@ class UserMenuControllerTest {
             for (int other = 1; other <= PAGE_SIZE; other++) {
                 if (other != rowNumber) {
                     assertThat(ws.map().usrId(other))
-                            .as("row %d must be untouched", other)
-                            .isBlank();
+                            .as("row %d must be untouched, and an untouched row of COUSR0AO holds the "
+                                    + "storage image :117 moves there, not spaces", other)
+                            .isEqualTo(ScreenFieldImage.unpainted(UserListResponse.USRID_LENGTH));
                 }
             }
         }
@@ -1611,7 +1613,10 @@ class UserMenuControllerTest {
             assertThat(ws.cu00UsrIdFirst()).isBlank();
             assertThat(ws.cu00UsrIdLast()).isBlank();
             for (int rowNumber = 1; rowNumber <= PAGE_SIZE; rowNumber++) {
-                assertThat(ws.map().usrId(rowNumber)).isBlank();
+                assertThat(ws.map().usrId(rowNumber))
+                        .as("WHEN OTHER -> CONTINUE, so row %d was never written and holds the "
+                                + "unpainted image", rowNumber)
+                        .isEqualTo(ScreenFieldImage.unpainted(UserListResponse.USRID_LENGTH));
             }
         }
 
@@ -2093,7 +2098,10 @@ class UserMenuControllerTest {
             assertThat(map.pageNum()).isEqualTo("00000001");
             assertThat(map.usrIdIn()).isBlank();
             assertThat(map.errMsg().strip()).isEqualTo(UserMenuController.MSG_REACHED_BOTTOM);
-            assertThat(map.sel(1)).isBlank();
+            assertThat(map.sel(1))
+                    .as("neither POPULATE-USER-DATA nor INITIALIZE-USER-DATA touches a selection cell, "
+                            + "so it still holds what :117 moved into the area")
+                    .isEqualTo(ScreenFieldImage.unpainted(UserListResponse.SEL_LENGTH));
             assertThat(map.usrId(1).strip()).isEqualTo("ADMIN001");
             assertThat(map.fname(1).strip()).isEqualTo("MARGARET");
             assertThat(map.lname(1).strip()).isEqualTo("GOLD");
@@ -2208,8 +2216,9 @@ class UserMenuControllerTest {
                     .as("only the STARTBR arm's own send; :329 was never reached")
                     .hasSize(1);
             assertThat(ws.map().pageNum())
-                    .as(":327 was not reached either, so PAGENUMO is untouched")
-                    .isBlank();
+                    .as(":327 was not reached either, so PAGENUMO is untouched and holds the unpainted "
+                            + "image rather than spaces nothing wrote")
+                    .isEqualTo(ScreenFieldImage.unpainted(UserListResponse.PAGENUM_LENGTH));
         }
 
         @Test
@@ -2620,13 +2629,13 @@ class UserMenuControllerTest {
                             .contentType(MediaType.APPLICATION_JSON)
                             .content(json(reentering().withAid("ENTER"))))
                     .andExpect(status().isOk())
-                    .andExpect(jsonPath("$.usrId01").value("ADMIN001"))
-                    .andExpect(jsonPath("$.usrId10").value("USER0005"))
+                    .andExpect(jsonPath("$.usrid01").value("ADMIN001"))
+                    .andExpect(jsonPath("$.usrid10").value("USER0005"))
                     .andReturn();
 
             assertThat(result.getResponse().getContentAsString())
                     .as("the body is the COUSR0AO projection, not an error document")
-                    .contains("\"trnName\":\"CU00\"");
+                    .contains("\"trnname\":\"CU00\"");
             Mockito.verify(repository).startBrowse(Mockito.any());
         }
 
@@ -2686,20 +2695,22 @@ class UserMenuControllerTest {
                     .hasSize(UserListResponse.MAP_FIELD_COUNT)
                     .hasSize(59);
 
+            // Screen fields under their xxxI item in lower case (AAP 0.6.3); the six CU00 carriers,
+            // the three navigation members and the envelope keep their own names.
             assertThat(wireNames).containsExactlyInAnyOrder(
-                    "trnName", "title01", "curDate", "pgmName", "title02", "curTime", "pageNum",
-                    "usrIdIn",
-                    "sel0001", "usrId01", "fname01", "lname01", "utype01",
-                    "sel0002", "usrId02", "fname02", "lname02", "utype02",
-                    "sel0003", "usrId03", "fname03", "lname03", "utype03",
-                    "sel0004", "usrId04", "fname04", "lname04", "utype04",
-                    "sel0005", "usrId05", "fname05", "lname05", "utype05",
-                    "sel0006", "usrId06", "fname06", "lname06", "utype06",
-                    "sel0007", "usrId07", "fname07", "lname07", "utype07",
-                    "sel0008", "usrId08", "fname08", "lname08", "utype08",
-                    "sel0009", "usrId09", "fname09", "lname09", "utype09",
-                    "sel0010", "usrId10", "fname10", "lname10", "utype10",
-                    "errMsg",
+                    "trnname", "title01", "curdate", "pgmname", "title02", "curtime", "pagenum",
+                    "usridin",
+                    "sel0001", "usrid01", "fname01", "lname01", "utype01",
+                    "sel0002", "usrid02", "fname02", "lname02", "utype02",
+                    "sel0003", "usrid03", "fname03", "lname03", "utype03",
+                    "sel0004", "usrid04", "fname04", "lname04", "utype04",
+                    "sel0005", "usrid05", "fname05", "lname05", "utype05",
+                    "sel0006", "usrid06", "fname06", "lname06", "utype06",
+                    "sel0007", "usrid07", "fname07", "lname07", "utype07",
+                    "sel0008", "usrid08", "fname08", "lname08", "utype08",
+                    "sel0009", "usrid09", "fname09", "lname09", "utype09",
+                    "sel0010", "usrid10", "fname10", "lname10", "utype10",
+                    "errmsg",
                     "cdemoCu00UsrIdFirst", "cdemoCu00UsrIdLast", "cdemoCu00PageNum",
                     "cdemoCu00NextPageFlg", "cdemoCu00UsrSelFlg", "cdemoCu00UsrSelected",
                     "nextProgram", "nextMapset", "nextMap",
@@ -2760,14 +2771,14 @@ class UserMenuControllerTest {
                     .andExpect(status().isOk())
                     // The pinned clock is 2022-07-19T23:12:34Z, and POPULATE-HEADER-INFO renders
                     // WS-CURTIME-HH-MM-SS at :581 and WS-CURDATE-MM-DD-YY at :575.
-                    .andExpect(jsonPath("$.curTime").value("23:12:34"))
-                    .andExpect(jsonPath("$.curDate").value("07/19/22"))
+                    .andExpect(jsonPath("$.curtime").value("23:12:34"))
+                    .andExpect(jsonPath("$.curdate").value("07/19/22"))
                     .andReturn().getResponse().getContentAsString();
 
-            assertThat(mapper.readTree(body).get("curTime").asText())
+            assertThat(mapper.readTree(body).get("curtime").asText())
                     .as("CURTIMEI PIC X(8)")
                     .hasSize(8);
-            assertThat(mapper.readTree(body).get("curDate").asText())
+            assertThat(mapper.readTree(body).get("curdate").asText())
                     .as("CURDATEI PIC X(8)")
                     .hasSize(8);
         }
@@ -2780,10 +2791,10 @@ class UserMenuControllerTest {
                             .content(json(reentering().withAid("ENTER"))))
                     .andExpect(status().isOk())
                     // MOVE WS-TRANID TO TRNNAMEO at :568 and MOVE WS-PGMNAME TO PGMNAMEO at :569.
-                    .andExpect(jsonPath("$.trnName").value(UserListResponse.TRANSACTION_ID))
-                    .andExpect(jsonPath("$.trnName").value("CU00"))
-                    .andExpect(jsonPath("$.pgmName").value(UserListResponse.PROGRAM_NAME))
-                    .andExpect(jsonPath("$.pgmName").value("COUSR00C"))
+                    .andExpect(jsonPath("$.trnname").value(UserListResponse.TRANSACTION_ID))
+                    .andExpect(jsonPath("$.trnname").value("CU00"))
+                    .andExpect(jsonPath("$.pgmname").value(UserListResponse.PROGRAM_NAME))
+                    .andExpect(jsonPath("$.pgmname").value("COUSR00C"))
                     // MOVE CCDA-TITLE01/02 at :566-567 - app/cpy/COTTL01Y.cpy, byte for byte.
                     .andExpect(jsonPath("$.title01").value(ScreenTitles.CCDA_TITLE01))
                     .andExpect(jsonPath("$.title02").value(ScreenTitles.CCDA_TITLE02));
@@ -2814,9 +2825,9 @@ class UserMenuControllerTest {
                             .contentType(MediaType.APPLICATION_JSON)
                             .content(json(reentering().withAid("ENTER"))))
                     .andExpect(status().isOk())
-                    .andExpect(jsonPath("$.usrId01").value("ADMIN001"))
+                    .andExpect(jsonPath("$.usrid01").value("ADMIN001"))
                     // Row ten is populated, which a page of three could not manage.
-                    .andExpect(jsonPath("$.usrId10").value("USER0005"))
+                    .andExpect(jsonPath("$.usrid10").value("USER0005"))
                     .andExpect(jsonPath("$.utype10").value("U"));
         }
     }
@@ -3605,9 +3616,11 @@ class UserMenuControllerTest {
             assertThat(ws.cu00UsrSelFlg().strip())
                     .as(":153 captured the flag from the ticked row")
                     .isEqualTo("U");
-            assertThat(ws.cu00UsrSelected().strip())
-                    .as(":154 captured a blank identifier, because the row was blank")
-                    .isEmpty();
+            assertThat(ws.cu00UsrSelected())
+                    .as(":154 copied USRIDnnI of a row nothing painted, so what the anchor now holds is "
+                            + "that row's unpainted image - the move is faithful either way, and this "
+                            + "asserts which image was moved")
+                    .isEqualTo(ScreenFieldImage.unpainted(UserListResponse.CU00_USR_SELECTED_LENGTH));
             assertThat(ws.message().strip())
                     .as("the guard failed, so the EVALUATE never ran and no complaint was made")
                     .isNotEqualTo(UserListResponse.INVALID_SELECTION_MESSAGE);
@@ -3970,7 +3983,7 @@ class UserMenuControllerTest {
                             .content(mapper.writeValueAsString(reentering().withAid("ENTER"))))
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.cdemoCu00PageNum").value(1))
-                    .andExpect(jsonPath("$.usrId01").value("ADMIN001"));
+                    .andExpect(jsonPath("$.usrid01").value("ADMIN001"));
         }
 
         @Test
@@ -4000,7 +4013,7 @@ class UserMenuControllerTest {
                             .contentType(MediaType.APPLICATION_JSON)
                             .content(mapper.writeValueAsString(reentering().withAid("PFK12"))))
                     .andExpect(status().isOk())
-                    .andExpect(jsonPath("$.errMsg")
+                    .andExpect(jsonPath("$.errmsg")
                             .value(CODEC.movePicX(SystemMessages.CCDA_MSG_INVALID_KEY,
                                     UserListResponse.ERRMSG_LENGTH)));
         }

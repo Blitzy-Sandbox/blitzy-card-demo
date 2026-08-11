@@ -1,10 +1,13 @@
 package com.vsergeychik.carddemo.account.dto;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import com.fasterxml.jackson.databind.annotation.JsonPOJOBuilder;
 import com.vsergeychik.carddemo.card.dto.CardScreenState;
 import com.vsergeychik.carddemo.common.DiagnosticText;
+import com.vsergeychik.carddemo.common.ResponseOnlyMembers;
+import com.vsergeychik.carddemo.common.ScreenFieldImage;
 import com.vsergeychik.carddemo.common.SensitiveDiagnostics;
 import com.vsergeychik.carddemo.common.BmsAttributes;
 import com.vsergeychik.carddemo.common.CobolDecimal;
@@ -440,6 +443,19 @@ import java.util.Objects;
  * @see FixedWidthCodec the sole home of the {@code PIC X} move rule and of the zoned-decimal alphabet
  * @see CobolDecimal the sole home of the scale-2, {@code RoundingMode.DOWN} store policy
  * @see BmsAttributes the reproduced {@code DFHBMSCA} / {@code DFHATTR} attribute constants
+ *
+ * <h2>Members this request tolerates without declaring</h2>
+ *
+ * <p>{@code @JsonIgnoreProperties} on {@link Builder} names the members the paired response carries that
+ * this request does not declare. It sits on the builder and not on this type because
+ * {@code @JsonDeserialize(builder = ...)} makes the builder the class Jackson binds into, and it is the
+ * builder's annotation that is consulted. They are tolerated so a client can send the body it was just handed straight
+ * back: rule R6 and gate G37 put the whole conversation in the payload, which makes the next request the
+ * previous response. {@code ignoreUnknown} stays at its default of {@code false}, so every <em>other</em>
+ * unrecognised name is still refused with the offending field named in the error envelope. Each tolerated
+ * member is recomputed by the server on every path, so the value that arrives here is discarded and
+ * cannot steer a branch. The names live in {@link com.vsergeychik.carddemo.common.ResponseOnlyMembers},
+ * which explains each one.
  */
 @JsonDeserialize(builder = AccountUpdateRequest.Builder.class)
 public final class AccountUpdateRequest {
@@ -1450,11 +1466,13 @@ public final class AccountUpdateRequest {
      * @throws IllegalArgumentException if {@code length} is negative
      */
     public static String lowValues(int length) {
+        // One implementation of the LOW-VALUES image, in common.ScreenFieldImage, so the choice cannot
+        // drift back apart across screens. Any width validation above is this method's own contract.
         if (length < 0) {
             throw new IllegalArgumentException("A field cannot be " + length + " characters wide, so "
                     + "there is no such thing as " + length + " LOW-VALUES characters");
         }
-        return String.valueOf(LOW_VALUE).repeat(length);
+        return ScreenFieldImage.unpainted(length);
     }
 
     /**
@@ -5794,8 +5812,24 @@ public final class AccountUpdateRequest {
      * {@code app/cbl/COACTUPC.cbl:1051-1058} handles by name.
      *
      * <p>A builder is not thread safe and is not meant to be shared; the request it produces is both.
+     *
+     * <p>{@code @JsonIgnoreProperties} names the members {@link AccountUpdateResponse} carries that this
+     * request does not declare, so a client can send the body it was just handed straight back - rule R6
+     * and gate G37 put the whole conversation in the payload, which makes the next request the previous
+     * response. It has to be here rather than on the enclosing type: with
+     * {@code @JsonDeserialize(builder = ...)} the builder is the class Jackson binds into, so the
+     * enclosing type's annotation is never consulted and the round trip would still be refused.
+     * {@code ignoreUnknown} stays at its default of {@code false}, so every <em>other</em> unrecognised
+     * name is still refused with the offending field named. Each tolerated member is recomputed by
+     * {@code COACTUPC} on every path, so the value that arrives here is discarded and cannot steer a
+     * branch. See {@link com.vsergeychik.carddemo.common.ResponseOnlyMembers}.
      */
     @JsonPOJOBuilder(withPrefix = "")
+    @JsonIgnoreProperties({
+            ResponseOnlyMembers.NEXT_PROGRAM,
+            ResponseOnlyMembers.NEXT_MAPSET,
+            ResponseOnlyMembers.NEXT_MAP,
+            ResponseOnlyMembers.SCREEN_METADATA})
     public static final class Builder {
 
         /** {@code TRNNAMEI}. */

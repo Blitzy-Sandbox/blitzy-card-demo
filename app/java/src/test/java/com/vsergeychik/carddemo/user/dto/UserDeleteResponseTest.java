@@ -12,6 +12,7 @@ import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.FixedWidthRecord;
 import com.vsergeychik.carddemo.common.NavigationContext;
 import com.vsergeychik.carddemo.common.PfKeyResolver;
+import com.vsergeychik.carddemo.common.ScreenFieldImage;
 import com.vsergeychik.carddemo.common.ScreenTitles;
 import com.vsergeychik.carddemo.common.SystemMessages;
 import com.vsergeychik.carddemo.user.model.SecUserRecord;
@@ -277,6 +278,32 @@ class UserDeleteResponseTest {
             "lName",
             "usrType",
             "errMsg");
+
+    /**
+     * A member's name <strong>on the wire</strong>.
+     *
+     * <p>A screen field answers to its {@code xxxI} item in lower case - that is what
+     * {@code @JsonProperty} pins on the subject and what AAP 0.6.3 requires, "payload field names and
+     * lengths derive from the xxxI items only". A carrier traces to no {@code DFHMDF} field, so no such
+     * rule governs it and it keeps its own component name. Keeping the two apart is the point: a single
+     * list serving both roles would silently assert that the Java identifier and the wire name coincide.
+     *
+     * @param member the Java member name
+     * @return the JSON property name it is published under
+     */
+    private static String wireNameOf(String member) {
+        return MAP_MEMBERS.contains(member) ? member.toLowerCase(Locale.ROOT) : member;
+    }
+
+    /**
+     * {@link #wireNameOf(String)} over a list, preserving order.
+     *
+     * @param members the Java member names
+     * @return their JSON property names
+     */
+    private static List<String> wireNamesOf(List<String> members) {
+        return members.stream().map(UserDeleteResponseTest::wireNameOf).toList();
+    }
 
     /**
      * The eleven declared widths, read from the {@code xxxO} {@code PICTURE} clauses and
@@ -1393,17 +1420,23 @@ class UserDeleteResponseTest {
         }
 
         @Test
-        @DisplayName("the three display-only fields start blank, exactly as :157-159 leaves them")
-        void displayOnlyFieldsStartBlank() {
+        @DisplayName("the three display-only fields start unpainted, as the :97 map clear leaves them")
+        void displayOnlyFieldsStartUnpainted() {
             UserDeleteResponse blanked = UserDeleteResponse.empty();
 
-            assertThat(blanked.fName()).isEqualTo(" ".repeat(SEC_USR_FNAME_WIDTH));
-            assertThat(blanked.lName()).isEqualTo(" ".repeat(SEC_USR_LNAME_WIDTH));
-            assertThat(blanked.usrType()).isEqualTo(" ".repeat(SEC_USR_TYPE_WIDTH));
+            assertThat(blanked.fName())
+                    .isEqualTo(ScreenFieldImage.unpainted(SEC_USR_FNAME_WIDTH));
+            assertThat(blanked.lName())
+                    .isEqualTo(ScreenFieldImage.unpainted(SEC_USR_LNAME_WIDTH));
+            assertThat(blanked.usrType())
+                    .isEqualTo(ScreenFieldImage.unpainted(SEC_USR_TYPE_WIDTH));
 
-            // INITIALIZE-ALL-FIELDS at :349-356 returns the screen to exactly this state, and it is
-            // also the state :157-159 imposes before every lookup.
-            assertThat(blanked.usrIdIn()).isEqualTo(" ".repeat(SEC_USR_ID_WIDTH));
+            // INITIALIZE-ALL-FIELDS at :349-356 and :157-159 both blank these four - with SPACES, which
+            // is a different byte from the LOW-VALUES a fresh map carries. empty() is the fresh map, so
+            // the spaces image is asserted where the statement that writes it is exercised, through the
+            // controller.
+            assertThat(blanked.usrIdIn())
+                    .isEqualTo(ScreenFieldImage.unpainted(SEC_USR_ID_WIDTH));
         }
     }
 
@@ -1800,10 +1833,16 @@ class UserDeleteResponseTest {
             assertThat(UserDeleteResponse.empty().withErrMsg(errMsg).errMsg()).isEqualTo(errMsg);
 
             // The WHEN OTHER arm at :183 sets no message, so the screen it sends carries the blank
-            // ERRMSGO that :88 established - not a stale one.
-            assertThat(UserDeleteResponse.empty().errMsg())
+            // ERRMSGO that :88 established - not a stale one. :88 is a MOVE SPACES, and the projection
+            // performs it through withErrMsg; empty() is the map before any statement has run, which is
+            // the LOW-VALUES image :97 leaves. Both are asserted, because they are different bytes.
+            assertThat(UserDeleteResponse.empty()
+                            .withErrMsg(" ".repeat(ERR_MSG_LENGTH)).errMsg())
                     .as("MOVE SPACES TO WS-MESSAGE / ERRMSGO OF COUSR3AO at :88")
                     .isEqualTo(" ".repeat(ERR_MSG_LENGTH));
+            assertThat(UserDeleteResponse.empty().errMsg())
+                    .as("and the map before :88 has run - MOVE LOW-VALUES TO COUSR3AO at :97")
+                    .isEqualTo(ScreenFieldImage.unpainted(ERR_MSG_LENGTH));
         }
 
         @Test
@@ -1902,11 +1941,13 @@ class UserDeleteResponseTest {
 
             UserDeleteResponse afterInitialise = UserDeleteResponse.empty();
             assertThat(afterInitialise.usrIdIn())
-                    .as("the screen's id field is blank after INITIALIZE-ALL-FIELDS")
-                    .isEqualTo(" ".repeat(SEC_USR_ID_WIDTH));
-            assertThat(afterInitialise.fName()).isBlank();
-            assertThat(afterInitialise.lName()).isBlank();
-            assertThat(afterInitialise.usrType()).isBlank();
+                    .as("the screen's id field carries nothing on a fresh map - the LOW-VALUES image "
+                            + "MOVE LOW-VALUES TO COUSR3AO (:97) leaves. INITIALIZE-ALL-FIELDS at "
+                            + ":351-356 moves SPACES and is exercised through the controller")
+                    .isEqualTo(ScreenFieldImage.unpainted(SEC_USR_ID_WIDTH));
+            assertThat(ScreenFieldImage.isUnpainted(afterInitialise.fName())).isTrue();
+            assertThat(ScreenFieldImage.isUnpainted(afterInitialise.lName())).isTrue();
+            assertThat(ScreenFieldImage.isUnpainted(afterInitialise.usrType())).isTrue();
 
             // And yet the composed message still carries the id, because it came from the record.
             String errMsg = errMsgImage(successMessageImage(stored.secUsrId()));
@@ -1917,7 +1958,11 @@ class UserDeleteResponseTest {
                             + "blank - the two travel by different routes")
                     .contains("USER0007")
                     .startsWith("User USER0007 has been deleted ...");
-            assertThat(sent.usrIdIn()).isEqualTo(" ".repeat(SEC_USR_ID_WIDTH));
+            assertThat(sent.usrIdIn())
+                    .as("INITIALIZE-ALL-FIELDS was not performed on this composition, so the id field is "
+                            + "still the LOW-VALUES image a fresh map carries - the point of the test is "
+                            + "that the id reached the MESSAGE, not the field")
+                    .isEqualTo(ScreenFieldImage.unpainted(SEC_USR_ID_WIDTH));
             assertThat(sent.errMsg())
                     .as("and the stored password is not in the message either")
                     .doesNotContain("SECRET01");
@@ -2831,8 +2876,8 @@ class UserDeleteResponseTest {
 
             for (int index = 0; index < DFHMDF_NAMED; index++) {
                 assertThat(values.get(index))
-                        .as("%s is %d spaces", XXXO_ITEMS.get(index), DECLARED_WIDTHS.get(index))
-                        .isEqualTo(" ".repeat(DECLARED_WIDTHS.get(index)))
+                        .as("%s is %d LOW-VALUES", XXXO_ITEMS.get(index), DECLARED_WIDTHS.get(index))
+                        .isEqualTo(ScreenFieldImage.unpainted(DECLARED_WIDTHS.get(index)))
                         .hasSize(DECLARED_WIDTHS.get(index));
             }
             assertThat(values.stream().mapToInt(String::length).sum())
@@ -2853,8 +2898,10 @@ class UserDeleteResponseTest {
             // caller populates the header explicitly and visibly.
             UserDeleteResponse empty = UserDeleteResponse.empty();
 
-            assertThat(empty.trnName()).isNotEqualTo(TRANSACTION_ID).isBlank();
-            assertThat(empty.pgmName()).isNotEqualTo(PROGRAM_NAME).isBlank();
+            assertThat(empty.trnName()).isNotEqualTo(TRANSACTION_ID);
+            assertThat(ScreenFieldImage.isUnpainted(empty.trnName())).isTrue();
+            assertThat(empty.pgmName()).isNotEqualTo(PROGRAM_NAME);
+            assertThat(ScreenFieldImage.isUnpainted(empty.pgmName())).isTrue();
             assertThat(empty.withTrnName(TRANSACTION_ID).trnName()).isEqualTo(TRANSACTION_ID);
             assertThat(empty.withPgmName(PROGRAM_NAME).pgmName()).isEqualTo(PROGRAM_NAME);
         }
@@ -2930,9 +2977,11 @@ class UserDeleteResponseTest {
         void keySetIsExactlyTheComponents() throws Exception {
             Map<String, Object> json = asJsonMap(populated());
 
-            assertThat(json.keySet()).containsExactlyInAnyOrderElementsOf(componentNames());
+            assertThat(json.keySet())
+                    .containsExactlyInAnyOrderElementsOf(wireNamesOf(componentNames()));
             assertThat(json).hasSize(COMPONENT_COUNT);
-            assertThat(json.keySet()).containsAll(MAP_MEMBERS).containsAll(NAVIGATION_MEMBERS)
+            assertThat(json.keySet()).containsAll(wireNamesOf(MAP_MEMBERS))
+                    .containsAll(NAVIGATION_MEMBERS)
                     .contains(EXTENSION_MEMBER);
         }
 
@@ -2965,7 +3014,7 @@ class UserDeleteResponseTest {
             assertThat(json)
                     .as("config.WebConfig leaves the naming strategy alone, so a member name is its "
                             + "JSON key verbatim")
-                    .contains("\"usrIdIn\"", "\"errMsg\"", "\"nextMapset\"", "\"cu03Info\"",
+                    .contains("\"usridin\"", "\"errmsg\"", "\"nextMapset\"", "\"cu03Info\"",
                             "\"navigationContext\"")
                     .doesNotContain("usr_id_in", "err_msg", "next_mapset", "cu03_info")
                     .doesNotContain("USRIDINO", "ERRMSGO");
@@ -2988,11 +3037,13 @@ class UserDeleteResponseTest {
             assertThat(back.fName()).hasSize(SEC_USR_FNAME_WIDTH).startsWith("Ada");
             assertThat(back.lName()).hasSize(SEC_USR_LNAME_WIDTH).startsWith("Byron");
             assertThat(back.errMsg())
-                    .as("ACCEPT_EMPTY_STRING_AS_NULL_OBJECT stays disabled, so 78 spaces stay 78 "
-                            + "spaces and do not become null")
-                    .isEqualTo(" ".repeat(ERR_MSG_LENGTH))
+                    .as("ACCEPT_EMPTY_STRING_AS_NULL_OBJECT stays disabled, so a fixed-width blank field "
+                            + "survives the round trip at full width and does not become null")
+                    .isEqualTo(ScreenFieldImage.unpainted(ERR_MSG_LENGTH))
                     .hasSize(ERR_MSG_LENGTH);
-            assertThat(back.usrType()).isEqualTo(" ").hasSize(SEC_USR_TYPE_WIDTH);
+            assertThat(back.usrType())
+                    .isEqualTo(ScreenFieldImage.unpainted(SEC_USR_TYPE_WIDTH))
+                    .hasSize(SEC_USR_TYPE_WIDTH);
             assertThat(back).isEqualTo(padded);
         }
 
@@ -3043,7 +3094,8 @@ class UserDeleteResponseTest {
 
             // Nor may an eight-character value appear between usrType and errMsg under an assumed
             // name: the sixteen keys are enumerated, so there is no room for a seventeenth.
-            assertThat(json.keySet()).containsExactlyInAnyOrderElementsOf(componentNames());
+            assertThat(json.keySet())
+                    .containsExactlyInAnyOrderElementsOf(wireNamesOf(componentNames()));
         }
     }
 

@@ -3018,9 +3018,9 @@ final class CardListControllerTest {
             mockMvc.perform(get(CardListController.CARD_LIST_PATH))
                     .andExpect(status().isOk())
                     .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
-                    .andExpect(jsonPath("$.trnnameo").value("CCLI"))
-                    .andExpect(jsonPath("$.pgmnameo").value("COCRDLIC"))
-                    .andExpect(jsonPath("$.curdateo").value("07/19/22"));
+                    .andExpect(jsonPath("$.trnname").value("CCLI"))
+                    .andExpect(jsonPath("$.pgmname").value("COCRDLIC"))
+                    .andExpect(jsonPath("$.curdate").value("07/19/22"));
         }
 
         @Test
@@ -3102,8 +3102,8 @@ final class CardListControllerTest {
             mockMvc.perform(get(CardListController.CARD_LIST_PATH))
                     .andExpect(status().isOk())
                     // The screen is still at the top level, so no client field moves.
-                    .andExpect(jsonPath("$.trnnameo").value("CCLI"))
-                    .andExpect(jsonPath("$.acctsido").exists())
+                    .andExpect(jsonPath("$.trnname").value("CCLI"))
+                    .andExpect(jsonPath("$.acctsid").exists())
                     // Finding F3: the 45 quads and the cursor request are published rather than dropped.
                     .andExpect(jsonPath("$.screenMetadata.fields.ACCTSID.colour").exists())
                     .andExpect(jsonPath("$.screenMetadata.fields.CRDSEL1.protection").exists())
@@ -3153,11 +3153,11 @@ final class CardListControllerTest {
                     .doesNotContain("\"screenRowTable\"");
             assertThat(serialised)
                     .as("the output items ARE payload members")
-                    .contains("\"acctsido\"")
-                    .contains("\"cardsido\"")
-                    .contains("\"pagenoo\"")
-                    .contains("\"errmsgo\"")
-                    .contains("\"infomsgo\"");
+                    .contains("\"acctsid\"")
+                    .contains("\"cardsid\"")
+                    .contains("\"pageno\"")
+                    .contains("\"errmsg\"")
+                    .contains("\"infomsg\"");
         }
 
         @Test
@@ -3271,8 +3271,8 @@ final class CardListControllerTest {
                             .param("limit", "3"))
                     .andExpect(status().isOk())
                     // Rows 1 and 7 are both painted, so the page is seven deep whatever was asked for.
-                    .andExpect(jsonPath("$.crdnum1o").value(String.format("%016d", 1)))
-                    .andExpect(jsonPath("$.crdnum7o").value(String.format("%016d", 7)));
+                    .andExpect(jsonPath("$.crdnum1").value(String.format("%016d", 1)))
+                    .andExpect(jsonPath("$.crdnum7").value(String.format("%016d", 7)));
         }
 
         @Test
@@ -3781,11 +3781,11 @@ final class CardListControllerTest {
             // also the proof that this map has no function-key legend field at all.
             assertThat(serialised)
                     .as("COCRDLIC copies only its own map, so none of COCRDSL's own items appears")
-                    .doesNotContain("\"crdnameo\"")
-                    .doesNotContain("\"crdstcdo\"")
-                    .doesNotContain("\"expmono\"")
-                    .doesNotContain("\"expyearo\"")
-                    .doesNotContain("\"fkeyso\"");
+                    .doesNotContain("\"crdname\"")
+                    .doesNotContain("\"crdstcd\"")
+                    .doesNotContain("\"expmon\"")
+                    .doesNotContain("\"expyear\"")
+                    .doesNotContain("\"fkeys\"");
             assertThat(response).isInstanceOf(CardListResponse.class);
             assertThat(CardListResponse.MAP_FIELDS)
                     .as("and no descriptor names one either")
@@ -3961,7 +3961,7 @@ final class CardListControllerTest {
                 }
                 assertThat(serialised)
                         .as("%s IS a payload member", field.itemName())
-                        .contains("\"" + field.itemName().toLowerCase(Locale.ROOT) + "\"");
+                        .contains("\"" + withoutDirectionSuffix(field.itemName()) + "\"");
             }
         }
 
@@ -4303,5 +4303,22 @@ final class CardListControllerTest {
      */
     private static CardReadResult cardReadDuplicate(CardRecord record) {
         return CardReadResult.duplicateKey(record, record.encodeToImage(StandardCharsets.US_ASCII));
+    }
+
+    /**
+     * A copybook item name rendered as the JSON member it is published under: the item without its
+     * output-direction suffix, lower-cased.
+     *
+     * <p>{@code @JsonProperty} pins every screen field's wire name to its {@code xxxI} item in lower
+     * case, which is the one naming rule AAP 0.6.3 states - "payload field names and lengths derive from
+     * the xxxI items only". The Java accessor keeps the {@code xxxO} spelling, because that is the map
+     * view the type projects; the wire name does not, because the paired request has to accept this
+     * response back field for field.
+     *
+     * @param itemName a symbolic-map item name such as {@code TRNNAMEO} or {@code TRNNAMEI}
+     * @return the JSON member name, such as {@code trnname}
+     */
+    private static String withoutDirectionSuffix(String itemName) {
+        return itemName.substring(0, itemName.length() - 1).toLowerCase(Locale.ROOT);
     }
 }

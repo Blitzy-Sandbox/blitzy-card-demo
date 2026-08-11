@@ -1050,11 +1050,21 @@ public class CardRepository {
      * would put the decision in the wrong layer, and doing it with a version column would change the
      * schema, which is forbidden.
      *
+     * <p><strong>A unit of work is required, and its absence is refused rather than reported.</strong>
+     * {@code COCRDUPC} rewrites the record its own {@code READ ... UPDATE} holds, inside one CICS task, so
+     * the boundary is not an addition - {@code CardUpdateService} already opens it with
+     * {@link DatasetUnitOfWork#execute(String, java.util.function.Supplier)}. What the requirement rules
+     * out is reaching this method without one: the pool hands out connections with auto-commit disabled,
+     * so the {@code UPDATE} would execute, report the row it replaced, and be rolled back on return, and
+     * this method would answer {@link CardWriteResult#normal()} for a record no later read could find. See
+     * {@link DatasetUnitOfWork#requireActiveToPersist(String, String)}.
+     *
      * @param record the record to write. Its card number identifies the record replaced
      * @return the write outcome: normal when exactly one record was replaced, otherwise the failure arm
      *         carrying the raw response pair. Never {@code null}
      * @throws NullPointerException  if {@code record} is {@code null}
-     * @throws IllegalStateException as a
+     * @throws IllegalStateException if no unit of work is open, in which case nothing has been attempted;
+     *                               or as a
      *                               {@link com.vsergeychik.carddemo.common.DatasetIntegrityException}
      *                               if the write replaced more rows than the key selected when it was
      *                               checked, in which case the unit of work is refused rather than a
@@ -1064,6 +1074,13 @@ public class CardRepository {
         Objects.requireNonNull(record, "A card record is required to rewrite one; there is no "
                 + "partial-record rewrite, because CARD-UPDATE-RECORD is a full " + RECORD_LENGTH
                 + "-byte record at app/cbl/COCRDUPC.cbl:314-321");
+        // Refused before anything is attempted when no unit of work is open. The pool hands out
+        // connections with auto-commit disabled, so the UPDATE would execute, report the row it replaced,
+        // and then be rolled back on return - and this method would report the normal response for a
+        // record no later read could find. See requireActiveToPersist.
+        DatasetUnitOfWork.requireActiveToPersist("A rewrite of " + BASE_CICS_FILE_NAME.trim()
+                + ", which EXEC CICS REWRITE issues against the record the preceding READ ... UPDATE "
+                + "still holds (app/cbl/COCRDUPC.cbl:1477-1492)", baseRelation.dsname());
 
         // Exactly RECORD_LENGTH bytes, with the reserved span space-filled. The width is not re-checked
         // here, and deliberately so: it is guaranteed where it belongs, by the model. CardRecord's
@@ -1086,17 +1103,15 @@ public class CardRepository {
             recordImageForm.bindOperand(parameters, 2, keyPattern, codec.charset());
         };
 
-        // Establish how many rows the key selects BEFORE any of them is replaced. Under an open unit of
-        // work the probe takes the same row lock the UPDATE will use, so the two see the same rows;
-        // without one nothing can be atomic anyway, and the probe is still what keeps a fan-out from
-        // being discovered only from the affected-row count.
-        boolean locking = DatasetUnitOfWork.active();
+        // Establish how many rows the key selects BEFORE any of them is replaced, under the same row lock
+        // the UPDATE will use so the two see the same rows. Reading the affected-row count afterwards
+        // would discover a fan-out only after the rows were overwritten.
         int selected;
         Statements sql;
         try {
             sql = resolveStatements();
-            selected = fetch(locking ? sql.selectForUpdateByCardNumber() : sql.selectByCardNumber(),
-                    keyPattern, FAN_OUT_PROBE_LIMIT).rowCount();
+            selected = fetch(sql.selectForUpdateByCardNumber(), keyPattern, FAN_OUT_PROBE_LIMIT)
+                    .rowCount();
         } catch (DataAccessException rejected) {
             return CardWriteResult.failed(
                     responseOf(logRefusal(REWRITE_OPERATION_NAME, BASE_CICS_FILE_NAME,
@@ -1137,8 +1152,7 @@ public class CardRepository {
         throw DatasetUnitOfWork.commitRefusal(
                 "The rewrite of a record of " + BASE_CICS_FILE_NAME.trim(),
                 replaced + " rows were replaced where the key selected exactly one when it was checked "
-                        + "under " + (locking ? "a row lock" : "no row lock, because no unit of work was "
-                        + "open"));
+                        + "under a row lock");
     }
 
     // =================================================================================================

@@ -24,8 +24,6 @@
   },
   "expectedResponse": {
     "nextProgram": "COACTUPC",
-    "nextMapset": "COMEN01",
-    "nextMap": "COMEN1A",
     "navigation": {
       "CDEMO-FROM-TRANID": "CM00",
       "CDEMO-FROM-PROGRAM": "COMEN01C",

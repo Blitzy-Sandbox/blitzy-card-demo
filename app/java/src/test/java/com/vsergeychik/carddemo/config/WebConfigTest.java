@@ -17,10 +17,9 @@ import com.vsergeychik.carddemo.common.AbendException;
 import com.vsergeychik.carddemo.common.DateHeader;
 import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.config.WebConfig.CobolErrorHandler;
+import com.vsergeychik.carddemo.testsupport.ScreenFixtureController;
 
-import jakarta.validation.ConstraintViolationException;
-import jakarta.validation.Valid;
-import jakarta.validation.constraints.Size;
+import jakarta.servlet.RequestDispatcher;
 
 import java.io.IOException;
 import java.lang.reflect.Method;
@@ -35,7 +34,6 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.Set;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -55,21 +53,17 @@ import org.springframework.boot.test.system.CapturedOutput;
 import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.core.env.PropertySource;
 import org.springframework.core.io.ClassPathResource;
-import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.http.converter.json.Jackson2ObjectMapperBuilder;
 import org.springframework.http.converter.json.MappingJackson2HttpMessageConverter;
+import org.springframework.http.ResponseEntity;
 import org.springframework.mock.http.MockHttpOutputMessage;
+import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.validation.beanvalidation.LocalValidatorFactoryBean;
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.PathVariable;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.config.annotation.EnableWebMvc;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 
@@ -170,11 +164,17 @@ class WebConfigTest {
      */
     private static final Clock FIXED_CLOCK = Clock.fixed(FIXED_INSTANT, ZoneOffset.UTC);
 
-    /** A program name that must never appear in a response body. */
-    private static final String WITHHELD_PROGRAM = "CBACT04C";
+    /**
+     * A program name that must never appear in a response body.
+     *
+     * <p>Read from {@link ScreenFixtureController} rather than restated, because the fixture is what
+     * raises the abend carrying it: one value, so an assertion that the body withholds it cannot pass
+     * against a value the fixture stopped using.
+     */
+    private static final String WITHHELD_PROGRAM = ScreenFixtureController.WITHHELD_PROGRAM;
 
-    /** A reason string that must never appear in a response body. */
-    private static final String WITHHELD_REASON = "ERROR OPENING ACCTFILE";
+    /** A reason string that must never appear in a response body, from the same single source. */
+    private static final String WITHHELD_REASON = ScreenFixtureController.WITHHELD_REASON;
 
     /**
      * The five {@code RETURN-CODE} values this estate actually produces, as
@@ -191,7 +191,8 @@ class WebConfigTest {
      * assertion changes with it - which is the correct coupling, because the pair is the contract.
      */
     private static final String ABEND_BODY = "{\"code\":\"" + CobolErrorHandler.ABEND_CODE
-            + "\",\"message\":\"" + CobolErrorHandler.ABEND_MESSAGE + "\"}";
+            + "\",\"error\":\"" + HttpStatus.INTERNAL_SERVER_ERROR.getReasonPhrase()
+            + "\",\"detail\":\"" + CobolErrorHandler.ABEND_MESSAGE + "\",\"fieldErrors\":[]}";
 
     /**
      * Builds an {@link ObjectMapper} the way Spring Boot would: a fresh builder, then
@@ -271,6 +272,13 @@ class WebConfigTest {
      * boundary. A fresh validator is created with it, because {@code standaloneSetup} does not
      * install one and {@code @Valid} would then be silently ignored - a test that appeared to pass
      * while asserting nothing.
+     *
+     * <p>The fixture is instantiated here and registered with this dispatcher alone; it is never a
+     * bean. It lives in {@code com.vsergeychik.carddemo.testsupport}, outside
+     * {@code CardDemoApplication}'s eleven scanned packages, precisely so that the
+     * {@code @RestController} the standalone dispatcher needs cannot also put an eighteenth
+     * controller and ten fixture routes into an application context started from this module's test
+     * output.
      *
      * @return the configured dispatcher
      */
@@ -711,8 +719,10 @@ class WebConfigTest {
                     .andReturn().getResponse().getContentAsString();
 
             assertThat(body).isEqualTo(ABEND_BODY);
-            // Two members and no third: no program, no return code, no reason, no path, no timestamp.
-            assertThat(body.chars().filter(character -> character == ':').count()).isEqualTo(2);
+            // Four members and no fifth: no program, no return code, no reason, no path, no timestamp.
+            // fieldErrors is present and empty, because an abend identifies no field - and abendData is
+            // absent, because a CALL 'CEE3ABD' site transmits no ABEND-DATA area.
+            assertThat(body.chars().filter(character -> character == ':').count()).isEqualTo(4);
         }
 
         @Test
@@ -737,7 +747,7 @@ class WebConfigTest {
             adviceDispatcher().perform(get("/webconfig-fixture/abend-bare/16"))
                     .andExpect(status().isInternalServerError())
                     .andExpect(jsonPath("$.code").value(CobolErrorHandler.ABEND_CODE))
-                    .andExpect(jsonPath("$.message").value(CobolErrorHandler.ABEND_MESSAGE));
+                    .andExpect(jsonPath("$.detail").value(CobolErrorHandler.ABEND_MESSAGE));
         }
 
         @Test
@@ -884,7 +894,7 @@ class WebConfigTest {
                     .andExpect(status().isBadRequest())
                     .andExpect(jsonPath("$.code")
                             .value(CobolErrorHandler.MALFORMED_REQUEST_CODE))
-                    .andExpect(jsonPath("$.message")
+                    .andExpect(jsonPath("$.detail")
                             .value(CobolErrorHandler.MALFORMED_REQUEST_MESSAGE));
         }
     }
@@ -909,8 +919,10 @@ class WebConfigTest {
         void aRejectedValueStaysABadRequest() throws Exception {
             adviceDispatcher().perform(get("/webconfig-fixture/rejected-value"))
                     .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.code").value(CobolErrorHandler.REJECTED_VALUE_CODE))
                     .andExpect(jsonPath("$.error").value(HttpStatus.BAD_REQUEST.getReasonPhrase()))
                     .andExpect(jsonPath("$.detail").exists())
+                    .andExpect(jsonPath("$.fieldErrors").isArray())
                     .andExpect(jsonPath("$.status").doesNotExist());
         }
 
@@ -933,13 +945,15 @@ class WebConfigTest {
         void aDatasetFailureIsAnInternalServerError() throws Exception {
             final String body = adviceDispatcher().perform(get("/webconfig-fixture/dataset-failure"))
                     .andExpect(status().isInternalServerError())
-                    .andExpect(jsonPath("$.status").value(500))
+                    .andExpect(jsonPath("$.code").value(CobolErrorHandler.DATASET_ACCESS_CODE))
                     .andReturn().getResponse().getContentAsString();
 
             assertThat(body)
-                    .isEqualTo("{\"status\":500,\"error\":\""
+                    .isEqualTo("{\"code\":\"" + CobolErrorHandler.DATASET_ACCESS_CODE
+                            + "\",\"error\":\""
                             + HttpStatus.INTERNAL_SERVER_ERROR.getReasonPhrase()
-                            + "\",\"message\":\"" + CobolErrorHandler.DATASET_ACCESS_MESSAGE + "\"}")
+                            + "\",\"detail\":\"" + CobolErrorHandler.DATASET_ACCESS_MESSAGE
+                            + "\",\"fieldErrors\":[]}")
                     .doesNotContain("AWS.M2.CARDDEMO")
                     .doesNotContain("connection");
         }
@@ -956,8 +970,8 @@ class WebConfigTest {
             final String body = adviceDispatcher()
                     .perform(get("/webconfig-fixture/accounts/not-a-number"))
                     .andExpect(status().isBadRequest())
-                    .andExpect(jsonPath("$.status").value(400))
-                    .andExpect(jsonPath("$.message").value(CobolErrorHandler.TYPE_MISMATCH_MESSAGE))
+                    .andExpect(jsonPath("$.code").value(CobolErrorHandler.TYPE_MISMATCH_CODE))
+                    .andExpect(jsonPath("$.detail").value(CobolErrorHandler.TYPE_MISMATCH_MESSAGE))
                     .andReturn().getResponse().getContentAsString();
 
             assertThat(body)
@@ -995,9 +1009,10 @@ class WebConfigTest {
                     .andExpect(status().isInternalServerError())
                     .andReturn().getResponse().getContentAsString();
 
-            assertThat(body).isEqualTo("{\"status\":500,\"error\":\""
-                    + HttpStatus.INTERNAL_SERVER_ERROR.getReasonPhrase() + "\",\"message\":\""
-                    + CobolErrorHandler.UNEXPECTED_FAILURE_MESSAGE + "\"}");
+            assertThat(body).isEqualTo("{\"code\":\""
+                    + CobolErrorHandler.REQUEST_NOT_COMPLETED_CODE + "\",\"error\":\""
+                    + HttpStatus.INTERNAL_SERVER_ERROR.getReasonPhrase() + "\",\"detail\":\""
+                    + CobolErrorHandler.UNEXPECTED_FAILURE_MESSAGE + "\",\"fieldErrors\":[]}");
         }
 
         @Test
@@ -1005,9 +1020,10 @@ class WebConfigTest {
         void anUnknownPathKeepsItsStatus() throws Exception {
             adviceDispatcher().perform(get("/webconfig-fixture/no-such-screen"))
                     .andExpect(status().isNotFound())
-                    .andExpect(jsonPath("$.status").value(404))
+                    .andExpect(jsonPath("$.code")
+                            .value(CobolErrorHandler.REQUEST_NOT_COMPLETED_CODE))
                     .andExpect(jsonPath("$.error").value(HttpStatus.NOT_FOUND.getReasonPhrase()))
-                    .andExpect(jsonPath("$.message")
+                    .andExpect(jsonPath("$.detail")
                             .value(CobolErrorHandler.UNEXPECTED_FAILURE_MESSAGE));
         }
 
@@ -1017,7 +1033,8 @@ class WebConfigTest {
             adviceDispatcher().perform(post("/webconfig-fixture/rejected-value")
                             .contentType(MediaType.APPLICATION_JSON).content("{}"))
                     .andExpect(status().isMethodNotAllowed())
-                    .andExpect(jsonPath("$.status").value(405))
+                    .andExpect(jsonPath("$.code")
+                            .value(CobolErrorHandler.REQUEST_NOT_COMPLETED_CODE))
                     .andExpect(jsonPath("$.error")
                             .value(HttpStatus.METHOD_NOT_ALLOWED.getReasonPhrase()));
         }
@@ -1028,7 +1045,8 @@ class WebConfigTest {
             adviceDispatcher().perform(post("/webconfig-fixture/signon")
                             .contentType(MediaType.TEXT_PLAIN).content("USER0001"))
                     .andExpect(status().isUnsupportedMediaType())
-                    .andExpect(jsonPath("$.status").value(415))
+                    .andExpect(jsonPath("$.code")
+                            .value(CobolErrorHandler.REQUEST_NOT_COMPLETED_CODE))
                     .andExpect(jsonPath("$.error")
                             .value(HttpStatus.UNSUPPORTED_MEDIA_TYPE.getReasonPhrase()));
         }
@@ -1094,6 +1112,115 @@ class WebConfigTest {
      * <p>{@link DateHeader}'s own 58-byte layout is deliberately not asserted here; that belongs to
      * the {@code common} package's tests. What is asserted here is the wiring the layout depends on.
      */
+    /**
+     * The container's error path, which this API answers as JSON rather than as a framework page.
+     *
+     * <p>Two defects are being held closed here. A caller sending {@code Accept: text/html} used to be
+     * answered with Spring Boot's whitelabel HTML page - from an API that speaks only JSON - because a
+     * servlet container <em>forwards</em> to {@code /error} whenever a response carries an error status
+     * and no handler produced a body. And a direct {@code GET /error}, which is a real registered
+     * mapping, used to answer {@code 500} with {@code {"timestamp":...,"status":999,"error":"None"}}: a
+     * body shape found nowhere else in the API, carrying a status code that does not exist.
+     */
+    @Nested
+    @DisplayName("The container's error path answers this API's one JSON envelope")
+    class TheErrorEndpoint {
+
+        /** The endpoint under test; it is stateless, so one instance serves every case. */
+        private final WebConfig.CobolErrorEndpoint endpoint = new WebConfig.CobolErrorEndpoint();
+
+        @Test
+        @DisplayName("a forwarded failure keeps the status the container recorded")
+        void aForwardedFailureKeepsItsStatus() {
+            final MockHttpServletRequest forwarded = new MockHttpServletRequest();
+            forwarded.setAttribute(RequestDispatcher.ERROR_STATUS_CODE, 406);
+
+            final ResponseEntity<CobolErrorHandler.CobolErrorResponse> answer =
+                    endpoint.renderError(forwarded);
+
+            assertThat(answer.getStatusCode()).isEqualTo(HttpStatus.NOT_ACCEPTABLE);
+            assertThat(answer.getHeaders().getContentType()).isEqualTo(MediaType.APPLICATION_JSON);
+            assertThat(answer.getBody()).isNotNull();
+            assertThat(answer.getBody().code())
+                    .isEqualTo(CobolErrorHandler.REQUEST_NOT_COMPLETED_CODE);
+            assertThat(answer.getBody().error())
+                    .isEqualTo(HttpStatus.NOT_ACCEPTABLE.getReasonPhrase());
+            assertThat(answer.getBody().detail())
+                    .isEqualTo(CobolErrorHandler.UNEXPECTED_FAILURE_MESSAGE);
+            assertThat(answer.getBody().fieldErrors()).isEmpty();
+            assertThat(answer.getBody().abendData()).isNull();
+        }
+
+        @Test
+        @DisplayName("the body carries no timestamp, no path and no invented status member")
+        void theBodyCarriesNothingFromTheRequest() throws Exception {
+            final MockHttpServletRequest forwarded = new MockHttpServletRequest();
+            forwarded.setAttribute(RequestDispatcher.ERROR_STATUS_CODE, 404);
+            forwarded.setAttribute(RequestDispatcher.ERROR_REQUEST_URI, "/api/no-such-screen");
+
+            final String rendered = customizedMapper()
+                    .writeValueAsString(endpoint.renderError(forwarded).getBody());
+
+            assertThat(rendered).isEqualTo("{\"code\":\""
+                    + CobolErrorHandler.REQUEST_NOT_COMPLETED_CODE + "\",\"error\":\""
+                    + HttpStatus.NOT_FOUND.getReasonPhrase() + "\",\"detail\":\""
+                    + CobolErrorHandler.UNEXPECTED_FAILURE_MESSAGE + "\",\"fieldErrors\":[]}");
+            assertThat(rendered).doesNotContain("no-such-screen");
+        }
+
+        @ParameterizedTest(name = "a request whose recorded status is {0} answers 500")
+        @DisplayName("a request that was not forwarded by a failure invents no failure status")
+        @ValueSource(strings = {"absent", "not-an-integer", "999"})
+        void aRequestWithNoUsableStatusAnswersFiveHundred(final String recorded) {
+            final MockHttpServletRequest request = new MockHttpServletRequest();
+            if ("not-an-integer".equals(recorded)) {
+                request.setAttribute(RequestDispatcher.ERROR_STATUS_CODE, "404");
+            } else if ("999".equals(recorded)) {
+                // 999 is exactly what Boot's own /error body reported for a direct request, and it is
+                // not a registered status: answering with it published a code that does not exist.
+                request.setAttribute(RequestDispatcher.ERROR_STATUS_CODE, 999);
+            }
+
+            assertThat(WebConfig.CobolErrorEndpoint.statusOf(request))
+                    .isEqualTo(HttpStatus.INTERNAL_SERVER_ERROR);
+            assertThat(endpoint.renderError(request).getStatusCode())
+                    .isEqualTo(HttpStatus.INTERNAL_SERVER_ERROR);
+        }
+
+        @Test
+        @DisplayName("it refuses to render without a request rather than inventing one")
+        void itRefusesToRenderWithoutARequest() {
+            assertThatExceptionOfType(NullPointerException.class)
+                    .isThrownBy(() -> endpoint.renderError(null));
+            assertThatExceptionOfType(NullPointerException.class)
+                    .isThrownBy(() -> WebConfig.CobolErrorEndpoint.statusOf(null));
+        }
+
+        @Test
+        @DisplayName("it is an ErrorController, which is what suppresses Boot's whitelabel page")
+        void itIsAnErrorControllerSoBootsOwnIsSuppressed() {
+            // BasicErrorController is registered @ConditionalOnMissingBean(ErrorController.class), so
+            // implementing the interface is not decoration: it is the mechanism that replaces Boot's
+            // HTML-producing mapping with this JSON-only one.
+            assertThat(org.springframework.boot.web.servlet.error.ErrorController.class)
+                    .isAssignableFrom(WebConfig.CobolErrorEndpoint.class);
+            assertThat(WebConfig.CobolErrorEndpoint.class
+                    .isAnnotationPresent(org.springframework.web.bind.annotation.RestController.class))
+                    .isTrue();
+        }
+
+        @Test
+        @DisplayName("the whitelabel page is disabled in configuration as well as replaced in code")
+        void theWhitelabelPageIsDisabledInConfigurationToo() throws IOException {
+            final List<PropertySource<?>> sources = new YamlPropertySourceLoader()
+                    .load("application.yml", new ClassPathResource("application.yml"));
+
+            assertThat(sources).isNotEmpty();
+            assertThat(sources.get(0).getProperty("server.error.whitelabel.enabled"))
+                    .isEqualTo(false);
+        }
+    }
+
     @Nested
     @DisplayName("The Clock bean - one of them, system-zoned, and the reason 17 screens are testable")
     class TheClockBean {
@@ -1397,6 +1524,7 @@ class WebConfigTest {
                                         + "$JobSubmissionProperties",
                                 "carddemoJacksonCustomizer",
                                 "clock",
+                                "com.vsergeychik.carddemo.config.WebConfig$CobolErrorEndpoint",
                                 "com.vsergeychik.carddemo.config.WebConfig$CobolErrorHandler",
                                 "jobSubmissionValidator",
                                 "webConfig");
@@ -1467,11 +1595,14 @@ class WebConfigTest {
                         .as("the field the converter stopped at belongs in the operator's log")
                         .contains("unreadable at field(s): TAMT001");
                 assertThat(body)
-                        .as("and nowhere near the caller's response")
-                        .doesNotContain("TAMT001")
+                        .as("and the caller is told which member was refused, and nothing else")
                         .isEqualTo("{\"code\":\"" + CobolErrorHandler.MALFORMED_REQUEST_CODE
-                                + "\",\"message\":\"" + CobolErrorHandler.MALFORMED_REQUEST_MESSAGE
-                                + "\"}");
+                                + "\",\"error\":\"" + HttpStatus.BAD_REQUEST.getReasonPhrase()
+                                + "\",\"detail\":\"" + CobolErrorHandler.MALFORMED_REQUEST_MESSAGE
+                                + "\",\"fieldErrors\":[{\"field\":\"TAMT001\",\"message\":\""
+                                + "could not be read from the request body\"}]}")
+                        .as("the parser's own message, which quotes the payload, still never travels")
+                        .doesNotContain("not-a-number");
             });
         }
 
@@ -1490,8 +1621,9 @@ class WebConfigTest {
                 assertThat(output.getOut() + output.getErr())
                         .contains("none named - the document itself is unreadable");
                 assertThat(body).isEqualTo("{\"code\":\""
-                        + CobolErrorHandler.MALFORMED_REQUEST_CODE + "\",\"message\":\""
-                        + CobolErrorHandler.MALFORMED_REQUEST_MESSAGE + "\"}");
+                        + CobolErrorHandler.MALFORMED_REQUEST_CODE + "\",\"error\":\""
+                        + HttpStatus.BAD_REQUEST.getReasonPhrase() + "\",\"detail\":\""
+                        + CobolErrorHandler.MALFORMED_REQUEST_MESSAGE + "\",\"fieldErrors\":[]}");
             });
         }
 
@@ -1591,162 +1723,5 @@ class WebConfigTest {
      * @param nested the nested screen projection
      */
     private record NestingPayload(ScreenPayload nested) {
-    }
-
-    /**
-     * A request payload carrying the sign-on screen's own field width.
-     *
-     * <p>{@code @Size(max = 8)} is not an arbitrary bound: {@code app/cpy-bms/COSGN00.CPY} declares
-     * {@code USERIDI PIC X(8)}, and the {@code USERID} field of {@code app/bms/COSGN00.bms} is
-     * {@code LENGTH=8}. That is the rule stated in section 4.2 of this file's specification - a
-     * validation length always traces to an {@code xxxI} picture clause - expressed as the smallest
-     * payload that can demonstrate it.
-     *
-     * @param USERID the sign-on user identifier, at most eight characters
-     * @param PASSWD the sign-on password, at most eight characters. It stays plaintext, exactly as
-     *               {@code COSGN00C} compares {@code SEC-USR-PWD PIC X(08)} against {@code USRSEC};
-     *               hashing it would be a behaviour change and would need a framework this
-     *               migration excludes (practice B6, gate G41)
-     */
-    private record SignOnFixturePayload(
-            @Size(max = 8) String USERID,
-            @Size(max = 8) String PASSWD) {
-    }
-
-    /**
-     * The throwaway controller the advice is driven over.
-     *
-     * <p>It exists so that every {@code @ExceptionHandler} in {@link CobolErrorHandler} can be
-     * reached through the real dispatcher without importing any of the 17 production controllers -
-     * each of which owns its own test in its own domain package, and each of which would drag a
-     * service and a repository into a configuration test. Every endpoint does exactly one thing:
-     * raise one failure, or accept one payload.
-     *
-     * <p>Path variables are annotated with an explicit name rather than relying on parameter-name
-     * retention. The module's build does pass {@code -parameters}, so the implicit form would work
-     * today; naming them makes this fixture independent of that setting, which matters because a
-     * failure to resolve a parameter name surfaces as an {@code IllegalArgumentException} and would
-     * therefore be answered by the very handler under test - a false pass that is genuinely hard to
-     * see.
-     */
-    @RestController
-    private static final class ScreenFixtureController {
-
-        /** The path prefix every fixture endpoint shares. */
-        private static final String BASE = "/webconfig-fixture";
-
-        /**
-         * Raises an abend carrying both {@code ABCODE} and {@code TIMING}, as the eight standard
-         * {@code CALL 'CEE3ABD'} sites do.
-         *
-         * @param returnCode the {@code RETURN-CODE} the abending paragraph had set
-         * @return never returns; the abend always propagates
-         */
-        @GetMapping(BASE + "/abend/{returnCode}")
-        String abendWithParameters(@PathVariable("returnCode") final int returnCode) {
-            throw AbendException.standard(WITHHELD_PROGRAM, returnCode, WITHHELD_REASON);
-        }
-
-        /**
-         * Raises an abend carrying neither {@code ABCODE} nor {@code TIMING}, which is the shape of
-         * the {@code CBSTM03A} site at {@code app/cbl/CBSTM03A.CBL:923} - it sets neither argument.
-         *
-         * @param returnCode the {@code RETURN-CODE} the abending paragraph had set
-         * @return never returns; the abend always propagates
-         */
-        @GetMapping(BASE + "/abend-bare/{returnCode}")
-        String abendWithoutParameters(@PathVariable("returnCode") final int returnCode) {
-            throw AbendException.withoutAbendParameters(WITHHELD_PROGRAM, returnCode,
-                    WITHHELD_REASON);
-        }
-
-        /**
-         * Raises the failure a width or shape guard produces when a value does not fit its
-         * {@code PICTURE} clause.
-         *
-         * @return never returns
-         */
-        @GetMapping(BASE + "/rejected-value")
-        String rejectedValue() {
-            throw new IllegalArgumentException(
-                    "CARD-NUM is PIC X(16) but '4111111111111111X' is 17 characters");
-        }
-
-        /**
-         * Raises the failure a missing or contradictory dataset binding produces.
-         *
-         * @return never returns
-         */
-        @GetMapping(BASE + "/state-fault")
-        String stateFault() {
-            throw new IllegalStateException(
-                    "carddemo.datasets.acctdat is unbound; AWS.M2.CARDDEMO.ACCTDATA.VSAM.KSDS");
-        }
-
-        /**
-         * Raises a failure reaching a dataset, which is distinct from a record simply being absent.
-         *
-         * @return never returns
-         */
-        @GetMapping(BASE + "/dataset-failure")
-        String datasetFailure() {
-            throw new DataAccessResourceFailureException(
-                    "could not obtain a connection for AWS.M2.CARDDEMO.ACCTDATA.VSAM.KSDS");
-        }
-
-        /**
-         * Raises a constraint violation from outside request-body binding, as a validated path
-         * variable or service argument would.
-         *
-         * @return never returns
-         */
-        @GetMapping(BASE + "/violation")
-        String violation() {
-            throw new ConstraintViolationException("USERID exceeds PIC X(8)", Set.of());
-        }
-
-        /**
-         * Raises a failure no handler declares, so the status-preserving catch-all claims it.
-         *
-         * @return never returns
-         */
-        @GetMapping(BASE + "/unclaimed")
-        String unclaimed() {
-            throw new UnsupportedOperationException(
-                    "internal detail that must not reach a response body");
-        }
-
-        /**
-         * Accepts a numeric path variable, so a non-numeric one produces a conversion failure.
-         *
-         * @param accountId the eleven-digit account identifier
-         * @return the identifier, echoed, when conversion succeeds
-         */
-        @GetMapping(BASE + "/accounts/{accountId}")
-        String typedPathVariable(@PathVariable("accountId") final long accountId) {
-            return String.valueOf(accountId);
-        }
-
-        /**
-         * Accepts a validated request body, so a width breach produces a validation failure.
-         *
-         * @param payload the sign-on payload
-         * @return the accepted user identifier
-         */
-        @PostMapping(BASE + "/signon")
-        String signOn(@Valid @RequestBody final SignOnFixturePayload payload) {
-            return payload.USERID();
-        }
-
-        /**
-         * Accepts a screen payload, so a malformed body produces a parse failure.
-         *
-         * @param payload the screen payload
-         * @return the accepted transaction identifier
-         */
-        @PostMapping(BASE + "/screen")
-        String screen(@RequestBody final ScreenPayload payload) {
-            return payload.TRNNAME();
-        }
     }
 }

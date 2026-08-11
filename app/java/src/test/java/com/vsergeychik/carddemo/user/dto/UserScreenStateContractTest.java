@@ -132,7 +132,7 @@ class UserScreenStateContractTest {
         @DisplayName("an omitted member also reads as absent")
         void anOmittedMemberReadsAsAbsent() throws Exception {
             SignOnRequest bound =
-                    mapper.readValue("{\"userId\":\"ADMIN001\"}", SignOnRequest.class);
+                    mapper.readValue("{\"userid\":\"ADMIN001\"}", SignOnRequest.class);
 
             assertThat(bound.hasNavigationContext()).isFalse();
             assertThat(bound.commareaLength()).isZero();
@@ -172,7 +172,7 @@ class UserScreenStateContractTest {
             assertThat(names).doesNotContain("rows");
             for (int row = 1; row <= 10; row++) {
                 assertThat(names).contains(String.format("sel%04d", row),
-                        String.format("usrId%02d", row),
+                        String.format("usrid%02d", row),
                         String.format("fname%02d", row),
                         String.format("lname%02d", row),
                         String.format("utype%02d", row));
@@ -187,16 +187,18 @@ class UserScreenStateContractTest {
                     mapper.readTree(mapper.writeValueAsString(populated())).fieldNames();
             names.forEachRemaining(emitted::add);
 
-            List<String> expected = new ArrayList<>(List.of("trnName", "title01", "curDate",
-                    "pgmName", "title02", "curTime", "pageNum", "usrIdIn"));
+            // Screen fields under their xxxI item in lower case (AAP 0.6.3); the six CU00 carriers and
+            // the two conversation members under their own names.
+            List<String> expected = new ArrayList<>(List.of("trnname", "title01", "curdate",
+                    "pgmname", "title02", "curtime", "pagenum", "usridin"));
             for (int row = 1; row <= 10; row++) {
                 expected.add(String.format("sel%04d", row));
-                expected.add(String.format("usrId%02d", row));
+                expected.add(String.format("usrid%02d", row));
                 expected.add(String.format("fname%02d", row));
                 expected.add(String.format("lname%02d", row));
                 expected.add(String.format("utype%02d", row));
             }
-            expected.addAll(List.of("errMsg", "cdemoCu00UsrIdFirst", "cdemoCu00UsrIdLast",
+            expected.addAll(List.of("errmsg", "cdemoCu00UsrIdFirst", "cdemoCu00UsrIdLast",
                     "cdemoCu00PageNum", "cdemoCu00NextPageFlg", "cdemoCu00UsrSelFlg",
                     "cdemoCu00UsrSelected", "navigationContext", "aid"));
 
@@ -224,7 +226,7 @@ class UserScreenStateContractTest {
         @DisplayName("the numbered members bind back into the row table")
         void theNumberedMembersBindBack() throws Exception {
             UserListRequest bound = mapper.readValue(
-                    "{\"sel0002\":\"U\",\"usrId02\":\"USER0002\",\"fname02\":\"AL\","
+                    "{\"sel0002\":\"U\",\"usrid02\":\"USER0002\",\"fname02\":\"AL\","
                             + "\"lname02\":\"BE\",\"utype02\":\"U\"}",
                     UserListRequest.class);
 
@@ -256,7 +258,7 @@ class UserScreenStateContractTest {
         }
 
         @ParameterizedTest(name = "{0} is refused when it exceeds its declared width")
-        @ValueSource(strings = {"usrId01", "fname01", "lname01"})
+        @ValueSource(strings = {"usrid01", "fname01", "lname01"})
         @DisplayName("an over-wide row member is refused rather than truncated")
         void anOverWideRowMemberIsRefused(String member) {
             String tooLong = "X".repeat(40);

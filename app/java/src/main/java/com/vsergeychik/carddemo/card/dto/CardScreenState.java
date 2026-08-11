@@ -10,6 +10,7 @@ import com.vsergeychik.carddemo.common.FixedWidthRecord.RecordLayout;
 import com.vsergeychik.carddemo.common.PfKeyResolver;
 import com.vsergeychik.carddemo.common.PfKeyResolver.AidKey;
 import java.nio.charset.Charset;
+import com.vsergeychik.carddemo.common.ScreenFieldImage;
 import com.vsergeychik.carddemo.common.SensitiveDiagnostics;
 import java.nio.charset.StandardCharsets;
 import java.util.Objects;
@@ -655,8 +656,10 @@ public final class CardScreenState {
      * @throws IllegalArgumentException if {@code length} is below 1
      */
     public static String lowValues(int length) {
+        // One implementation of the LOW-VALUES image, in common.ScreenFieldImage, so the choice cannot
+        // drift back apart across screens. Any width validation above is this method's own contract.
         requireDeclaredWidth(length, "LOW-VALUES");
-        return "\u0000".repeat(length);
+        return ScreenFieldImage.unpainted(length);
     }
 
     // =================================================================================================

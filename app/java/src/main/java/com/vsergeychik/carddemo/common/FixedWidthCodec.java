@@ -7,9 +7,11 @@ import com.vsergeychik.carddemo.common.FixedWidthRecord.RecordLayout;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.nio.charset.Charset;
+import java.nio.charset.CharsetEncoder;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
+import java.util.OptionalInt;
 
 /**
  * COBOL {@code PICTURE} semantics over a fixed-width record area: the one place in this module where
@@ -290,6 +292,42 @@ public final class FixedWidthCodec {
      */
     public byte[] encodeImage(String image, String subject) {
         return transcoder.encode(image, subject);
+    }
+
+    /**
+     * The first character of a value that this code page cannot represent, reported as a Unicode code
+     * point so a caller can locate it without the value being quoted back.
+     *
+     * <p>This is the <em>question</em> form of {@link #encodeImage(String, String)}: it asks whether a
+     * value could be written through this code page instead of refusing it while writing. It exists for
+     * the screen boundary, where an unrepresentable character is the caller's mistake and has to be
+     * answered as one - a {@code RECEIVE MAP} delivers bytes already in the terminal's code page, so a
+     * character with no representation in it could never have arrived at all. The two online programs
+     * that declare {@code EXEC CICS HANDLE ABEND} ask this before their flow begins, so that such a
+     * value is refused rather than routed to {@code ABEND-ROUTINE}.
+     *
+     * <p>Iteration is by code point rather than by {@code char}, so a surrogate pair is judged as the
+     * one character it is: testing its halves separately would report each surrogate as unrepresentable
+     * and name a code point that is not in the value. One encoder is created per call and never shared,
+     * because {@link java.nio.charset.CharsetEncoder} is stateful and this class is used concurrently.
+     *
+     * @param value the value to judge; must not be {@code null}
+     * @return the first unrepresentable code point, or an empty {@link OptionalInt} when every
+     *         character of the value has a representation in this code page
+     * @throws NullPointerException if {@code value} is {@code null}
+     */
+    public OptionalInt firstUnrepresentableCodePoint(String value) {
+        Objects.requireNonNull(value, "A value is required to judge against a code page");
+        CharsetEncoder encoder = charset.newEncoder();
+        for (int index = 0; index < value.length(); ) {
+            int codePoint = value.codePointAt(index);
+            int width = Character.charCount(codePoint);
+            if (!encoder.canEncode(value.subSequence(index, index + width))) {
+                return OptionalInt.of(codePoint);
+            }
+            index += width;
+        }
+        return OptionalInt.empty();
     }
 
     /**

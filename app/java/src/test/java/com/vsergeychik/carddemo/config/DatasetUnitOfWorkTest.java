@@ -1,6 +1,7 @@
 package com.vsergeychik.carddemo.config;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.assertj.core.api.Assertions.assertThatIllegalStateException;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
@@ -336,6 +337,71 @@ class DatasetUnitOfWorkTest {
                     .withMessageContaining("operation name is required");
             assertThatExceptionOfType(NullPointerException.class)
                     .isThrownBy(() -> DatasetUnitOfWork.requireActive("A read-for-update", null))
+                    .withMessageContaining("dataset name is required");
+        }
+    }
+
+    @Nested
+    @DisplayName("The precondition a write enforces")
+    class WritePrecondition {
+
+        @Test
+        @DisplayName("inside a unit of work, a write is permitted")
+        void insideAUnitOfWorkItIsPermitted() {
+            unitOfWork(singleConnection()).execute("a write", () -> {
+                DatasetUnitOfWork.requireActiveToPersist("A write to the transaction master",
+                        "TEST.TRANSACT.KSDS");
+                return null;
+            });
+        }
+
+        @Test
+        @DisplayName("outside one it is refused, and the message says why the row would be lost")
+        void outsideOneItIsRefused() {
+            // The reason differs from the locking read's and the message has to say so: a WRITE takes no
+            // lock, and what goes wrong is that the pool is configured auto-commit: false, so the row is
+            // rolled back when the connection is returned while the statement's row count would be handed
+            // back as a completed write.
+            assertThatIllegalStateException()
+                    .isThrownBy(() -> DatasetUnitOfWork.requireActiveToPersist(
+                            "A write to the transaction master", "TEST.TRANSACT.KSDS"))
+                    .withMessageContaining("changes stored records")
+                    .withMessageContaining("no transaction is open on this thread")
+                    .withMessageContaining("auto-commit: false")
+                    .withMessageContaining("written, then discarded")
+                    .withMessageContaining("TEST.TRANSACT.KSDS")
+                    .withMessageContaining(DatasetUnitOfWork.class.getSimpleName() + ".execute")
+                    .withMessageContaining(DatasetUnitOfWork.class.getSimpleName() + ".persistVerb");
+        }
+
+        @Test
+        @DisplayName("it decides from the thread alone, so it needs no data source to reach a verdict")
+        void itDecidesFromTheThreadAlone() {
+            // Cheap inside a boundary and cheap outside one: the decision is a thread-local read, not a
+            // round trip, so putting the guard on every write costs a write nothing. Asserted by reaching
+            // both verdicts with no DataSource, no JdbcTemplate and no connection in sight.
+            assertThat(DatasetUnitOfWork.active()).isFalse();
+            assertThatIllegalStateException().isThrownBy(() -> DatasetUnitOfWork.requireActiveToPersist(
+                    "A write to the transaction master", "TEST.TRANSACT.KSDS"));
+
+            TransactionSynchronizationManager.setActualTransactionActive(true);
+            try {
+                assertThatCode(() -> DatasetUnitOfWork.requireActiveToPersist(
+                        "A write to the transaction master", "TEST.TRANSACT.KSDS"))
+                        .doesNotThrowAnyException();
+            } finally {
+                TransactionSynchronizationManager.setActualTransactionActive(false);
+            }
+        }
+
+        @Test
+        @DisplayName("both arguments are required, so a refusal can always name what it refused")
+        void bothArgumentsAreRequired() {
+            assertThatExceptionOfType(NullPointerException.class)
+                    .isThrownBy(() -> DatasetUnitOfWork.requireActiveToPersist(null, "TEST.DS"))
+                    .withMessageContaining("operation name is required");
+            assertThatExceptionOfType(NullPointerException.class)
+                    .isThrownBy(() -> DatasetUnitOfWork.requireActiveToPersist("A write", null))
                     .withMessageContaining("dataset name is required");
         }
     }

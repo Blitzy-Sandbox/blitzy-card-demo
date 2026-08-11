@@ -1464,7 +1464,7 @@ class CustomerRepositoryTest {
             JdbcTemplate template = seeded(rows);
             CustomerRepository repository = repository(template);
 
-            WriteResult result = repository.rewrite(changed.getBytes(ASCII));
+            WriteResult result = withUnitOfWork(() -> repository.rewrite(changed.getBytes(ASCII)));
 
             assertThat(result.isWritten()).isTrue();
             assertThat(result.status()).isEqualTo(FileStatus.OK);
@@ -1486,7 +1486,7 @@ class CustomerRepositoryTest {
             CustomerRecord record = repository.readByKey(keyImageOf(row)).customer().orElseThrow();
             record.setCustFicoCreditScore(777);
 
-            WriteResult result = repository.rewrite(record);
+            WriteResult result = withUnitOfWork(() -> repository.rewrite(record));
 
             assertThat(result.isWritten()).isTrue();
             CustomerRecord reread = repository.readByKey(keyImageOf(row)).customer().orElseThrow();
@@ -1504,7 +1504,7 @@ class CustomerRepositoryTest {
             CustomerRepository repository = repository(template);
             String absent = "999999996" + " ".repeat(FIVE_HUNDRED - NINE);
 
-            WriteResult result = repository.rewrite(absent.getBytes(ASCII));
+            WriteResult result = withUnitOfWork(() -> repository.rewrite(absent.getBytes(ASCII)));
 
             assertThat(result.isNotFound()).isTrue();
             assertThat(result.status()).isEqualTo(FileStatus.NOT_FOUND);
@@ -1546,7 +1546,7 @@ class CustomerRepositoryTest {
             CustomerRepository repository = repository(template);
             String changed = withChangedScore(row);
 
-            WriteResult result = repository.rewrite(changed.getBytes(ASCII));
+            WriteResult result = withUnitOfWork(() -> repository.rewrite(changed.getBytes(ASCII)));
 
             assertThat(result.isOther()).isTrue();
             assertThat(result.status()).isEqualTo(CustomerRepository.PERMANENT_ERROR_STATUS);
@@ -1566,7 +1566,30 @@ class CustomerRepositoryTest {
             byte[] image = ("000000001" + " ".repeat(FIVE_HUNDRED - NINE)).getBytes(ASCII);
 
             assertThatExceptionOfType(DatasetIntegrityException.class)
-                    .isThrownBy(() -> repository.rewrite(image));
+                    .isThrownBy(() -> withUnitOfWork(() -> repository.rewrite(image)));
+        }
+
+        @Test
+        @DisplayName("outside a unit of work the rewrite is refused rather than reported as written")
+        void outsideAUnitOfWorkTheRewriteIsRefused() {
+            // 9600-WRITE-PROCESSING rewrites the account and then the customer inside one CICS task, and
+            // the pool hands out connections with auto-commit disabled, so an UPDATE issued with nothing
+            // bound to the thread executes, reports the row it replaced, and is rolled back when the
+            // connection is returned. Reporting '00' from there would leave COACTUPC believing the
+            // customer half of the pair had been stored.
+            List<String> rows = fixtureRows();
+            JdbcTemplate template = seeded(rows);
+            CustomerRepository repository = repository(template);
+            byte[] image = withChangedScore(rows.get(0)).getBytes(ASCII);
+
+            assertThatIllegalStateException().isThrownBy(() -> repository.rewrite(image))
+                    .withMessageContaining("no transaction is open on this thread")
+                    .withMessageContaining("changes stored records");
+
+            assertThat(template.queryForObject("SELECT COUNT(*) FROM \"" + TEST_DSNAME
+                    + "\" WHERE " + RECORD_IMAGE_COLUMN + " = ?", Integer.class, rows.get(0)))
+                    .as("nothing may have been attempted")
+                    .isEqualTo(1);
         }
 
         @Test
@@ -1575,15 +1598,16 @@ class CustomerRepositoryTest {
             CustomerRepository repository = repository(countingOneThenReportingUpdateCount(0));
             byte[] image = ("000000001" + " ".repeat(FIVE_HUNDRED - NINE)).getBytes(ASCII);
 
-            assertThat(repository.rewrite(image).isNotFound()).isTrue();
+            assertThat(withUnitOfWork(() -> repository.rewrite(image)).isNotFound()).isTrue();
         }
 
         @Test
         @DisplayName("an unreachable dataset reports a permanent error rather than throwing")
         void anUnreachableDatasetReportsAPermanentError() {
             byte[] image = ("000000001" + " ".repeat(FIVE_HUNDRED - NINE)).getBytes(ASCII);
+            CustomerRepository repository = repository(unreachable());
 
-            WriteResult result = repository(unreachable()).rewrite(image);
+            WriteResult result = withUnitOfWork(() -> repository.rewrite(image));
 
             assertThat(result.isOther()).isTrue();
             assertThat(result.diagnostic()).isPresent();
@@ -1593,8 +1617,9 @@ class CustomerRepositoryTest {
         @DisplayName("a refused statement is reported at the count and at the write")
         void aRefusedStatementIsReported() throws SQLException {
             byte[] image = ("000000001" + " ".repeat(FIVE_HUNDRED - NINE)).getBytes(ASCII);
+            CustomerRepository repository = repository(describingThenRefusing());
 
-            WriteResult result = repository(describingThenRefusing()).rewrite(image);
+            WriteResult result = withUnitOfWork(() -> repository.rewrite(image));
 
             assertThat(result.isOther()).isTrue();
             assertThat(result.diagnostic()).isPresent();
@@ -1610,7 +1635,7 @@ class CustomerRepositoryTest {
             CustomerRepository repository = repository(template);
             byte[] image = changed.getBytes(ASCII);
 
-            assertThat(repository.rewrite(image).isWritten()).isTrue();
+            assertThat(withUnitOfWork(() -> repository.rewrite(image)).isWritten()).isTrue();
             // Mutating the caller's array afterwards must not have altered what was stored.
             Arrays.fill(image, (byte) 'Z');
             assertThat(repository.readByKey(keyImageOf(row)).customer().orElseThrow()
@@ -1690,7 +1715,7 @@ class CustomerRepositoryTest {
             CustomerRepository repository = repository(countingOneThenRefusingTheUpdate());
             byte[] image = ("000000001" + " ".repeat(FIVE_HUNDRED - NINE)).getBytes(ASCII);
 
-            WriteResult result = repository.rewrite(image);
+            WriteResult result = withUnitOfWork(() -> repository.rewrite(image));
 
             assertThat(result.isOther()).isTrue();
             assertThat(result.status()).isEqualTo(CustomerRepository.PERMANENT_ERROR_STATUS);
@@ -2933,8 +2958,10 @@ class CustomerRepositoryTest {
             byte[] absent = ("999999999" + rows.get(0).substring(NINE)).getBytes(ASCII);
 
             assertThatCode(() -> {
-                assertThat(repository.rewrite(present).status()).isEqualTo(FileStatus.OK);
-                assertThat(repository.rewrite(absent).status()).isEqualTo(FileStatus.NOT_FOUND);
+                assertThat(withUnitOfWork(() -> repository.rewrite(present).status()))
+                        .isEqualTo(FileStatus.OK);
+                assertThat(withUnitOfWork(() -> repository.rewrite(absent).status()))
+                        .isEqualTo(FileStatus.NOT_FOUND);
             }).doesNotThrowAnyException();
         }
 
@@ -2947,7 +2974,7 @@ class CustomerRepositoryTest {
             CustomerRepository repository = repository(unreachable());
 
             ReadResult read = repository.readByKey(1L);
-            WriteResult write = repository.rewrite(new CustomerRecord());
+            WriteResult write = withUnitOfWork(() -> repository.rewrite(new CustomerRecord()));
 
             assertThat(read.isOther()).isTrue();
             assertThat(write.isOther()).isTrue();
@@ -2985,7 +3012,7 @@ class CustomerRepositoryTest {
                 file.closeFile();
                 repository.readByKey(1L);
                 repository.readByKey("000000001");
-                repository.rewrite(new CustomerRecord());
+                withUnitOfWork(() -> repository.rewrite(new CustomerRecord()));
             }).doesNotThrowAnyException();
         }
 

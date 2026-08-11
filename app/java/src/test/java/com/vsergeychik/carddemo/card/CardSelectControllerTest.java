@@ -2631,8 +2631,8 @@ class CardSelectControllerTest {
                     .andExpect(status().isOk())
                     .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
                     // The path variable reached CARDSIDI and came back on CARDSIDO at its X(16) width.
-                    .andExpect(jsonPath("$.cardsido").value(CARD_NUMBER))
-                    .andExpect(jsonPath("$.acctsido").value(ACCOUNT_ID))
+                    .andExpect(jsonPath("$.cardsid").value(CARD_NUMBER))
+                    .andExpect(jsonPath("$.acctsid").value(ACCOUNT_ID))
                     // The whole 01 CCRDSLAI bound, so the commarea the body carried is the one that ran
                     // and came back. CDEMO-FROM-PROGRAM is rewritten only on the transfer arm, at :324,
                     // so on the paint path it still names the program that called this one.
@@ -2660,7 +2660,7 @@ class CardSelectControllerTest {
                             .contentType(MediaType.APPLICATION_JSON)
                             .content(body(sent)))
                     .andExpect(status().isOk())
-                    .andExpect(jsonPath("$.cardsido").value(CARD_NUMBER))
+                    .andExpect(jsonPath("$.cardsid").value(CARD_NUMBER))
                     .andExpect(jsonPath("$.navigationContext.cardNum")
                             .value(Long.parseLong(CARD_NUMBER)));
 
@@ -2686,7 +2686,7 @@ class CardSelectControllerTest {
                     .andExpect(jsonPath("$.errmsgc").doesNotExist())
                     .andExpect(jsonPath("$.acctsidp").doesNotExist())
                     // The screen itself is still at the top level, unwrapped.
-                    .andExpect(jsonPath("$.cardsido").value(CARD_NUMBER));
+                    .andExpect(jsonPath("$.cardsid").value(CARD_NUMBER));
         }
 
         @Test
@@ -2709,19 +2709,19 @@ class CardSelectControllerTest {
                             .contentType(MediaType.APPLICATION_JSON)
                             .content(body(request("", ACCOUNT_ID, null))))
                     .andExpect(status().isOk())
-                    .andExpect(jsonPath("$.trnnameo").value(CardSelectController.LIT_THISTRANID))
-                    .andExpect(jsonPath("$.pgmnameo").value(CardSelectController.LIT_THISPGM))
-                    .andExpect(jsonPath("$.title01o").value(ScreenTitles.CCDA_TITLE01))
-                    .andExpect(jsonPath("$.title02o").value(ScreenTitles.CCDA_TITLE02))
-                    .andExpect(jsonPath("$.curdateo").exists())
-                    .andExpect(jsonPath("$.curtimeo").exists())
-                    .andExpect(jsonPath("$.crdnameo").exists())
-                    .andExpect(jsonPath("$.crdstcdo").exists())
-                    .andExpect(jsonPath("$.expmono").exists())
-                    .andExpect(jsonPath("$.expyearo").exists())
-                    .andExpect(jsonPath("$.infomsgo").exists())
-                    .andExpect(jsonPath("$.errmsgo").exists())
-                    .andExpect(jsonPath("$.fkeyso").exists())
+                    .andExpect(jsonPath("$.trnname").value(CardSelectController.LIT_THISTRANID))
+                    .andExpect(jsonPath("$.pgmname").value(CardSelectController.LIT_THISPGM))
+                    .andExpect(jsonPath("$.title01").value(ScreenTitles.CCDA_TITLE01))
+                    .andExpect(jsonPath("$.title02").value(ScreenTitles.CCDA_TITLE02))
+                    .andExpect(jsonPath("$.curdate").exists())
+                    .andExpect(jsonPath("$.curtime").exists())
+                    .andExpect(jsonPath("$.crdname").exists())
+                    .andExpect(jsonPath("$.crdstcd").exists())
+                    .andExpect(jsonPath("$.expmon").exists())
+                    .andExpect(jsonPath("$.expyear").exists())
+                    .andExpect(jsonPath("$.infomsg").exists())
+                    .andExpect(jsonPath("$.errmsg").exists())
+                    .andExpect(jsonPath("$.fkeys").exists())
                     // xxxL, xxxF and xxxA are validation and highlight metadata, never payload
                     // members - AAP 0.6.3. None of them may appear.
                     .andExpect(jsonPath("$.acctsidl").doesNotExist())

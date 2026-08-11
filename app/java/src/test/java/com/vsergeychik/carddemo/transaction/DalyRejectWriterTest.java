@@ -28,6 +28,7 @@ import org.springframework.context.ApplicationContext;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.SimpleDriverDataSource;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import javax.sql.DataSource;
 import java.io.IOException;
@@ -1705,6 +1706,30 @@ class DalyRejectWriterTest {
         }
     }
 
+    /**
+     * Declares a unit of work around a write, and always undoes the declaration.
+     *
+     * <p>The relation-backed sink requires one: the pool hands out connections with auto-commit disabled,
+     * so an INSERT issued with nothing bound to the thread is rolled back when the connection is returned,
+     * and reporting {@code OK} from there would lose a rejected customer transaction with nothing
+     * downstream able to detect it. These tests drive mocked JDBC chains that cannot begin a real
+     * transaction, and what the sink inspects is exactly this thread state, so declaring it directly is the
+     * honest way to satisfy the precondition. The caller-supplied {@code RecordSink} seam carries no such
+     * requirement, so the collector-backed tests do not use this.
+     *
+     * @param work the work to run
+     * @param <T>  what it answers
+     * @return what {@code work} answered
+     */
+    private static <T> T inUnitOfWork(java.util.function.Supplier<T> work) {
+        TransactionSynchronizationManager.setActualTransactionActive(true);
+        try {
+            return work.get();
+        } finally {
+            TransactionSynchronizationManager.setActualTransactionActive(false);
+        }
+    }
+
     // =================================================================================================
     // The default JDBC sink - risk R-E: production connectivity cannot be exercised here.
     // =================================================================================================
@@ -1801,7 +1826,7 @@ class DalyRejectWriterTest {
             DalyRejectWriter subject = new DalyRejectWriter(new JdbcTemplate(dataSource), ASCII,
                     bindings(LRECL, "F"), RecordImageForm.CHARACTER);
             try (RejectsFile file = subject.openOutput()) {
-                assertThat(file.writeRejectRec(image('T'), 102)).isEqualTo(FileStatus.Outcome.OK);
+                assertThat(inUnitOfWork(() -> file.writeRejectRec(image('T'), 102))).isEqualTo(FileStatus.Outcome.OK);
             }
 
             // Once, and it is the write's own: the open resolves the destination with a describe and
@@ -1879,7 +1904,8 @@ class DalyRejectWriterTest {
             DalyRejectWriter subject = new DalyRejectWriter(new JdbcTemplate(dataSource), ASCII,
                     bindings(LRECL, "F"), RecordImageForm.CHARACTER);
             try (RejectsFile file = subject.openOutput()) {
-                assertThat(file.writeRejectRec(image('U'), 100)).isEqualTo(FileStatus.Outcome.OTHER);
+                assertThat(inUnitOfWork(() -> file.writeRejectRec(image('U'), 100)))
+                        .isEqualTo(FileStatus.Outcome.OTHER);
                 assertThat(file.recordsWritten()).isOne();
             }
         }
@@ -1898,10 +1924,51 @@ class DalyRejectWriterTest {
             DalyRejectWriter subject = new DalyRejectWriter(new JdbcTemplate(dataSource), ASCII,
                     bindings(LRECL, "F"), RecordImageForm.BINARY);
             try (RejectsFile file = subject.openOutput()) {
-                file.writeRejectRec(image('V'), 100);
+                inUnitOfWork(() -> file.writeRejectRec(image('V'), 100));
             }
             Mockito.verify(statement).setBytes(Mockito.eq(1),
                     Mockito.argThat(value -> value != null && value.length == LRECL));
+        }
+
+        @Test
+        @DisplayName("outside a unit of work the write is refused, because a lost reject cannot be "
+                + "detected by anything downstream")
+        void outsideAUnitOfWorkTheWriteIsRefused() throws SQLException {
+            // The pool hands out connections with auto-commit disabled, so the INSERT would execute,
+            // report the row it added, and then be rolled back when the connection was returned - and
+            // reporting OK from there is the DALYREJS-STATUS = '00' arm, so CBTRN02C would count the
+            // reject, carry on, and finish with RETURN-CODE 4 over an empty generation. Nothing
+            // downstream can detect that, which is why this is refused rather than reported.
+            //
+            // The open is deliberately NOT subject to the same requirement: Spring Batch runs the
+            // ItemStream open and close callbacks outside the chunk transaction, so requiring one there
+            // would refuse the production step itself.
+            DataSource dataSource = Mockito.mock(DataSource.class);
+            Connection connection = Mockito.mock(Connection.class);
+            PreparedStatement statement = Mockito.mock(PreparedStatement.class);
+            Mockito.when(dataSource.getConnection()).thenReturn(connection);
+            Mockito.when(connection.prepareStatement(Mockito.anyString())).thenReturn(statement);
+            Mockito.when(connection.createStatement()).thenReturn(Mockito.mock(Statement.class));
+            Mockito.when(statement.executeUpdate()).thenReturn(1);
+
+            DalyRejectWriter subject = new DalyRejectWriter(new JdbcTemplate(dataSource), ASCII,
+                    bindings(LRECL, "F"), RecordImageForm.CHARACTER);
+            try (RejectsFile file = subject.openOutput()) {
+                assertThat(file.openOutcome())
+                        .as("the open carries no unit-of-work requirement")
+                        .isEqualTo(FileStatus.Outcome.OK);
+
+                assertThatIllegalStateException()
+                        .isThrownBy(() -> file.writeRejectRec(image('Y'), 100))
+                        .withMessageContaining("no transaction is open on this thread")
+                        .withMessageContaining("changes stored records")
+                        .withMessageContaining(TEST_DSNAME);
+
+                assertThat(file.recordsWritten())
+                        .as("a refused write is not a written record")
+                        .isZero();
+            }
+            Mockito.verify(statement, Mockito.never()).executeUpdate();
         }
     }
 
@@ -1954,7 +2021,7 @@ class DalyRejectWriterTest {
             Collector sink = new Collector();
 
             try (RejectsFile file = subject.openOutput(sink)) {
-                assertThat(file.writeRejectRec(image('W'), 102)).isEqualTo(FileStatus.Outcome.OK);
+                assertThat(inUnitOfWork(() -> file.writeRejectRec(image('W'), 102))).isEqualTo(FileStatus.Outcome.OK);
             }
 
             assertThat(sink.records).singleElement()
@@ -2047,8 +2114,8 @@ class DalyRejectWriterTest {
                     RecordImageForm.CHARACTER);
             RejectsFile file = subject.openOutput();
 
-            assertThat(file.writeRejectRec(image('A'), 102)).isEqualTo(FileStatus.Outcome.OK);
-            assertThat(file.writeRejectRec(image('B'), 100)).isEqualTo(FileStatus.Outcome.OK);
+            assertThat(inUnitOfWork(() -> file.writeRejectRec(image('A'), 102))).isEqualTo(FileStatus.Outcome.OK);
+            assertThat(inUnitOfWork(() -> file.writeRejectRec(image('B'), 100))).isEqualTo(FileStatus.Outcome.OK);
             // CATLG: the close leaves the rejects where they are. That is the whole distinction.
             assertThat(file.closeOutput()).isEqualTo(FileStatus.Outcome.OK);
             assertThat(held(template)).isEqualTo(2);
@@ -2064,7 +2131,7 @@ class DalyRejectWriterTest {
             DalyRejectWriter subject = new DalyRejectWriter(template, ASCII, bindings(LRECL, "F"),
                     RecordImageForm.CHARACTER);
             RejectsFile file = subject.openOutput();
-            assertThat(file.writeRejectRec(image('A'), 102)).isEqualTo(FileStatus.Outcome.OK);
+            assertThat(inUnitOfWork(() -> file.writeRejectRec(image('A'), 102))).isEqualTo(FileStatus.Outcome.OK);
 
             assertThat(file.discardGeneration()).isEqualTo(FileStatus.Outcome.OK);
             assertThat(file.discardGeneration()).isEqualTo(FileStatus.Outcome.OK);
@@ -2095,7 +2162,7 @@ class DalyRejectWriterTest {
             DalyRejectWriter subject = new DalyRejectWriter(template, ASCII, bindings(LRECL, "F"),
                     RecordImageForm.CHARACTER);
             RejectsFile file = subject.openOutput();
-            assertThat(file.writeRejectRec(image('A'), 102)).isEqualTo(FileStatus.Outcome.OK);
+            assertThat(inUnitOfWork(() -> file.writeRejectRec(image('A'), 102))).isEqualTo(FileStatus.Outcome.OK);
             template.update("INSERT INTO \"" + TEST_DSNAME + "\" VALUES (?)", " ".repeat(LRECL));
 
             assertThat(file.discardGeneration()).isEqualTo(FileStatus.Outcome.OTHER);
@@ -2114,7 +2181,7 @@ class DalyRejectWriterTest {
             DalyRejectWriter subject = new DalyRejectWriter(template, ASCII, bindings(LRECL, "F"),
                     RecordImageForm.CHARACTER);
             RejectsFile file = subject.openOutput();
-            assertThat(file.writeRejectRec(image('A'), 102)).isEqualTo(FileStatus.Outcome.OK);
+            assertThat(inUnitOfWork(() -> file.writeRejectRec(image('A'), 102))).isEqualTo(FileStatus.Outcome.OK);
 
             // Stubbed after the open, so the open's own clear and probe are the real ones.
             Mockito.doReturn(null).when(template)
@@ -2138,7 +2205,7 @@ class DalyRejectWriterTest {
             DalyRejectWriter subject = new DalyRejectWriter(template, ASCII, bindings(LRECL, "F"),
                     RecordImageForm.CHARACTER);
             RejectsFile file = subject.openOutput();
-            assertThat(file.writeRejectRec(image('A'), 102)).isEqualTo(FileStatus.Outcome.OK);
+            assertThat(inUnitOfWork(() -> file.writeRejectRec(image('A'), 102))).isEqualTo(FileStatus.Outcome.OK);
 
             // The count still runs for real and agrees; only the delete's answer is bent.
             Mockito.doReturn(99).when(template).update(Mockito.anyString());
@@ -2162,7 +2229,7 @@ class DalyRejectWriterTest {
             DalyRejectWriter subject = new DalyRejectWriter(new JdbcTemplate(dataSource), ASCII,
                     bindings(LRECL, "F"), RecordImageForm.CHARACTER);
             RejectsFile file = subject.openOutput();
-            assertThat(file.writeRejectRec(image('A'), 102)).isEqualTo(FileStatus.Outcome.OK);
+            assertThat(inUnitOfWork(() -> file.writeRejectRec(image('A'), 102))).isEqualTo(FileStatus.Outcome.OK);
 
             assertThatCode(() -> assertThat(file.discardGeneration())
                     .isEqualTo(FileStatus.Outcome.OTHER)).doesNotThrowAnyException();

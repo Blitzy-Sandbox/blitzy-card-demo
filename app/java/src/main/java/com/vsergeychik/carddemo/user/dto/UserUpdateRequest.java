@@ -1,8 +1,10 @@
 package com.vsergeychik.carddemo.user.dto;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.NavigationContext;
+import com.vsergeychik.carddemo.common.ResponseOnlyMembers;
 import com.vsergeychik.carddemo.common.SensitiveDiagnostics;
 import jakarta.validation.constraints.Size;
 import java.nio.charset.StandardCharsets;
@@ -360,12 +362,28 @@ import java.util.Map;
  *                          {@code app/cbl/COUSR02C.cbl:50-58}, restored from {@code DFHCOMMAREA} at
  *                          line 94 behind the 160-byte communication area. Not a {@code DFHMDF}
  *                          field; {@code null} is normalised to {@link Cu02Info#initial()}
+ *
+ * <h2>Members this request tolerates without declaring</h2>
+ *
+ * <p>The {@code @JsonIgnoreProperties} below names the members the paired response carries that this
+ * request does not declare. They are tolerated so a client can send the body it was just handed straight
+ * back: rule R6 and gate G37 put the whole conversation in the payload, which makes the next request the
+ * previous response. {@code ignoreUnknown} stays at its default of {@code false}, so every <em>other</em>
+ * unrecognised name is still refused with the offending field named in the error envelope. Each tolerated
+ * member is recomputed by the server on every path, so the value that arrives here is discarded and
+ * cannot steer a branch. The names live in {@link com.vsergeychik.carddemo.common.ResponseOnlyMembers},
+ * which explains each one.
  */
+@JsonIgnoreProperties({
+        ResponseOnlyMembers.NEXT_PROGRAM,
+        ResponseOnlyMembers.NEXT_MAPSET,
+        ResponseOnlyMembers.NEXT_MAP,
+        ResponseOnlyMembers.SCREEN_METADATA})
 public record UserUpdateRequest(
 
         /* TRNNAMEI PIC X(4) - app/cpy-bms/COUSR02.CPY:24; TRNNAME DFHMDF LENGTH=4,
          * app/bms/COUSR02.bms:34-37. */
-        @Size(max = TRNNAME_LENGTH) String trnName,
+        @Size(max = TRNNAME_LENGTH) @JsonProperty("trnname") String trnName,
 
         /* TITLE01I PIC X(40) - app/cpy-bms/COUSR02.CPY:30; TITLE01 DFHMDF LENGTH=40,
          * app/bms/COUSR02.bms:38-41. */
@@ -373,11 +391,11 @@ public record UserUpdateRequest(
 
         /* CURDATEI PIC X(8) - app/cpy-bms/COUSR02.CPY:36; CURDATE DFHMDF LENGTH=8,
          * app/bms/COUSR02.bms:47-51. */
-        @Size(max = CURDATE_LENGTH) String curDate,
+        @Size(max = CURDATE_LENGTH) @JsonProperty("curdate") String curDate,
 
         /* PGMNAMEI PIC X(8) - app/cpy-bms/COUSR02.CPY:42; PGMNAME DFHMDF LENGTH=8,
          * app/bms/COUSR02.bms:57-60. */
-        @Size(max = PGMNAME_LENGTH) String pgmName,
+        @Size(max = PGMNAME_LENGTH) @JsonProperty("pgmname") String pgmName,
 
         /* TITLE02I PIC X(40) - app/cpy-bms/COUSR02.CPY:48; TITLE02 DFHMDF LENGTH=40,
          * app/bms/COUSR02.bms:61-64. */
@@ -385,20 +403,20 @@ public record UserUpdateRequest(
 
         /* CURTIMEI PIC X(8) - app/cpy-bms/COUSR02.CPY:54; CURTIME DFHMDF LENGTH=8,
          * app/bms/COUSR02.bms:70-74. Eight here; only COSGN00 declares nine. */
-        @Size(max = CURTIME_LENGTH) String curTime,
+        @Size(max = CURTIME_LENGTH) @JsonProperty("curtime") String curTime,
 
         /* USRIDINI PIC X(8) - app/cpy-bms/COUSR02.CPY:60; USRIDIN DFHMDF LENGTH=8,
          * app/bms/COUSR02.bms:85-89. USRIDIN, not USERID, and declared before the two name
          * fields exactly as this mapset orders them. */
-        @Size(max = USRIDIN_LENGTH) String usrIdIn,
+        @Size(max = USRIDIN_LENGTH) @JsonProperty("usridin") String usrIdIn,
 
         /* FNAMEI PIC X(20) - app/cpy-bms/COUSR02.CPY:66; FNAME DFHMDF LENGTH=20,
          * app/bms/COUSR02.bms:103-107. First of the four change-detected fields. */
-        @Size(max = FNAME_LENGTH) String fName,
+        @Size(max = FNAME_LENGTH) @JsonProperty("fname") String fName,
 
         /* LNAMEI PIC X(20) - app/cpy-bms/COUSR02.CPY:72; LNAME DFHMDF LENGTH=20,
          * app/bms/COUSR02.bms:116-120. Second of the four change-detected fields. */
-        @Size(max = LNAME_LENGTH) String lName,
+        @Size(max = LNAME_LENGTH) @JsonProperty("lname") String lName,
 
         /* PASSWDI PIC X(8) - app/cpy-bms/COUSR02.CPY:78; PASSWD DFHMDF LENGTH=8,
          * app/bms/COUSR02.bms:130-134. Third of the four change-detected fields.
@@ -411,13 +429,13 @@ public record UserUpdateRequest(
         /* USRTYPEI PIC X(1) - app/cpy-bms/COUSR02.CPY:84; USRTYPE DFHMDF LENGTH=1,
          * app/bms/COUSR02.bms:145-149. Fourth of the four change-detected fields. No format
          * constraint: COUSR02C never validates it against 'A' or 'U'. */
-        @Size(max = USRTYPE_LENGTH) String usrType,
+        @Size(max = USRTYPE_LENGTH) @JsonProperty("usrtype") String usrType,
 
         /* ERRMSGI PIC X(78) - app/cpy-bms/COUSR02.CPY:90; ERRMSG DFHMDF LENGTH=78,
          * app/bms/COUSR02.bms:155-158. Seventy-eight, although WS-MESSAGE is X(80): the 80-to-78
          * truncation at COUSR02C.cbl:270 is the controller's, performed through
          * common.FixedWidthCodec, and is not performed in this file. */
-        @Size(max = ERRMSG_LENGTH) String errMsg,
+        @Size(max = ERRMSG_LENGTH) @JsonProperty("errmsg") String errMsg,
 
         /* NOT a DFHMDF field. The explicitly mandated exception: the 160-byte CARDDEMO-COMMAREA of
          * app/cpy/COCOM01Y.cpy, loaded by COUSR02C.cbl:94 from DFHCOMMAREA. Referenced, never

@@ -15,6 +15,7 @@ import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.FixedWidthRecord;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.FieldSpan;
 import com.vsergeychik.carddemo.common.NavigationContext;
+import com.vsergeychik.carddemo.common.ScreenFieldImage;
 import com.vsergeychik.carddemo.common.ScreenTitles;
 import com.vsergeychik.carddemo.common.SystemMessages;
 import com.vsergeychik.carddemo.transaction.dto.ReportRequestResponse.FieldAttributes;
@@ -651,12 +652,14 @@ class ReportRequestResponseTest {
 
         @ParameterizedTest
         @EnumSource(ScreenField.class)
-        @DisplayName("a fresh field is SPACES at its declared width")
-        void defaultsToSpaces(ScreenField field) {
+        @DisplayName("a fresh field is LOW-VALUES at its declared width")
+        void defaultsToLowValues(ScreenField field) {
+            // MOVE LOW-VALUES TO CORPT0AO, app/cbl/CORPT00C.cbl:179. moveSpacesToAllFields() and
+            // initializeAllFields() carry the SPACES shapes and are asserted separately.
             ReportRequestResponse response = new ReportRequestResponse();
             assertThat(response.payloadValue(field))
                     .hasSize(field.payloadLength())
-                    .isEqualTo(" ".repeat(field.payloadLength()));
+                    .isEqualTo(ScreenFieldImage.unpainted(field.payloadLength()));
         }
 
         @ParameterizedTest
@@ -876,10 +879,11 @@ class ReportRequestResponseTest {
             assertThat(response.getCurdateo()).isEqualTo("08/22/22").hasSize(8);
             assertThat(response.getCurtimeo()).isEqualTo("17:02:43").hasSize(8);
 
-            // The paragraph does not touch the eleven data fields.
-            assertThat(response.getMonthlyo()).isEqualTo(" ");
-            assertThat(response.getConfirmo()).isEqualTo(" ");
-            assertThat(response.getErrmsgo()).isEqualTo(" ".repeat(78));
+            // The paragraph does not touch the eleven data fields, so they still hold what the
+            // constructor's MOVE LOW-VALUES TO CORPT0AO image (:179) left.
+            assertThat(response.getMonthlyo()).isEqualTo(ScreenFieldImage.unpainted(1));
+            assertThat(response.getConfirmo()).isEqualTo(ScreenFieldImage.unpainted(1));
+            assertThat(response.getErrmsgo()).isEqualTo(ScreenFieldImage.unpainted(78));
 
             assertThatNullPointerException()
                     .isThrownBy(() -> response.populateHeaderInfo(null))
@@ -1246,7 +1250,7 @@ class ReportRequestResponseTest {
             first.setErrmsgo("only on the first");
             first.setColourAttribute(ScreenField.ERRMSG, BmsAttributes.DFHRED);
 
-            assertThat(second.getErrmsgo()).isEqualTo(" ".repeat(78));
+            assertThat(second.getErrmsgo()).isEqualTo(ScreenFieldImage.unpainted(78));
             assertThat(second.colourAttribute(ScreenField.ERRMSG))
                     .isEqualTo(ReportRequestResponse.ATTRIBUTE_UNSET);
         }
@@ -1313,9 +1317,9 @@ class ReportRequestResponseTest {
             List<String> names = new ArrayList<>();
             tree.fieldNames().forEachRemaining(names::add);
 
-            List<String> expected = List.of("trnnameo", "title01o", "curdateo", "pgmnameo",
-                    "title02o", "curtimeo", "monthlyo", "yearlyo", "customo", "sdtmmo", "sdtddo",
-                    "sdtyyyyo", "edtmmo", "edtddo", "edtyyyyo", "confirmo", "errmsgo",
+            List<String> expected = List.of("trnname", "title01", "curdate", "pgmname",
+                    "title02", "curtime", "monthly", "yearly", "custom", "sdtmm", "sdtdd",
+                    "sdtyyyy", "edtmm", "edtdd", "edtyyyy", "confirm", "errmsg",
                     "nextProgram", "nextMapset", "nextMap", "navigationContext");
             assertThat(names).containsExactlyInAnyOrderElementsOf(expected);
             assertThat(expected).hasSize(21);
@@ -1372,7 +1376,7 @@ class ReportRequestResponseTest {
             response.setErrmsgo(" ".repeat(78));
 
             String json = mapper.writeValueAsString(response);
-            assertThat(json).contains("\"errmsgo\":\"" + " ".repeat(78) + "\"");
+            assertThat(json).contains("\"errmsg\":\"" + " ".repeat(78) + "\"");
 
             ReportRequestResponse back = mapper.readValue(json, ReportRequestResponse.class);
             assertThat(back.getErrmsgo()).isEqualTo(" ".repeat(78)).hasSize(78);
@@ -3213,8 +3217,9 @@ class ReportRequestResponseTest {
                 assertThat(response.getConfirmo()).isEqualTo(" ");
             } else if ("Y".equals(keyed) || "y".equals(keyed)) {
                 assertThat(response.getErrmsgo())
-                        .as("CORPT00C:475-476 - WHEN 'Y' OR 'y' / CONTINUE, so the line stays clear")
-                        .isEqualTo(" ".repeat(78));
+                        .as("CORPT00C:475-476 - WHEN 'Y' OR 'y' / CONTINUE, so the line is never "
+                                + "written and stays at the LOW-VALUES image :179 left")
+                        .isEqualTo(ScreenFieldImage.unpainted(78));
                 assertThat(response.getConfirmo()).isEqualTo(keyed);
                 assertThat(response.getMonthlyo()).as("and nothing is reinitialised").isEqualTo("X");
             } else if ("N".equals(keyed) || "n".equals(keyed)) {
@@ -3390,9 +3395,13 @@ class ReportRequestResponseTest {
                                     + "not one of the 119 is a payload member")
                             .noneMatch(name -> name.equalsIgnoreCase(metadataItem));
                 }
+                // The payload member is the item WITHOUT its output-direction suffix, in lower case:
+                // @JsonProperty pins each wire name to the xxxI item (AAP 0.6.3).
+                String wireName = field.payloadItemName()
+                        .substring(0, field.payloadItemName().length() - 1);
                 assertThat(names)
-                        .as(field.payloadItemName() + " IS a payload member")
-                        .anyMatch(name -> name.equalsIgnoreCase(field.payloadItemName()));
+                        .as(field.payloadItemName() + " IS a payload member, as " + wireName)
+                        .anyMatch(name -> name.equalsIgnoreCase(wireName));
             }
 
             assertThat(names).hasSize(ReportRequestResponse.SCREEN_FIELD_COUNT + 4);

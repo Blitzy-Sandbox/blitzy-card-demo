@@ -1,6 +1,7 @@
 package com.vsergeychik.carddemo.transaction.dto;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import com.vsergeychik.carddemo.common.BmsAttributes;
 import com.vsergeychik.carddemo.common.DateHeader;
 import com.vsergeychik.carddemo.common.FieldAttributeSetter;
@@ -10,6 +11,7 @@ import com.vsergeychik.carddemo.common.FixedWidthRecord;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.FieldSpan;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.RecordLayout;
 import com.vsergeychik.carddemo.common.NavigationContext;
+import com.vsergeychik.carddemo.common.ScreenFieldImage;
 import com.vsergeychik.carddemo.common.ScreenTitles;
 import com.vsergeychik.carddemo.common.SystemMessages;
 import java.nio.charset.Charset;
@@ -301,8 +303,8 @@ public final class ReportRequestResponse {
     /** One space, the {@code PIC X} pad character, used to build {@code SPACES} of a given width. */
     private static final String SPACE = " ";
 
-    /** {@code X'00'} as a Java character, the {@code LOW-VALUES} fill. */
-    private static final String LOW_VALUE = "\u0000";
+    // The LOW-VALUES fill is ScreenFieldImage.LOW_VALUE and ScreenFieldImage.unpainted(int); it is not
+    // redeclared here, so this screen cannot drift away from the other sixteen.
 
     // =================================================================================================
     // The seventeen screen fields, in copybook declaration order, which is also BMS declaration order.
@@ -821,19 +823,27 @@ public final class ReportRequestResponse {
     // =================================================================================================
 
     /**
-     * A response with every field at its declared width, filled with spaces, every attribute quad
-     * {@link FieldAttributes#UNSET}, and an empty commarea.
+     * A response with every field carrying the unpainted image at its declared width, every attribute
+     * quad {@link FieldAttributes#UNSET}, and an empty commarea.
      *
-     * <p>Spaces rather than {@code LOW-VALUES} is the resting state chosen for a fresh object, because
-     * a response is a transport object that must serialise cleanly, and {@code X'00'} inside a JSON
-     * string is legal but hostile. The COBOL group initialiser is not lost: it is available verbatim
-     * as {@link #moveLowValuesToMapGroup()}, which is what {@code CORPT00C.cbl:179} performs.
+     * <p>The unpainted image is {@code LOW-VALUES} - {@code X'00'} at the declared width - which is
+     * what {@code MOVE LOW-VALUES TO CORPT0AO} at {@code app/cbl/CORPT00C.cbl:179} moves, so it is the
+     * resting state of a fresh object. An earlier revision chose spaces instead, reasoning that a
+     * response must serialise cleanly and {@code X'00'} inside a JSON string is "legal but hostile".
+     * That traded a correct byte for a comfortable one: {@code U+0000} is an ordinary JSON string
+     * character, Jackson emits it as the {@code \u0000} escape, and a field-for-field diff of the
+     * returned map area reports the substitution.
+     *
+     * <p>{@code SPACES} is a different fact and remains available separately as
+     * {@link #moveSpacesToAllFields()} and {@link #initializeAllFields()} - the latter being the
+     * {@code INITIALIZE} at {@code :636-645}, which genuinely does set ten items to spaces.
+     * {@link ScreenFieldImage} records the distinction once, for all seventeen screens.
      */
     public ReportRequestResponse() {
         for (ScreenField field : ScreenField.values()) {
             attributes.put(field, FieldAttributes.UNSET);
+            setPayloadValue(field, ScreenFieldImage.unpainted(field.payloadLength()));
         }
-        moveSpacesToAllFields();
 
         // No transfer has been decided yet, so the program target starts blank; the map and mapset
         // start as this screen's own, which is what the pseudo-conversational re-display path implies
@@ -905,8 +915,10 @@ public final class ReportRequestResponse {
      * @throws IllegalArgumentException if {@code length} is less than 1
      */
     public static String lowValues(int length) {
+        // One implementation of the LOW-VALUES image, in common.ScreenFieldImage, so the choice cannot
+        // drift back apart across screens. Any width validation above is this method's own contract.
         requireDeclaredWidth(length, "LOW-VALUES");
-        return LOW_VALUE.repeat(length);
+        return ScreenFieldImage.unpainted(length);
     }
 
     // =================================================================================================
@@ -1278,6 +1290,7 @@ public final class ReportRequestResponse {
      *
      * @return four characters, space-padded, never trimmed
      */
+    @JsonProperty("trnname")
     public String getTrnnameo() {
         return trnnameo;
     }
@@ -1299,6 +1312,7 @@ public final class ReportRequestResponse {
      *
      * @return forty characters
      */
+    @JsonProperty("title01")
     public String getTitle01o() {
         return title01o;
     }
@@ -1320,6 +1334,7 @@ public final class ReportRequestResponse {
      *
      * @return eight characters
      */
+    @JsonProperty("curdate")
     public String getCurdateo() {
         return curdateo;
     }
@@ -1340,6 +1355,7 @@ public final class ReportRequestResponse {
      *
      * @return eight characters
      */
+    @JsonProperty("pgmname")
     public String getPgmnameo() {
         return pgmnameo;
     }
@@ -1361,6 +1377,7 @@ public final class ReportRequestResponse {
      *
      * @return forty characters
      */
+    @JsonProperty("title02")
     public String getTitle02o() {
         return title02o;
     }
@@ -1382,6 +1399,7 @@ public final class ReportRequestResponse {
      *
      * @return eight characters
      */
+    @JsonProperty("curtime")
     public String getCurtimeo() {
         return curtimeo;
     }
@@ -1403,6 +1421,7 @@ public final class ReportRequestResponse {
      *
      * @return one character
      */
+    @JsonProperty("monthly")
     public String getMonthlyo() {
         return monthlyo;
     }
@@ -1423,6 +1442,7 @@ public final class ReportRequestResponse {
      *
      * @return one character
      */
+    @JsonProperty("yearly")
     public String getYearlyo() {
         return yearlyo;
     }
@@ -1443,6 +1463,7 @@ public final class ReportRequestResponse {
      *
      * @return one character
      */
+    @JsonProperty("custom")
     public String getCustomo() {
         return customo;
     }
@@ -1464,6 +1485,7 @@ public final class ReportRequestResponse {
      *
      * @return two characters
      */
+    @JsonProperty("sdtmm")
     public String getSdtmmo() {
         return sdtmmo;
     }
@@ -1484,6 +1506,7 @@ public final class ReportRequestResponse {
      *
      * @return two characters
      */
+    @JsonProperty("sdtdd")
     public String getSdtddo() {
         return sdtddo;
     }
@@ -1504,6 +1527,7 @@ public final class ReportRequestResponse {
      *
      * @return four characters
      */
+    @JsonProperty("sdtyyyy")
     public String getSdtyyyyo() {
         return sdtyyyyo;
     }
@@ -1524,6 +1548,7 @@ public final class ReportRequestResponse {
      *
      * @return two characters
      */
+    @JsonProperty("edtmm")
     public String getEdtmmo() {
         return edtmmo;
     }
@@ -1544,6 +1569,7 @@ public final class ReportRequestResponse {
      *
      * @return two characters
      */
+    @JsonProperty("edtdd")
     public String getEdtddo() {
         return edtddo;
     }
@@ -1564,6 +1590,7 @@ public final class ReportRequestResponse {
      *
      * @return four characters
      */
+    @JsonProperty("edtyyyy")
     public String getEdtyyyyo() {
         return edtyyyyo;
     }
@@ -1585,6 +1612,7 @@ public final class ReportRequestResponse {
      *
      * @return one character
      */
+    @JsonProperty("confirm")
     public String getConfirmo() {
         return confirmo;
     }
@@ -1607,6 +1635,7 @@ public final class ReportRequestResponse {
      * @return seventy-eight characters, space-padded and never trimmed, so a JSON round trip returns an
      *         equal value
      */
+    @JsonProperty("errmsg")
     public String getErrmsgo() {
         return errmsgo;
     }

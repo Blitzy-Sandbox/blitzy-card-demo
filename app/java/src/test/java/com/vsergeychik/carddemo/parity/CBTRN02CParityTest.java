@@ -55,6 +55,7 @@ import org.springframework.beans.factory.NoSuchBeanDefinitionException;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
@@ -654,7 +655,7 @@ final class CBTRN02CParityTest {
         TransactionValidationJob job =
             job(database, invocation.clock(), sysout, rejects, scenario, charset);
         try {
-            RunOutcome outcome = job.postTransactions(sysout);
+            RunOutcome outcome = inStepUnitOfWork(() -> job.postTransactions(sysout));
             recorder.returnCode(outcome.returnCode());
         } finally {
             for (String line : sysout.lines()) {
@@ -664,6 +665,49 @@ final class CBTRN02CParityTest {
             recordFinalState(recorder, database);
         }
         return null;
+    }
+
+    /**
+     * Declares the unit of work the step supplies, runs the work, and always undoes the declaration.
+     *
+     * <p>{@code CBTRN02C} posts, and every posting verb refuses to run outside a unit of work: the pool
+     * hands out connections with auto-commit disabled, so a statement issued with nothing bound to the
+     * thread is rolled back when the connection is returned, and a repository that reported {@code '00'}
+     * from there would have this harness record a fingerprint for records that reached no dataset. Under
+     * the launcher the step's own chunk transaction is what satisfies that requirement.
+     *
+     * <p>Declared on the thread rather than opened as a real transaction, and that choice is
+     * parity-relevant rather than a convenience. {@code POSTTRAN}'s six datasets are all defined
+     * {@code RECOVERY(NONE)} ({@code app/csd/CARDDEMO.CSD:9} and its siblings) and the program issues no
+     * syncpoint, so a write is durable when it completes and {@code CALL 'CEE3ABD'} does not take it back;
+     * the step reproduces that with a commit interval of one record. One transaction around a whole run
+     * would instead discard everything an abending run had already written, which is a state the COBOL
+     * cannot produce. The declaration satisfies the precondition and leaves each statement's durability
+     * exactly where the case fixtures expect it.
+     *
+     * @param work the work to run
+     * @param <T>  what it answers
+     * @return what {@code work} answered
+     */
+    private static <T> T inStepUnitOfWork(java.util.function.Supplier<T> work) {
+        TransactionSynchronizationManager.setActualTransactionActive(true);
+        try {
+            return work.get();
+        } finally {
+            TransactionSynchronizationManager.setActualTransactionActive(false);
+        }
+    }
+
+    /**
+     * The same declaration, for work that answers nothing.
+     *
+     * @param work the work to run
+     */
+    private static void inStepUnitOfWork(Runnable work) {
+        inStepUnitOfWork(() -> {
+            work.run();
+            return null;
+        });
     }
 
     /**
@@ -1187,8 +1231,11 @@ final class CBTRN02CParityTest {
         delegate.open(new ExecutionContext());
         DalyTranRecord item = delegate.read();
         assertThat(item).isNotNull();
-        TransactionValidationJob.RecordOutcome outcome = delegate.process(item);
-        delegate.write(Chunk.of(outcome));
+        // The step's chunk transaction encloses the processing and the write, so the harness declares it
+        // around exactly those two calls and not around the stream's open and close, which Spring Batch
+        // runs outside it.
+        TransactionValidationJob.RecordOutcome outcome = inStepUnitOfWork(() -> delegate.process(item));
+        inStepUnitOfWork(() -> delegate.write(Chunk.of(outcome)));
         assertThat(delegate.read())
             .withFailMessage("the second READ at :346 must report '10': one record was seeded")
             .isNull();
@@ -1264,14 +1311,14 @@ final class CBTRN02CParityTest {
         }).when(accounts).open(AccountRepository.OpenMode.I_O);
 
         CapturedSysout sysout = new CapturedSysout();
-        RunOutcome outcome = new TransactionValidationJob(
+        TransactionValidationJob posting = new TransactionValidationJob(
             new BatchConfig(new NoBeanPublished<>(), new NoBeanPublished<>(), contracts(), bindings),
             new DalyTranRepository(database, bindings, charset, RecordImageForm.CHARACTER, WRITE_ORDER),
             new CardXrefRepository(database, bindings, charset, RecordImageForm.CHARACTER),
             accounts, balances, master,
             rejectWriter(database, bindings, charset, new CollectingRejects(Scenario.CLEAN)),
-            new SuppliedBean<SysoutSink>(sysout), pinnedClock())
-            .postTransactions(sysout);
+            new SuppliedBean<SysoutSink>(sysout), pinnedClock());
+        RunOutcome outcome = inStepUnitOfWork(() -> posting.postTransactions(sysout));
 
         assertThat(outcome.transactionCount()).isOne();
         assertThat(outcome.rejectCount()).isZero();
@@ -1303,15 +1350,17 @@ final class CBTRN02CParityTest {
         seedResolvableTransaction(overlimitOnly, "504.77", "100.00", "0.00", "0.00", "2024-12-13");
         CollectingRejects firstRejects = new CollectingRejects(Scenario.CLEAN);
         CapturedSysout firstSysout = new CapturedSysout();
-        RunOutcome first = job(overlimitOnly, pinnedClock(), firstSysout, firstRejects, Scenario.CLEAN,
-            ParityHarness.FIXTURE_CHARSET).postTransactions(firstSysout);
+        TransactionValidationJob firstJob = job(overlimitOnly, pinnedClock(), firstSysout, firstRejects,
+            Scenario.CLEAN, ParityHarness.FIXTURE_CHARSET);
+        RunOutcome first = inStepUnitOfWork(() -> firstJob.postTransactions(firstSysout));
 
         JdbcTemplate both = database("overlimitAndExpired");
         seedResolvableTransaction(both, "504.77", "100.00", "0.00", "0.00", "2022-06-09");
         CollectingRejects secondRejects = new CollectingRejects(Scenario.CLEAN);
         CapturedSysout secondSysout = new CapturedSysout();
-        RunOutcome second = job(both, pinnedClock(), secondSysout, secondRejects, Scenario.CLEAN,
-            ParityHarness.FIXTURE_CHARSET).postTransactions(secondSysout);
+        TransactionValidationJob secondJob = job(both, pinnedClock(), secondSysout, secondRejects,
+            Scenario.CLEAN, ParityHarness.FIXTURE_CHARSET);
+        RunOutcome second = inStepUnitOfWork(() -> secondJob.postTransactions(secondSysout));
 
         assertThat(first.rejectCount()).isOne();
         assertThat(second.rejectCount()).isOne();
@@ -1354,7 +1403,7 @@ final class CBTRN02CParityTest {
             ParityHarness.FIXTURE_CHARSET);
 
         assertThatExceptionOfType(AbendException.class)
-            .isThrownBy(() -> job.postTransactions(sysout))
+            .isThrownBy(() -> inStepUnitOfWork(() -> job.postTransactions(sysout)))
             .satisfies(abend -> assertThat(abend.getReturnCode())
                 .withFailMessage("app/cbl/CBTRN02C.cbl:297 moves 12 into APPL-RESULT before the abend "
                     + "at :305, so the exception carries 12 and the step's exit status is 12.")

@@ -11,6 +11,7 @@ import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.NavigationContext;
 import com.vsergeychik.carddemo.common.PfKeyResolver;
 import com.vsergeychik.carddemo.common.PfKeyResolver.AidKey;
+import com.vsergeychik.carddemo.common.ScreenFieldImage;
 import com.vsergeychik.carddemo.common.ScreenMetadata;
 import com.vsergeychik.carddemo.common.ScreenResponse;
 import com.vsergeychik.carddemo.common.ScreenTitles;
@@ -1354,7 +1355,9 @@ public final class TransactionAddController {
      * @throws IllegalArgumentException if {@code width} is negative
      */
     public static String lowValues(int width) {
-        return String.valueOf(LOW_VALUE).repeat(width);
+        // One implementation of the LOW-VALUES image, in common.ScreenFieldImage, so the choice cannot
+        // drift back apart across screens. Any width validation above is this method's own contract.
+        return ScreenFieldImage.unpainted(width);
     }
 
     /**

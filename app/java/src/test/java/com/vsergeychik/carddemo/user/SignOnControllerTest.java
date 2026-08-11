@@ -8,6 +8,7 @@ import com.vsergeychik.carddemo.common.FieldAttributeSetter.FieldValidationState
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.NavigationContext;
 import com.vsergeychik.carddemo.common.PfKeyResolver;
+import com.vsergeychik.carddemo.common.ScreenFieldImage;
 import com.vsergeychik.carddemo.common.ScreenTitles;
 import com.vsergeychik.carddemo.common.SystemMessages;
 import com.vsergeychik.carddemo.config.WebConfig;
@@ -528,11 +529,11 @@ class SignOnControllerTest {
             json.fieldNames().forEachRemaining(names::add);
 
             Assertions.assertThat(names)
-                    .containsExactly("trnName", "title01", "curDate", "pgmName", "title02",
-                            "curTime", "applId", "sysId", "userId", "passwd", "errMsg",
+                    .containsExactly("trnname", "title01", "curdate", "pgmname", "title02",
+                            "curtime", "applid", "sysid", "userid", "passwd", "errmsg",
                             "navigationContext", "aid");
-            Assertions.assertThat(json.has("applId")).isTrue();
-            Assertions.assertThat(json.has("sysId")).isTrue();
+            Assertions.assertThat(json.has("applid")).isTrue();
+            Assertions.assertThat(json.has("sysid")).isTrue();
 
             List<String> mapMembers = names.subList(0, SignOnRequest.MAP_FIELD_COUNT);
             for (String member : mapMembers) {
@@ -1245,16 +1246,17 @@ class SignOnControllerTest {
         }
 
         @Test
-        @DisplayName("USERIDO stays at spaces - COSGN00C never writes it")
-        void userIdOutputStaysAtSpaces() {
+        @DisplayName("USERIDO stays unpainted - COSGN00C never writes it")
+        void userIdOutputStaysUnpainted() {
             SignOnResponse projected = controller.toResponse(signedOnOutcome(
                     NavigationContext.USER_TYPE_ADMIN,
                     SignOnResponse.NEXT_PROGRAM_ADMIN,
                     NavigationContext.empty()));
 
             Assertions.assertThat(projected.userId())
-                    .as("the program only ever reads USERIDI, at :118 and :132")
-                    .isBlank()
+                    .as("the program only ever reads USERIDI, at :118 and :132 - it is not a MOVE target "
+                            + "anywhere, so it keeps the LOW-VALUES image :81 left")
+                    .isEqualTo(ScreenFieldImage.unpainted(SignOnResponse.USERID_LENGTH))
                     .hasSize(SignOnResponse.USERID_LENGTH);
         }
 
@@ -1383,8 +1385,10 @@ class SignOnControllerTest {
         @DisplayName("JSON contains exactly ten map-derived properties and never PASSWD")
         void exactlyTenSerialisedPropertiesComeFromTheMap() {
             var json = new ObjectMapper().valueToTree(SignOnResponse.empty());
-            List<String> mapProperties = List.of("trnName", "title01", "curDate", "pgmName",
-                    "title02", "curTime", "applId", "sysId", "userId", "errMsg");
+            // The wire names: each screen field's xxxI item in lower case, which @JsonProperty pins
+            // per AAP 0.6.3. The Java components keep camel case, and that is not what a caller sees.
+            List<String> mapProperties = List.of("trnname", "title01", "curdate", "pgmname",
+                    "title02", "curtime", "applid", "sysid", "userid", "errmsg");
 
             Assertions.assertThat(mapProperties).hasSize(SignOnResponse.MAP_FIELD_COUNT);
             for (String property : mapProperties) {
@@ -1524,8 +1528,8 @@ class SignOnControllerTest {
 
             mockMvc().perform(post(SignOnController.SIGNON_PATH))
                     .andExpect(status().isOk())
-                    .andExpect(jsonPath("$.trnName").value("CC00"))
-                    .andExpect(jsonPath("$.pgmName").value("COSGN00C"))
+                    .andExpect(jsonPath("$.trnname").value("CC00"))
+                    .andExpect(jsonPath("$.pgmname").value("COSGN00C"))
                     .andExpect(jsonPath("$.screenMetadata.cursorField")
                             .value(SignOnController.CURSOR_USERID))
                     .andExpect(jsonPath("$.screenMetadata.resetAllOutputFields").value(true));
@@ -1579,8 +1583,8 @@ class SignOnControllerTest {
 
             Assertions.assertThat(seen)
                     .as("the fifteen screen members stay at the top level, plus the metadata envelope")
-                    .containsExactlyInAnyOrder("trnName", "title01", "curDate", "pgmName", "title02",
-                            "curTime", "applId", "sysId", "userId", "errMsg", "role", "nextProgram",
+                    .containsExactlyInAnyOrder("trnname", "title01", "curdate", "pgmname", "title02",
+                            "curtime", "applid", "sysid", "userid", "errmsg", "role", "nextProgram",
                             "nextMapset", "nextMap", "navigationContext", "screenMetadata");
             Assertions.assertThat(seen)
                     .as("no xxxL length item, xxxF/xxxA attribute item or xxxC/xxxP/xxxH/xxxV output "
@@ -1647,15 +1651,15 @@ class SignOnControllerTest {
                             .contentType(MediaType.APPLICATION_JSON)
                             .content(objectMapper.writeValueAsBytes(requestWith(context))))
                     .andExpect(status().isOk())
-                    .andExpect(jsonPath("$.trnName").value(SignOnResponse.TRANID))
-                    .andExpect(jsonPath("$.pgmName").value(SignOnResponse.PROGRAM_NAME))
+                    .andExpect(jsonPath("$.trnname").value(SignOnResponse.TRANID))
+                    .andExpect(jsonPath("$.pgmname").value(SignOnResponse.PROGRAM_NAME))
                     .andExpect(jsonPath("$.title01").value(ScreenTitles.CCDA_TITLE01))
                     .andExpect(jsonPath("$.title02").value(ScreenTitles.CCDA_TITLE02))
-                    .andExpect(jsonPath("$.curDate").value(EXPECTED_CURDATE))
-                    .andExpect(jsonPath("$.curTime").value(EXPECTED_CURTIME))
-                    .andExpect(jsonPath("$.applId").value(spaces(SignOnResponse.APPLID_LENGTH)))
-                    .andExpect(jsonPath("$.sysId").value(spaces(SignOnResponse.SYSID_LENGTH)))
-                    .andExpect(jsonPath("$.errMsg").value(spaces(SignOnResponse.ERRMSG_LENGTH)));
+                    .andExpect(jsonPath("$.curdate").value(EXPECTED_CURDATE))
+                    .andExpect(jsonPath("$.curtime").value(EXPECTED_CURTIME))
+                    .andExpect(jsonPath("$.applid").value(spaces(SignOnResponse.APPLID_LENGTH)))
+                    .andExpect(jsonPath("$.sysid").value(spaces(SignOnResponse.SYSID_LENGTH)))
+                    .andExpect(jsonPath("$.errmsg").value(spaces(SignOnResponse.ERRMSG_LENGTH)));
 
             verify(decisionCore).handle(any(SignOnInput.class));
             verifyNoMoreInteractions(decisionCore);

@@ -17,6 +17,7 @@ import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.FixedWidthRecord;
 import com.vsergeychik.carddemo.common.NavigationContext;
 import com.vsergeychik.carddemo.common.PfKeyResolver;
+import com.vsergeychik.carddemo.common.ScreenFieldImage;
 import com.vsergeychik.carddemo.common.ScreenTitles;
 import com.vsergeychik.carddemo.common.SystemMessages;
 import com.vsergeychik.carddemo.user.dto.UserListResponse.Row;
@@ -639,6 +640,34 @@ class UserListResponseTest {
             "nextProgram", "nextMapset", "nextMap",
             "navigationContext");
 
+    /**
+     * The 59 screen fields of {@code 01 COUSR0AO}, as a set, so {@link #wireNameOf(String)} can tell them
+     * from the ten members that trace to no {@code DFHMDF} field.
+     */
+    private static final java.util.Set<String> SCREEN_FIELD_MEMBERS =
+            java.util.Set.copyOf(EXPECTED_COMPONENT_NAMES.subList(0, 59));
+
+    /**
+     * A member's name <strong>on the wire</strong>: a screen field answers to its {@code xxxI} item in
+     * lower case, which {@code @JsonProperty} pins per AAP 0.6.3; a carrier keeps its component name.
+     *
+     * @param member the Java member name
+     * @return the JSON property name it is published under
+     */
+    private static String wireNameOf(String member) {
+        return SCREEN_FIELD_MEMBERS.contains(member) ? member.toLowerCase(Locale.ROOT) : member;
+    }
+
+    /**
+     * {@link #wireNameOf(String)} over a list, preserving order.
+     *
+     * @param members the Java member names
+     * @return their JSON property names
+     */
+    private static List<String> wireNamesOf(List<String> members) {
+        return members.stream().map(UserListResponseTest::wireNameOf).toList();
+    }
+
     // =================================================================================================
     // HELPERS. Every one is static, returns a fresh value and holds nothing between calls (B9).
     // =================================================================================================
@@ -1171,13 +1200,16 @@ class UserListResponseTest {
         @Test
         @DisplayName("blank() fills every one of the 59 fields to exactly its declared width")
         void blankFillsEveryFieldToItsDeclaredWidth() {
+            // The fill is the LOW-VALUES image: MOVE LOW-VALUES TO COUSR0AO at :117 is what clears this
+            // map. Not spaces, and therefore not Java-blank - INITIALIZE-USER-DATA's MOVE SPACES at :446
+            // is a separate, later action and is asserted where it happens.
             Map<String, String> images = mapImages(UserListResponse.blank());
             assertThat(images).hasSize(DFHMDF_NAMED);
             for (MapField field : MAP_FIELDS) {
                 assertThat(images.get(field.name()))
                         .as("%s PIC X(%d)", field.name(), field.width())
                         .hasSize(field.width())
-                        .isBlank();
+                        .isEqualTo(ScreenFieldImage.unpainted(field.width()));
             }
         }
 
@@ -1632,9 +1664,14 @@ class UserListResponseTest {
                     assertThat(row.blankRow()).isFalse();
                 } else {
                     assertThat(row.blankRow())
-                            .as("row %d found no user, so the screen shows spaces", rowNumber)
+                            .as("row %d found no user, so it holds nothing - spaces where "
+                                    + "INITIALIZE-USER-DATA reached it, LOW-VALUES where the map clear "
+                                    + "at :117 is all that touched it", rowNumber)
                             .isTrue();
-                    assertThat(row.userId()).isNotNull().isBlank();
+                    assertThat(row.userId())
+                            .isNotNull()
+                            .satisfies(id -> assertThat(ScreenFieldImage.isSpacesOrLowValues(id))
+                                    .isTrue());
                 }
             }
         }
@@ -2523,7 +2560,7 @@ class UserListResponseTest {
         @DisplayName("the JSON keys are exactly the 69 component names, in declaration order")
         void theJsonKeysAreExactlyTheComponentNames() throws Exception {
             assertThat(jsonKeys(populatedResponse()))
-                    .containsExactlyElementsOf(EXPECTED_COMPONENT_NAMES);
+                    .containsExactlyElementsOf(wireNamesOf(EXPECTED_COMPONENT_NAMES));
         }
 
         @Test
@@ -2537,7 +2574,7 @@ class UserListResponseTest {
                 assertThat(json)
                         .as("row %d", rowNumber)
                         .contains("\"sel" + four + "\"")
-                        .contains("\"usrId" + two + "\"")
+                        .contains("\"usrid" + two + "\"")
                         .contains("\"fname" + two + "\"")
                         .contains("\"lname" + two + "\"")
                         .contains("\"utype" + two + "\"");
@@ -2585,7 +2622,7 @@ class UserListResponseTest {
             assertThat(restored.rows()).hasSize(OCCURS_COUNT);
             assertThat(restored.row(LAST_ROW_NUMBER).userId())
                     .hasSize(UserListResponse.USRID_LENGTH)
-                    .isBlank();
+                    .satisfies(id -> assertThat(ScreenFieldImage.isSpacesOrLowValues(id)).isTrue());
             assertThat(restored.nextPageNo()).isTrue();
         }
 

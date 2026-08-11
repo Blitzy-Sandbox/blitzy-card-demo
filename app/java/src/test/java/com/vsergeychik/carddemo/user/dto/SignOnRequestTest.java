@@ -278,6 +278,32 @@ class SignOnRequestTest {
             "APPLID", "SYSID", "USERID", "PASSWD", "ERRMSG");
 
     /**
+     * A member's name <strong>on the wire</strong>.
+     *
+     * <p>A screen field answers to its {@code xxxI} item in lower case - that is what
+     * {@code @JsonProperty} pins on the subject and what AAP 0.6.3 requires, "payload field names and
+     * lengths derive from the xxxI items only". A carrier traces to no {@code DFHMDF} field, so no such
+     * rule governs it and it keeps its own component name. Keeping the two apart is the point: a single
+     * list serving both roles would silently assert that the Java identifier and the wire name coincide.
+     *
+     * @param member the Java member name
+     * @return the JSON property name it is published under
+     */
+    private static String wireNameOf(String member) {
+        return MAP_MEMBERS.contains(member) ? member.toLowerCase(Locale.ROOT) : member;
+    }
+
+    /**
+     * {@link #wireNameOf(String)} over a list, preserving order.
+     *
+     * @param members the Java member names
+     * @return their JSON property names
+     */
+    private static List<String> wireNamesOf(List<String> members) {
+        return members.stream().map(SignOnRequestTest::wireNameOf).toList();
+    }
+
+    /**
      * The declared widths, from the {@code xxxI} {@code PICTURE} clauses and independently from the
      * {@code LENGTH=} operands: {@code 4, 40, 8, 8, 40, 9, 8, 8, 8, 8, 78}.
      *
@@ -482,7 +508,7 @@ class SignOnRequestTest {
     }
 
     private static Set<String> expectedJsonMembers() {
-        Set<String> members = new LinkedHashSet<>(MAP_MEMBERS);
+        Set<String> members = new LinkedHashSet<>(wireNamesOf(MAP_MEMBERS));
         members.addAll(STATE_MEMBERS);
         return Set.copyOf(members);
     }
@@ -1566,7 +1592,7 @@ class SignOnRequestTest {
         @DisplayName("the member names are the component names, untransformed")
         void theMemberNamesAreUntransformed() {
             String json = serialise(populatedRequest());
-            for (String member : MAP_MEMBERS) {
+            for (String member : wireNamesOf(MAP_MEMBERS)) {
                 assertThat(json)
                         .as("no naming strategy may rename %s, or the 1:1 trace to its xxxI item "
                                 + "is lost", member)

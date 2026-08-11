@@ -312,6 +312,32 @@ class UserUpdateRequestTest {
             "usrType",
             "errMsg");
 
+    /**
+     * A member's name <strong>on the wire</strong>.
+     *
+     * <p>A screen field answers to its {@code xxxI} item in lower case - that is what
+     * {@code @JsonProperty} pins on the subject and what AAP 0.6.3 requires, "payload field names and
+     * lengths derive from the xxxI items only". A carrier traces to no {@code DFHMDF} field, so no such
+     * rule governs it and it keeps its own component name. Keeping the two apart is the point: a single
+     * list serving both roles would silently assert that the Java identifier and the wire name coincide.
+     *
+     * @param member the Java member name
+     * @return the JSON property name it is published under
+     */
+    private static String wireNameOf(String member) {
+        return MAP_MEMBERS.contains(member) ? member.toLowerCase(Locale.ROOT) : member;
+    }
+
+    /**
+     * {@link #wireNameOf(String)} over a list, preserving order.
+     *
+     * @param members the Java member names
+     * @return their JSON property names
+     */
+    private static List<String> wireNamesOf(List<String> members) {
+        return members.stream().map(UserUpdateRequestTest::wireNameOf).toList();
+    }
+
     /** The twelve {@code xxxI} items of {@code 01 COUSR2AI}, in declaration order. */
     private static final List<String> SYMBOLIC_MAP_ITEMS = List.of("TRNNAMEI",
             "TITLE01I",
@@ -626,7 +652,7 @@ class UserUpdateRequestTest {
     }
 
     private static Set<String> expectedJsonMembers() {
-        Set<String> members = new LinkedHashSet<>(MAP_MEMBERS);
+        Set<String> members = new LinkedHashSet<>(wireNamesOf(MAP_MEMBERS));
         members.addAll(STATE_MEMBERS);
         return Set.copyOf(members);
     }
@@ -2654,10 +2680,10 @@ class UserUpdateRequestTest {
         void theMemberNamesAreUntransformed() {
             String payload = serialise(populatedRequest());
 
-            for (String member : MAP_MEMBERS) {
+            for (String member : wireNamesOf(MAP_MEMBERS)) {
                 assertThat(payload)
-                        .as("%s appears as itself: not snake_case, not upper case, not renamed",
-                                member)
+                        .as("%s appears as its xxxI item in lower case: not snake_case, not upper "
+                                + "case, not renamed by a strategy", member)
                         .contains("\"" + member + "\":");
             }
             for (String member : STATE_MEMBERS) {

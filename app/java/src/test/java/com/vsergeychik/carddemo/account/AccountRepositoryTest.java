@@ -1681,7 +1681,7 @@ class AccountRepositoryTest {
             account.setAcctCurrBal(account.getAcctCurrBal().add(new BigDecimal("12.34")));
             account.zeroAcctCurrCycCredit();
             account.zeroAcctCurrCycDebit();
-            WriteResult written = repository.rewrite(account);
+            WriteResult written = withUnitOfWork(() -> repository.rewrite(account));
 
             assertThat(written.isWritten()).isTrue();
             assertThat(written.status()).isEqualTo(FileStatus.OK);
@@ -1713,7 +1713,7 @@ class AccountRepositoryTest {
                 AccountRecord account = file.readByKey(acctId).account().orElseThrow();
                 account.setAcctGroupId("VIAHANDLE");
 
-                WriteResult written = file.rewrite(account);
+                WriteResult written = withUnitOfWork(() -> file.rewrite(account));
 
                 assertThat(written.isWritten()).isTrue();
                 assertThat(written.status()).isEqualTo(FileStatus.OK);
@@ -1733,7 +1733,7 @@ class AccountRepositoryTest {
             AccountRecord account = repository.readByKey(firstId).account().orElseThrow();
             account.setAcctGroupId("REWRITTEN");
 
-            assertThat(repository.rewrite(account).isWritten()).isTrue();
+            assertThat(withUnitOfWork(() -> repository.rewrite(account)).isWritten()).isTrue();
 
             long secondId = Long.parseLong(keyImageOf(secondImage));
             assertThat(repository.readByKey(secondId).account().orElseThrow().toFixedWidthString())
@@ -1747,7 +1747,7 @@ class AccountRepositoryTest {
             AccountRecord absent = new AccountRecord(ASCII);
             absent.setAcctId(ABSENT_ACCT_ID);
 
-            WriteResult result = repository.rewrite(absent);
+            WriteResult result = withUnitOfWork(() -> repository.rewrite(absent));
 
             assertThat(result.isNotFound()).isTrue();
             assertThat(result.status()).isEqualTo(FileStatus.NOT_FOUND);
@@ -1768,7 +1768,7 @@ class AccountRepositoryTest {
             AccountRecord account = AccountRecord.decode(duplicated, ASCII);
             account.setAcctGroupId("OVERWRITE");
 
-            WriteResult result = repository.rewrite(account);
+            WriteResult result = withUnitOfWork(() -> repository.rewrite(account));
 
             assertThat(result.isOther()).isTrue();
             assertThat(result.status()).isEqualTo(AccountRepository.PERMANENT_ERROR_STATUS);
@@ -1786,20 +1786,28 @@ class AccountRepositoryTest {
         }
 
         @Test
-        @DisplayName("refuses the whole unit of work when the update fans out after the count was one")
-        void refusesTheUnitOfWorkWhenTheUpdateFansOutAfterTheProbe() throws SQLException {
-            // The one case a status cannot carry. The probe saw exactly one row, so the rewrite was
-            // issued - and the driver then reports two rows replaced, meaning the relation changed
-            // underneath it. The damage is already done, and a status returned from here would let the
-            // enclosing unit of work commit it, so the commit is refused instead.
-            AccountRepository repository = repository(describingThenFanningOutOnUpdate());
+        @DisplayName("outside a unit of work the rewrite is refused before any statement is prepared")
+        void outsideAUnitOfWorkTheRewriteIsRefused() throws SQLException {
+            // The pool hands out connections with auto-commit disabled on purpose, so an UPDATE issued
+            // with nothing bound to the thread executes, reports the row it replaced, and is rolled back
+            // when the connection is returned. Reporting '00' from there would tell CBACT04C that an
+            // account break had been stored and COACTUPC that an update had been applied, for a record no
+            // later read could find - and no FILE STATUS means "written, then discarded". So the missing
+            // boundary is refused, and refused before a statement is prepared rather than after a row
+            // count has been read from one.
+            List<String> prepared = new ArrayList<>();
+            AccountRepository repository = repository(recordingPreparedStatements(prepared));
             AccountRecord account = AccountRecord.decode(fixtureRows().get(0), ASCII);
 
-            assertThatExceptionOfType(DatasetIntegrityException.class)
+            assertThatIllegalStateException()
                     .isThrownBy(() -> repository.rewrite(account))
-                    .withMessageContaining("must not be allowed to stand")
-                    .withMessageContaining("2 rows were replaced")
-                    .withMessageContaining("no row lock, because no unit of work was open");
+                    .withMessageContaining("no transaction is open on this thread")
+                    .withMessageContaining("changes stored records")
+                    .withMessageContaining(TEST_DSNAME);
+
+            assertThat(prepared)
+                    .as("nothing may be attempted when the change could not be committed")
+                    .isEmpty();
         }
 
         @Test
@@ -1829,7 +1837,7 @@ class AccountRepositoryTest {
             AccountRepository repository = repository(describingThenLosingTheRowBeforeUpdate());
             AccountRecord account = AccountRecord.decode(fixtureRows().get(0), ASCII);
 
-            WriteResult result = repository.rewrite(account);
+            WriteResult result = withUnitOfWork(() -> repository.rewrite(account));
 
             assertThat(result.isNotFound()).isTrue();
             assertThat(result.status()).isEqualTo(FileStatus.NOT_FOUND);
@@ -1844,15 +1852,8 @@ class AccountRepositoryTest {
             AccountRepository repository = repository(template);
             AccountRecord account = AccountRecord.decode(fixtureRows().get(0), ASCII);
 
-            // Outside a unit of work there is no lock to share, and requiring one would refuse a rewrite
-            // the COBOL performs, so the count is taken with a plain keyed read.
-            repository.rewrite(account);
-            assertThat(prepared).hasSize(1);
-            assertThat(prepared.get(0)).doesNotContain("FOR UPDATE");
-
-            // Inside one, the count and the UPDATE must see the same rows, so the count takes the same
-            // lock the UPDATE will use.
-            prepared.clear();
+            // A rewrite needs a unit of work, so there is no second, lock-free form of the count to
+            // choose between: the count and the UPDATE always see the same rows.
             transactionOver(template).execute(status -> repository.rewrite(account));
             assertThat(prepared).isNotEmpty();
             assertThat(prepared.get(0)).endsWith("FOR UPDATE");
@@ -1868,7 +1869,7 @@ class AccountRepositoryTest {
             AccountRecord absent = new AccountRecord(ASCII);
             absent.setAcctId(ABSENT_ACCT_ID);
 
-            assertThat(repository.rewrite(absent).isNotFound()).isTrue();
+            assertThat(withUnitOfWork(() -> repository.rewrite(absent)).isNotFound()).isTrue();
             assertThat(prepared)
                     .as("the count found no row, so no UPDATE should have been prepared")
                     .noneMatch(sql -> sql.startsWith("UPDATE"));
@@ -1882,7 +1883,7 @@ class AccountRepositoryTest {
             AccountRepository repository = repository(describingThenRefusing());
             AccountRecord account = AccountRecord.decode(fixtureRows().get(0), ASCII);
 
-            WriteResult result = repository.rewrite(account);
+            WriteResult result = withUnitOfWork(() -> repository.rewrite(account));
 
             assertThat(result.isOther()).isTrue();
             assertThat(result.isNotFound()).isFalse();
@@ -1896,9 +1897,12 @@ class AccountRepositoryTest {
             AccountRecord account = new AccountRecord(ASCII);
             account.setAcctId(1L);
 
-            assertThat(repository(unreachable()).rewrite(account).status())
+            AccountRepository unreachableRepository = repository(unreachable());
+            AccountRepository refusingRepository = repository(describingThenRefusing());
+
+            assertThat(withUnitOfWork(() -> unreachableRepository.rewrite(account).status()))
                     .isEqualTo(AccountRepository.PERMANENT_ERROR_STATUS);
-            assertThat(repository(describingThenRefusing()).rewrite(account).status())
+            assertThat(withUnitOfWork(() -> refusingRepository.rewrite(account).status()))
                     .isEqualTo(AccountRepository.PERMANENT_ERROR_STATUS);
         }
 
@@ -2564,11 +2568,11 @@ class AccountRepositoryTest {
             try (AccountFile file = repository.open(OpenMode.I_O)) {
                 file.readNext();
                 file.readByKey(ABSENT_ACCT_ID);
-                file.rewrite(blank);
+                withUnitOfWork(() -> file.rewrite(blank));
             }
             repository.readByKey(ABSENT_ACCT_ID);
             withUnitOfWork(() -> repository.readForUpdate(AccountRecord.keyImage(ABSENT_ACCT_ID, ASCII)));
-            repository.rewrite(blank);
+            withUnitOfWork(() -> repository.rewrite(blank));
 
             assertThat(prepared)
                     .as("the operations must actually have prepared something, or this proves nothing")
@@ -3408,10 +3412,15 @@ class AccountRepositoryTest {
 
             // rewrite: '00' when the record's own key selects it, '23' when it selects nothing.
             AccountRecord present = repository.readByKey(firstId).account().orElseThrow();
-            assertThat(repository.rewrite(present).status()).isEqualTo(FileStatus.OK);
+            assertThat(withUnitOfWork(() -> repository.rewrite(present).status()))
+                    .isEqualTo(FileStatus.OK);
             AccountRecord absent = new AccountRecord(ASCII);
             absent.setAcctId(ABSENT_ACCT_ID);
-            assertThat(repository.rewrite(absent).status()).isEqualTo(FileStatus.NOT_FOUND);
+            assertThat(withUnitOfWork(() -> repository.rewrite(absent).status()))
+                    .isEqualTo(FileStatus.NOT_FOUND);
+            // And outside one it is refused, exactly as the locking read above is.
+            assertThatIllegalStateException().isThrownBy(() -> repository.rewrite(present))
+                    .withMessageContaining("no transaction is open on this thread");
         }
 
         @Test
@@ -3426,7 +3435,7 @@ class AccountRepositoryTest {
 
             assertThat(unreachableRepository.readByKey(ABSENT_ACCT_ID).status())
                     .isEqualTo(AccountRepository.PERMANENT_ERROR_STATUS);
-            assertThat(unreachableRepository.rewrite(blank).status())
+            assertThat(withUnitOfWork(() -> unreachableRepository.rewrite(blank).status()))
                     .isEqualTo(AccountRepository.PERMANENT_ERROR_STATUS);
             assertThat(withUnitOfWork(() -> unreachableRepository
                     .readForUpdate(AccountRecord.keyImage(ABSENT_ACCT_ID, ASCII)).status()))
@@ -3603,7 +3612,7 @@ class AccountRepositoryTest {
             account.zeroAcctCurrCycCredit();
             account.zeroAcctCurrCycDebit();
 
-            assertThat(repository.rewrite(account).isWritten()).isTrue();
+            assertThat(withUnitOfWork(() -> repository.rewrite(account)).isWritten()).isTrue();
 
             AccountRecord reread = repository.readByKey(acctId).account().orElseThrow();
             assertThat(reread.getAcctCurrBal())

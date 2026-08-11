@@ -417,6 +417,32 @@ class UserUpdateResponseTest {
             "errMsg");
 
     /**
+     * A member's name <strong>on the wire</strong>.
+     *
+     * <p>A screen field answers to its {@code xxxI} item in lower case - that is what
+     * {@code @JsonProperty} pins on the subject and what AAP 0.6.3 requires, "payload field names and
+     * lengths derive from the xxxI items only". A carrier traces to no {@code DFHMDF} field, so no such
+     * rule governs it and it keeps its own component name. Keeping the two apart is the point: a single
+     * list serving both roles would silently assert that the Java identifier and the wire name coincide.
+     *
+     * @param member the Java member name
+     * @return the JSON property name it is published under
+     */
+    private static String wireNameOf(String member) {
+        return MAP_MEMBERS.contains(member) ? member.toLowerCase(Locale.ROOT) : member;
+    }
+
+    /**
+     * {@link #wireNameOf(String)} over a list, preserving order.
+     *
+     * @param members the Java member names
+     * @return their JSON property names
+     */
+    private static List<String> wireNamesOf(List<String> members) {
+        return members.stream().map(UserUpdateResponseTest::wireNameOf).toList();
+    }
+
+    /**
      * The three members that replace {@code EXEC CICS XCTL}, and the two that carry conversation state.
      *
      * <p>The explicitly mandated exception to "every member traces to a {@code DFHMDF} definition":
@@ -857,7 +883,7 @@ class UserUpdateResponseTest {
     }
 
     private static Set<String> expectedJsonMembers() {
-        Set<String> members = new LinkedHashSet<>(MAP_MEMBERS);
+        Set<String> members = new LinkedHashSet<>(wireNamesOf(MAP_MEMBERS));
         members.addAll(STATE_MEMBERS);
         return Set.copyOf(members);
     }
@@ -2972,10 +2998,10 @@ class UserUpdateResponseTest {
             ObjectMapper mapper = webConfigEquivalentMapper();
             String json = mapper.writeValueAsString(afterSuccessfulRead());
 
-            for (String member : MAP_MEMBERS) {
+            for (String member : wireNamesOf(MAP_MEMBERS)) {
                 assertThat(json)
-                        .as("%s is emitted verbatim - no snake_case, no kebab-case, no upper camel",
-                                member)
+                        .as("%s is emitted as its xxxI item in lower case - no snake_case, no "
+                                + "kebab-case, no upper camel", member)
                         .contains("\"" + member + "\"");
             }
 
@@ -2991,8 +3017,9 @@ class UserUpdateResponseTest {
             assertThat(topLevel)
                     .as("this map spells its identifier USRIDIN, and COUSR01 spells its USERID; the "
                             + "two are deliberately not harmonised")
-                    .contains("usrIdIn")
-                    .doesNotContain("userId")
+                    .contains("usridin")
+                    .doesNotContain("userid")
+                    .doesNotContain("usrIdIn")
                     .doesNotContain("usr_id_in")
                     .doesNotContain("UsrIdIn")
                     .doesNotContain("secUsrId");

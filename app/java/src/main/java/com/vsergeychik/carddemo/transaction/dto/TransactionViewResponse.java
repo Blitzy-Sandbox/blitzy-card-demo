@@ -1,8 +1,10 @@
 package com.vsergeychik.carddemo.transaction.dto;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import com.vsergeychik.carddemo.common.DiagnosticText;
 import com.vsergeychik.carddemo.common.BmsAttributes;
+import com.vsergeychik.carddemo.common.ScreenFieldImage;
 import com.vsergeychik.carddemo.common.SensitiveDiagnostics;
 import com.vsergeychik.carddemo.common.DateHeader;
 import com.vsergeychik.carddemo.common.FieldAttributeSetter;
@@ -777,8 +779,10 @@ public final class TransactionViewResponse {
      * @throws IllegalArgumentException if {@code length} is below 1
      */
     public static String lowValues(int length) {
+        // One implementation of the LOW-VALUES image, in common.ScreenFieldImage, so the choice cannot
+        // drift back apart across screens. Any width validation above is this method's own contract.
         requireDeclaredWidth(length, "LOW-VALUES");
-        return "\u0000".repeat(length);
+        return ScreenFieldImage.unpainted(length);
     }
 
     private static void requireDeclaredWidth(int length, String figurativeConstant) {
@@ -1295,27 +1299,27 @@ public final class TransactionViewResponse {
     // always a valid, fully formed 555-byte group image and never a partially populated one.
     // =================================================================================================
 
-    private String trnnameo = spaces(TRNNAMEO_LENGTH);
-    private String title01o = spaces(TITLE01O_LENGTH);
-    private String curdateo = spaces(CURDATEO_LENGTH);
-    private String pgmnameo = spaces(PGMNAMEO_LENGTH);
-    private String title02o = spaces(TITLE02O_LENGTH);
-    private String curtimeo = spaces(CURTIMEO_LENGTH);
-    private String actidino = spaces(ACTIDINO_LENGTH);
-    private String cardnino = spaces(CARDNINO_LENGTH);
-    private String ttypcdo = spaces(TTYPCDO_LENGTH);
-    private String tcatcdo = spaces(TCATCDO_LENGTH);
-    private String trnsrco = spaces(TRNSRCO_LENGTH);
-    private String tdesco = spaces(TDESCO_LENGTH);
-    private String trnamto = spaces(TRNAMTO_LENGTH);
-    private String torigdto = spaces(TORIGDTO_LENGTH);
-    private String tprocdto = spaces(TPROCDTO_LENGTH);
-    private String mido = spaces(MIDO_LENGTH);
-    private String mnameo = spaces(MNAMEO_LENGTH);
-    private String mcityo = spaces(MCITYO_LENGTH);
-    private String mzipo = spaces(MZIPO_LENGTH);
-    private String confirmo = spaces(CONFIRMO_LENGTH);
-    private String errmsgo = spaces(ERRMSGO_LENGTH);
+    private String trnnameo = ScreenFieldImage.unpainted(TRNNAMEO_LENGTH);
+    private String title01o = ScreenFieldImage.unpainted(TITLE01O_LENGTH);
+    private String curdateo = ScreenFieldImage.unpainted(CURDATEO_LENGTH);
+    private String pgmnameo = ScreenFieldImage.unpainted(PGMNAMEO_LENGTH);
+    private String title02o = ScreenFieldImage.unpainted(TITLE02O_LENGTH);
+    private String curtimeo = ScreenFieldImage.unpainted(CURTIMEO_LENGTH);
+    private String actidino = ScreenFieldImage.unpainted(ACTIDINO_LENGTH);
+    private String cardnino = ScreenFieldImage.unpainted(CARDNINO_LENGTH);
+    private String ttypcdo = ScreenFieldImage.unpainted(TTYPCDO_LENGTH);
+    private String tcatcdo = ScreenFieldImage.unpainted(TCATCDO_LENGTH);
+    private String trnsrco = ScreenFieldImage.unpainted(TRNSRCO_LENGTH);
+    private String tdesco = ScreenFieldImage.unpainted(TDESCO_LENGTH);
+    private String trnamto = ScreenFieldImage.unpainted(TRNAMTO_LENGTH);
+    private String torigdto = ScreenFieldImage.unpainted(TORIGDTO_LENGTH);
+    private String tprocdto = ScreenFieldImage.unpainted(TPROCDTO_LENGTH);
+    private String mido = ScreenFieldImage.unpainted(MIDO_LENGTH);
+    private String mnameo = ScreenFieldImage.unpainted(MNAMEO_LENGTH);
+    private String mcityo = ScreenFieldImage.unpainted(MCITYO_LENGTH);
+    private String mzipo = ScreenFieldImage.unpainted(MZIPO_LENGTH);
+    private String confirmo = ScreenFieldImage.unpainted(CONFIRMO_LENGTH);
+    private String errmsgo = ScreenFieldImage.unpainted(ERRMSGO_LENGTH);
 
     /**
      * The {@code xxxC} / {@code xxxP} / {@code xxxH} / {@code xxxV} quad of each of the 21 fields.
@@ -1358,6 +1362,11 @@ public final class TransactionViewResponse {
     // space-padded value survives serialise-then-deserialise untrimmed: the setter pads and truncates
     // to the declared width but never trims, and there is no @JsonInclude or naming strategy declared
     // here - config/WebConfig owns Jackson configuration module-wide (practice B8).
+    //
+    // Each getter carries @JsonProperty naming its xxxI item in lower case. The identifier keeps the
+    // xxxO suffix because that is the map view this type projects; the WIRE name drops it, because AAP
+    // 0.6.3 derives payload names from the xxxI items only and because the paired request has to be
+    // able to accept this response back field for field.
     // =================================================================================================
 
     /**
@@ -1366,6 +1375,7 @@ public final class TransactionViewResponse {
      *
      * @return four characters, untrimmed
      */
+    @JsonProperty("trnname")
     public String getTrnnameo() {
         return trnnameo;
     }
@@ -1387,6 +1397,7 @@ public final class TransactionViewResponse {
      *
      * @return forty characters, untrimmed
      */
+    @JsonProperty("title01")
     public String getTitle01o() {
         return title01o;
     }
@@ -1408,6 +1419,7 @@ public final class TransactionViewResponse {
      *
      * @return eight characters, untrimmed
      */
+    @JsonProperty("curdate")
     public String getCurdateo() {
         return curdateo;
     }
@@ -1428,6 +1440,7 @@ public final class TransactionViewResponse {
      *
      * @return eight characters, untrimmed
      */
+    @JsonProperty("pgmname")
     public String getPgmnameo() {
         return pgmnameo;
     }
@@ -1449,6 +1462,7 @@ public final class TransactionViewResponse {
      *
      * @return forty characters, untrimmed
      */
+    @JsonProperty("title02")
     public String getTitle02o() {
         return title02o;
     }
@@ -1470,6 +1484,7 @@ public final class TransactionViewResponse {
      *
      * @return eight characters, untrimmed
      */
+    @JsonProperty("curtime")
     public String getCurtimeo() {
         return curtimeo;
     }
@@ -1496,6 +1511,7 @@ public final class TransactionViewResponse {
      *
      * @return eleven characters, untrimmed
      */
+    @JsonProperty("actidin")
     public String getActidino() {
         return actidino;
     }
@@ -1521,6 +1537,7 @@ public final class TransactionViewResponse {
      *
      * @return sixteen characters, untrimmed
      */
+    @JsonProperty("cardnin")
     public String getCardnino() {
         return cardnino;
     }
@@ -1541,6 +1558,7 @@ public final class TransactionViewResponse {
      *
      * @return two characters, untrimmed
      */
+    @JsonProperty("ttypcd")
     public String getTtypcdo() {
         return ttypcdo;
     }
@@ -1563,6 +1581,7 @@ public final class TransactionViewResponse {
      *
      * @return four characters, untrimmed
      */
+    @JsonProperty("tcatcd")
     public String getTcatcdo() {
         return tcatcdo;
     }
@@ -1583,6 +1602,7 @@ public final class TransactionViewResponse {
      *
      * @return ten characters, untrimmed
      */
+    @JsonProperty("trnsrc")
     public String getTrnsrco() {
         return trnsrco;
     }
@@ -1606,6 +1626,7 @@ public final class TransactionViewResponse {
      *
      * @return sixty characters, untrimmed
      */
+    @JsonProperty("tdesc")
     public String getTdesco() {
         return tdesco;
     }
@@ -1645,6 +1666,7 @@ public final class TransactionViewResponse {
      *
      * @return twelve characters, untrimmed
      */
+    @JsonProperty("trnamt")
     public String getTrnamto() {
         return trnamto;
     }
@@ -1675,6 +1697,7 @@ public final class TransactionViewResponse {
      *
      * @return ten characters, untrimmed
      */
+    @JsonProperty("torigdt")
     public String getTorigdto() {
         return torigdto;
     }
@@ -1696,6 +1719,7 @@ public final class TransactionViewResponse {
      *
      * @return ten characters, untrimmed
      */
+    @JsonProperty("tprocdt")
     public String getTprocdto() {
         return tprocdto;
     }
@@ -1719,6 +1743,7 @@ public final class TransactionViewResponse {
      *
      * @return nine characters, untrimmed
      */
+    @JsonProperty("mid")
     public String getMido() {
         return mido;
     }
@@ -1740,6 +1765,7 @@ public final class TransactionViewResponse {
      *
      * @return thirty characters, untrimmed
      */
+    @JsonProperty("mname")
     public String getMnameo() {
         return mnameo;
     }
@@ -1761,6 +1787,7 @@ public final class TransactionViewResponse {
      *
      * @return twenty-five characters, untrimmed
      */
+    @JsonProperty("mcity")
     public String getMcityo() {
         return mcityo;
     }
@@ -1781,6 +1808,7 @@ public final class TransactionViewResponse {
      *
      * @return ten characters, untrimmed
      */
+    @JsonProperty("mzip")
     public String getMzipo() {
         return mzipo;
     }
@@ -1808,6 +1836,7 @@ public final class TransactionViewResponse {
      *
      * @return one character, untrimmed
      */
+    @JsonProperty("confirm")
     public String getConfirmo() {
         return confirmo;
     }
@@ -1832,6 +1861,7 @@ public final class TransactionViewResponse {
      * @return seventy-eight characters, untrimmed - a message shorter than the field is space-padded
      *     and stays that way through a JSON round trip
      */
+    @JsonProperty("errmsg")
     public String getErrmsgo() {
         return errmsgo;
     }

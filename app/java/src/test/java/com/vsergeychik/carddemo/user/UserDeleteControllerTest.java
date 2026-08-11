@@ -25,6 +25,7 @@ import com.vsergeychik.carddemo.common.FieldAttributeSetter.FieldHighlight;
 import com.vsergeychik.carddemo.common.FieldAttributeSetter.FieldValidationState;
 import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.NavigationContext;
+import com.vsergeychik.carddemo.common.ScreenFieldImage;
 import com.vsergeychik.carddemo.common.ScreenResponse;
 import com.vsergeychik.carddemo.common.PfKeyResolver.AidKey;
 import com.vsergeychik.carddemo.common.ScreenTitles;
@@ -604,7 +605,11 @@ class UserDeleteControllerTest {
 
             verify(repository, never()).readForUpdate(anyString());
             assertThat(state.sendCount()).isOne();
-            assertThat(state.response().usrIdIn()).isBlank();
+            // Two different blanks, and this path produces both. USRIDINO is never written on it - no
+            // receive, no INITIALIZE-ALL-FIELDS - so it keeps the LOW-VALUES image MOVE LOW-VALUES TO
+            // COUSR3AO (:97) leaves, which is X'00' and therefore not Java-blank. ERRMSGO IS written, by
+            // the MOVE SPACES at :88, so it is spaces at its declared width.
+            assertThat(ScreenFieldImage.isUnpainted(state.response().usrIdIn())).isTrue();
             assertThat(state.response().errMsg()).isBlank();
             assertThat(state.cursorField()).contains(CursorField.USRIDINL);
             assertThat(state.isErrFlagOn()).isFalse();
@@ -1903,9 +1908,9 @@ class UserDeleteControllerTest {
                             .contentType(MediaType.APPLICATION_JSON)
                             .content(body))
                     .andExpect(status().isOk())
-                    .andExpect(jsonPath("$.errMsg")
+                    .andExpect(jsonPath("$.errmsg")
                             .value(errMsgImage("Press PF5 key to delete this user ...")))
-                    .andExpect(jsonPath("$.usrIdIn").value(USER_ID))
+                    .andExpect(jsonPath("$.usridin").value(USER_ID))
                     .andExpect(jsonPath("$.nextProgram").value("COUSR03C"));
         }
 
@@ -1925,7 +1930,7 @@ class UserDeleteControllerTest {
                     // The confirmation names the record that was actually deleted, and it is the URI's -
                     // COUSR03C:315 performs INITIALIZE-ALL-FIELDS first, which is why USRIDIN comes back
                     // blank rather than naming either user.
-                    .andExpect(jsonPath("$.errMsg")
+                    .andExpect(jsonPath("$.errmsg")
                             .value(errMsgImage("User USER0001 has been deleted ...")))
                     .andExpect(jsonPath("$.cu03Info.usrSelected").value(USER_ID));
 
@@ -1994,7 +1999,7 @@ class UserDeleteControllerTest {
             mockMvc.perform(delete("/api/users/{userId}", " ".repeat(8))
                             .contentType(MediaType.APPLICATION_JSON).content(body))
                     .andExpect(status().isOk())
-                    .andExpect(jsonPath("$.errMsg").value(errMsgImage("User ID can NOT be empty...")));
+                    .andExpect(jsonPath("$.errmsg").value(errMsgImage("User ID can NOT be empty...")));
 
             verify(repository, never()).readForUpdate(anyString());
         }
@@ -2010,7 +2015,7 @@ class UserDeleteControllerTest {
                             .contentType(MediaType.APPLICATION_JSON)
                             .content(body))
                     .andExpect(status().isOk())
-                    .andExpect(jsonPath("$.errMsg")
+                    .andExpect(jsonPath("$.errmsg")
                             .value(errMsgImage("User USER0001 has been deleted ...")));
             verify(hold).deleteHeld();
         }

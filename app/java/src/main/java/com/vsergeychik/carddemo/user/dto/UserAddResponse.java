@@ -1,5 +1,6 @@
 package com.vsergeychik.carddemo.user.dto;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
 import com.vsergeychik.carddemo.common.NavigationContext;
 import com.vsergeychik.carddemo.common.SensitiveDiagnostics;
 import java.util.List;
@@ -237,7 +238,9 @@ import java.util.List;
  * null-or-empty exclusion are all refused, so a space-padded {@code PIC X(n)} value survives a round
  * trip intact. That matters most for {@link #passwd}, whose only legitimate value is eight spaces and
  * which must arrive as eight spaces rather than as {@code null}, as {@code ""}, or omitted. This class
- * therefore carries no property rename, no naming strategy, no inclusion rule, no ignore marker and no
+ * therefore carries one {@code @JsonProperty} per screen field - pinning each wire name to its
+ * {@code xxxI} item in lower case, per AAP 0.6.3 - and beyond that no naming strategy, no inclusion
+ * rule, no ignore marker and no
  * custom serialiser: a second policy stated locally could only contradict the central one. A Java
  * record's components are its JSON properties, so the wire form is exactly the sixteen members below.
  *
@@ -317,18 +320,18 @@ import java.util.List;
  * @param nextMap           the map the client should render next, {@value #MAP_NAME} for this screen.
  *                          Not a {@code DFHMDF} field
  */
-public record UserAddResponse(String trnName,
+public record UserAddResponse(@JsonProperty("trnname") String trnName,
                               String title01,
-                              String curDate,
-                              String pgmName,
+                              @JsonProperty("curdate") String curDate,
+                              @JsonProperty("pgmname") String pgmName,
                               String title02,
-                              String curTime,
-                              String fName,
-                              String lName,
-                              String userId,
+                              @JsonProperty("curtime") String curTime,
+                              @JsonProperty("fname") String fName,
+                              @JsonProperty("lname") String lName,
+                              @JsonProperty("userid") String userId,
                               String passwd,
-                              String usrType,
-                              String errMsg,
+                              @JsonProperty("usrtype") String usrType,
+                              @JsonProperty("errmsg") String errMsg,
                               NavigationContext navigationContext,
                               String nextProgram,
                               String nextMapset,

@@ -9,6 +9,7 @@ import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.NavigationContext;
 import com.vsergeychik.carddemo.common.PfKeyResolver;
 import com.vsergeychik.carddemo.common.PfKeyResolver.AidKey;
+import com.vsergeychik.carddemo.common.ScreenFieldImage;
 import com.vsergeychik.carddemo.common.ScreenMetadata;
 import com.vsergeychik.carddemo.common.ScreenResponse;
 import com.vsergeychik.carddemo.common.ScreenTitles;
@@ -1644,12 +1645,15 @@ public class TransactionMenuController {
     /**
      * {@code MOVE LOW-VALUES TO COTRN0AO} at {@code :114} - the enter path, and only the enter path.
      *
-     * <p>Two halves, and they are represented differently on purpose. The attribute quads take the
-     * low value, which is what tells BMS to use the map's default rendering. The payload items take
-     * <strong>spaces</strong>, because {@link TransactionListResponse} documents that projection: a
-     * JSON payload has to carry characters, and every predicate this program applies to those items -
-     * {@code = SPACES OR LOW-VALUES} at {@code :206} and {@code NOT = SPACES AND LOW-VALUES} at
-     * {@code :149-184} - treats the two identically, so the observable behaviour is the same.
+     * <p>Both halves take the low value, because that is what the statement moves. The attribute quads
+     * take it because it tells BMS to use the map's default rendering; the payload items take it
+     * because {@code X'00'} is the byte a never-painted screen field holds. An earlier revision wrote
+     * <strong>spaces</strong> into the payload items on the reasoning that this program's own
+     * predicates - {@code = SPACES OR LOW-VALUES} at {@code :206} and
+     * {@code NOT = SPACES AND LOW-VALUES} at {@code :149-184} - treat the two identically. They do,
+     * <em>here</em>; but the substituted byte is visible in the response this program returns, and
+     * {@code COSGN00C.cbl:118} shows a sibling program whose predicate distinguishes them. See
+     * {@link ScreenFieldImage} for the single decision this now routes through.
      *
      * <p>This is also the whole of gate G38 for this screen: the attribute reset happens here, on the
      * enter path, and never on re-entry - see the class documentation for why there is no field
@@ -1660,7 +1664,7 @@ public class TransactionMenuController {
     void moveLowValuesToOutputMap(TransactionListResponse response) {
         for (String prefix : TransactionListResponse.fieldPrefixes()) {
             response.setPayloadValue(prefix,
-                    codec.movePicX("", TransactionListResponse.declaredLength(prefix)));
+                    ScreenFieldImage.unpainted(TransactionListResponse.declaredLength(prefix)));
         }
         response.resetAttributesToLowValues();
     }

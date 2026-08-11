@@ -12,6 +12,7 @@ import com.vsergeychik.carddemo.common.RecordImageForm;
 import com.vsergeychik.carddemo.config.CobolCharsetConfig;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBinding;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBindings;
+import com.vsergeychik.carddemo.config.DatasetUnitOfWork;
 import com.vsergeychik.carddemo.transaction.model.DalyTranRecord;
 
 import org.apache.commons.logging.Log;
@@ -1063,7 +1064,8 @@ public final class DalyRejectWriter {
     public RejectsFile openOutput() {
         return new RejectsFile(new JdbcRecordSink(jdbcTemplate, insertStatement(), recordImageForm,
                 codec.charset(), requireRelation().describeStatement(),
-                requireRelation().deleteAll(), requireRelation().countAllStatement()));
+                requireRelation().deleteAll(), requireRelation().countAllStatement(),
+                requireRelation().dsname()));
     }
 
     /**
@@ -1204,6 +1206,13 @@ public final class DalyRejectWriter {
         private final String countStatement;
 
         /**
+         * The configured dataset name, carried for one purpose only: naming the destination in the refusal
+         * {@link #write(byte[])} raises when there is no unit of work to persist a record in. It is
+         * configuration rather than a literal, so surfacing it introduces no dataset name into source.
+         */
+        private final String datasetName;
+
+        /**
          * Creates the sink.
          *
          * @param jdbcTemplate      the template that issues the insert
@@ -1213,10 +1222,11 @@ public final class DalyRejectWriter {
          * @param describeStatement the read-only probe {@link #open()} and {@link #close()} issue
          * @param clearStatement    the statement {@link #open()} issues to establish an empty generation
          * @param countStatement    the read-only count {@link #discard(int)} issues before deleting
+         * @param datasetName       the configured destination name, for the missing-unit-of-work refusal
          */
         JdbcRecordSink(JdbcTemplate jdbcTemplate, String statement, RecordImageForm recordImageForm,
                        Charset charset, String describeStatement, String clearStatement,
-                       String countStatement) {
+                       String countStatement, String datasetName) {
             this.jdbcTemplate = jdbcTemplate;
             this.statement = statement;
             this.recordImageForm = recordImageForm;
@@ -1224,6 +1234,7 @@ public final class DalyRejectWriter {
             this.describeStatement = describeStatement;
             this.clearStatement = clearStatement;
             this.countStatement = countStatement;
+            this.datasetName = datasetName;
         }
 
         /**
@@ -1359,10 +1370,25 @@ public final class DalyRejectWriter {
          * @param recordImage the record's bytes in the dataset code page
          * @return {@link FileStatus.Outcome#OK}, or {@link FileStatus.Outcome#OTHER} when the write was
          *         rejected
+         * @throws IllegalStateException if no unit of work is open, in which case nothing is attempted -
+         *                               the record would not have been stored and reporting
+         *                               {@link FileStatus.Outcome#OK} would lose a reject silently
          */
 
         @Override
         public FileStatus.Outcome write(byte[] recordImage) {
+            // Refused before anything is attempted when no unit of work is open. The pool hands out
+            // connections with auto-commit disabled, so the INSERT would execute, report the row it added,
+            // and then be rolled back when the connection returned - and this sink would report OK, which
+            // is the DALYREJS-STATUS = '00' arm, for a rejected customer transaction that was never
+            // recorded anywhere. A lost reject is the one outcome worse than an abend, because nothing
+            // downstream can detect it, so the missing boundary is reported as the wiring defect it is.
+            // The reject writes CBTRN02C performs run inside the step's own chunk transaction; note that
+            // open() and discard() deliberately carry no such requirement, because Spring Batch runs the
+            // ItemStream open and close callbacks outside that transaction.
+            DatasetUnitOfWork.requireActiveToPersist("A write of a " + DD_NAME + " record, which "
+                    + "WRITE FD-REJS-RECORD FROM REJECT-RECORD issues at app/cbl/CBTRN02C.cbl:L451",
+                    datasetName);
             PreparedStatementSetter binder = parameters -> recordImageForm.bindImage(parameters,
                     DatasetRelation.RECORD_IMAGE_COLUMN_INDEX, recordImage, charset);
             try {
@@ -1769,10 +1795,12 @@ public final class DalyRejectWriter {
          * @return {@link FileStatus.Outcome#OK} when the record was accepted, or
          *         {@link FileStatus.Outcome#OTHER} when the sink rejected it; never {@code null}
          * @throws NullPointerException  if the sink returns a {@code null} outcome
-         * @throws IllegalStateException if this handle has already been closed, or if the record area is
+         * @throws IllegalStateException if this handle has already been closed; if the record area is
          *                               not {@value #RECORD_LENGTH} bytes - which cannot happen through
          *                               this class's own API and is checked because the consequence of it
-         *                               happening is undetectable downstream
+         *                               happening is undetectable downstream; or, for a handle opened on
+         *                               the configured dataset, if no unit of work is open, because the
+         *                               record would be discarded rather than stored
          */
         public FileStatus.Outcome writeRejectRec() {
             requireOpen("WRITE " + FD_REJS_RECORD);

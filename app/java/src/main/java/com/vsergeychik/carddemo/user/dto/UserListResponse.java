@@ -1,6 +1,8 @@
 package com.vsergeychik.carddemo.user.dto;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
 import com.vsergeychik.carddemo.common.NavigationContext;
+import com.vsergeychik.carddemo.common.ScreenFieldImage;
 import com.vsergeychik.carddemo.common.SensitiveDiagnostics;
 import java.util.List;
 import java.util.Objects;
@@ -352,65 +354,65 @@ import java.util.Objects;
  * @param navigationContext    the {@value NavigationContext#COMMAREA_LENGTH}-byte
  *                             {@code CARDDEMO-COMMAREA}, referenced and never widened
  */
-public record UserListResponse(String trnName,
+public record UserListResponse(@JsonProperty("trnname") String trnName,
                                String title01,
-                               String curDate,
-                               String pgmName,
+                               @JsonProperty("curdate") String curDate,
+                               @JsonProperty("pgmname") String pgmName,
                                String title02,
-                               String curTime,
-                               String pageNum,
-                               String usrIdIn,
+                               @JsonProperty("curtime") String curTime,
+                               @JsonProperty("pagenum") String pageNum,
+                               @JsonProperty("usridin") String usrIdIn,
                                String sel0001,
-                               String usrId01,
+                               @JsonProperty("usrid01") String usrId01,
                                String fname01,
                                String lname01,
                                String utype01,
                                String sel0002,
-                               String usrId02,
+                               @JsonProperty("usrid02") String usrId02,
                                String fname02,
                                String lname02,
                                String utype02,
                                String sel0003,
-                               String usrId03,
+                               @JsonProperty("usrid03") String usrId03,
                                String fname03,
                                String lname03,
                                String utype03,
                                String sel0004,
-                               String usrId04,
+                               @JsonProperty("usrid04") String usrId04,
                                String fname04,
                                String lname04,
                                String utype04,
                                String sel0005,
-                               String usrId05,
+                               @JsonProperty("usrid05") String usrId05,
                                String fname05,
                                String lname05,
                                String utype05,
                                String sel0006,
-                               String usrId06,
+                               @JsonProperty("usrid06") String usrId06,
                                String fname06,
                                String lname06,
                                String utype06,
                                String sel0007,
-                               String usrId07,
+                               @JsonProperty("usrid07") String usrId07,
                                String fname07,
                                String lname07,
                                String utype07,
                                String sel0008,
-                               String usrId08,
+                               @JsonProperty("usrid08") String usrId08,
                                String fname08,
                                String lname08,
                                String utype08,
                                String sel0009,
-                               String usrId09,
+                               @JsonProperty("usrid09") String usrId09,
                                String fname09,
                                String lname09,
                                String utype09,
                                String sel0010,
-                               String usrId10,
+                               @JsonProperty("usrid10") String usrId10,
                                String fname10,
                                String lname10,
                                String utype10,
-                               String errMsg,
+                               @JsonProperty("errmsg") String errMsg,
                                String cdemoCu00UsrIdFirst,
                                String cdemoCu00UsrIdLast,
                                int cdemoCu00PageNum,
@@ -893,46 +895,50 @@ public record UserListResponse(String trnName,
     // =============================================================================================
 
     /**
-     * The screen as {@code COUSR00C} finds it before it has produced anything: every character field
-     * spaces at its declared width, the page number zero, and the next-page flag at the
-     * {@code VALUE 'N'} its declaration gives it at {@code app/cbl/COUSR00C.cbl} line 70.
+     * The screen as {@code COUSR00C} finds it before it has produced anything: every screen field
+     * carrying the unpainted image at its declared width, the page number zero, and the next-page flag
+     * at the {@code VALUE 'N'} its declaration gives it at {@code app/cbl/COUSR00C.cbl} line 70.
      *
-     * <p>All ten rows are present and blank, which is the state {@code INITIALIZE-USER-DATA} leaves
+     * <p>The unpainted image is {@code LOW-VALUES} - {@code X'00'} at the declared width - which is
+     * what {@code MOVE LOW-VALUES TO COUSR0AO} at line 117 moves. {@link ScreenFieldImage} records
+     * that decision once for all seventeen screens.
+     *
+     * <p>All ten rows are present and unpainted, which is the state {@code INITIALIZE-USER-DATA} leaves
      * them in. That is the point of starting here: a page that finds fewer than ten users emits ten
-     * rows regardless, the unreached ones carrying spaces.
+     * rows regardless, the unreached ones still unpainted.
      *
-     * @return a fully space-filled response, ready to be filled in through {@link #toBuilder()}
+     * @return a fully unpainted response, ready to be filled in through {@link #toBuilder()}
      */
     public static UserListResponse blank() {
-        return new UserListResponse(spaces(TRNNAME_LENGTH),
-                spaces(TITLE01_LENGTH),
-                spaces(CURDATE_LENGTH),
-                spaces(PGMNAME_LENGTH),
-                spaces(TITLE02_LENGTH),
-                spaces(CURTIME_LENGTH),
-                spaces(PAGENUM_LENGTH),
-                spaces(USRIDIN_LENGTH),
-                spaces(SEL_LENGTH), spaces(USRID_LENGTH), spaces(FNAME_LENGTH),
-                spaces(LNAME_LENGTH), spaces(UTYPE_LENGTH),
-                spaces(SEL_LENGTH), spaces(USRID_LENGTH), spaces(FNAME_LENGTH),
-                spaces(LNAME_LENGTH), spaces(UTYPE_LENGTH),
-                spaces(SEL_LENGTH), spaces(USRID_LENGTH), spaces(FNAME_LENGTH),
-                spaces(LNAME_LENGTH), spaces(UTYPE_LENGTH),
-                spaces(SEL_LENGTH), spaces(USRID_LENGTH), spaces(FNAME_LENGTH),
-                spaces(LNAME_LENGTH), spaces(UTYPE_LENGTH),
-                spaces(SEL_LENGTH), spaces(USRID_LENGTH), spaces(FNAME_LENGTH),
-                spaces(LNAME_LENGTH), spaces(UTYPE_LENGTH),
-                spaces(SEL_LENGTH), spaces(USRID_LENGTH), spaces(FNAME_LENGTH),
-                spaces(LNAME_LENGTH), spaces(UTYPE_LENGTH),
-                spaces(SEL_LENGTH), spaces(USRID_LENGTH), spaces(FNAME_LENGTH),
-                spaces(LNAME_LENGTH), spaces(UTYPE_LENGTH),
-                spaces(SEL_LENGTH), spaces(USRID_LENGTH), spaces(FNAME_LENGTH),
-                spaces(LNAME_LENGTH), spaces(UTYPE_LENGTH),
-                spaces(SEL_LENGTH), spaces(USRID_LENGTH), spaces(FNAME_LENGTH),
-                spaces(LNAME_LENGTH), spaces(UTYPE_LENGTH),
-                spaces(SEL_LENGTH), spaces(USRID_LENGTH), spaces(FNAME_LENGTH),
-                spaces(LNAME_LENGTH), spaces(UTYPE_LENGTH),
-                spaces(ERRMSG_LENGTH),
+        return new UserListResponse(ScreenFieldImage.unpainted(TRNNAME_LENGTH),
+                ScreenFieldImage.unpainted(TITLE01_LENGTH),
+                ScreenFieldImage.unpainted(CURDATE_LENGTH),
+                ScreenFieldImage.unpainted(PGMNAME_LENGTH),
+                ScreenFieldImage.unpainted(TITLE02_LENGTH),
+                ScreenFieldImage.unpainted(CURTIME_LENGTH),
+                ScreenFieldImage.unpainted(PAGENUM_LENGTH),
+                ScreenFieldImage.unpainted(USRIDIN_LENGTH),
+                ScreenFieldImage.unpainted(SEL_LENGTH), ScreenFieldImage.unpainted(USRID_LENGTH), ScreenFieldImage.unpainted(FNAME_LENGTH),
+                ScreenFieldImage.unpainted(LNAME_LENGTH), ScreenFieldImage.unpainted(UTYPE_LENGTH),
+                ScreenFieldImage.unpainted(SEL_LENGTH), ScreenFieldImage.unpainted(USRID_LENGTH), ScreenFieldImage.unpainted(FNAME_LENGTH),
+                ScreenFieldImage.unpainted(LNAME_LENGTH), ScreenFieldImage.unpainted(UTYPE_LENGTH),
+                ScreenFieldImage.unpainted(SEL_LENGTH), ScreenFieldImage.unpainted(USRID_LENGTH), ScreenFieldImage.unpainted(FNAME_LENGTH),
+                ScreenFieldImage.unpainted(LNAME_LENGTH), ScreenFieldImage.unpainted(UTYPE_LENGTH),
+                ScreenFieldImage.unpainted(SEL_LENGTH), ScreenFieldImage.unpainted(USRID_LENGTH), ScreenFieldImage.unpainted(FNAME_LENGTH),
+                ScreenFieldImage.unpainted(LNAME_LENGTH), ScreenFieldImage.unpainted(UTYPE_LENGTH),
+                ScreenFieldImage.unpainted(SEL_LENGTH), ScreenFieldImage.unpainted(USRID_LENGTH), ScreenFieldImage.unpainted(FNAME_LENGTH),
+                ScreenFieldImage.unpainted(LNAME_LENGTH), ScreenFieldImage.unpainted(UTYPE_LENGTH),
+                ScreenFieldImage.unpainted(SEL_LENGTH), ScreenFieldImage.unpainted(USRID_LENGTH), ScreenFieldImage.unpainted(FNAME_LENGTH),
+                ScreenFieldImage.unpainted(LNAME_LENGTH), ScreenFieldImage.unpainted(UTYPE_LENGTH),
+                ScreenFieldImage.unpainted(SEL_LENGTH), ScreenFieldImage.unpainted(USRID_LENGTH), ScreenFieldImage.unpainted(FNAME_LENGTH),
+                ScreenFieldImage.unpainted(LNAME_LENGTH), ScreenFieldImage.unpainted(UTYPE_LENGTH),
+                ScreenFieldImage.unpainted(SEL_LENGTH), ScreenFieldImage.unpainted(USRID_LENGTH), ScreenFieldImage.unpainted(FNAME_LENGTH),
+                ScreenFieldImage.unpainted(LNAME_LENGTH), ScreenFieldImage.unpainted(UTYPE_LENGTH),
+                ScreenFieldImage.unpainted(SEL_LENGTH), ScreenFieldImage.unpainted(USRID_LENGTH), ScreenFieldImage.unpainted(FNAME_LENGTH),
+                ScreenFieldImage.unpainted(LNAME_LENGTH), ScreenFieldImage.unpainted(UTYPE_LENGTH),
+                ScreenFieldImage.unpainted(SEL_LENGTH), ScreenFieldImage.unpainted(USRID_LENGTH), ScreenFieldImage.unpainted(FNAME_LENGTH),
+                ScreenFieldImage.unpainted(LNAME_LENGTH), ScreenFieldImage.unpainted(UTYPE_LENGTH),
+                ScreenFieldImage.unpainted(ERRMSG_LENGTH),
                 spaces(CU00_USRID_FIRST_LENGTH),
                 spaces(CU00_USRID_LAST_LENGTH),
                 0,
@@ -1026,19 +1032,37 @@ public record UserListResponse(String trnName,
         }
 
         /**
-         * {@code true} when all four data cells are blank - the state
-         * {@code INITIALIZE-USER-DATA} leaves a row in and the browse never overwrites.
+         * {@code true} when all four data cells carry no user - which covers both of the two ways a row
+         * can hold nothing, because the program produces both.
          *
-         * <p>The selection cell is excluded on purpose: {@code INITIALIZE-USER-DATA} at
-         * {@code app/cbl/COUSR00C.cbl} line 446 onwards moves {@code SPACES} into
-         * {@code USRIDnnI}, {@code FNAMEnnI}, {@code LNAMEnnI} and {@code UTYPEnnI} only, so a row
-         * with no user on it may still carry a character the user typed in its selection cell.
+         * <p>The two are different bytes and both occur here:
          *
-         * @return {@code true} when the four data cells hold nothing but spaces
+         * <ul>
+         *   <li><strong>Spaces.</strong> {@code INITIALIZE-USER-DATA} at
+         *       {@code app/cbl/COUSR00C.cbl} line 446 onwards moves {@code SPACES} into
+         *       {@code USRIDnnI}, {@code FNAMEnnI}, {@code LNAMEnnI} and {@code UTYPEnnI}. A row the
+         *       browse reached past goes through here.</li>
+         *   <li><strong>{@code LOW-VALUES}.</strong> {@code MOVE LOW-VALUES TO COUSR0AO} at {@code :117}
+         *       clears the map before the first paint, so a row on a screen that
+         *       {@code INITIALIZE-USER-DATA} never ran for holds {@code X'00'}.</li>
+         * </ul>
+         *
+         * <p>So the test is the COBOL's own {@code = SPACES OR LOW-VALUES}, not a Java blankness test:
+         * {@link String#isBlank()} reports a run of {@code X'00'} as <em>not</em> blank and would answer
+         * {@code false} for a row that plainly holds no user. See
+         * {@link ScreenFieldImage#isSpacesOrLowValues(String)}.
+         *
+         * <p>The selection cell is excluded on purpose: {@code INITIALIZE-USER-DATA} blanks the four
+         * data cells only, so a row with no user on it may still carry a character the user typed in its
+         * selection cell.
+         *
+         * @return {@code true} when all four data cells are spaces or all {@code LOW-VALUES}
          */
         public boolean blankRow() {
-            return userId.isBlank() && firstName.isBlank() && lastName.isBlank()
-                    && userType.isBlank();
+            return ScreenFieldImage.isSpacesOrLowValues(userId)
+                    && ScreenFieldImage.isSpacesOrLowValues(firstName)
+                    && ScreenFieldImage.isSpacesOrLowValues(lastName)
+                    && ScreenFieldImage.isSpacesOrLowValues(userType);
         }
     }
 

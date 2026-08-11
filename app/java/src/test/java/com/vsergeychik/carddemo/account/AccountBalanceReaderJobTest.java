@@ -1400,12 +1400,62 @@ class AccountBalanceReaderJobTest {
                     FIXTURE_CHARSET,
                     new SingleValueProvider<>(new CollectingSink()));
 
+            StepExecution stepExecution = stepExecution();
+            StepContribution contribution = new StepContribution(stepExecution);
+
             RepeatStatus status = job.readCardfileTasklet()
-                    .execute(mock(StepContribution.class), chunkContext(stepExecution()));
+                    .execute(contribution, chunkContext(stepExecution));
 
             assertThat(status)
                     .as("CBACT02C runs once and GOBACKs at :87 - there is no second pass to ask for")
                     .isEqualTo(RepeatStatus.FINISHED);
+            assertThat(contribution.getReadCount())
+                    .as("the first read found end of file, so nothing was read - and the read that "
+                            + "found it is not itself a record")
+                    .isZero();
+        }
+
+        @Test
+        @DisplayName("the tasklet reports the pass's record count as the step's read count")
+        void theTaskletReportsTheReadCount() throws Exception {
+            // The gap this closes was visible in the batch metadata rather than in any output: a
+            // completed pass over the whole card master recorded READ_COUNT 0 in
+            // BATCH_STEP_EXECUTION, exactly as a pass over an empty dataset would, while three sibling
+            // reader jobs recorded their real counts. The count is metadata only: CBACT02C keeps no
+            // counter, so the displayed line sequence is asserted here too and is unchanged.
+            CollectingSink sink = new CollectingSink();
+            AccountBalanceReaderJob job = new AccountBalanceReaderJob(
+                    batchConfig(sourceDerivedContract(), "CARDDEMO.TEST.CARDDATA.VSAM.KSDS"),
+                    repositoryOverWholeFixture(), FIXTURE_CHARSET, new SingleValueProvider<>(sink));
+            StepExecution stepExecution = stepExecution();
+            StepContribution contribution = new StepContribution(stepExecution);
+
+            RepeatStatus status = job.readCardfileTasklet()
+                    .execute(contribution, chunkContext(stepExecution));
+
+            assertThat(status).isEqualTo(RepeatStatus.FINISHED);
+            assertThat(contribution.getReadCount()).isEqualTo(FIXTURE_RECORD_COUNT);
+            assertThat(contribution.getWriteCount())
+                    .as("CBACT02C opens INPUT at :72 and writes nothing anywhere")
+                    .isZero();
+            assertThat(sink.lines())
+                    .as("one banner, one line per record, one banner - the count changed nothing")
+                    .hasSize(EXPECTED_LINE_COUNT);
+        }
+
+        @Test
+        @DisplayName("the program returns the number of records it read, for a caller outside a step")
+        void theProgramReturnsItsRecordCount() {
+            CollectingSink whole = new CollectingSink();
+            CollectingSink empty = new CollectingSink();
+
+            assertThat(jobOver(repositoryOverWholeFixture()).execute(whole))
+                    .isEqualTo(FIXTURE_RECORD_COUNT);
+            assertThat(jobOver(repositoryReturning(List.of(CardReadResult.endOfFile()))).execute(empty))
+                    .as("an empty dataset read nothing")
+                    .isZero();
+            assertThat(whole.lines()).hasSize(EXPECTED_LINE_COUNT);
+            assertThat(empty.lines()).hasSize(2);
         }
 
         @Test
@@ -1416,10 +1466,16 @@ class AccountBalanceReaderJobTest {
                     repositoryReturning(List.of(CardReadResult.notFound())),
                     FIXTURE_CHARSET,
                     new SingleValueProvider<>(new CollectingSink()));
+            StepExecution stepExecution = stepExecution();
+            StepContribution contribution = new StepContribution(stepExecution);
             Tasklets tasklet = () -> job.readCardfileTasklet()
-                    .execute(mock(StepContribution.class), chunkContext(stepExecution()));
+                    .execute(contribution, chunkContext(stepExecution));
 
             assertThatExceptionOfType(AbendException.class).isThrownBy(tasklet::run);
+            assertThat(contribution.getReadCount())
+                    .as("the abend propagates instead of returning, so a step that did not complete "
+                            + "reports no count - which is the honest reading of a failed pass")
+                    .isZero();
         }
 
         /** A throwing runnable, so the tasklet's checked signature can be asserted on. */

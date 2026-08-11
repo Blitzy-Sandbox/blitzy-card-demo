@@ -391,6 +391,26 @@ class TranCatBalRepositoryTest {
         }
     }
 
+    /**
+     * The same declaration, for an action that answers something the caller then asserts on.
+     *
+     * <p>A write and a rewrite both require one: the pool hands out connections with auto-commit
+     * disabled, so a statement issued with nothing bound to the thread is rolled back when the connection
+     * is returned, and the repository refuses rather than reporting a record as stored.
+     *
+     * @param action the action to run
+     * @param <T>    what it answers
+     * @return what {@code action} answered
+     */
+    private static <T> T insideUnitOfWork(java.util.function.Supplier<T> action) {
+        TransactionSynchronizationManager.setActualTransactionActive(true);
+        try {
+            return action.get();
+        } finally {
+            TransactionSynchronizationManager.setActualTransactionActive(false);
+        }
+    }
+
     // ---- mocked JDBC chains, for the arms a real relation cannot produce ----
 
     /** A chain whose connection cannot be obtained at all. */
@@ -1416,7 +1436,8 @@ class TranCatBalRepositoryTest {
                     .trancatTypeCd(FIXTURE_TYPE_CD)        // :506 MOVE DALYTRAN-TYPE-CD
                     .trancatCd(FIXTURE_CAT_CD)             // :507 MOVE DALYTRAN-CAT-CD
                     .addToTranCatBal(new BigDecimal("25.75"));   // :508 ADD DALYTRAN-AMT
-            WriteResult written = repository.write(area);   // :510 WRITE, then '00' or abend
+            WriteResult written =
+                    insideUnitOfWork(() -> repository.write(area));  // :510 WRITE, '00' or abend
             assertThat(written.isWritten()).isTrue();
             assertThat(written.status()).isEqualTo(FileStatus.OK);
             assertThat(written.applResult()).isEqualTo(FileStatus.APPL_AOK);
@@ -1479,7 +1500,8 @@ class TranCatBalRepositoryTest {
         @DisplayName("a new record is stored as exactly 50 bytes, FILLER included")
         void newRecordIsStoredAtFiftyBytes() {
             JdbcTemplate template = seeded(new ArrayList<>());
-            WriteResult result = repository(template).write(recordFor(42L, "10.00"));
+            TranCatBalRepository repository = repository(template);
+            WriteResult result = insideUnitOfWork(() -> repository.write(recordFor(42L, "10.00")));
             assertThat(result.isWritten()).isTrue();
             assertThat(result.status()).isEqualTo(FileStatus.OK);
             assertThat(result.outcome()).isEqualTo(Outcome.OK);
@@ -1501,7 +1523,7 @@ class TranCatBalRepositoryTest {
             JdbcTemplate template = seeded(new ArrayList<>());
             TranCatBalRepository repository = repository(template);
             TranCatBalRecord written = recordFor(42L, "1234.56");
-            assertThat(repository.write(written).isWritten()).isTrue();
+            assertThat(insideUnitOfWork(() -> repository.write(written)).isWritten()).isTrue();
 
             ReadResult read = repository.readByKey(42L, FIXTURE_TYPE_CD, FIXTURE_CAT_CD);
             assertThat(read.isFound()).isTrue();
@@ -1516,9 +1538,9 @@ class TranCatBalRepositoryTest {
             JdbcTemplate template = seeded(new ArrayList<>());
             TranCatBalRepository repository = repository(template);
             TranCatBalRecord record = recordFor(42L, "10.00");
-            assertThat(repository.write(record).isWritten()).isTrue();
+            assertThat(insideUnitOfWork(() -> repository.write(record)).isWritten()).isTrue();
 
-            WriteResult second = repository.write(record);
+            WriteResult second = insideUnitOfWork(() -> repository.write(record));
             assertThat(second.isDuplicate()).isTrue();
             assertThat(second.status()).isEqualTo(FileStatus.DUPLICATE);
             assertThat(second.outcome()).isEqualTo(Outcome.DUPLICATE);
@@ -1535,8 +1557,8 @@ class TranCatBalRepositoryTest {
         @Test
         @DisplayName("a backend that enforces uniqueness itself yields the same '22'")
         void backendIntegrityViolationAlsoYieldsDuplicate() throws SQLException {
-            WriteResult result = repository(describingThenViolatingIntegrityOnWrite())
-                    .write(recordFor(42L, "10.00"));
+            TranCatBalRepository repository = repository(describingThenViolatingIntegrityOnWrite());
+            WriteResult result = insideUnitOfWork(() -> repository.write(recordFor(42L, "10.00")));
             assertThat(result.isDuplicate()).isTrue();
             assertThat(result.status()).isEqualTo(FileStatus.DUPLICATE);
             assertThat(result.cicsResp()).hasValue(FileStatus.DUPREC);
@@ -1554,7 +1576,8 @@ class TranCatBalRepositoryTest {
         @Test
         @DisplayName("an unreachable dataset is reported as a status")
         void unreachableDatasetIsReportedAsStatus() {
-            WriteResult result = repository(unreachable()).write(recordFor(42L, "10.00"));
+            TranCatBalRepository repository = repository(unreachable());
+            WriteResult result = insideUnitOfWork(() -> repository.write(recordFor(42L, "10.00")));
             assertThat(result.isOther()).isTrue();
             assertThat(result.status()).isEqualTo(TranCatBalRepository.PERMANENT_ERROR_STATUS);
             assertThat(result.diagnostic()).isPresent();
@@ -1563,7 +1586,8 @@ class TranCatBalRepositoryTest {
         @Test
         @DisplayName("a refused pre-check statement is reported as a status")
         void refusedPreCheckIsReportedAsStatus() throws SQLException {
-            WriteResult result = repository(describingThenRefusing()).write(recordFor(42L, "10.00"));
+            TranCatBalRepository repository = repository(describingThenRefusing());
+            WriteResult result = insideUnitOfWork(() -> repository.write(recordFor(42L, "10.00")));
             assertThat(result.isOther()).isTrue();
             assertThat(result.diagnostic()).isPresent();
         }
@@ -1571,7 +1595,8 @@ class TranCatBalRepositoryTest {
         @Test
         @DisplayName("an insert that adds no row is a permanent error, never a silent success")
         void insertAddingNoRowIsAPermanentError() throws SQLException {
-            WriteResult result = repository(countingThenReporting(0, 0)).write(recordFor(42L, "10.00"));
+            TranCatBalRepository repository = repository(countingThenReporting(0, 0));
+            WriteResult result = insideUnitOfWork(() -> repository.write(recordFor(42L, "10.00")));
             assertThat(result.isWritten()).isFalse();
             assertThat(result.isOther()).isTrue();
             assertThat(result.status()).isEqualTo(TranCatBalRepository.PERMANENT_ERROR_STATUS);
@@ -1583,7 +1608,8 @@ class TranCatBalRepositoryTest {
         void insertAddingSeveralRowsRefusesTheUnitOfWork() throws SQLException {
             TranCatBalRepository repository = repository(countingThenReporting(0, 2));
             assertThatExceptionOfType(DatasetIntegrityException.class)
-                    .isThrownBy(() -> repository.write(recordFor(42L, "10.00")))
+                    .isThrownBy(() -> insideUnitOfWork(
+                            () -> repository.write(recordFor(42L, "10.00"))))
                     .withMessageContaining("2 rows were added");
         }
 
@@ -1592,8 +1618,10 @@ class TranCatBalRepositoryTest {
         void handleWriteWorks() {
             JdbcTemplate template = seeded(new ArrayList<>());
             try (TranCatBalFile file = repository(template).open(OpenMode.I_O)) {
-                assertThat(file.write(recordFor(42L, "5.00")).isWritten()).isTrue();
-                assertThat(file.write(recordFor(42L, "5.00")).isDuplicate()).isTrue();
+                assertThat(insideUnitOfWork(() -> file.write(recordFor(42L, "5.00"))).isWritten())
+                        .isTrue();
+                assertThat(insideUnitOfWork(() -> file.write(recordFor(42L, "5.00"))).isDuplicate())
+                        .isTrue();
                 assertThatNullPointerException().isThrownBy(() -> file.write(null));
             }
         }
@@ -1615,7 +1643,7 @@ class TranCatBalRepositoryTest {
                     .record().orElseThrow();
             record.tranCatBal(new BigDecimal("77.77"));
 
-            WriteResult result = repository.rewrite(record);
+            WriteResult result = insideUnitOfWork(() -> repository.rewrite(record));
             assertThat(result.isWritten()).isTrue();
             assertThat(result.status()).isEqualTo(FileStatus.OK);
             assertThat(result.applResult()).isEqualTo(FileStatus.APPL_AOK);
@@ -1637,7 +1665,7 @@ class TranCatBalRepositoryTest {
             String fillerAsRead = record.fillerImage();
             assertThat(fillerAsRead).hasSize(FILLER_WIDTH);
             record.tranCatBal(new BigDecimal("1.00"));
-            assertThat(repository.rewrite(record).isWritten()).isTrue();
+            assertThat(insideUnitOfWork(() -> repository.rewrite(record)).isWritten()).isTrue();
 
             TranCatBalRecord reread = repository.readByKey(1L, FIXTURE_TYPE_CD, FIXTURE_CAT_CD)
                     .record().orElseThrow();
@@ -1648,8 +1676,9 @@ class TranCatBalRepositoryTest {
         @Test
         @DisplayName("a key matching nothing is '23' - a rewrite is not an insert")
         void keyMatchingNothingIsNotFound() {
-            WriteResult result = repository(seeded(fixtureRows()))
-                    .rewrite(recordFor(ABSENT_ACCT_ID, "1.00"));
+            TranCatBalRepository repository = repository(seeded(fixtureRows()));
+            WriteResult result =
+                    insideUnitOfWork(() -> repository.rewrite(recordFor(ABSENT_ACCT_ID, "1.00")));
             assertThat(result.isNotFound()).isTrue();
             assertThat(result.status()).isEqualTo(FileStatus.NOT_FOUND);
             assertThat(result.applResult()).isEqualTo(TranCatBalRepository.APPL_RESULT_FATAL);
@@ -1667,7 +1696,7 @@ class TranCatBalRepositoryTest {
             TranCatBalRecord record = TranCatBalRecord.decode(row, ASCII)
                     .tranCatBal(new BigDecimal("99.99"));
 
-            WriteResult result = repository.rewrite(record);
+            WriteResult result = insideUnitOfWork(() -> repository.rewrite(record));
             assertThat(result.isWritten()).isFalse();
             assertThat(result.status()).isEqualTo(TranCatBalRepository.PERMANENT_ERROR_STATUS);
             assertThat(result.cicsResp()).hasValue(FileStatus.INVREQ);
@@ -1699,7 +1728,8 @@ class TranCatBalRepositoryTest {
         @Test
         @DisplayName("an unreachable dataset is reported as a status")
         void unreachableDatasetIsReportedAsStatus() {
-            WriteResult result = repository(unreachable()).rewrite(recordFor(1L, "1.00"));
+            TranCatBalRepository repository = repository(unreachable());
+            WriteResult result = insideUnitOfWork(() -> repository.rewrite(recordFor(1L, "1.00")));
             assertThat(result.isOther()).isTrue();
             assertThat(result.diagnostic()).isPresent();
         }
@@ -1707,7 +1737,8 @@ class TranCatBalRepositoryTest {
         @Test
         @DisplayName("a refused pre-check statement is reported as a status")
         void refusedPreCheckIsReportedAsStatus() throws SQLException {
-            WriteResult result = repository(describingThenRefusing()).rewrite(recordFor(1L, "1.00"));
+            TranCatBalRepository repository = repository(describingThenRefusing());
+            WriteResult result = insideUnitOfWork(() -> repository.rewrite(recordFor(1L, "1.00")));
             assertThat(result.isOther()).isTrue();
             assertThat(result.diagnostic()).isPresent();
         }
@@ -1715,7 +1746,8 @@ class TranCatBalRepositoryTest {
         @Test
         @DisplayName("a row lost between the pre-check and the update is '23', because nothing was written")
         void rowLostBetweenCheckAndUpdateIsNotFound() throws SQLException {
-            WriteResult result = repository(countingThenReporting(1, 0)).rewrite(recordFor(1L, "1.00"));
+            TranCatBalRepository repository = repository(countingThenReporting(1, 0));
+            WriteResult result = insideUnitOfWork(() -> repository.rewrite(recordFor(1L, "1.00")));
             assertThat(result.isNotFound()).isTrue();
             assertThat(result.status()).isEqualTo(FileStatus.NOT_FOUND);
         }
@@ -1725,9 +1757,35 @@ class TranCatBalRepositoryTest {
         void fanOutAfterTheCheckRefusesTheUnitOfWork() throws SQLException {
             TranCatBalRepository repository = repository(countingThenReporting(1, 2));
             assertThatExceptionOfType(DatasetIntegrityException.class)
-                    .isThrownBy(() -> repository.rewrite(recordFor(1L, "1.00")))
+                    .isThrownBy(() -> insideUnitOfWork(
+                            () -> repository.rewrite(recordFor(1L, "1.00"))))
                     .withMessageContaining("2 rows were replaced")
-                    .withMessageContaining("no row lock");
+                    .withMessageContaining("a row lock");
+        }
+
+        @Test
+        @DisplayName("outside a unit of work both verbs are refused, never reported as stored")
+        void outsideAUnitOfWorkTheWriteAndTheRewriteAreRefused() {
+            // The pool hands out connections with auto-commit disabled, so either statement would
+            // execute, report the row it touched, and then be rolled back when the connection was
+            // returned - leaving 2700-A believing it had created a balance record and 2700-B believing it
+            // had stored an accumulated one. There is no FILE STATUS for that, so nothing is attempted.
+            JdbcTemplate template = seeded(fixtureRows());
+            TranCatBalRepository repository = repository(template);
+
+            assertThatIllegalStateException()
+                    .isThrownBy(() -> repository.write(recordFor(ABSENT_ACCT_ID, "1.00")))
+                    .withMessageContaining("no transaction is open on this thread")
+                    .withMessageContaining(TEST_DSNAME);
+            assertThatIllegalStateException()
+                    .isThrownBy(() -> repository.rewrite(recordFor(1L, "1.00")))
+                    .withMessageContaining("no transaction is open on this thread")
+                    .withMessageContaining(TEST_DSNAME);
+
+            assertThat(template.queryForList(
+                    "SELECT " + RECORD_IMAGE_COLUMN + " FROM \"" + TEST_DSNAME + "\"", String.class))
+                    .as("nothing may be attempted when the change could not be committed")
+                    .isEqualTo(fixtureRows());
         }
 
         @Test
@@ -1748,8 +1806,9 @@ class TranCatBalRepositoryTest {
                 TranCatBalRecord record = file.readByKey(1L, FIXTURE_TYPE_CD, FIXTURE_CAT_CD)
                         .record().orElseThrow();
                 record.tranCatBal(new BigDecimal("12.34"));
-                assertThat(file.rewrite(record).isWritten()).isTrue();
-                assertThat(file.rewrite(recordFor(ABSENT_ACCT_ID, "1.00")).isNotFound()).isTrue();
+                assertThat(insideUnitOfWork(() -> file.rewrite(record)).isWritten()).isTrue();
+                assertThat(insideUnitOfWork(
+                        () -> file.rewrite(recordFor(ABSENT_ACCT_ID, "1.00"))).isNotFound()).isTrue();
                 assertThatNullPointerException().isThrownBy(() -> file.rewrite(null));
             }
         }
@@ -1770,7 +1829,8 @@ class TranCatBalRepositoryTest {
         void balanceRoundTripsSignCorrect(String amount) {
             JdbcTemplate template = seeded(new ArrayList<>());
             TranCatBalRepository repository = repository(template);
-            assertThat(repository.write(recordFor(42L, amount)).isWritten()).isTrue();
+            assertThat(insideUnitOfWork(() -> repository.write(recordFor(42L, amount))).isWritten())
+                    .isTrue();
 
             BigDecimal read = repository.readByKey(42L, FIXTURE_TYPE_CD, FIXTURE_CAT_CD)
                     .record().orElseThrow().tranCatBal();
@@ -1785,7 +1845,8 @@ class TranCatBalRepositoryTest {
             BigDecimal expected = new BigDecimal(amount).setScale(2, RoundingMode.DOWN);
             JdbcTemplate template = seeded(new ArrayList<>());
             TranCatBalRepository repository = repository(template);
-            assertThat(repository.write(recordFor(42L, amount)).isWritten()).isTrue();
+            assertThat(insideUnitOfWork(() -> repository.write(recordFor(42L, amount))).isWritten())
+                    .isTrue();
             assertThat(repository.readByKey(42L, FIXTURE_TYPE_CD, FIXTURE_CAT_CD)
                     .record().orElseThrow().tranCatBal()).isEqualByComparingTo(expected);
         }
@@ -2102,8 +2163,9 @@ class TranCatBalRepositoryTest {
         @Test
         @DisplayName("a write refused for a NON-integrity reason is a permanent error, not a duplicate")
         void nonIntegrityWriteFailureIsNotADuplicate() throws SQLException {
-            WriteResult result = repository(describingThenFailingWriteWithoutIntegrityViolation())
-                    .write(recordFor(42L, "10.00"));
+            TranCatBalRepository repository =
+                    repository(describingThenFailingWriteWithoutIntegrityViolation());
+            WriteResult result = insideUnitOfWork(() -> repository.write(recordFor(42L, "10.00")));
             assertThat(result.isDuplicate()).isFalse();
             assertThat(result.isOther()).isTrue();
             assertThat(result.status()).isEqualTo(TranCatBalRepository.PERMANENT_ERROR_STATUS);
@@ -2117,8 +2179,9 @@ class TranCatBalRepositoryTest {
         void anAbsentRowCountRefusesTheWrite() {
             TranCatBalRepository repository = repository(countReportingNothing(fixtureRows()));
             // A write sees "already exists" and refuses; a rewrite sees "more than one" and refuses.
-            assertThat(repository.write(recordFor(42L, "1.00")).isDuplicate()).isTrue();
-            WriteResult rewritten = repository.rewrite(recordFor(1L, "1.00"));
+            assertThat(insideUnitOfWork(() -> repository.write(recordFor(42L, "1.00"))).isDuplicate())
+                    .isTrue();
+            WriteResult rewritten = insideUnitOfWork(() -> repository.rewrite(recordFor(1L, "1.00")));
             assertThat(rewritten.isWritten()).isFalse();
             assertThat(rewritten.status()).isEqualTo(TranCatBalRepository.PERMANENT_ERROR_STATUS);
             assertThat(rewritten.cicsResp()).hasValue(FileStatus.INVREQ);

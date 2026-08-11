@@ -1105,8 +1105,10 @@ class UserAddControllerTest {
             mapper.readTree(mapper.writeValueAsString(response)).fieldNames()
                     .forEachRemaining(members::add);
 
-            assertThat(members).containsExactly("trnName", "title01", "curDate", "pgmName", "title02",
-                    "curTime", "fName", "lName", "userId", "passwd", "usrType", "errMsg",
+            // Screen fields under their xxxI item in lower case (AAP 0.6.3); the four carriers, which
+            // trace to no DFHMDF field, under their own names.
+            assertThat(members).containsExactly("trnname", "title01", "curdate", "pgmname", "title02",
+                    "curtime", "fname", "lname", "userid", "passwd", "usrtype", "errmsg",
                     "navigationContext", "nextProgram", "nextMapset", "nextMap");
         }
 
@@ -1728,9 +1730,11 @@ class UserAddControllerTest {
     class HttpContract {
 
         /** The twelve wire names, in the order app/cpy-bms/COUSR01.CPY declares their xxxI items. */
+        // The twelve screen fields as they appear on the WIRE: each one's xxxI item in lower case,
+        // which @JsonProperty pins per AAP 0.6.3. Not the Java component names, which keep camel case.
         private static final List<String> PAYLOAD_FIELDS = List.of(
-            "trnName", "title01", "curDate", "pgmName", "title02", "curTime", "fName", "lName",
-            "userId", "passwd", "usrType", "errMsg");
+            "trnname", "title01", "curdate", "pgmname", "title02", "curtime", "fname", "lname",
+            "userid", "passwd", "usrtype", "errmsg");
 
         private final ObjectMapper mapper = new ObjectMapper();
 
@@ -1755,8 +1759,10 @@ class UserAddControllerTest {
         }
 
         private ResultMatcher errMsgStartsWith(String expectedPrefix) {
+            // ERRMSGI is published as "errmsg" - @JsonProperty pins every screen field's wire name to
+            // its xxxI item in lower case (AAP 0.6.3), so path("errMsg") would silently read nothing.
             return result -> assertThat(mapper.readTree(result.getResponse().getContentAsString())
-                            .path("errMsg").asText())
+                            .path("errmsg").asText())
                     .startsWith(expectedPrefix);
         }
 
@@ -1771,8 +1777,8 @@ class UserAddControllerTest {
                     .andExpect(status().isOk())
                     .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
                     .andExpect(errMsgStartsWith("User USR1 has been added ..."))
-                    .andExpect(jsonPath("$.trnName").value("CU01"))
-                    .andExpect(jsonPath("$.pgmName").value("COUSR01C"))
+                    .andExpect(jsonPath("$.trnname").value("CU01"))
+                    .andExpect(jsonPath("$.pgmname").value("COUSR01C"))
                     .andExpect(jsonPath("$.nextProgram").value("COUSR01C"))
                     .andExpect(jsonPath("$.nextMapset").value("COUSR01"))
                     .andExpect(jsonPath("$.nextMap").value("COUSR1A"));
@@ -1808,8 +1814,8 @@ class UserAddControllerTest {
             mapper.readTree(body(populatedRequest())).fieldNames().forEachRemaining(members::add);
 
             // The twelve payload members, then the two that carry conversation rather than screen state.
-            assertThat(members).containsExactly("trnName", "title01", "curDate", "pgmName", "title02",
-                    "curTime", "fName", "lName", "userId", "passwd", "usrType", "errMsg",
+            assertThat(members).containsExactly("trnname", "title01", "curdate", "pgmname", "title02",
+                    "curtime", "fname", "lname", "userid", "passwd", "usrtype", "errmsg",
                     "navigationContext", "aid");
 
             // The symbolic map declares a quad per field. Only the last of the four is a payload member:
@@ -1833,7 +1839,7 @@ class UserAddControllerTest {
         void theIdMemberIsTheOneThisMapDeclares() throws Exception {
             String json = body(populatedRequest());
 
-            assertThat(json).contains("\"userId\"");
+            assertThat(json).contains("\"userid\"");
             assertThat(json).as("USRIDIN belongs to COUSR02 and COUSR03, not to COUSR01")
                     .doesNotContain("usrIdIn").doesNotContain("usridIn").doesNotContain("USRIDIN");
             assertThat(UserAddRequest.USERID_FIELD).isEqualTo("USERIDI");
@@ -2058,7 +2064,7 @@ class UserAddControllerTest {
         void aMalformedBodyIsRefused() throws Exception {
             http().perform(post(UserAddController.USERS_PATH)
                             .contentType(MediaType.APPLICATION_JSON)
-                            .content("{\"fName\": "))
+                            .content("{\"fname\": "))
                     .andExpect(status().isBadRequest())
                     .andExpect(jsonPath("$.code")
                             .value(WebConfig.CobolErrorHandler.MALFORMED_REQUEST_CODE));

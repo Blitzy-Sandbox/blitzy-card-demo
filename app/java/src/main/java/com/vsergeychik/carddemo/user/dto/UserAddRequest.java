@@ -1,6 +1,9 @@
 package com.vsergeychik.carddemo.user.dto;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import com.vsergeychik.carddemo.common.NavigationContext;
+import com.vsergeychik.carddemo.common.ResponseOnlyMembers;
 import com.vsergeychik.carddemo.common.SensitiveDiagnostics;
 import jakarta.validation.constraints.Size;
 import java.util.List;
@@ -223,7 +226,9 @@ import java.util.List;
  * <h2>Serialisation</h2>
  *
  * A record's components are its JSON properties, so this class needs no Jackson annotation at all and
- * carries none: no rename, no naming strategy, no inclusion rule, no ignore, no custom serialiser.
+ * carries only the per-field {@code @JsonProperty} that pins each wire name to its {@code xxxI} item
+ * in lower case (AAP 0.6.3), and beyond that none: no naming strategy, no inclusion rule, no ignore,
+ * no custom serialiser.
  * Field names reach the wire untransformed, and a serialise-then-deserialise round trip returns an
  * equal value with every trailing space intact, because no component is trimmed, coerced from an empty
  * string to {@code null}, or excluded when blank. The two read-through accessors are deliberately
@@ -283,20 +288,36 @@ import java.util.List;
  *                 {@code null} represents the {@code EIBCALEN = 0} case of {@code COUSR01C:78}
  * @param aid      the resolved AID token, at most {@value #AID_LENGTH} characters, carrying which key
  *                 the terminal sent for {@code COUSR01C:90-103} to branch on
+ *
+ * <h2>Members this request tolerates without declaring</h2>
+ *
+ * <p>The {@code @JsonIgnoreProperties} below names the members the paired response carries that this
+ * request does not declare. They are tolerated so a client can send the body it was just handed straight
+ * back: rule R6 and gate G37 put the whole conversation in the payload, which makes the next request the
+ * previous response. {@code ignoreUnknown} stays at its default of {@code false}, so every <em>other</em>
+ * unrecognised name is still refused with the offending field named in the error envelope. Each tolerated
+ * member is recomputed by the server on every path, so the value that arrives here is discarded and
+ * cannot steer a branch. The names live in {@link com.vsergeychik.carddemo.common.ResponseOnlyMembers},
+ * which explains each one.
  */
+@JsonIgnoreProperties({
+        ResponseOnlyMembers.NEXT_PROGRAM,
+        ResponseOnlyMembers.NEXT_MAPSET,
+        ResponseOnlyMembers.NEXT_MAP,
+        ResponseOnlyMembers.SCREEN_METADATA})
 public record UserAddRequest(
-        @Size(max = UserAddRequest.TRNNAME_LENGTH) String trnName,
+        @Size(max = UserAddRequest.TRNNAME_LENGTH) @JsonProperty("trnname") String trnName,
         @Size(max = UserAddRequest.TITLE01_LENGTH) String title01,
-        @Size(max = UserAddRequest.CURDATE_LENGTH) String curDate,
-        @Size(max = UserAddRequest.PGMNAME_LENGTH) String pgmName,
+        @Size(max = UserAddRequest.CURDATE_LENGTH) @JsonProperty("curdate") String curDate,
+        @Size(max = UserAddRequest.PGMNAME_LENGTH) @JsonProperty("pgmname") String pgmName,
         @Size(max = UserAddRequest.TITLE02_LENGTH) String title02,
-        @Size(max = UserAddRequest.CURTIME_LENGTH) String curTime,
-        @Size(max = UserAddRequest.FNAME_LENGTH) String fName,
-        @Size(max = UserAddRequest.LNAME_LENGTH) String lName,
-        @Size(max = UserAddRequest.USERID_LENGTH) String userId,
+        @Size(max = UserAddRequest.CURTIME_LENGTH) @JsonProperty("curtime") String curTime,
+        @Size(max = UserAddRequest.FNAME_LENGTH) @JsonProperty("fname") String fName,
+        @Size(max = UserAddRequest.LNAME_LENGTH) @JsonProperty("lname") String lName,
+        @Size(max = UserAddRequest.USERID_LENGTH) @JsonProperty("userid") String userId,
         @Size(max = UserAddRequest.PASSWD_LENGTH) String passwd,
-        @Size(max = UserAddRequest.USRTYPE_LENGTH) String usrType,
-        @Size(max = UserAddRequest.ERRMSG_LENGTH) String errMsg,
+        @Size(max = UserAddRequest.USRTYPE_LENGTH) @JsonProperty("usrtype") String usrType,
+        @Size(max = UserAddRequest.ERRMSG_LENGTH) @JsonProperty("errmsg") String errMsg,
         NavigationContext navigationContext,
         @Size(max = UserAddRequest.AID_LENGTH) String aid) {
 

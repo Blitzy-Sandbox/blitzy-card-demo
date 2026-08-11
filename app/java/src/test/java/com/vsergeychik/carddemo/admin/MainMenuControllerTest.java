@@ -32,6 +32,7 @@ import com.vsergeychik.carddemo.common.FieldAttributeSetter.FieldHighlight;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.NavigationContext;
 import com.vsergeychik.carddemo.common.PfKeyResolver;
+import com.vsergeychik.carddemo.common.ScreenFieldImage;
 import com.vsergeychik.carddemo.common.ScreenMetadata;
 import com.vsergeychik.carddemo.common.ScreenResponse;
 import com.vsergeychik.carddemo.common.ScreenTitles;
@@ -699,6 +700,23 @@ class MainMenuControllerTest {
      *
      * @return a fresh list of exactly twenty names
      */
+    /**
+     * The twenty payload members as they appear <strong>on the wire</strong>: each one's {@code xxxI}
+     * item, lower-cased with the direction suffix dropped, which is what {@code @JsonProperty} pins and
+     * what AAP 0.6.3 requires ("payload field names and lengths derive from the xxxI items only").
+     *
+     * <p>Separate from {@link #payloadMemberNames()} because the two are deliberately not the same
+     * string: the Java component keeps camel case for Java's conventions, and the wire name does not
+     * depend on it. A single list serving both roles would silently assert that they coincide.
+     *
+     * @return a fresh list of exactly twenty wire names
+     */
+    private static List<String> payloadWireNames() {
+        return payloadMemberNames().stream()
+                .map(member -> member.toLowerCase(java.util.Locale.ROOT))
+                .toList();
+    }
+
     private static List<String> payloadMemberNames() {
         List<String> names = new ArrayList<>(MainMenuResponse.SYMBOLIC_MAP_FIELD_COUNT);
         names.add("trnName");
@@ -979,7 +997,10 @@ class MainMenuControllerTest {
                     .as("a null communication area IS the representation of EIBCALEN = 0")
                     .isNull();
             assertThat(seen.option())
-                    .isEqualTo(CODEC.movePicX(SPACE, MainMenuRequest.OPTION_LENGTH));
+                    .as("a body that arrived with nothing in it sent no OPTIONI, and RECEIVE MAP leaves a "
+                            + "field the terminal did not send at LOW-VALUES - not at spaces the operator "
+                            + "never typed")
+                    .isEqualTo(ScreenFieldImage.unpainted(MainMenuRequest.OPTION_LENGTH));
             assertThat(seen.eibAid()).isEqualTo(CicsAid.DFHENTER);
         }
 
@@ -1019,15 +1040,20 @@ class MainMenuControllerTest {
         }
 
         @Test
-        @DisplayName("an omitted OPTIONI member becomes spaces, because a PIC X(2) field is never absent")
-        void anOmittedOptionBecomesSpaces() {
+        @DisplayName("an omitted OPTIONI member becomes the not-transmitted image, not spaces")
+        void anOmittedOptionBecomesTheNotTransmittedImage() {
             MainMenuController controller = controllerOver(stubbedService());
 
             MainMenuInput translated = controller.toInput(
                     withOption(null, NavigationContext.empty().withPgmReenter()));
 
             assertThat(translated.option())
-                    .isEqualTo(CODEC.movePicX(SPACE, MainMenuRequest.OPTION_LENGTH))
+                    .as("a PIC X(2) field is never absent, so an image is supplied - and the image CICS "
+                            + "leaves for a field the terminal did not send is LOW-VALUES. Spaces would "
+                            + "assert the operator pressed the space bar twice. The backwards scan at "
+                            + ":117-120 stops at the first position on either image, so the message the "
+                            + "operator sees is unchanged; the echoed OPTIONO is what differs")
+                    .isEqualTo(ScreenFieldImage.unpainted(MainMenuRequest.OPTION_LENGTH))
                     .hasSize(MainMenuRequest.OPTION_LENGTH);
         }
 
@@ -2192,8 +2218,8 @@ class MainMenuControllerTest {
             mockMvcReturning(paintedOutcome(NavigationContext.empty().withPgmReenter()))
                     .perform(get(MainMenuController.MAIN_MENU_PATH))
                     .andExpect(status().isOk())
-                    .andExpect(jsonPath("$.trnName").value(MainMenuResponse.TRANSACTION_ID))
-                    .andExpect(jsonPath("$.pgmName").value(MainMenuResponse.PROGRAM_NAME));
+                    .andExpect(jsonPath("$.trnname").value(MainMenuResponse.TRANSACTION_ID))
+                    .andExpect(jsonPath("$.pgmname").value(MainMenuResponse.PROGRAM_NAME));
         }
 
         @Test
@@ -2206,7 +2232,7 @@ class MainMenuControllerTest {
                     .andReturn();
 
             ObjectNode envelope = envelopeOf(result.getResponse().getContentAsString());
-            for (String member : payloadMemberNames()) {
+            for (String member : payloadWireNames()) {
                 assertThat(envelope.has(member))
                         .as("%s traces to a named DFHMDF field, so it is a top-level member", member)
                         .isTrue();
@@ -2231,7 +2257,7 @@ class MainMenuControllerTest {
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.title01").value(ScreenTitles.CCDA_TITLE01))
                     .andExpect(jsonPath("$.title02").value(ScreenTitles.CCDA_TITLE02))
-                    .andExpect(jsonPath("$.errMsg")
+                    .andExpect(jsonPath("$.errmsg")
                             .value(SPACE.repeat(MainMenuResponse.ERR_MSG_LENGTH)))
                     .andExpect(jsonPath("$.optn011").exists())
                     .andExpect(jsonPath("$.optn012").exists())
@@ -2293,8 +2319,8 @@ class MainMenuControllerTest {
 
             String body = result.getResponse().getContentAsString();
             assertThat(body)
-                    .contains("\"trnName\"", "\"curDate\"", "\"pgmName\"", "\"curTime\"",
-                            "\"errMsg\"", "\"optn001\"", "\"nextMapset\"")
+                    .contains("\"trnname\"", "\"curdate\"", "\"pgmname\"", "\"curtime\"",
+                            "\"errmsg\"", "\"optn001\"", "\"nextMapset\"")
                     .doesNotContain("\"trn_name\"", "\"cur-date\"", "\"TrnName\"", "\"PgmName\"",
                             "\"err_msg\"", "\"next_mapset\"");
         }
@@ -2472,8 +2498,8 @@ class MainMenuControllerTest {
                             .content(new ObjectMapper().writeValueAsString(
                                     blankScreen(signOnHandoffContext(), CicsAid.DFHENTER))))
                     .andExpect(status().isOk())
-                    .andExpect(jsonPath("$.trnName").value(MainMenuResponse.TRANSACTION_ID))
-                    .andExpect(jsonPath("$.pgmName").value(MainMenuResponse.PROGRAM_NAME))
+                    .andExpect(jsonPath("$.trnname").value(MainMenuResponse.TRANSACTION_ID))
+                    .andExpect(jsonPath("$.pgmname").value(MainMenuResponse.PROGRAM_NAME))
                     .andExpect(jsonPath("$.nextMapset").value(MainMenuResponse.MAPSET_NAME))
                     .andExpect(jsonPath("$.nextMap").value(MainMenuResponse.MAP_NAME));
 
@@ -2495,8 +2521,8 @@ class MainMenuControllerTest {
 
             mockMvc.perform(get(MainMenuController.MAIN_MENU_PATH))
                     .andExpect(status().isOk())
-                    .andExpect(jsonPath("$.curDate").value(EXPECTED_CURDATE))
-                    .andExpect(jsonPath("$.curTime").value(EXPECTED_CURTIME));
+                    .andExpect(jsonPath("$.curdate").value(EXPECTED_CURDATE))
+                    .andExpect(jsonPath("$.curtime").value(EXPECTED_CURTIME));
         }
 
         @Test
@@ -2507,7 +2533,7 @@ class MainMenuControllerTest {
 
             mockMvc.perform(get(MainMenuController.MAIN_MENU_PATH))
                     .andExpect(status().isOk())
-                    .andExpect(jsonPath("$.errMsg")
+                    .andExpect(jsonPath("$.errmsg")
                             .value(SPACE.repeat(MainMenuResponse.ERR_MSG_LENGTH)))
                     .andExpect(jsonPath("$.title01").value(ScreenTitles.CCDA_TITLE01))
                     .andExpect(jsonPath("$.title02").value(ScreenTitles.CCDA_TITLE02))

@@ -15,9 +15,9 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.vsergeychik.carddemo.common.AbendException;
 import com.vsergeychik.carddemo.common.SystemMessages;
 import com.vsergeychik.carddemo.config.WebConfig.CobolErrorHandler;
-import com.vsergeychik.carddemo.config.WebConfig.CobolErrorHandler.ErrorResponse;
+import com.vsergeychik.carddemo.config.WebConfig.CobolErrorHandler.CobolErrorResponse;
 import com.vsergeychik.carddemo.config.WebConfig.CobolErrorHandler.FieldMessage;
-import com.vsergeychik.carddemo.config.WebConfig.CobolErrorHandler.ValidationResponse;
+import com.vsergeychik.carddemo.testsupport.ScreenBindingFixtureController;
 
 import jakarta.validation.ConstraintViolation;
 import jakarta.validation.ConstraintViolationException;
@@ -45,9 +45,6 @@ import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.validation.BeanPropertyBindingResult;
 import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RestController;
 
 /**
  * The error contract of {@link WebConfig.CobolErrorHandler}: what a failure tells a caller, and -
@@ -114,10 +111,10 @@ class WebConfigErrorContractTest {
         void bodyIsStableCodeAndGenericMessage() {
             AbendException abend = AbendException.standard(PROGRAM, 12, REASON);
 
-            ErrorResponse body = CobolErrorHandler.abendResponse(abend);
+            CobolErrorResponse body = CobolErrorHandler.abendResponse(abend);
 
             assertThat(body.code()).isEqualTo(CobolErrorHandler.ABEND_CODE);
-            assertThat(body.message()).isEqualTo(CobolErrorHandler.ABEND_MESSAGE);
+            assertThat(body.detail()).isEqualTo(CobolErrorHandler.ABEND_MESSAGE);
         }
 
         @Test
@@ -125,8 +122,8 @@ class WebConfigErrorContractTest {
         void bodyCarriesNoInternalState() {
             AbendException abend = AbendException.standard(PROGRAM, 12, REASON);
 
-            ErrorResponse body = CobolErrorHandler.abendResponse(abend);
-            String rendered = body.code() + '|' + body.message();
+            CobolErrorResponse body = CobolErrorHandler.abendResponse(abend);
+            String rendered = body.code() + '|' + body.detail();
 
             assertThat(rendered).doesNotContain(PROGRAM);
             assertThat(rendered).doesNotContain(REASON);
@@ -138,7 +135,7 @@ class WebConfigErrorContractTest {
         @Test
         @DisplayName("the status is 500, because the unit of work did not complete")
         void statusIsInternalServerError() {
-            ResponseEntity<ErrorResponse> answer =
+            ResponseEntity<CobolErrorResponse> answer =
                     handler.handleAbend(AbendException.standard(PROGRAM, 8));
 
             assertThat(answer.getStatusCode()).isEqualTo(HttpStatus.INTERNAL_SERVER_ERROR);
@@ -181,7 +178,7 @@ class WebConfigErrorContractTest {
             // The nine CALL 'CEE3ABD' sites DISPLAY to SYSOUT and terminate; none transmits an area to
             // a terminal, so there is nothing source-authored to publish and the body stays the two
             // constants. Absent, not empty: an empty one would claim they transmitted a blank area.
-            ErrorResponse body =
+            CobolErrorResponse body =
                     CobolErrorHandler.abendResponse(AbendException.standard(PROGRAM, 12, REASON));
 
             assertThat(body.abendData()).isNull();
@@ -201,7 +198,7 @@ class WebConfigErrorContractTest {
                     .withoutAbendParameters("COCRDSLC", 12, REASON)
                     .withSourceDiagnostic(transmitted);
 
-            ErrorResponse body = CobolErrorHandler.abendResponse(abend);
+            CobolErrorResponse body = CobolErrorHandler.abendResponse(abend);
 
             assertThat(body.abendData())
                     .isEqualTo(transmitted)
@@ -211,7 +208,7 @@ class WebConfigErrorContractTest {
                     .startsWith("9999");
             // And the status and the other two members are unchanged by its presence.
             assertThat(body.code()).isEqualTo(CobolErrorHandler.ABEND_CODE);
-            assertThat(body.message()).isEqualTo(CobolErrorHandler.ABEND_MESSAGE);
+            assertThat(body.detail()).isEqualTo(CobolErrorHandler.ABEND_MESSAGE);
         }
 
         @Test
@@ -226,8 +223,8 @@ class WebConfigErrorContractTest {
                             abendDataImage(SystemMessages.AbendData.spaces()
                                     .withAbendCulprit("COCRDSLC")));
 
-            ErrorResponse body = CobolErrorHandler.abendResponse(abend);
-            String rendered = body.code() + '|' + body.message() + '|' + body.abendData();
+            CobolErrorResponse body = CobolErrorHandler.abendResponse(abend);
+            String rendered = body.code() + '|' + body.detail() + '|' + body.abendData();
 
             assertThat(rendered)
                     .doesNotContain(REASON)
@@ -285,17 +282,17 @@ class WebConfigErrorContractTest {
         @Test
         @DisplayName("the body is the stable code and the generic message")
         void bodyIsStableCodeAndGenericMessage() {
-            ErrorResponse body = CobolErrorHandler.malformedRequestResponse(unreadable());
+            CobolErrorResponse body = CobolErrorHandler.malformedRequestResponse(unreadable());
 
             assertThat(body.code()).isEqualTo(CobolErrorHandler.MALFORMED_REQUEST_CODE);
-            assertThat(body.message()).isEqualTo(CobolErrorHandler.MALFORMED_REQUEST_MESSAGE);
+            assertThat(body.detail()).isEqualTo(CobolErrorHandler.MALFORMED_REQUEST_MESSAGE);
         }
 
         @Test
         @DisplayName("the body carries no parser text, property name, type or position")
         void bodyCarriesNoParserDetail() {
-            ErrorResponse body = CobolErrorHandler.malformedRequestResponse(unreadable());
-            String rendered = body.code() + '|' + body.message();
+            CobolErrorResponse body = CobolErrorHandler.malformedRequestResponse(unreadable());
+            String rendered = body.code() + '|' + body.detail();
 
             assertThat(rendered).doesNotContain(PARSER_TEXT);
             assertThat(rendered).doesNotContain("cardNum");
@@ -306,7 +303,7 @@ class WebConfigErrorContractTest {
         @Test
         @DisplayName("the status is 400, because the caller sent something unreadable")
         void statusIsBadRequest() {
-            ResponseEntity<ErrorResponse> answer = handler.handleUnreadableRequestBody(unreadable());
+            ResponseEntity<CobolErrorResponse> answer = handler.handleUnreadableRequestBody(unreadable());
 
             assertThat(answer.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
             assertThat(answer.getBody()).isNotNull();
@@ -322,13 +319,13 @@ class WebConfigErrorContractTest {
                     new IllegalArgumentException("CC-CARD-NUM is declared PIC X(16) but was given 20"),
                     null);
 
-            ResponseEntity<ErrorResponse> answer = handler.handleUnreadableRequestBody(wrapped);
+            ResponseEntity<CobolErrorResponse> answer = handler.handleUnreadableRequestBody(wrapped);
 
             assertThat(answer.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
             assertThat(answer.getBody()).isNotNull();
-            assertThat(answer.getBody().message())
+            assertThat(answer.getBody().detail())
                     .isEqualTo(CobolErrorHandler.MALFORMED_REQUEST_MESSAGE);
-            assertThat(answer.getBody().message()).doesNotContain("CC-CARD-NUM");
+            assertThat(answer.getBody().detail()).doesNotContain("CC-CARD-NUM");
         }
 
         @Test
@@ -358,7 +355,7 @@ class WebConfigErrorContractTest {
         @Test
         @DisplayName("a constraint violation becomes one entry naming the property and the width")
         void constraintViolationBecomesFieldEntry() {
-            ValidationResponse body =
+            CobolErrorResponse body =
                     CobolErrorHandler.validationResponse(violationsOf(new Screen("CU00", "123456789")));
 
             assertThat(body.error()).isEqualTo(HttpStatus.BAD_REQUEST.getReasonPhrase());
@@ -377,7 +374,7 @@ class WebConfigErrorContractTest {
             // caller, one rejected field at a time.
             Provenance payload = new Provenance("NINECHARS");
 
-            ValidationResponse body = CobolErrorHandler.validationResponse(violationsOf(payload));
+            CobolErrorResponse body = CobolErrorHandler.validationResponse(violationsOf(payload));
 
             assertThat(body.fieldErrors()).singleElement().satisfies(entry -> {
                 assertThat(entry.field()).isEqualTo("usrIdIn");
@@ -422,7 +419,7 @@ class WebConfigErrorContractTest {
         @Test
         @DisplayName("entries are ordered by field, so the same failure serialises the same way")
         void entriesAreOrderedByField() {
-            ValidationResponse body = CobolErrorHandler
+            CobolErrorResponse body = CobolErrorHandler
                     .validationResponse(violationsOf(new Screen("CU0000", "123456789")));
 
             assertThat(body.fieldErrors()).extracting(FieldMessage::field)
@@ -432,7 +429,7 @@ class WebConfigErrorContractTest {
         @Test
         @DisplayName("the status is 400")
         void statusIsBadRequest() {
-            ResponseEntity<ValidationResponse> answer = handler
+            ResponseEntity<CobolErrorResponse> answer = handler
                     .handleConstraintViolation(violationsOf(new Screen("CU00", "123456789")));
 
             assertThat(answer.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
@@ -453,7 +450,7 @@ class WebConfigErrorContractTest {
         void aViolationWithNoConstraintMetadataIsStillAnswered() {
             ConstraintViolation<?> noDescriptor = mock(ConstraintViolation.class);
 
-            ValidationResponse withoutDescriptor = CobolErrorHandler
+            CobolErrorResponse withoutDescriptor = CobolErrorHandler
                     .validationResponse(new ConstraintViolationException(Set.of(noDescriptor)));
 
             assertThat(withoutDescriptor.fieldErrors()).singleElement().satisfies(entry ->
@@ -464,7 +461,7 @@ class WebConfigErrorContractTest {
             ConstraintViolation<?> violation = mock(ConstraintViolation.class);
             doReturn(withoutAnnotation).when(violation).getConstraintDescriptor();
 
-            ValidationResponse withoutCode = CobolErrorHandler
+            CobolErrorResponse withoutCode = CobolErrorHandler
                     .validationResponse(new ConstraintViolationException(Set.of(violation)));
 
             assertThat(withoutCode.fieldErrors()).singleElement().satisfies(entry ->
@@ -482,7 +479,7 @@ class WebConfigErrorContractTest {
             FieldError conversionFailure = new FieldError("screen", "acctsid", null, false,
                     new String[] {"typeMismatch"}, null, "Failed to convert value of type ...");
 
-            ValidationResponse body =
+            CobolErrorResponse body =
                     CobolErrorHandler.validationResponse(bindingFailure(conversionFailure));
 
             assertThat(body.fieldErrors()).singleElement().satisfies(entry -> {
@@ -505,7 +502,7 @@ class WebConfigErrorContractTest {
                     new String[] {"Size"}, null, "irrelevant");
             error.wrap(mock(ConstraintViolation.class));
 
-            ValidationResponse body = CobolErrorHandler.validationResponse(bindingFailure(error));
+            CobolErrorResponse body = CobolErrorHandler.validationResponse(bindingFailure(error));
 
             assertThat(body.fieldErrors()).singleElement().satisfies(entry -> assertThat(entry.message())
                     .as("the code is Size but there is no max to quote, so the length default answers")
@@ -570,33 +567,27 @@ class WebConfigErrorContractTest {
     class OverHttp {
 
         /**
-         * A one-route stand-in for the screen controllers that arrive in a later checkpoint. It exists
-         * only so a request body can be bound by the real message converter and the resulting failure
-         * can be seen to reach the real advice.
-         */
-        @RestController
-        static class ScreenController {
-
-            @PostMapping(path = "/screen", consumes = MediaType.APPLICATION_JSON_VALUE)
-            String accept(@RequestBody Screen screen) {
-                return screen.trnName();
-            }
-        }
-
-        /**
-         * The payload of {@link ScreenController}, deliberately holding a numeric member so a type
-         * mismatch can be provoked.
+         * Stands the advice up over {@link ScreenBindingFixtureController}, the one-route fixture whose
+         * body binding these tests provoke failures in.
          *
-         * @param trnName a {@code PIC X(4)} character field
-         * @param pageNum a {@code PIC 9(8)} numeric field
+         * <p>The fixture is a top-level class in {@code com.vsergeychik.carddemo.testsupport} rather
+         * than a class nested here, and the reason is component scope rather than style.
+         * {@code MockMvcBuilders.standaloneSetup} needs the fixture's {@code @RestController} - it is
+         * what registers the handler method and what writes the {@code String} return as a body - but
+         * {@code @RestController} carries {@code @Controller}, which is meta-annotated
+         * {@code @Component}. Nested here it sat inside {@code com.vsergeychik.carddemo.config}, one of
+         * {@code CardDemoApplication}'s eleven scanned packages, one scan-configuration change away
+         * from joining the seventeen controllers the deployed artifact publishes - which is precisely
+         * what happened to a sibling fixture in this same package. {@code CardDemoApplicationTest}
+         * now asserts that no class compiled from the test tree inside a scanned package carries a
+         * controller stereotype.
+         *
+         * @return the dispatcher, with the real advice and the production Jackson settings
          */
-        record Screen(String trnName, int pageNum) {
-        }
-
         private MockMvc mockMvc() {
             MappingJackson2HttpMessageConverter converter =
                     new MappingJackson2HttpMessageConverter(productionLikeMapper());
-            return MockMvcBuilders.standaloneSetup(new ScreenController())
+            return MockMvcBuilders.standaloneSetup(new ScreenBindingFixtureController())
                     .setControllerAdvice(new CobolErrorHandler())
                     .setMessageConverters(converter)
                     .build();
@@ -621,10 +612,13 @@ class WebConfigErrorContractTest {
                             .content("{\"trnName\":"))
                     .andExpect(status().isBadRequest())
                     .andExpect(jsonPath("$.code").value(CobolErrorHandler.MALFORMED_REQUEST_CODE))
-                    .andExpect(jsonPath("$.message")
+                    .andExpect(jsonPath("$.detail")
                             .value(CobolErrorHandler.MALFORMED_REQUEST_MESSAGE))
-                    .andExpect(jsonPath("$.error").doesNotExist())
-                    .andExpect(jsonPath("$.path").doesNotExist());
+                    .andExpect(jsonPath("$.error")
+                            .value(HttpStatus.BAD_REQUEST.getReasonPhrase()))
+                    .andExpect(jsonPath("$.fieldErrors").isArray())
+                    .andExpect(jsonPath("$.path").doesNotExist())
+                    .andExpect(jsonPath("$.timestamp").doesNotExist());
         }
 
         @Test
@@ -634,8 +628,12 @@ class WebConfigErrorContractTest {
                             .content("{\"trnName\":\"CU00\",\"pageNum\":1,\"notAField\":\"x\"}"))
                     .andExpect(status().isBadRequest())
                     .andExpect(jsonPath("$.code").value(CobolErrorHandler.MALFORMED_REQUEST_CODE))
+                    // The refused MEMBER is named, because a caller that cannot discover which member
+                    // of a 59-field screen was refused has to bisect its own payload to find out. Its
+                    // VALUE is still never echoed, and neither is Jackson's message, which quotes it.
+                    .andExpect(jsonPath("$.fieldErrors[0].field").value("notAField"))
                     .andExpect(content().string(org.hamcrest.Matchers.not(
-                            org.hamcrest.Matchers.containsString("notAField"))));
+                            org.hamcrest.Matchers.containsString("CU00"))));
         }
 
         @Test

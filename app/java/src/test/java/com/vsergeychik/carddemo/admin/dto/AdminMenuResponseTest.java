@@ -9,6 +9,7 @@ import com.vsergeychik.carddemo.common.DateHeader;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.FixedWidthRecord;
 import com.vsergeychik.carddemo.common.NavigationContext;
+import com.vsergeychik.carddemo.common.ScreenFieldImage;
 import com.vsergeychik.carddemo.common.ScreenMetadata;
 import com.vsergeychik.carddemo.common.ScreenTitles;
 import com.vsergeychik.carddemo.common.SystemMessages;
@@ -195,12 +196,14 @@ class AdminMenuResponseTest {
      * The JSON property names this type publishes, in declaration order. Twenty screen fields, the
      * communication area, three navigation members, the colour attribute and the repaint flag.
      */
-    private static final List<String> EXPECTED_JSON_KEYS = List.of("trnName",
+    // The screen fields answer to their xxxI items in lower case, which @JsonProperty pins per
+    // AAP 0.6.3; the carriers, which trace to no DFHMDF field, answer to their component names.
+    private static final List<String> EXPECTED_JSON_KEYS = List.of("trnname",
             "title01",
-            "curDate",
-            "pgmName",
+            "curdate",
+            "pgmname",
             "title02",
-            "curTime",
+            "curtime",
             "optn001",
             "optn002",
             "optn003",
@@ -214,7 +217,7 @@ class AdminMenuResponseTest {
             "optn011",
             "optn012",
             "option",
-            "errMsg",
+            "errmsg",
             "navigationContext",
             "nextProgram",
             "nextMapset",
@@ -597,20 +600,24 @@ class AdminMenuResponseTest {
         @Test
         @DisplayName("all twelve slots exist and are addressable on a blank response")
         void allTwelveSlotsAreAddressableWhenUnset() {
+            // Addressable and unpainted: MOVE LOW-VALUES TO COADM1AO at :89 leaves X'00', which is NOT
+            // Java-blank, so the assertion is the image itself rather than isBlank().
             final AdminMenuResponse blank = AdminMenuResponse.empty();
             assertThat(blank.optionLines())
                     .hasSize(12)
                     .allSatisfy(line -> assertThat(line)
                             .isNotNull()
                             .hasSize(AdminMenuResponse.OPTION_LINE_LENGTH)
-                            .isBlank());
+                            .isEqualTo(ScreenFieldImage.unpainted(
+                                    AdminMenuResponse.OPTION_LINE_LENGTH)));
         }
 
         @Test
         @DisplayName("slots 5 to 12 are addressable even though the program never fills them")
         void slotsFiveToTwelveAreAddressableThoughNeverFilled() {
             final AdminMenuResponse response = populated();
-            final String blankLine = spaces(AdminMenuResponse.OPTION_LINE_LENGTH);
+            final String blankLine =
+                    ScreenFieldImage.unpainted(AdminMenuResponse.OPTION_LINE_LENGTH);
             assertThat(response.optn005()).isEqualTo(blankLine);
             assertThat(response.optn006()).isEqualTo(blankLine);
             assertThat(response.optn007()).isEqualTo(blankLine);
@@ -716,13 +723,13 @@ class AdminMenuResponseTest {
 
         @Test
         @DisplayName("every text field is space-filled to its own declared width")
-        void everyTextFieldIsSpaceFilledToItsDeclaredWidth() {
+        void everyTextFieldIsUnpaintedToItsDeclaredWidth() {
             final AdminMenuResponse blank = AdminMenuResponse.empty();
             final List<String> values = blank.payloadValues();
             for (int i = 0; i < values.size(); i++) {
                 assertThat(values.get(i))
-                        .as("%s is spaces at its declared width", EXPECTED_FIELDS.get(i))
-                        .isEqualTo(spaces(EXPECTED_WIDTHS.get(i)));
+                        .as("%s is LOW-VALUES at its declared width", EXPECTED_FIELDS.get(i))
+                        .isEqualTo(ScreenFieldImage.unpainted(EXPECTED_WIDTHS.get(i)));
             }
         }
 
@@ -777,15 +784,16 @@ class AdminMenuResponseTest {
                     null, null, null, null, null, null,
                     BmsAttributes.DFHRED, false);
 
-            assertThat(response.trnName()).isEqualTo(spaces(4));
-            assertThat(response.title01()).isEqualTo(spaces(40));
-            assertThat(response.curDate()).isEqualTo(spaces(8));
-            assertThat(response.pgmName()).isEqualTo(spaces(8));
-            assertThat(response.title02()).isEqualTo(spaces(40));
-            assertThat(response.curTime()).isEqualTo(spaces(8));
-            assertThat(response.optionLines()).allSatisfy(line -> assertThat(line).isEqualTo(spaces(40)));
-            assertThat(response.option()).isEqualTo(spaces(2));
-            assertThat(response.errMsg()).isEqualTo(spaces(78));
+            assertThat(response.trnName()).isEqualTo(ScreenFieldImage.unpainted(4));
+            assertThat(response.title01()).isEqualTo(ScreenFieldImage.unpainted(40));
+            assertThat(response.curDate()).isEqualTo(ScreenFieldImage.unpainted(8));
+            assertThat(response.pgmName()).isEqualTo(ScreenFieldImage.unpainted(8));
+            assertThat(response.title02()).isEqualTo(ScreenFieldImage.unpainted(40));
+            assertThat(response.curTime()).isEqualTo(ScreenFieldImage.unpainted(8));
+            assertThat(response.optionLines())
+                    .allSatisfy(line -> assertThat(line).isEqualTo(ScreenFieldImage.unpainted(40)));
+            assertThat(response.option()).isEqualTo(ScreenFieldImage.unpainted(2));
+            assertThat(response.errMsg()).isEqualTo(ScreenFieldImage.unpainted(78));
             assertThat(response.nextProgram()).isEqualTo(spaces(8));
             assertThat(response.nextMapset()).isEqualTo(spaces(7));
             assertThat(response.nextMap()).isEqualTo(spaces(7));
@@ -841,9 +849,14 @@ class AdminMenuResponseTest {
         }
 
         @Test
-        @DisplayName("\"nothing entered yet\" is spaces - a third state no integer has")
-        void nothingEnteredYetIsSpaces() {
-            assertThat(AdminMenuResponse.empty().option()).isEqualTo("  ").isNotEqualTo("00");
+        @DisplayName("\"nothing entered yet\" is LOW-VALUES - a third state no integer has")
+        void nothingEnteredYetIsUnpainted() {
+            // MOVE WS-OPTION TO OPTIONO at :125 is the only writer, so before it runs the field holds
+            // what :89 left. Still two characters wide, and still distinct from the entered value "00".
+            assertThat(AdminMenuResponse.empty().option())
+                    .isEqualTo(ScreenFieldImage.unpainted(AdminMenuResponse.OPTION_LENGTH))
+                    .isNotEqualTo("00")
+                    .isNotEqualTo("  ");
         }
 
         @Test
@@ -1137,8 +1150,8 @@ class AdminMenuResponseTest {
             assertThat(restored.payloadValues()).containsExactlyElementsOf(original.payloadValues());
             assertThat(restored.option()).isEqualTo("01");
             assertThat(restored.optn012())
-                    .as("an all-spaces value must not be trimmed away")
-                    .isEqualTo(spaces(AdminMenuResponse.OPTION_LINE_LENGTH));
+                    .as("an all-LOW-VALUES value must not be trimmed away")
+                    .isEqualTo(ScreenFieldImage.unpainted(AdminMenuResponse.OPTION_LINE_LENGTH));
             assertThat(restored.navigationContext()).isEqualTo(original.navigationContext());
             // The colour is not on the wire, so it comes back as DFHDFCOL - the terminal's default
             // colour, X'00' - rather than being carried. That is the point of ignoring it: it is a
@@ -1167,7 +1180,8 @@ class AdminMenuResponseTest {
             assertThat(afterBlank.resetAllOutputFields()).isFalse();
             assertThat(mapper.readValue("{}", AdminMenuResponse.class).optionLines())
                     .hasSize(12)
-                    .allSatisfy(line -> assertThat(line).isEqualTo(spaces(40)));
+                    .allSatisfy(line -> assertThat(line)
+                            .isEqualTo(ScreenFieldImage.unpainted(40)));
         }
     }
 
@@ -1185,7 +1199,8 @@ class AdminMenuResponseTest {
                     .isThrownBy(() -> lines.set(0, "mutated"));
             assertThatExceptionOfType(UnsupportedOperationException.class)
                     .isThrownBy(() -> lines.add("appended"));
-            assertThat(AdminMenuResponse.empty().optionLines().get(0)).isEqualTo(spaces(40));
+            assertThat(AdminMenuResponse.empty().optionLines().get(0))
+                    .isEqualTo(ScreenFieldImage.unpainted(40));
         }
 
         @Test
@@ -1236,7 +1251,7 @@ class AdminMenuResponseTest {
             final AdminMenuResponse second = builder.build();
 
             assertThat(first.optn001()).isEqualTo("first");
-            assertThat(first.optn002()).isEqualTo(spaces(40));
+            assertThat(first.optn002()).isEqualTo(ScreenFieldImage.unpainted(40));
             assertThat(second.optn001()).isEqualTo("second");
             assertThat(second.optn002()).isEqualTo("also second");
         }
@@ -1269,8 +1284,8 @@ class AdminMenuResponseTest {
             assertThat(firstEntry.resetAllOutputFields()).isTrue();
             assertThat(firstEntry.navigationContext().isReenter()).isTrue();
             assertThat(firstEntry.payloadValues())
-                    .as("LOW-VALUES leaves every output field blank")
-                    .allSatisfy(value -> assertThat(value).isBlank());
+                    .as("LOW-VALUES leaves every output field at X'00', which is not Java-blank")
+                    .allSatisfy(value -> assertThat(ScreenFieldImage.isUnpainted(value)).isTrue());
         }
 
         @Test
@@ -1591,8 +1606,7 @@ class AdminMenuResponseTest {
                     .isNotNull()
                     .isNotEmpty()
                     .hasSize(78)
-                    .isEqualTo(spaces(AdminMenuResponse.ERR_MSG_LENGTH))
-                    .isBlank();
+                    .isEqualTo(ScreenFieldImage.unpainted(AdminMenuResponse.ERR_MSG_LENGTH));
             assertThat(codec().movePicX("", AdminMenuResponse.ERR_MSG_LENGTH))
                     .isEqualTo(spaces(78))
                     .hasSize(78);
@@ -1751,8 +1765,8 @@ class AdminMenuResponseTest {
                     .isNotEqualTo("0")
                     .hasSize(2);
             assertThat(AdminMenuResponse.empty().option())
-                    .as("nothing entered yet is spaces; entering zero is \"00\"")
-                    .isEqualTo("  ")
+                    .as("nothing entered yet is LOW-VALUES; entering zero is \"00\"")
+                    .isEqualTo(ScreenFieldImage.unpainted(AdminMenuResponse.OPTION_LENGTH))
                     .isNotEqualTo(rendered);
         }
 
@@ -1839,7 +1853,8 @@ class AdminMenuResponseTest {
         @DisplayName("slots 5 to 12 are forty spaces on a populated screen, and are not pruned")
         void slotsFiveToTwelveAreFortySpacesAndSurvive() {
             final AdminMenuResponse response = populated();
-            final String blankLine = spaces(AdminMenuResponse.OPTION_LINE_LENGTH);
+            final String blankLine =
+                    ScreenFieldImage.unpainted(AdminMenuResponse.OPTION_LINE_LENGTH);
 
             for (int slot = ADMIN_OPTION_COUNT + 1; slot <= AdminMenuResponse.OPTION_LINE_COUNT; slot++) {
                 assertThat(response.optionLine(slot))

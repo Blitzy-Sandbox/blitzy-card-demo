@@ -1,6 +1,7 @@
 package com.vsergeychik.carddemo.transaction;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatIllegalStateException;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.hamcrest.Matchers.startsWith;
 import static org.mockito.ArgumentMatchers.any;
@@ -28,6 +29,7 @@ import com.vsergeychik.carddemo.common.FieldAttributeSetter.FieldHighlight;
 import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.NavigationContext;
+import com.vsergeychik.carddemo.common.ScreenFieldImage;
 import com.vsergeychik.carddemo.common.ScreenResponse;
 import com.vsergeychik.carddemo.common.PhysicalSequence;
 import com.vsergeychik.carddemo.common.PfKeyResolver;
@@ -2175,7 +2177,7 @@ class TransactionViewControllerTest {
     class TheWorkingStorage {
 
         @Test
-        @DisplayName("a fresh area is spaces, zeros and flags off")
+        @DisplayName("a fresh area is the storage image, zeros and flags off")
         void aFreshArea() {
             ProgramState state = new ProgramState(controller.codec());
 
@@ -2204,7 +2206,11 @@ class TransactionViewControllerTest {
             assertThat(state.commarea()).isEqualTo(NavigationContext.empty());
             assertThat(state.ct02Info()).isNotNull();
             assertThat(state.symbolicMap()).isNotNull();
-            assertThat(state.actidinI()).isBlank();
+            assertThat(state.actidinI())
+                    .as("01 COTRN2AO is declared at L82 with no VALUE clause, so a freshly opened area "
+                            + "holds LOW-VALUES and not spaces - L122's MOVE LOW-VALUES is the source's "
+                            + "own statement of what the area holds when nothing has been painted")
+                    .isEqualTo(ScreenFieldImage.unpainted(TransactionViewResponse.ACTIDINO_LENGTH));
         }
 
         @Test
@@ -2611,12 +2617,12 @@ class TransactionViewControllerTest {
                             .contentType(MediaType.APPLICATION_JSON)
                             .content(mapper.writeValueAsString(completeRequest())))
                     .andExpect(status().isOk())
-                    .andExpect(jsonPath("$.trnnameo").value("CT02"))
-                    .andExpect(jsonPath("$.pgmnameo").value("COTRN02C"))
+                    .andExpect(jsonPath("$.trnname").value("CT02"))
+                    .andExpect(jsonPath("$.pgmname").value("COTRN02C"))
                     .andExpect(jsonPath("$.nextProgram").value("COTRN02C"))
                     .andExpect(jsonPath("$.nextMapset").value("COTRN02"))
                     .andExpect(jsonPath("$.nextMap").value("COTRN2A"))
-                    .andExpect(jsonPath("$.errmsgo")
+                    .andExpect(jsonPath("$.errmsg")
                             .value(startsWith("Transaction added successfully.")));
 
             verify(transactionRepository).write(any());
@@ -2654,8 +2660,8 @@ class TransactionViewControllerTest {
                     .doesNotContain("actidina")
                     .doesNotContain("metadata")
                     .doesNotContain("JSESSIONID")
-                    .contains("\"actidino\"")
-                    .contains("\"errmsgo\"");
+                    .contains("\"actidin\"")
+                    .contains("\"errmsg\"");
         }
 
         @Test
@@ -2767,23 +2773,26 @@ class TransactionViewControllerTest {
         }
 
         @Test
-        @DisplayName("without the boundary the same call names an identifier and leaves nothing behind, "
-                + "which is the defect this closes")
-        void withoutTheBoundaryTheInsertIsLost() {
+        @DisplayName("without the boundary the write is refused outright, so no identifier is ever "
+                + "promised for a record that was not stored")
+        void withoutTheBoundaryTheInsertIsRefused() {
             // The control, and it is what makes the case above evidence rather than assertion. The only
             // difference is that transaction management is not enabled, so @Transactional advises
-            // nothing - the same runtime the annotation's absence produced. The screen is identical; the
-            // master is empty.
+            // nothing - the same runtime the annotation's absence produced.
+            //
+            // This used to name the identifier on the screen and leave the master empty, which is the
+            // sharper half of the defect: the operator was told a transaction had been added, and nothing
+            // downstream could tell that it had not. The repository now refuses a write it cannot commit,
+            // so the missing boundary surfaces as a wiring failure at the call site instead of as a
+            // successful screen over an empty dataset.
             withTransactionalContext(false, (controller, verifier) -> {
-                ScreenResponse<TransactionViewResponse> response =
-                        controller.addTransaction(completeRequest());
+                assertThatIllegalStateException()
+                        .isThrownBy(() -> controller.addTransaction(completeRequest()))
+                        .withMessageContaining("no transaction is open on this thread")
+                        .withMessageContaining("changes stored records");
 
-                assertThat(response.screen().getErrmsgo())
-                        .as("the operator is told the same thing either way")
-                        .startsWith("Transaction added successfully.  Your Tran ID is "
-                                + FIRST_TRAN_ID + ".");
                 assertThat(recordsIn(verifier))
-                        .as("but nothing was committed")
+                        .as("and nothing was written, so there is nothing to have lost")
                         .isEmpty();
             });
         }

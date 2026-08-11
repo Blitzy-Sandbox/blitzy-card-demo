@@ -1,8 +1,10 @@
 package com.vsergeychik.carddemo.admin.dto;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import com.vsergeychik.carddemo.common.BmsAttributes;
 import com.vsergeychik.carddemo.common.NavigationContext;
+import com.vsergeychik.carddemo.common.ScreenFieldImage;
 import com.vsergeychik.carddemo.common.ScreenMetadata;
 import jakarta.validation.constraints.Size;
 import java.util.ArrayList;
@@ -307,12 +309,12 @@ import java.util.List;
  *                              it names an action and corresponds to no copybook item
  */
 public record AdminMenuResponse(
-        @Size(max = TRN_NAME_LENGTH) String trnName,
+        @Size(max = TRN_NAME_LENGTH) @JsonProperty("trnname") String trnName,
         @Size(max = TITLE_LENGTH) String title01,
-        @Size(max = CUR_DATE_LENGTH) String curDate,
-        @Size(max = PGM_NAME_LENGTH) String pgmName,
+        @Size(max = CUR_DATE_LENGTH) @JsonProperty("curdate") String curDate,
+        @Size(max = PGM_NAME_LENGTH) @JsonProperty("pgmname") String pgmName,
         @Size(max = TITLE_LENGTH) String title02,
-        @Size(max = CUR_TIME_LENGTH) String curTime,
+        @Size(max = CUR_TIME_LENGTH) @JsonProperty("curtime") String curTime,
         @Size(max = OPTION_LINE_LENGTH) String optn001,
         @Size(max = OPTION_LINE_LENGTH) String optn002,
         @Size(max = OPTION_LINE_LENGTH) String optn003,
@@ -326,7 +328,7 @@ public record AdminMenuResponse(
         @Size(max = OPTION_LINE_LENGTH) String optn011,
         @Size(max = OPTION_LINE_LENGTH) String optn012,
         @Size(max = OPTION_LENGTH) String option,
-        @Size(max = ERR_MSG_LENGTH) String errMsg,
+        @Size(max = ERR_MSG_LENGTH) @JsonProperty("errmsg") String errMsg,
         NavigationContext navigationContext,
         @Size(max = NEXT_PROGRAM_LENGTH) String nextProgram,
         @Size(max = NEXT_MAPSET_LENGTH) String nextMapset,
@@ -646,15 +648,20 @@ public record AdminMenuResponse(
     public static final List<Integer> PAYLOAD_FIELD_LENGTHS = buildPayloadFieldLengths();
 
     // =================================================================================================
-    // Construction. The canonical constructor substitutes a space-filled value for every absent
+    // Construction. The canonical constructor substitutes a declared-width image for every absent
     // character member and the initial communication area for an absent context, so that an unset
-    // field is addressable rather than a null dereference - COBOL has no null, and a screen field that
-    // has not been written is spaces, exactly as MOVE LOW-VALUES leaves it before SEND.
+    // field is addressable rather than a null dereference - COBOL has no null.
     //
-    // Both substitutions route through ONE decision each, shared by all twenty-four members, rather
-    // than twenty-four separate guards. That is not only less code: it is one branch pair to prove
-    // rather than forty-eight, which is what makes this package's branch coverage honest instead of
-    // merely high.
+    // WHICH image depends on what the member is, and the two are not interchangeable. A screen field
+    // that has not been written is LOW-VALUES, because MOVE LOW-VALUES TO COADM1AO at
+    // app/cbl/COADM01C.cbl:89 is what clears the map before SEND; a communication-area carrier that
+    // names nothing is spaces. So the twenty screen members route through orUnpainted and the four
+    // carriers through orSpaces.
+    //
+    // Each substitution routes through ONE decision, shared by every member it applies to, rather than
+    // twenty-four separate guards. That is not only less code: it is two branch pairs to prove rather
+    // than forty-eight, which is what makes this package's branch coverage honest instead of merely
+    // high.
     // =================================================================================================
 
     /**
@@ -667,26 +674,26 @@ public record AdminMenuResponse(
      * a second place for the rule to drift.
      */
     public AdminMenuResponse {
-        trnName = orSpaces(trnName, TRN_NAME_LENGTH);
-        title01 = orSpaces(title01, TITLE_LENGTH);
-        curDate = orSpaces(curDate, CUR_DATE_LENGTH);
-        pgmName = orSpaces(pgmName, PGM_NAME_LENGTH);
-        title02 = orSpaces(title02, TITLE_LENGTH);
-        curTime = orSpaces(curTime, CUR_TIME_LENGTH);
-        optn001 = orSpaces(optn001, OPTION_LINE_LENGTH);
-        optn002 = orSpaces(optn002, OPTION_LINE_LENGTH);
-        optn003 = orSpaces(optn003, OPTION_LINE_LENGTH);
-        optn004 = orSpaces(optn004, OPTION_LINE_LENGTH);
-        optn005 = orSpaces(optn005, OPTION_LINE_LENGTH);
-        optn006 = orSpaces(optn006, OPTION_LINE_LENGTH);
-        optn007 = orSpaces(optn007, OPTION_LINE_LENGTH);
-        optn008 = orSpaces(optn008, OPTION_LINE_LENGTH);
-        optn009 = orSpaces(optn009, OPTION_LINE_LENGTH);
-        optn010 = orSpaces(optn010, OPTION_LINE_LENGTH);
-        optn011 = orSpaces(optn011, OPTION_LINE_LENGTH);
-        optn012 = orSpaces(optn012, OPTION_LINE_LENGTH);
-        option = orSpaces(option, OPTION_LENGTH);
-        errMsg = orSpaces(errMsg, ERR_MSG_LENGTH);
+        trnName = orUnpainted(trnName, TRN_NAME_LENGTH);
+        title01 = orUnpainted(title01, TITLE_LENGTH);
+        curDate = orUnpainted(curDate, CUR_DATE_LENGTH);
+        pgmName = orUnpainted(pgmName, PGM_NAME_LENGTH);
+        title02 = orUnpainted(title02, TITLE_LENGTH);
+        curTime = orUnpainted(curTime, CUR_TIME_LENGTH);
+        optn001 = orUnpainted(optn001, OPTION_LINE_LENGTH);
+        optn002 = orUnpainted(optn002, OPTION_LINE_LENGTH);
+        optn003 = orUnpainted(optn003, OPTION_LINE_LENGTH);
+        optn004 = orUnpainted(optn004, OPTION_LINE_LENGTH);
+        optn005 = orUnpainted(optn005, OPTION_LINE_LENGTH);
+        optn006 = orUnpainted(optn006, OPTION_LINE_LENGTH);
+        optn007 = orUnpainted(optn007, OPTION_LINE_LENGTH);
+        optn008 = orUnpainted(optn008, OPTION_LINE_LENGTH);
+        optn009 = orUnpainted(optn009, OPTION_LINE_LENGTH);
+        optn010 = orUnpainted(optn010, OPTION_LINE_LENGTH);
+        optn011 = orUnpainted(optn011, OPTION_LINE_LENGTH);
+        optn012 = orUnpainted(optn012, OPTION_LINE_LENGTH);
+        option = orUnpainted(option, OPTION_LENGTH);
+        errMsg = orUnpainted(errMsg, ERR_MSG_LENGTH);
         navigationContext = orEmptyContext(navigationContext);
         nextProgram = orSpaces(nextProgram, NEXT_PROGRAM_LENGTH);
         nextMapset = orSpaces(nextMapset, NEXT_MAPSET_LENGTH);
@@ -696,9 +703,13 @@ public record AdminMenuResponse(
     /**
      * The screen as {@code COADM01C} leaves it immediately after
      * {@code MOVE LOW-VALUES TO COADM1AO} at {@code app/cbl/COADM01C.cbl:89} and before
-     * {@code POPULATE-HEADER-INFO} runs: every text field space-filled to its declared width, the
-     * communication area at its own initial value, the message colour at the map's declared
-     * {@link BmsAttributes#DFHRED}, and the screen to render named as this screen.
+     * {@code POPULATE-HEADER-INFO} runs: every screen field carrying the unpainted image at its
+     * declared width, the communication area at its own initial value, the message colour at the map's
+     * declared {@link BmsAttributes#DFHRED}, and the screen to render named as this screen.
+     *
+     * <p>The unpainted image is {@code LOW-VALUES} - {@code X'00'} at the declared width - and not
+     * spaces, because that is the byte line 89 moves. {@link ScreenFieldImage} records that decision
+     * once for all seventeen screens and lists all seventeen source sites.
      *
      * <p>{@link #nextProgram()} is left blank on purpose. Both {@code XCTL} targets are chosen at
      * runtime - one from the option table, one from {@code CDEMO-TO-PROGRAM} - so pre-seeding either
@@ -707,29 +718,29 @@ public record AdminMenuResponse(
      * <p>{@link #resetAllOutputFields()} is {@code false}: it is a signal the service raises for the
      * first-entry repaint, not a property of a blank instance.
      *
-     * @return the space-filled initial response, never {@code null}
+     * @return the unpainted initial response, never {@code null}
      */
     public static AdminMenuResponse empty() {
-        return new AdminMenuResponse(spaces(TRN_NAME_LENGTH),
-                spaces(TITLE_LENGTH),
-                spaces(CUR_DATE_LENGTH),
-                spaces(PGM_NAME_LENGTH),
-                spaces(TITLE_LENGTH),
-                spaces(CUR_TIME_LENGTH),
-                spaces(OPTION_LINE_LENGTH),
-                spaces(OPTION_LINE_LENGTH),
-                spaces(OPTION_LINE_LENGTH),
-                spaces(OPTION_LINE_LENGTH),
-                spaces(OPTION_LINE_LENGTH),
-                spaces(OPTION_LINE_LENGTH),
-                spaces(OPTION_LINE_LENGTH),
-                spaces(OPTION_LINE_LENGTH),
-                spaces(OPTION_LINE_LENGTH),
-                spaces(OPTION_LINE_LENGTH),
-                spaces(OPTION_LINE_LENGTH),
-                spaces(OPTION_LINE_LENGTH),
-                spaces(OPTION_LENGTH),
-                spaces(ERR_MSG_LENGTH),
+        return new AdminMenuResponse(ScreenFieldImage.unpainted(TRN_NAME_LENGTH),
+                ScreenFieldImage.unpainted(TITLE_LENGTH),
+                ScreenFieldImage.unpainted(CUR_DATE_LENGTH),
+                ScreenFieldImage.unpainted(PGM_NAME_LENGTH),
+                ScreenFieldImage.unpainted(TITLE_LENGTH),
+                ScreenFieldImage.unpainted(CUR_TIME_LENGTH),
+                ScreenFieldImage.unpainted(OPTION_LINE_LENGTH),
+                ScreenFieldImage.unpainted(OPTION_LINE_LENGTH),
+                ScreenFieldImage.unpainted(OPTION_LINE_LENGTH),
+                ScreenFieldImage.unpainted(OPTION_LINE_LENGTH),
+                ScreenFieldImage.unpainted(OPTION_LINE_LENGTH),
+                ScreenFieldImage.unpainted(OPTION_LINE_LENGTH),
+                ScreenFieldImage.unpainted(OPTION_LINE_LENGTH),
+                ScreenFieldImage.unpainted(OPTION_LINE_LENGTH),
+                ScreenFieldImage.unpainted(OPTION_LINE_LENGTH),
+                ScreenFieldImage.unpainted(OPTION_LINE_LENGTH),
+                ScreenFieldImage.unpainted(OPTION_LINE_LENGTH),
+                ScreenFieldImage.unpainted(OPTION_LINE_LENGTH),
+                ScreenFieldImage.unpainted(OPTION_LENGTH),
+                ScreenFieldImage.unpainted(ERR_MSG_LENGTH),
                 NavigationContext.empty(),
                 spaces(NEXT_PROGRAM_LENGTH),
                 MAPSET_NAME,
@@ -952,9 +963,14 @@ public record AdminMenuResponse(
     /**
      * {@code value}, or {@code width} spaces when it is absent.
      *
-     * <p>The single null decision for all twenty-four character members. COBOL has no null: an
-     * unwritten screen field is spaces, so that is what an absent value becomes, which is what makes
-     * {@code OPTN005O} through {@code OPTN012O} addressable even though nothing ever writes them.
+     * <p>The single null decision for the four communication-area carriers. COBOL has no null, and a
+     * {@code CARDDEMO-COMMAREA} item that names nothing is spaces - {@code CDEMO-TO-PROGRAM} at
+     * {@code app/cbl/COADM01C.cbl:83} is set only when a transfer is decided, and
+     * {@link NavigationContext#empty()} documents the same resting state for the area as a whole.
+     *
+     * <p>The twenty <em>screen</em> members do not come through here: an unpainted screen field is
+     * {@code LOW-VALUES}, not spaces, so they route through {@link #orUnpainted(String, int)}. The two
+     * are different bytes and the distinction is deliberate; see {@link ScreenFieldImage}.
      *
      * @param value the supplied value, possibly {@code null}
      * @param width the declared width to fall back to
@@ -962,6 +978,25 @@ public record AdminMenuResponse(
      */
     private static String orSpaces(final String value, final int width) {
         return value == null ? spaces(width) : value;
+    }
+
+    /**
+     * {@code value}, or the unpainted image of a screen field {@code width} characters wide when it is
+     * absent.
+     *
+     * <p>The single null decision for all twenty screen members. An absent value means the field was
+     * never written, and {@code MOVE LOW-VALUES TO COADM1AO} at {@code app/cbl/COADM01C.cbl:89} says
+     * what that looks like: {@code X'00'} at the declared width. That is what makes {@code OPTN005O}
+     * through {@code OPTN012O} addressable even though {@code COADM01C} declares only four options and
+     * nothing ever writes the other eight.
+     *
+     * @param value the supplied value, possibly {@code null}
+     * @param width the declared width to fall back to
+     * @return a non-{@code null} value
+     * @see ScreenFieldImage#unpainted(int)
+     */
+    private static String orUnpainted(final String value, final int width) {
+        return value == null ? ScreenFieldImage.unpainted(width) : value;
     }
 
     /**

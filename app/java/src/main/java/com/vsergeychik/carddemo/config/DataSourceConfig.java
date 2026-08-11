@@ -237,7 +237,11 @@ public class DataSourceConfig {
             that silently came up against the wrong backend would report byte-level parity results \
             that mean nothing. To run the suite instead, activate the 'test' profile, whose \
             application-test.yml supplies an in-memory H2 DataSource that also backs the Spring \
-            Batch JobRepository.""";
+            Batch JobRepository - and note that the profile needs src/test/resources on the \
+            classpath as well as activating, because it imports its DataSource from a document \
+            that lives there and is deliberately never packaged. If this message appears with \
+            'test' already active, that classpath is what is missing: run from \
+            target/test-classes:target/classes rather than from the packaged jar.""";
 
     /**
      * The sentence every driver diagnostic ends with, stating the policy that makes the driver a

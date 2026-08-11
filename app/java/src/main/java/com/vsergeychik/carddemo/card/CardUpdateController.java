@@ -21,6 +21,7 @@ import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.NavigationContext;
 import com.vsergeychik.carddemo.common.PfKeyResolver;
+import com.vsergeychik.carddemo.common.ScreenInputRejectedException;
 import com.vsergeychik.carddemo.common.ScreenMetadata;
 import com.vsergeychik.carddemo.common.ScreenResponse;
 import com.vsergeychik.carddemo.common.ScreenTitles;
@@ -2134,14 +2135,24 @@ public class CardUpdateController {
      *                 {@code null}
      * @param eibcalen {@code EIBCALEN}, the length of the passed commarea
      * @param eibAid   {@code EIBAID}, the raw attention identifier byte
+     * <p>Two things sit deliberately outside that declarative. Ahead of it,
+     * {@link ScreenInputRejectedException#requireRepresentable} judges the seventeen received values
+     * against the screen code page: a character that code page cannot represent is a value no
+     * {@code RECEIVE MAP} could have delivered, so it is the caller's mistake rather than a transaction
+     * that failed, and sweeping before the flow begins puts the refusal ahead of every read and every
+     * write. Inside it, a {@link ScreenInputRejectedException} raised deeper - by the commarea
+     * consistency guard in {@link #editMapInputs1200} - is rethrown for the same reason.
+     *
      * @return the painted screen; never {@code null}
-     * @throws NullPointerException if {@code request} is {@code null}
-     * @throws AbendException       if the {@code HANDLE ABEND} handler runs to its
-     *                              {@code EXEC CICS ABEND ABCODE('9999')}
+     * @throws NullPointerException         if {@code request} is {@code null}
+     * @throws ScreenInputRejectedException if the payload carries a value a received map could not have
+     * @throws AbendException               if the {@code HANDLE ABEND} handler runs to its
+     *                                      {@code EXEC CICS ABEND ABCODE('9999')}
      */
     PaintedScreen handle(CardUpdateRequest request, int eibcalen, byte eibAid) {
         Objects.requireNonNull(request, "A request is required: COCRDUPC is entered with a terminal "
                 + "input area, and an absent one is spaces rather than nothing");
+        ScreenInputRejectedException.requireRepresentable(request.fieldValues(), PIC_X_CODEC);
 
         CardUpdateResponse response = new CardUpdateResponse();
         Conversation task = new Conversation();
@@ -2154,6 +2165,10 @@ public class CardUpdateController {
             // The handler has already run - :1546-1548 does EXEC CICS HANDLE ABEND CANCEL before
             // abending, so an abend raised BY the handler is not re-handled. Rethrown unchanged.
             throw alreadyAbending;
+        } catch (ScreenInputRejectedException callersInput) {
+            // Not an abend: a payload describing a conversation this program cannot be in. Answered as
+            // the caller's error, the same 400 the screens without a HANDLE ABEND already produce.
+            throw callersInput;
         } catch (RuntimeException abend) {
             throw abendRoutine(task, response, abend);
         }
@@ -3136,6 +3151,33 @@ public class CardUpdateController {
     }
 
     /**
+     * Asserts that a commarea key the program itself wrote still holds what the program writes there,
+     * before it is moved into a {@code PIC 9} receiver.
+     *
+     * <p>{@code CCUP-OLD-ACCTID PIC X(11)} and {@code CCUP-OLD-CARDID PIC X(16)} are alphanumeric, and
+     * {@code app/cbl/COCRDUPC.cbl:671-672} moves them into {@code CDEMO-ACCT-ID PIC 9(11)} and
+     * {@code CDEMO-CARD-NUM PIC 9(16)}. Their only writer is {@code :1006-1007}, which writes the digits
+     * the {@code READ} returned, so on a real conversation the receiving numeric items always get digits
+     * and the {@code MOVE} cannot fail. A hand-built payload can ask for the processing action while
+     * leaving them blank; a numeric item cannot hold blanks, so that payload is refused here as the
+     * caller's error rather than allowed to fail inside the {@code HANDLE ABEND} declarative.
+     *
+     * @param value    the commarea value as supplied
+     * @param length   the item's declared {@code PIC X} width
+     * @param member   the payload member to name in the answer
+     * @param expected what the program writes there, as a shape rather than a value
+     * @throws ScreenInputRejectedException if the value is not the declared count of digits
+     */
+    static void requireFetchedKey(String value, int length, String member, String expected) {
+        String image = PIC_X_CODEC.movePicX(value == null ? "" : value, length);
+        for (int index = 0; index < image.length(); index++) {
+            if (image.charAt(index) < '0' || image.charAt(index) > '9') {
+                throw ScreenInputRejectedException.inconsistentCommarea(member, expected);
+            }
+        }
+    }
+
+    /**
      * {@code 1200-EDIT-MAP-INPUTS} - {@code app/cbl/COCRDUPC.cbl:641-715}: two completely different
      * validations behind one paragraph name, chosen by whether details have been fetched yet.
      *
@@ -3199,6 +3241,18 @@ public class CardUpdateController {
         task.wsEditCardFlag = FLG_FILTER_ISVALID;
 
         CardDetails fetched = task.oldDetails();
+
+        // Reached only when the change action says a card was already fetched, and the two MOVEs below
+        // feed PIC 9 receivers. The only writer of CCUP-OLD-ACCTID and CCUP-OLD-CARDID is this program,
+        // at :1006-1007, and it writes the eleven and sixteen digits it read - so on any conversation
+        // that actually fetched a card these hold digits. A payload asking for the processing action
+        // while leaving them blank describes a screen that was never fetched, and a numeric item cannot
+        // hold blanks at all. Refused as the caller's error, ahead of the MOVEs, rather than letting the
+        // numeric conversion fail inside the HANDLE ABEND declarative and answer an abend.
+        requireFetchedKey(fetched.acctid(), CardDetails.ACCTID_LENGTH, "commArea.oldDetails.acctid",
+                "the eleven digits of the fetched account identifier");
+        requireFetchedKey(fetched.cardid(), CardDetails.CARDID_LENGTH, "commArea.oldDetails.cardid",
+                "the sixteen digits of the fetched card number");
 
         // :671-672 - the fetched keys go back into the commarea. CDEMO-ACCT-ID is PIC 9(11) and
         // CDEMO-CARD-NUM PIC 9(16), while CCUP-OLD-ACCTID and CCUP-OLD-CARDID are alphanumeric, so each

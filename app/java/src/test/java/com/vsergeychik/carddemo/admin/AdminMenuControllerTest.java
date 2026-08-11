@@ -28,6 +28,7 @@ import com.vsergeychik.carddemo.common.FieldAttributeSetter.FieldHighlight;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.NavigationContext;
 import com.vsergeychik.carddemo.common.PfKeyResolver;
+import com.vsergeychik.carddemo.common.ScreenFieldImage;
 import com.vsergeychik.carddemo.common.ScreenMetadata;
 import com.vsergeychik.carddemo.common.ScreenResponse;
 import com.vsergeychik.carddemo.common.ScreenTitles;
@@ -499,7 +500,7 @@ class AdminMenuControllerTest {
         }
 
         @Test
-        @DisplayName("an absent body reaches the service with no communication area and spaces typed")
+        @DisplayName("an absent body reaches the service with no communication area and nothing sent")
         void anAbsentBodyBecomesTheColdStart() {
             AdminMenuService service = stubbedService();
             doReturn(paintedOutcome(NavigationContext.empty().withPgmReenter()))
@@ -513,7 +514,9 @@ class AdminMenuControllerTest {
                     .as("a null communication area is how EIBCALEN = 0 is encoded")
                     .isFalse();
             assertThat(captured.getValue().option())
-                    .isEqualTo(SPACE.repeat(AdminMenuRequest.OPTION_LENGTH));
+                    .as("nothing arrived, so nothing was sent for OPTIONI, and RECEIVE MAP leaves a field "
+                            + "the terminal did not send at LOW-VALUES")
+                    .isEqualTo(ScreenFieldImage.unpainted(AdminMenuRequest.OPTION_LENGTH));
         }
 
         @Test
@@ -1243,8 +1246,8 @@ class AdminMenuControllerTest {
                             .content(bodyOf(blankScreen(NavigationContext.empty().withPgmEnter(),
                                     CicsAid.DFHENTER))))
                     .andExpect(status().isOk())
-                    .andExpect(jsonPath("$.trnName").value(AdminMenuResponse.TRANSACTION_ID))
-                    .andExpect(jsonPath("$.pgmName").value(AdminMenuResponse.PROGRAM_NAME))
+                    .andExpect(jsonPath("$.trnname").value(AdminMenuResponse.TRANSACTION_ID))
+                    .andExpect(jsonPath("$.pgmname").value(AdminMenuResponse.PROGRAM_NAME))
                     .andExpect(jsonPath("$.nextMapset").value(AdminMenuResponse.MAPSET_NAME))
                     .andExpect(jsonPath("$.nextMap").value(AdminMenuResponse.MAP_NAME))
                     .andExpect(jsonPath("$.screenMetadata.resetAllOutputFields").value(true))
@@ -1271,8 +1274,8 @@ class AdminMenuControllerTest {
                     .andExpect(jsonPath("$.title01").value(ScreenTitles.CCDA_TITLE01))
                     .andExpect(jsonPath("$.title02").value(ScreenTitles.CCDA_TITLE02))
                     // Seventy-eight spaces: present, not null, not "", not dropped.
-                    .andExpect(jsonPath("$.errMsg").exists())
-                    .andExpect(jsonPath("$.errMsg")
+                    .andExpect(jsonPath("$.errmsg").exists())
+                    .andExpect(jsonPath("$.errmsg")
                             .value(SPACE.repeat(AdminMenuResponse.ERR_MSG_LENGTH)))
                     // A slot BUILD-MENU-OPTIONS never fills is still a member, and still forty wide.
                     .andExpect(jsonPath("$.optn005").exists())
@@ -1291,9 +1294,9 @@ class AdminMenuControllerTest {
                     blankScreen(NavigationContext.empty().withPgmReenter(), CicsAid.DFHENTER))
                     .getResponse().getContentAsString(StandardCharsets.UTF_8);
 
-            assertThat(json).contains("\"trnName\"", "\"title01\"", "\"curDate\"", "\"pgmName\"",
-                    "\"title02\"", "\"curTime\"", "\"optn001\"", "\"optn012\"", "\"option\"",
-                    "\"errMsg\"", "\"nextProgram\"", "\"nextMapset\"", "\"nextMap\"",
+            assertThat(json).contains("\"trnname\"", "\"title01\"", "\"curdate\"", "\"pgmname\"",
+                    "\"title02\"", "\"curtime\"", "\"optn001\"", "\"optn012\"", "\"option\"",
+                    "\"errmsg\"", "\"nextProgram\"", "\"nextMapset\"", "\"nextMap\"",
                     "\"navigationContext\"", "\"screenMetadata\"");
             assertThat(json).doesNotContain("trn_name", "TrnName", "trn-name", "err_msg", "ErrMsg");
         }
@@ -1443,7 +1446,7 @@ class AdminMenuControllerTest {
                                     blankScreen(NavigationContext.empty().withPgmEnter(),
                                             CicsAid.DFHENTER))))
                     .andExpect(status().isOk())
-                    .andExpect(jsonPath("$.trnName").value(AdminMenuResponse.TRANSACTION_ID));
+                    .andExpect(jsonPath("$.trnname").value(AdminMenuResponse.TRANSACTION_ID));
 
             assertThat(mockingDetails(service).isSpy()).isTrue();
             verify(service).handle(any(AdminMenuInput.class));
@@ -1463,8 +1466,8 @@ class AdminMenuControllerTest {
 
             mockMvc.perform(get(AdminMenuController.ADMIN_MENU_PATH))
                     .andExpect(status().isOk())
-                    .andExpect(jsonPath("$.curDate").value("07/19/22"))
-                    .andExpect(jsonPath("$.curTime").value("23:12:32"));
+                    .andExpect(jsonPath("$.curdate").value("07/19/22"))
+                    .andExpect(jsonPath("$.curtime").value("23:12:32"));
         }
 
         @Test
@@ -1475,7 +1478,7 @@ class AdminMenuControllerTest {
 
             mockMvc.perform(get(AdminMenuController.ADMIN_MENU_PATH))
                     .andExpect(status().isOk())
-                    .andExpect(jsonPath("$.errMsg")
+                    .andExpect(jsonPath("$.errmsg")
                             .value(SPACE.repeat(AdminMenuResponse.ERR_MSG_LENGTH)))
                     .andExpect(jsonPath("$.title01").value(ScreenTitles.CCDA_TITLE01))
                     .andExpect(jsonPath("$.optn011").exists())

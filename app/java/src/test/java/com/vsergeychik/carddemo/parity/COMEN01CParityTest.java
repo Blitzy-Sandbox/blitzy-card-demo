@@ -18,6 +18,7 @@ import com.vsergeychik.carddemo.common.CicsAid;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.NavigationContext;
 import com.vsergeychik.carddemo.common.PfKeyResolver;
+import com.vsergeychik.carddemo.common.ScreenFieldImage;
 import com.vsergeychik.carddemo.common.ScreenTitles;
 import com.vsergeychik.carddemo.common.SystemMessages;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBinding;
@@ -441,8 +442,18 @@ class COMEN01CParityTest {
     // the translation, and each checked against its declared width the moment it is built.
     // =================================================================================================
 
-    /** {@code MOVE SPACES TO WS-MENU-OPT-TXT} - {@code app/cbl/COMEN01C.cbl:241}, forty spaces. */
-    private static final String BLANK_MENU_LINE = spaces(MENU_LINE_LENGTH);
+    /**
+     * An {@code OPTN00nO} line the program never writes, as {@code MOVE LOW-VALUES TO COMEN1AO} at
+     * {@code app/cbl/COMEN01C.cbl:89} leaves it: forty {@code X'00'} characters.
+     *
+     * <p>Note which statement this is <em>not</em>. {@code MOVE SPACES TO WS-MENU-OPT-TXT} at
+     * {@code :241} targets a {@code WORKING-STORAGE} item, the composition buffer - not a map field. The
+     * {@code MOVE ... TO OPTN00nO} statements live inside the {@code EVALUATE} arms and run only for a
+     * subscript the loop reaches, so a line past {@code CDEMO-MENU-OPT-COUNT} and a line whose arm is
+     * {@code WHEN OTHER / CONTINUE} are both simply never written. An earlier revision of this constant
+     * cited {@code :241} and expected spaces, conflating the buffer with the field.
+     */
+    private static final String BLANK_MENU_LINE = ScreenFieldImage.unpainted(MENU_LINE_LENGTH);
 
     /** {@code MOVE SPACES TO WS-MESSAGE} - {@code app/cbl/COMEN01C.cbl:79}, eighty spaces. */
     private static final String BLANK_WS_MESSAGE = spaces(WS_MESSAGE_LENGTH);
@@ -450,8 +461,12 @@ class COMEN01CParityTest {
     /** {@code MOVE SPACES TO ERRMSGO} - {@code app/cbl/COMEN01C.cbl:80}, seventy-eight spaces. */
     private static final String BLANK_ERRMSG = spaces(ERRMSG_LENGTH);
 
-    /** {@code OPTIONO} as {@code MOVE LOW-VALUES TO COMEN1AO} leaves it - {@code :89}. */
-    private static final String BLANK_OPTION = spaces(OPTION_LENGTH);
+    /**
+     * {@code OPTIONO} as {@code MOVE LOW-VALUES TO COMEN1AO} leaves it - {@code :89}, so {@code X'00'}
+     * at its declared width rather than spaces. {@code MOVE WS-OPTION TO OPTIONO} at {@code :125} is
+     * the only writer, and it is inside {@code PROCESS-ENTER-KEY}.
+     */
+    private static final String BLANK_OPTION = ScreenFieldImage.unpainted(OPTION_LENGTH);
 
     /**
      * The twelve {@code OPTN00nO} lines a full paint produces: ten composed by
@@ -1764,20 +1779,27 @@ class COMEN01CParityTest {
     /**
      * The transaction, mapset and map the run names are the ones the CSD and the source agree on.
      *
-     * <p>{@code EXEC CICS RETURN TRANSID(WS-TRANID)} at lines 107 to 110 always names {@code CM00}, and
+     * <p>{@code EXEC CICS RETURN TRANSID(WS-TRANID)} at lines 107 to 110 always names {@code CM00}, so
+     * that is asserted on every path. The mapset and map are named only where a map was actually sent.
      * {@code MAPSET('COMEN01')} at line 191 and {@code MAP('COMEN1A')} at line 190 are the only map
-     * names the program mentions at all. The translation therefore carries all three as
-     * <strong>program identity</strong> rather than as a report of what the last statement did: the
-     * outcome names {@code COMEN01} and {@code COMEN1A} on every path, including the two transfer paths,
-     * and the controller projects both onto the response whichever path ran.
+     * names the program mentions, and both sit inside {@code SEND-MENU-SCREEN} - a transfer does not
+     * execute them. Neither {@code XCTL} names a map either: line 153 names
+     * {@code CDEMO-MENU-OPT-PGMNAME(WS-OPTION)} and line 176 names {@code CDEMO-TO-PROGRAM}, both
+     * programs. So on a transfer the pair is blank, which is what the near-twin
+     * {@code COADM01C} translation has always answered.
      *
-     * <p>That is asserted unconditionally here, and the unconditionality is itself the point. It would
-     * be easy to assume a transfer must leave the pair blank - the near-twin admin-menu translation does
-     * exactly that - and to write the expectation as a conditional that then agrees with whatever the
-     * code happens to do on each path. Stating the constants once means a translation that started
-     * blanking them on a transfer would fail here and in the two transfer cases, rather than passing
-     * quietly. What the program never writes is the communication area's own {@code CDEMO-LAST-MAP} and
-     * {@code CDEMO-LAST-MAPSET}, which every case requires to be the seven spaces they arrived as.
+     * <p>This assertion previously stated the two constants unconditionally, on the reasoning that "the
+     * only map names the program mentions" are its identity on every path. That conflated two different
+     * things: the only mapset the program <em>mentions</em> is not the mapset stated on a path that
+     * never reaches the statement mentioning it. Telling a client to paint the screen the program is
+     * leaving is the one answer that is certainly wrong, and it is what made the two sibling menus
+     * answer differently for the same operator action. The form below is still not a conditional that
+     * agrees with whatever the code does - each path has exactly one required answer and both are
+     * asserted positively: the constants where a screen was sent, blank where control was transferred.
+     *
+     * <p>Separately, the program never writes the communication area's own {@code CDEMO-LAST-MAPSET} or
+     * {@code CDEMO-LAST-MAP} - it references neither, confirmed by exhaustive search over
+     * {@code app/cbl/COMEN01C.cbl} - so both stay exactly as they arrived on every path.
      *
      * @param outcome what the run produced
      */
@@ -1786,13 +1808,27 @@ class COMEN01CParityTest {
                 .describedAs("RETURN TRANSID(WS-TRANID) at line 108, and DEFINE TRANSACTION(CM00) "
                         + "PROGRAM(COMEN01C) in app/csd/CARDDEMO.CSD")
                 .isEqualTo(TRANSACTION_ID);
-        assertThat(outcome.mapsetName())
-                .describedAs("MAPSET('COMEN01') at line 191 is the only mapset COMEN01C names, on every "
-                        + "path including a transfer")
-                .isEqualTo(MAPSET_NAME);
-        assertThat(outcome.mapName())
-                .describedAs("MAP('COMEN1A') at line 190 is the only map COMEN01C names")
-                .isEqualTo(MAP_NAME);
+        if (outcome.screenPainted()) {
+            assertThat(outcome.mapsetName())
+                    .describedAs("SEND MAP ... MAPSET('COMEN01') at line 191 ran, so the response names "
+                            + "the mapset that was actually sent")
+                    .isEqualTo(MAPSET_NAME);
+            assertThat(outcome.mapName())
+                    .describedAs("MAP('COMEN1A') at line 190 ran, so the response names the map that was "
+                            + "actually sent")
+                    .isEqualTo(MAP_NAME);
+        } else {
+            assertThat(outcome.mapsetName())
+                    .describedAs("no SEND ran: neither EXEC CICS XCTL names a map - line 153 names a "
+                            + "program and line 176 names a program - so a transfer must name no mapset "
+                            + "either, and naming COMEN01 here would tell the client to paint the screen "
+                            + "the program is leaving")
+                    .isBlank();
+            assertThat(outcome.mapName())
+                    .describedAs("likewise no map on a transfer: which map the successor paints is the "
+                            + "successor's decision, made after this program has ended")
+                    .isBlank();
+        }
         assertThat(outcome.navigationContext().lastMapset())
                 .describedAs("CDEMO-LAST-MAPSET is a COMMAREA field and COMEN01C never writes it, so it "
                         + "stays exactly as it arrived - which is what distinguishes the program's own "

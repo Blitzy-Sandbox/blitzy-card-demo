@@ -213,6 +213,37 @@ class BillPaymentRequestTest {
             "trnSelected");
 
     /**
+     * The ten screen fields of {@code 01 COBIL0AI}, by Java member name, so {@link #wireNameOf(String)}
+     * can tell them from the eight members that trace to no {@code DFHMDF} field.
+     */
+    private static final java.util.Set<String> SCREEN_FIELD_MEMBERS = java.util.Set.of(
+            "trnName", "title01", "curDate", "pgmName", "title02", "curTime", "actIdIn", "curBal",
+            "confirm", "errMsg");
+
+    /**
+     * A member's name <strong>on the wire</strong>: a screen field answers to its {@code xxxI} item in
+     * lower case, which {@code @JsonProperty} pins per AAP 0.6.3; the attention identifier and the
+     * {@code CDEMO-CB00-INFO} carriers trace to no {@code DFHMDF} field and keep their own names.
+     *
+     * @param member the Java member name
+     * @return the JSON property name it is published under
+     */
+    private static String wireNameOf(String member) {
+        return SCREEN_FIELD_MEMBERS.contains(member)
+                ? member.toLowerCase(java.util.Locale.ROOT) : member;
+    }
+
+    /**
+     * {@link #wireNameOf(String)} over a collection, preserving order.
+     *
+     * @param members the Java member names
+     * @return their JSON property names
+     */
+    private static List<String> wireNamesOf(java.util.Collection<String> members) {
+        return members.stream().map(BillPaymentRequestTest::wireNameOf).toList();
+    }
+
+    /**
      * The six members of {@code 05 CDEMO-CB00-INFO}, declared at {@code app/cbl/COBIL00C.cbl:64-72}
      * inside {@code 01 CARDDEMO-COMMAREA} - in the program, not in the copybook. Their widths sum to
      * 58, which is why this program's communication area is 58 bytes longer than the shared 160-byte
@@ -727,7 +758,7 @@ class BillPaymentRequestTest {
             String carrier = mapper.writeValueAsString(NavigationContext.empty().withPgmEnter());
 
             BillPaymentRequest absent =
-                    mapper.readValue("{\"actIdIn\":\"1\"}", BillPaymentRequest.class);
+                    mapper.readValue("{\"actidin\":\"1\"}", BillPaymentRequest.class);
             BillPaymentRequest present = mapper.readValue(
                     "{\"navigationContext\":" + carrier + "}", BillPaymentRequest.class);
 
@@ -766,8 +797,10 @@ class BillPaymentRequestTest {
         void theBodyCarriesExactlyTheEighteenMembers() throws Exception {
             Set<String> published = publishedNames(canonical());
 
-            // Compared as sets, so a failure lists both what is missing and what is unexpected.
-            assertThat(published).containsExactlyInAnyOrderElementsOf(WIRE_MEMBERS);
+            // Compared as sets, so a failure lists both what is missing and what is unexpected. The ten
+            // screen fields are published under their xxxI items in lower case (AAP 0.6.3); the eight
+            // carriers under their own names.
+            assertThat(published).containsExactlyInAnyOrderElementsOf(wireNamesOf(WIRE_MEMBERS));
             assertThat(published).hasSize(18);
         }
 
@@ -846,7 +879,7 @@ class BillPaymentRequestTest {
             // does not ask the type to change.
             assertThatExceptionOfType(UnrecognizedPropertyException.class)
                     .isThrownBy(() -> mapper.readValue(
-                            "{\"actIdIn\":\"00000000011\",\"notAScreenField\":\"x\"}",
+                            "{\"actidin\":\"00000000011\",\"notAScreenField\":\"x\"}",
                             BillPaymentRequest.class))
                     .withMessageContaining("notAScreenField");
 
@@ -880,7 +913,7 @@ class BillPaymentRequestTest {
         @DisplayName("explicit nulls for the two typeable fields bind and raise no violation")
         void explicitNullsForTheTypeableFieldsBind() throws Exception {
             BillPaymentRequest bound = mapper.readValue(
-                    "{\"actIdIn\":null,\"confirm\":null}", BillPaymentRequest.class);
+                    "{\"actidin\":null,\"confirm\":null}", BillPaymentRequest.class);
 
             assertThat(bound.getActIdIn()).isNull();
             assertThat(bound.getConfirm()).isNull();
@@ -960,10 +993,10 @@ class BillPaymentRequestTest {
 
             assertThat(body)
                     .as("the edited text must be quoted, so the sign and every leading zero survive")
-                    .contains("\"curBal\":\"" + edited + "\"");
+                    .contains("\"curbal\":\"" + edited + "\"");
             assertThat(body)
                     .as("curBal must never be emitted as a bare JSON number")
-                    .doesNotContain("\"curBal\":" + edited.charAt(0) + "0");
+                    .doesNotContain("\"curbal\":" + edited.charAt(0) + "0");
 
             BillPaymentRequest bound = mapper.readValue(body, BillPaymentRequest.class);
 

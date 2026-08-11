@@ -2901,8 +2901,16 @@ public class TransactionViewController {
             this.codec = Objects.requireNonNull(codec, "A codec is required: TRAN-RECORD is 350 bytes in "
                     + "a specific code page, and the area cannot be built without knowing which");
             this.tranRecord = new TranRecord(codec.charset());
+            // 01 COTRN2AO is declared in WORKING-STORAGE at L82 with no VALUE clause, so a freshly
+            // opened area holds the storage's initial image and not spaces. Every arm this program can
+            // take either passes through MOVE LOW-VALUES TO COTRN2AO at L122 or leaves the area
+            // untouched, and the one field the program does paint with spaces before any arm is chosen
+            // is ERRMSGO, which L113 clears explicitly. Opening the area at spaces would put a value in
+            // twenty of these twenty-one items that no statement in the program ever moved there, and
+            // FieldDiffer reports a substituted byte (gate G21), so the resting image is stated once in
+            // common.ScreenFieldImage and reached here through the response's own LOW-VALUES rule.
             for (ScreenField field : ScreenField.values()) {
-                response.setOutputItem(field, spaces(field.width()));
+                response.setOutputItem(field, TransactionViewResponse.lowValues(field.width()));
             }
         }
 
