@@ -1,7 +1,7 @@
 {
   "program": "CBTRN02C",
   "caseId": "case01",
-  "description": "The clean post, seeded entirely from app/data/ASCII and the case every other one is a variation of. dailytran row 0 carries card 4859452612877065, type 01, category 0001 and DALYTRAN-AMT +504.77; cardxref row 20 resolves that card to account 7; acctdata row 6 is account 7 with ACCT-CREDIT-LIMIT 2065.00, ACCT-EXPIRAION-DATE 2024-12-13 and both cycle amounts zero; tcatbal row 6 is key (7,01,0001) at +0.00. So 1500-A finds the card, 1500-B finds the account, COMPUTE WS-TEMP-BAL at :403-405 gives 0.00 - 0.00 + 504.77 = 504.77, 2065.00 >= 504.77 so :407 continues, and 2024-12-13 >= 2022-06-10 so :414 continues. Reason stays 0, :211 chooses 2000-POST-TRANSACTION, and the three writes happen in the source's order: TCATBALF rewritten to +504.77 (its READ reported '00', so :498 takes the update arm and the 22 reserved bytes stay the fixture's twenty-two zeros), then the account rewritten with ACCT-CURR-BAL 193.00+504.77=697.77 and ACCT-CURR-CYC-CREDIT 0.00+504.77=504.77 because :548 tests >= 0, then the 350-byte TRAN-RECORD added under TRAN-ID 0000000000683580 with TRAN-PROC-TS holding the 26 bytes Z-GET-DB2-FORMAT-TIMESTAMP composes from the pinned clock. No reject, so :229 leaves RETURN-CODE 0 and DALYREJS is opened and closed holding nothing.",
+  "description": "CBTRN02C's clean post - the canonical happy path every other case in this folder is a variation of, and the only one seeded entirely from unmodified app/data/ASCII rows. SCENARIO. dailytran row 0 carries DALYTRAN-ID 0000000000683580 on card 4859452612877065, type 01, category 0001, DALYTRAN-AMT +504.77; cardxref row 20 resolves that card to XREF-ACCT-ID 00000000007; acctdata row 6 is that account with ACCT-CREDIT-LIMIT 2065.00, ACCT-EXPIRAION-DATE 2024-12-13 (the copybook's own misspelling, kept verbatim) and both cycle amounts at 0.00; tcatbal row 6 is key 00000000007010001 at 0.00. All four stages of 1500-VALIDATE-TRAN therefore pass: 1500-A-LOOKUP-XREF at :380-392 finds the card, so reason 100 is not set; the reason being still 0, :372-376 runs 1500-B-LOOKUP-ACCT, which finds the account, so reason 101 is not set; :407 finds ACCT-CREDIT-LIMIT >= WS-TEMP-BAL, so reason 102 is not set; and :414 finds ACCT-EXPIRAION-DATE >= DALYTRAN-ORIG-TS (1:10) - 2024-12-13 against 2022-06-10, a 10-byte reference modification of the 26-byte timestamp - so reason 103 is not set. This program contains no EVALUATE at all: those four are an ordered nested-IF ladder, and their order is part of what is pinned here. ARITHMETIC, re-derivable by hand from the raw zoned bytes without running anything. The overpunch convention in these fixtures is positive final digit 0-9 as { A B C D E F G H I and negative as } J K L M N O P Q R. COMPUTE WS-TEMP-BAL at :403-405 is ACCT-CURR-CYC-CREDIT - ACCT-CURR-CYC-DEBIT + DALYTRAN-AMT, that is 00000000000{ minus 00000000000{ plus 0000005047G, so 0.00 - 0.00 + 504.77 = 504.77. The receiver is WS-TEMP-BAL PIC S9(09)V99 at :187 and the keyword ROUNDED appears zero times in this program, so the store truncates: scale exactly 2 with RoundingMode.DOWN, never HALF_UP and never HALF_EVEN. The three posted results then follow in the source's own order. 2700-B-UPDATE-TCATBAL-REC adds the amount to TRAN-CAT-BAL: 0000000000{ plus 0000005047G, so 0.00 + 504.77 = 504.77, stored as 0000005047G. 2800-UPDATE-ACCOUNT-REC adds it to ACCT-CURR-BAL: 00000001930{ plus 0000005047G, so 193.00 + 504.77 = 697.77, stored as 00000006977G; and because :548 finds DALYTRAN-AMT >= 0 it adds to ACCT-CURR-CYC-CREDIT, 0.00 + 504.77 = 504.77 stored as 00000005047G, leaving ACCT-CURR-CYC-DEBIT at 0.00 as 00000000000{. 2900-WRITE-TRANSACTION-FILE then writes the 350-byte TRAN-RECORD under TRAN-ID 0000000000683580. Each of the three records is pinned twice over: field by field, and as a whole image whose length proves the total width - 50, 300 and 350 - and therefore proves that every FILLER span was emitted. TCATBALF's FILLER STAYS THE FIXTURE'S TWENTY-TWO ZEROS, and that is behaviour rather than an oversight. 2700-B-UPDATE-TCATBAL-REC at :526-542 does exactly two things, ADD DALYTRAN-AMT TO TRAN-CAT-BAL and REWRITE, and issues no INITIALIZE; the record area still holds what READ INTO put there, so the 22 reserved bytes are rewritten unchanged. INITIALIZE appears only on the create arm, 2700-A-CREATE-TCATBAL-REC at :503, which is why the sibling case02 - a type-03 key absent from tcatbal.txt - expects 22 spaces there instead. The READ having reported '00', the create arm is not taken, so the DISPLAY at :475-477 - the literal 'TCATBAL record not found for key : ' followed by FD-TRAN-CAT-KEY and then '.. Creating.' - is not emitted either. PINNED CLOCK. TRAN-PROC-TS is the one wall-clock-derived value in this program: Z-GET-DB2-FORMAT-TIMESTAMP at :692-705 composes DB2-FORMAT-TS PIC X(26) from FUNCTION CURRENT-DATE in the shape YYYY-MM-DD-HH.MM.SS.hh0000 declared by the REDEFINES at :160-175. It is pinned, never captured: ParityHarness.DEFAULT_PINNED_CLOCK fixes the instant at 2022-07-19T23:12:34 UTC - the analysed revision's own stamp, Ver CardDemo_v1.0-15-g27d6c6f-68 Date 2022-07-19 - and its zero nanosecond makes DB2-MIL 00, giving exactly 2022-07-19-23.12.34.000000. That is deliberately not the shape of DALYTRAN-ORIG-TS, which the fixture carries as 2022-06-10 19:27:53.000000 with a space before the time and colons inside it; :437-438 copies the freshly composed value, and DALYTRAN-PROC-TS - 26 spaces on input - is not copied at all. RETURN CODE AND MESSAGES. WS-REJECT-COUNT stays 0, so the IF at :229-231 never moves 4 into RETURN-CODE and the code is 0. The four DISPLAY lines are byte-exact, including the single space before the colon at :227 and the two spaces before it at :228. CHANNELS. DALYREJS is opened unconditionally at :198 and nothing is rejected, so it appears on the writes channel as a 430-byte output holding zero rows - a positive assertion that it was created and never written to, which is what DISP=(NEW,CATLG,DELETE) in POSTTRAN.jcl catalogues. The three posting effects are asserted on the final-state channel, where all five relations are pinned, including DALYTRAN and XREFFILE, which the program must leave undisturbed. The cross-reference row is seeded at its true on-disk width of 36 bytes and widened to the copybook's 50 once, at seed time, by ParityCase.Normalisation.CARDXREF_FILLER_PAD_36_TO_50; nothing is padded at comparison time. POSTTRAN.jcl:23 is EXEC PGM=CBTRN02C with no PARM=, so there are no job parameters. PROVENANCE. Every expected value here is STATICALLY DERIVED - by structured reading of the COBOL paragraphs cited above, cross-checked against the copybook byte layouts in app/cpy, the DD and PARM contract in app/jcl/POSTTRAN.jcl, and the real ASCII fixtures. It is NOT captured from, recorded against or replayed from any execution of the legacy COBOL: running these programs is empirically impossible in this environment - no z/OS or CICS runtime exists, the available compiler reports its indexed file handler disabled, no Language Environment CEE* services are present, and the IBM-supplied DFHAID, DFHBMSCA and DFHATTR copybooks are absent from the repository. Only the provenance of the expected values is substituted; the 20 cases per program, the field-for-field diffing and the diff-count-equals-zero gate all stand, and the substitution is escalated for explicit user confirmation as risk R-A rather than quietly absorbed. No user-specified rules govern this project - review_rules returns 'No user rules provided' - so this fixture is held instead to the enterprise best-practice substitutes: B1 exact derived values with no placeholder, B3 the reference inputs left untouched, B5 behaviour preserved including the FILLER quirk above, B7 the clock pinned rather than read, B8 explicit field-name-to-value pairs beside the record images, B11 this derivation written out so a reviewer can re-check it against the copybooks by hand, and B12 this provenance stated plainly.",
   "unitKind": "BATCH_JOB",
   "inputs": {
     "DALYTRAN": {
@@ -30,31 +30,92 @@
       "copybook": "CVTRA05Y"
     }
   },
+  "jobParameters": {},
   "expectedWrites": [],
   "expectedFinalState": [
     {
       "dataset": "DALYTRAN",
       "rowIndex": 0,
+      "fields": {
+        "DALYTRAN-ID": "0000000000683580",
+        "DALYTRAN-TYPE-CD": "01",
+        "DALYTRAN-CAT-CD": "0001",
+        "DALYTRAN-SOURCE": "POS TERM  ",
+        "DALYTRAN-DESC": "Purchase at Abshire-Lowe                                                                            ",
+        "DALYTRAN-AMT": "504.77",
+        "DALYTRAN-MERCHANT-ID": "800000000",
+        "DALYTRAN-MERCHANT-NAME": "Abshire-Lowe                                      ",
+        "DALYTRAN-MERCHANT-CITY": "North Enoshaven                                   ",
+        "DALYTRAN-MERCHANT-ZIP": "72112     ",
+        "DALYTRAN-CARD-NUM": "4859452612877065",
+        "DALYTRAN-ORIG-TS": "2022-06-10 19:27:53.000000",
+        "DALYTRAN-PROC-TS": "                          ",
+        "FILLER": "                    "
+      },
       "expectedBytes": "0000000000683580010001POS TERM  Purchase at Abshire-Lowe                                                                            0000005047G800000000Abshire-Lowe                                      North Enoshaven                                   72112     48594526128770652022-06-10 19:27:53.000000                                              "
     },
     {
       "dataset": "XREFFILE",
       "rowIndex": 0,
+      "fields": {
+        "XREF-CARD-NUM": "4859452612877065",
+        "XREF-CUST-ID": "000000007",
+        "XREF-ACCT-ID": "00000000007",
+        "FILLER": "              "
+      },
       "expectedBytes": "485945261287706500000000700000000007              "
     },
     {
       "dataset": "ACCTFILE",
       "rowIndex": 0,
+      "fields": {
+        "ACCT-ID": "00000000007",
+        "ACCT-ACTIVE-STATUS": "Y",
+        "ACCT-CURR-BAL": "697.77",
+        "ACCT-CREDIT-LIMIT": "2065.00",
+        "ACCT-CASH-CREDIT-LIMIT": "264.00",
+        "ACCT-OPEN-DATE": "2012-10-12",
+        "ACCT-EXPIRAION-DATE": "2024-12-13",
+        "ACCT-REISSUE-DATE": "2024-12-13",
+        "ACCT-CURR-CYC-CREDIT": "504.77",
+        "ACCT-CURR-CYC-DEBIT": "0.00",
+        "ACCT-ADDR-ZIP": "A000000000",
+        "ACCT-GROUP-ID": "          ",
+        "FILLER": "                                                                                                                                                                                  "
+      },
       "expectedBytes": "00000000007Y00000006977G00000020650{00000002640{2012-10-122024-12-132024-12-1300000005047G00000000000{A000000000                                                                                                                                                                                            "
     },
     {
       "dataset": "TCATBALF",
       "rowIndex": 0,
+      "fields": {
+        "TRANCAT-ACCT-ID": "00000000007",
+        "TRANCAT-TYPE-CD": "01",
+        "TRANCAT-CD": "0001",
+        "TRAN-CAT-BAL": "504.77",
+        "FILLER": "0000000000000000000000"
+      },
       "expectedBytes": "000000000070100010000005047G0000000000000000000000"
     },
     {
       "dataset": "TRANFILE",
       "rowIndex": 0,
+      "fields": {
+        "TRAN-ID": "0000000000683580",
+        "TRAN-TYPE-CD": "01",
+        "TRAN-CAT-CD": "0001",
+        "TRAN-SOURCE": "POS TERM  ",
+        "TRAN-DESC": "Purchase at Abshire-Lowe                                                                            ",
+        "TRAN-AMT": "504.77",
+        "TRAN-MERCHANT-ID": "800000000",
+        "TRAN-MERCHANT-NAME": "Abshire-Lowe                                      ",
+        "TRAN-MERCHANT-CITY": "North Enoshaven                                   ",
+        "TRAN-MERCHANT-ZIP": "72112     ",
+        "TRAN-CARD-NUM": "4859452612877065",
+        "TRAN-ORIG-TS": "2022-06-10 19:27:53.000000",
+        "TRAN-PROC-TS": "2022-07-19-23.12.34.000000",
+        "FILLER": "                    "
+      },
       "expectedBytes": "0000000000683580010001POS TERM  Purchase at Abshire-Lowe                                                                            0000005047G800000000Abshire-Lowe                                      North Enoshaven                                   72112     48594526128770652022-06-10 19:27:53.0000002022-07-19-23.12.34.000000                    "
     }
   ],

@@ -1,7 +1,7 @@
 {
   "program": "COTRN00C",
   "caseId": "case20",
-  "description": "TWO selection cells filled in one submission, which is the case that pins the ORDERING of the ten-way EVALUATE TRUE at :148-182 rather than merely its membership (gate G30). Rows three and seven both carry 'S'; because EVALUATE evaluates its WHEN clauses in source order and the FIRST match wins, arm three matches and arms four to ten are never evaluated. CDEMO-CT00-TRN-SELECTED must therefore hold the identifier from TRNID03I and NOT the one from TRNID07I. Reverse the evaluation order and every other assertion in this case still passes while this one field is wrong, which is exactly why it is stated: an unordered implementation is indistinguishable from an ordered one on all nineteen of the other cases.",
+  "description": "COTRN00C LISTS transactions from the TRANSACT file, although rule R1 requires the migrated class to be called TransactionMenuController: the name comes from the prompt and the behaviour from app/cbl/COTRN00C.cbl, and a mandated name never authorises a change to what the source does. This case pins the ORDERING of the ten-way EVALUATE TRUE at :148-182 rather than merely its membership (gate G30), by filling TWO selection cells in one submission. Entry is in RE-ENTRY state: CDEMO-PGM-CONTEXT arrives as 1, so 'IF NOT CDEMO-PGM-REENTER' at :112 is FALSE, :118 performs RECEIVE-TRNLST-SCREEN and the EVALUATE EIBAID at :119 matches DFHENTER at :120, which performs PROCESS-ENTER-KEY. SEL0003I and SEL0007I both carry 'S'; because EVALUATE tests its WHEN clauses in source order and the FIRST match wins, arm three at :155-157 matches and arms four to ten at :158-178 are never evaluated at all. CDEMO-CT00-TRN-SELECTED must therefore hold TRNID03I, moved at :157, and NOT TRNID07I, which :169 would have moved had position not decided it first. Reverse the evaluation order and every other assertion in this case still passes while that one field is wrong, which is exactly why it is stated: on all nineteen of the other cases an unordered implementation is indistinguishable from an ordered one. The two typed identifiers are deliberately NOT the ones the row ordinals imply - TRNID03I carries record four's key and TRNID07I record nine's - so the expected CDEMO-CT00-TRN-SELECTED cannot be reproduced by re-deriving a value from the row index, only by moving the cell the matching arm names, which is the whole point of :151 through :178 naming a different TRNIDnnI in every arm. All ten SEL000nI cells and TRNIDINI are pinned explicitly below rather than left to a default, so arms one and two are provably SPACES and cannot match while arm seven is provably filled and would have matched: the ordering claim is then a property of this file and not of the harness that loads it. The guard at :183-184 holds - flag and identifier are both non-space and non-low-values - so the selector EVALUATE at :185 is entered and matches WHEN 'S' at :186, which shares one body with WHEN 's' at :187; case18 is this case's single-cell sibling, driving that same body from arm one, and the lower-case half of the pair is derived from case18 rather than spending a case file on one byte. The body moves 'COTRN01C' at :188, WS-TRANID at :189, WS-PGMNAME at :190 and 0 into CDEMO-PGM-CONTEXT at :191 - so the next program is entered in ENTER state and paints rather than re-validates - and then transfers at :192-195. Per rule R6 that EXEC CICS XCTL becomes a response field naming the target: nothing is forwarded, nothing is redirected and no session is consulted, so 'termination' is XCTL and 'nextProgram' is COTRN01C. Because the transfer happens INSIDE PROCESS-ENTER-KEY, :206-229 is never reached: TRNIDINI is never examined at :206, the page number is never zeroed at :224, PROCESS-PAGE-FORWARD is never performed at :225 and TRNIDINO is never blanked at :228. Nothing is painted either, so 'sends' is EMPTY and both message channels below carry the spaces :102 moved into WS-MESSAGE PIC X(80) and ERRMSGO PIC X(78) before the commarea had even been inspected - a truncation with nothing to truncate, still pinned at both widths so that a drift in either declaration fails here. Only :224, :306-307, :317, :364 and :366 write CDEMO-CT00-PAGE-NUM and only :393 and :439 write CDEMO-CT00-TRNID-FIRST and CDEMO-CT00-TRNID-LAST, all of them inside paging paragraphs this path never enters, so the three come back exactly as they arrived. CDEMO-CT00-NEXT-PAGE-FLG coming back as the 'Y' it arrived with is a real assertion rather than a passthrough: :99 SET NEXT-PAGE-NO TO TRUE runs BEFORE the commarea is copied, and because CDEMO-CT00-INFO is a 05-level item of CARDDEMO-COMMAREA the 218-byte move at :111 restores the caller's flag over it - apply :99 after the copy instead and this field reads 'N'. TRANSACT is still seeded with twelve well-formed rows so that 'no browse was ever opened' is an assertion about a file that had twelve records to offer rather than a vacuous statement about an empty one; each row is exactly 350 bytes in US-ASCII per app/cpy/CVTRA05Y.cpy, with TRAN-AMT at scale two under a zoned sign overpunch, both 26-byte timestamps pinned rather than generated, and the trailing FILLER X(20) space-filled - drop that span and every offset behind it shifts and the record stops measuring 350. The empty-result branch is NOT this case's: a STARTBR reporting DFHRESP(NOTFND) at :605-611 is case06's, and its empty-file twin is derived in code from case06 rather than declared as a twenty-first file, because ParityCase.caseId() admits case01 through case20 and nothing else. No attribute value is expected anywhere: COTRN00C copies DFHBMSCA at :81 and never uses it, does not copy CSSETATY at all, and none of its 699 lines writes an attribute byte, so no DFHRED and no '*' belongs in any expectation here. The program browses only - STARTBR, READNEXT, READPREV, ENDBR - so nothing is written, nothing is normalised and no job parameter applies, all three of which are declared empty below rather than left to inference. PROVENANCE: this expectation is STATICALLY DERIVED, by reading app/cbl/COTRN00C.cbl paragraph by paragraph and cross-checking app/cpy/CVTRA05Y.cpy for the record layout, app/cpy/COCOM01Y.cpy plus the CDEMO-CT00-INFO extension at :62-70 for the 160-plus-58-byte commarea, app/cpy-bms/COTRN00.CPY (COTRN0AI at :17, COTRN0AO REDEFINES at :373) and app/bms/COTRN00.bms for the screen widths, and app/csd/CARDDEMO.CSD (:419) for the CT00-to-COTRN00C binding. It was NEVER captured from a running COBOL program, because this environment has no COBOL runtime able to execute an indexed file, a CICS map or a Language Environment service.",
   "unitKind": "CONTROLLER_POJO",
   "inputs": {
     "TRANSACT": {
@@ -21,8 +21,10 @@
       ]
     }
   },
+  "jobParameters": {},
   "screenRequest": {
     "eibcalen": 218,
+    "aid": "DFHENTER",
     "pinnedClock": "2022-07-19T23:12:34",
     "charset": "US-ASCII",
     "commarea": {
@@ -50,13 +52,21 @@
       "CDEMO-CT00-TRN-SELECTED": "                "
     },
     "mapFields": {
+      "TRNIDINI": "                ",
+      "SEL0001I": " ",
+      "SEL0002I": " ",
       "SEL0003I": "S",
       "TRNID03I": "0000000000000004",
+      "SEL0004I": " ",
+      "SEL0005I": " ",
+      "SEL0006I": " ",
       "SEL0007I": "S",
-      "TRNID07I": "0000000000000009"
+      "TRNID07I": "0000000000000009",
+      "SEL0008I": " ",
+      "SEL0009I": " ",
+      "SEL0010I": " "
     },
-    "forcedOutcomes": {},
-    "aid": "DFHENTER"
+    "forcedOutcomes": {}
   },
   "expectedResponse": {
     "nextProgram": "COTRN01C",
@@ -100,5 +110,7 @@
       "channel": "SCREEN_ERRMSG_78",
       "text": "                                                                              "
     }
-  ]
+  ],
+  "normalisations": [],
+  "expectedDatasets": []
 }

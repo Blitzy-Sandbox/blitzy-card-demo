@@ -319,14 +319,19 @@ final class COSGN00CParityTest {
      *
      * <p>Stated as a property of the case set so that a case which quietly stopped signing on -
      * because a seed row changed, or a password expectation was edited - cannot pass unnoticed.
+     * Changing it is therefore a deliberate act, and the one change made to it is recorded here:
+     * {@code case14} exercises the {@code ELSE} at {@code :241-246} rather than the {@code XCTL},
+     * so that the wrong-password arm is asserted with a fully populated communication area carried
+     * across it. The administrator target stays driven by {@code case02} and {@code case09}, so
+     * both arms of {@code :230} remain reached.
      */
-    private static final int SUCCESSFUL_SIGN_ONS = 8;
+    private static final int SUCCESSFUL_SIGN_ONS = 7;
 
     /**
      * How many of the twenty reach {@code SEND-SIGNON-SCREEN} at {@code :145-157} and transmit the
-     * map.
+     * map - every case that neither signs on nor presses {@code DFHPF3}.
      */
-    private static final int SCREEN_SENDS = 11;
+    private static final int SCREEN_SENDS = 12;
 
     /**
      * How many of the twenty reach {@code SEND-PLAIN-TEXT} at {@code :162-172} - exactly one, the
@@ -1627,20 +1632,29 @@ final class COSGN00CParityTest {
     }
 
     /**
-     * The blank-field chain keeps the source's order, and the case with both fields blank answers
-     * with the <em>first</em> message.
+     * The blank-field chain keeps the source's order, and the second arm is reached only by falling
+     * through the first.
      *
      * <p>{@code EVALUATE TRUE} at {@code app/cbl/COSGN00C.cbl:117} is ordered and the first matching
      * {@code WHEN} wins, so the order of {@code :118-130} is the whole of the contract - and it is
-     * only falsifiable across the case set. {@code case06} pins the user-id arm, {@code case07} pins
-     * the password arm, and {@code case08} - which transmits neither field, so both arrive as
-     * {@code LOW-VALUES} - pins that only the earlier one speaks. Each arm also raises
-     * {@code WS-ERR-FLG}, so {@code :138} finds the flag on and the file is never read: an empty read
-     * outcome is part of what these three assert.
+     * only falsifiable across the case set. {@code case06} pins the user-id arm from the first
+     * position, while {@code case07} and {@code case08} pin the password arm from the second, each
+     * with a different seeded key: reaching {@code :123} at all proves {@code :118} was evaluated and
+     * found false, because a chain that tested the password first would answer both of them with the
+     * password message and {@code case06} with it too. Each arm also raises {@code WS-ERR-FLG}, so
+     * {@code :138} finds the flag on and the file is never read: an empty read outcome is part of
+     * what these three assert.
+     *
+     * <p>The complementary reading - that when <em>both</em> fields are blank the earlier arm is the
+     * one that speaks - is driven directly against the service by
+     * {@code SignOnServiceTest.bothBlankAsksForTheUserIdFirst()}, where both conditions can be made
+     * true at once and the losing message can be asserted absent. It is proven there rather than
+     * here because a fixture can only ever exhibit one arm's outcome, whereas that test contrasts
+     * the two.
      */
     @Test
-    @DisplayName("the blank-field chain keeps source order and the first blank wins")
-    void theBlankFieldChainIsOrderedAndTheFirstBlankWins() {
+    @DisplayName("the blank-field chain keeps source order and the second arm falls through the first")
+    void theBlankFieldChainIsOrderedAndTheSecondArmFallsThroughTheFirst() {
         Map<String, ParityCase> byId = casesById();
 
         ParityCase blankUserId = byId.get(ParityHarness.caseId(6));
@@ -1663,19 +1677,30 @@ final class COSGN00CParityTest {
                 .as("case07: :126 moves -1 into PASSWDL")
                 .isEqualTo(CursorField.PASSWORD.lengthItemName().orElseThrow());
 
-        ParityCase bothBlank = byId.get(ParityHarness.caseId(8));
-        assertThat(bothBlank.screenRequest().mapFields())
-                .as("case08 must transmit neither field, so both arrive as LOW-VALUES and both arms "
-                        + "of the chain match - which is the only way to prove the first one wins")
-                .doesNotContainKey(USERID_INPUT_ITEM)
-                .doesNotContainKey(PASSWD_INPUT_ITEM);
-        assertThat(errMsgOf(bothBlank))
-                .as("case08: both arms match and the EVALUATE stops at the first, so the password "
-                        + "message is never produced")
-                .isEqualTo(truncated(SignOnService.MSG_ENTER_USER_ID))
-                .isNotEqualTo(truncated(SignOnService.MSG_ENTER_PASSWORD));
+        ParityCase blankPasswordAgain = byId.get(ParityHarness.caseId(8));
+        assertThat(errMsgOf(blankPasswordAgain))
+                .as("case08 pins the second arm a second time, :123-127, so the arm does not rest on "
+                        + "one row of seed data alone")
+                .isEqualTo(truncated(SignOnService.MSG_ENTER_PASSWORD))
+                .isNotEqualTo(truncated(SignOnService.MSG_ENTER_USER_ID));
+        assertThat(blankPasswordAgain.screenRequest().mapFields())
+                .as("case08 must supply a user id too, or reaching :123 proves nothing about the "
+                        + "ordering")
+                .containsKey(USERID_INPUT_ITEM);
+        assertThat(blankPasswordAgain.screenRequest().mapFields().get(PASSWD_INPUT_ITEM))
+                .as("case08 drives the SPACES half of ':123' rather than the LOW-VALUES half, so the "
+                        + "field must be transmitted and blank rather than absent")
+                .isNotNull()
+                .isBlank();
+        assertThat(blankPasswordAgain.expectedResponse().cursorField())
+                .as("case08: :126 moves -1 into PASSWDL")
+                .isEqualTo(CursorField.PASSWORD.lengthItemName().orElseThrow());
+        assertThat(blankPasswordAgain.screenRequest().mapFields().get(USERID_INPUT_ITEM))
+                .as("case08 must type a different seeded key from case07, or the two are one case "
+                        + "written twice")
+                .isNotEqualTo(blankPassword.screenRequest().mapFields().get(USERID_INPUT_ITEM));
 
-        for (ParityCase parityCase : List.of(blankUserId, blankPassword, bothBlank)) {
+        for (ParityCase parityCase : List.of(blankUserId, blankPassword, blankPasswordAgain)) {
             assertThat(parityCase.expectedResponse().nextProgram())
                     .as("%s: the arm raises WS-ERR-FLG, so :138 skips READ-USER-SEC-FILE entirely "
                             + "and no sign-on can occur", parityCase.caseId())
@@ -1917,7 +1942,7 @@ final class COSGN00CParityTest {
         }
 
         assertThat(adminTargets + userTargets)
-                .as("eight of the twenty sign on; a change in that number means a case stopped "
+                .as("seven of the twenty sign on; a change in that number means a case stopped "
                         + "exercising the comparison at :223")
                 .isEqualTo(SUCCESSFUL_SIGN_ONS);
         assertThat(adminTargets)
@@ -1944,7 +1969,10 @@ final class COSGN00CParityTest {
      *
      * <p>{@code case14} carries a fully populated inbound area and asserts the complement: the eleven
      * fields {@code COSGN00C} does not write come back exactly as they arrived. A translation holding
-     * any of this in a session would have nothing to hand back.
+     * any of this in a session would have nothing to hand back. It carries that area across the
+     * <em>rejecting</em> path - the wrong-password {@code ELSE} at {@code :241-246} - which is what
+     * makes the assertion non-vacuous: the cases that reject on a blank inbound area would read the
+     * same whether the area was carried or rebuilt, and this one would not.
      */
     @Test
     @DisplayName("the navigation context travels in the payload, all sixteen fields, no session")
@@ -2006,8 +2034,9 @@ final class COSGN00CParityTest {
                 continue;
             }
             assertThat(navigationOf(carried, arrived.getKey()))
-                    .as("case14: COSGN00C writes five commarea fields at :224-228 and touches no "
-                            + "other, so %s comes back as it arrived", arrived.getKey())
+                    .as("case14: COSGN00C writes CDEMO-USER-ID at :134 and, on the signing-on path "
+                            + "alone, the five at :224-228; it touches no other field on any path, "
+                            + "so %s comes back as it arrived", arrived.getKey())
                     .isEqualTo(arrived.getValue());
         }
     }
@@ -2132,7 +2161,7 @@ final class COSGN00CParityTest {
                     .isEmpty();
         }
         assertThat(sends)
-                .as("eleven of the twenty reach SEND-SIGNON-SCREEN at :145-157")
+                .as("twelve of the twenty reach SEND-SIGNON-SCREEN at :145-157")
                 .isEqualTo(SCREEN_SENDS);
     }
 
@@ -2198,10 +2227,10 @@ final class COSGN00CParityTest {
                 .as("exactly one of the twenty presses PF3")
                 .isEqualTo(PLAIN_TEXT_SENDS);
         assertThat(transfers)
-                .as("eight sign on")
+                .as("seven sign on")
                 .isEqualTo(SUCCESSFUL_SIGN_ONS);
         assertThat(painted)
-                .as("eleven paint the screen")
+                .as("twelve paint the screen")
                 .isEqualTo(SCREEN_SENDS);
         assertThat(transfers + painted + plainText)
                 .as("and the three account for every case: MAIN-PARA reaches exactly one terminal "

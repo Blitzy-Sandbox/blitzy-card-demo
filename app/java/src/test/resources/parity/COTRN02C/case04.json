@@ -1,106 +1,183 @@
 {
-  "program" : "COTRN02C",
-  "caseId" : "case04",
-  "description" : "PF3 with no caller recorded. :132 receives the map, the EVALUATE EIBAID at :133 takes the DFHPF3 arm at :136, and the test at :137 finds CDEMO-FROM-PROGRAM at spaces, so :138 moves the literal 'COMEN01C' into CDEMO-TO-PROGRAM and :143 performs RETURN-TO-PREV-SCREEN. The transfer at :508-511 names no map, so the response's mapset and map are blanked rather than left naming the screen being left - the target program paints its own. :505-507 stamp CDEMO-FROM-TRANID with 'CT02', CDEMO-FROM-PROGRAM with 'COTRN02C' and CDEMO-PGM-CONTEXT with zeros, so the next screen sees a first entry. No map is sent and therefore no message reaches a terminal, and no cursor is requested: the PF3 arm contains no MOVE -1.",
-  "unitKind" : "CONTROLLER_POJO",
-  "inputs" : {
-    "CCXREF" : {
-      "rows" : [ ],
-      "fixture" : "cardxref.txt",
-      "fromRow" : 0,
-      "rowCount" : 5,
-      "empty" : null,
-      "recordLength" : null,
-      "copybook" : null
+  "program": "COTRN02C",
+  "caseId": "case04",
+  "description": "RISK R-B, STATED FIRST BECAUSE THE CLASS NAME INVERTS THE BEHAVIOUR: the prompt-mandated Java class for COTRN02C is TransactionViewController, but this program does not view - it ADDS. Two independent sources say so: app/cbl/COTRN02C.cbl:5 'Function    : Add a new Transaction to TRANSACT file', and the project inventory row 'CT02 | COTRN02 | COTRN02C | Transaction Add', which sits at README.md:224 in this checkout - the brief and case01 cite it as :222, and the row text rather than the ordinal is what makes it findable either way. Both readings are the inverse of the prompt's mapping and the mirror image of parity/COTRN01C, whose program genuinely views. Rule R1 governs the resolution - the name comes from the prompt, the behaviour comes from the source - and practice B4 governs the disclosure, so the divergence is documented here and never silently corrected; the Agent Action Plan escalates it for explicit user confirmation. No case in this folder is downgraded to read-only to match the name: the EXEC CICS WRITE at :713 is pinned at its full 350 bytes by case19 and case20, and this case pins a path that deliberately writes nothing. WHAT THIS CASE PINS: arm three of the ordered EVALUATE EIBAID at :133-152 - WHEN DFHPF4 at :144, which performs CLEAR-CURRENT-SCREEN at :145. CDEMO-PGM-CONTEXT arrives as '1', so CDEMO-PGM-REENTER holds at :120 and control reaches :132 PERFORM RECEIVE-TRNADD-SCREEN, which copies all twenty-one xxxI items in from the terminal, and then the EVALUATE. All five arms in source order, with the case that owns each: 1 WHEN DFHENTER at :134 performs PROCESS-ENTER-KEY and is owned by case07 through case20, the whole validation cascade and the insert; 2 WHEN DFHPF3 at :136 resolves its target from the commarea and is owned by case05, whose CDEMO-FROM-PROGRAM names a caller so :140-141 echo it, while the :137-138 branch that substitutes the literal 'COMEN01C' for a blank caller is driven directly by COTRN02CParityTest.AidDispatch.pf3ResolvesItsTargetFromTheCommarea; 3 WHEN DFHPF4 at :144 performs CLEAR-CURRENT-SCREEN and is THIS CASE; 4 WHEN DFHPF5 at :146 performs COPY-LAST-TRAN-DATA; 5 WHEN OTHER at :148 raises WS-ERR-FLG, moves CCDA-MSG-INVALID-KEY and sends, and is owned by case06. WHEN OTHER is last, which is the whole of gate G30 for this screen: EVALUATE is ordered, the first matching WHEN wins, and reordering the arms would change which key does what. CASE ALLOCATION, RECONCILED IN THE OPEN (practice B4): this file's authoring brief described the folder as allocating DFHPF3 to case03, WHEN OTHER to case05 and DFHPF5 to case20. The folder as it actually stands allocates them differently - case02 and case03 are the two first-entry paints at CDEMO-PGM-CONTEXT '0', case05 is the DFHPF3 arm and case06 is WHEN OTHER - and before this case existed the DFHPF4 arm was pinned by no case fixture at all. Closing that hole is what this case is for, and it costs no coverage: the branch previously held here, DFHPF3 with a blank CDEMO-FROM-PROGRAM defaulting to COMEN01C, keeps its coverage in AidDispatch.pf3ResolvesItsTargetFromTheCommarea, which drives both halves of the :137-141 IF directly, and case05 keeps the DFHPF3 arm at fixture level. The reconciliation is recorded rather than made silently, and nothing is renamed or weakened to accommodate it. THE CLEAR LIST IS EXACTLY FOURTEEN FIELDS PLUS WS-MESSAGE, NO MORE AND NO FEWER (practice B5). CLEAR-CURRENT-SCREEN at :754-757 is two performs and nothing else: INITIALIZE-ALL-FIELDS at :756 then SEND-TRNADD-SCREEN at :757. INITIALIZE-ALL-FIELDS at :762-779 moves -1 into ACTIDINL at :764 and SPACES into fourteen xxxI items at :765-778 - ACTIDINI, CARDNINI, TTYPCDI, TCATCDI, TRNSRCI, TRNAMTI, TDESCI, TORIGDTI, TPROCDTI, MIDI, MNAMEI, MCITYI, MZIPI and CONFIRMI - and into the eighty-byte WS-MESSAGE at :779. Each is spaces to its FULL declared width and not an empty string (rule R5): eleven for ACTIDINO, sixteen for CARDNINO, two for TTYPCDO, four for TCATCDO, ten for TRNSRCO, sixty for TDESCO, twelve for TRNAMTO, ten each for TORIGDTO and TPROCDTO, nine for MIDO, thirty for MNAMEO, twenty-five for MCITYO, ten for MZIPO and one for CONFIRMO. WHICH FIELDS ARE DELIBERATELY NOT CLEARED, AND WHAT REPLACES THEM INSTEAD (practice B8). Seven of the twenty-one are absent from the :765-778 list: the six header items TRNNAMEI, TITLE01I, CURDATEI, PGMNAMEI, TITLE02I and CURTIMEI, and ERRMSGI. They are nonetheless all replaced before the send, by a different paragraph, and this case makes that observable rather than assuming it - every one of the twenty-one is given a non-blank value on the way in, the fourteen carrying plausible form data an operator would abandon and the seven carrying obviously stale markers. POPULATE-HEADER-INFO at :552-571 then overwrites the six: TITLE01O takes CCDA-TITLE01 and TITLE02O takes CCDA-TITLE02, both PIC X(40) literals from app/cpy/COTTL01Y.cpy reproduced byte for byte; TRNNAMEO takes WS-TRANID 'CT02' and PGMNAMEO takes WS-PGMNAME 'COTRN02C'; and CURDATEO and CURTIMEO are built from FUNCTION CURRENT-DATE as mm/dd/yy and hh:mm:ss. ERRMSGO is overwritten separately, by MOVE WS-MESSAGE TO ERRMSGO at :520, and because :779 has just blanked WS-MESSAGE the value that lands is seventy-eight spaces. So the stale header text and the stale error line both disappear, but neither disappears because it was cleared - the distinction the fourteen-item list draws is real and is asserted here in both directions. WHY THE MESSAGE CHANNELS ARE PRESENT AND BLANK RATHER THAN ABSENT: a path that sends a screen reports both message channels, so declaring none would assert that no screen was painted. WS-MESSAGE is PIC X(80) in WORKING-STORAGE and ERRMSGO is PIC X(78) in the symbolic map, and MOVE WS-MESSAGE TO ERRMSGO at :520 loses the last two bytes on the way to the screen; both are blank here, so the two-byte loss is invisible in the values and visible only in the widths, which is exactly why the channels are distinct. ERRMSGC carries DFHDFCOL, the default colour: MOVE DFHGREEN TO ERRMSGC at :727 is the only attribute assignment this program ever makes and it belongs to the successful-write arm, so it must not appear here. Nor may the CSSETATY highlight: this is a REENTER case, which is the half of gate G38 that matters, and CLEAR-CURRENT-SCREEN raises no error flag - clearing a form is not rejecting it - so no field is coloured DFHRED and no '*' is planted. The cursor is requested on ACTIDINL, because COBOL positions the cursor by moving -1 into a field's xxxL length item, so the length item IS the cursor and it is named as metadata rather than as payload. WHY NOTHING IS WRITTEN AND NOTHING IS TRANSFERRED: this arm touches no dataset. expectedWrites is empty, which is the positive assertion that the WRITE at :713 was not reached, and all three TRANSACT rows stand byte-identical on the final-state channel at their full 350 bytes with the trailing FILLER PIC X(20) present and space-filled (gates G19 and G21) - TRANSACT has no REWRITE and no DELETE anywhere in the codebase, so an unchanged master is the complete statement of the outcome. SEND-TRNADD-SCREEN ends with EXEC CICS RETURN TRANSID(WS-TRANID) COMMAREA at :530-534, so the termination is RETURN_TRANSID and not XCTL: the two are not interchangeable, and CICS RETURN ends the task, so no code runs after the repaint and there is no second send. No nextProgram expectation of a transfer is made and gate G40 is not asserted, because this arm performs no XCTL; the response names COTRN02C, COTRN02 and COTRN2A because the pseudo-conversation returns to itself and the screen it repaints is its own. The commarea travels back untouched apart from the re-enter flag already set on the previous pass, because CLEAR-CURRENT-SCREEN modifies no CDEMO field: all twenty-two fields of the 218-byte area are pinned and none omitted, since the conversation state lives in the payload rather than in a server-side session (rule R6, gate G37) and an unpinned field is a field nobody has checked. DEAD DECLARATIONS PRESERVED, NOT TIDIED (practice B5): WS-ACCTDAT-FILE PIC X(08) VALUE 'ACCTDAT ' is declared at :40 and COPY CVACT01Y at :89, and neither is referenced anywhere in the program's 783 lines - no DATASET operand names WS-ACCTDAT-FILE and no field of ACCOUNT-RECORD is ever moved - so the account master is a dead declaration and its copybook a dead include. No ACCTDAT input is declared here and no ACCTDAT row appears in any expectation in any case in this folder, because seeding a master the program never opens would assert a read that does not exist. This arm reads nothing at all, which makes the point twice over. THE DATASETS THIS CASE SEEDS, AND HOW THEY ARE ADDRESSED: three TRANSACT rows are declared inline because no ASCII fixture ships for that master - it is populated online, not loaded - and each is 350 bytes summed from app/cpy/CVTRA05Y.cpy as 16+2+4+10+100+11+9+50+50+10+16+26+26+20 (practice B11). Row 0 is additionally pinned across all fourteen spans by their verbatim copybook names, with TRAN-AMT stated as its eleven-byte stored image 0000000010A rather than as a quantity, because the gate is byte parity and the zoned sign overpunch that makes it +1.01 is part of the value. CCXREF is seeded from five rows of the cardxref.txt fixture exactly as they ship, 36 bytes wide, and is deliberately NOT pre-padded: app/cpy/CVACT03Y.cpy declares CARD-XREF-RECORD as 16+9+11+14 = 50 and the fixture omits the trailing FILLER PIC X(14), so the CARDXREF_FILLER_PAD_36_TO_50 normalisation declared below supplies those fourteen spaces once, at seed time, and is the sole owner of that repair (gate G16, risk R-F). CXACAIX is not seeded as a dataset of its own: app/csd/CARDDEMO.CSD:63-65 defines it as a PATH over the CCXREF base - 'ALTERNATE INDEX TO CCXREF VIA ACCOUNT KEY' - so it is an alternate-index finder and never a second table (gate G45). Every dataset is addressed by its application.yml binding key rather than by name, so not one fully-qualified mainframe dataset name appears anywhere in this file (gate G46); no tenth fixture is named, the fixture set being closed at the nine derived from app/data/ASCII; and the code page is stated as US-ASCII rather than left to a platform default (practice B8). The account and card values fed in are genuine - 00000000027 and 0683586198171516 are the second row of cardxref.txt - so the data the operator is shown abandoning is real production-shaped data even though this arm resolves nothing (practice B1). THE CLOCK IS PINNED (practice B7): POPULATE-HEADER-INFO calls FUNCTION CURRENT-DATE at :554, so a captured 'now' would make this case unreproducible and its two header items unassertable. The instant is 2022-07-19T23:12:34, the same one all twenty cases in this folder use, and it is not arbitrary - it is the source file's own version stamp, 'Ver: CardDemo_v1.0-15-g27d6c6f-68 Date: 2022-07-19 23:12:34 CDT'. CURDATEO is therefore 07/19/22 and CURTIMEO is 23:12:34 in any timezone. BASELINE PROVENANCE (practice B12): every expected value here is STATICALLY DERIVED - by structured reading of MAIN-PARA, RECEIVE-TRNADD-SCREEN, CLEAR-CURRENT-SCREEN, INITIALIZE-ALL-FIELDS, SEND-TRNADD-SCREEN and POPULATE-HEADER-INFO, cross-checked against the copybook byte layouts (app/cpy/COCOM01Y.cpy as 4+8+4+8+8+1+1+9+25+25+25+11+1+16+7+7 = 160 bytes and the CDEMO-CT02-INFO extension at :72-80 as 16+16+8+1+1+16 = 58, so the passed area is 218 and the extension is a separate group never folded into the commarea; app/cpy/CVTRA05Y.cpy 350; app/cpy/CVACT03Y.cpy 50), against the symbolic-map widths of app/cpy-bms/COTRN02.CPY - twenty-one xxxI payload items whose declared widths sum to 396, so the group image is 12 + 21*7 + 396 = 555 bytes, with the xxxL, xxxF and xxxA items being length, flag and attribute metadata and never payload - and against the real bytes of app/data/ASCII. TRNAMT is the twelve-character edit mask +99999999.99 and is carried as a string rather than as a BigDecimal, and there is no TRNIDIN item on this map at all: the new identifier comes from a backward browse and is never typed. These values were NEVER captured from a live COBOL execution: running the legacy programs is empirically impossible in this environment, which Agent Action Plan section 0.7.6 establishes with eight independently verified blockers - among them a compiler whose indexed-file handler is disabled, the absence of any Language Environment CEE service behind CSUTLDTC, the absence of a CICS emulator, and the absence of the IBM-supplied DFHAID and DFHBMSCA copybooks this program copies at :92-93, which is why common.CicsAid is the single reproduction of the DFHPF4 mnemonic this case names (risk R-D). The change of provenance is escalated as risk R-A rather than absorbed silently. NO USER RULES EXIST: review_rules returns exactly one line, 'No user rules provided', and that line is the whole document, so no rule forces this file into scope and no rule constrains how it is written. Per UR4 the absence is stated explicitly and is not treated as permission to lower the bar: the standard held here is the Agent Action Plan section 0.10.2 enterprise practices, cited by name where they bite - B1 (every literal derived and verified, no placeholder anywhere), B3 (the reference trees app/cbl, app/cpy, app/cpy-bms, app/bms, app/csd and app/data are read-only and were not touched), B4 (the R-B inversion and the case reallocation both disclosed), B5 (the clear list preserved at exactly fourteen fields plus WS-MESSAGE, and the dead ACCTDAT declaration left in place), B7 (a pinned clock), B8 (binding keys, a named code page, and every field named in both directions), B11 (every width summed from a PICTURE clause) and B12 (the provenance statement above). GATES DISCHARGED: G15 (one of exactly twenty cases in parity/COTRN02C), G16 (the cardxref seed stays 36 bytes and is normalised at seed time, never pre-padded), G18 (the diff count must be zero, per module rather than per build), G19 and G21 (350-byte records whose FILLER is present and space-filled), G30 (the five-arm EVALUATE EIBAID in source order with WHEN OTHER last, arm three driven here), G37 (no server-side session state - the whole 218-byte area travels in the payload), G38 (a REENTER case in which no field is highlighted, because this arm sets no error flag), G45 (CXACAIX is an alternate-index finder over the CCXREF base, not a second table), G46 (binding keys, never a dataset-name literal) and G51 (the controller is driven as a plain object - no MockMvc, no TestRestTemplate, no servlet container, no HTTP and no JobLauncher in the path). DELIBERATELY NOT ASSERTED, because this program or this arm has none of them: G32 (COTRN02C contains zero GO TO, so there is no backward jump to restructure), G35 (zero CALL 'CEE3ABD', which is why the return code is 0 and no abend path exists), G39 (no pagination loop on this screen), G40 (this arm performs no XCTL) and G43 (no 9300-CHECK-CHANGE-IN-REC in this program).",
+  "unitKind": "CONTROLLER_POJO",
+  "inputs": {
+    "CCXREF": {
+      "fixture": "cardxref.txt",
+      "fromRow": 0,
+      "rowCount": 5
     },
-    "TRANSACT" : {
-      "rows" : [ "0000000000000001010001POS TERM  SEEDED TRANSACTION NUMBER 1                                                                         0000000010A800000001SEEDED MERCHANT 1                                 SEEDED CITY 1                                     000001234105000244537657402022-07-11 08:00:00.0000012022-07-11 09:30:00.000001                    ", "0000000000000002020002POS TERM  SEEDED TRANSACTION NUMBER 2                                                                         0000000020B800000002SEEDED MERCHANT 2                                 SEEDED CITY 2                                     000001234205000244537657402022-07-12 08:00:00.0000022022-07-12 09:30:00.000002                    ", "0000000000000003030003POS TERM  SEEDED TRANSACTION NUMBER 3                                                                         0000000030C800000003SEEDED MERCHANT 3                                 SEEDED CITY 3                                     000001234305000244537657402022-07-13 08:00:00.0000032022-07-13 09:30:00.000003                    " ],
-      "fixture" : null,
-      "fromRow" : null,
-      "rowCount" : null,
-      "empty" : null,
-      "recordLength" : null,
-      "copybook" : null
+    "TRANSACT": {
+      "rows": [
+        "0000000000000001010001POS TERM  SEEDED TRANSACTION NUMBER 1                                                                         0000000010A800000001SEEDED MERCHANT 1                                 SEEDED CITY 1                                     000001234105000244537657402022-07-11 08:00:00.0000012022-07-11 09:30:00.000001                    ",
+        "0000000000000002020002POS TERM  SEEDED TRANSACTION NUMBER 2                                                                         0000000020B800000002SEEDED MERCHANT 2                                 SEEDED CITY 2                                     000001234205000244537657402022-07-12 08:00:00.0000022022-07-12 09:30:00.000002                    ",
+        "0000000000000003030003POS TERM  SEEDED TRANSACTION NUMBER 3                                                                         0000000030C800000003SEEDED MERCHANT 3                                 SEEDED CITY 3                                     000001234305000244537657402022-07-13 08:00:00.0000032022-07-13 09:30:00.000003                    "
+      ]
     }
   },
-  "jobParameters" : { },
-  "screenRequest" : {
-    "eibcalen" : 218,
-    "aid" : "DFHPF3",
-    "pinnedClock" : "2022-07-19T23:12:34",
-    "charset" : "US-ASCII",
-    "commarea" : {
-      "CDEMO-FROM-TRANID" : "CT00",
-      "CDEMO-FROM-PROGRAM" : "        ",
-      "CDEMO-TO-TRANID" : "CT02",
-      "CDEMO-TO-PROGRAM" : "COTRN02C",
-      "CDEMO-USER-ID" : "USER0001",
-      "CDEMO-USER-TYPE" : "U",
-      "CDEMO-PGM-CONTEXT" : "1",
-      "CDEMO-CT02-TRN-SELECTED" : "                "
+  "jobParameters": {},
+  "screenRequest": {
+    "eibcalen": 218,
+    "aid": "DFHPF4",
+    "pinnedClock": "2022-07-19T23:12:34",
+    "charset": "US-ASCII",
+    "commarea": {
+      "CDEMO-FROM-TRANID": "CT00",
+      "CDEMO-FROM-PROGRAM": "COTRN00C",
+      "CDEMO-TO-TRANID": "CT02",
+      "CDEMO-TO-PROGRAM": "COTRN02C",
+      "CDEMO-USER-ID": "USER0001",
+      "CDEMO-USER-TYPE": "U",
+      "CDEMO-PGM-CONTEXT": "1",
+      "CDEMO-CT02-TRN-SELECTED": "                "
     },
-    "mapFields" : { },
-    "forcedOutcomes" : { }
-  },
-  "expectedResponse" : {
-    "nextProgram" : "COMEN01C",
-    "nextMapset" : null,
-    "nextMap" : null,
-    "navigation" : {
-      "CDEMO-FROM-TRANID" : "CT02",
-      "CDEMO-FROM-PROGRAM" : "COTRN02C",
-      "CDEMO-TO-TRANID" : "CT02",
-      "CDEMO-TO-PROGRAM" : "COMEN01C",
-      "CDEMO-USER-ID" : "USER0001",
-      "CDEMO-USER-TYPE" : "U",
-      "CDEMO-PGM-CONTEXT" : "0",
-      "CDEMO-CUST-ID" : "000000000",
-      "CDEMO-CUST-FNAME" : "                         ",
-      "CDEMO-CUST-MNAME" : "                         ",
-      "CDEMO-CUST-LNAME" : "                         ",
-      "CDEMO-ACCT-ID" : "00000000000",
-      "CDEMO-ACCT-STATUS" : " ",
-      "CDEMO-CARD-NUM" : "0000000000000000",
-      "CDEMO-LAST-MAP" : "       ",
-      "CDEMO-LAST-MAPSET" : "       ",
-      "CDEMO-CT02-TRNID-FIRST" : "                ",
-      "CDEMO-CT02-TRNID-LAST" : "                ",
-      "CDEMO-CT02-PAGE-NUM" : "00000000",
-      "CDEMO-CT02-NEXT-PAGE-FLG" : " ",
-      "CDEMO-CT02-TRN-SEL-FLG" : " ",
-      "CDEMO-CT02-TRN-SELECTED" : "                "
+    "mapFields": {
+      "TRNNAMEI": "STAL",
+      "TITLE01I": "STALE TITLE LINE ONE FROM THE PRIOR SEND",
+      "CURDATEI": "99/99/99",
+      "PGMNAMEI": "STALEPGM",
+      "TITLE02I": "STALE TITLE LINE TWO FROM THE PRIOR SEND",
+      "CURTIMEI": "99:99:99",
+      "ACTIDINI": "00000000027",
+      "CARDNINI": "0683586198171516",
+      "TTYPCDI": "02",
+      "TCATCDI": "0002",
+      "TRNSRCI": "POS TERM  ",
+      "TDESCI": "MISTYPED ENTRY THE OPERATOR ABANDONS WITH PF4",
+      "TRNAMTI": "+00000099.99",
+      "TORIGDTI": "2022-07-19",
+      "TPROCDTI": "2022-07-19",
+      "MIDI": "987654321",
+      "MNAMEI": "SHELBYVILLE HARDWARE",
+      "MCITYI": "SHELBYVILLE",
+      "MZIPI": "0000054321",
+      "CONFIRMI": "Y",
+      "ERRMSGI": "STALE ERROR LINE LEFT BY THE PREVIOUS SEND - NOT IN THE CLEAR LIST"
     },
-    "sends" : [ ],
-    "cursorField" : null,
-    "termination" : "XCTL"
+    "forcedOutcomes": {}
   },
-  "expectedWrites" : [ ],
-  "expectedFinalState" : [ {
-    "dataset" : "TRANSACT",
-    "rowIndex" : 0,
-    "fields" : { },
-    "expectedBytes" : "0000000000000001010001POS TERM  SEEDED TRANSACTION NUMBER 1                                                                         0000000010A800000001SEEDED MERCHANT 1                                 SEEDED CITY 1                                     000001234105000244537657402022-07-11 08:00:00.0000012022-07-11 09:30:00.000001                    "
-  }, {
-    "dataset" : "TRANSACT",
-    "rowIndex" : 1,
-    "fields" : { },
-    "expectedBytes" : "0000000000000002020002POS TERM  SEEDED TRANSACTION NUMBER 2                                                                         0000000020B800000002SEEDED MERCHANT 2                                 SEEDED CITY 2                                     000001234205000244537657402022-07-12 08:00:00.0000022022-07-12 09:30:00.000002                    "
-  }, {
-    "dataset" : "TRANSACT",
-    "rowIndex" : 2,
-    "fields" : { },
-    "expectedBytes" : "0000000000000003030003POS TERM  SEEDED TRANSACTION NUMBER 3                                                                         0000000030C800000003SEEDED MERCHANT 3                                 SEEDED CITY 3                                     000001234305000244537657402022-07-13 08:00:00.0000032022-07-13 09:30:00.000003                    "
-  } ],
-  "expectedReturnCode" : 0,
-  "expectedMessages" : [ ],
-  "normalisations" : [ {
-    "dataset" : "CCXREF",
-    "kind" : "CARDXREF_FILLER_PAD_36_TO_50"
-  } ],
-  "expectedDatasets" : [ {
-    "dataset" : "TRANSACT",
-    "channel" : "FINAL_STATE",
-    "rowCount" : 3,
-    "recordLength" : 350
-  } ]
+  "expectedResponse": {
+    "nextProgram": "COTRN02C",
+    "nextMapset": "COTRN02",
+    "nextMap": "COTRN2A",
+    "navigation": {
+      "CDEMO-FROM-TRANID": "CT00",
+      "CDEMO-FROM-PROGRAM": "COTRN00C",
+      "CDEMO-TO-TRANID": "CT02",
+      "CDEMO-TO-PROGRAM": "COTRN02C",
+      "CDEMO-USER-ID": "USER0001",
+      "CDEMO-USER-TYPE": "U",
+      "CDEMO-PGM-CONTEXT": "1",
+      "CDEMO-CUST-ID": "000000000",
+      "CDEMO-CUST-FNAME": "                         ",
+      "CDEMO-CUST-MNAME": "                         ",
+      "CDEMO-CUST-LNAME": "                         ",
+      "CDEMO-ACCT-ID": "00000000000",
+      "CDEMO-ACCT-STATUS": " ",
+      "CDEMO-CARD-NUM": "0000000000000000",
+      "CDEMO-LAST-MAP": "       ",
+      "CDEMO-LAST-MAPSET": "       ",
+      "CDEMO-CT02-TRNID-FIRST": "                ",
+      "CDEMO-CT02-TRNID-LAST": "                ",
+      "CDEMO-CT02-PAGE-NUM": "00000000",
+      "CDEMO-CT02-NEXT-PAGE-FLG": " ",
+      "CDEMO-CT02-TRN-SEL-FLG": " ",
+      "CDEMO-CT02-TRN-SELECTED": "                "
+    },
+    "sends": [
+      {
+        "fields": {
+          "TRNNAMEO": "CT02",
+          "TITLE01O": "      AWS Mainframe Modernization       ",
+          "CURDATEO": "07/19/22",
+          "PGMNAMEO": "COTRN02C",
+          "TITLE02O": "              CardDemo                  ",
+          "CURTIMEO": "23:12:34",
+          "ACTIDINO": "           ",
+          "CARDNINO": "                ",
+          "TTYPCDO": "  ",
+          "TCATCDO": "    ",
+          "TRNSRCO": "          ",
+          "TDESCO": "                                                            ",
+          "TRNAMTO": "            ",
+          "TORIGDTO": "          ",
+          "TPROCDTO": "          ",
+          "MIDO": "         ",
+          "MNAMEO": "                              ",
+          "MCITYO": "                         ",
+          "MZIPO": "          ",
+          "CONFIRMO": " ",
+          "ERRMSGO": "                                                                              "
+        },
+        "attributes": {
+          "ERRMSGC": "DFHDFCOL"
+        }
+      }
+    ],
+    "cursorField": "ACTIDINL",
+    "termination": "RETURN_TRANSID"
+  },
+  "expectedWrites": [],
+  "expectedFinalState": [
+    {
+      "dataset": "TRANSACT",
+      "rowIndex": 0,
+      "fields": {
+        "TRAN-ID": "0000000000000001",
+        "TRAN-TYPE-CD": "01",
+        "TRAN-CAT-CD": "0001",
+        "TRAN-SOURCE": "POS TERM  ",
+        "TRAN-DESC": "SEEDED TRANSACTION NUMBER 1                                                                         ",
+        "TRAN-AMT": "0000000010A",
+        "TRAN-MERCHANT-ID": "800000001",
+        "TRAN-MERCHANT-NAME": "SEEDED MERCHANT 1                                 ",
+        "TRAN-MERCHANT-CITY": "SEEDED CITY 1                                     ",
+        "TRAN-MERCHANT-ZIP": "0000012341",
+        "TRAN-CARD-NUM": "0500024453765740",
+        "TRAN-ORIG-TS": "2022-07-11 08:00:00.000001",
+        "TRAN-PROC-TS": "2022-07-11 09:30:00.000001",
+        "FILLER": "                    "
+      },
+      "expectedBytes": "0000000000000001010001POS TERM  SEEDED TRANSACTION NUMBER 1                                                                         0000000010A800000001SEEDED MERCHANT 1                                 SEEDED CITY 1                                     000001234105000244537657402022-07-11 08:00:00.0000012022-07-11 09:30:00.000001                    "
+    },
+    {
+      "dataset": "TRANSACT",
+      "rowIndex": 1,
+      "fields": {},
+      "expectedBytes": "0000000000000002020002POS TERM  SEEDED TRANSACTION NUMBER 2                                                                         0000000020B800000002SEEDED MERCHANT 2                                 SEEDED CITY 2                                     000001234205000244537657402022-07-12 08:00:00.0000022022-07-12 09:30:00.000002                    "
+    },
+    {
+      "dataset": "TRANSACT",
+      "rowIndex": 2,
+      "fields": {},
+      "expectedBytes": "0000000000000003030003POS TERM  SEEDED TRANSACTION NUMBER 3                                                                         0000000030C800000003SEEDED MERCHANT 3                                 SEEDED CITY 3                                     000001234305000244537657402022-07-13 08:00:00.0000032022-07-13 09:30:00.000003                    "
+    }
+  ],
+  "expectedReturnCode": 0,
+  "expectedMessages": [
+    {
+      "channel": "WS_MESSAGE_80",
+      "text": "                                                                                "
+    },
+    {
+      "channel": "SCREEN_ERRMSG_78",
+      "text": "                                                                              "
+    }
+  ],
+  "normalisations": [
+    {
+      "dataset": "CCXREF",
+      "kind": "CARDXREF_FILLER_PAD_36_TO_50"
+    }
+  ],
+  "expectedDatasets": [
+    {
+      "dataset": "TRANSACT",
+      "channel": "FINAL_STATE",
+      "rowCount": 3,
+      "recordLength": 350
+    }
+  ]
 }

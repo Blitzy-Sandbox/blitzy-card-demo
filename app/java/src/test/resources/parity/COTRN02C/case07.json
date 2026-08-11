@@ -1,26 +1,16 @@
 {
   "program" : "COTRN02C",
   "caseId" : "case07",
-  "description" : "The WHEN OTHER arm of VALIDATE-INPUT-KEY-FIELDS, :224-229: neither key was entered. Both guards - :196 on ACTIDINI and :210 on CARDNINI - are the abbreviated combined relation NOT = SPACES AND LOW-VALUES, so a field holding spaces satisfies neither and the EVALUATE falls to its default. 'Account or Card Number must be entered...' is moved into WS-MESSAGE, the cursor goes to ACTIDINL, and the send at :229 ends the task - which is why VALIDATE-INPUT-DATA-FIELDS never runs and the eleven detail fields are still exactly as they arrived. Neither dataset is opened at all: this rejection happens before the first EXEC CICS READ.",
+  "description" : "RISK R-B, STATED FIRST BECAUSE THE CLASS NAME INVERTS THE BEHAVIOUR: the prompt-mandated Java class for COTRN02C is TransactionViewController, yet this program does not view - it ADDS. Two independent artefacts say so: app/cbl/COTRN02C.cbl:5 'Function    : Add a new Transaction to TRANSACT file', and README.md:222 '| CT02 | COTRN02 | COTRN02C | Transaction Add |'. Rule R1 resolves the clash - the class name is taken from the prompt verbatim, the behaviour from the source, which is the only oracle there is - and practice B4 governs the disclosure: the inversion is documented here and never corrected, and no case in this folder is downgraded to a read-only reading of the program. parity/COTRN01C is the mirror image, whose program genuinely views. PROVENANCE, practice B12: every expected value below is statically derived, by structured reading of app/cbl/COTRN02C.cbl cross-checked against the copybook byte layouts in app/cpy - CVTRA05Y 350 bytes, CVACT03Y 50, COCOM01Y 160 - the I-suffixed item widths declared by app/cpy-bms/COTRN02.CPY, the DFHMDF definitions in app/bms/COTRN02.bms, and the real ASCII fixtures copied byte for byte from app/data/ASCII. It is not captured from, recorded against or replayed from any execution of the COBOL: Agent Action Plan 0.7.6 proves that impossible in this environment - no z/OS or CICS runtime, the available compiler reports its indexed file handler disabled, no Language Environment CEE* services exist, and DFHAID, DFHBMSCA and DFHATTR are absent from this repository, which is risk R-D - so the substitution of provenance is escalated as risk R-A rather than quietly absorbed. WHAT THIS CASE DRIVES: arm 1 of the ordered three-arm EVALUATE TRUE in VALIDATE-INPUT-KEY-FIELDS at :195-230, and within it the class test IF ACTIDINI OF COTRN2AI IS NOT NUMERIC at :197. The route is REENTER - CDEMO-PGM-CONTEXT is 1, so the test at :120 takes the ELSE at :131 - then RECEIVE-TRNADD-SCREEN at :132, the first arm of EVALUATE EIBAID at :134 because the attention identifier is DFHENTER, PROCESS-ENTER-KEY at :164, and its first PERFORM at :166. Arm 1 is entered because ACTIDINI holds 1234ABC8901, which is neither SPACES nor LOW-VALUES under the abbreviated combined relation at :196, while CARDNINI is sixteen spaces: the ordering of the EVALUATE is therefore what selects the account path over the card path and over the default, which is gate G30. The plan allocates arm 1 to this case together with case08, case09 and case10, arm 2 at :210 - the card number - to case11 through case14, and arm 3 at :224-229 - neither key entered - to case06; this file asserts its own arm and says nothing about the others. THE NUMVAL SEMANTICS, GATE G29: the guard at :197-203 moves 'Y' to WS-ERR-FLG, moves 'Account ID must be Numeric...' to WS-MESSAGE, moves -1 to ACTIDINL and performs SEND-TRNADD-SCREEN, which ends at :530 with EXEC CICS RETURN - and in CICS a RETURN terminates the task. The COMPUTE WS-ACCT-ID-N = FUNCTION NUMVAL(ACTIDINI) at :204-205 is therefore NEVER reached on this path, no READ-CXACAIX-FILE happens at :208, and the MOVE XREF-CARD-NUM TO CARDNINI at :209 never runs. The rejection is owned by the digits-only class test rather than by the intrinsic: FUNCTION NUMVAL is only ever reached on text already proved numeric, and it would have returned zero for this argument rather than refusing it, so a translation without the early return would either throw or post a garbage account id. That is the reject half of the accept-and-reject obligation, and it is asserted here as an absence: one message, no cross-reference read, no record written. The malformed surface the guard refuses, of which this case pins one concrete value: alphabetic characters, 1234ABC8901, the value used here; an embedded space, 12345 78901, the shape case08 pins; a leading sign, +1234567890 or -1234567890, which the class test refuses because on a PIC X(11) item only '0' through '9' count as digits and a sign character does not; and a decimal point, 1234567.901. All spaces is refused by the same test but CANNOT reach it, because arm 1's own condition at :196 excludes SPACES - an all-spaces account id falls through to arm 2 and, with a blank card number as well, to arm 3 - and that is an easy mis-derivation, so it is stated rather than left implicit. WHAT IS ASSERTED: exactly one message, byte-exact with its trailing ellipsis, projected on the two channels the program actually has - WS-MESSAGE at its declared PIC X(80) and ERRMSGO at its declared PIC X(78), the two-byte loss being the MOVE at :520, which is rule R5 - and one send carrying the twenty-one O-suffixed output items, six of which POPULATE-HEADER-INFO builds at :554-571 against the pinned clock, practice B7: TRNNAMEO CT02, PGMNAMEO COTRN02C, TITLE01O and TITLE02O verbatim from app/cpy/COTTL01Y.cpy, CURDATEO 07/19/22 in MM/DD/YY and CURTIMEO 23:12:34 in HH:MM:SS. The cursor is ACTIDINL, and CARDNINO is still sixteen spaces precisely because :209 never ran. ACTIDINL is an L-suffixed length item and therefore validation metadata - the cursor declaration, never a payload member - exactly as the F-suffixed flag and A-suffixed attribute items are metadata. Nothing is highlighted: COTRN02C does not copy CSSETATY, and this program's only attribute assignment anywhere is MOVE DFHGREEN TO ERRMSGC on the successful-write arm at :727, so ERRMSGC carries the map's default colour here, which is what gate G38 amounts to on this screen in both the ENTER and the REENTER state. expectedWrites is empty, which is the positive assertion that nothing was written, and TRANSACT's final state is the three seeded rows unchanged at their full declared 350 bytes including the twenty-byte FILLER - the only channel that can say 'exactly as seeded'. The RETURN-CODE is 0: this is an online program that sets none and contains no CALL 'CEE3ABD', so gate G35 does not apply, and neither does G32 - this program contains no GO TO at all, rule R7 - nor G39, there being no pagination, nor G40, no XCTL being taken, because EXEC CICS RETURN TRANSID('CT02') at :530-533 hands the next interrupt back to this same transaction, which is why the response names COTRN02C rather than a transfer target, nor G43, there being no 9300-CHECK-CHANGE-IN-REC in this program. Gate G47 is satisfied negatively and deliberately: this path proves the CXACAIX call site is NOT reached, and an unreached outcome belongs to a call site's inventory as much as its reached ones. DATASETS: addressed by binding key only and never by dataset name, so not one fully-qualified mainframe dataset name - the dotted form the CSD declares for each cluster - appears anywhere in this file, which is gate G46. CCXREF is seeded from the real fixture at its raw 36 bytes per row and is deliberately NOT pre-padded - app/cpy/CVACT03Y.cpy declares XREF-CARD-NUM X(16) at 1-16, XREF-CUST-ID 9(09) at 17-25, XREF-ACCT-ID 9(11) at 26-36 and FILLER X(14) at 37-50, so 50 are declared and 36 supplied - and the declared normalisation hands the 36-to-50 pad to its single owner, parity/FieldDiffer: gate G16, risk R-F. CXACAIX is not seeded separately, because app/csd/CARDDEMO.CSD makes it a PATH over the CCXREF base: it is an alternate-index finder on card.CardXrefRepository and never a second table, which is gate G45. The base is seeded once even though this case never reads it, since a read that never happens is only observable against a dataset that could have answered. Nine fixtures exist and there is no tenth. ACCTDAT IS A DEAD DECLARATION, practice B5: WS-ACCTDAT-FILE PIC X(08) VALUE 'ACCTDAT ' at :40 appears in no DATASET operand anywhere in the program, and COPY CVACT01Y at :89 is a dead include whose 300-byte ACCOUNT-RECORD is never named. Its binding key would resolve to fixtures/acctdata.txt, 50 rows of 300 bytes, but inputs names the datasets the unit under test actually reads and this unit reads none - TransactionViewController takes no AccountRepository, so there is nowhere for a well-meaning completion of the migration to add the read - so no ACCTDAT entry appears in inputs, in expectedWrites, in expectedFinalState or in expectedDatasets in any case here, and the dead declaration is preserved rather than tidied away. RULES: review_rules returns exactly one line, 'No user rules provided', and that line is the whole document, so no user rule governs this file; their absence is not licence to lower the bar, and Agent Action Plan 0.10.2 binds instead - B1, where nothing below stands in for a value still to be decided and every literal is real, the malformed-input variants above being mandatory rather than optional; B3, the reference trees app/cbl, app/cpy, app/cpy-bms, app/bms, app/csd and app/data are read-only; B4; B5; B7; B8, where the chosen literal, the exact message, the -1 cursor target, the 80-to-78 truncation direction, the binding keys and the US-ASCII code page are each named rather than implied; B11, every width summed from its PICTURE clause - ACTIDIN X(11), CARDNIN X(16), WS-ACCT-ID-N 9(11), WS-MESSAGE X(80), ERRMSGO X(78), CARD-XREF-RECORD 50, TRAN-RECORD 350, CARDDEMO-COMMAREA 160 plus the 58-byte CDEMO-CT02-INFO at :72-80 for the 218 bytes EIBCALEN reports, and the 555-byte symbolic-map group image, being the 12-byte TIOA prefix plus twenty-one times the seven bytes of length, flag and reserved span plus the 396 bytes the twenty-one payload items occupy; and B12. Rules R1, R4 - WS-ACCT-ID-N is a scale-free PIC 9(11) and so an integral type, never double or float, though nothing is computed on this path - R5, R6, every scrap of conversation state travelling in the payload with no session anywhere, which is gate G37, and R7 all bind.",
   "unitKind" : "CONTROLLER_POJO",
   "inputs" : {
     "CCXREF" : {
-      "rows" : [ ],
       "fixture" : "cardxref.txt",
       "fromRow" : 0,
-      "rowCount" : 5,
-      "empty" : null,
-      "recordLength" : null,
-      "copybook" : null
+      "rowCount" : 5
     },
     "TRANSACT" : {
-      "rows" : [ "0000000000000001010001POS TERM  SEEDED TRANSACTION NUMBER 1                                                                         0000000010A800000001SEEDED MERCHANT 1                                 SEEDED CITY 1                                     000001234105000244537657402022-07-11 08:00:00.0000012022-07-11 09:30:00.000001                    ", "0000000000000002020002POS TERM  SEEDED TRANSACTION NUMBER 2                                                                         0000000020B800000002SEEDED MERCHANT 2                                 SEEDED CITY 2                                     000001234205000244537657402022-07-12 08:00:00.0000022022-07-12 09:30:00.000002                    ", "0000000000000003030003POS TERM  SEEDED TRANSACTION NUMBER 3                                                                         0000000030C800000003SEEDED MERCHANT 3                                 SEEDED CITY 3                                     000001234305000244537657402022-07-13 08:00:00.0000032022-07-13 09:30:00.000003                    " ],
-      "fixture" : null,
-      "fromRow" : null,
-      "rowCount" : null,
-      "empty" : null,
-      "recordLength" : null,
-      "copybook" : null
+      "rows" : [ "0000000000000001010001POS TERM  SEEDED TRANSACTION NUMBER 1                                                                         0000000010A800000001SEEDED MERCHANT 1                                 SEEDED CITY 1                                     000001234105000244537657402022-07-11 08:00:00.0000012022-07-11 09:30:00.000001                    ", "0000000000000002020002POS TERM  SEEDED TRANSACTION NUMBER 2                                                                         0000000020B800000002SEEDED MERCHANT 2                                 SEEDED CITY 2                                     000001234205000244537657402022-07-12 08:00:00.0000022022-07-12 09:30:00.000002                    ", "0000000000000003030003POS TERM  SEEDED TRANSACTION NUMBER 3                                                                         0000000030C800000003SEEDED MERCHANT 3                                 SEEDED CITY 3                                     000001234305000244537657402022-07-13 08:00:00.0000032022-07-13 09:30:00.000003                    " ]
     }
   },
   "jobParameters" : { },
@@ -40,7 +30,7 @@
       "CDEMO-CT02-TRN-SELECTED" : "                "
     },
     "mapFields" : {
-      "ACTIDINI" : "           ",
+      "ACTIDINI" : "1234ABC8901",
       "CARDNINI" : "                "
     },
     "forcedOutcomes" : { }
@@ -81,7 +71,7 @@
         "PGMNAMEO" : "COTRN02C",
         "TITLE02O" : "              CardDemo                  ",
         "CURTIMEO" : "23:12:34",
-        "ACTIDINO" : "           ",
+        "ACTIDINO" : "1234ABC8901",
         "CARDNINO" : "                ",
         "TTYPCDO" : "  ",
         "TCATCDO" : "    ",
@@ -95,7 +85,7 @@
         "MCITYO" : "                         ",
         "MZIPO" : "          ",
         "CONFIRMO" : " ",
-        "ERRMSGO" : "Account or Card Number must be entered...                                     "
+        "ERRMSGO" : "Account ID must be Numeric...                                                 "
       },
       "attributes" : {
         "ERRMSGC" : "DFHDFCOL"
@@ -108,26 +98,39 @@
   "expectedFinalState" : [ {
     "dataset" : "TRANSACT",
     "rowIndex" : 0,
-    "fields" : { },
+    "fields" : {
+      "TRAN-ID" : "0000000000000001",
+      "TRAN-TYPE-CD" : "01",
+      "TRAN-CAT-CD" : "0001",
+      "TRAN-SOURCE" : "POS TERM  ",
+      "TRAN-DESC" : "SEEDED TRANSACTION NUMBER 1                                                                         ",
+      "TRAN-AMT" : "0000000010A",
+      "TRAN-MERCHANT-ID" : "800000001",
+      "TRAN-MERCHANT-NAME" : "SEEDED MERCHANT 1                                 ",
+      "TRAN-MERCHANT-CITY" : "SEEDED CITY 1                                     ",
+      "TRAN-MERCHANT-ZIP" : "0000012341",
+      "TRAN-CARD-NUM" : "0500024453765740",
+      "TRAN-ORIG-TS" : "2022-07-11 08:00:00.000001",
+      "TRAN-PROC-TS" : "2022-07-11 09:30:00.000001",
+      "FILLER" : "                    "
+    },
     "expectedBytes" : "0000000000000001010001POS TERM  SEEDED TRANSACTION NUMBER 1                                                                         0000000010A800000001SEEDED MERCHANT 1                                 SEEDED CITY 1                                     000001234105000244537657402022-07-11 08:00:00.0000012022-07-11 09:30:00.000001                    "
   }, {
     "dataset" : "TRANSACT",
     "rowIndex" : 1,
-    "fields" : { },
     "expectedBytes" : "0000000000000002020002POS TERM  SEEDED TRANSACTION NUMBER 2                                                                         0000000020B800000002SEEDED MERCHANT 2                                 SEEDED CITY 2                                     000001234205000244537657402022-07-12 08:00:00.0000022022-07-12 09:30:00.000002                    "
   }, {
     "dataset" : "TRANSACT",
     "rowIndex" : 2,
-    "fields" : { },
     "expectedBytes" : "0000000000000003030003POS TERM  SEEDED TRANSACTION NUMBER 3                                                                         0000000030C800000003SEEDED MERCHANT 3                                 SEEDED CITY 3                                     000001234305000244537657402022-07-13 08:00:00.0000032022-07-13 09:30:00.000003                    "
   } ],
   "expectedReturnCode" : 0,
   "expectedMessages" : [ {
     "channel" : "WS_MESSAGE_80",
-    "text" : "Account or Card Number must be entered...                                       "
+    "text" : "Account ID must be Numeric...                                                   "
   }, {
     "channel" : "SCREEN_ERRMSG_78",
-    "text" : "Account or Card Number must be entered...                                     "
+    "text" : "Account ID must be Numeric...                                                 "
   } ],
   "normalisations" : [ {
     "dataset" : "CCXREF",

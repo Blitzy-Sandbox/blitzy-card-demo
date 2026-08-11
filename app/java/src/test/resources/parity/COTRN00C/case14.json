@@ -1,7 +1,7 @@
 {
   "program": "COTRN00C",
   "caseId": "case14",
-  "description": "A full MIDDLE page: PF8 from page one of twenty-five records. The anchor read at :286 consumes record ten, rows one to ten take records eleven to twenty, :306-307 computes 1 + 1 = 2 - the same COMPUTE as case02 but from a non-zero starting value, which is what makes it a distinct assertion - and the look-ahead READNEXT at :308 finds record twenty-one, so :310 SET NEXT-PAGE-YES. Exactly ONE send, because no read reported end-of-file. Both cursor writes fire: :393 moves record eleven into CDEMO-CT00-TRNID-FIRST and :439 moves record twenty into CDEMO-CT00-TRNID-LAST, and those two values are the anchors the next PF7 and PF8 will resume from.",
+  "description": "The TENTH and LAST arm of the ten-way selection EVALUATE TRUE at :148-182, which is the one arm that cannot be reached without nine genuine failures first. SEL0001I through SEL0009I all arrive as spaces, so :149, :152, :155, :158, :161, :164, :167, :170 and :173 are each evaluated and each false, and only then does :176 match - an EVALUATE TRUE stops at its first true WHEN, so this case walks the whole ordered chain rather than sampling it, and WHEN OTHER at :179 is never reached (gate G30). :177 moves the cell into CDEMO-CT00-TRN-SEL-FLG and :178 moves TRNID10I - not TRNID09I - into CDEMO-CT00-TRN-SELECTED. That is the LAST-ELEMENT half of the 1-based-to-0-based boundary: the tenth COBOL row group is index nine of the Java row collection, so an off-by-one would echo the tenth cell while selecting the ninth transaction. case18 pins the same mapping at the FIRST element, and the two together bracket the table. Both fields being present, :183 is true and the inner EVALUATE matches WHEN 'S' at :186 - the upper half of a two-clause fall-through pair whose lower half is WHEN 's' at :187 - so the program hard-codes COTRN01C at :188, stamps its own identity at :189-190, MOVEs 0 to CDEMO-PGM-CONTEXT at :191 and XCTLs at :192-195. In a stateless translation that transfer is a response field naming the next program and nothing more: no server-side forward, no redirect and no session, with the 160-byte commarea and the 58-byte CDEMO-CT00-INFO extension both travelling in the payload (gates G37 and G40). The inbound values are chosen so that all four overwrites are observable rather than merely asserted - CM00 becomes CT00, COMEN01C becomes COTRN00C, COTRN00C becomes COTRN01C and the context 1 becomes 0. Control leaves at :193, so everything after it is unreached: the TRNIDINI edit at :206-219, the MOVE -1 at :221, the page reset at :224 and PROCESS-PAGE-FORWARD at :225. The page number therefore comes back as the 1 it arrived as and the next-page flag as the Y it arrived as, no STARTBR, READNEXT, READPREV or ENDBR is issued against TRANSACT, no map is sent, and both message channels hold the spaces :102-103 left. The cursor is still TRNIDINL because :105 sets it in MAIN-PARA before any branch is taken, not because :221 ran. Two names diverge from their sources and both are honoured verbatim under rule R1: COTRN00C LISTS transactions although the migrated class is TransactionMenuController, and COTRN01C VIEWS the selected transaction although its class is TransactionAddController - README.md:223 and the source headers both document CT01 as Transaction View (risk R-B). This case asserts the handoff only; it assumes nothing about an insert at the target. Statically derived by reading app/cbl/COTRN00C.cbl paragraph by paragraph and cross-checking app/cpy/CVTRA05Y.cpy for the 350-byte record, app/cpy-bms/COTRN00.CPY for the xxxI widths, app/bms/COTRN00.bms for the DFHMDF lengths and app/cpy/COCOM01Y.cpy for the commarea - never captured from a running COBOL program.",
   "unitKind": "CONTROLLER_POJO",
   "inputs": {
     "TRANSACT": {
@@ -17,25 +17,13 @@
         "0000000000000009010001POS TERM  TRANSACTION 09 DESCRIPTION                                                                          0000001090{000000009MERCHANT 09                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    ",
         "0000000000000010010001POS TERM  TRANSACTION 10 DESCRIPTION                                                                          0000001100{000000010MERCHANT 10                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    ",
         "0000000000000011010001POS TERM  TRANSACTION 11 DESCRIPTION                                                                          0000001110{000000011MERCHANT 11                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    ",
-        "0000000000000012010001POS TERM  TRANSACTION 12 DESCRIPTION                                                                          0000001120{000000012MERCHANT 12                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    ",
-        "0000000000000013010001POS TERM  TRANSACTION 13 DESCRIPTION                                                                          0000001130{000000013MERCHANT 13                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    ",
-        "0000000000000014010001POS TERM  TRANSACTION 14 DESCRIPTION                                                                          0000001140{000000014MERCHANT 14                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    ",
-        "0000000000000015010001POS TERM  TRANSACTION 15 DESCRIPTION                                                                          0000001150{000000015MERCHANT 15                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    ",
-        "0000000000000016010001POS TERM  TRANSACTION 16 DESCRIPTION                                                                          0000001160{000000016MERCHANT 16                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    ",
-        "0000000000000017010001POS TERM  TRANSACTION 17 DESCRIPTION                                                                          0000001170{000000017MERCHANT 17                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    ",
-        "0000000000000018010001POS TERM  TRANSACTION 18 DESCRIPTION                                                                          0000001180{000000018MERCHANT 18                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    ",
-        "0000000000000019010001POS TERM  TRANSACTION 19 DESCRIPTION                                                                          0000001190{000000019MERCHANT 19                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    ",
-        "0000000000000020010001POS TERM  TRANSACTION 20 DESCRIPTION                                                                          0000001200{000000020MERCHANT 20                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    ",
-        "0000000000000021010001POS TERM  TRANSACTION 21 DESCRIPTION                                                                          0000001210{000000021MERCHANT 21                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    ",
-        "0000000000000022010001POS TERM  TRANSACTION 22 DESCRIPTION                                                                          0000001220{000000022MERCHANT 22                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    ",
-        "0000000000000023010001POS TERM  TRANSACTION 23 DESCRIPTION                                                                          0000001230{000000023MERCHANT 23                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    ",
-        "0000000000000024010001POS TERM  TRANSACTION 24 DESCRIPTION                                                                          0000001240{000000024MERCHANT 24                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    ",
-        "0000000000000025010001POS TERM  TRANSACTION 25 DESCRIPTION                                                                          0000001250{000000025MERCHANT 25                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    "
+        "0000000000000012010001POS TERM  TRANSACTION 12 DESCRIPTION                                                                          0000001120{000000012MERCHANT 12                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    "
       ]
     }
   },
   "screenRequest": {
     "eibcalen": 218,
+    "aid": "DFHENTER",
     "pinnedClock": "2022-07-19T23:12:34",
     "charset": "US-ASCII",
     "commarea": {
@@ -62,21 +50,71 @@
       "CDEMO-CT00-TRN-SEL-FLG": " ",
       "CDEMO-CT00-TRN-SELECTED": "                "
     },
-    "mapFields": {},
-    "forcedOutcomes": {},
-    "aid": "DFHPF8"
+    "mapFields": {
+      "TRNIDINI": "                ",
+      "SEL0001I": " ",
+      "TRNID01I": "0000000000000001",
+      "TDATE01I": "06/10/22",
+      "TDESC01I": "TRANSACTION 01 DESCRIPTION",
+      "TAMT001I": "+00000101.00",
+      "SEL0002I": " ",
+      "TRNID02I": "0000000000000002",
+      "TDATE02I": "06/10/22",
+      "TDESC02I": "TRANSACTION 02 DESCRIPTION",
+      "TAMT002I": "+00000102.00",
+      "SEL0003I": " ",
+      "TRNID03I": "0000000000000003",
+      "TDATE03I": "06/10/22",
+      "TDESC03I": "TRANSACTION 03 DESCRIPTION",
+      "TAMT003I": "+00000103.00",
+      "SEL0004I": " ",
+      "TRNID04I": "0000000000000004",
+      "TDATE04I": "06/10/22",
+      "TDESC04I": "TRANSACTION 04 DESCRIPTION",
+      "TAMT004I": "+00000104.00",
+      "SEL0005I": " ",
+      "TRNID05I": "0000000000000005",
+      "TDATE05I": "06/10/22",
+      "TDESC05I": "TRANSACTION 05 DESCRIPTION",
+      "TAMT005I": "+00000105.00",
+      "SEL0006I": " ",
+      "TRNID06I": "0000000000000006",
+      "TDATE06I": "06/10/22",
+      "TDESC06I": "TRANSACTION 06 DESCRIPTION",
+      "TAMT006I": "+00000106.00",
+      "SEL0007I": " ",
+      "TRNID07I": "0000000000000007",
+      "TDATE07I": "06/10/22",
+      "TDESC07I": "TRANSACTION 07 DESCRIPTION",
+      "TAMT007I": "+00000107.00",
+      "SEL0008I": " ",
+      "TRNID08I": "0000000000000008",
+      "TDATE08I": "06/10/22",
+      "TDESC08I": "TRANSACTION 08 DESCRIPTION",
+      "TAMT008I": "+00000108.00",
+      "SEL0009I": " ",
+      "TRNID09I": "0000000000000009",
+      "TDATE09I": "06/10/22",
+      "TDESC09I": "TRANSACTION 09 DESCRIPTION",
+      "TAMT009I": "+00000109.00",
+      "SEL0010I": "S",
+      "TRNID10I": "0000000000000010",
+      "TDATE10I": "06/10/22",
+      "TDESC10I": "TRANSACTION 10 DESCRIPTION",
+      "TAMT010I": "+00000110.00"
+    },
+    "forcedOutcomes": {}
   },
   "expectedResponse": {
-    "nextMapset": "COTRN00",
-    "nextMap": "COTRN0A",
+    "nextProgram": "COTRN01C",
     "navigation": {
-      "CDEMO-FROM-TRANID": "CM00",
-      "CDEMO-FROM-PROGRAM": "COMEN01C",
+      "CDEMO-FROM-TRANID": "CT00",
+      "CDEMO-FROM-PROGRAM": "COTRN00C",
       "CDEMO-TO-TRANID": "CT00",
-      "CDEMO-TO-PROGRAM": "COTRN00C",
+      "CDEMO-TO-PROGRAM": "COTRN01C",
       "CDEMO-USER-ID": "USER0001",
       "CDEMO-USER-TYPE": "U",
-      "CDEMO-PGM-CONTEXT": "1",
+      "CDEMO-PGM-CONTEXT": "0",
       "CDEMO-CUST-ID": "000000000",
       "CDEMO-CUST-FNAME": "                         ",
       "CDEMO-CUST-MNAME": "                         ",
@@ -86,27 +124,16 @@
       "CDEMO-CARD-NUM": "0000000000000000",
       "CDEMO-LAST-MAP": "       ",
       "CDEMO-LAST-MAPSET": "       ",
-      "CDEMO-CT00-TRNID-FIRST": "0000000000000011",
-      "CDEMO-CT00-TRNID-LAST": "0000000000000020",
-      "CDEMO-CT00-PAGE-NUM": "00000002",
+      "CDEMO-CT00-TRNID-FIRST": "0000000000000001",
+      "CDEMO-CT00-TRNID-LAST": "0000000000000010",
+      "CDEMO-CT00-PAGE-NUM": "00000001",
       "CDEMO-CT00-NEXT-PAGE-FLG": "Y",
-      "CDEMO-CT00-TRN-SEL-FLG": " ",
-      "CDEMO-CT00-TRN-SELECTED": "                "
+      "CDEMO-CT00-TRN-SEL-FLG": "S",
+      "CDEMO-CT00-TRN-SELECTED": "0000000000000010"
     },
-    "sends": [
-      {
-        "fields": {
-          "TITLE01O": "      AWS Mainframe Modernization       ",
-          "TITLE02O": "              CardDemo                  ",
-          "TRNNAMEO": "CT00",
-          "PGMNAMEO": "COTRN00C",
-          "CURDATEO": "07/19/22",
-          "CURTIMEO": "23:12:34"
-        }
-      }
-    ],
+    "sends": [],
     "cursorField": "TRNIDINL",
-    "termination": "RETURN_TRANSID"
+    "termination": "XCTL"
   },
   "expectedWrites": [],
   "expectedFinalState": [],

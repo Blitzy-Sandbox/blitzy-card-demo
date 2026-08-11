@@ -1,13 +1,14 @@
 {
   "program": "CBSTM03B",
   "caseId": "case09",
-  "description": "app/cbl/CBSTM03B.CBL:183-185 - 3000-CUSTFILE-PROC's OPEN INPUT CUST-FILE, reached through the third dispatch arm (:123-124). CUSTFILE is ACCESS MODE IS RANDOM (:45), so this arm tests M03B-READ-K and never M03B-READ; the OPEN itself is common to both access modes and reports '00'. The rows are seeded from app/data/ASCII/custdata.txt at the CUSTREC width of 500 - modelled as Stm03CustomerRecord rather than CustomerRecord so that CUST-DOB-YYYYMMDD stays distinct from CVCUS01Y's CUST-DOB-YYYY-MM-DD.",
+  "description": "End of file on XREFFILE with the record area deliberately cleared first - the other half of the boundary case08 pins, and the arm at app/cbl/CBSTM03A.CBL:356-357 that ends the statement loop. Where this sits in the caller. 1000-XREFFILE-GET-NEXT (app/cbl/CBSTM03A.CBL:345-366) is the only site that reads this file, and it resets BOTH halves of the shared area before every CALL: MOVE ZERO TO WS-M03B-RC at :349 - a figurative constant moved to an alphanumeric receiver fills it, so the inbound status is '00' and not '0 ' - and MOVE SPACES TO WS-M03B-FLDT at :350. 1000-MAINLINE (:316-329) wraps that paragraph in PERFORM UNTIL END-OF-FILE = 'Y', so the loop is left only when a READ reports '10' and :357 moves 'Y' into END-OF-FILE. This case is that exit, transcribed with the caller's own idiom intact: an OPEN, the two READs that consume the two seeded rows, and a third READ that reaches the end of the file. Dispatch. EVALUATE LK-M03B-DD at app/cbl/CBSTM03B.CBL:118 selects WHEN 'XREFFILE' at :121 and performs 2000-XREFFILE-PROC THRU 2999-EXIT at :122 - the SECOND of the four arms, and the EVALUATE is ordered, so LK-M03B-DD is pinned on all four images below and the arm can never be reached by accident (gate G30). The guard chain. 2000-XREFFILE-PROC (:157-179) is three independent guards, each leaving the paragraph the moment it fires. On every READ here IF M03B-OPEN at :159 is FALSE and control falls through to IF M03B-READ at :164, which does READ XREF-FILE INTO LK-M03B-FLDT at :165-166 and then GO TO 2900-EXIT at :167 - so :170's IF M03B-CLOSE is never even evaluated on a read. Every path converges on 2900-EXIT (:175-176), whose single statement is MOVE XREFFILE-STATUS TO LK-M03B-RC, and then on 2999-EXIT (:178-179). The guard order is behaviour rather than style (gate G30, rule R7). The status area is the SOLE end-of-file channel. The READ at :165 carries NO AT END clause - :166's END-READ closes an empty statement list - and the program declares no DECLARATIVES section, so nothing but FILE STATUS IS XREFFILE-STATUS (:41) can tell the caller the pass is over. That is what makes the fourth image's LK-M03B-RC the whole assertion: '10' arrives through the one MOVE at :176 out of the area declared at :87-89, and :356 reads nothing else. Why this '10' is not case04's '10' (gate G47). case04 drives end of file on TRNXFILE and reports it out of TRNXFILE-STATUS (:83-85); this case drives it on XREFFILE and reports it out of XREFFILE-STATUS (:87-89). CBSTM03B declares FOUR independent two-byte status areas (:83-97), one per file and none with a VALUE clause, and gate G47 requires the outcomes to be driven per DD rather than globally - so a translation holding one shared status field would satisfy case04 and fail here, which is precisely why the second sequential file is worth a case of its own. The inbound '00' established at :349 is what makes the answer unambiguous: the '10' in image 4 was produced by THIS read on THIS file's area rather than inherited from an earlier one. What an end-of-file read does to the record area, and why this case can say it. READ ... INTO at :165 is the only statement in the paragraph that touches LK-M03B-FLDT, and at end of file it moves nothing at all: the area comes back exactly as the caller left it. case08 asserts that by leaving the residue of the previous read in place - the direction that proves nothing was blanked. This case asserts the other direction, the one the real call site actually produces: because :350 blanks the area before every call, an end-of-file read hands back 1000 spaces, and image 4 pins exactly that. Both directions are needed. A translation that copied the previous record forward on end of file would satisfy case08's residue and fail here; one that blanked the area on end of file would satisfy this case and fail case08. It is not a theoretical concern: :364 moves WS-M03B-FLDT into CARD-XREF-RECORD unconditionally, after the EVALUATE, so whatever the area holds on the end-of-file pass is copied into the record and only END-OF-FILE stops the caller acting on it. Four images, one per CALL. ParityCase carries inputs and expectations but no script - jobParameters belongs to BATCH_JOB alone - so the sequence lives in CBSTM03BParityTest.script(\"case09\") and each of its four CALLs is pinned here as one 1040-byte area image, in call order. Images 1 to 3 are the setup made explicit rather than assumed: the OPEN that puts '00' into XREFFILE-STATUS, then row 0 and row 1 delivered in ascending RECORD KEY order. Image 4 is the assertion. Order, and the absence of a key. SELECT XREF-FILE declares ACCESS MODE IS SEQUENTIAL over RECORD KEY IS FD-XREF-CARD-NUM (:37-41), so a plain 'R' never consults the key: LK-M03B-KEY stays twenty-five spaces and LK-M03B-KEY-LN stays the zoned image of zero, '000{' - that trailing brace being the positive-sign overpunch in the low-order byte of PIC S9(4) and not a stray character. Sequential order is also what makes two seeded rows and three reads a defined end-of-file event rather than an accident of fixture size (practice B7). Exactly two rows, and why they are still the fixture (gate G16). cardxref.txt ships fifty rows, and scripting fifty-one reads would be unreadable, so inputs declares the two rows this case needs as inline rows copied byte for byte out of app/data/ASCII/cardxref.txt - row 0, card number 0500024453765740 with XREF-CUST-ID 000000050 and XREF-ACCT-ID 00000000050, and row 1, 0683586198171516 with 000000027 and 00000000027. The bytes ARE the fixture's; only the row count differs, which is the whole reason end of file lands on the third read. Nothing was trimmed or padded on disk - app/data is read-only (practice B3) - and no tenth fixture was invented. 36 versus 50, and who owns the pad (risk R-F). Those rows measure 36 - 16 + 9 + 11, with CVACT03Y's trailing FILLER X(14) simply absent - where the copybook declares 50. They are left at 36 exactly as shipped and the case declares CARDXREF_FILLER_PAD_36_TO_50 against XREFFILE instead: the normalisation is the sole owner of that pad and applies it once, at seed time, before anything decodes a row, and it is idempotent. Supplying the fourteen spaces by hand here would be a defect even though the asserted read delivers no record at all. Naming FILLER explicitly in both final-state rows is the field-level proof the pad arrived: it is precisely the span the fixture omits, so a pad applied twice, or not at all, surfaces there before anywhere else (gate G21). Widths, re-derivable by hand (practice B11). Each area image is 1040 bytes because LK-M03B-AREA (:100-112) is 8 + 1 + 2 + 25 + 4 + 1000, and all six spans are named on every image so every one of those bytes is compared field by field and not merely as one string (gate G17). A cross-reference record is 50 bytes because app/cpy/CVACT03Y.cpy is XREF-CARD-NUM PIC X(16) + XREF-CUST-ID PIC 9(09) + XREF-ACCT-ID PIC 9(11) + FILLER PIC X(14), which is also the width CBSTM03B's own FD splits into FD-XREF-CARD-NUM X(16) + FD-XREF-DATA X(34) at :65-68 (gate G19). READ ... INTO is a PIC X MOVE of those 50 bytes into a 1000-byte receiver, left justified and space filled, so a successful image reads as the row's 36 digits followed by 964 spaces. Code page, named and never inferred (practice B8). Every byte here is US-ASCII, the code page of the authoritative fixtures under app/data/ASCII; IBM037 belongs to the reference-only datasets under app/data/EBCDIC and is deliberately not used. The platform default is never relied on, which matters for the one character in this file that is neither a digit nor a space: the '{' of LK-M03B-KEY-LN is 0x7B in US-ASCII and a different byte entirely under an EBCDIC reading. XREF-CUST-ID and XREF-ACCT-ID are PIC 9 fields carried as character strings with their leading zeros intact and never as JSON numbers, because the comparison is on bytes. Return code and messages. expectedReturnCode is 0. The '10' above is a two-byte FILE STATUS living in LK-M03B-RC; the COBOL RETURN-CODE is a different thing entirely and CBSTM03B never assigns it - the program contains no RETURN-CODE reference and no CALL statement anywhere, and simply GOBACKs at :130-131. Recording ten here would conflate an end-of-file status with a step return code. expectedMessages is empty because the subroutine contains no DISPLAY statement at all: 'ERROR READING XREFFILE' at app/cbl/CBSTM03A.CBL:359 belongs to the caller, and on '10' even the caller displays nothing - it sets END-OF-FILE and moves on. Read-only, proved twice. All four SELECTs are OPEN INPUT and no paragraph in CBSTM03B writes, so both seeded rows must come back exactly as they went in, and reaching end of file changes nothing about that. It is asserted row by row in expectedFinalState and again at dataset level in expectedDatasets, where XREFFILE is pinned at two rows of 50 bytes on the FINAL_STATE channel and M03BAREA at four images of 1040 bytes on the WRITES channel - a count and a width no row expectation can state on its own. Two operation codes stay dark (practice B5). M03B-WRITE 'W' (:107) and M03B-REWRITE 'Z' (:108) are declared but are never SET anywhere in app/cbl, and neither appears as an operation in this case; they stay declared and unexercised rather than being invented into life. The unit (gate G12, requirement I3, practice B4). The prompt-mandated Java name is StatementGenerationJobB, but CBSTM03B is not a job: its own header at :7 reads 'BATCH COBOL Subroutine', no EXEC PGM=CBSTM03B appears in app/jcl, app/proc or app/csd, and CBSTM03A CALLs it thirteen times. It is therefore a Spring @Component and unitKind is COMPONENT; the name divergence is recorded here rather than quietly corrected. The component is driven directly through its typed method, with no JobLauncher and no HTTP in the path (gate G51). Provenance (practice B12). Every value above is STATICALLY DERIVED - from the line numbers cited here, from the CVACT03Y field offsets, and from the real bytes of app/data/ASCII/cardxref.txt - and was NEVER captured from a COBOL execution. No COBOL runs in this environment: AAP section 0.7.6 records eight independently verified blockers, among them a compiler whose indexed file handler is disabled, which is exactly what an ORGANIZATION IS INDEXED file like this one would need. The deviation is one of provenance only - twenty cases per program, field-for-field diffing and a diff count of zero all stand - and it is escalated as risk R-A in AAP section 0.9.11.",
   "unitKind": "COMPONENT",
   "inputs": {
-    "CUSTFILE": {
-      "fixture": "custdata.txt",
-      "fromRow": 9,
-      "rowCount": 3
+    "XREFFILE": {
+      "rows": [
+        "050002445376574000000005000000000050",
+        "068358619817151600000002700000000027"
+      ]
     }
   },
   "jobParameters": {},
@@ -18,42 +19,99 @@
       "dataset": "M03BAREA",
       "rowIndex": 0,
       "fields": {
-        "LK-M03B-DD": "CUSTFILE",
+        "LK-M03B-DD": "XREFFILE",
         "LK-M03B-OPER": "O",
-        "LK-M03B-RC": "00"
+        "LK-M03B-RC": "00",
+        "LK-M03B-KEY": "                         ",
+        "LK-M03B-KEY-LN": "000{",
+        "LK-M03B-FLDT": "                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        "
       },
-      "expectedBytes": "CUSTFILEO00                         000{                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        "
+      "expectedBytes": "XREFFILEO00                         000{                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        "
+    },
+    {
+      "dataset": "M03BAREA",
+      "rowIndex": 1,
+      "fields": {
+        "LK-M03B-DD": "XREFFILE",
+        "LK-M03B-OPER": "R",
+        "LK-M03B-RC": "00",
+        "LK-M03B-KEY": "                         ",
+        "LK-M03B-KEY-LN": "000{",
+        "LK-M03B-FLDT": "050002445376574000000005000000000050                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    "
+      },
+      "expectedBytes": "XREFFILER00                         000{050002445376574000000005000000000050                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    "
+    },
+    {
+      "dataset": "M03BAREA",
+      "rowIndex": 2,
+      "fields": {
+        "LK-M03B-DD": "XREFFILE",
+        "LK-M03B-OPER": "R",
+        "LK-M03B-RC": "00",
+        "LK-M03B-KEY": "                         ",
+        "LK-M03B-KEY-LN": "000{",
+        "LK-M03B-FLDT": "068358619817151600000002700000000027                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    "
+      },
+      "expectedBytes": "XREFFILER00                         000{068358619817151600000002700000000027                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    "
+    },
+    {
+      "dataset": "M03BAREA",
+      "rowIndex": 3,
+      "fields": {
+        "LK-M03B-DD": "XREFFILE",
+        "LK-M03B-OPER": "R",
+        "LK-M03B-RC": "10",
+        "LK-M03B-KEY": "                         ",
+        "LK-M03B-KEY-LN": "000{",
+        "LK-M03B-FLDT": "                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        "
+      },
+      "expectedBytes": "XREFFILER10                         000{                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        "
     }
   ],
   "expectedFinalState": [
     {
-      "dataset": "CUSTFILE",
+      "dataset": "XREFFILE",
       "rowIndex": 0,
-      "fields": {},
-      "expectedBytes": "000000010Maybell                  Creola                   Mann                     77933 Adah Dale                                   Suite 343                                         Andersonfurt                                      CTUSA44803-4279(614)594-2619  (667)057-0235  754755746000000000002128247551980-06-110093803568Y476                                                                                                                                                                        "
+      "fields": {
+        "XREF-CARD-NUM": "0500024453765740",
+        "XREF-CUST-ID": "000000050",
+        "XREF-ACCT-ID": "00000000050",
+        "FILLER": "              "
+      },
+      "expectedBytes": "050002445376574000000005000000000050              "
     },
     {
-      "dataset": "CUSTFILE",
+      "dataset": "XREFFILE",
       "rowIndex": 1,
-      "fields": {},
-      "expectedBytes": "000000011Hayden                   Ressie                   Pfannerstill             14895 Everette Ridges                             Apt. 443                                          Julianneburgh                                     WAUSA24984     (002)533-6980  (553)586-7718  493538586000000000001111908551986-11-030002650577Y209                                                                                                                                                                        "
-    },
-    {
-      "dataset": "CUSTFILE",
-      "rowIndex": 2,
-      "fields": {},
-      "expectedBytes": "000000012Maci                     Alan                     Robel                    80501 Isac Cliffs                                 Suite 623                                         Predovicton                                       MNUSA78861     (584)045-5200  (610)244-0407  666114218000000000009021433511984-02-180061317348Y688                                                                                                                                                                        "
+      "fields": {
+        "XREF-CARD-NUM": "0683586198171516",
+        "XREF-CUST-ID": "000000027",
+        "XREF-ACCT-ID": "00000000027",
+        "FILLER": "              "
+      },
+      "expectedBytes": "068358619817151600000002700000000027              "
     }
   ],
   "expectedReturnCode": 0,
   "expectedMessages": [],
-  "normalisations": [],
+  "normalisations": [
+    {
+      "dataset": "XREFFILE",
+      "kind": "CARDXREF_FILLER_PAD_36_TO_50"
+    }
+  ],
   "expectedDatasets": [
     {
       "dataset": "M03BAREA",
       "channel": "WRITES",
-      "rowCount": 1,
+      "rowCount": 4,
       "recordLength": 1040
+    },
+    {
+      "dataset": "XREFFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 2,
+      "recordLength": 50
     }
   ]
 }

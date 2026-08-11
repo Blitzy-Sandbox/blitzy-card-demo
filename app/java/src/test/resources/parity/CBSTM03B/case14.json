@@ -1,13 +1,13 @@
 {
   "program": "CBSTM03B",
   "caseId": "case14",
-  "description": "INVALID KEY on ACCTFILE, stated so that 'the record area is returned unchanged' is actually asserted rather than merely satisfied by accident. A successful keyed read puts a 300-byte account row into LK-M03B-FLDT; the caller then issues a second keyed read for account 00000000099 WITHOUT clearing the area, and the '23' that comes back is accompanied by the previous account row still intact. A translation that blanked the area, or returned a partially built record, would be reported here and nowhere else in this program's twenty cases.",
+  "description": "Gate G48's RANDOM half taken on the CUSTFILE-STATUS area: operation code 'R' against the CUSTFILE DD, which is the silent no-op that returns a STALE status. app/cbl/CBSTM03B.CBL:118's ordered EVALUATE LK-M03B-DD matches WHEN 'CUSTFILE' (:123) and performs 3000-CUSTFILE-PROC THRU 3999-EXIT (:124). That paragraph (:181) holds exactly three guards - IF M03B-OPEN (:183), IF M03B-READ-K (:188) and IF M03B-CLOSE (:195) - and NO IF M03B-READ at all, because CUSTFILE is declared ACCESS MODE IS RANDOM (:45). With LK-M03B-OPER = 'R' (88 M03B-READ VALUE 'R', :105) all three conditions are false. Every GO TO 3900-EXIT sits INSIDE its IF (:185, :192, :197), so none of them fires and control falls out of the third IF straight into 3900-EXIT (:200), whose MOVE CUSTFILE-STATUS TO LK-M03B-RC (:201) is outside every IF and still runs; 3999-EXIT then EXITs (:203-204). So this CALL performs NO I/O whatsoever and LK-M03B-RC is nonetheless overwritten - with whatever CUSTFILE-STATUS already held. THE TRAP, stated so that nobody tidies it away. The scripted OPEN left '00' in CUSTFILE-STATUS, so the plain read reports '00'. Here '00' means UNCHANGED, not SUCCEEDED. A caller reading it as success goes on to read LK-M03B-FLDT and finds the 1000 spaces it primed itself: no record, no INVALID KEY, no error, no diagnostic. In this program's own caller that is not hypothetical. app/cbl/CBSTM03A.CBL:368 2000-CUSTFILE-GET primes the area with MOVE ZERO TO WS-M03B-RC (:375) and MOVE SPACES TO WS-M03B-FLDT (:376), CALLs (:377), passes the status through EVALUATE WS-M03B-RC WHEN '00' CONTINUE (:379-381), and then executes MOVE WS-M03B-FLDT TO CUSTOMER-RECORD (:388). A stale '00' therefore populates an all-blank 500-byte customer record and the statement prints a customer with no name, no address and no FICO score, with nothing anywhere having reported a failure. A Java implementation must reproduce that exactly: it must NOT throw - not UnsupportedOperationException, not IllegalArgumentException, not anything - must NOT return an error, a not-found or an unsupported-operation status, and must NOT silently substitute the keyed read the key would fit or a sequential browse. All three would be parity violations, and the third is the most dangerous because it would hand back a plausible record and the blank-record symptom would disappear along with the bug that causes it. Deciding what a status means is the caller's job, not the subroutine's: app/cbl/CBSTM03A.CBL:353-359 turns '10' into MOVE 'Y' TO END-OF-FILE and sends WHEN OTHER to a DISPLAY and an abend, and a throw here would bypass every one of those guards. WHY THE OPEN IS SCRIPTED (practice B7). CUSTFILE-STATUS is declared at :91-93 with NO VALUE clause, so what it holds before any I/O is not defined by the source - case15 pins exactly that untouched state, two spaces, on the ACCTFILE area. Asserting a stale '00' without first establishing it would make this case non-deterministic. One preceding call, the OPEN, establishes it and makes the assertion sound, which is why the transcript carries two rows rather than one and why row 0 is byte-identical to case09's. WHAT IS SUPPLIED AND NEVER CONSULTED. LK-M03B-KEY carries 000000050 left-justified in its 25-byte span and LK-M03B-KEY-LN carries +9, which is precisely what app/cbl/CBSTM03A.CBL:372-374 computes - MOVE XREF-CUST-ID TO WS-M03B-KEY then COMPUTE WS-M03B-KEY-LN = LENGTH OF XREF-CUST-ID - and 000000050 is the XREF-CUST-ID of row 0 of app/data/ASCII/cardxref.txt, so it is the exact value the statement flow carries out of the cross-reference. Neither member is read. The one place either would be used is the MOVE LK-M03B-KEY (1:LK-M03B-KEY-LN) reference modification at :189, and that statement lives inside the IF M03B-READ-K this operation does not satisfy. That is the sharpest point of the case: the key is correct, its length is correct, and the record it names is the single row this case seeds - and still nothing is delivered, because the guard that would evaluate any of it is not reached. Both members come back unmodified. LK-M03B-KEY-LN is PIC S9(4) with no USAGE clause (:111), so it is four zoned DISPLAY bytes with the sign overpunched into the low-order byte: +9 is '000I', as +0 is '000{' in row 0 and case01 and +32 is '003B' in case06. THE CALLER NEVER ISSUES THIS, WHICH IS WHY IT IS PINNED. app/cbl/CBSTM03A.CBL sets M03B-READ only for XREFFILE (:348) and TRNXFILE (:744, :833), both SEQUENTIAL, and reaches CUSTFILE solely through M03B-OPEN (:785), M03B-READ-K (:371) and M03B-CLOSE (:891). 'R' on CUSTFILE is therefore reachable but unused - exactly the combination someone later removes on the grounds that nothing calls it. Pinning its behaviour is what prevents that. THE MIRROR. case06 is the same asymmetry from the other side: a 'K' against TRNXFILE, which is ACCESS MODE IS SEQUENTIAL (:33) and guards OPEN, READ and CLOSE but never READ-K; case15 makes the same point as this case on the other RANDOM DD, ACCTFILE (:206-226). With this case the per-DD capability matrix is proven in both directions on both of the RANDOM areas - 'R' is a valid operation code and an invalid operation for a RANDOM DD, just as 'K' is valid and invalid for a SEQUENTIAL one - and the no-op is represented identically in all three: one area row carrying the unmatched operation and the stale status, and no record row at all. The four FILE STATUS areas are independent (:83-97), which is why the outcome is asserted on CUSTFILE-STATUS specifically and not inferred from the ACCTFILE evidence (gate G47). WHAT IS ASSERTED, AND WHAT IS ASSERTED BY ABSENCE. There is NO CUSTFILE row on the writes channel, and that absence is half the value of the case: nothing was read, so a record row would itself be a difference, since FieldDiffer reports an extra record as a diff. The seeded row is pinned on the final-state channel instead, field by field across all nineteen spans of app/cpy/CUSTREC.cpy and including the trailing FILLER X(168) that carries the record to its declared 500 (gates G19 and G21) - the read-only proof, since all four SELECTs are OPEN INPUT and no paragraph writes. The record type is CUSTREC and its date of birth field is CUST-DOB-YYYYMMDD, spelled as one unbroken token and never with the internal hyphens that app/cpy/CVCUS01Y.cpy uses for the same date: implicit requirement I1 keeps the two near-identical layouts distinct types, and it governs this DD even on a call that delivers no record. 8 + 1 + 2 + 25 + 4 + 1000 = 1040, re-derivable from the LINKAGE SECTION at :100-112 without tooling (practice B11), and every span is stated by name as well as inside the complete image, because FieldDiffer compares field by field and never as a whole string (gate G17). THE UNIT. StatementGenerationJobB, whose prompt-mandated ...Job name is honoured verbatim under rule R1 while its nature is a Spring @Component and not a Spring Batch Job (gate G12, implicit requirement I3): the source header reads 'Type : BATCH COBOL Subroutine', no EXEC PGM=CBSTM03B exists anywhere in app/jcl, app/proc or app/csd, and CBSTM03A calls it thirteen times. That divergence is recorded rather than quietly resolved (practice B4). unitKind is COMPONENT and the unit is reached through a typed method with no JobLauncher and no HTTP layer in the path (gate G51), which is also why jobParameters is empty - a job parameter comes from a JCL PARM and this subroutine has no way to receive one, so the operation code, the key and the key length travel in the linkage area the transcript pins rather than as parameters. expectedReturnCode is 0 because CBSTM03B never assigns RETURN-CODE at all - it contains no CALL and no reference to RETURN-CODE - and the two-byte LK-M03B-RC is a FILE STATUS carried in the linkage area; the two are never conflated. expectedMessages is empty because CBSTM03B contains no DISPLAY statement. Operation codes 'W' (:107) and 'Z' (:108) are declared in the linkage area and tested by no IF in any of the four paragraphs; they stay unimplemented rather than tidied away (practice B5) and this case drives neither of them, because an unsupported DD-and-operation COMBINATION is a different thing from a declared-but-dead operation code and this case is the former. SEED AND PROVENANCE. The single seeded row is row 49 of app/data/ASCII/custdata.txt, copied unchanged into src/test/resources/fixtures/custdata.txt, whose fifty rows are a full 500 bytes each - so no normalisation marker is set, the suite's only two pads being cardxref 36 to 50 and USRSEC 57 to 80. Row 49 is chosen because its CUST-ID is 000000050, the very customer the supplied key names, which is what turns 'the key is never consulted' from an assertion about a missing record into an assertion about a present one. All byte content is US-ASCII, stated explicitly and never taken from the platform default (practice B8). Provenance (practice B12, risk R-A): every expected value here is STATICALLY DERIVED from the line numbers cited above and from the byte offsets of app/cpy/CUSTREC.cpy, and was NEVER captured from a COBOL execution - AAP 0.7.6 proves that impossible in this environment across eight independently verified blockers, one of which is that app/cpy/CUSTREC.cpy itself fails to parse on the only available compiler, and 0.9.11 escalates the substitution for explicit confirmation rather than absorbing it silently.",
   "unitKind": "COMPONENT",
   "inputs": {
-    "ACCTFILE": {
-      "fixture": "acctdata.txt",
-      "fromRow": 9,
-      "rowCount": 3
+    "CUSTFILE": {
+      "fixture": "custdata.txt",
+      "fromRow": 49,
+      "rowCount": 1
     }
   },
   "jobParameters": {},
@@ -18,51 +18,55 @@
       "dataset": "M03BAREA",
       "rowIndex": 0,
       "fields": {
-        "LK-M03B-DD": "ACCTFILE",
+        "LK-M03B-DD": "CUSTFILE",
         "LK-M03B-OPER": "O",
-        "LK-M03B-RC": "00"
+        "LK-M03B-RC": "00",
+        "LK-M03B-KEY": "                         ",
+        "LK-M03B-KEY-LN": "000{",
+        "LK-M03B-FLDT": "                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        "
       },
-      "expectedBytes": "ACCTFILEO00                         000{                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        "
+      "expectedBytes": "CUSTFILEO00                         000{                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        "
     },
     {
       "dataset": "M03BAREA",
       "rowIndex": 1,
       "fields": {
-        "LK-M03B-DD": "ACCTFILE",
-        "LK-M03B-OPER": "K",
-        "LK-M03B-RC": "00"
+        "LK-M03B-DD": "CUSTFILE",
+        "LK-M03B-OPER": "R",
+        "LK-M03B-RC": "00",
+        "LK-M03B-KEY": "000000050                ",
+        "LK-M03B-KEY-LN": "000I",
+        "LK-M03B-FLDT": "                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        "
       },
-      "expectedBytes": "ACCTFILEK0000000000011              001A00000000011Y00000002120{00000049980{00000031750{2014-09-122025-03-122025-03-1200000000000{00000000000{A000000000                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        "
-    },
-    {
-      "dataset": "M03BAREA",
-      "rowIndex": 2,
-      "fields": {
-        "LK-M03B-DD": "ACCTFILE",
-        "LK-M03B-OPER": "K",
-        "LK-M03B-RC": "23"
-      },
-      "expectedBytes": "ACCTFILEK2300000000099              001A00000000011Y00000002120{00000049980{00000031750{2014-09-122025-03-122025-03-1200000000000{00000000000{A000000000                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        "
+      "expectedBytes": "CUSTFILER00000000050                000I                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        "
     }
   ],
   "expectedFinalState": [
     {
-      "dataset": "ACCTFILE",
+      "dataset": "CUSTFILE",
       "rowIndex": 0,
-      "fields": {},
-      "expectedBytes": "00000000010Y00000001590{00000054010{00000044420{2015-09-132023-01-272023-01-2700000000000{00000000000{A000000000                                                                                                                                                                                            "
-    },
-    {
-      "dataset": "ACCTFILE",
-      "rowIndex": 1,
-      "fields": {},
-      "expectedBytes": "00000000011Y00000002120{00000049980{00000031750{2014-09-122025-03-122025-03-1200000000000{00000000000{A000000000                                                                                                                                                                                            "
-    },
-    {
-      "dataset": "ACCTFILE",
-      "rowIndex": 2,
-      "fields": {},
-      "expectedBytes": "00000000012Y00000001760{00000046360{00000003880{2009-06-172023-07-072023-07-0700000000000{00000000000{A000000000                                                                                                                                                                                            "
+      "fields": {
+        "CUST-ID": "000000050",
+        "CUST-FIRST-NAME": "Aniya                    ",
+        "CUST-MIDDLE-NAME": "Alba                     ",
+        "CUST-LAST-NAME": "Von                      ",
+        "CUST-ADDR-LINE-1": "1588 Nienow Cape                                  ",
+        "CUST-ADDR-LINE-2": "Suite 187                                         ",
+        "CUST-ADDR-LINE-3": "New Aricchester                                   ",
+        "CUST-ADDR-STATE-CD": "OR",
+        "CUST-ADDR-COUNTRY-CD": "USA",
+        "CUST-ADDR-ZIP": "04257     ",
+        "CUST-PHONE-NUM-1": "(325)301-0827  ",
+        "CUST-PHONE-NUM-2": "(493)985-9283  ",
+        "CUST-SSN": "931248469",
+        "CUST-GOVT-ISSUED-ID": "00000000000030387824",
+        "CUST-DOB-YYYYMMDD": "1960-12-01",
+        "CUST-EFT-ACCOUNT-ID": "0074883577",
+        "CUST-PRI-CARD-HOLDER-IND": "Y",
+        "CUST-FICO-CREDIT-SCORE": "623",
+        "FILLER": "                                                                                                                                                                        "
+      },
+      "expectedBytes": "000000050Aniya                    Alba                     Von                      1588 Nienow Cape                                  Suite 187                                         New Aricchester                                   ORUSA04257     (325)301-0827  (493)985-9283  931248469000000000000303878241960-12-010074883577Y623                                                                                                                                                                        "
     }
   ],
   "expectedReturnCode": 0,
@@ -72,8 +76,14 @@
     {
       "dataset": "M03BAREA",
       "channel": "WRITES",
-      "rowCount": 3,
+      "rowCount": 2,
       "recordLength": 1040
+    },
+    {
+      "dataset": "CUSTFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 500
     }
   ]
 }

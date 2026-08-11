@@ -1,12 +1,16 @@
 {
   "program": "CBSTM03A",
   "caseId": "case11",
-  "description": "FILE STATUS '04' at the TRNXFILE open: IF WS-M03B-RC = '00' OR '04' at L736 accepts a record-length conflict exactly as it accepts success, so the run proceeds and writes a complete statement. Treating '04' as fatal would abend a run the COBOL completes (gate G47).",
+  "description": "The three-hop scale-2 amount chain and the PIC Z(9).99- TRAILING SIGN, driven by five mixed-sign transactions on one card. THE CHAIN HAS THREE HOPS AND NOT ONE OF THEM CHANGES SCALE: (1) TRNX-AMT PIC S9(09)V99 in app/cpy/COSTM01.CPY is an 11-byte zoned DISPLAY field whose sign is overpunched onto its trailing byte - not one of the 28 copybooks declares COMP-3, so every persisted numeric in this estate is zoned, and the shipped data states the convention outright: acctdata.txt closes ACCT-CURR-BAL on '{', which is digit zero carrying a positive sign. (2) ADD TRNX-AMT TO WS-TOTAL-AMT at app/cbl/CBSTM03A.CBL:L429, inside the inner PERFORM VARYING TR-JMP at L422-L430, accumulates into WS-TOTAL-AMT PIC S9(9)V99 declared under 01 COMP3-VARIABLES COMP-3 at L64-L65 - packed decimal, scale 2, and WORKING-STORAGE only, never a record field, which is the 'COMP and COMP-3 variables' feature the program header advertises at L32. (3) MOVE WS-TOTAL-AMT TO WS-TRN-AMT at L433 converts packed back to zoned, because WS-TRN-AMT PIC S9(9)V99 at L68 is DISPLAY, and MOVE WS-TRN-AMT TO ST-TOTAL-TRAMT at L434 then edits that zoned value through PIC Z(9).99-. All three fields carry scale exactly 2, so no scale change occurs anywhere on the path and no rounding decision is ever reached. The packed-to-zoned hop is preserved as the two moves the COBOL writes rather than collapsed into a single conversion (practice B5). Per transaction, 6000-WRITE-TRANS performs the same edit on the single amount: MOVE TRNX-ID TO ST-TRANID at L676, MOVE TRNX-DESC TO ST-TRANDT at L677, MOVE TRNX-AMT TO ST-TRANAMT at L678 - ST-TRANAMT being PIC Z(9).99- likewise - then WRITE FD-STMTFILE-REC FROM ST-LINE14 at L679. NUMERIC POLICY, NAMED AND NOT IMPLIED: every amount is a BigDecimal at scale exactly 2 and every scale-setting operation on a monetary path uses RoundingMode.DOWN. The reason is mechanical rather than stylistic - the keyword ROUNDED appears zero times across all 28 programs, so COBOL truncates excess fractional digits on store, and truncation toward zero is precisely what RoundingMode.DOWN performs. No other rounding mode appears on any monetary path, and a binary fractional primitive is never used for a value derived from a PIC 9(n)V(s) field because it cannot represent a two-place decimal exactly. THE MASK, BYTE BY BYTE: PIC Z(9).99- is 9 + 1 + 2 + 1 = 13 bytes - nine Z positions, the decimal point, two fraction digits, then ONE trailing sign position. Z means zero suppression, so a leading zero of the integer part is emitted as a SPACE and never as '0'. The sign position holds '-' when the value is negative and a SPACE when it is zero or positive; it is never '+'. The contrast is ST-CURR-BAL PIC 9(9).99- at L113 on ST-LINE8, the same 13 bytes with no suppression, which is why this account's balance appears as '000000492.00 ' with its leading zeros intact. LINE GEOMETRY AS ARITHMETIC: ST-LINE14 at L132-L137 is ST-TRANID X(16) + FILLER VALUE ' ' X(01) + ST-TRANDT X(49) + FILLER VALUE '$' X(01) + ST-TRANAMT Z(9).99-, so 16 + 1 + 49 + 1 + 13 = 80; ST-LINE14A at L138-L142 is FILLER VALUE 'Total EXP:' X(10) + FILLER VALUE SPACES X(56) + FILLER VALUE '$' X(01) + ST-TOTAL-TRAMT Z(9).99-, so 10 + 56 + 1 + 13 = 80. The literal '$' sits immediately before the amount on both lines. WHAT THE FIVE SEEDS EXERCISE, WITH THE ADDITION DONE BY HAND: +1234.56 seeded as '0000012345F' renders '     1234.56 ' - positive, so five Z positions stand blank and the sign position is a SPACE; -2500.00 seeded as '0000025000}' renders '     2500.00-', and the running total crosses zero here, 1234.56 - 2500.00 = -1265.44; +7.89 seeded as '0000000078I' renders '        7.89 ' with eight Z positions blank, running -1265.44 + 7.89 = -1257.55; -0.02 seeded as '0000000000K' renders '         .02-', all nine Z positions blank on a negative value, running -1257.55 - 0.02 = -1257.57; and -100000000.00 seeded as '1000000000}' renders '100000000.00-', which fills all nine Z positions and so pins the other end of the span. The total is therefore -1257.57 - 100000000.00 = -100001257.57, edited into ST-TOTAL-TRAMT as '100001257.57-': nine integer digits, so no Z position is blank, no high-order digit is lost in the L433 packed-to-zoned hop, and the trailing '-' makes the total's sign position an assertion rather than an assumption. WS-TOTAL-AMT carries nine integer digits and 100001257.57 sits inside that, so the accumulation is exact rather than clipped. Every one of the six rendered images above is exactly 13 bytes. THE TOTAL IS PER STATEMENT, NOT CUMULATIVE: MOVE ZERO TO WS-TOTAL-AMT at L325 sits INSIDE 1000-MAINLINE's PERFORM UNTIL at L317-L329, immediately before the PERFORM 4000-TRNXFILE-GET at L326, so the accumulator is re-primed for every cross-reference record. This case seeds one cross-reference row, so its Total EXP is that one customer's own total; hoisting the reset out of the loop would leave a second statement carrying the first one's sum, which is the failure the two-statement case pins from the other side. THE HTML SIDE RECEIVES THE AMOUNT ALREADY EDITED: 6000-WRITE-TRANS builds HTML-TRAN-LN by STRINGing ST-TRANAMT - the 13-byte masked image, not the numeric value - between '<p>' and '</p>' at L711-L714, so each HTML amount cell is 3 + 13 + 4 = 20 characters space-padded to 100. The HTML writer must not re-apply the mask, because that would edit an already-edited string. ENVIRONMENT - THE OPEN REPORTS '04' AND THE RUN COMPLETES: this case is paired with a TRNXFILE open that reports FILE STATUS '04'. IF WS-M03B-RC = '00' OR '04' at L736 CONTINUEs on both, so a record-length conflict at the open is accepted exactly as success is - no DISPLAY, no 9999-ABEND-PROGRAM - and the statement is written in full. That acceptance is what makes this a legitimate carrier for an arithmetic subject: treating '04' as fatal would abend a run the COBOL completes and not one of the amounts above would ever be reached. Note that the guard at L748 accepts the same two statuses on the first read, and that '04' is substituted at the open alone. UNIT AND INVOCATION: statement.StatementGenerationJobA as a BATCH_JOB, reached at step/Tasklet level with statement.StatementGenerationJobB as its constructor-injected collaborator - no JobLauncher, no job repository and no HTTP anywhere in the path (gate G51). jobParameters is empty because no step of app/jcl/CREASTMT.JCL declares a PARM, unlike INTCALC.jcl's PARM='2022071800'. INPUTS: TRNXFILE is INLINE because there is no tenth fixture to name - app/data/ASCII holds exactly nine .txt files and none of them is a statement transaction file - so each row is composed from app/cpy/COSTM01.CPY at exactly 350 bytes: TRNX-CARD-NUM X(16) plus TRNX-ID X(16) as the 32-byte composite key that DELDEF01's IDCAMS corroborates with KEYS(32 0) at :30 and RECORDSIZE(350 350) at :32, then 2 + 4 + 10 + 100 + 11 + 9 + 50 + 50 + 10 + 26 + 26 = 298 plus a trailing FILLER X(20) emitted as spaces = 318 (gate G21). Every row carries the cross-referenced card so the table search at L417-L432 matches, and the five rows are ordered ascending by card then id, which is the order STEP010's SORT FIELDS=(263,16,CH,A,1,16,CH,A) with OUTREC FIELDS=(1:263,16,17:1,262,279:279,50) at :53-:54 produces. XREFFILE is row 0 of app/data/ASCII/cardxref.txt verbatim - XREF-CARD-NUM 0500024453765740, XREF-CUST-ID 000000050, XREF-ACCT-ID 00000000050 - and it stays 36 bytes here: ParityCase.Normalisation is the sole owner of the 14-space pad up to CVACT03Y's declared 50 and applies it once, at seed time, through the declared CARDXREF_FILLER_PAD_36_TO_50, so the fixture is never edited and the pad is never applied twice (gate G16). ACCTFILE and CUSTFILE are acctdata.txt (300 x 50) and custdata.txt (500 x 50) whole, and both keyed reads take their keys from that xref row - 2000-CUSTFILE-GET with LENGTH OF XREF-CUST-ID = 9 and 3000-ACCTFILE-GET with LENGTH OF XREF-ACCT-ID = 11 - so the statement is for CUSTOMER 000000050 and ACCOUNT 00000000050: Aniya Alba Von, 1588 Nienow Cape, Suite 187, FICO 623, ACCT-CURR-BAL '00000004920{' whose closing '{' is the zoned positive-zero overpunch and so 492.00. The customer is read through CUSTREC, whose date of birth is CUST-DOB-YYYYMMDD and never CVCUS01Y's CUST-DOB-YYYY-MM-DD (requirement I1). ST-ADD3's STRING at L472-L481 delimits CUST-ADDR-LINE-3 by ' ', which stops 'New Aricchester' at its first space, so the address line reads 'New OR USA 04257' - a quirk preserved rather than tidied. WIDTHS AND COUNTS, EACH FROM TWO SOURCES: STMTFILE is 80 bytes, from 01 FD-STMTFILE-REC PIC X(80) at :45 and from app/jcl/CREASTMT.JCL LINE 89, DCB=(LRECL=80,BLKSIZE=8000,RECFM=FB), under the STMTFILE DD at line 87. Line 90 of that JCL is genuinely corrupted - verbatim '//         SPACE=(CYL,(1,1),RLSE), 00,RECFM=FB), ATA.VSAM.KSDS', a text-overlay artefact splicing fragments of other lines - and its ' 00,RECFM=FB)' remnant sits directly beneath STMTFILE where it is easily misread as LRECL=100. Line 89 is authoritative, and the JCL is left exactly as it stands because it is the parity oracle: the hazard is recorded and worked around here, never corrected there (practice B4). HTMLFILE is 100 bytes, from 01 FD-HTMLFILE-REC PIC X(100) at :47 and from line 94, DCB=(LRECL=100,BLKSIZE=800,RECFM=FB), under the HTMLFILE DD at line 92; that supersedes STEP030's pre-delete LRECL=80,BLKSIZE=3200 at line 69, because the step that creates the dataset wins. STMTFILE is 19 + N records and HTMLFILE is 64 + 11N - 11 per transaction from L682, L685, L692, L694, L697, L704, L706, L709, L716, L718 and L721 - so with N = 5 that is exactly 24 and 119, in write order at contiguous zero-based row indices, and expectedDatasets pins both counts and both widths on the WRITES channel (gates G19, G20). Both FD records are single elementary items and the STMTFILE records are many different line templates, so each expectation pins its whole span image, which parity.FieldDiffer walks span by span rather than comparing as one opaque string, and which at the same time fixes the total width and so proves every VALUE SPACES and FILLER span was emitted. expectedFinalState is deliberately empty: CREASTMT.JCL:L87-L96 declares both outputs DISP=(NEW,CATLG,DELETE), and the retained-state channel is the subject of the case that pins it, not of this one. MESSAGES AND RETURN CODE: the nine DISPLAY_LINE expectations are the TIOT walk and nothing else - the job and step line at L270 with TIOTNJOB 'CREASTMT' and TIOTJSTP 'STEP040 ', the 'DD Names from TIOT: ' line at L275, one ' -- valid UCB' line at L279 for each of STEP040's six dataset DDs in JCL declaration order (:83-:92; STEPLIB, SYSPRINT and SYSOUT at :80-:82 are not data allocations), and the post-loop entry at L290, whose ' -- null  UCB' is byte-different from the in-loop ' --  null UCB' at L281 and where TIOCDDNM X(08) is blank. No abend arm is reached and 9999-ABEND-PROGRAM is never performed, so expectedReturnCode is 0. DETERMINISM: nothing here is read from a clock. The program composes no timestamp of its own, and the two X(26) spans TRNX-ORIG-TS and TRNX-PROC-TS are seed bytes carrying the fixed 2022-07-18 12:00:00.000000 literal the shipped transaction data uses, never a 'now'. Bytes are US-ASCII throughout, matching app/data/ASCII, and never a platform default. PROVENANCE: every expected value here is STATICALLY DERIVED - by structured reading of the CBSTM03A paragraphs cited above, cross-checked against the COSTM01, CUSTREC, CVACT01Y and CVACT03Y byte layouts, the CREASTMT.JCL DD and DCB contracts and the real ASCII fixtures, and by hand addition of the five seeded amounts. It was never captured from, recorded against or replayed from any execution of the legacy COBOL, which is empirically impossible in this environment: there is no z/OS or CICS runtime, the available compiler reports its indexed file handler disabled, no Language Environment CEE* services exist, and app/cpy/CUSTREC.cpy carries literal TAB characters that break parsing outright.",
   "unitKind": "BATCH_JOB",
   "inputs": {
     "TRNXFILE": {
       "rows": [
-        "0500024453765740TRAN000000000001010001POS TERM  Accepted under status 04                                                                            0000000640{000000001Blick-Rippin                                      Port Renayfurt                                    60176     2022-07-18 12:00:00.0000002022-07-18 12:00:00.000000                    "
+        "0500024453765740TRAN000000000001010001POS TERM  POS purchase at Blick-Rippin                                                                        0000012345F000000001Blick-Rippin                                      Port Renayfurt                                    60176     2022-07-18 12:00:00.0000002022-07-18 12:00:00.000000                    ",
+        "0500024453765740TRAN000000000002010001POS TERM  Disputed settlement reversed in full                                                                0000025000}000000001Blick-Rippin                                      Port Renayfurt                                    60176     2022-07-18 12:00:00.0000002022-07-18 12:00:00.000000                    ",
+        "0500024453765740TRAN000000000003010001POS TERM  Paper statement fee                                                                                 0000000078I000000002Bank of XYZ                                       Seattle                                           99999     2022-07-18 12:00:00.0000002022-07-18 12:00:00.000000                    ",
+        "0500024453765740TRAN000000000004010001POS TERM  Interest rounding adjustment credited                                                               0000000000K000000002Bank of XYZ                                       Seattle                                           99999     2022-07-18 12:00:00.0000002022-07-18 12:00:00.000000                    ",
+        "0500024453765740TRAN000000000005010001POS TERM  Duplicated overnight batch backed out                                                               1000000000}000000001Blick-Rippin                                      Port Renayfurt                                    60176     2022-07-18 12:00:00.0000002022-07-18 12:00:00.000000                    "
       ]
     },
     "XREFFILE": {
@@ -108,21 +112,41 @@
     {
       "dataset": "STMTFILE",
       "rowIndex": 16,
-      "expectedBytes": "TRAN000000000001 Accepted under status 04                         $       64.00 "
+      "expectedBytes": "TRAN000000000001 POS purchase at Blick-Rippin                     $     1234.56 "
     },
     {
       "dataset": "STMTFILE",
       "rowIndex": 17,
-      "expectedBytes": "--------------------------------------------------------------------------------"
+      "expectedBytes": "TRAN000000000002 Disputed settlement reversed in full             $     2500.00-"
     },
     {
       "dataset": "STMTFILE",
       "rowIndex": 18,
-      "expectedBytes": "Total EXP:                                                        $       64.00 "
+      "expectedBytes": "TRAN000000000003 Paper statement fee                              $        7.89 "
     },
     {
       "dataset": "STMTFILE",
       "rowIndex": 19,
+      "expectedBytes": "TRAN000000000004 Interest rounding adjustment credited            $         .02-"
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 20,
+      "expectedBytes": "TRAN000000000005 Duplicated overnight batch backed out            $100000000.00-"
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 21,
+      "expectedBytes": "--------------------------------------------------------------------------------"
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 22,
+      "expectedBytes": "Total EXP:                                                        $100001257.57-"
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 23,
       "expectedBytes": "********************************END OF STATEMENT********************************"
     },
     {
@@ -433,7 +457,7 @@
     {
       "dataset": "HTMLFILE",
       "rowIndex": 61,
-      "expectedBytes": "<p>Accepted under status 04                         </p>                                            "
+      "expectedBytes": "<p>POS purchase at Blick-Rippin                     </p>                                            "
     },
     {
       "dataset": "HTMLFILE",
@@ -448,7 +472,7 @@
     {
       "dataset": "HTMLFILE",
       "rowIndex": 64,
-      "expectedBytes": "<p>       64.00 </p>                                                                                "
+      "expectedBytes": "<p>     1234.56 </p>                                                                                "
     },
     {
       "dataset": "HTMLFILE",
@@ -468,12 +492,12 @@
     {
       "dataset": "HTMLFILE",
       "rowIndex": 68,
-      "expectedBytes": "<td colspan=\"3\" style=\"padding:0px 5px;background-color:#1d1d96b3;\">                                "
+      "expectedBytes": "<td style=\"width:25%; padding:0px 5px; background-color:#f2f2f2; text-align:left;\">                 "
     },
     {
       "dataset": "HTMLFILE",
       "rowIndex": 69,
-      "expectedBytes": "<h3>End of Statement</h3>                                                                           "
+      "expectedBytes": "<p>TRAN000000000002</p>                                                                             "
     },
     {
       "dataset": "HTMLFILE",
@@ -483,21 +507,241 @@
     {
       "dataset": "HTMLFILE",
       "rowIndex": 71,
-      "expectedBytes": "</tr>                                                                                               "
+      "expectedBytes": "<td style=\"width:55%; padding:0px 5px; background-color:#f2f2f2; text-align:left;\">                 "
     },
     {
       "dataset": "HTMLFILE",
       "rowIndex": 72,
-      "expectedBytes": "</table>                                                                                            "
+      "expectedBytes": "<p>Disputed settlement reversed in full             </p>                                            "
     },
     {
       "dataset": "HTMLFILE",
       "rowIndex": 73,
-      "expectedBytes": "</body>                                                                                             "
+      "expectedBytes": "</td>                                                                                               "
     },
     {
       "dataset": "HTMLFILE",
       "rowIndex": 74,
+      "expectedBytes": "<td style=\"width:20%; padding:0px 5px; background-color:#f2f2f2; text-align:right;\">                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 75,
+      "expectedBytes": "<p>     2500.00-</p>                                                                                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 76,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 77,
+      "expectedBytes": "</tr>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 78,
+      "expectedBytes": "<tr>                                                                                                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 79,
+      "expectedBytes": "<td style=\"width:25%; padding:0px 5px; background-color:#f2f2f2; text-align:left;\">                 "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 80,
+      "expectedBytes": "<p>TRAN000000000003</p>                                                                             "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 81,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 82,
+      "expectedBytes": "<td style=\"width:55%; padding:0px 5px; background-color:#f2f2f2; text-align:left;\">                 "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 83,
+      "expectedBytes": "<p>Paper statement fee                              </p>                                            "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 84,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 85,
+      "expectedBytes": "<td style=\"width:20%; padding:0px 5px; background-color:#f2f2f2; text-align:right;\">                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 86,
+      "expectedBytes": "<p>        7.89 </p>                                                                                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 87,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 88,
+      "expectedBytes": "</tr>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 89,
+      "expectedBytes": "<tr>                                                                                                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 90,
+      "expectedBytes": "<td style=\"width:25%; padding:0px 5px; background-color:#f2f2f2; text-align:left;\">                 "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 91,
+      "expectedBytes": "<p>TRAN000000000004</p>                                                                             "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 92,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 93,
+      "expectedBytes": "<td style=\"width:55%; padding:0px 5px; background-color:#f2f2f2; text-align:left;\">                 "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 94,
+      "expectedBytes": "<p>Interest rounding adjustment credited            </p>                                            "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 95,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 96,
+      "expectedBytes": "<td style=\"width:20%; padding:0px 5px; background-color:#f2f2f2; text-align:right;\">                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 97,
+      "expectedBytes": "<p>         .02-</p>                                                                                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 98,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 99,
+      "expectedBytes": "</tr>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 100,
+      "expectedBytes": "<tr>                                                                                                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 101,
+      "expectedBytes": "<td style=\"width:25%; padding:0px 5px; background-color:#f2f2f2; text-align:left;\">                 "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 102,
+      "expectedBytes": "<p>TRAN000000000005</p>                                                                             "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 103,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 104,
+      "expectedBytes": "<td style=\"width:55%; padding:0px 5px; background-color:#f2f2f2; text-align:left;\">                 "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 105,
+      "expectedBytes": "<p>Duplicated overnight batch backed out            </p>                                            "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 106,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 107,
+      "expectedBytes": "<td style=\"width:20%; padding:0px 5px; background-color:#f2f2f2; text-align:right;\">                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 108,
+      "expectedBytes": "<p>100000000.00-</p>                                                                                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 109,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 110,
+      "expectedBytes": "</tr>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 111,
+      "expectedBytes": "<tr>                                                                                                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 112,
+      "expectedBytes": "<td colspan=\"3\" style=\"padding:0px 5px;background-color:#1d1d96b3;\">                                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 113,
+      "expectedBytes": "<h3>End of Statement</h3>                                                                           "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 114,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 115,
+      "expectedBytes": "</tr>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 116,
+      "expectedBytes": "</table>                                                                                            "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 117,
+      "expectedBytes": "</body>                                                                                             "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 118,
       "expectedBytes": "</html>                                                                                             "
     }
   ],
@@ -551,13 +795,13 @@
     {
       "dataset": "STMTFILE",
       "channel": "WRITES",
-      "rowCount": 20,
+      "rowCount": 24,
       "recordLength": 80
     },
     {
       "dataset": "HTMLFILE",
       "channel": "WRITES",
-      "rowCount": 75,
+      "rowCount": 119,
       "recordLength": 100
     }
   ]

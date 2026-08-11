@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -14,6 +15,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.vsergeychik.carddemo.account.dto.AccountUpdateRequest;
 import com.vsergeychik.carddemo.account.dto.AccountUpdateResponse;
@@ -28,11 +30,16 @@ import com.vsergeychik.carddemo.common.CicsResponse;
 import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.NavigationContext;
+import com.vsergeychik.carddemo.common.PfKeyResolver;
 import com.vsergeychik.carddemo.common.ScreenInputRejectedException;
+import com.vsergeychik.carddemo.common.ScreenMetadata;
 import com.vsergeychik.carddemo.common.SystemMessages;
 import com.vsergeychik.carddemo.customer.CustomerRepository;
 import com.vsergeychik.carddemo.customer.model.CustomerRecord;
 import com.vsergeychik.carddemo.util.DateUtilityJob;
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
@@ -40,6 +47,7 @@ import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -47,9 +55,12 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.mockito.InOrder;
 import org.springframework.http.MediaType;
+import org.springframework.http.converter.json.MappingJackson2HttpMessageConverter;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
@@ -92,6 +103,75 @@ import org.springframework.test.web.servlet.setup.MockMvcBuilders;
  *   <li>{@code ABEND-ROUTINE}'s default message is unreachable, because {@code CSMSG02Y} declares
  *       {@code ABEND-MSG VALUE SPACES} and the test is against {@code LOW-VALUES}.</li>
  * </ol>
+ *
+ * <h2>Divergences from the Agent Action Plan, recorded rather than adopted (practice B4)</h2>
+ * <p>Four of the plan's figures do not survive a reading of the source. Each was re-verified against
+ * {@code app/cbl/COACTUPC.cbl}, {@code app/cpy-bms/COACTUP.CPY} and {@code app/bms/COACTUP.bms}, and the
+ * source is what is asserted here. Three are listed immediately below; the fourth is the {@code 9000}
+ * series' paragraph numbering, which belongs with the {@code EVALUATE} register that follows.
+ * <ol>
+ *   <li><strong>The optimistic-concurrency paragraph is {@code 9700}, not {@code 9300}.</strong>
+ *       {@code 9700-CHECK-CHANGE-IN-REC} opens at {@code :4109} and closes at {@code :4193}, and is
+ *       performed as a range from {@code :3947-3948}. {@code 9300} in this program is
+ *       {@code 9300-GETACCTDATA-BYACCT} at {@code :3701} - the account read, something else entirely.
+ *       Both are exercised below, under their own numbers.</li>
+ *   <li><strong>There are 13 reusable field editors, not 18.</strong> The labels matching
+ *       {@code 12nn-EDIT-*} are fifteen; two of them - {@code 1200-EDIT-MAP-INPUTS} at {@code :1429} and
+ *       {@code 1210-EDIT-ACCOUNT} at {@code :1783} - are the drivers, leaving {@code 1215}, {@code 1220},
+ *       {@code 1225}, {@code 1230}, {@code 1235}, {@code 1240}, {@code 1245}, {@code 1250}, {@code 1260},
+ *       {@code 1265}, {@code 1270}, {@code 1275} and {@code 1280}. The higher figure counts invocation
+ *       contexts rather than paragraphs. All thirteen are driven below.</li>
+ *   <li><strong>21 composite components stay decomposed on the wire, not 20.</strong> Four dates at
+ *       three components each, the SSN's three and each telephone number's three is twenty-one. The
+ *       enumeration is asserted rather than the count restated.</li>
+ * </ol>
+ *
+ * <h2>Where each {@code EVALUATE} is driven (gate G30)</h2>
+ * <p>{@code app/cbl/COACTUPC.cbl} contains exactly ten {@code EVALUATE} statements outside comment
+ * lines. {@code EVALUATE} is ordered - the first matching {@code WHEN} wins and {@code WHEN OTHER} is
+ * the default - so each is driven arm by arm in source order, {@code WHEN OTHER} last. This register
+ * exists so the gate can be checked without reading the whole class.
+ * <table border="1">
+ *   <caption>The ten {@code EVALUATE} sites and the nested class that drives each</caption>
+ *   <tr><th>Site</th><th>Home paragraph</th><th>Driven by</th></tr>
+ *   <tr><td>{@code :921}</td><td>{@code 0000-MAIN} - the main dispatch</td>
+ *       <td>{@link MainDispatch}, four arms</td></tr>
+ *   <tr><td>{@code :2563}</td><td>{@code 2000-DECIDE-ACTION}</td>
+ *       <td>{@link DecideAction2000}, eight arms</td></tr>
+ *   <tr><td>{@code :2606}</td><td>{@code 2000-DECIDE-ACTION}, nested on the write outcome</td>
+ *       <td>{@link DecideAction2000}, the four {@code 9600} arms</td></tr>
+ *   <tr><td>{@code :2710}</td><td>{@code 3200-SETUP-SCREEN-VARS}</td>
+ *       <td>{@link PaintAndAttributes}, selecting {@code 3201}/{@code 3202}/{@code 3203}</td></tr>
+ *   <tr><td>{@code :2957}</td><td>{@code 3250-SETUP-INFOMSG}</td>
+ *       <td>{@link PaintAndAttributes}, eight arms and the missing {@code WHEN OTHER}</td></tr>
+ *   <tr><td>{@code :2993}</td><td>{@code 3300-SETUP-SCREEN-ATTRS}, the protection context</td>
+ *       <td>{@link PaintAndAttributes}, four arms including the deliberately empty one</td></tr>
+ *   <tr><td>{@code :3009}</td><td>{@code 3300-SETUP-SCREEN-ATTRS}, nested on cursor position</td>
+ *       <td>{@link PaintAndAttributes}, screen-order arms and the fallback</td></tr>
+ *   <tr><td>{@code :3664}</td><td>{@code 9200-GETCARDXREF-BYACCT} on {@code WS-RESP-CD}</td>
+ *       <td>{@link ReadPath}, all three arms</td></tr>
+ *   <tr><td>{@code :3713}</td><td>{@code 9300-GETACCTDATA-BYACCT} on {@code WS-RESP-CD}</td>
+ *       <td>{@link ReadPath}, all three arms</td></tr>
+ *   <tr><td>{@code :3763}</td><td>{@code 9400-GETCUSTDATA-BYCUST} on {@code WS-RESP-CD}</td>
+ *       <td>{@link ReadPath}, all three arms</td></tr>
+ * </table>
+ * <p><strong>A fourth divergence, and the answer to a question the plan leaves open.</strong> The plan
+ * assigns {@code :3664} to {@code 9000-READ-ACCT}, {@code :3713} to {@code 9200} and {@code :3763} to
+ * {@code 9300}, then asks how {@code 9400-GETCUSTDATA-BYCUST} discriminates given it appears to have no
+ * {@code EVALUATE}. The whole run is shifted by one paragraph. The boundaries are
+ * {@code 9000-READ-ACCT} {@code :3608}-{@code :3646} ({@code -EXIT} at {@code :3647}), {@code 9200}
+ * {@code :3650}-{@code :3697}, {@code 9300} {@code :3701}-{@code :3747} and {@code 9400}
+ * {@code :3752}-{@code :3796}, and the only {@code EVALUATE}s past {@code :3600} are at {@code :3664},
+ * {@code :3713} and {@code :3763}. So <strong>{@code 9400} does have its own {@code EVALUATE}, at
+ * {@code :3763}</strong>, with the same three-arm shape as its two siblings - {@code DFHRESP(NORMAL)},
+ * {@code DFHRESP(NOTFND)} composing a {@code STRING} gated by {@code WS-RETURN-MSG-OFF} and naming
+ * {@code ' REAS:'} in capitals, then {@code WHEN OTHER} moving {@code WS-FILE-ERROR-MESSAGE} - and no
+ * {@code DFHRESP(ENDFILE)} arm, which is why {@code WHEN OTHER} has to be reachable.
+ * <p>The paragraph with no {@code EVALUATE} is {@code 9000-READ-ACCT} itself, and correctly so: it is a
+ * driver, not a reader. It initialises {@code ACUP-OLD-DETAILS}, stages the account key, then performs
+ * {@code 9200}, {@code 9300}, {@code 9400} and {@code 9500} as four ranges separated by three
+ * {@code IF ... GO TO 9000-READ-ACCT-EXIT} guards - and those guards, not an {@code EVALUATE}, are what
+ * {@link ReadOrdering} asserts with {@link InOrder}.
  */
 @DisplayName("AccountUpdateController - COACTUPC / CAUP, the account update screen")
 class AccountUpdateControllerTest {
@@ -2300,11 +2380,11 @@ class AccountUpdateControllerTest {
     }
 
     @Nested
-    @DisplayName("The read path - 9000, 9200 on CXACAIX, 9300, 9400, 9500")
+    @DisplayName("The read path - the 9000 driver, 9200 on CXACAIX, 9300, 9400 and 9500")
     class ReadPath {
 
         @Test
-        @DisplayName("All three reads succeed: 9500 stores both records into the OLD and NEW groups")
+        @DisplayName("All three reads succeed: 9500 stores both records into the OLD group")
         void happyPath() {
             stubAllFound();
             AccountUpdateController.Conversation task = warmTask();
@@ -2314,7 +2394,9 @@ class AccountUpdateControllerTest {
 
             assertThat(task.foundAcctInMaster()).isTrue();
             assertThat(task.foundCustInMaster()).isTrue();
-            // 9500 populates OLD from the record and copies it into NEW, so 1205 has a baseline.
+            // 9500 populates ACUP-OLD-DETAILS from the two records and nothing else: :3801-3886
+            // contains no MOVE to an ACUP-NEW item. ACUP-NEW is the screen's, filled by 1100, and that
+            // separation is what lets 1205 detect a change at all.
             assertThat(task.acupOldAcct.activeStatus).isEqualTo("Y");
             assertThat(task.acupOldAcct.openYear()).isEqualTo("2020");
             assertThat(task.acupOldAcct.openMon()).isEqualTo("01");
@@ -3630,9 +3712,7 @@ class AccountUpdateControllerTest {
          */
         private MockMvc http() {
             return MockMvcBuilders.standaloneSetup(controller)
-                    .setMessageConverters(
-                            new org.springframework.http.converter.json
-                                    .MappingJackson2HttpMessageConverter(MAPPER))
+                    .setMessageConverters(new MappingJackson2HttpMessageConverter(MAPPER))
                     .build();
         }
 
@@ -3663,10 +3743,10 @@ class AccountUpdateControllerTest {
                     .andExpect(status().isOk())
                     .andReturn().getResponse().getContentAsString();
 
-            com.fasterxml.jackson.databind.JsonNode json = MAPPER.readTree(body);
+            JsonNode json = MAPPER.readTree(body);
             assertThat(AccountUpdateResponse.FIELDS).hasSize(54);
             for (AccountUpdateResponse.ScreenField field : AccountUpdateResponse.FIELDS) {
-                assertThat(json.has(field.label().toLowerCase(java.util.Locale.ROOT)))
+                assertThat(json.has(field.label().toLowerCase(Locale.ROOT)))
                         .describedAs("%s is a payload field", field.label())
                         .isTrue();
             }
@@ -3684,7 +3764,7 @@ class AccountUpdateControllerTest {
                     fullyValidScreen().withValue(AccountUpdateRequest.ScreenField.ACSTTUS, "X"),
                     AccountUpdateController.PASSED_COMMAREA_LENGTH, CicsAid.DFHENTER);
 
-            com.vsergeychik.carddemo.common.ScreenMetadata metadata = controller.screenMetadataOf(
+            ScreenMetadata metadata = controller.screenMetadataOf(
                     painted.response(), painted.request(), painted.cursorField());
 
             assertThat(metadata.cursorField())
@@ -3702,7 +3782,7 @@ class AccountUpdateControllerTest {
                     CicsAid.DFHPF3);
 
             assertThat(painted.cursorField()).isNull();
-            com.vsergeychik.carddemo.common.ScreenMetadata metadata = controller.screenMetadataOf(
+            ScreenMetadata metadata = controller.screenMetadataOf(
                     painted.response(), painted.request(), painted.cursorField());
             assertThat(metadata).isNotNull();
         }
@@ -3712,14 +3792,13 @@ class AccountUpdateControllerTest {
         void noSessionState() throws Exception {
             // G37 and B9 together: no HttpSession, no @SessionAttributes, and no mutable static field.
             // A declared field that is not final would be shared across concurrent turns.
-            for (java.lang.reflect.Field field : AccountUpdateController.class
-                    .getDeclaredFields()) {
-                if (java.lang.reflect.Modifier.isStatic(field.getModifiers())) {
-                    assertThat(java.lang.reflect.Modifier.isFinal(field.getModifiers()))
+            for (Field field : AccountUpdateController.class.getDeclaredFields()) {
+                if (Modifier.isStatic(field.getModifiers())) {
+                    assertThat(Modifier.isFinal(field.getModifiers()))
                             .describedAs("static field %s must be final", field.getName())
                             .isTrue();
                 } else {
-                    assertThat(java.lang.reflect.Modifier.isFinal(field.getModifiers()))
+                    assertThat(Modifier.isFinal(field.getModifiers()))
                             .describedAs("instance field %s must be final", field.getName())
                             .isTrue();
                 }
@@ -3727,6 +3806,28 @@ class AccountUpdateControllerTest {
             assertThat(AccountUpdateController.class.getAnnotations())
                     .noneMatch(a -> a.annotationType().getSimpleName()
                             .equals("SessionAttributes"));
+            // Nor a session-scoped bean: a scoped proxy would give the controller per-user storage by
+            // the back door, which is the same violation written differently.
+            assertThat(AccountUpdateController.class.getAnnotations())
+                    .noneMatch(a -> a.annotationType().getSimpleName().equals("Scope")
+                            || a.annotationType().getSimpleName().equals("SessionScope"));
+            // No ThreadLocal, and nothing whose type could carry state between turns.
+            for (Field field : AccountUpdateController.class.getDeclaredFields()) {
+                assertThat(ThreadLocal.class.isAssignableFrom(field.getType()))
+                        .describedAs("field %s must not be a ThreadLocal", field.getName())
+                        .isFalse();
+            }
+            // And no entry point takes a session or a raw servlet request to read one from: the whole
+            // conversation arrives as the payload, the path variable and the three query parameters.
+            for (Method method : AccountUpdateController.class.getDeclaredMethods()) {
+                for (Class<?> parameter : method.getParameterTypes()) {
+                    assertThat(parameter.getName())
+                            .describedAs("%s takes no session-bearing parameter", method.getName())
+                            .doesNotContain("HttpSession")
+                            .doesNotContain("HttpServletRequest")
+                            .doesNotContain("WebRequest");
+                }
+            }
         }
     }
 
@@ -4133,4 +4234,1047 @@ class AccountUpdateControllerTest {
             assertThat(controller.handle(received, 0, CicsAid.DFHENTER)).isNotNull();
         }
     }
+
+    // =============================================================================================
+    // The BMS field contract, the work-area shape and the variable-length communication area.
+    //
+    // The five families below discharge the presentation and storage contracts that the flow tests
+    // above exercise but do not pin: the 54 named DFHMDF fields and their widths (G9), the 1095-byte
+    // symbolic-map group, the 873-byte WS-THIS-PROGCOMMAREA including all nine ACUP-CHANGE-ACTION
+    // condition names (G50), and the OCCURS 1 TO 32767 DEPENDING ON EIBCALEN span at
+    // app/cbl/COACTUPC.cbl:856 (G33). Every number is read from app/cpy-bms/COACTUP.CPY and
+    // app/bms/COACTUP.bms rather than from a captured run - no COBOL baseline exists (AAP risk R-A).
+    // =============================================================================================
+
+    @Nested
+    @DisplayName("The BMS field contract - 54 named DFHMDF entries of 128, every one PIC X(n)")
+    class BmsFieldContract {
+
+        /**
+         * The 21 components the three account dates, the date of birth, the SSN and the two telephone
+         * numbers are split into on the wire, in screen order.
+         *
+         * <p>Twenty-<em>one</em>, not the twenty the Agent Action Plan states: four dates at three
+         * components each is twelve, the SSN is three and the two telephone numbers are three each.
+         * The count is derived from {@code app/cpy-bms/COACTUP.CPY} rather than restated, and the
+         * divergence is recorded rather than silently adopted (practice <strong>B4</strong>).
+         */
+        private final List<AccountUpdateRequest.ScreenField> composites = List.of(
+                AccountUpdateRequest.ScreenField.OPNYEAR, AccountUpdateRequest.ScreenField.OPNMON,
+                AccountUpdateRequest.ScreenField.OPNDAY, AccountUpdateRequest.ScreenField.EXPYEAR,
+                AccountUpdateRequest.ScreenField.EXPMON, AccountUpdateRequest.ScreenField.EXPDAY,
+                AccountUpdateRequest.ScreenField.RISYEAR, AccountUpdateRequest.ScreenField.RISMON,
+                AccountUpdateRequest.ScreenField.RISDAY, AccountUpdateRequest.ScreenField.ACTSSN1,
+                AccountUpdateRequest.ScreenField.ACTSSN2, AccountUpdateRequest.ScreenField.ACTSSN3,
+                AccountUpdateRequest.ScreenField.DOBYEAR, AccountUpdateRequest.ScreenField.DOBMON,
+                AccountUpdateRequest.ScreenField.DOBDAY, AccountUpdateRequest.ScreenField.ACSPH1A,
+                AccountUpdateRequest.ScreenField.ACSPH1B, AccountUpdateRequest.ScreenField.ACSPH1C,
+                AccountUpdateRequest.ScreenField.ACSPH2A, AccountUpdateRequest.ScreenField.ACSPH2B,
+                AccountUpdateRequest.ScreenField.ACSPH2C);
+
+        private MockMvc dispatcher() {
+            return MockMvcBuilders.standaloneSetup(controller)
+                    .setMessageConverters(new MappingJackson2HttpMessageConverter(MAPPER))
+                    .build();
+        }
+
+        @Test
+        @DisplayName("Fifty-four named fields of the mapset's 128 DFHMDF entries, request and response "
+                + "agreeing label for label")
+        void fiftyFourNamedFieldsOfOneHundredAndTwentyEight() {
+            // app/bms/COACTUP.bms declares 128 DFHMDF entries, 54 of which carry a name; the unnamed 74
+            // are constant text and have no symbolic-map item, so they cannot be payload members.
+            assertThat(AccountUpdateRequest.FIELD_COUNT).isEqualTo(54);
+            assertThat(AccountUpdateRequest.DFHMDF_ENTRY_COUNT).isEqualTo(128);
+            assertThat(AccountUpdateRequest.ScreenField.values()).hasSize(54);
+            assertThat(AccountUpdateResponse.FIELDS).hasSize(54);
+
+            List<String> inbound = new ArrayList<>();
+            for (AccountUpdateRequest.ScreenField field : AccountUpdateRequest.ScreenField.values()) {
+                inbound.add(field.label());
+            }
+            List<String> outbound = new ArrayList<>();
+            for (AccountUpdateResponse.ScreenField field : AccountUpdateResponse.FIELDS) {
+                outbound.add(field.label());
+            }
+            // CACTUPAO REDEFINES CACTUPAI (app/cpy-bms/COACTUP.CPY:343), so the two groups name the
+            // same fields in the same order - the xxxI and xxxO items of one storage layout.
+            assertThat(outbound).containsExactlyElementsOf(inbound);
+        }
+
+        @ParameterizedTest(name = "{0}")
+        @EnumSource(AccountUpdateRequest.ScreenField.class)
+        @DisplayName("Every field is PIC X(n) at its declared width, and traces to a DFHMDF entry")
+        void everyFieldIsPicXAtItsDeclaredWidth(AccountUpdateRequest.ScreenField field) {
+            // The width comes from the xxxI PICTURE in app/cpy-bms/COACTUP.CPY and the DFHMDF LENGTH=
+            // operand in app/bms/COACTUP.bms, which agree; the type comes from the PICTURE alone.
+            assertThat(field.picture()).isEqualTo("X(" + field.length() + ")");
+            assertThat(field.isAlphanumeric()).isTrue();
+            assertThat(field.length()).isPositive();
+            assertThat(AccountUpdateRequest.declaredLength(field)).isEqualTo(field.length());
+            // G9: the field is traceable to both of its sources, by line.
+            assertThat(field.copybookLine()).isPositive();
+            assertThat(field.mapsetLine()).isPositive();
+            // SIZE=(24,80) on the single DFHMDI, so no field can sit off the screen.
+            assertThat(field.screenRow()).isBetween(1, AccountUpdateRequest.SCREEN_ROWS);
+            assertThat(field.screenColumn()).isBetween(1, AccountUpdateRequest.SCREEN_COLUMNS);
+            // The response half declares the same width for the same field.
+            assertThat(AccountUpdateResponse.declaredLength(
+                            AccountUpdateResponse.ScreenField.valueOf(field.name())))
+                    .isEqualTo(field.length());
+        }
+
+        @Test
+        @DisplayName("There is no edited and no numeric item anywhere: COACTUP.bms declares zero PICIN "
+                + "and zero PICOUT")
+        void noEditedOrNumericItemAnywhere() {
+            // COACTVW declares five PIC +ZZZ,ZZZ,ZZZ.99 items; this mapset declares none, so no
+            // formatter belongs on this screen. The PICTURE is asserted whole rather than by searching
+            // for mask characters, because the width digits of X(9) would defeat a bare "no 9" search:
+            // the character set of a well-formed picture here is exactly X, the parentheses and digits,
+            // and a numeric or edited item could not be written without leaving that set.
+            for (AccountUpdateRequest.ScreenField field : AccountUpdateRequest.ScreenField.values()) {
+                assertThat(field.picture())
+                        .describedAs("%s is PIC X only - no PICIN/PICOUT in app/bms/COACTUP.bms",
+                                field.label())
+                        .matches("X\\(\\d+\\)");
+                for (char mask : new char[] {'Z', '+', '-', '.', ',', 'S', 'V', '*', 'C', 'D', 'B'}) {
+                    assertThat(field.picture().indexOf(mask))
+                            .describedAs("%s carries no '%s' mask character", field.label(), mask)
+                            .isEqualTo(-1);
+                }
+            }
+        }
+
+        @Test
+        @DisplayName("The 54 widths sum to the group's 705 data bytes")
+        void theWidthsSumToTheDeclaredPayload() {
+            int total = 0;
+            for (AccountUpdateRequest.ScreenField field : AccountUpdateRequest.ScreenField.values()) {
+                total += field.length();
+            }
+            assertThat(total).isEqualTo(AccountUpdateRequest.PAYLOAD_LENGTH).isEqualTo(705);
+        }
+
+        @Test
+        @DisplayName("The three function-key legends: FKEYS 21, FKEY05 7, FKEY12 10")
+        void theThreeFunctionKeyLegends() {
+            assertThat(AccountUpdateRequest.ScreenField.FKEYS.length())
+                    .isEqualTo(AccountUpdateRequest.FKEYS_LENGTH).isEqualTo(21);
+            assertThat(AccountUpdateRequest.ScreenField.FKEY05.length())
+                    .isEqualTo(AccountUpdateRequest.FKEY05_LENGTH).isEqualTo(7);
+            assertThat(AccountUpdateRequest.ScreenField.FKEY12.length())
+                    .isEqualTo(AccountUpdateRequest.FKEY12_LENGTH).isEqualTo(10);
+        }
+
+        @Test
+        @DisplayName("The twenty-one composite components each stay a separate member at their own width")
+        void compositesStayDecomposed() {
+            // AccountUpdateService recomposes the dates with STRING year '-' mon '-' day, and
+            // 9700-CHECK-CHANGE-IN-REC compares the snapshot at asymmetric offsets, so a client that
+            // collapsed these into one member would break the concurrency check.
+            assertThat(composites).hasSize(21).doesNotHaveDuplicates();
+            for (AccountUpdateRequest.ScreenField part : composites) {
+                assertThat(part.isAlphanumeric()).isTrue();
+                assertThat(part.length()).isIn(2, 3, 4);
+            }
+            assertThat(AccountUpdateRequest.ScreenField.OPNYEAR.length()).isEqualTo(4);
+            assertThat(AccountUpdateRequest.ScreenField.OPNMON.length()).isEqualTo(2);
+            assertThat(AccountUpdateRequest.ScreenField.OPNDAY.length()).isEqualTo(2);
+            assertThat(AccountUpdateRequest.ScreenField.ACTSSN1.length()).isEqualTo(3);
+            assertThat(AccountUpdateRequest.ScreenField.ACTSSN2.length()).isEqualTo(2);
+            assertThat(AccountUpdateRequest.ScreenField.ACTSSN3.length()).isEqualTo(4);
+            assertThat(AccountUpdateRequest.ScreenField.ACSPH1A.length()).isEqualTo(3);
+            assertThat(AccountUpdateRequest.ScreenField.ACSPH1B.length()).isEqualTo(3);
+            assertThat(AccountUpdateRequest.ScreenField.ACSPH1C.length()).isEqualTo(4);
+        }
+
+        @Test
+        @DisplayName("No xxxL, xxxF, xxxA, xxxC, xxxP, xxxH or xxxV item is a JSON member of any of the "
+                + "fifty-four fields")
+        void metadataIsNeverAJsonMember() throws Exception {
+            stubAllFound();
+
+            String body = dispatcher()
+                    .perform(put(AccountUpdateController.ACCOUNT_UPDATE_PATH, ACCT)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(MAPPER.writeValueAsString(fullyValidScreen())))
+                    .andExpect(status().isOk())
+                    .andReturn().getResponse().getContentAsString();
+            JsonNode json = MAPPER.readTree(body);
+
+            // xxxL is the signed halfword length, xxxF the flag byte and xxxA its REDEFINES; the output
+            // group names the same four attribute bytes xxxC, xxxP, xxxH and xxxV from
+            // DFHMDI DSATTS/MAPATTS=(COLOR,HILIGHT,PS,VALIDN). All seven are validation and highlight
+            // metadata, published under screenMetadata, never as payload members (G9).
+            for (AccountUpdateResponse.ScreenField field : AccountUpdateResponse.FIELDS) {
+                String stem = field.label().toLowerCase(Locale.ROOT);
+                assertThat(json.has(stem))
+                        .describedAs("%s is a payload member", field.label()).isTrue();
+                for (String suffix : List.of("l", "f", "a", "c", "p", "h", "v")) {
+                    assertThat(json.has(stem + suffix))
+                            .describedAs("%s%s is metadata, not a payload member",
+                                    field.label(), suffix.toUpperCase(Locale.ROOT))
+                            .isFalse();
+                }
+            }
+            assertThat(json.has("screenMetadata")).isTrue();
+        }
+
+        @Test
+        @DisplayName("MOVE -1 TO xxxL is representable: the length item is a signed PIC S9(4) halfword")
+        void minusOneIsRepresentableInTheLengthItem() {
+            // 41 sites move -1 into a length item to position the cursor. The item is COMP PIC S9(4),
+            // so the value is signed and the range is four digits either side of zero.
+            assertThat(AccountUpdateRequest.FieldMetadata.CURSOR_HERE).isEqualTo(-1);
+            assertThat(AccountUpdateRequest.FieldMetadata.LENGTH_ITEM_MIN).isEqualTo(-9999);
+            assertThat(AccountUpdateRequest.FieldMetadata.LENGTH_ITEM_MAX).isEqualTo(9999);
+            assertThat(AccountUpdateRequest.FieldMetadata.CURSOR_HERE)
+                    .isGreaterThanOrEqualTo(AccountUpdateRequest.FieldMetadata.LENGTH_ITEM_MIN);
+
+            AccountUpdateRequest.FieldMetadata cursor =
+                    AccountUpdateRequest.FieldMetadata.unset().withCursorHere();
+            assertThat(cursor.lengthItem()).isEqualTo(-1);
+            assertThat(cursor.isCursorHere()).isTrue();
+            assertThat(AccountUpdateRequest.FieldMetadata.unset().isCursorHere()).isFalse();
+
+            AccountUpdateRequest received = AccountUpdateRequest.initial()
+                    .withCursorOn(AccountUpdateRequest.ScreenField.ACCTSID);
+            assertThat(received.metadata(AccountUpdateRequest.ScreenField.ACCTSID).lengthItem())
+                    .isEqualTo(AccountUpdateRequest.FieldMetadata.CURSOR_HERE);
+        }
+
+        @Test
+        @DisplayName("A bare asterisk is a legal whole value, because CSSETATY moves '*' into xxxO")
+        void anAsteriskIsALegalWholeValue() {
+            // app/cpy/CSSETATY.cpy moves '*' into the field's own output item when the field is BLANK,
+            // so the response type has to accept a one-character value that is not data.
+            AccountUpdateResponse response = AccountUpdateResponse.initial()
+                    .withValue(AccountUpdateResponse.ScreenField.ACSTTUS, "*");
+
+            assertThat(response.value(AccountUpdateResponse.ScreenField.ACSTTUS)).isEqualTo("*");
+            assertThat(response.getAcsttus()).isEqualTo("*");
+        }
+
+        @Test
+        @DisplayName("The symbolic-map group is 1095 bytes: 12 + 54 x 7 + 705, and round-trips")
+        void theGroupImageIsOneThousandAndNinetyFiveBytes() {
+            assertThat(AccountUpdateRequest.TIOAPFX_LENGTH).isEqualTo(12);
+            assertThat(AccountUpdateRequest.FIELD_OVERHEAD).isEqualTo(7);
+            assertThat(AccountUpdateRequest.GROUP_LENGTH)
+                    .isEqualTo(AccountUpdateRequest.TIOAPFX_LENGTH
+                            + AccountUpdateRequest.FIELD_COUNT * AccountUpdateRequest.FIELD_OVERHEAD
+                            + AccountUpdateRequest.PAYLOAD_LENGTH)
+                    .isEqualTo(1095);
+
+            AccountUpdateRequest received = fullyValidScreen()
+                    .withCursorOn(AccountUpdateRequest.ScreenField.ACSTTUS);
+            byte[] image = received.toGroupImage(CODEC);
+
+            assertThat(image).hasSize(1095);
+            AccountUpdateRequest decoded = AccountUpdateRequest.fromGroupImage(image, CODEC);
+            for (AccountUpdateRequest.ScreenField field : AccountUpdateRequest.ScreenField.values()) {
+                assertThat(decoded.value(field))
+                        .describedAs("%s survives the group image", field.label())
+                        .isEqualTo(received.image(field, CODEC));
+            }
+            // The cursor signal is carried in the length item, so it survives with the data.
+            assertThat(decoded.metadata(AccountUpdateRequest.ScreenField.ACSTTUS).isCursorHere())
+                    .isTrue();
+        }
+    }
+
+
+    @Nested
+    @DisplayName("WS-THIS-PROGCOMMAREA - 873 bytes, nine change-action states, asymmetric SSN spans")
+    class WorkAreaShape {
+
+        @Test
+        @DisplayName("873 bytes: one action byte plus two 436-byte detail groups of 106 + 330")
+        void theWorkAreaIsEightHundredAndSeventyThreeBytes() {
+            // app/cbl/COACTUPC.cbl:652-846. The account half is 106 bytes and the customer half 330,
+            // so a detail group is 436 and the whole area is 1 + 436 + 436.
+            assertThat(AccountUpdateRequest.AcctSnapshot.RECORD_LENGTH).isEqualTo(106);
+            assertThat(AccountUpdateRequest.CustSnapshot.RECORD_LENGTH).isEqualTo(330);
+            assertThat(AccountUpdateRequest.Details.RECORD_LENGTH).isEqualTo(436);
+            assertThat(AccountUpdateRequest.ChangeAction.RECORD_LENGTH).isEqualTo(1);
+            assertThat(AccountUpdateRequest.CommArea.RECORD_LENGTH)
+                    .isEqualTo(AccountUpdateRequest.ChangeAction.RECORD_LENGTH
+                            + 2 * AccountUpdateRequest.Details.RECORD_LENGTH)
+                    .isEqualTo(873);
+            // The offsets follow from the widths, which is what makes the two groups comparable.
+            assertThat(AccountUpdateRequest.CommArea.CHANGE_ACTION_OFFSET).isZero();
+            assertThat(AccountUpdateRequest.CommArea.OLD_DETAILS_OFFSET).isEqualTo(1);
+            assertThat(AccountUpdateRequest.CommArea.NEW_DETAILS_OFFSET).isEqualTo(437);
+
+            byte[] image = AccountUpdateRequest.CommArea.initialised().encode(CODEC);
+            assertThat(image).hasSize(873);
+            assertThat(AccountUpdateRequest.CommArea.decode(image, CODEC))
+                    .isEqualTo(AccountUpdateRequest.CommArea.initialised());
+        }
+
+        @Test
+        @DisplayName("The OLD SSN span is one flat X(09); the NEW span is X(03) + X(02) + X(04)")
+        void theSsnSpansAreStructurallyAsymmetric() {
+            // app/cbl/COACTUPC.cbl:742 declares ACUP-OLD-CUST-SSN-X as a single PIC X(09) with a
+            // PIC 9(09) overlay. :830-833 declares ACUP-NEW-CUST-SSN-1, -2 and -3 as three storage
+            // items, then the group item over them, then the numeric overlay. Nine bytes either way -
+            // the asymmetry is in the naming, and it is deliberate.
+            assertThat(AccountUpdateRequest.DetailGroup.OLD.declaresSsnParts()).isFalse();
+            assertThat(AccountUpdateRequest.DetailGroup.NEW.declaresSsnParts()).isTrue();
+            assertThat(AccountUpdateRequest.CustSnapshot.SSN_LENGTH).isEqualTo(9);
+            assertThat(AccountUpdateRequest.CustSnapshot.SSN_PART_1_LENGTH
+                    + AccountUpdateRequest.CustSnapshot.SSN_PART_2_LENGTH
+                    + AccountUpdateRequest.CustSnapshot.SSN_PART_3_LENGTH)
+                    .isEqualTo(AccountUpdateRequest.CustSnapshot.SSN_LENGTH);
+            // The FICO range condition is declared on the NEW group only, from the same two sites.
+            assertThat(AccountUpdateRequest.DetailGroup.OLD.declaresFicoRangeCondition()).isFalse();
+            assertThat(AccountUpdateRequest.DetailGroup.NEW.declaresFicoRangeCondition()).isTrue();
+        }
+
+        @Test
+        @DisplayName("1100 feeds ACTSSN1/2/3 into the NEW parts while OLD keeps the flat nine")
+        void theThreePartsFeedTheNewGroupAndTheFlatSpanTheOld() {
+            stubAllFound();
+            AccountUpdateController.Conversation task = warmTask();
+            task.ccWorkArea.setCcAcctId(ACCT);
+            controller.readAcct9000(task);
+
+            // OLD carries what the record held, as one nine-character span.
+            assertThat(task.acupOldCust.ssnX).isEqualTo("123456789");
+
+            AccountUpdateController.Conversation typed = task(fullyValidScreen()
+                    .withValue(AccountUpdateRequest.ScreenField.ACTSSN1, "987")
+                    .withValue(AccountUpdateRequest.ScreenField.ACTSSN2, "65")
+                    .withValue(AccountUpdateRequest.ScreenField.ACTSSN3, "4321"),
+                    AccountUpdateController.PASSED_COMMAREA_LENGTH, CicsAid.DFHENTER);
+            controller.receiveMap1100(typed);
+
+            // NEW carries the three components the operator keyed, each at its own declared width.
+            assertThat(typed.acupNewCust.ssn1()).isEqualTo("987");
+            assertThat(typed.acupNewCust.ssn2()).isEqualTo("65");
+            assertThat(typed.acupNewCust.ssn3()).isEqualTo("4321");
+            // And the flat span over them agrees, because they are one storage area.
+            assertThat(typed.acupNewCust.ssnX).isEqualTo("987654321");
+        }
+
+        @ParameterizedTest(name = "ACUP-CHANGE-ACTION = {0}")
+        @CsvSource(delimiter = '|', value = {
+            // token | notFetched | showDetails | changesMade | notOk | okNotConf | okayedDone
+            //       | failed | lockError | butFailed | unrecognised
+            "LOW-VALUES | true  | false | false | false | false | false | false | false | false | false",
+            "SPACE      | true  | false | false | false | false | false | false | false | false | false",
+            "S          | false | true  | false | false | false | false | false | false | false | false",
+            "E          | false | false | true  | true  | false | false | false | false | false | false",
+            "N          | false | false | true  | false | true  | false | false | false | false | false",
+            "C          | false | false | true  | false | false | true  | false | false | false | false",
+            "L          | false | false | true  | false | false | false | true  | true  | false | false",
+            "F          | false | false | true  | false | false | false | true  | false | true  | false",
+            "?          | false | false | false | false | false | false | false | false | false | true",
+        })
+        @DisplayName("All nine 88-level condition names, both states, for every declared byte")
+        void everyChangeActionConditionInBothStates(String token, boolean notFetched,
+                boolean showDetails, boolean changesMade, boolean notOk, boolean okNotConfirmed,
+                boolean okayedDone, boolean failed, boolean lockError, boolean butFailed,
+                boolean unrecognised) {
+            // app/cbl/COACTUPC.cbl:656-668. The groupings overlap the singular conditions deliberately:
+            // 'L' satisfies ACUP-CHANGES-MADE, ACUP-CHANGES-FAILED and ACUP-CHANGES-OKAYED-LOCK-ERROR
+            // at once, which is how the WHENs at :979-980 share one arm.
+            //
+            // The two figurative constants are named rather than written, because a CSV cell holding
+            // only a space - or only x'00' - is delivered as null.
+            String value = switch (token) {
+                case "LOW-VALUES" -> AccountUpdateRequest.ChangeAction.LOW_VALUES;
+                case "SPACE" -> AccountUpdateRequest.ChangeAction.SPACES;
+                default -> token;
+            };
+            AccountUpdateRequest.ChangeAction action = AccountUpdateRequest.ChangeAction.of(value);
+
+            assertThat(action.isDetailsNotFetched()).isEqualTo(notFetched);
+            assertThat(action.isShowDetails()).isEqualTo(showDetails);
+            assertThat(action.isChangesMade()).isEqualTo(changesMade);
+            assertThat(action.isChangesNotOk()).isEqualTo(notOk);
+            assertThat(action.isChangesOkNotConfirmed()).isEqualTo(okNotConfirmed);
+            assertThat(action.isChangesOkayedAndDone()).isEqualTo(okayedDone);
+            assertThat(action.isChangesFailed()).isEqualTo(failed);
+            assertThat(action.isChangesOkayedLockError()).isEqualTo(lockError);
+            assertThat(action.isChangesOkayedButFailed()).isEqualTo(butFailed);
+            assertThat(action.isUnrecognised()).isEqualTo(unrecognised);
+        }
+
+        @Test
+        @DisplayName("The nine named factories agree with the nine condition names")
+        void theNamedFactoriesAgreeWithTheConditions() {
+            assertThat(AccountUpdateRequest.ChangeAction.initial().isDetailsNotFetched()).isTrue();
+            assertThat(AccountUpdateRequest.ChangeAction.spacesState().isDetailsNotFetched()).isTrue();
+            assertThat(AccountUpdateRequest.ChangeAction.showDetails().isShowDetails()).isTrue();
+            assertThat(AccountUpdateRequest.ChangeAction.changesNotOk().isChangesNotOk()).isTrue();
+            assertThat(AccountUpdateRequest.ChangeAction.changesOkNotConfirmed()
+                    .isChangesOkNotConfirmed()).isTrue();
+            assertThat(AccountUpdateRequest.ChangeAction.changesOkayedAndDone()
+                    .isChangesOkayedAndDone()).isTrue();
+            assertThat(AccountUpdateRequest.ChangeAction.changesOkayedLockError()
+                    .isChangesOkayedLockError()).isTrue();
+            assertThat(AccountUpdateRequest.ChangeAction.changesOkayedButFailed()
+                    .isChangesOkayedButFailed()).isTrue();
+            // The two grouping conditions cover exactly the values the copybook lists.
+            assertThat(AccountUpdateRequest.ChangeAction.DETAILS_NOT_FETCHED_VALUES).hasSize(2);
+            assertThat(AccountUpdateRequest.ChangeAction.CHANGES_MADE_VALUES).hasSize(5);
+            assertThat(AccountUpdateRequest.ChangeAction.CHANGES_FAILED_VALUES).hasSize(2);
+        }
+
+        @Test
+        @DisplayName("The 873-byte area travels in the payload and comes back unchanged when nothing "
+                + "touched it")
+        void theWorkAreaTravelsInThePayload() {
+            AccountUpdateRequest.CommArea carried = AccountUpdateRequest.CommArea.initialised()
+                    .withChangeAction(AccountUpdateRequest.ChangeAction.changesOkNotConfirmed());
+            AccountUpdateRequest received = request(ACCT, reenter()).withCommArea(carried);
+
+            AccountUpdateController.PaintedScreen painted = controller.handle(received,
+                    AccountUpdateController.PASSED_COMMAREA_LENGTH, CicsAid.DFHPF3);
+
+            // PF3 transfers control without touching the area, so what arrived is what leaves - and it
+            // leaves in the response, never in a session (G37).
+            assertThat(painted.response().getCommArea().encode(CODEC)).hasSize(873);
+            assertThat(painted.response().getCommArea().changeAction())
+                    .isEqualTo(AccountUpdateRequest.ChangeAction.changesOkNotConfirmed());
+        }
+    }
+
+    @Nested
+    @DisplayName("DFHCOMMAREA - OCCURS 1 TO 32767 TIMES DEPENDING ON EIBCALEN, at :856")
+    class VariableLengthCommarea {
+
+        @Test
+        @DisplayName("The span's declared bounds, and the length this program is entered with")
+        void theDeclaredBounds() {
+            // app/cbl/COACTUPC.cbl:855-856 - 05 FILLER PIC X(1) OCCURS 1 TO 32767 TIMES DEPENDING ON
+            // EIBCALEN. The table is one byte per element, so its occurrence count IS the byte length.
+            assertThat(AccountUpdateController.PASSED_COMMAREA_LENGTH)
+                    .isEqualTo(NavigationContext.COMMAREA_LENGTH
+                            + AccountUpdateRequest.CommArea.RECORD_LENGTH)
+                    .isEqualTo(1033)
+                    .isBetween(1, 32767);
+            assertThat(NavigationContext.COMMAREA_LENGTH).isEqualTo(160);
+            // WS-COMMAREA PIC X(2000) at :850 is the sending side, and it too fits the table.
+            assertThat(AccountUpdateRequest.COMMAREA_CAPACITY).isEqualTo(2000).isLessThan(32767);
+        }
+
+        @Test
+        @DisplayName("COBOL subscript 1 is Java index 0, and subscript EIBCALEN is index EIBCALEN - 1")
+        void theFirstAndLastElementOfTheSpan() {
+            String navigation = new String(reenter().toFixedWidth(CODEC), StandardCharsets.US_ASCII);
+            String workArea = new String(AccountUpdateRequest.CommArea.initialised()
+                    .withChangeAction(AccountUpdateRequest.ChangeAction.showDetails()).encode(CODEC),
+                    StandardCharsets.US_ASCII);
+            String dfhcommarea = navigation + workArea;
+            int eibcalen = dfhcommarea.length();
+
+            assertThat(eibcalen).isEqualTo(AccountUpdateController.PASSED_COMMAREA_LENGTH);
+
+            // :889-890 - MOVE DFHCOMMAREA (1:LENGTH OF CARDDEMO-COMMAREA). Reference modification is
+            // 1-based, so the first element is Java index 0. This is the top off-by-one risk of the
+            // migration, and it is asserted at both ends of the span rather than assumed.
+            assertThat(AccountUpdateController.slice(dfhcommarea, 0,
+                    NavigationContext.COMMAREA_LENGTH)).isEqualTo(navigation);
+            assertThat(AccountUpdateController.slice(dfhcommarea, 0, 1))
+                    .isEqualTo(dfhcommarea.substring(0, 1));
+
+            // :891-893 - MOVE DFHCOMMAREA(LENGTH OF CARDDEMO-COMMAREA + 1: LENGTH OF
+            // WS-THIS-PROGCOMMAREA). COBOL position 161 is Java index 160.
+            assertThat(AccountUpdateController.slice(dfhcommarea, NavigationContext.COMMAREA_LENGTH,
+                    AccountUpdateRequest.CommArea.RECORD_LENGTH)).isEqualTo(workArea);
+
+            // Subscripts 1 through EIBCALEN are the whole table, and reading it whole changes nothing.
+            assertThat(AccountUpdateController.slice(dfhcommarea, 0, eibcalen))
+                    .isEqualTo(dfhcommarea);
+
+            // The last element: COBOL subscript EIBCALEN, Java index EIBCALEN - 1.
+            assertThat(AccountUpdateController.slice(dfhcommarea, eibcalen - 1, 1))
+                    .isEqualTo(workArea.substring(workArea.length() - 1));
+            // And why the index has to be EIBCALEN - 1 rather than EIBCALEN: an off-by-one read does
+            // not fail, it silently yields the PIC X pad character. So the correct index is pinned here
+            // rather than left to a crash that would never come.
+            assertThat(AccountUpdateController.slice(dfhcommarea, eibcalen, 1)).isEqualTo(" ");
+        }
+
+        @Test
+        @DisplayName("The shorter accepted length addresses only the CARDDEMO-COMMAREA half")
+        void theCarddemoCommareaOnlyLength() {
+            // resolveEibcalen accepts 0, 160 and 1033: the three lengths CICS can pass this program.
+            // At 160 the table's last element is the navigation context's last byte, and the work area
+            // is not addressable at all.
+            String navigation = new String(enter().toFixedWidth(CODEC), StandardCharsets.US_ASCII);
+
+            assertThat(navigation).hasSize(NavigationContext.COMMAREA_LENGTH);
+            assertThat(AccountUpdateController.slice(navigation, 0,
+                    NavigationContext.COMMAREA_LENGTH)).isEqualTo(navigation);
+            assertThat(AccountUpdateController.slice(navigation,
+                    NavigationContext.COMMAREA_LENGTH - 1, 1))
+                    .isEqualTo(navigation.substring(NavigationContext.COMMAREA_LENGTH - 1));
+            assertThat(AccountUpdateController.slice(navigation,
+                    NavigationContext.COMMAREA_LENGTH, 1)).isEqualTo(" ");
+            assertThat(AccountUpdateController.resolveEibcalen(NavigationContext.COMMAREA_LENGTH,
+                    request(ACCT, enter()))).isEqualTo(NavigationContext.COMMAREA_LENGTH);
+        }
+
+        @Test
+        @DisplayName("CDEMO-LAST-MAP and CDEMO-LAST-MAPSET are X(7), inside the 160-byte context")
+        void theNavigationContextIsOneHundredAndSixtyBytes() {
+            // app/cpy/COCOM01Y.cpy - general 34 + customer 84 + account 12 + card 16 + more 14 = 160.
+            assertThat(NavigationContext.GENERAL_INFO_LENGTH
+                    + NavigationContext.CUSTOMER_INFO_LENGTH
+                    + NavigationContext.ACCOUNT_INFO_LENGTH
+                    + NavigationContext.CARD_INFO_LENGTH
+                    + NavigationContext.MORE_INFO_LENGTH)
+                    .isEqualTo(NavigationContext.COMMAREA_LENGTH).isEqualTo(160);
+            // Seven, not eight: the mapset literal LIT_THISMAPSET is eight characters and 3400 truncates
+            // it, which is why the last-mapset item cannot be compared against the literal unchanged.
+            assertThat(NavigationContext.LAST_MAP_LENGTH).isEqualTo(7);
+            assertThat(NavigationContext.LAST_MAPSET_LENGTH).isEqualTo(7);
+            assertThat(AccountUpdateController.LIT_THISMAPSET).hasSize(8);
+        }
+    }
+
+
+    /**
+     * A folded function key and the key it folds onto: {@code DFHPF13} through {@code DFHPF24} against
+     * {@code DFHPF1} through {@code DFHPF12}.
+     *
+     * @param name      the folded key's name, for the test's display name
+     * @param upper     the {@code DFHPF13}-{@code DFHPF24} byte
+     * @param lower     the {@code DFHPF1}-{@code DFHPF12} byte it folds onto
+     * @param token     the five-character {@code CCARD-AID} token both produce
+     */
+    private record FoldedKey(String name, byte upper, byte lower, String token) {
+    }
+
+    /** The twelve folds {@code app/cpy/CSSTRPFY.cpy} declares, in copybook order. */
+    private static List<FoldedKey> foldedKeys() {
+        return List.of(
+                new FoldedKey("PF13/PF1", CicsAid.DFHPF13, CicsAid.DFHPF1, "PFK01"),
+                new FoldedKey("PF14/PF2", CicsAid.DFHPF14, CicsAid.DFHPF2, "PFK02"),
+                new FoldedKey("PF15/PF3", CicsAid.DFHPF15, CicsAid.DFHPF3, "PFK03"),
+                new FoldedKey("PF16/PF4", CicsAid.DFHPF16, CicsAid.DFHPF4, "PFK04"),
+                new FoldedKey("PF17/PF5", CicsAid.DFHPF17, CicsAid.DFHPF5, "PFK05"),
+                new FoldedKey("PF18/PF6", CicsAid.DFHPF18, CicsAid.DFHPF6, "PFK06"),
+                new FoldedKey("PF19/PF7", CicsAid.DFHPF19, CicsAid.DFHPF7, "PFK07"),
+                new FoldedKey("PF20/PF8", CicsAid.DFHPF20, CicsAid.DFHPF8, "PFK08"),
+                new FoldedKey("PF21/PF9", CicsAid.DFHPF21, CicsAid.DFHPF9, "PFK09"),
+                new FoldedKey("PF22/PF10", CicsAid.DFHPF22, CicsAid.DFHPF10, "PFK10"),
+                new FoldedKey("PF23/PF11", CicsAid.DFHPF23, CicsAid.DFHPF11, "PFK11"),
+                new FoldedKey("PF24/PF12", CicsAid.DFHPF24, CicsAid.DFHPF12, "PFK12"));
+    }
+
+    @Nested
+    @DisplayName("CSSTRPFY folds PF13-PF24 onto PF1-PF12, has no DFHPA3 arm and no WHEN OTHER")
+    class AttentionIdentifierFolding {
+
+        @ParameterizedTest(name = "{0} -> {3}")
+        @MethodSource("com.vsergeychik.carddemo.account.AccountUpdateControllerTest#foldedKeys")
+        @DisplayName("Both halves of the fold reach one token")
+        void bothHalvesOfTheFoldReachOneToken(FoldedKey fold) {
+            // app/cpy/CSSTRPFY.cpy - the second twelve arms move the SAME CCARD-AID-PFKnn condition as
+            // the first twelve, so a 3270 sending PF15 is indistinguishable from one sending PF3.
+            assertThat(PfKeyResolver.resolve(fold.lower())).isPresent();
+            assertThat(PfKeyResolver.resolve(fold.upper())).isPresent();
+            assertThat(PfKeyResolver.resolve(fold.lower()).orElseThrow().token())
+                    .isEqualTo(fold.token());
+            assertThat(PfKeyResolver.resolve(fold.upper()).orElseThrow().token())
+                    .isEqualTo(fold.token());
+            assertThat(fold.token()).hasSize(PfKeyResolver.AID_TOKEN_LENGTH);
+        }
+
+        @Test
+        @DisplayName("The three folds this screen's legends name: PF3/PF15, PF5/PF17, PF12/PF24")
+        void theThreeFoldsThisScreenCaresAbout() {
+            // FKEY05 and FKEY12 name PF5 and PF12 on the screen, and PF3 is the universal back key,
+            // so these are the three folds an operator can actually reach here.
+            assertThat(PfKeyResolver.resolve(CicsAid.DFHPF15).orElseThrow())
+                    .isEqualTo(PfKeyResolver.resolve(CicsAid.DFHPF3).orElseThrow())
+                    .isEqualTo(PfKeyResolver.AidKey.PFK03);
+            assertThat(PfKeyResolver.resolve(CicsAid.DFHPF17).orElseThrow())
+                    .isEqualTo(PfKeyResolver.resolve(CicsAid.DFHPF5).orElseThrow())
+                    .isEqualTo(PfKeyResolver.AidKey.PFK05);
+            assertThat(PfKeyResolver.resolve(CicsAid.DFHPF24).orElseThrow())
+                    .isEqualTo(PfKeyResolver.resolve(CicsAid.DFHPF12).orElseThrow())
+                    .isEqualTo(PfKeyResolver.AidKey.PFK12);
+        }
+
+        @Test
+        @DisplayName("PF15 drives the same 0000-MAIN arm as PF3: control transfers (G40)")
+        void aFoldedKeyDrivesTheSameArm() {
+            AccountUpdateController.PaintedScreen viaPf3 = controller.handle(request(ACCT, reenter()),
+                    AccountUpdateController.PASSED_COMMAREA_LENGTH, CicsAid.DFHPF3);
+            AccountUpdateController.PaintedScreen viaPf15 = controller.handle(request(ACCT, reenter()),
+                    AccountUpdateController.PASSED_COMMAREA_LENGTH, CicsAid.DFHPF15);
+
+            // :921 dispatches on the stored CCARD-AID condition, not on EIBAID, so the fold is what
+            // makes the two turns identical - including the next-program the client is told to call.
+            assertThat(viaPf15.response().getNextProgram())
+                    .isEqualTo(viaPf3.response().getNextProgram());
+            assertThat(viaPf15.response().getNextMapset())
+                    .isEqualTo(viaPf3.response().getNextMapset());
+            assertThat(viaPf15.response().getNextMap()).isEqualTo(viaPf3.response().getNextMap());
+            verifyNoInteractions(accounts, xrefs, customers, service);
+        }
+
+        @Test
+        @DisplayName("No DFHPA3 arm, no WHEN OTHER: an unmapped AID has an explicit no-match outcome")
+        void noDfhpa3AndNoWhenOther() {
+            // CSSTRPFY evaluates DFHENTER, DFHCLEAR, DFHPA1, DFHPA2 and DFHPF1-DFHPF24 - twenty-eight
+            // arms, no DFHPA3 and no WHEN OTHER - and does not clear CCARD-AID first. So an unmatched
+            // key leaves the field as INITIALIZE left it, satisfying none of the fifteen conditions.
+            assertThat(PfKeyResolver.resolve(CicsAid.DFHPA1)).isPresent();
+            assertThat(PfKeyResolver.resolve(CicsAid.DFHPA2)).isPresent();
+            assertThat(PfKeyResolver.resolve(CicsAid.DFHPA3)).isEmpty();
+            assertThat(PfKeyResolver.resolve(CicsAid.DFHENTER).orElseThrow())
+                    .isEqualTo(PfKeyResolver.AidKey.ENTER);
+            assertThat(PfKeyResolver.resolve(CicsAid.DFHCLEAR).orElseThrow())
+                    .isEqualTo(PfKeyResolver.AidKey.CLEAR);
+            assertThat(PfKeyResolver.resolve((byte) 0x00)).isEmpty();
+
+            // storePfKey reproduces the no-match by handing back what was already there.
+            assertThat(PfKeyResolver.storePfKey(CicsAid.DFHPA3, Optional.empty())).isEmpty();
+            assertThat(PfKeyResolver.storePfKey(CicsAid.DFHPA3,
+                    Optional.of(PfKeyResolver.AidKey.PFK03)))
+                    .contains(PfKeyResolver.AidKey.PFK03);
+        }
+
+        @Test
+        @DisplayName("Every one of the twenty-eight arms resolves, and only those")
+        void theTwentyEightArms() {
+            byte[] arms = {CicsAid.DFHENTER, CicsAid.DFHCLEAR, CicsAid.DFHPA1, CicsAid.DFHPA2,
+                CicsAid.DFHPF1, CicsAid.DFHPF2, CicsAid.DFHPF3, CicsAid.DFHPF4, CicsAid.DFHPF5,
+                CicsAid.DFHPF6, CicsAid.DFHPF7, CicsAid.DFHPF8, CicsAid.DFHPF9, CicsAid.DFHPF10,
+                CicsAid.DFHPF11, CicsAid.DFHPF12, CicsAid.DFHPF13, CicsAid.DFHPF14, CicsAid.DFHPF15,
+                CicsAid.DFHPF16, CicsAid.DFHPF17, CicsAid.DFHPF18, CicsAid.DFHPF19, CicsAid.DFHPF20,
+                CicsAid.DFHPF21, CicsAid.DFHPF22, CicsAid.DFHPF23, CicsAid.DFHPF24};
+
+            assertThat(arms).hasSize(28);
+            for (byte arm : arms) {
+                assertThat(PfKeyResolver.resolve(arm))
+                        .describedAs("AID x'%02X' is one of the copybook's arms", arm)
+                        .isPresent();
+            }
+            // Sixteen distinct tokens for twenty-eight arms, because twelve of them fold.
+            assertThat(PfKeyResolver.AidKey.values()).hasSize(16);
+        }
+    }
+
+    @Nested
+    @DisplayName("EDIT-DATE-CCYYMMDD delegation - the four labelled sites of 1200")
+    class DateEditorDelegation {
+
+        @ParameterizedTest(name = "{0}")
+        @CsvSource({
+            "Open Date,     20200115, OPNYEAR, OPNMON, OPNDAY",
+            "Expiry Date,   20250114, EXPYEAR, EXPMON, EXPDAY",
+            "Reissue Date,  20220630, RISYEAR, RISMON, RISDAY",
+            "Date of Birth, 19800229, DOBYEAR, DOBMON, DOBDAY",
+        })
+        @DisplayName("Each site names its own field and reads the three flags back")
+        void eachSiteNamesItsFieldAndReadsTheFlagsBack(String label, String date, String yearField,
+                String monthField, String dayField) {
+            // :1478-1482, :1490-1494, :1503-1507 and :1534-1542 - each site is MOVE '<label>' TO
+            // WS-EDIT-VARIABLE-NAME, then the range PERFORM, then MOVE WS-EDIT-DATE-FLGS TO the
+            // three-character group for that date. The label is moved at PIC X(25).
+            AccountUpdateController.Conversation task = warmTask();
+            AccountUpdateResponse.ScreenField year =
+                    AccountUpdateResponse.ScreenField.valueOf(yearField);
+            AccountUpdateResponse.ScreenField month =
+                    AccountUpdateResponse.ScreenField.valueOf(monthField);
+            AccountUpdateResponse.ScreenField day = AccountUpdateResponse.ScreenField.valueOf(dayField);
+
+            controller.editDate(task, label, date, year, month, day,
+                    "Date of Birth".equals(label));
+
+            assertThat(task.wsEditVariableName)
+                    .isEqualTo(AccountUpdateController.editVariableName(label))
+                    .hasSize(AccountUpdateController.WS_EDIT_VARIABLE_NAME_LENGTH);
+            assertThat(task.wsEditVariableName.trim()).isEqualTo(label);
+            // A well-formed date leaves all three flags valid and says nothing.
+            assertThat(task.flag(year)).isEqualTo(AccountUpdateController.FLG_ISVALID);
+            assertThat(task.flag(month)).isEqualTo(AccountUpdateController.FLG_ISVALID);
+            assertThat(task.flag(day)).isEqualTo(AccountUpdateController.FLG_ISVALID);
+            assertThat(returnMessageOf(task)).isEmpty();
+        }
+
+        @ParameterizedTest(name = "{0} rejects a thirteenth month")
+        @CsvSource({
+            "Open Date,     OPNYEAR, OPNMON, OPNDAY",
+            "Expiry Date,   EXPYEAR, EXPMON, EXPDAY",
+            "Reissue Date,  RISYEAR, RISMON, RISDAY",
+            "Date of Birth, DOBYEAR, DOBMON, DOBDAY",
+        })
+        @DisplayName("A rejected date carries its own label into the message and its own flags out")
+        void aRejectedDateCarriesItsLabel(String label, String yearField, String monthField,
+                String dayField) {
+            AccountUpdateController.Conversation task = warmTask();
+            AccountUpdateResponse.ScreenField month =
+                    AccountUpdateResponse.ScreenField.valueOf(monthField);
+
+            controller.editDate(task, label, "20201315",
+                    AccountUpdateResponse.ScreenField.valueOf(yearField), month,
+                    AccountUpdateResponse.ScreenField.valueOf(dayField),
+                    "Date of Birth".equals(label));
+
+            // CSUTLDPY's month range message, with the label the caller moved in.
+            assertThat(returnMessageOf(task))
+                    .startsWith(label)
+                    .contains(AccountDateValidator.MSG_MONTH_MUST_BE_1_TO_12.trim());
+            assertThat(task.flag(month)).isEqualTo(AccountUpdateController.FLG_NOT_OK);
+            assertThat(task.inputError()).isTrue();
+        }
+
+        @Test
+        @DisplayName("Only the date-of-birth site runs the second range, EDIT-DATE-OF-BIRTH")
+        void onlyTheDateOfBirthSiteRunsTheSecondRange() {
+            // :1536-1542 - the reasonableness test is guarded by WS-EDIT-DT-OF-BIRTH-ISVALID and is
+            // performed for the date of birth only. A tomorrow-dated open date is therefore accepted,
+            // and the same value as a date of birth is not.
+            AccountUpdateController.Conversation openDate = warmTask();
+            controller.editDate(openDate, "Open Date", "20990101",
+                    AccountUpdateResponse.ScreenField.OPNYEAR,
+                    AccountUpdateResponse.ScreenField.OPNMON,
+                    AccountUpdateResponse.ScreenField.OPNDAY, false);
+            assertThat(returnMessageOf(openDate)).isEmpty();
+
+            AccountUpdateController.Conversation birth = warmTask();
+            controller.editDate(birth, "Date of Birth", "20990101",
+                    AccountUpdateResponse.ScreenField.DOBYEAR,
+                    AccountUpdateResponse.ScreenField.DOBMON,
+                    AccountUpdateResponse.ScreenField.DOBDAY, true);
+            assertThat(returnMessageOf(birth))
+                    .contains(AccountDateValidator.MSG_CANNOT_BE_IN_THE_FUTURE.trim());
+        }
+
+        @Test
+        @DisplayName("The label is moved at PIC X(25), so a longer name loses its tail")
+        void theLabelIsMovedAtItsDeclaredWidth() {
+            // 'Current Cycle Credit Limit' is twenty-six characters, so WS-EDIT-VARIABLE-NAME truncates
+            // it on the right - the alphanumeric MOVE rule, and a message the operator actually sees.
+            assertThat(AccountUpdateController.editVariableName("Current Cycle Credit Limit"))
+                    .hasSize(25)
+                    .isEqualTo("Current Cycle Credit Limi");
+            assertThat(AccountUpdateController.editVariableName("Open Date"))
+                    .isEqualTo(at("Open Date", 25));
+        }
+    }
+
+
+    @Nested
+    @DisplayName("Read ordering - 9000's three guards drive 9200, 9300 then 9400 (G47)")
+    class ReadOrdering {
+
+        @Test
+        @DisplayName("The three reads happen in source order, on the three named datasets")
+        void theThreeReadsHappenInSourceOrder() {
+            stubAllFound();
+            AccountUpdateController.Conversation task = warmTask();
+            task.ccWorkArea.setCcAcctId(ACCT);
+
+            controller.readAcct9000(task);
+
+            // :3612-3646 - 9200 supplies the customer id that 9400 needs, so the order is a data
+            // dependency, not a preference. InOrder asserts the sequence across the three mocks.
+            InOrder reads = inOrder(xrefs, accounts, customers);
+            reads.verify(xrefs).readByAccountIdViaAltIndex(ACCT);
+            reads.verify(accounts).readByKey(11L);
+            reads.verify(customers).readByKey(anyString());
+            reads.verifyNoMoreInteractions();
+        }
+
+        @Test
+        @DisplayName("A cross-reference failure short-circuits both remaining reads")
+        void aXrefFailureShortCircuitsTheRest() {
+            when(xrefs.readByAccountIdViaAltIndex(anyString())).thenReturn(
+                    CardXrefRepository.ReadResult.notFound(
+                            CardXrefRepository.ALTERNATE_INDEX_DD_NAME));
+            AccountUpdateController.Conversation task = warmTask();
+            task.ccWorkArea.setCcAcctId(ACCT);
+
+            controller.readAcct9000(task);
+
+            InOrder reads = inOrder(xrefs, accounts, customers);
+            reads.verify(xrefs).readByAccountIdViaAltIndex(ACCT);
+            reads.verifyNoMoreInteractions();
+            verify(accounts, never()).readByKey(anyLong());
+            verify(customers, never()).readByKey(anyString());
+        }
+
+        @Test
+        @DisplayName("An account failure still lets 9400 run, because the DID-NOT-FIND guard is dead")
+        void anAccountFailureStillReachesTheCustomerRead() {
+            when(xrefs.readByAccountIdViaAltIndex(anyString())).thenReturn(
+                    CardXrefRepository.ReadResult.found(
+                            CardXrefRepository.ALTERNATE_INDEX_DD_NAME,
+                            new CardXrefRecord(XREF_CARD, CUST_ID, 11L), XREF_IMAGE));
+            when(accounts.readByKey(anyLong())).thenReturn(AccountRepository.ReadResult.notFound());
+            when(customers.readByKey(anyString()))
+                    .thenReturn(CustomerRepository.ReadResult.found(customer(), CUST_IMAGE));
+            AccountUpdateController.Conversation task = warmTask();
+            task.ccWorkArea.setCcAcctId(ACCT);
+
+            controller.readAcct9000(task);
+
+            // :3701-3750 sets no DID-NOT-FIND flag the caller tests - the SET is commented out - so the
+            // customer read follows a failed account read. Preserved, not corrected (practice B5).
+            InOrder reads = inOrder(xrefs, accounts, customers);
+            reads.verify(xrefs).readByAccountIdViaAltIndex(ACCT);
+            reads.verify(accounts).readByKey(11L);
+            reads.verify(customers).readByKey(anyString());
+            assertThat(task.foundAcctInMaster()).isFalse();
+        }
+
+        @Test
+        @DisplayName("The write path is the service's, and it is not touched by a read turn")
+        void aReadTurnNeverWrites() {
+            stubAllFound();
+            AccountUpdateController.Conversation task = warmTask();
+            task.ccWorkArea.setCcAcctId(ACCT);
+
+            controller.readAcct9000(task);
+
+            // 9600-WRITE-PROCESSING and 9700-CHECK-CHANGE-IN-REC are the service's - the controller
+            // delegates the whole write path (G43). NOTE: the concurrency paragraph is 9700, at
+            // app/cbl/COACTUPC.cbl:4109, NOT the 9300 the Agent Action Plan names; 9300 here is
+            // 9300-GETACCTDATA-BYACCT at :3701 (practice B4).
+            verifyNoInteractions(service);
+        }
+
+        @Test
+        @DisplayName("9000 is a driver: four ranges and three IF ... GO TO -EXIT guards, no EVALUATE")
+        void theDriverIsFourRangesAndThreeGuards() {
+            // :3608-3646. INITIALIZE ACUP-OLD-DETAILS, stage CC-ACCT-ID into ACUP-OLD-ACCT-ID and
+            // WS-CARD-RID-ACCT-ID, then 9200 / guard / 9300 / guard / 9400 / guard / 9500. The guards
+            // test FLG-ACCTFILTER-NOT-OK, DID-NOT-FIND-ACCT-IN-ACCTDAT and DID-NOT-FIND-CUST-IN-CUSTDAT
+            // in that order - and the paragraph itself has no EVALUATE, which is why its outcome is
+            // asserted through the sequence rather than through arms.
+            stubAllFound();
+            AccountUpdateController.Conversation task = warmTask();
+            task.ccWorkArea.setCcAcctId(ACCT);
+
+            controller.readAcct9000(task);
+
+            // All four ranges ran, so 9500's snapshot exists and the key was staged before 9200.
+            InOrder reads = inOrder(xrefs, accounts, customers);
+            reads.verify(xrefs).readByAccountIdViaAltIndex(ACCT);
+            reads.verify(accounts).readByKey(11L);
+            reads.verify(customers).readByKey(anyString());
+            assertThat(task.acupOldAcct.acctIdX).isEqualTo(ACCT);
+            assertThat(task.wsCardRidAcctId).isEqualTo(ACCT);
+            assertThat(task.wsNoInfoMessage()).isTrue();
+        }
+    }
+
+    @Nested
+    @DisplayName("The two records the read path decodes - 300 and 500 bytes (G19, G21)")
+    class RecordDecoding {
+
+        @Test
+        @DisplayName("The account record is 300 bytes with FILLER X(178) space-filled")
+        void theAccountRecordIsThreeHundredBytes() {
+            AccountRecord record = account();
+            byte[] image = record.toByteArray();
+
+            // app/cpy/CVACT01Y.cpy - 122 bytes of fields then FILLER X(178), 300 in all. Omitting the
+            // FILLER would leave every downstream offset and the record length wrong, which is why the
+            // width is asserted rather than assumed.
+            assertThat(image).hasSize(AccountRecord.RECORD_LENGTH).hasSize(300);
+            assertThat(AccountRecord.FILLER_OFFSET).isEqualTo(122);
+            assertThat(AccountRecord.FILLER_LENGTH).isEqualTo(178);
+            assertThat(AccountRecord.FILLER_OFFSET + AccountRecord.FILLER_LENGTH).isEqualTo(300);
+
+            byte[] filler = record.rawBytes(AccountRecord.SPAN_FILLER);
+            assertThat(filler).hasSize(178);
+            for (byte each : filler) {
+                assertThat((char) each).isEqualTo(' ');
+            }
+        }
+
+        @Test
+        @DisplayName("The misspelled ACCT-EXPIRAION-DATE survives the round trip, unrenamed")
+        void theMisspelledExpirationDateSurvives() {
+            // app/cpy/CVACT01Y.cpy spells it ACCT-EXPIRAION-DATE. Renaming it would silently break
+            // field-for-field diffing, so the misspelling is the contract.
+            AccountRecord decoded =
+                    AccountRecord.decode(account().toByteArray(), StandardCharsets.US_ASCII);
+
+            assertThat(decoded.getAcctExpiraionDate()).isEqualTo("2025-01-14");
+            assertThat(decoded.getAcctOpenDate()).isEqualTo("2020-01-15");
+            assertThat(decoded.getAcctReissueDate()).isEqualTo("2022-06-30");
+            // Re-encoding is byte-identical, FILLER included.
+            assertThat(decoded.toByteArray()).isEqualTo(account().toByteArray());
+        }
+
+        @Test
+        @DisplayName("The customer record is 500 bytes")
+        void theCustomerRecordIsFiveHundredBytes() {
+            // app/cpy/CVCUS01Y.cpy. CUSTREC.cpy is a near-duplicate that spells the date of birth
+            // CUST-DOB-YYYYMMDD; this one spells it CUST-DOB-YYYY-MM-DD, and the two are kept apart.
+            assertThat(CustomerRecord.RECORD_LENGTH).isEqualTo(500);
+            assertThat(customer().encode(StandardCharsets.US_ASCII)).hasSize(500);
+            assertThat(CustomerRepository.RECORD_LENGTH).isEqualTo(500);
+
+            CustomerRecord decoded = CustomerRecord.decode(
+                    customer().encode(StandardCharsets.US_ASCII), StandardCharsets.US_ASCII);
+            assertThat(decoded.getCustDobYyyyMmDd()).isEqualTo("1980-02-29");
+            assertThat(decoded.getCustSsn()).isEqualTo(123456789);
+        }
+
+        @Test
+        @DisplayName("9500 stores what 9700 later compares, so the concurrency check has a baseline")
+        void nineFiveHundredStoresTheBaselineNineSevenHundredCompares() {
+            stubAllFound();
+            AccountUpdateController.Conversation task = warmTask();
+            task.ccWorkArea.setCcAcctId(ACCT);
+
+            controller.readAcct9000(task);
+
+            // :3801-3886 fills ACUP-OLD-DETAILS and ONLY that group - the paragraph contains no MOVE
+            // to an ACUP-NEW item. That is the snapshot 1205-COMPARE-OLD-NEW compares the screen
+            // against and the one 9700-CHECK-CHANGE-IN-REC re-reads the file against, so its fidelity
+            // is the whole basis of the optimistic-concurrency check (G43).
+            assertThat(task.acupOldAcct.acctIdX).isEqualTo(ACCT);
+            assertThat(task.acupOldAcct.activeStatus).isEqualTo("Y");
+            assertThat(task.acupOldAcct.currBalN()).isEqualByComparingTo(new BigDecimal("1234.56"));
+            assertThat(task.acupOldCust.ssnX).isEqualTo("123456789");
+            assertThat(task.acupOldCust.ficoScoreN()).isEqualTo(750);
+            assertThat(task.acupOldCust.dobYyyyMmDd).isEqualTo("19800229");
+
+            // ACUP-NEW is the screen's, not the record's: this turn painted nothing into it, so it is
+            // still what INITIALIZE left. A test that expected the record here would be asserting a
+            // copy the source does not make.
+            assertThat(task.acupNewAcct.acctIdX)
+                    .isEqualTo(AccountUpdateController.spaces(
+                            AccountUpdateRequest.AcctSnapshot.ACCT_ID_LENGTH));
+            assertThat(task.acupNewCust.ssnX)
+                    .isEqualTo(AccountUpdateController.spaces(
+                            AccountUpdateRequest.CustSnapshot.SSN_LENGTH));
+        }
+    }
+
+    @Nested
+    @DisplayName("The remaining REDEFINES pairs - two views over one span (G34)")
+    class RedefinitionRoundTrips {
+
+        @Test
+        @DisplayName("WS-EDIT-US-PHONE-NUM-X: the three parts and their PIC 9 views, both ways")
+        void thePhoneNumberPartsAndTheirNumericViews() {
+            // :83-100 - one PIC X(15) span, three named parts at offsets 1, 5 and 9 (1-based), each
+            // with a PIC 9(n) redefinition. Writing through the X view and reading through the numeric
+            // one is the same storage, which is what makes it a redefinition.
+            String span = AccountUpdateController.spaces(
+                    AccountUpdateController.WS_EDIT_US_PHONE_NUM_LENGTH);
+            span = AccountUpdateController.withPhoneArea(span, "206");
+            span = AccountUpdateController.withPhonePrefix(span, "555");
+            span = AccountUpdateController.withPhoneLine(span, "1234");
+
+            assertThat(span).hasSize(15);
+            assertThat(AccountUpdateController.phoneArea(span)).isEqualTo("206");
+            assertThat(AccountUpdateController.phonePrefix(span)).isEqualTo("555");
+            assertThat(AccountUpdateController.phoneLine(span)).isEqualTo("1234");
+            // The -N views: the same characters read as PIC 9(3), 9(3) and 9(4).
+            assertThat(CODEC.decodePic9(AccountUpdateController.phoneArea(span))).isEqualTo(206L);
+            assertThat(CODEC.decodePic9(AccountUpdateController.phonePrefix(span))).isEqualTo(555L);
+            assertThat(CODEC.decodePic9(AccountUpdateController.phoneLine(span))).isEqualTo(1234L);
+
+            // And the other direction: a value written through the numeric view reads back through the
+            // alphanumeric one at the same offset.
+            String renumbered = AccountUpdateController.withPhoneArea(span, CODEC.movePic9(917L, 3));
+            assertThat(AccountUpdateController.phoneArea(renumbered)).isEqualTo("917");
+            assertThat(AccountUpdateController.phonePrefix(renumbered)).isEqualTo("555");
+        }
+
+        @Test
+        @DisplayName("A non-numeric value in the alphanumeric view is what IS NOT NUMERIC tests for")
+        void aNonNumericValueInTheAlphanumericView() {
+            // The redefinition does not convert: the bytes are whatever was moved in, and the numeric
+            // view is only meaningful once IS NUMERIC has passed. That test is on the X view.
+            String span = AccountUpdateController.withPhoneArea(AccountUpdateController.spaces(
+                    AccountUpdateController.WS_EDIT_US_PHONE_NUM_LENGTH), "2O6");
+
+            assertThat(AccountUpdateController.phoneArea(span)).isEqualTo("2O6");
+            assertThat(AccountUpdateController.isNumericPicX(
+                    AccountUpdateController.phoneArea(span))).isFalse();
+            assertThat(AccountUpdateController.isNumericPicX("206")).isTrue();
+            // A blank part is not numeric either, which is why the blank arm is tested first.
+            assertThat(AccountUpdateController.isNumericPicX("   ")).isFalse();
+        }
+
+        @Test
+        @DisplayName("WS-EDIT-US-SSN: three parts, and the PIC 9(09) view over the whole group")
+        void theSsnPartsAndTheGroupNumericView() {
+            // :117-130 - PART1 X(3), PART2 X(2), PART3 X(4), each with a PIC 9 redefinition, and
+            // WS-EDIT-US-SSN-N PIC 9(09) redefining all three together.
+            AccountUpdateController.Conversation task = warmTask();
+            task.acupNewCust.setSsn1("123");
+            task.acupNewCust.setSsn2("45");
+            task.acupNewCust.setSsn3("6789");
+
+            assertThat(task.acupNewCust.ssn1()).isEqualTo("123");
+            assertThat(task.acupNewCust.ssn2()).isEqualTo("45");
+            assertThat(task.acupNewCust.ssn3()).isEqualTo("6789");
+            assertThat(task.acupNewCust.ssnX).isEqualTo("123456789");
+            assertThat(CODEC.decodePic9(task.acupNewCust.ssnX)).isEqualTo(123456789L);
+
+            // Writing the flat span and reading the parts is the same round trip in reverse.
+            task.acupNewCust.ssnX = "987654321";
+            assertThat(task.acupNewCust.ssn1()).isEqualTo("987");
+            assertThat(task.acupNewCust.ssn2()).isEqualTo("65");
+            assertThat(task.acupNewCust.ssn3()).isEqualTo("4321");
+
+            // 88 INVALID-SSN-PART1 is declared on the numeric view, so it needs a clean part 1.
+            task.acupNewCust.setSsn1("66A");
+            assertThat(AccountUpdateController.isNumericPicX(task.acupNewCust.ssn1())).isFalse();
+        }
+
+        @Test
+        @DisplayName("WS-CARD-RID-CUST-ID and -ACCT-ID: PIC 9 storage read through their -X views")
+        void theCardRidViews() {
+            // :379-384 - WS-CARD-RID-CUST-ID PIC 9(09) and WS-CARD-RID-ACCT-ID PIC 9(11), each with an
+            // -X redefinition. The read paths use the character view as the key image and the numeric
+            // view as the key value, so the two must agree at all times.
+            stubAllFound();
+            AccountUpdateController.Conversation task = warmTask();
+            task.ccWorkArea.setCcAcctId(ACCT);
+
+            controller.readAcct9000(task);
+
+            assertThat(task.wsCardRidAcctId)
+                    .hasSize(AccountUpdateController.WS_CARD_RID_ACCT_ID_LENGTH)
+                    .isEqualTo(ACCT);
+            assertThat(task.wsCardRidAcctIdN()).isEqualTo(11L);
+            assertThat(task.wsCardRidCustId)
+                    .hasSize(AccountUpdateController.WS_CARD_RID_CUST_ID_LENGTH);
+            assertThat(task.wsCardRidCustIdN()).isEqualTo(CUST_ID);
+            // The character view of a nine-digit customer id is zero-filled, not space-padded, because
+            // the sending item is PIC 9.
+            assertThat(task.wsCardRidCustId).isEqualTo(CODEC.movePic9((long) CUST_ID, 9));
+        }
+
+        @Test
+        @DisplayName("The five monetary spans: the X view and the PIC S9(10)V99 view agree")
+        void theMonetarySpansAndTheirSignedViews() {
+            // :676-707 and :764-795 - each monetary item is a PIC X(12) span with a PIC S9(10)V99
+            // redefinition. A store truncates at scale 2 with RoundingMode.DOWN, because ROUNDED
+            // appears zero times in all 28 programs.
+            AccountUpdateController.Conversation task = warmTask();
+            task.acupNewAcct.currBal =
+                    AccountUpdateController.monetaryImage(new BigDecimal("1234.56"));
+
+            assertThat(task.acupNewAcct.currBal)
+                    .hasSize(AccountUpdateRequest.AcctSnapshot.MONEY_LENGTH);
+            assertThat(task.acupNewAcct.currBalN()).isEqualByComparingTo(new BigDecimal("1234.56"));
+            assertThat(task.acupNewAcct.currBalN().scale()).isEqualTo(2);
+            // A third decimal digit is truncated, never rounded up.
+            assertThat(AccountUpdateController.storeMonetary(new BigDecimal("1234.569")))
+                    .isEqualByComparingTo(new BigDecimal("1234.56"));
+            assertThat(AccountUpdateController.storeMonetary(new BigDecimal("-1234.569")))
+                    .isEqualByComparingTo(new BigDecimal("-1234.56"));
+        }
+    }
+
 }

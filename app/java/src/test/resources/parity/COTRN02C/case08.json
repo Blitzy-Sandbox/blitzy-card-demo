@@ -1,26 +1,16 @@
 {
   "program" : "COTRN02C",
   "caseId" : "case08",
-  "description" : "FUNCTION NUMVAL's rejection half, reached the way the program reaches it. ACTIDINI carries an embedded space, so the COBOL class test at :197 - IF ACTIDINI IS NOT NUMERIC, which is true unless every character is a digit - rejects it with 'Account ID must be Numeric...' at :199-200 and the cursor at :201. The conversion at :204 is never reached, which is the point: the guard, not the intrinsic, is what an operator sees, and FUNCTION NUMVAL would have returned zero for this argument rather than refusing it. The screen echoes the value as typed, because the reject path performs no normalisation. Gate G29's full accept-and-reject table, including the currency string, the parenthesised negative, the empty argument and the all-spaces argument, is pinned directly by COTRN02CParityTest.NumericIntrinsicParity - none of those four can reach the intrinsic through this program, because the guard refuses them first.",
+  "description" : "RISK R-B, STATED FIRST BECAUSE THE CLASS NAME INVERTS THE BEHAVIOUR: the prompt-mandated Java class for COTRN02C is TransactionViewController, but this program does not view - it ADDS. Two independent sources say so: app/cbl/COTRN02C.cbl:5 'Function    : Add a new Transaction to TRANSACT file', and README.md's own online inventory at :213-231, whose CT02 row at :224 reads '| CT02 | COTRN02 | COTRN02C | Transaction Add     |' beside the CT01 row at :223 '| CT01 | COTRN01 | COTRN01C | Transaction View    |' - the inverse of the prompt's mapping, and the mirror image of parity/COTRN01C, whose program genuinely views. Rule R1 governs the resolution - the name comes from the prompt, the behaviour comes from the source - and practice B4 governs the disclosure: the divergence is documented here and never silently corrected, the Agent Action Plan escalates it for explicit user confirmation, and no case in this folder is downgraded to read-only to match the name. The EXEC CICS WRITE at :713 is pinned at its full 350 bytes by case19 and case20. ONE CITATION CORRECTED IN THE OPEN, ALSO B4: this file's authoring brief cites README.md:222 for the CT02 row, and the verified line in this checkout is :224 - the row moved when the table gained its two heading lines. The :213-231 range the Agent Action Plan cites is exact. The number is corrected here rather than propagated, because a citation that does not resolve is worse than no citation at all. WHAT THIS CASE DRIVES, IN TWO PARTS: the account half of VALIDATE-INPUT-KEY-FIELDS resolving successfully through the alternate index, and then the FIRST arm of the eleven-arm empty-field cascade. CDEMO-PGM-CONTEXT arrives at '1', so NOT CDEMO-PGM-REENTER at :120 is false and :132 receives the map; EIBAID is DFHENTER, so the ordered EVALUATE at :133-152 takes its first arm at :134 and performs PROCESS-ENTER-KEY, which at :166 performs VALIDATE-INPUT-KEY-FIELDS. The EVALUATE TRUE at :195 takes arm one at :196 because ACTIDINI is neither SPACES nor LOW-VALUES, and the class test at :197 passes because every one of the eleven characters is a digit. So :204-205 COMPUTE WS-ACCT-ID-N = FUNCTION NUMVAL(ACTIDINI) into a PIC 9(11) carrier, :206-207 MOVE that carrier to XREF-ACCT-ID AND back over ACTIDINI - one statement with two receivers, legal and intended because COTRN2AO REDEFINES COTRN2AI - :208 performs READ-CXACAIX-FILE, and :209 MOVEs XREF-CARD-NUM over CARDNINI. Arm one is tested BEFORE arm two, so when both key fields are supplied the account path wins and the typed card number is discarded and replaced from the cross-reference; here CARDNINI arrives blank and comes back holding the resolved sixteen digits, which is the same overwrite seen from its other side. case12 is the mirror image on the card path, where :223 overwrites ACTIDINI from XREF-ACCT-ID instead. THE ELEVEN-DIGIT WRITE-BACK IS AN IDENTITY, AND SAYING SO IS THE HONEST ASSERTION: COBOL's NUMERIC class test on an alphanumeric item is true only when every character is a digit, so the guard at :197 has already forced ACTIDINI to exactly eleven digits by the time :204 converts it. The renormalisation at :206-207 therefore cannot change the image on this path - it can only confirm it - and what is asserted is that ACTIDINO comes back as eleven zero-padded digits equal to the PIC 9(11) image of WS-ACCT-ID-N (rule R5: PIC 9 is zero-filled, PIC X is space-padded). Claiming a visible reformatting here would be claiming a behaviour the guard makes unreachable. The move that IS visible is :209, which replaces sixteen spaces with a card number this case never typed. READ-CXACAIX-FILE AT :576-604 AND ITS THREE RESP ARMS, IN SOURCE ORDER (gate G30, WHEN OTHER last): EXEC CICS READ DATASET(WS-CXACAIX-FILE) INTO(CARD-XREF-RECORD) LENGTH(LENGTH OF CARD-XREF-RECORD) RIDFLD(XREF-ACCT-ID) KEYLENGTH(LENGTH OF XREF-ACCT-ID) RESP(WS-RESP-CD) RESP2(WS-REAS-CD), then EVALUATE WS-RESP-CD. Arm one, DFHRESP(NORMAL) at :589-590, is CONTINUE - THIS case, and it is the only outcome of the three that lets the paragraph reach :209. Arm two, DFHRESP(NOTFND) at :591-596, reports 'Account ID NOT found...' with -1 to ACTIDINL and sends - case09, which asks for an account the fixture does not carry. Arm three, WHEN OTHER at :597-603, DISPLAYs 'RESP:' WS-RESP-CD 'REAS:' WS-REAS-CD and then reports 'Unable to lookup Acct in XREF AIX file...' with -1 to ACTIDINL and sends - case10, which has to force the outcome because the source enumerates no condition that reaches it. Gate G47 is discharged here for the NORMAL outcome specifically. GATE G45 - CXACAIX IS A FINDER, NOT A TABLE: app/csd/CARDDEMO.CSD defines FILE(CXACAIX) at :63 with DESCRIPTION 'ALTERNATE INDEX TO CCXREF VIA ACCOUNT KEY' at :64 and a DSNAME at :65 that ends in VSAM.AIX.PATH - a PATH over the base cluster FILE(CCXREF) defines at :37-39, whose DSNAME ends in VSAM.KSDS. One dataset, two access paths. So this case seeds the CCXREF base ONCE and declares no CXACAIX input of its own: the read is card.CardXrefRepository's alternate-index finder keyed on the eleven-digit XREF-ACCT-ID, resolving over the same seeded rows the sixteen-character base finder reads by XREF-CARD-NUM. Declaring a second input would model the alternate index as a second table, which is exactly what G45 forbids and what no schema change is permitted to introduce. THE FIXTURE IS NOT IN ACCOUNT-ID ORDER, SO THE FINDER MUST NOT ASSUME ORDERING: the five seeded rows of app/data/ASCII/cardxref.txt carry, sliced at CVACT03Y's offsets, the account ids 00000000050, 00000000027, 00000000002, 00000000020 and 00000000012 in that physical sequence - descending, then ascending, then neither. This case deliberately asks for 00000000027, the SECOND row, whose key sorts below the first row's: a finder that assumed the file were ascending, or that stopped at the first key greater than the one wanted, would report NOTFND and take case09's arm instead. The expected card number 0683586198171516 is that same row's bytes 1-16, so the pairing is proved by the fixture rather than asserted about it. PART TWO - THE EMPTY-FIELD CASCADE AT :251-320, ARM ONE. PROCESS-ENTER-KEY performs VALIDATE-INPUT-DATA-FIELDS at :167. The IF ERR-FLG-ON blanking block at :237-249 does NOT run: the key path resolved, so the flag is still off - which is also why that block is unreachable from this caller and is preserved anyway rather than tidied (practice B5). The EVALUATE TRUE at :251 is an eleven-arm first-match-wins chain closed by WHEN OTHER CONTINUE at :318-319, and its eleven texts in source order, each with the xxxL item that receives MOVE -1, are: 1 TTYPCDI :252-257 'Type CD can NOT be empty...' cursor TTYPCDL; 2 TCATCDI :258-263 'Category CD can NOT be empty...' cursor TCATCDL; 3 TRNSRCI :264-269 'Source can NOT be empty...' cursor TRNSRCL; 4 TDESCI :270-275 'Description can NOT be empty...' cursor TDESCL; 5 TRNAMTI :276-281 'Amount can NOT be empty...' cursor TRNAMTL; 6 TORIGDTI :282-287 'Orig Date can NOT be empty...' cursor TORIGDTL; 7 TPROCDTI :288-293 'Proc Date can NOT be empty...' cursor TPROCDTL; 8 MIDI :294-299 'Merchant ID can NOT be empty...' cursor MIDL; 9 MNAMEI :300-305 'Merchant Name can NOT be empty...' cursor MNAMEL; 10 MCITYI :306-311 'Merchant City can NOT be empty...' cursor MCITYL; 11 MZIPI :312-317 'Merchant Zip can NOT be empty...' cursor MZIPL. THIS case drives arm one: TTYPCDI arrives as two spaces and every other detail field is populated, so the first arm matches and no later arm is evaluated. The order is the contract and is neither reordered nor deduplicated (rule R7, gate G30). Arms two to eleven are documented here rather than driven, because gate G15 fixes this folder at exactly twenty files and a case may not be added for each; TransactionViewControllerTest drives the remaining ten arms directly. WHY EXACTLY ONE MESSAGE AND NOTHING WRITTEN: the arm performs SEND-TRNADD-SCREEN, which at :516-534 populates the header, moves WS-MESSAGE into ERRMSGO, sends the map and then issues EXEC CICS RETURN. That RETURN ends the CICS task, so control never comes back to the statement after the PERFORM: the numeric cascade at :322-337 is not evaluated even though two spaces are also not numeric, the three positional shape guards at :339-381 are not reached, neither CSUTLDTC call site is reached, and the EVALUATE CONFIRMI at :169 is never reached. CONFIRMI is deliberately declared as 'Y' to make that last point assertable rather than assumed: confirmation was given and the transaction is still not added, because the guard returned before the confirmation was ever looked at. expectedWrites is empty, the backward browse at :644-704 never starts, and TRANSACT still holds exactly its three seeded 350-byte rows on the final-state channel - the positive form of 'this path writes nothing'. TRANSACT has no REWRITE and no DELETE anywhere in the codebase, and the ENDBR at :704 is bare, with no RESP operand and no error path. WHAT THE SCREEN CARRIES: one send, all 21 xxxO items pinned. ERRMSGO receives WS-MESSAGE at :520 - a PIC X(80) source into a PIC X(78) receiver, so the two message channels below differ by the two bytes COBOL loses on the right, and both are stated because reporting only one would make that move unobservable. The header six come from POPULATE-HEADER-INFO at :552-571 with the clock pinned to 2022-07-19T23:12:34, the single instant every case in this folder uses (practice B7): TRNNAMEO from WS-TRANID 'CT02', PGMNAMEO from WS-PGMNAME 'COTRN02C', TITLE01O and TITLE02O from app/cpy/COTTL01Y.cpy:18-22 at their declared PIC X(40), CURDATEO as MM/DD/YY and CURTIMEO as HH:MM:SS. TTYPCDO comes back as two spaces because the blanking block did not run and the field is echoed exactly as it arrived. The cursor is TTYPCDL, an xxxL length item and therefore validation metadata rather than a payload member - no xxxL, xxxF or xxxA name appears among the fields of this case, and no other xxxL is -1. ERRMSGC is pinned at DFHDFCOL, the default colour: MOVE DFHGREEN TO ERRMSGC at :727 is the only attribute assignment this program makes and it belongs to the successful-write arm alone, so a rejecting path colours nothing (gate G38 - and the CSSETATY highlight applies in neither state on this screen). The response names COTRN02C, COTRN02 and COTRN2A with termination RETURN_TRANSID: that is the same screen re-displayed by the SEND and the RETURN TRANSID(WS-TRANID) at :530-532, NOT an EXEC CICS XCTL to another program - the XCTL at :508-511 is on RETURN-TO-PREV-SCREEN, which this path never performs - so there is no program transfer to assert here and gate G40 belongs to case01, case04 and case05. All 22 fields of the 218-byte communication area are pinned and none omitted, because the conversation state travels in the payload rather than in any server-side session (rule R6, gate G37); the resolved account id is NOT among them, because the program moves it into XREF-ACCT-ID and the screen field and nowhere else, leaving CDEMO-ACCT-ID at its zeros. ACCTDAT IS A DEAD DECLARATION AND RESOLVING AN ACCOUNT ID HERE DOES NOT READ THE ACCOUNT FILE (practice B5): WS-ACCTDAT-FILE PIC X(08) VALUE 'ACCTDAT ' is declared at :40 and appears in no DATASET operand of any of the program's eleven EXEC CICS verbs, and COPY CVACT01Y at :89 is a dead include whose ACCOUNT-RECORD fields are never moved. The account id this case supplies is used as the alternate-index key of the cross-reference and for nothing else: no ACCTDAT input is declared, no ACCTDAT row appears in any expectation here or in any other case in this folder, and COTRN02CParityTest.DeadDeclarations proves the translation keeps both names as constants and wires no account collaborator at all. Preserving the deadness is the requirement; implementing an account read would be a new feature and a parity violation. THE TWO DATASETS SEEDED, AND HOW THEY ARE ADDRESSED: CCXREF is seeded from five rows of the cardxref.txt fixture exactly as they ship, 36 bytes wide, and is deliberately NOT pre-padded. app/cpy/CVACT03Y.cpy declares CARD-XREF-RECORD as XREF-CARD-NUM X(16) + XREF-CUST-ID 9(09) + XREF-ACCT-ID 9(11) + FILLER X(14) = 50 and the fixture omits the trailing FILLER, so the CARDXREF_FILLER_PAD_36_TO_50 normalisation declared below supplies those fourteen spaces once, at seed time, and is the sole owner of that repair (gate G16, risk R-F). TRANSACT is declared inline with three 350-byte rows because no ASCII fixture ships for that master - it is populated online, not loaded - each summed from app/cpy/CVTRA05Y.cpy as 16+2+4+10+100+11+9+50+50+10+16+26+26+20 with the trailing FILLER PIC X(20) present and space-filled (gates G19 and G21). Row 0 is pinned across all fourteen spans by their verbatim copybook names, with TRAN-AMT stated as its eleven-byte stored image 0000000010A rather than as a quantity, because the gate is byte parity and the zoned sign overpunch that makes it +1.01 is part of the value. Every dataset is addressed by its application.yml binding key, so not one fully-qualified mainframe dataset name appears anywhere in this file (gate G46); no tenth fixture is named, the fixture set being closed at the nine derived from app/data/ASCII; and the code page is stated as US-ASCII rather than left to a platform default (practice B8). CASE ALLOCATION, RECONCILED IN THE OPEN (practice B4): case08 previously encoded FUNCTION NUMVAL's rejection half - an ACTIDINI carrying an embedded space, refused by the class test at :197 with 'Account ID must be Numeric...'. This file's authoring brief assigns case08 the scenario above instead, and the reassignment is recorded rather than made silently, because swapping a case's scenario without saying so would leave a reader unable to find the behaviour that moved. Nothing is left unexercised by the move: the account-arm class guard is driven through the controller by TransactionViewControllerTest at :696, :721 and :1787, and the intrinsic's own accept-and-reject table for gate G29 - the comma, the currency sign, the embedded space, the second decimal point, the parenthesised negative, the empty argument and the all-spaces argument - is pinned directly by COTRN02CParityTest.NumericIntrinsicParity, which notes that none of those can reach the intrinsic through this program because the guard refuses them first. The card-arm half of the same guard remains driven by case12. No file was added and none removed: this folder still holds exactly case01 through case20 (gate G15). BASELINE PROVENANCE (practice B12): every expected value here is STATICALLY DERIVED - by structured reading of MAIN-PARA, PROCESS-ENTER-KEY, VALIDATE-INPUT-KEY-FIELDS, READ-CXACAIX-FILE, VALIDATE-INPUT-DATA-FIELDS, SEND-TRNADD-SCREEN and POPULATE-HEADER-INFO, cross-checked against the copybook byte layouts (app/cpy/CVACT03Y.cpy summed to 50 as 16+9+11+14 with only 36 supplied; app/cpy/COCOM01Y.cpy 160 bytes plus the CDEMO-CT02-INFO extension at :72-80 as 16+16+8+1+1+16 = 58, so the passed area is 218 and the extension is a separate payload field rather than a widened NavigationContext; app/cpy/CVTRA05Y.cpy 350), against the symbolic-map widths of app/cpy-bms/COTRN02.CPY (21 xxxI payload items whose PICTURE clauses give every field length used here - ACTIDIN 11, CARDNIN 16, TTYPCD 2, TCATCD 4, TRNSRC 10, TDESC 60, TRNAMT 12, TORIGDT 10, TPROCDT 10, MID 9, MNAME 30, MCITY 25, MZIP 10, CONFIRM 1, ERRMSG 78, and a 555-byte group image as 12 + 21 x 7 + 396), and against the real bytes of app/data/ASCII/cardxref.txt, sliced with a parser rather than read by eye. It was NEVER captured from a live COBOL execution: running the legacy programs is empirically impossible in this environment, which Agent Action Plan section 0.7.6 establishes with eight independently verified blockers - among them a compiler whose indexed-file handler is disabled, the absence of any Language Environment CEE service behind CSUTLDTC, the absence of a CICS emulator, and the absence of the IBM-supplied DFHAID and DFHBMSCA copybooks this program copies at :92-93 (risk R-D, which is why the AID is declared as the DFHENTER mnemonic and resolved through common.CicsAid). The change of provenance is escalated as risk R-A rather than absorbed silently. NO USER RULES EXIST: review_rules returns exactly one line, 'No user rules provided', and that line is the whole document, so no rule forces this file into scope and no rule constrains how it is written. Per UR4 the absence is stated explicitly and is not treated as permission to lower the bar: the standard held here is the Agent Action Plan section 0.10.2 enterprise practices, cited by name where they bite - B1 (every literal derived and verified, no placeholder anywhere), B3 (app/cbl, app/cpy, app/cpy-bms, app/bms, app/csd and app/data are read-only and were not touched), B4 (the R-B inversion, the corrected README citation and the case reallocation all disclosed), B5 (the renormalisation, the CARDNIN overwrite, the eleven-arm order and the dead ACCTDAT declaration all preserved as written), B7 (a pinned clock, so the run is deterministic in any timezone), B8 (binding keys, a named code page, explicit literals, the exact cursor target), B11 (every width summed from a PICTURE clause) and B12 (the provenance statement above). GATES DISCHARGED: G15, G16, G18, G30, G37, G38, G45 - of which this case is the primary exerciser on the NORMAL outcome - G46, G47 and G51 (the controller is driven as a plain object: no MockMvc, no TestRestTemplate, no servlet container and no JobLauncher in the path). DELIBERATELY NOT ASSERTED, because COTRN02C has none of them: G32 (zero GO TO, so no backward jump to restructure), G35 (zero CALL 'CEE3ABD', which is why the return code is 0 and no abend path exists), G39 (no pagination on this screen) and G43 (no 9300-CHECK-CHANGE-IN-REC). G40 is not asserted either, because no XCTL is reached on this path.",
   "unitKind" : "CONTROLLER_POJO",
   "inputs" : {
     "CCXREF" : {
-      "rows" : [ ],
       "fixture" : "cardxref.txt",
       "fromRow" : 0,
-      "rowCount" : 5,
-      "empty" : null,
-      "recordLength" : null,
-      "copybook" : null
+      "rowCount" : 5
     },
     "TRANSACT" : {
-      "rows" : [ "0000000000000001010001POS TERM  SEEDED TRANSACTION NUMBER 1                                                                         0000000010A800000001SEEDED MERCHANT 1                                 SEEDED CITY 1                                     000001234105000244537657402022-07-11 08:00:00.0000012022-07-11 09:30:00.000001                    ", "0000000000000002020002POS TERM  SEEDED TRANSACTION NUMBER 2                                                                         0000000020B800000002SEEDED MERCHANT 2                                 SEEDED CITY 2                                     000001234205000244537657402022-07-12 08:00:00.0000022022-07-12 09:30:00.000002                    ", "0000000000000003030003POS TERM  SEEDED TRANSACTION NUMBER 3                                                                         0000000030C800000003SEEDED MERCHANT 3                                 SEEDED CITY 3                                     000001234305000244537657402022-07-13 08:00:00.0000032022-07-13 09:30:00.000003                    " ],
-      "fixture" : null,
-      "fromRow" : null,
-      "rowCount" : null,
-      "empty" : null,
-      "recordLength" : null,
-      "copybook" : null
+      "rows" : [ "0000000000000001010001POS TERM  SEEDED TRANSACTION NUMBER 1                                                                         0000000010A800000001SEEDED MERCHANT 1                                 SEEDED CITY 1                                     000001234105000244537657402022-07-11 08:00:00.0000012022-07-11 09:30:00.000001                    ", "0000000000000002020002POS TERM  SEEDED TRANSACTION NUMBER 2                                                                         0000000020B800000002SEEDED MERCHANT 2                                 SEEDED CITY 2                                     000001234205000244537657402022-07-12 08:00:00.0000022022-07-12 09:30:00.000002                    ", "0000000000000003030003POS TERM  SEEDED TRANSACTION NUMBER 3                                                                         0000000030C800000003SEEDED MERCHANT 3                                 SEEDED CITY 3                                     000001234305000244537657402022-07-13 08:00:00.0000032022-07-13 09:30:00.000003                    " ]
     }
   },
   "jobParameters" : { },
@@ -40,7 +30,20 @@
       "CDEMO-CT02-TRN-SELECTED" : "                "
     },
     "mapFields" : {
-      "ACTIDINI" : "0000000 050"
+      "ACTIDINI" : "00000000027",
+      "CARDNINI" : "                ",
+      "TTYPCDI" : "  ",
+      "TCATCDI" : "0001",
+      "TRNSRCI" : "POS TERM  ",
+      "TDESCI" : "COFFEE AND A NEWSPAPER",
+      "TRNAMTI" : "+00000012.34",
+      "TORIGDTI" : "2022-07-18",
+      "TPROCDTI" : "2022-07-18",
+      "MIDI" : "123456789",
+      "MNAMEI" : "KWIK-E-MART",
+      "MCITYI" : "SPRINGFIELD",
+      "MZIPI" : "0000012345",
+      "CONFIRMI" : "Y"
     },
     "forcedOutcomes" : { }
   },
@@ -80,34 +83,49 @@
         "PGMNAMEO" : "COTRN02C",
         "TITLE02O" : "              CardDemo                  ",
         "CURTIMEO" : "23:12:34",
-        "ACTIDINO" : "0000000 050",
-        "CARDNINO" : "                ",
+        "ACTIDINO" : "00000000027",
+        "CARDNINO" : "0683586198171516",
         "TTYPCDO" : "  ",
-        "TCATCDO" : "    ",
-        "TRNSRCO" : "          ",
-        "TDESCO" : "                                                            ",
-        "TRNAMTO" : "            ",
-        "TORIGDTO" : "          ",
-        "TPROCDTO" : "          ",
-        "MIDO" : "         ",
-        "MNAMEO" : "                              ",
-        "MCITYO" : "                         ",
-        "MZIPO" : "          ",
-        "CONFIRMO" : " ",
-        "ERRMSGO" : "Account ID must be Numeric...                                                 "
+        "TCATCDO" : "0001",
+        "TRNSRCO" : "POS TERM  ",
+        "TDESCO" : "COFFEE AND A NEWSPAPER                                      ",
+        "TRNAMTO" : "+00000012.34",
+        "TORIGDTO" : "2022-07-18",
+        "TPROCDTO" : "2022-07-18",
+        "MIDO" : "123456789",
+        "MNAMEO" : "KWIK-E-MART                   ",
+        "MCITYO" : "SPRINGFIELD              ",
+        "MZIPO" : "0000012345",
+        "CONFIRMO" : "Y",
+        "ERRMSGO" : "Type CD can NOT be empty...                                                   "
       },
       "attributes" : {
         "ERRMSGC" : "DFHDFCOL"
       }
     } ],
-    "cursorField" : "ACTIDINL",
+    "cursorField" : "TTYPCDL",
     "termination" : "RETURN_TRANSID"
   },
   "expectedWrites" : [ ],
   "expectedFinalState" : [ {
     "dataset" : "TRANSACT",
     "rowIndex" : 0,
-    "fields" : { },
+    "fields" : {
+      "TRAN-ID" : "0000000000000001",
+      "TRAN-TYPE-CD" : "01",
+      "TRAN-CAT-CD" : "0001",
+      "TRAN-SOURCE" : "POS TERM  ",
+      "TRAN-DESC" : "SEEDED TRANSACTION NUMBER 1                                                                         ",
+      "TRAN-AMT" : "0000000010A",
+      "TRAN-MERCHANT-ID" : "800000001",
+      "TRAN-MERCHANT-NAME" : "SEEDED MERCHANT 1                                 ",
+      "TRAN-MERCHANT-CITY" : "SEEDED CITY 1                                     ",
+      "TRAN-MERCHANT-ZIP" : "0000012341",
+      "TRAN-CARD-NUM" : "0500024453765740",
+      "TRAN-ORIG-TS" : "2022-07-11 08:00:00.000001",
+      "TRAN-PROC-TS" : "2022-07-11 09:30:00.000001",
+      "FILLER" : "                    "
+    },
     "expectedBytes" : "0000000000000001010001POS TERM  SEEDED TRANSACTION NUMBER 1                                                                         0000000010A800000001SEEDED MERCHANT 1                                 SEEDED CITY 1                                     000001234105000244537657402022-07-11 08:00:00.0000012022-07-11 09:30:00.000001                    "
   }, {
     "dataset" : "TRANSACT",
@@ -123,10 +141,10 @@
   "expectedReturnCode" : 0,
   "expectedMessages" : [ {
     "channel" : "WS_MESSAGE_80",
-    "text" : "Account ID must be Numeric...                                                   "
+    "text" : "Type CD can NOT be empty...                                                     "
   }, {
     "channel" : "SCREEN_ERRMSG_78",
-    "text" : "Account ID must be Numeric...                                                 "
+    "text" : "Type CD can NOT be empty...                                                   "
   } ],
   "normalisations" : [ {
     "dataset" : "CCXREF",

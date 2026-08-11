@@ -1,7 +1,7 @@
 {
   "program": "CBSTM03B",
   "caseId": "case13",
-  "description": "app/cbl/CBSTM03B.CBL:213-216 - 4000-ACCTFILE-PROC's keyed read, the fourth and last dispatch arm (:125-126), driven as app/cbl/CBSTM03A.CBL:391-401 drives it with WS-M03B-KEY-LN COMPUTE'd from LENGTH OF XREF-ACCT-ID and therefore 11. The area pins that as the signed zoned image '001A'. FD-ACCT-ID is PIC 9(11) rather than PIC X, so the used key reaches the record key through a numeric DISPLAY move - right justified and zero filled - and the expectation is stated at the 300-byte CVACT01Y width, whose signed spans carry their real overpunched images from app/data/ASCII/acctdata.txt.",
+  "description": "The ACCTFILE keyed read that HITS, followed by the folder's only ACCTFILE CLOSE - the call that completes the CLOSE surface across all four DD names (gate G48), as case10, case15 and case19 each record. app/cbl/CBSTM03B.CBL:118 EVALUATE LK-M03B-DD reaches WHEN 'ACCTFILE' at :125 - the fourth and LAST dispatch arm, so 'TRNXFILE' (:119), 'XREFFILE' (:121) and 'CUSTFILE' (:123) are all passed over first and only WHEN OTHER (:127) lies beyond it - and :126 performs 4000-ACCTFILE-PROC THRU 4999-EXIT. Call one is the OPEN the session needs: IF M03B-OPEN (:208) true, OPEN INPUT ACCT-FILE (:209), GO TO 4900-EXIT (:210), and :226 MOVE ACCTFILE-STATUS TO LK-M03B-RC reports '00'. That status belongs to ACCTFILE-STATUS alone - the fourth of the four independent two-byte areas at :83-97, none of which carries a VALUE clause - and says nothing about the other three, which is what a per-DD status assertion means (gate G47). Call two is the subject: IF M03B-OPEN (:208) is now FALSE, so control reaches IF M03B-READ-K (:213) TRUE, then :214 MOVE LK-M03B-KEY (1:LK-M03B-KEY-LN) TO FD-ACCT-ID, :215 READ ACCT-FILE INTO LK-M03B-FLDT, :217 GO TO 4900-EXIT and :226 again, reporting '00'. The reference-modified MOVE at :214 is the statement worth reading twice, because it is the NUMERIC half of a rule with two halves. FD-ACCT-ID is PIC 9(11) at :77, a numeric DISPLAY item, so the move aligns on the decimal point and pads on the LEFT with zeros, truncating high-order digits if the sender is wider. The identical-looking statement at :189 moves into FD-CUST-ID PIC X(09) at :72, an ALPHANUMERIC item, where the same syntax left-justifies and pads on the RIGHT with spaces instead, truncating low-order bytes; cases 10, 11 and 12 pin that half. Here the sending value is exactly eleven bytes, so both rules would produce the same '00000000011' and the distinction is invisible in the result - which is precisely why it has to be stated rather than inferred. LK-M03B-KEY-LN is a declared input of the 1040-byte contract, PIC S9(4) at :111, and :214 consumes it with no range check and no comparison against the receiver's width, so a caller supplying fewer bytes drives the two rules apart: the three characters '000' would reach FD-ACCT-ID as '00000000000', eight zeros ahead of them, but would reach FD-CUST-ID as '000' followed by six trailing spaces. One statement, two move rules, decided entirely by the receiver's PICTURE, and both are reproduced rather than unified. The eleven is not a guess: app/cbl/CBSTM03A.CBL:392-401 drives this call, and :398 COMPUTE WS-M03B-KEY-LN = LENGTH OF XREF-ACCT-ID takes it from a PIC 9(11) field in app/cpy/CVACT03Y.cpy. It is pinned as the signed zoned image '001A' because LK-M03B-KEY-LN is PIC S9(4) DISPLAY and a positive sign is overpunched into the low-order byte rather than occupying a fifth one - the same reason the OPEN's and the CLOSE's zero both read '000{'. LK-M03B-KEY comes back unmodified at its full 25 bytes, left-justified and space-padded, because MOVE XREF-ACCT-ID TO WS-M03B-KEY (:396) moves an eleven-byte value into a PIC X(25) span under the alphanumeric rule and the subroutine never writes back to the key field. The key deliberately addresses the MIDDLE of the three seeded rows - 00000000010, 00000000011 and 00000000012 - so a port that returned the first row, or wherever a browse happened to be standing, instead of the keyed row would be caught rather than flattered. READ ... INTO moves the 300-byte record into LK-M03B-FLDT PIC X(1000), left-justified and space-filled, so bytes 1-300 are the record and 301-1000 are spaces: the subroutine returns a raw span and decodes nothing, which is why the expectation states the span rather than a decoded object. The record decodes through app/cpy/CVACT01Y.cpy, and all thirteen of its spans are pinned in declaration order - including ACCT-EXPIRAION-DATE, whose misspelling is reproduced exactly as the copybook writes it and is never quietly repaired to the correctly spelled form, which is deliberately not written anywhere in this file because carrying it even in prose would put the wrong name one careless copy away from the expectation map (implicit requirement I1) - and the trailing FILLER X(178) as 178 spaces, because FILLER is an emitted span and not a gap and it is what takes 11+1+12+12+12+10+10+10+12+12+10+10+178 to 300. Omit it and every offset after it shifts while the total silently falls to 122. The five PIC S9(10)V99 spans carry their real overpunched images from app/data/ASCII/acctdata.txt, where a trailing '{' is the sign of a positive digit zero and must survive byte for byte; ACCT-ID is a PIC 9(11) field carried as characters so its leading zeros survive. Note also that the ACCTFILE data span after the key is X(289) at :78 while the SAME COBOL field name FD-ACCT-DATA denotes an X(318) span inside FD-TRNXFILE-REC at :63 - legal because they sit in different FD records, and read side by side in one run by case16 so the two cannot be conflated. Call three is the CLOSE, and it is the only ACCTFILE CLOSE in the folder. IF M03B-OPEN (:208) false, IF M03B-READ-K (:213) false, IF M03B-CLOSE (:220) true, CLOSE ACCT-FILE (:221), GO TO 4900-EXIT (:222), :226 again, and 4999-EXIT at :228-229 - the program's final paragraph. Reaching the third guard only after the first two have both been evaluated and failed is behaviour and not arrangement (gate G30), and it is the mirror of call two, where :217 left the paragraph before :220 could be reached at all. The caller idiom matters here: app/cbl/CBSTM03A.CBL:857-860 issues MOVE ZERO TO WS-M03B-RC but NOT the MOVE SPACES TO WS-M03B-FLDT that :745 and :834 issue, so the record area arrives at the CLOSE still carrying the 300 bytes the read left in it and comes back carrying them unchanged. 'A CLOSE assigns no record area' is therefore an assertion with content rather than a tautology over 1000 spaces - it could not be made at all if the area had been cleared first. All three seeded rows are pinned after the run, which is the read-only proof: every SELECT is OPEN INPUT (:136, :160, :184, :209) and no paragraph contains a WRITE or a REWRITE, so a row that came back different from the way it went in would be a parity failure that no area image could reveal. The expected RETURN-CODE is 0 and no message is expected. LK-M03B-RC is a two-byte FILE STATUS, not a return code: CBSTM03B holds no DISPLAY of its own and GOBACKs without ever assigning RETURN-CODE, so what a status MEANS stays with the caller - and for this DD CBSTM03A's EVALUATE at :403-410 distinguishes '00' from WHEN OTHER only, with no '10' arm and no '23' arm, so anything other than the '00' this case takes would go to DISPLAY 'ERROR READING ACCTFILE' and PERFORM 9999-ABEND-PROGRAM. 'W' (:107) and 'Z' (:108) remain declared and are SET nowhere in app/cbl, so this case does not drive them and leaving them unexercised is deliberate; cases 17 and 18 assert their no-op as it is. No normalisation applies either: acctdata rows are a full 300 bytes and the only two pads in the whole suite are cardxref 36->50 and USRSEC 57->80. Provenance: every expected value here is STATICALLY DERIVED - from the line numbers above, from the PICTURE clauses at :72, :77 and :111, from the CVACT01Y spans summing to 300, from the LK-M03B-AREA widths 8+1+2+25+4+1000 = 1040 at :100-112, and from the real bytes of app/data/ASCII/acctdata.txt rows 9 to 11 - and was never captured from an execution of the COBOL. Section 0.7.6 of the plan records eight independently verified blockers to running it in this environment, one of which names this program directly: cobc refuses CBSTM03B:116 because PROCEDURE DIVISION USING is a subprogram entry and not a -x main. Section 0.9.11 escalates the substituted provenance as risk R-A; the twenty cases per program, the field-for-field diffing and the diff-count-zero gate all stand unchanged.",
   "unitKind": "COMPONENT",
   "inputs": {
     "ACCTFILE": {
@@ -20,7 +20,10 @@
       "fields": {
         "LK-M03B-DD": "ACCTFILE",
         "LK-M03B-OPER": "O",
-        "LK-M03B-RC": "00"
+        "LK-M03B-RC": "00",
+        "LK-M03B-KEY": "                         ",
+        "LK-M03B-KEY-LN": "000{",
+        "LK-M03B-FLDT": "                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        "
       },
       "expectedBytes": "ACCTFILEO00                         000{                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        "
     },
@@ -30,7 +33,10 @@
       "fields": {
         "LK-M03B-DD": "ACCTFILE",
         "LK-M03B-OPER": "K",
-        "LK-M03B-RC": "00"
+        "LK-M03B-RC": "00",
+        "LK-M03B-KEY": "00000000011              ",
+        "LK-M03B-KEY-LN": "001A",
+        "LK-M03B-FLDT": "00000000011Y00000002120{00000049980{00000031750{2014-09-122025-03-122025-03-1200000000000{00000000000{A000000000                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        "
       },
       "expectedBytes": "ACCTFILEK0000000000011              001A00000000011Y00000002120{00000049980{00000031750{2014-09-122025-03-122025-03-1200000000000{00000000000{A000000000                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        "
     },
@@ -40,7 +46,10 @@
       "fields": {
         "LK-M03B-DD": "ACCTFILE",
         "LK-M03B-OPER": "C",
-        "LK-M03B-RC": "00"
+        "LK-M03B-RC": "00",
+        "LK-M03B-KEY": "                         ",
+        "LK-M03B-KEY-LN": "000{",
+        "LK-M03B-FLDT": "00000000011Y00000002120{00000049980{00000031750{2014-09-122025-03-122025-03-1200000000000{00000000000{A000000000                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        "
       },
       "expectedBytes": "ACCTFILEC00                         000{00000000011Y00000002120{00000049980{00000031750{2014-09-122025-03-122025-03-1200000000000{00000000000{A000000000                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        "
     }
@@ -49,19 +58,61 @@
     {
       "dataset": "ACCTFILE",
       "rowIndex": 0,
-      "fields": {},
+      "fields": {
+        "ACCT-ID": "00000000010",
+        "ACCT-ACTIVE-STATUS": "Y",
+        "ACCT-CURR-BAL": "00000001590{",
+        "ACCT-CREDIT-LIMIT": "00000054010{",
+        "ACCT-CASH-CREDIT-LIMIT": "00000044420{",
+        "ACCT-OPEN-DATE": "2015-09-13",
+        "ACCT-EXPIRAION-DATE": "2023-01-27",
+        "ACCT-REISSUE-DATE": "2023-01-27",
+        "ACCT-CURR-CYC-CREDIT": "00000000000{",
+        "ACCT-CURR-CYC-DEBIT": "00000000000{",
+        "ACCT-ADDR-ZIP": "A000000000",
+        "ACCT-GROUP-ID": "          ",
+        "FILLER": "                                                                                                                                                                                  "
+      },
       "expectedBytes": "00000000010Y00000001590{00000054010{00000044420{2015-09-132023-01-272023-01-2700000000000{00000000000{A000000000                                                                                                                                                                                            "
     },
     {
       "dataset": "ACCTFILE",
       "rowIndex": 1,
-      "fields": {},
+      "fields": {
+        "ACCT-ID": "00000000011",
+        "ACCT-ACTIVE-STATUS": "Y",
+        "ACCT-CURR-BAL": "00000002120{",
+        "ACCT-CREDIT-LIMIT": "00000049980{",
+        "ACCT-CASH-CREDIT-LIMIT": "00000031750{",
+        "ACCT-OPEN-DATE": "2014-09-12",
+        "ACCT-EXPIRAION-DATE": "2025-03-12",
+        "ACCT-REISSUE-DATE": "2025-03-12",
+        "ACCT-CURR-CYC-CREDIT": "00000000000{",
+        "ACCT-CURR-CYC-DEBIT": "00000000000{",
+        "ACCT-ADDR-ZIP": "A000000000",
+        "ACCT-GROUP-ID": "          ",
+        "FILLER": "                                                                                                                                                                                  "
+      },
       "expectedBytes": "00000000011Y00000002120{00000049980{00000031750{2014-09-122025-03-122025-03-1200000000000{00000000000{A000000000                                                                                                                                                                                            "
     },
     {
       "dataset": "ACCTFILE",
       "rowIndex": 2,
-      "fields": {},
+      "fields": {
+        "ACCT-ID": "00000000012",
+        "ACCT-ACTIVE-STATUS": "Y",
+        "ACCT-CURR-BAL": "00000001760{",
+        "ACCT-CREDIT-LIMIT": "00000046360{",
+        "ACCT-CASH-CREDIT-LIMIT": "00000003880{",
+        "ACCT-OPEN-DATE": "2009-06-17",
+        "ACCT-EXPIRAION-DATE": "2023-07-07",
+        "ACCT-REISSUE-DATE": "2023-07-07",
+        "ACCT-CURR-CYC-CREDIT": "00000000000{",
+        "ACCT-CURR-CYC-DEBIT": "00000000000{",
+        "ACCT-ADDR-ZIP": "A000000000",
+        "ACCT-GROUP-ID": "          ",
+        "FILLER": "                                                                                                                                                                                  "
+      },
       "expectedBytes": "00000000012Y00000001760{00000046360{00000003880{2009-06-172023-07-072023-07-0700000000000{00000000000{A000000000                                                                                                                                                                                            "
     }
   ],
@@ -74,6 +125,12 @@
       "channel": "WRITES",
       "rowCount": 3,
       "recordLength": 1040
+    },
+    {
+      "dataset": "ACCTFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 3,
+      "recordLength": 300
     }
   ]
 }

@@ -1,7 +1,7 @@
 {
   "program": "COUSR00C",
   "caseId": "case03",
-  "description": "A short page: the same first-entry path as case02 over four records, so the forward loop at :300-306 ends on end of file rather than on the subscript. READNEXT reports ENDFILE on its fifth call, so :302's guard fails, POPULATE-USER-DATA is not performed and WS-IDX stops at 5 - which is why rows 5 to 10 stay at the spaces :292-296 blanked them to, and why row 5 is blank rather than holding a fifth record. :308 is false, so the ELSE at :317-322 runs: NEXT-PAGE-NO, and because WS-IDX is 5 and therefore greater than 1, the COMPUTE at :320-321 still counts the short page as page 1 (gate G28). Note that INITIALIZE-USER-DATA at :446-501 blanks USRIDnn, FNAMEnn, LNAMEnn and UTYPEnn only - never the SELnnnn cell - so the selection column is untouched by the blanking pass.",
+  "description": "A SHORT PAGE - a USRSEC holding fewer records than one page - taken through the first-entry ENTER path at app/cbl/COUSR00C.cbl:115-119 over the FIRST FOUR records of app/jcl/DUSRSECJ.jcl:35-44. :116 sets CDEMO-PGM-REENTER, so the context this case is entered with as 0 leaves as 1; :117 MOVE LOW-VALUES TO COUSR0AO discards every screen field the payload carried; :118 performs PROCESS-ENTER-KEY, whose ten-way selection scan at :151-185 therefore reaches WHEN OTHER, its last arm (gate G30); :218-219 anchors the browse on LOW-VALUES rather than on a typed key, because USRIDINI is what :117 left it; and :227 restarts the count at zero before PROCESS-PAGE-FORWARD. STARTBR at :284 reports NORMAL and positions at or after the RIDFLD - GTEQ is CICS's default and :592 has the keyword commented out - and :288 is false for DFHENTER, so no record is discarded. :292-296 blanks all ten rows, and then the forward loop at :300-306 ends on END OF FILE rather than on the subscript: four READNEXTs report NORMAL and step WS-IDX to 5 through the COMPUTE at :304 (gate G28), and the fifth reports ENDFILE, so :302's guard fails, POPULATE-USER-DATA is not performed and WS-IDX stops at 5. That is why rows 5 to 10 stay at the spaces :292-296 left them at, and why row 5 is blank rather than holding a fifth record. INITIALIZE-USER-DATA at :446-501 blanks USRIDnn, FNAMEnn, LNAMEnn and UTYPEnn only and never the SELnnnn cell, so all ten selection cells keep the LOW-VALUES of :117 - x'00', not a space, and the two are pinned as different values below because the program distinguishes them (practice B8). :308 is false because the browse is at end of file, so the ELSE at :317-322 runs: NEXT-PAGE-NO, and because WS-IDX is 5 and therefore greater than 1 the COMPUTE at :320-321 still counts the short page as page 1. That is the exact complement of case04, where an empty file leaves WS-IDX at 1 so the increment is skipped and the page number stays 00000000. :325 ENDBR inspects nothing, because :687-691 specifies no RESP and no EVALUATE follows it. :327 then MOVEs CDEMO-CU00-PAGE-NUM, PIC 9(08), into PAGENUMI, PIC X(8), which is the same eight bytes as PAGENUMO: app/cpy-bms/COUSR00.CPY:373 declares COUSR0AO as a REDEFINES of COUSR0AI and both views place seven metadata bytes ahead of each field, so the eight-character 00000001 pinned below is what the screen carries. :328 MOVEs a single SPACE into USRIDINO - carried to eight by the alphanumeric MOVE - and :230-231 does it again on the way out. POPULATE-USER-DATA sets CDEMO-CU00-USRID-FIRST from row 1 at :389, but its WHEN 10 arm at :433-435 never runs on a four-record page, so CDEMO-CU00-USRID-LAST keeps the spaces the payload carried: that single field is the whole difference between this navigation image and case02's. THREE TRANSMISSIONS, ONE PUBLISHED BODY. COUSR00C sends the map three times here - from inside READNEXT's ENDFILE arm at :640, again at :329 and once more at :119 - and all three carry ERASE, because SEND-ERASE-YES is set at :103 and nothing on this path clears it. WS-MESSAGE is not cleared between them, so 'You have reached the bottom of the page...' survives into the last image; PAGENUMI is only assigned at :327, so the FIRST of the three still carried the LOW-VALUES :117 left there rather than 00000001 or spaces; and USRIDINO was only spaced at :328 and :231, so the first send still carried LOW-VALUES there too. A CICS terminal simply receives three transmissions where a REST response can carry one, so UserMenuController records all three on WorkArea.sends() and publishes the last - the image the terminal is left displaying - and this case pins all 59 DFHMDF fields of that one. The earlier two are asserted where the API exposes them, in UserMenuControllerTest, which pins ws.sends() at three for this path and the first send's message text: the mid-paragraph send is preserved rather than tidied into a single terminal send (practice B5), and it is asserted once rather than twice. WHY FOUR RECORDS AND NOT TEN. The ten-record first-entry boundary - a page that fills exactly and a look-ahead READNEXT at :311 that falls off the end - is case02's, and the suite pins its row 1, its row 10 and its message by name. Repeating it here would have duplicated that case and left :319-321, the short-page increment, carried by case18 alone; case18 reaches the same arm from the typed-key anchor at :220-222, so the two short-page cases are distinguished by their anchor, and this is the only case whose whole dataset is shorter than one page. expectedMessages is empty because nothing on this path is EMITTED: the ENDFILE arm at :634-640 does not DISPLAY, and the three DISPLAY sites at :608, :642 and :676 are all WHEN OTHER arms this case never reaches. Screen text is not a message - it is pinned in the transmission's ERRMSGO field, at that field's own 78-byte width, which is app/cpy-bms/COUSR00.CPY:372's PIC X(78) receiving the 80-byte WS-MESSAGE with its last two bytes truncated. expectedWrites is empty and the final state is the seed unchanged, because COUSR00C opens USRSEC for browse only: app/csd/CARDDEMO.CSD grants FILE(USRSEC) ADD, DELETE, READ and UPDATE as well, and this program uses none of them. Each of the four rows is pinned BOTH field by field - the six app/cpy/CSUSR01Y.cpy:17-23 spans in declaration order, with SEC-USR-FILLER named because the copybook names it rather than leaving it anonymous - AND as the whole 80-byte image, so the values, the total width and the filler having been emitted as 23 spaces rather than zeros are all asserted (gates G19, G21); expectedDatasets then adds the assertion no row expectation can make, that USRSEC still holds exactly four rows at its 80-byte width. Page size ten is BEHAVIOUR, not configuration (gate G39): it is hard-coded at :293, :300, :347 and :352 and by 02 USER-REC OCCURS 10 TIMES at :57, it appears nowhere in this file as a tunable, and a four-record file exercises it from below - the loop stops because the data ran out, not because the subscript did. USRSEC is addressed by its binding key throughout and never by a dataset name (gate G46). The browse outcomes this case covers are STARTBR NORMAL at :598, four READNEXT NORMALs at :632, READNEXT ENDFILE at :634 reached INSIDE the fill loop rather than at the look-ahead, and ENDBR (gate G47). No conversation state is held anywhere: the communication area, the AID and the screen values travel in the payload and nothing else (gate G37, rule R6), and the unit is reached as a plain Java object with no HTTP and no JobLauncher in the path (gate G51). COUSR00C does not copy CSSETATY - its COPY list is COCOM01Y, COUSR00, COTTL01Y, CSDAT01Y, CSMSG01Y, CSUSR01Y, DFHAID and DFHBMSCA - so no attribute byte is moved and no '*' overwrites a field; ERRMSG is statically COLOR=RED in app/bms/COUSR00.bms and needs no runtime highlight, so this case sits on the ENTER side of gate G38 and the re-entry highlight that gate also asks for has nothing here to apply to. Nothing else fabricates a gate the program cannot reach either: there is no GO TO to restructure, no CALL 'CEE3ABD' to translate and no 9300-CHECK-CHANGE-IN-REC to reproduce, so gates G32, G35 and G43 are not applicable to this program and are not claimed, and expectedReturnCode is 0 like every other case of this program, which contains no MOVE ... TO RETURN-CODE and ends every path at the EXEC CICS RETURN TRANSID('CU00') COMMAREA(CARDDEMO-COMMAREA) of :141-144. SEED: USRSEC has no ASCII fixture - app/data/ASCII holds nine and none of them is a security-user file - so its rows are inline, and these four are VERBATIM in-stream records of app/jcl/DUSRSECJ.jcl:35-38 at their in-stream width of exactly 57 characters, none synthesized. No row is pre-padded here: the 23-byte shortfall is the absent SEC-USR-FILLER and it is carried to 80 once, at seed time, by the single USRSEC_FILLER_PAD_57_TO_80 normalisation declared below, which the harness and FieldDiffer own. SEC-USR-PWD stays the plaintext eight-character literal the legacy design stores and compares (practice B6); it is carried in the record and never in a transmission, because app/cpy-bms/COUSR00.CPY declares no field for it. The clock is pinned to 2022-07-19T23:12:34, the source's own version stamp at :694 rather than an invented instant, because POPULATE-HEADER-INFO calls FUNCTION CURRENT-DATE at :564 on EVERY send and three unpinned headers would make this case irreproducible (practice B7). The code page is named US-ASCII and never defaulted (practice B8). RULE R1: the plan mandates the class name UserMenuController, but the Function header at :5 reads 'List all users from USRSEC file', app/bms/COUSR00.bms paints 'List Users' at POS=(4,35) and README.md records CU00 the same way - the name comes from the plan and the behaviour from the source, and nothing here expects menu-shaped behaviour. PROVENANCE (practice B12, risk R-A): every expected value here was DERIVED BY STRUCTURED READING of the COBOL and its copybooks and was NOT captured from, recorded against or replayed from any execution of the legacy program - executing it is impossible in this environment, which has no z/OS or CICS runtime, whose COBOL compiler reports its indexed file handler disabled, and which is missing the IBM-supplied DFHAID and DFHBMSCA. Only the provenance of the expected values is substituted; the twenty cases, the field-for-field diffing and the diff-count-of-zero gate are all preserved (gates G15, G18). The derivation rests on app/cbl/COUSR00C.cbl:56-75, :98-144, :149-232, :282-331, :384-441, :446-501, :522-544, :562-581, :586-614 and :619-648; app/cpy-bms/COUSR00.CPY, whose 59 xxxI items fix every field width and whose :373 REDEFINES aligns the I and O views; app/cpy/COCOM01Y.cpy, whose spans sum to 160, plus the 34-byte CDEMO-CU00-INFO extension declared at :67-75 for 194 in all - COTRN00C's equivalent is 58 and is not copied here; app/cpy/COTTL01Y.cpy, whose two 40-character title literals are carried byte for byte; app/cpy/CSUSR01Y.cpy:17-23, whose 8+20+20+8+1 = 57 plus the NAMED SEC-USR-FILLER X(23) make 80; and app/jcl/DUSRSECJ.jcl, whose :48 DCB=(LRECL=80,RECFM=FB) and :64-66 IDCAMS DEFINE CLUSTER KEYS(8,0) RECORDSIZE(80,80) fix that width independently of the copybook.",
   "unitKind": "CONTROLLER_POJO",
   "inputs": {
     "USRSEC": {
@@ -122,21 +122,53 @@
     {
       "dataset": "USRSEC",
       "rowIndex": 0,
+      "fields": {
+        "SEC-USR-ID": "ADMIN001",
+        "SEC-USR-FNAME": "MARGARET            ",
+        "SEC-USR-LNAME": "GOLD                ",
+        "SEC-USR-PWD": "PASSWORD",
+        "SEC-USR-TYPE": "A",
+        "SEC-USR-FILLER": "                       "
+      },
       "expectedBytes": "ADMIN001MARGARET            GOLD                PASSWORDA                       "
     },
     {
       "dataset": "USRSEC",
       "rowIndex": 1,
+      "fields": {
+        "SEC-USR-ID": "ADMIN002",
+        "SEC-USR-FNAME": "RUSSELL             ",
+        "SEC-USR-LNAME": "RUSSELL             ",
+        "SEC-USR-PWD": "PASSWORD",
+        "SEC-USR-TYPE": "A",
+        "SEC-USR-FILLER": "                       "
+      },
       "expectedBytes": "ADMIN002RUSSELL             RUSSELL             PASSWORDA                       "
     },
     {
       "dataset": "USRSEC",
       "rowIndex": 2,
+      "fields": {
+        "SEC-USR-ID": "ADMIN003",
+        "SEC-USR-FNAME": "RAYMOND             ",
+        "SEC-USR-LNAME": "WHITMORE            ",
+        "SEC-USR-PWD": "PASSWORD",
+        "SEC-USR-TYPE": "A",
+        "SEC-USR-FILLER": "                       "
+      },
       "expectedBytes": "ADMIN003RAYMOND             WHITMORE            PASSWORDA                       "
     },
     {
       "dataset": "USRSEC",
       "rowIndex": 3,
+      "fields": {
+        "SEC-USR-ID": "ADMIN004",
+        "SEC-USR-FNAME": "EMMANUEL            ",
+        "SEC-USR-LNAME": "CASGRAIN            ",
+        "SEC-USR-PWD": "PASSWORD",
+        "SEC-USR-TYPE": "A",
+        "SEC-USR-FILLER": "                       "
+      },
       "expectedBytes": "ADMIN004EMMANUEL            CASGRAIN            PASSWORDA                       "
     }
   ],
@@ -146,6 +178,14 @@
     {
       "dataset": "USRSEC",
       "kind": "USRSEC_FILLER_PAD_57_TO_80"
+    }
+  ],
+  "expectedDatasets": [
+    {
+      "dataset": "USRSEC",
+      "channel": "FINAL_STATE",
+      "rowCount": 4,
+      "recordLength": 80
     }
   ]
 }

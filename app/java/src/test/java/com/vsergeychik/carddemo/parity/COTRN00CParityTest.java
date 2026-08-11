@@ -248,11 +248,37 @@ final class COTRN00CParityTest {
      */
     private static final int NUMERIC_START_ORDINAL = 8;
 
+    /**
+     * The record {@link #partialBackwardPageVariant()} anchors its backward page on.
+     *
+     * <p>Six, because the anchor read at {@code :340} consumes it and leaves exactly FIVE records
+     * below it - fewer than the ten rows the loop at {@code :351-357} would fill, which is what makes
+     * the loop end on end-of-file rather than on {@code WS-IDX <= 0} and therefore what makes the
+     * rewind block at {@code :359-369} unreachable.
+     */
+    private static final int PARTIAL_BACKWARD_ANCHOR_ORDINAL = 6;
+
+    /** How many records lie below that anchor, and therefore how many rows a partial page fills. */
+    private static final int PARTIAL_BACKWARD_AVAILABLE = PARTIAL_BACKWARD_ANCHOR_ORDINAL - 1;
+
     /** {@code WHEN 's'} at {@code :187} - the lower-case half of the two-clause selection arm. */
     private static final String SELECTOR_LOWER = "s";
 
     /** A letter neither {@code :186} nor {@code :187} enumerates, so it reaches {@code :196}. */
     private static final String SELECTOR_INVALID = "x";
+
+    /**
+     * The record {@code case17}'s screen showed in row two, and therefore the identifier {@code :154}
+     * moves into {@code CDEMO-CT00-TRN-SELECTED} when the invalid selector is read from that cell.
+     *
+     * <p>Twenty-two because {@code case17} arrives on page three of a twenty-four record file, whose
+     * rows one to four hold records twenty-one to twenty-four. It is deliberately NOT a record the
+     * page that {@code :225} then paints contains in row two, so that the two can be told apart.
+     */
+    private static final int INVALID_SELECTOR_ROW_TWO_ORDINAL = 22;
+
+    /** The screen row {@code case17} types its rejected selector into - the SECOND scan arm, {@code :152}. */
+    private static final int INVALID_SELECTOR_ROW = 2;
 
     /** {@code MOVE 'Invalid selection. Valid value is S' TO WS-MESSAGE} - {@code :198-200}. */
     private static final String MSG_INVALID_SELECTION = "Invalid selection. Valid value is S";
@@ -360,7 +386,7 @@ final class COTRN00CParityTest {
     // GTEQ is in force because it is the STARTBR default: app/cbl/COTRN00C.cbl:597 has the keyword
     // commented out, which changed nothing. Whether to discard the anchor record is the caller's
     // decision, and COTRN00C makes it at :285 and :339 - which is exactly the skip-read guard cases 13
-    // to 17 exist to pin.
+    // to 16 exist to pin.
     // =================================================================================================
 
     /**
@@ -1029,6 +1055,55 @@ final class COTRN00CParityTest {
                 forced.normalisations());
     }
 
+    /**
+     * {@code case16}'s backward page re-anchored mid-file, so that the loop runs out of records
+     * before it runs out of rows.
+     *
+     * <p>This is the third of the three ways {@code PROCESS-PAGE-BACKWARD} can end, and the only one
+     * on which the page number changes not at all. Twelve records on file and {@code PF7} from page
+     * two anchored on record six: the anchor {@code READPREV} at {@code :340} consumes record six,
+     * the loop at {@code :351-357} reads records five down to one into screen rows ten down to six,
+     * and the sixth {@code READPREV} reports {@code ENDFILE}. {@code TRANSACT-EOF} is then true, so
+     * the {@code IF} at {@code :359} is FALSE and the entire rewind block - the extra read at
+     * {@code :360}, the {@code NEXT-PAGE-YES} test at {@code :361}, the {@code SUBTRACT} at
+     * {@code :364} and the {@code MOVE} at {@code :366} - is skipped. The page number therefore stays
+     * at the TWO it arrived with while the screen shows the first five records of the file. That is an
+     * inherited oddity of the program rather than a translation artefact and is preserved rather than
+     * tidied (practice B5).
+     *
+     * <p>Derived in code rather than declared as a twenty-first file for the same reason
+     * {@link #emptyFileVariant()} is: {@link ParityCase#caseId()} admits {@code case01} through
+     * {@code case20} and nothing else, and the twenty declared files are spoken for. Only the seed and
+     * the anchor are substituted, so everything else about the invocation is {@code case16}'s. The
+     * assertions that read this variant judge the work area and the painted rows directly rather than
+     * through the diff gate, because the expectations it carries are {@code case16}'s and describe
+     * {@code case16}'s outcome - the same seam {@link #withSelectorLetter} uses.
+     *
+     * @return {@code case16}'s invocation over twelve records, anchored on record six
+     */
+    private static ParityCase partialBackwardPageVariant() {
+        ParityCase base = caseNumber(16);
+        ParityCase.ScreenRequest request = base.screenRequest();
+        assertThat(request.aid())
+                .as("the variant only re-anchors a backward page, so the declared case it derives "
+                        + "from must already be one")
+                .isEqualTo("DFHPF7");
+
+        Map<String, String> commarea = new LinkedHashMap<>(request.commarea());
+        commarea.put(TransactionListCursor.TRNID_FIRST_FIELD,
+                tranIdImage(PARTIAL_BACKWARD_ANCHOR_ORDINAL));
+
+        return new ParityCase(base.program(), base.caseId(), base.description(), base.unitKind(),
+                Map.of(TRANSACT, caseNumber(2).inputs().get(TRANSACT)),
+                base.jobParameters(),
+                new ParityCase.ScreenRequest(request.eibcalen(), request.aid(),
+                        request.pinnedClock(), request.charset(), commarea, request.mapFields(),
+                        request.forcedOutcomes()),
+                base.expectedResponse(), base.expectedWrites(), base.expectedFinalState(),
+                base.expectedReturnCode(), base.expectedMessages(), base.normalisations(),
+                base.expectedDatasets());
+    }
+
     // =================================================================================================
     // THE GATE. Everything above exists to make this one assertion mean something.
     // =================================================================================================
@@ -1303,13 +1378,13 @@ final class COTRN00CParityTest {
         @Test
         @DisplayName("a partial backward page fills rows six to ten and leaves one to five blanked")
         void aPartialBackwardPageLeavesTheHeadBlank() {
-            Observed observed = clean(17);
+            Observed observed = execute(partialBackwardPageVariant());
 
             // PF7 anchored on record six, so only records five down to one lie below the anchor.
             // WS-IDX is primed at ten and decremented, so those five land in rows ten down to six and
             // the head of the page is never reached at all - which is the opposite end from the one a
             // forward partial page leaves blank.
-            int availableBelowAnchor = 5;
+            int availableBelowAnchor = PARTIAL_BACKWARD_AVAILABLE;
             int firstPopulatedRow = TransactionListResponse.LAST_ROW - availableBelowAnchor + 1;
             assertThat(firstPopulatedRow).isEqualTo(6);
 
@@ -1328,6 +1403,83 @@ final class COTRN00CParityTest {
                                 + "five records still read ascending on the terminal", row, record)
                         .isEqualTo(keyImageOf(tranIdImage(record)));
             }
+        }
+
+        @Test
+        @DisplayName("an invalid selector still paints a FULL page, alongside its error line")
+        void anInvalidSelectorStillPaintsAFullPage() {
+            Observed observed = clean(17);
+
+            // The WHEN OTHER arm at :196 sets the message and repositions the cursor, and the two
+            // statements that would have stopped the paragraph there are COMMENTED OUT in the source:
+            // :197 '* SET TRANSACT-EOF TO TRUE' and :202 '* PERFORM SEND-TRNLST-SCREEN'. Nothing in
+            // the arm sets WS-ERR-FLG either. So there is no early exit, and this is the assertion
+            // that says so - practice B5 in one test.
+            assertThat(observed.work().errFlg())
+                    .as("no MOVE 'Y' TO WS-ERR-FLG anywhere in :196-202, unlike the non-numeric "
+                            + "TRNIDINI arm at :212 which does set one. That single difference is why "
+                            + "this path paints a page and that one abandons the paragraph")
+                    .isEqualTo(WorkArea.FLAG_NO);
+            assertThat(observed.work().isTransactNotEof())
+                    .as(":197 is a comment, so end-of-file was never forced and the browse below ran "
+                            + "normally")
+                    .isTrue();
+            assertThat(observed.work().sendCount())
+                    .as(":202 is a comment too, so the arm paints nothing of its own and the only send "
+                            + "is :326's - which is what carries the error line out with the page")
+                    .isEqualTo(1);
+
+            for (int row = TransactionListResponse.FIRST_ROW;
+                 row <= TransactionListResponse.LAST_ROW; row++) {
+                assertThat(observed.response().getRowTransactionId(row))
+                        .as("row %d must hold record %d. Execution fell through :203-204 to :225 and "
+                                + "painted a full page from LOW-VALUES; an implementation that returned "
+                                + "early on an invalid selector would leave this row blank, which is "
+                                + "the failure this case exists to catch", row, row)
+                        .isEqualTo(keyImageOf(tranIdImage(row)));
+                assertThat(observed.response().getRowTransactionDate(row))
+                        .hasSize(TransactionListResponse.TDATE_LENGTH)
+                        .isEqualTo("06/10/22");
+                assertThat(observed.response().getRowDescription(row))
+                        .hasSize(TransactionListResponse.TDESC_LENGTH)
+                        .isEqualTo(String.format("TRANSACTION %02d DESCRIPTION", row));
+                assertThat(observed.response().getRowAmount(row))
+                        .hasSize(TransactionListResponse.TAMT_LENGTH)
+                        .isEqualTo(editedAmountOf(seededAmount(row)));
+            }
+
+            assertThat(observed.response().getErrmsgO())
+                    .as("and the very same send carries the error line, because MOVE WS-MESSAGE TO "
+                            + "ERRMSGO at :531 runs on every send and WS-MESSAGE still holds what "
+                            + ":198-200 moved into it. A populated page AND an error message is the "
+                            + "observable signature of this branch")
+                    .hasSize(TransactionListResponse.ERRMSG_LENGTH)
+                    .isEqualTo(paddedMessage(MSG_INVALID_SELECTION)
+                            .substring(0, TransactionListResponse.ERRMSG_LENGTH));
+            String typed = observed.parityCase().screenRequest().mapFields()
+                    .get(TransactionListRequest.inputItemName(
+                            TransactionListRequest.selectionFieldName(INVALID_SELECTOR_ROW)));
+            assertThat(typed)
+                    .as("the case must type a selector that neither :186 nor :187 enumerates, or the "
+                            + "arm at :196 is not the one reached. The two clauses differ only in "
+                            + "case, so ruling out '%s' either way rules out both", SELECTOR_LOWER)
+                    .isNotBlank()
+                    .isNotEqualToIgnoringCase(SELECTOR_LOWER);
+            assertThat(observed.work().cursor().getTrnSelFlg())
+                    .as("the rejected selector survives in the commarea, exactly as typed: :196's "
+                            + "WHEN OTHER does not blank the two cursor fields the way the scan's own "
+                            + "WHEN OTHER at :180-181 would have")
+                    .isEqualTo(typed);
+            assertThat(observed.work().cursor().getTrnSelected())
+                    .as("and so does the identifier :154 moved - the row-two id of the page the "
+                            + "operator was LOOKING at, not the row-two id of the page just painted, "
+                            + "because the scan at :148-182 ran before :225 repainted the rows")
+                    .isEqualTo(tranIdImage(INVALID_SELECTOR_ROW_TWO_ORDINAL))
+                    .isNotEqualTo(observed.response().getRowTransactionId(INVALID_SELECTOR_ROW));
+            assertThat(observed.response().getNextProgram())
+                    .as("and nothing is transferred: the XCTL at :192-195 belongs to the accepted "
+                            + "arm, which this path did not take")
+                    .isBlank();
         }
 
         @Test
@@ -1584,12 +1736,10 @@ final class COTRN00CParityTest {
             assertThat(clean(2).work().cursor().getPageNum())
                     .as("an ENTER zeroes the page number at :224 and :306-307 makes it one")
                     .isEqualTo(1);
-            assertThat(clean(14).work().cursor().getPageNum())
-                    .as("the same COMPUTE from a non-zero start: page one plus one is two, which is "
-                            + "why a middle page is a distinct assertion from a first page")
-                    .isEqualTo(2);
-            assertThat(clean(14).work().cursor().getNextPageFlg())
-                    .as("the look-ahead READNEXT at :308 found record twenty-one, so :310 sets Y")
+            assertThat(clean(2).work().cursor().getNextPageFlg())
+                    .as("and on the same path the look-ahead READNEXT at :308 finds record eleven of "
+                            + "twelve, so :310 SET NEXT-PAGE-YES. This is the Y half of the flag on "
+                            + "this site; the N half is case05 below")
                     .isEqualTo(TransactionListCursor.NEXT_PAGE_YES);
             assertThat(clean(5).work().cursor().getPageNum())
                     .as("case05 is the exact-multiple-of-ten boundary: twenty records, so the loop at "
@@ -1600,10 +1750,10 @@ final class COTRN00CParityTest {
                     .isEqualTo(2);
             assertThat(clean(5).work().cursor().getNextPageFlg())
                     .as("and yet the flag is N on a FULL ten-row page, because the look-ahead READNEXT "
-                            + "at :308 consumed the last record and reached :312. case05 and case14 "
-                            + "share this page number and both cursor anchors and differ only here, "
-                            + "which is what makes the look-ahead's outcome - rather than the row "
-                            + "count - the thing that sets the flag")
+                            + "at :308 found nothing beyond record twenty and reached :312. case02 and "
+                            + "case05 both paint all ten rows and both reach this site, and they "
+                            + "differ in the look-ahead's OUTCOME rather than in the row count - which "
+                            + "is what makes the outcome, not the count, the thing that sets the flag")
                     .isEqualTo(TransactionListCursor.NEXT_PAGE_NO);
         }
 
@@ -1636,9 +1786,9 @@ final class COTRN00CParityTest {
                             + "page leaves it at zero - the value that made 'UNTIL WS-IDX <= 0' at "
                             + ":351 true")
                     .isZero();
-            assertThat(clean(17).work().idx())
+            assertThat(execute(partialBackwardPageVariant()).work().idx())
                     .as("five records painted going backwards, so :355 ran five times from ten")
-                    .isEqualTo(5);
+                    .isEqualTo(TransactionListResponse.PAGE_SIZE - PARTIAL_BACKWARD_AVAILABLE);
         }
 
         @Test
@@ -1664,13 +1814,17 @@ final class COTRN00CParityTest {
             assertThat(moved.work().message())
                     .isEqualTo(paddedMessage(MSG_REACHED_TOP));
 
-            Observed neither = clean(17);
+            Observed neither = execute(partialBackwardPageVariant());
             assertThat(neither.work().cursor().getPageNum())
                     .as("a backward page that ran out mid-page never reaches :359 at all, so neither "
                             + "rewind site runs and the page number stays at the two it arrived with - "
                             + "while showing the first five records of the file. That is an inherited "
                             + "oddity of the program and is preserved rather than tidied")
                     .isEqualTo(2);
+            assertThat(neither.work().isTransactEof())
+                    .as("and it is end-of-file, not WS-IDX <= 0, that ended the loop at :351 - which "
+                            + "is precisely why :359 is false and neither rewind site is reached")
+                    .isTrue();
         }
     }
 
@@ -1749,6 +1903,44 @@ final class COTRN00CParityTest {
                     .isEqualTo(keyImageOf(tranIdImage(4)))
                     .isNotEqualTo(keyImageOf(tranIdImage(9)));
             assertThat(observed.work().cursor().getTrnSelFlg()).isEqualTo("S");
+        }
+
+        @Test
+        @DisplayName("the TENTH arm is reached only after nine failures, and it takes TRNID10I")
+        void theLastSelectionCellIsReachedOnlyAfterNineFailures() {
+            // The other end of the table from case18. An EVALUATE TRUE stops at its first true WHEN,
+            // so :176 can only be reached when :149, :152, :155, :158, :161, :164, :167, :170 and
+            // :173 have each been evaluated and each been false - which is why the nine cells below
+            // must be genuinely empty for this case to mean what it says.
+            for (int row = TransactionListResponse.FIRST_ROW;
+                    row < TransactionListResponse.LAST_ROW; row++) {
+                assertThat(caseNumber(14).screenRequest().mapFields()
+                                .get(TransactionListRequest.inputItemName(
+                                        TransactionListRequest.selectionFieldName(row))))
+                        .as("case14 leaves cell %d empty so that arm %d is evaluated and rejected "
+                                + "rather than skipped", row, row)
+                        .isBlank();
+            }
+
+            Observed observed = clean(14);
+            assertThat(observed.work().selectedRow())
+                    .as("the last of the ten arms, :176-178, is the one that matches")
+                    .isEqualTo(TransactionListResponse.LAST_ROW);
+            assertThat(observed.work().cursor().getTrnSelected())
+                    .as("COBOL numbers its row groups one to ten and Java indexes its rows zero to "
+                            + "nine, so the TENTH group is index NINE. :178 moves TRNID10I - the "
+                            + "tenth - and an off-by-one at this end of the table would move TRNID09I "
+                            + "while echoing the tenth cell, which is why both values are named here")
+                    .isEqualTo(keyImageOf(tranIdImage(TransactionListResponse.LAST_ROW)))
+                    .isNotEqualTo(keyImageOf(tranIdImage(TransactionListResponse.LAST_ROW - 1)));
+            assertThat(observed.work().cursor().getTrnSelFlg())
+                    .as("WHEN 'S' at :186 again, reached from the last arm rather than the first")
+                    .isEqualTo("S");
+            assertThat(observed.work().cursor().getPageNum())
+                    .as("MOVE 0 TO CDEMO-CT00-PAGE-NUM at :224 follows the XCTL at :192-195 and is "
+                            + "therefore NEVER reached: the page number is the one that arrived")
+                    .isEqualTo(Integer.parseInt(caseNumber(14).screenRequest().commarea()
+                            .get(TransactionListCursor.PAGE_NUM_FIELD)));
         }
 
         @Test
@@ -1862,7 +2054,10 @@ final class COTRN00CParityTest {
         @Test
         @DisplayName("an accepted selection names COTRN01C and performs no server-side forward")
         void anAcceptedSelectionNamesTheNextProgram() {
-            for (int ordinal : new int[]{18, 20}) {
+            // The three accepted selections: case18 fills the FIRST cell, case14 the TENTH and last,
+            // and case20 fills two cells so that the ordering of the ten-way EVALUATE is what decides.
+            // All three reach the same body at :186-195, so all three must produce the same transfer.
+            for (int ordinal : new int[]{14, 18, 20}) {
                 Observed observed = clean(ordinal);
                 assertThat(observed.response().getNextProgram())
                         .as("case%02d: EXEC CICS XCTL PROGRAM(CDEMO-TO-PROGRAM) at :192-195 becomes a "
@@ -2278,9 +2473,9 @@ final class COTRN00CParityTest {
         @Test
         @DisplayName("READNEXT and READPREV each report OK, ENDFILE and a refusal")
         void everyReadArmIsReached() {
-            assertThat(clean(14).work().lastReadOutcome())
-                    .as("a full middle page ends on the look-ahead READNEXT at :308, which found a "
-                            + "record - WHEN DFHRESP(NORMAL) at :637")
+            assertThat(clean(2).work().lastReadOutcome())
+                    .as("a full page over twelve records ends on the look-ahead READNEXT at :308, "
+                            + "which found record eleven - WHEN DFHRESP(NORMAL) at :637")
                     .isEqualTo(FileStatus.Outcome.OK);
             assertThat(clean(3).work().lastReadOutcome())
                     .as("WHEN DFHRESP(ENDFILE) at :639, from READNEXT")
@@ -2306,10 +2501,12 @@ final class COTRN00CParityTest {
                             + "page and one more looks ahead, so eleven in all and record one is not "
                             + "consumed")
                     .isEqualTo(11);
-            assertThat(clean(14).work().readCount())
+            assertThat(clean(5).work().readCount())
                     .as("PF8 does NOT satisfy it, so :286 runs and consumes the anchor record: one "
-                            + "anchor read, ten painting reads and one look-ahead is twelve. Skip that "
-                            + "first read and the new page would repeat the row already shown")
+                            + "anchor read, ten painting reads and one look-ahead is twelve. case02 "
+                            + "and case05 both paint ten rows, so the extra read is the anchor and "
+                            + "nothing else. Skip that first read and the new page would repeat the "
+                            + "row already shown")
                     .isEqualTo(12);
             assertThat(clean(15).work().readCount())
                     .as("PF7 against the BACKWARD guard at :339, which names DFHENTER and DFHPF8 and "
@@ -2417,8 +2614,8 @@ final class COTRN00CParityTest {
         void aPathThatOpensNoBrowseIssuesNoCall() {
             // case19 is deliberately absent: it types a key and therefore DOES open a browse. The
             // ordinals here are the ones whose paths never reach :281 - the no-commarea guard, the
-            // PF3 return, the unnamed key, the two paging refusals and the two accepted selections.
-            for (int ordinal : new int[]{1, 9, 10, 11, 12, 18, 20}) {
+            // PF3 return, the unnamed key, the two paging refusals and the three accepted selections.
+            for (int ordinal : new int[]{1, 9, 10, 11, 12, 14, 18, 20}) {
                 Observed observed = clean(ordinal);
                 assertThat(observed.cursors())
                         .as("case%02d: no STARTBR is issued on this path, so the file is never "
@@ -2455,22 +2652,23 @@ final class COTRN00CParityTest {
             // different cases. A controller that cached a page, a cursor or a work area would make the
             // second result depend on the first, and one of the two comparisons would fail.
             ParityHarness harness = ParityHarness.usAscii();
-            ParityCase middlePage = caseNumber(14);
+            ParityCase secondPage = caseNumber(5);
             ParityCase firstPage = caseNumber(2);
 
             AtomicReference<TransactionMenuController> shared = new AtomicReference<>();
-            FieldDiffer.DiffResult firstRun = harness.judge(middlePage, UNIT_KIND,
+            FieldDiffer.DiffResult firstRun = harness.judge(secondPage, UNIT_KIND,
                     invocation -> runOn(sharedController(shared, invocation), invocation));
             FieldDiffer.DiffResult secondRun = harness.judge(firstPage, UNIT_KIND,
                     invocation -> runOn(sharedController(shared, invocation), invocation));
 
             assertThat(firstRun.count())
-                    .as("case14 on a fresh controller:%n%s", firstRun.render())
+                    .as("case05 on a fresh controller:%n%s", firstRun.render())
                     .isZero();
             assertThat(secondRun.count())
-                    .as("case02 on the SAME controller instance, immediately after case14 paged to "
-                            + "page two. If any paging state had survived the first call, page one "
-                            + "would come back wrong here:%n%s", secondRun.render())
+                    .as("case02 on the SAME controller instance, immediately after case05 paged to "
+                            + "page two over a twenty-record file. If any paging state had survived "
+                            + "the first call, page one of twelve would come back wrong here:%n%s",
+                            secondRun.render())
                     .isZero();
             assertThat(shared.get())
                     .as("both runs really did use one instance, which is what makes the second "
@@ -2529,7 +2727,7 @@ final class COTRN00CParityTest {
          *
          * <p>The repository the controller was built with belongs to the FIRST invocation, which is
          * the point: a controller that had captured per-request state would carry it here, and the
-         * seeded data it browses is the first case's. Only case14's own run is judged against case14,
+         * seeded data it browses is the first case's. Only case05's own run is judged against case05,
          * so this seam is used exclusively by the shared-instance assertion above.
          */
         private ParityHarness.UnitOutcome runOn(TransactionMenuController controller,

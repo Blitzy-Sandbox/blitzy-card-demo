@@ -645,6 +645,22 @@ class CBSTM03BParityTest {
             return new Call(dd, Operation.READ_K, key, keyLength, true, false);
         }
 
+        /**
+         * A call that supplies a key and a key length alongside an operation <em>other</em> than the
+         * keyed read, with both of the caller's resets applied.
+         *
+         * <p>This is how a case reaches an unsupported DD-and-operation combination while still
+         * carrying the operands a real caller would have left in the area. Neither operand is
+         * consulted: the {@code MOVE LK-M03B-KEY (1:LK-M03B-KEY-LN)} reference modification that
+         * would read them appears only inside the two {@code IF M03B-READ-K} blocks
+         * ({@code CBSTM03B.CBL:189} and {@code :214}), so an operation that fails that guard never
+         * evaluates either. Pinning that both come back unmodified is a large part of what such a
+         * case asserts, and it cannot be pinned with {@link #of} because that supplies a blank key.
+         */
+        private static Call keyedAs(String dd, Operation oper, String key, int keyLength) {
+            return new Call(dd, oper, key, keyLength, true, true);
+        }
+
         /** A call that resets neither - how a stale status is carried into the next call. */
         private static Call stale(String dd, Operation oper) {
             return new Call(dd, oper, Request.blankKey(), 0, false, false);
@@ -684,8 +700,16 @@ class CBSTM03BParityTest {
             case "case02" -> List.of(Call.of(trnx, Operation.OPEN), Call.of(trnx, Operation.READ));
             case "case03" -> List.of(Call.of(trnx, Operation.OPEN), Call.of(trnx, Operation.READ),
                 Call.of(trnx, Operation.READ), Call.keeping(trnx, Operation.CLOSE));
+            // End of file, transcribed from the one caller site that actually reaches it:
+            // 8500-READTRNX-READ (:818-853) issues MOVE SPACES TO WS-M03B-FLDT (:834) before every
+            // CALL, so the read that finds nothing left is a primed read and LK-M03B-FLDT comes back
+            // as 1000 spaces. Exactly two rows are seeded and exactly two reads precede this one, so
+            // the third READ is at the end of the file by construction rather than by fixture size.
+            // The unprimed direction - "at end of file the record area is returned unchanged" - is
+            // pinned by case08 on XREFFILE, which is where :857-860's omission of the MOVE SPACES
+            // makes it an assertion with content.
             case "case04" -> List.of(Call.of(trnx, Operation.OPEN), Call.of(trnx, Operation.READ),
-                Call.keeping(trnx, Operation.READ));
+                Call.of(trnx, Operation.READ), Call.of(trnx, Operation.READ));
             // A CLOSE with no READ between it and the OPEN: the third guard (:146) reached only
             // after the first two (:135, :140) were evaluated and failed, and - because :857-860
             // omits the MOVE SPACES that :745 and :834 issue - LK-M03B-FLDT arrives blank and comes
@@ -694,7 +718,7 @@ class CBSTM03BParityTest {
             case "case05" -> List.of(Call.of(trnx, Operation.OPEN),
                 Call.keeping(trnx, Operation.CLOSE));
 
-            // 'K' against a SEQUENTIAL DD - the other half of the capability asymmetry case12 and
+            // 'K' against a SEQUENTIAL DD - the other half of the capability asymmetry case14 and
             // case15 pin from the RANDOM side. 1000-TRNXFILE-PROC guards OPEN (:135), READ (:140)
             // and CLOSE (:146) and has no IF M03B-READ-K, so all three conditions are false and
             // control falls into 1900-EXIT (:151-152), which still moves TRNXFILE-STATUS into
@@ -711,15 +735,28 @@ class CBSTM03BParityTest {
                 Call.keeping(xref, Operation.CLOSE));
             case "case08" -> List.of(Call.of(xref, Operation.OPEN), Call.of(xref, Operation.READ),
                 Call.keeping(xref, Operation.READ), Call.keeping(xref, Operation.CLOSE));
+            // The same boundary as case08, taken from the other side. Case 08 reaches end of file
+            // with the area left as the previous call returned it, which proves READ ... INTO at
+            // app/cbl/CBSTM03B.CBL:165 assigns nothing on AT END; this one reaches it the way the
+            // real call site does, because 1000-XREFFILE-GET-NEXT issues MOVE SPACES TO
+            // WS-M03B-FLDT at app/cbl/CBSTM03A.CBL:350 before every one of its calls - so every
+            // step here is Call.of and the end-of-file image comes back at 1000 spaces. It also
+            // consumes TWO seeded rows before the third READ, so end of file is a scripted event
+            // rather than a property of how many rows the fixture happens to hold. A translation
+            // that carried the previous record forward on AT END passes case08 and fails here; one
+            // that blanked the area on AT END passes here and fails case08.
+            case "case09" -> List.of(Call.of(xref, Operation.OPEN), Call.of(xref, Operation.READ),
+                Call.of(xref, Operation.READ), Call.of(xref, Operation.READ));
 
             // CUSTFILE - ACCESS MODE IS RANDOM. OPEN, CLOSE, and the keyed READ taken both ways:
             // the miss in case 11, and in case 12 the hit that pins the whole 500-byte CUSTREC
             // record field by field. Case 12's key is not arbitrary - 000000050 is the
             // XREF-CUST-ID of row 0 of app/data/ASCII/cardxref.txt, so it is the value the
             // statement flow actually carries out of the cross-reference and into
-            // app/cbl/CBSTM03A.CBL:368 2000-CUSTFILE-GET. The plain READ that reaches no IF at all
-            // on a RANDOM file is asserted on the other RANDOM DD, in case 15.
-            case "case09" -> List.of(Call.of(cust, Operation.OPEN));
+            // app/cbl/CBSTM03A.CBL:368 2000-CUSTFILE-GET. The OPEN on this DD is asserted by all
+            // three of the cases below and again in case14 and case20; the plain READ that reaches
+            // no IF at all on a RANDOM file is asserted on this DD in case 14 and on ACCTFILE in
+            // case 15.
             case "case10" -> List.of(Call.of(cust, Operation.OPEN),
                 Call.keyed(cust, "000000011", custKey), Call.keeping(cust, Operation.CLOSE));
             case "case11" -> List.of(Call.of(cust, Operation.OPEN),
@@ -730,9 +767,22 @@ class CBSTM03BParityTest {
             // ACCTFILE - the second RANDOM file, whose RECORD KEY is PIC 9(11) rather than PIC X.
             case "case13" -> List.of(Call.of(acct, Operation.OPEN),
                 Call.keyed(acct, "00000000011", acctKey), Call.keeping(acct, Operation.CLOSE));
-            case "case14" -> List.of(Call.of(acct, Operation.OPEN),
-                Call.keyed(acct, "00000000011", acctKey),
-                Call.keyedKeeping(acct, "00000000099", acctKey));
+
+            // 'R' against a RANDOM DD, on the CUSTFILE status area specifically (gate G47) - the
+            // other half of the capability asymmetry case06 pins from the SEQUENTIAL side.
+            // 3000-CUSTFILE-PROC guards OPEN (:183), READ-K (:188) and CLOSE (:195) and has no
+            // IF M03B-READ, because CUSTFILE is ACCESS MODE IS RANDOM (:45), so all three
+            // conditions are false and control falls into 3900-EXIT (:200-201), which still moves
+            // CUSTFILE-STATUS into LK-M03B-RC. The OPEN before it is what makes the stale status
+            // '00' rather than undefined: CUSTFILE-STATUS is declared at :91-93 with no VALUE
+            // clause. The key and its length are the ones app/cbl/CBSTM03A.CBL:372-374 computes -
+            // 000000050 and +9 - and they are supplied and never read, because the
+            // MOVE LK-M03B-KEY (1:LK-M03B-KEY-LN) that would read them sits inside the guard this
+            // operation fails. The row that key names is the single seeded row, so the case proves
+            // the operands are ignored against a record that is present rather than absent.
+            case "case14" -> List.of(Call.of(cust, Operation.OPEN),
+                Call.keyedAs(cust, Operation.READ, "000000050", custKey));
+
             case "case15" -> List.of(Call.stale(acct, Operation.READ), Call.of(acct, Operation.OPEN),
                 Call.keeping(acct, Operation.READ));
 

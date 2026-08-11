@@ -782,12 +782,13 @@ final class COUSR00CParityTest {
     /**
      * Page size is exactly ten, and nothing can change it (gate G39).
      *
-     * <p>Proven from the fixtures rather than from a constant: over the twenty-five-record file of
-     * case05 and case06 the declared page fills <strong>exactly</strong> ten rows and rows eight, nine
-     * and ten are among them, so the same fixtures could not be satisfied at a page size of seven - the
-     * card list's size, and the value this screen is most likely to be confused with. The
-     * twenty-sixth-through-eleventh records exist and are deliberately not shown, which is the other
-     * half of the same statement.
+     * <p>Proven from the fixtures rather than from a constant: over the ten-record file of case02 and
+     * the twenty-five-record files of case06 and case09 the declared page fills <strong>exactly</strong>
+     * ten rows and rows eight, nine and ten are among them, so none of the three fixtures could be
+     * satisfied at a page size of seven - the card list's size, and the value this screen is most likely
+     * to be confused with. case06 and case09 state the other half: each lists a full second page of
+     * twenty-five, so ten records fill the page while the ones past them exist and are deliberately not
+     * shown.
      */
     @Test
     @DisplayName("the page is ten rows, and seven would fail these fixtures (gate G39)")
@@ -801,7 +802,7 @@ final class COUSR00CParityTest {
                         + PAGE_SIZE * ROW_STEMS.size()
                         + UserListRequest.TRAILER_FIELD_COUNT);
 
-        for (String caseId : List.of("case05", "case06")) {
+        for (String caseId : List.of("case02", "case06", "case09")) {
             Map<String, String> page = onlySendOf(caseId);
             List<Integer> filled = new ArrayList<>();
             for (int rowNumber = 1; rowNumber <= PAGE_SIZE; rowNumber++) {
@@ -810,7 +811,8 @@ final class COUSR00CParityTest {
                 }
             }
             assertThat(filled)
-                    .as("%s lists a full page over a file longer than one page", caseId)
+                    .as("%s fills the declared page to its last row, which a page of seven could not",
+                            caseId)
                     .containsExactly(1, 2, 3, 4, 5, 6, 7, 8, 9, 10);
         }
     }
@@ -824,9 +826,11 @@ final class COUSR00CParityTest {
      * direction would reverse ten rows without changing which ten records were read.
      * {@code COMPUTE CDEMO-CU00-PAGE-NUM = CDEMO-CU00-PAGE-NUM + 1} appears twice with different
      * guards, at {@code :309-310} for a full page and at {@code :320-321} for a short one, and the two
-     * are separated here by cases that reach one and not the other - including case04, where
-     * {@code WS-IDX} is still 1 so the short-page increment must NOT happen. {@code :367}'s
-     * {@code SUBTRACT} and {@code :369}'s {@code MOVE 1} complete the count.
+     * are separated here by cases that reach one and not the other - including the two where
+     * {@code WS-IDX} is still 1 at {@code :319} so the short-page increment must NOT happen: case04,
+     * whose file holds no record, and case05, whose file holds ten but whose typed key sorts past all of
+     * them. Pinning an increment that does not occur is as much of this gate as pinning one that does.
+     * {@code :367}'s {@code SUBTRACT} and {@code :369}'s {@code MOVE 1} complete the count.
      */
     @Test
     @DisplayName("the page-count and subscript arithmetic sites are each pinned (gate G28)")
@@ -845,19 +849,80 @@ final class COUSR00CParityTest {
         assertThat(onlySendOf("case07").get(outputItem(UserListRequest.usrIdFieldName(1))))
                 .isEqualTo("ZUSER001");
 
-        // :309-310 - a full page with more below it counts up from what the payload carried.
-        assertThat(pageNumberOf("case05")).isEqualTo("00000001");
+        // :309-310 - a full page counts up from what the payload carried, whether or not one follows.
+        // PF8 does NOT reset the count first, unlike PROCESS-ENTER-KEY's MOVE 0 at :227, which is why
+        // case06 and case09 both arrive holding 1 and leave holding 2.
+        assertThat(pageNumberOf("case02")).isEqualTo("00000001");
         assertThat(pageNumberOf("case06")).isEqualTo("00000002");
+        assertThat(pageNumberOf("case09")).isEqualTo("00000002");
+
+        // :289 - the extra READNEXT of the abbreviated combined relation at :288 discards the anchor page
+        // one already displayed, so a PF8 page opens one key AFTER CDEMO-CU00-USRID-LAST and not on it.
+        // Row 1 is where that is visible: case09 anchors on USER0005 and starts at USER0006.
+        assertThat(caseNamed("case09").screenRequest().commarea())
+                .containsEntry(UserListRequest.CU00_USRID_LAST_FIELD, "USER0005");
+        assertThat(onlySendOf("case09").get(outputItem(UserListRequest.usrIdFieldName(1))))
+                .isEqualTo("USER0006");
+        assertThat(onlySendOf("case09").get(outputItem(UserListRequest.usrIdFieldName(PAGE_SIZE))))
+                .isEqualTo("USER0015");
 
         // :320-321 - a short page still counts, because WS-IDX moved past 1 ...
         assertThat(pageNumberOf("case03")).isEqualTo("00000001");
-        assertThat(pageNumberOf("case18")).isEqualTo("00000001");
-        // ... and an empty one does not, because it never did.
+        // ... and an empty one does not, because it never did - from an empty file in case04, and from
+        // a key that sorts past a file of ten in case05.
         assertThat(pageNumberOf("case04")).isEqualTo("00000000");
+        assertThat(pageNumberOf("case05")).isEqualTo("00000000");
 
         // :367 SUBTRACT 1, and :369 MOVE 1 when the start of the file has been reached.
         assertThat(pageNumberOf("case07")).isEqualTo("00000002");
         assertThat(pageNumberOf("case20")).isEqualTo("00000001");
+
+        // ... and NEITHER, which is the third outcome and the easiest to lose. case16's fill loop ends on
+        // end of file, so :362's guard is false and the whole :363-371 block - the look-behind READPREV,
+        // the SUBTRACT and the MOVE alike - is skipped. :376 then writes back the count the payload
+        // arrived with, untouched. Asserting the non-change is the only way a silently reintroduced
+        // decrement would be caught: 2 minus 1 is case07's answer, and it would still look plausible.
+        assertThat(pageNumberOf("case16")).isEqualTo("00000002");
+        assertThat(caseNamed("case16").screenRequest().commarea())
+                .as("and it is unchanged, not coincidentally equal - the payload carried the same 2")
+                .containsEntry(UserListResponse.CU00_PAGE_NUM_FIELD, "00000002");
+
+        // :389 fires only at WS-IDX 1 and :435 only at WS-IDX 10, so a backward page that stops short
+        // leaves the FIRST key exactly as the payload carried it while the LAST key is rewritten. case16
+        // is the only case that reaches that asymmetry; correcting the stale key would be a behaviour
+        // change (practice B5), and the two records landing in rows 9 and 10 is what proves the fill
+        // descended from :352's ten rather than ascending from one.
+        assertThat(caseNamed("case16").expectedResponse().navigation())
+                .containsEntry(UserListResponse.CU00_USRID_FIRST_FIELD, "ADMIN003")
+                .containsEntry(UserListResponse.CU00_USRID_LAST_FIELD, "ADMIN002");
+        assertThat(onlySendOf("case16").get(outputItem(UserListRequest.usrIdFieldName(1))))
+                .as(":346-350 blanked row 1 and the fill never reached it")
+                .isEqualTo("        ");
+        assertThat(onlySendOf("case16").get(outputItem(UserListRequest.usrIdFieldName(PAGE_SIZE - 1))))
+                .isEqualTo("ADMIN001");
+        assertThat(onlySendOf("case16").get(outputItem(UserListRequest.usrIdFieldName(PAGE_SIZE))))
+                .isEqualTo("ADMIN002");
+        // The NEGATIVE control, which is what makes the four positive assertions above mean
+        // something: case18 ticks row 10 and the XCTL at :206-209 transfers before :227's
+        // MOVE 0 and :228's PERFORM PROCESS-PAGE-FORWARD are reached, so NOT ONE of the four
+        // sites fires and the count leaves holding exactly the value the payload carried in.
+        // It is read from the communication area rather than from a transmission because this
+        // case paints none. A translation that paged forward anyway would arrive at the same
+        // digits by an entirely different route, and only the untouched USRID-FIRST,
+        // USRID-LAST and NEXT-PAGE-FLG beside it show that it did not.
+        ParityCase transferred = caseNamed("case18");
+        assertThat(transferred.expectedResponse().sends())
+                .as("case18 transferred before painting anything, so there is no page to count")
+                .isEmpty();
+        assertThat(transferred.screenRequest().commarea())
+                .containsEntry(UserListResponse.CU00_PAGE_NUM_FIELD, "00000001");
+        assertThat(transferred.expectedResponse().navigation())
+                .as("the count is carried through untouched, not recomputed")
+                .containsEntry(UserListResponse.CU00_PAGE_NUM_FIELD, "00000001")
+                .containsEntry(UserListResponse.CU00_USRID_FIRST_FIELD, "ADMIN001")
+                .containsEntry(UserListResponse.CU00_USRID_LAST_FIELD, "USER0005")
+                .containsEntry(UserListResponse.CU00_NEXT_PAGE_FLG_FIELD,
+                        UserListRequest.NEXT_PAGE_YES);
     }
 
     /**
@@ -1078,34 +1143,45 @@ final class COUSR00CParityTest {
                 .isEqualTo(FileStatus.Outcome.END_OF_FILE);
         assertThat(FileStatus.outcomeOfCicsResp(FileStatus.INVREQ)).isEqualTo(FileStatus.Outcome.OTHER);
 
-        // STARTBR: NORMAL wherever a page was built, NOTFND on an empty file or a HIGH-VALUES anchor,
-        // OTHER only where the case forces it because no data shape can express an unreachable file.
+        // STARTBR: NORMAL wherever a page was built, NOTFND on an empty file, on a HIGH-VALUES anchor
+        // or on a typed key that sorts past every record a populated file holds, and OTHER only where
+        // the case forces it because no data shape can express an unreachable file.
         assertThat(messageOf("case02")).isEqualTo("You have reached the bottom of the page...");
         assertThat(messageOf("case04")).isEqualTo("You are at the top of the page...");
+        assertThat(messageOf("case05")).isEqualTo("You are at the top of the page...");
         assertThat(messageOf("case17")).isEqualTo("Unable to lookup User...");
         assertThat(messageOf("case19")).isEqualTo("Unable to lookup User...");
         assertThat(caseNamed("case19").screenRequest().forcedOutcomes())
                 .containsExactly(java.util.Map.entry(RepositoryOperation.START_BROWSE,
                         new ForcedOutcome(FileStatus.Outcome.OTHER, null, null)));
 
-        // READNEXT: ENDFILE from the look-ahead and from inside the loop, OTHER from a read against a
-        // browse the NOTFND arm never established.
+        // READNEXT: ENDFILE from the look-ahead - case02, above, whose ten records fill the page and
+        // whose eleventh read finds nothing - and from inside the fill loop, where case03's four
+        // records run out with rows still to go; then OTHER, from a read against a browse the NOTFND
+        // arm never established.
         assertThat(messageOf("case03")).isEqualTo("You have reached the bottom of the page...");
-        assertThat(messageOf("case18")).isEqualTo("You have reached the bottom of the page...");
         assertThat(messageOf("case10")).isEqualTo("Unable to lookup User...");
 
         // READPREV: NORMAL through case07, ENDFILE through case20 - note "top" where READNEXT says
-        // "bottom" - and OTHER through case17, the backward mirror of case10.
+        // "bottom" - and OTHER through case17, the backward mirror of case10. ENDFILE is pinned at BOTH
+        // positions, exactly as READNEXT's is above: case20 reaches :668-674 from the look-behind at :363,
+        // case16 reaches it from inside the fill loop at :355. The position is not a detail - it is what
+        // decides whether :362's guard is true, and therefore whether the page number is touched at all.
         assertThat(messageOf("case07")).isEmpty();
         assertThat(messageOf("case20")).isEqualTo("You have reached the top of the page...");
+        assertThat(messageOf("case16")).isEqualTo("You have reached the top of the page...");
 
-        // The two guarded ELSE arms that never open a browse at all.
+        // The guarded ELSE arm that never opens a browse at all: PF7 on page 1, at :250-255. Its PF8
+        // counterpart at :272-277 is the one message on this screen that no fixture here carries, and it
+        // is asserted where it is reachable without one - UserMenuControllerTest.pf8AtTheBottomRefuses
+        // drives processPf8Key with NEXT-PAGE-NO and pins MSG_ALREADY_AT_BOTTOM together with the
+        // SEND-ERASE-NO that goes with it. Stated rather than left as a gap, because "no fixture covers
+        // it" and "nothing covers it" are different claims and only the first one is true.
         assertThat(messageOf("case08")).isEqualTo("You are already at the top of the page...");
-        assertThat(messageOf("case09")).isEqualTo("You are already at the bottom of the page...");
 
         // And the cases that reach no message at all, which is its own assertion.
-        assertThat(messageOf("case05")).isEmpty();
         assertThat(messageOf("case06")).isEmpty();
+        assertThat(messageOf("case09")).isEmpty();
     }
 
     /**
@@ -1196,10 +1272,62 @@ final class COUSR00CParityTest {
                 .containsEntry(UserListResponse.CU00_USR_SEL_FLG_FIELD, "u")
                 .containsEntry(UserListResponse.CU00_USR_SELECTED_FIELD, "ADMIN003");
 
-        // A ticked row carrying neither letter complains and pages forward anyway, because :210-214
-        // raises no error flag.
-        assertThat(messageOf("case16")).isEqualTo(UserListResponse.INVALID_SELECTION_MESSAGE);
-        assertThat(nextProgramOf("case16")).isNull();
+        // The far end of the scan. case13 ticks row 1 and case18 ticks row 10, so between them the
+        // ten arms at :151-185 are shown to be walked from the first to the LAST: case18's
+        // SEL0001I..SEL0009I are every one of them blank, which is what forces arms 1 to 9 to be
+        // evaluated and found false before :179-181 matches. An implementation that scanned fewer
+        // than ten cells, or that stopped short of the tenth, would satisfy case13 and fail here.
+        ParityCase lastArm = caseNamed("case18");
+        for (int rowNumber = 1; rowNumber < PAGE_SIZE; rowNumber++) {
+            assertThat(lastArm.screenRequest().mapFields())
+                    .as("case18 leaves row %d untouched, so arm %d must not match",
+                            rowNumber, rowNumber)
+                    .containsEntry(UserListRequest.selFieldName(rowNumber) + "I", " ");
+        }
+        assertThat(lastArm.screenRequest().mapFields())
+                .containsEntry(UserListRequest.selFieldName(PAGE_SIZE) + "I", "d")
+                .containsEntry(UserListRequest.usrIdFieldName(PAGE_SIZE) + "I", "USER0005");
+        assertThat(nextProgramOf("case18"))
+                .as("the fourth clause of :189-215 is WHEN 'd', which names the delete program")
+                .isEqualTo(UserListResponse.NEXT_PROGRAM_USER_DELETE);
+        // The character is stored AS TYPED. COUSR00C contains no FUNCTION UPPER-CASE, so :180 keeps
+        // the lower case the operator entered even though app/bms/COUSR00.bms advertises 'U' and 'D'
+        // in upper case only - a leniency that is real source behaviour and is preserved rather than
+        // tightened (practice B5). An arm chain that folded the case before comparing would answer
+        // this case identically and would still be wrong about what travels to COUSR03C.
+        assertThat(lastArm.expectedResponse().navigation())
+                .containsEntry(UserListResponse.CU00_USR_SEL_FLG_FIELD, "d")
+                .containsEntry(UserListResponse.CU00_USR_SELECTED_FIELD, "USER0005");
+        assertThat(lastArm.expectedResponse().navigation()
+                        .get(UserListResponse.CU00_USR_SEL_FLG_FIELD))
+                .as("stored as typed: an upper-cased flag would be a value the source never sets")
+                .isNotEqualTo("D");
+
+        // All four labels of the selection EVALUATE are now pinned by a case of their own, so the
+        // two pairs cannot be collapsed into one comparison without a failure here.
+        assertThat(List.of(
+                        caseNamed("case13").expectedResponse()
+                                .navigation().get(UserListResponse.CU00_USR_SEL_FLG_FIELD),
+                        caseNamed("case15").expectedResponse()
+                                .navigation().get(UserListResponse.CU00_USR_SEL_FLG_FIELD),
+                        caseNamed("case14").expectedResponse()
+                                .navigation().get(UserListResponse.CU00_USR_SEL_FLG_FIELD),
+                        caseNamed("case18").expectedResponse()
+                                .navigation().get(UserListResponse.CU00_USR_SEL_FLG_FIELD)))
+                .as(":190 'U', :191 'u', :200 'D' and :201 'd' are each driven")
+                .containsExactly("U", "u", "D", "d");
+
+        // A ticked row carrying neither letter is the WHEN OTHER arm at :210-214. It is a REAL arm and it
+        // is driven - by UserMenuControllerTest, under gates G49 and G50, which pins its exact text, the
+        // fact that it raises no error flag, that it performs no send of its own, and that :218 pages
+        // forward anyway. It is deliberately NOT a parity case: gate G15 fixes the budget at exactly
+        // twenty per program, and the twentieth slot buys more here as case16's short backward page - the
+        // only path on which :362's guard is false. The gap is declared rather than left silent (practice
+        // B12), and what remains assertable about the arm from this class is that no selection arm ever
+        // routes anywhere unless a letter matched, which the loop below settles for every case.
+        assertThat(nextProgramOf("case16"))
+                .as("case16 presses PF7, and no PF-key path names a next program")
+                .isNull();
 
         for (ParityCase parityCase : cases()) {
             ParityCase.ExpectedResponse response = parityCase.expectedResponse();

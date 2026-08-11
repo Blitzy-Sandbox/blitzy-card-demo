@@ -112,10 +112,13 @@ import org.junit.jupiter.params.provider.MethodSource;
  *
  * <p>All ten valued {@code CDEMO-MENU-OPT-USRTYPE} columns of {@code app/cpy/COMEN02Y.cpy} carry
  * {@code 'U'}, so the filter's true arm is <strong>unreachable from the shipped table</strong> - the
- * filtered set a regular user sees is all ten options, which {@code case03} asserts. The true arm is
- * therefore driven with a stub table that differs from the copybook's first entry in
- * <em>nothing but the one column under test</em>, so the composed {@code OPTN001O} line stays
- * byte-identical to the real one and the column is the only variable.
+ * filtered set a regular user sees is all ten options, which {@code case18} pins field by field and
+ * {@link #everyCopybookOptionIsOpenToARegularUser()} states option by option. The false arm is pinned
+ * from the other side by {@code case03}, an administrator choosing the shipped table's first entry: the
+ * first conjunct alone settles it, so a translation requiring the column to <em>match</em> the caller's
+ * type would paint a refusal there. The true arm is therefore driven with a stub table that differs
+ * from the copybook's first entry in <em>nothing but the one column under test</em>, so the composed
+ * {@code OPTN001O} line stays byte-identical to the real one and the column is the only variable.
  *
  * <h2>The missing space, which is source behaviour and not a typo</h2>
  *

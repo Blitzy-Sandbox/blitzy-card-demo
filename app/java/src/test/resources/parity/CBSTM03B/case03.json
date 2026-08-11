@@ -1,14 +1,13 @@
 {
   "program": "CBSTM03B",
   "caseId": "case03",
-  "description": "The full sequential shape of an ACCESS MODE IS SEQUENTIAL file - app/cbl/CBSTM03B.CBL:33 - driven exactly as app/cbl/CBSTM03A.CBL drives it: OPEN (:731-734), READ (:745-746), READ again, CLOSE (:857-860). Two successive reads must return the first and then the second record in ascending RECORD KEY IS FD-TRNXS-ID order, which is what proves the browse advances by one record rather than re-reading the record it is positioned on. The CLOSE reports '00' and leaves LK-M03B-FLDT holding whatever the last read put there, because CLOSE assigns no record area.",
+  "description": "The sequential advance on the TRNXFILE DD: that a second 'R' CALL on an already-open session delivers the NEXT record rather than re-delivering the first, and that 'next' means ascending 32-byte TRNX-KEY. This is the middle of the three browse cases - case02 stops after the first READ, case04 reads a single-row dataset twice and reaches end of file, and this case reads two records and then closes without ever exhausting the file. The four CALLs scripted here are the caller's own idiom transcribed from app/cbl/CBSTM03A.CBL: 8100-TRNXFILE-OPEN (:730) MOVEs 'TRNXFILE' TO WS-M03B-DD (:731), SETs M03B-OPEN TO TRUE (:732), MOVEs ZERO TO WS-M03B-RC (:733) and CALLs (:734), then - still inside that same paragraph and without moving the DD name again - SETs M03B-READ TO TRUE (:744), MOVEs SPACES TO WS-M03B-FLDT (:745) and CALLs again (:746) for the first record; 8500-READTRNX-READ (:818) issues every subsequent read, MOVEing the DD name (:832), SETting M03B-READ (:833), MOVEing SPACES TO WS-M03B-FLDT (:834) and CALLing (:835) once per turn of the loop its own EVALUATE WS-M03B-RC closes at :837-847 - WHEN '00' MOVE WS-M03B-FLDT TO TRNX-RECORD (:839) then GO TO 8500-READTRNX-READ (:840), WHEN '10' GO TO 8599-EXIT (:842), WHEN OTHER display and abend (:844-846) - so the third CALL scripted here is that loop's first turn, entered from :312, and the second READ overall; and 9100-TRNXFILE-CLOSE (:856), reached from :331, MOVEs the DD name (:857), SETs M03B-CLOSE TO TRUE (:858), MOVEs ZERO TO WS-M03B-RC (:859) and CALLs (:860) - re-zeroing the status but, unlike :745 and :834, issuing no MOVE SPACES TO WS-M03B-FLDT, which is why the fourth image arrives holding what the third read left there. Four CALLs means four 1040-byte area images, pinned in call order, because the shared area is the whole observable behaviour of one CALL. Every one of them takes this path through app/cbl/CBSTM03B.CBL: the ordered EVALUATE LK-M03B-DD (:118) matches WHEN 'TRNXFILE' (:119) ahead of every later arm and performs 1000-TRNXFILE-PROC THRU 1999-EXIT (:120); inside that paragraph (:133) the asserted second read finds the first guard IF M03B-OPEN (:135) FALSE, so evaluation falls to IF M03B-READ (:140), which is TRUE: READ TRNX-FILE INTO LK-M03B-FLDT (:141) runs and GO TO 1900-EXIT (:143) transfers past the CLOSE guard (:146); 1900-EXIT (:151-152) then performs the unconditional MOVE TRNXFILE-STATUS TO LK-M03B-RC and 1999-EXIT (:154-155) EXITs. That guard order is behaviour, not layout, and is preserved exactly (gate G30, rule R7) - reversing the two IFs would make the OPEN call read and the READ calls open, and all of them would still return '00'. A successful sequential READ of an existing indexed dataset reports '00', and it reports it on the TRNXFILE-STATUS area specifically (gate G47), which is the only one of the four groups at :83-97 that 1900-EXIT moves from; the other three are untouched and this case claims nothing about them. None of the four has a VALUE clause, so it is the OPEN at write position 0 that makes every later status deterministically '00' rather than undefined (practice B7) - which is also why the two scripted reads, and not a bare assertion about 'the second record', are what give this case its meaning. READ ... INTO is a group MOVE into LK-M03B-FLDT PIC X(1000) (:112), so the alphanumeric receiving rule decides the result: the 350-byte record is placed left-justified and the remaining bytes are spaces, which is why each read's LK-M03B-FLDT is pinned as bytes 1-350 of the record followed by exactly 650 spaces, and why neither side of the comparison is trimmed. The assertion this case exists for is the third image and the second seeded row: write position 1 carries TRNX-ID 0000000058866561 and write position 2 carries TRNX-ID 0000000329724245, so a cursor that re-read its first record would be caught on that span alone. Read order is ascending 32-byte TRNX-KEY, which is a property of the dataset rather than an assumption: app/jcl/CREASTMT.JCL DELDEF01 DEFINEs the TRXFL cluster with KEYS(32 0) and RECORDSIZE(350 350), and STEP010 builds its content with SORT FIELDS=(263,16,CH,A,1,16,CH,A) - card number ascending, then transaction id ascending. TRNX-KEY is TRNX-CARD-NUM at 1-16 followed by TRNX-ID at 17-32, and both seeded rows carry the same card 0500024453765740, so TRNX-ID is the discriminator and 0000000058866561 precedes 0000000329724245 whichever order they were seeded in. The fourth image is the CLOSE, and it is scripted without the caller's MOVE SPACES precisely so it can say something: the area arrives still holding row 1 and comes back holding row 1, because CLOSE TRNX-FILE (:147) assigns no record area and consumes no record - a CLOSE after a browse neither advances the cursor nor blanks what the browse delivered. It reports '00' because the file was open; the '42' a CLOSE of an unopened file would report is not on this path. All four images pin all six linkage spans by name and again as the complete image: LK-M03B-DD X(08) 'TRNXFILE', LK-M03B-OPER X(01) 'O', 'R', 'R' then 'C', LK-M03B-RC X(02) '00' four times, LK-M03B-KEY X(25) twenty-five spaces because neither a sequential READ nor a CLOSE passes a key, LK-M03B-KEY-LN S9(4) as the signed zoned image '000{' - a brace because the sign of a positive zero is overpunched into the low-order byte, and four zoned DISPLAY bytes rather than a two-byte halfword, which is what holds LK-M03B-FLDT at offset 40 - and LK-M03B-FLDT X(1000), 1000 spaces after the OPEN because an OPEN delivers no record, then each record plus its padding. 8 + 1 + 2 + 25 + 4 + 1000 = 1040, re-derivable from the LINKAGE SECTION at :100-112 without tooling (practice B11). Both seeded rows are pinned unchanged afterwards, field by field across all fourteen app/cpy/COSTM01.CPY spans including the trailing FILLER X(20) whose twenty spaces carry the record's full width - 16 + 16 + 2 + 4 + 10 + 100 + 11 + 9 + 50 + 50 + 10 + 26 + 26 + 20 = 350 (gates G19 and G21). That is the read-only proof, and two reads and a close are exactly the shape that needs it: every SELECT is OPEN INPUT and no paragraph of CBSTM03B contains a WRITE or a REWRITE, so a browse advances a cursor and changes no byte of the dataset - it must not consume, reorder or blank either the row it returned twice over or the one it never reached past. The unit is StatementGenerationJobB, whose prompt-mandated name is honoured verbatim under rule R1 while its nature is a Spring @Component and not a Spring Batch Job (gate G12, implicit requirement I3): the source header reads 'Type : BATCH COBOL Subroutine', no EXEC PGM=CBSTM03B exists anywhere in app/jcl, app/proc or app/csd, and CBSTM03A calls it thirteen times. The divergence is recorded rather than quietly resolved (practice B4). unitKind is therefore COMPONENT and the unit is reached through a typed method with no JobLauncher and no HTTP layer in the path (gate G51), which is also why jobParameters is empty - a job parameter comes from a JCL PARM and this subroutine has no way to receive one. expectedReturnCode is 0 because CBSTM03B never assigns RETURN-CODE; the two-byte LK-M03B-RC is a FILE STATUS carried in the linkage area and the two are never conflated. expectedMessages is empty because CBSTM03B contains no DISPLAY statement at all - the diagnostic for this very operation, DISPLAY 'ERROR READING TRNXFILE', belongs to the caller at app/cbl/CBSTM03A.CBL:751 and :844, which is what decides what a status means. Operation codes 'W' (:107) and 'Z' (:108) are declared in the linkage area and tested by no IF in any of the four paragraphs, and the program contains no WRITE and no REWRITE verb at all; this case drives only 'O', 'R', 'R' and 'C' and reaches neither of them, so they stay declared and unexercised rather than tidied away or quietly implemented (practice B5). Provenance (practice B12, risk R-A): these expected values are STATICALLY DERIVED and were NEVER captured from a COBOL execution, which AAP 0.7.6 proves impossible in this environment across eight independently verified blockers and 0.9.11 escalates for explicit confirmation - CBSTM03B cannot even be built here, since cobc refuses it because PROCEDURE DIVISION USING LK-M03B-AREA (:114) is a subprogram entry and not a -x main. They come from the line numbers cited above, from the byte offsets of app/cpy/COSTM01.CPY, and from app/jcl/CREASTMT.JCL STEP010, whose OUTREC FIELDS=(1:263,16, 17:1,262, 279:279,50) was applied mechanically to rows 20 and 101 (0-based) of app/data/ASCII/dailytran.txt - source 263-278 to TRNX 1-16, source 1-262 to TRNX 17-278, source 279-328 to TRNX 279-328, leaving 329-350 blank-filled by SORT. Both rows carry card 0500024453765740, which is cardxref.txt row 0's XREF-CARD-NUM, so the seed is coherent with the other three DDs; they are seeded inline because TRNXFILE is a derived dataset with no ASCII fixture and the fixture count is fixed at nine, and they are byte-identical to the rows case01, case02, case05 and case06 seed. The trailing 'H' and '{' in TRNX-AMT are zoned sign overpunches on PIC S9(09)V99 ('{' = +0 through 'I' = +9, '}' = -0 through 'R' = -9), so the images denote +183.88 and +14.00 and are reproduced as bytes rather than normalised to a signed literal. All byte content is US-ASCII, stated explicitly and never taken from the platform default (practice B8).",
   "unitKind": "COMPONENT",
   "inputs": {
     "TRNXFILE": {
       "rows": [
         "05000244537657400000000058866561010001POS TERM  Purchase at Blick-Rippin                                                                            0000001838H800000000Blick-Rippin                                      East Julien                                       87157     2022-06-10 19:27:53.000000                                              ",
-        "05000244537657400000000329724245010001POS TERM  Purchase at Reichel Group                                                                           0000000140{800000000Reichel Group                                     Port Romanfort                                    95843     2022-06-10 19:27:53.000000                                              ",
-        "05000244537657400000000475746885010001POS TERM  Purchase at Adams-Watsica                                                                           0000009674D800000000Adams-Watsica                                     Ratkemouth                                        55474-03732022-06-10 19:27:53.000000                                              "
+        "05000244537657400000000329724245010001POS TERM  Purchase at Reichel Group                                                                           0000000140{800000000Reichel Group                                     Port Romanfort                                    95843     2022-06-10 19:27:53.000000                                              "
       ]
     }
   },
@@ -22,7 +21,10 @@
       "fields": {
         "LK-M03B-DD": "TRNXFILE",
         "LK-M03B-OPER": "O",
-        "LK-M03B-RC": "00"
+        "LK-M03B-RC": "00",
+        "LK-M03B-KEY": "                         ",
+        "LK-M03B-KEY-LN": "000{",
+        "LK-M03B-FLDT": "                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        "
       },
       "expectedBytes": "TRNXFILEO00                         000{                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        "
     },
@@ -32,7 +34,10 @@
       "fields": {
         "LK-M03B-DD": "TRNXFILE",
         "LK-M03B-OPER": "R",
-        "LK-M03B-RC": "00"
+        "LK-M03B-RC": "00",
+        "LK-M03B-KEY": "                         ",
+        "LK-M03B-KEY-LN": "000{",
+        "LK-M03B-FLDT": "05000244537657400000000058866561010001POS TERM  Purchase at Blick-Rippin                                                                            0000001838H800000000Blick-Rippin                                      East Julien                                       87157     2022-06-10 19:27:53.000000                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        "
       },
       "expectedBytes": "TRNXFILER00                         000{05000244537657400000000058866561010001POS TERM  Purchase at Blick-Rippin                                                                            0000001838H800000000Blick-Rippin                                      East Julien                                       87157     2022-06-10 19:27:53.000000                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        "
     },
@@ -42,7 +47,10 @@
       "fields": {
         "LK-M03B-DD": "TRNXFILE",
         "LK-M03B-OPER": "R",
-        "LK-M03B-RC": "00"
+        "LK-M03B-RC": "00",
+        "LK-M03B-KEY": "                         ",
+        "LK-M03B-KEY-LN": "000{",
+        "LK-M03B-FLDT": "05000244537657400000000329724245010001POS TERM  Purchase at Reichel Group                                                                           0000000140{800000000Reichel Group                                     Port Romanfort                                    95843     2022-06-10 19:27:53.000000                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        "
       },
       "expectedBytes": "TRNXFILER00                         000{05000244537657400000000329724245010001POS TERM  Purchase at Reichel Group                                                                           0000000140{800000000Reichel Group                                     Port Romanfort                                    95843     2022-06-10 19:27:53.000000                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        "
     },
@@ -52,7 +60,10 @@
       "fields": {
         "LK-M03B-DD": "TRNXFILE",
         "LK-M03B-OPER": "C",
-        "LK-M03B-RC": "00"
+        "LK-M03B-RC": "00",
+        "LK-M03B-KEY": "                         ",
+        "LK-M03B-KEY-LN": "000{",
+        "LK-M03B-FLDT": "05000244537657400000000329724245010001POS TERM  Purchase at Reichel Group                                                                           0000000140{800000000Reichel Group                                     Port Romanfort                                    95843     2022-06-10 19:27:53.000000                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        "
       },
       "expectedBytes": "TRNXFILEC00                         000{05000244537657400000000329724245010001POS TERM  Purchase at Reichel Group                                                                           0000000140{800000000Reichel Group                                     Port Romanfort                                    95843     2022-06-10 19:27:53.000000                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        "
     }
@@ -61,20 +72,44 @@
     {
       "dataset": "TRNXFILE",
       "rowIndex": 0,
-      "fields": {},
+      "fields": {
+        "TRNX-CARD-NUM": "0500024453765740",
+        "TRNX-ID": "0000000058866561",
+        "TRNX-TYPE-CD": "01",
+        "TRNX-CAT-CD": "0001",
+        "TRNX-SOURCE": "POS TERM  ",
+        "TRNX-DESC": "Purchase at Blick-Rippin                                                                            ",
+        "TRNX-AMT": "0000001838H",
+        "TRNX-MERCHANT-ID": "800000000",
+        "TRNX-MERCHANT-NAME": "Blick-Rippin                                      ",
+        "TRNX-MERCHANT-CITY": "East Julien                                       ",
+        "TRNX-MERCHANT-ZIP": "87157     ",
+        "TRNX-ORIG-TS": "2022-06-10 19:27:53.000000",
+        "TRNX-PROC-TS": "                          ",
+        "FILLER": "                    "
+      },
       "expectedBytes": "05000244537657400000000058866561010001POS TERM  Purchase at Blick-Rippin                                                                            0000001838H800000000Blick-Rippin                                      East Julien                                       87157     2022-06-10 19:27:53.000000                                              "
     },
     {
       "dataset": "TRNXFILE",
       "rowIndex": 1,
-      "fields": {},
+      "fields": {
+        "TRNX-CARD-NUM": "0500024453765740",
+        "TRNX-ID": "0000000329724245",
+        "TRNX-TYPE-CD": "01",
+        "TRNX-CAT-CD": "0001",
+        "TRNX-SOURCE": "POS TERM  ",
+        "TRNX-DESC": "Purchase at Reichel Group                                                                           ",
+        "TRNX-AMT": "0000000140{",
+        "TRNX-MERCHANT-ID": "800000000",
+        "TRNX-MERCHANT-NAME": "Reichel Group                                     ",
+        "TRNX-MERCHANT-CITY": "Port Romanfort                                    ",
+        "TRNX-MERCHANT-ZIP": "95843     ",
+        "TRNX-ORIG-TS": "2022-06-10 19:27:53.000000",
+        "TRNX-PROC-TS": "                          ",
+        "FILLER": "                    "
+      },
       "expectedBytes": "05000244537657400000000329724245010001POS TERM  Purchase at Reichel Group                                                                           0000000140{800000000Reichel Group                                     Port Romanfort                                    95843     2022-06-10 19:27:53.000000                                              "
-    },
-    {
-      "dataset": "TRNXFILE",
-      "rowIndex": 2,
-      "fields": {},
-      "expectedBytes": "05000244537657400000000475746885010001POS TERM  Purchase at Adams-Watsica                                                                           0000009674D800000000Adams-Watsica                                     Ratkemouth                                        55474-03732022-06-10 19:27:53.000000                                              "
     }
   ],
   "expectedReturnCode": 0,
@@ -86,6 +121,12 @@
       "channel": "WRITES",
       "rowCount": 4,
       "recordLength": 1040
+    },
+    {
+      "dataset": "TRNXFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 2,
+      "recordLength": 350
     }
   ]
 }

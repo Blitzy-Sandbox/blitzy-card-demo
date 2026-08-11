@@ -1,7 +1,7 @@
 {
   "program": "COUSR00C",
   "caseId": "case16",
-  "description": "A ticked row carrying neither U nor D: the WHEN OTHER arm at :210-214. 'Invalid selection. Valid values are U and D' is painted and the cursor is placed, but - and this is the whole point of the case - NO error flag is raised, so PROCESS-ENTER-KEY does not return: it falls through to :218 and pages forward anyway, and the complaint arrives together with a freshly listed page. The twenty-five-record file is used deliberately: over ten records the look-ahead READNEXT at :311 would reach the end of the file and overwrite WS-MESSAGE with 'You have reached the bottom of the page...', hiding the very message this case exists to pin. Because the tick is not acted on, CDEMO-CU00-USR-SEL-FLG and CDEMO-CU00-USR-SELECTED are carried forward holding the rejected values rather than being cleared.",
+  "description": "PF7 backward with only two records above the anchor - a short backward page, and the one case that takes NEITHER page-number arm. CDEMO-CU00-USRID-FIRST arrives as ADMIN003, so over the ten records of app/jcl/DUSRSECJ.jcl exactly two records precede the anchor, and :248 pages backward because the count is 2. :342-343 discards the anchor itself, :346-350 blanks all ten rows to SPACES - not LOW-VALUES - and :352 moves 10 into WS-IDX, so the fill DESCENDS: ADMIN002 lands in row 10 and ADMIN001 in row 9, leaving rows 1 to 8 blank. A two-record backward page therefore sits at the BOTTOM of the screen, which is the exact inverse of a short forward page. The third READPREV inside the loop at :355 reports ENDFILE, so :668-674 sets end of file and paints 'You have reached the top of the page...' - and note that this is the IN-LOOP position of that arm, where case20 reaches the same arm from the look-behind at :363, the same pairing case03 and case18 make for READNEXT. Two consequences are preserved exactly as they are, and they are the point of this case (practice B5). First, POPULATE-USER-DATA never reaches WS-IDX 1, so the dual receiver at :389 never fires and CDEMO-CU00-USRID-FIRST keeps its INCOMING value ADMIN003 - a stale boundary key naming a record that is no longer even on the page; only :435 fired, at row 10, so USRID-LAST is ADMIN002. Second, :362's guard is false because end of file was set inside the loop, so the whole :363-371 block is skipped: no look-behind READPREV, no SUBTRACT at :367 and no MOVE at :369, and CDEMO-CU00-PAGE-NUM passes through UNCHANGED at 2. That is the third of three mutually exclusive backward outcomes, against case07's SUBTRACT and case20's MOVE. :374 still issues the ENDBR and :376-377 writes that unchanged 2 into the page-number field and sends, and there is no MOVE SPACE TO USRIDINO on this path - the forward page has one at :328 - so the start-key field keeps whatever it showed, as do SEL0001 through SEL0010, which INITIALIZE-USER-DATA does not touch. The COBOL performs two SENDs here, at :674 and at :377, and both compose the same image; the published handler exposes one transmission, and that is the image pinned below. Provenance: statically derived by structured reading of the paragraph against app/cpy/CSUSR01Y.cpy, app/cpy-bms/COUSR00.CPY and app/jcl/DUSRSECJ.jcl, and never captured from an execution of the legacy program (risk R-A). Declared gap, recorded rather than left silent: the :210-214 invalid-selection WHEN OTHER arm is driven by UserMenuControllerTest under gates G49 and G50 rather than by a parity case, because gate G15 fixes the budget at exactly twenty cases per program.",
   "unitKind": "CONTROLLER_POJO",
   "inputs": {
     "USRSEC": {
@@ -15,36 +15,56 @@
         "USER0002AJITH               KUMAR               PASSWORDU",
         "USER0003LAURITZ             ALME                PASSWORDU",
         "USER0004AVERARDO            MAZZI               PASSWORDU",
-        "USER0005LEE                 TING                PASSWORDU",
-        "ZUSER001SYNTHETIC1          EXTRA1              PASSWORDU",
-        "ZUSER002SYNTHETIC2          EXTRA2              PASSWORDU",
-        "ZUSER003SYNTHETIC3          EXTRA3              PASSWORDU",
-        "ZUSER004SYNTHETIC4          EXTRA4              PASSWORDU",
-        "ZUSER005SYNTHETIC5          EXTRA5              PASSWORDU",
-        "ZUSER006SYNTHETIC6          EXTRA6              PASSWORDU",
-        "ZUSER007SYNTHETIC7          EXTRA7              PASSWORDU",
-        "ZUSER008SYNTHETIC8          EXTRA8              PASSWORDU",
-        "ZUSER009SYNTHETIC9          EXTRA9              PASSWORDU",
-        "ZUSER010SYNTHETIC10         EXTRA10             PASSWORDU",
-        "ZUSER011SYNTHETIC11         EXTRA11             PASSWORDU",
-        "ZUSER012SYNTHETIC12         EXTRA12             PASSWORDU",
-        "ZUSER013SYNTHETIC13         EXTRA13             PASSWORDU",
-        "ZUSER014SYNTHETIC14         EXTRA14             PASSWORDU",
-        "ZUSER015SYNTHETIC15         EXTRA15             PASSWORDU"
+        "USER0005LEE                 TING                PASSWORDU"
       ]
     }
   },
   "screenRequest": {
     "eibcalen": 194,
-    "aid": "DFHENTER",
+    "aid": "DFHPF7",
     "pinnedClock": "2022-07-19T23:12:34",
     "charset": "US-ASCII",
     "commarea": {
-      "CDEMO-PGM-CONTEXT": "1"
+      "CDEMO-PGM-CONTEXT": "1",
+      "CDEMO-CU00-USRID-FIRST": "ADMIN003",
+      "CDEMO-CU00-USRID-LAST": "USER0002",
+      "CDEMO-CU00-PAGE-NUM": "00000002",
+      "CDEMO-CU00-NEXT-PAGE-FLG": "Y"
     },
     "mapFields": {
-      "SEL0005I": "X",
-      "USRID05I": "ADMIN005"
+      "PAGENUMI": "00000002",
+      "USRIDINI": "        ",
+      "SEL0001I": " ",
+      "USRID01I": "ADMIN003",
+      "FNAME01I": "RAYMOND             ",
+      "LNAME01I": "WHITMORE            ",
+      "UTYPE01I": "A",
+      "SEL0002I": " ",
+      "USRID02I": "ADMIN004",
+      "FNAME02I": "EMMANUEL            ",
+      "LNAME02I": "CASGRAIN            ",
+      "UTYPE02I": "A",
+      "SEL0003I": " ",
+      "USRID03I": "ADMIN005",
+      "FNAME03I": "GRANVILLE           ",
+      "LNAME03I": "LACHAPELLE          ",
+      "UTYPE03I": "A",
+      "SEL0004I": " ",
+      "USRID04I": "USER0001",
+      "FNAME04I": "LAWRENCE            ",
+      "LNAME04I": "THOMAS              ",
+      "UTYPE04I": "U",
+      "SEL0005I": " ",
+      "USRID05I": "USER0002",
+      "FNAME05I": "AJITH               ",
+      "LNAME05I": "KUMAR               ",
+      "UTYPE05I": "U",
+      "SEL0006I": " ",
+      "SEL0007I": " ",
+      "SEL0008I": " ",
+      "SEL0009I": " ",
+      "SEL0010I": " ",
+      "ERRMSGI": "                                                                              "
     },
     "forcedOutcomes": {}
   },
@@ -66,12 +86,12 @@
       "CDEMO-CARD-NUM": "0000000000000000",
       "CDEMO-LAST-MAP": "       ",
       "CDEMO-LAST-MAPSET": "       ",
-      "CDEMO-CU00-USRID-FIRST": "ADMIN001",
-      "CDEMO-CU00-USRID-LAST": "USER0005",
-      "CDEMO-CU00-PAGE-NUM": "00000001",
+      "CDEMO-CU00-USRID-FIRST": "ADMIN003",
+      "CDEMO-CU00-USRID-LAST": "ADMIN002",
+      "CDEMO-CU00-PAGE-NUM": "00000002",
       "CDEMO-CU00-NEXT-PAGE-FLG": "Y",
-      "CDEMO-CU00-USR-SEL-FLG": "X",
-      "CDEMO-CU00-USR-SELECTED": "ADMIN005"
+      "CDEMO-CU00-USR-SEL-FLG": " ",
+      "CDEMO-CU00-USR-SELECTED": "        "
     },
     "sends": [
       {
@@ -82,59 +102,59 @@
           "PGMNAMEO": "COUSR00C",
           "TITLE02O": "              CardDemo                  ",
           "CURTIMEO": "23:12:34",
-          "PAGENUMO": "00000001",
+          "PAGENUMO": "00000002",
           "USRIDINO": "        ",
           "SEL0001O": " ",
-          "USRID01O": "ADMIN001",
-          "FNAME01O": "MARGARET            ",
-          "LNAME01O": "GOLD                ",
-          "UTYPE01O": "A",
+          "USRID01O": "        ",
+          "FNAME01O": "                    ",
+          "LNAME01O": "                    ",
+          "UTYPE01O": " ",
           "SEL0002O": " ",
-          "USRID02O": "ADMIN002",
-          "FNAME02O": "RUSSELL             ",
-          "LNAME02O": "RUSSELL             ",
-          "UTYPE02O": "A",
+          "USRID02O": "        ",
+          "FNAME02O": "                    ",
+          "LNAME02O": "                    ",
+          "UTYPE02O": " ",
           "SEL0003O": " ",
-          "USRID03O": "ADMIN003",
-          "FNAME03O": "RAYMOND             ",
-          "LNAME03O": "WHITMORE            ",
-          "UTYPE03O": "A",
+          "USRID03O": "        ",
+          "FNAME03O": "                    ",
+          "LNAME03O": "                    ",
+          "UTYPE03O": " ",
           "SEL0004O": " ",
-          "USRID04O": "ADMIN004",
-          "FNAME04O": "EMMANUEL            ",
-          "LNAME04O": "CASGRAIN            ",
-          "UTYPE04O": "A",
-          "SEL0005O": "X",
-          "USRID05O": "ADMIN005",
-          "FNAME05O": "GRANVILLE           ",
-          "LNAME05O": "LACHAPELLE          ",
-          "UTYPE05O": "A",
+          "USRID04O": "        ",
+          "FNAME04O": "                    ",
+          "LNAME04O": "                    ",
+          "UTYPE04O": " ",
+          "SEL0005O": " ",
+          "USRID05O": "        ",
+          "FNAME05O": "                    ",
+          "LNAME05O": "                    ",
+          "UTYPE05O": " ",
           "SEL0006O": " ",
-          "USRID06O": "USER0001",
-          "FNAME06O": "LAWRENCE            ",
-          "LNAME06O": "THOMAS              ",
-          "UTYPE06O": "U",
+          "USRID06O": "        ",
+          "FNAME06O": "                    ",
+          "LNAME06O": "                    ",
+          "UTYPE06O": " ",
           "SEL0007O": " ",
-          "USRID07O": "USER0002",
-          "FNAME07O": "AJITH               ",
-          "LNAME07O": "KUMAR               ",
-          "UTYPE07O": "U",
+          "USRID07O": "        ",
+          "FNAME07O": "                    ",
+          "LNAME07O": "                    ",
+          "UTYPE07O": " ",
           "SEL0008O": " ",
-          "USRID08O": "USER0003",
-          "FNAME08O": "LAURITZ             ",
-          "LNAME08O": "ALME                ",
-          "UTYPE08O": "U",
+          "USRID08O": "        ",
+          "FNAME08O": "                    ",
+          "LNAME08O": "                    ",
+          "UTYPE08O": " ",
           "SEL0009O": " ",
-          "USRID09O": "USER0004",
-          "FNAME09O": "AVERARDO            ",
-          "LNAME09O": "MAZZI               ",
-          "UTYPE09O": "U",
+          "USRID09O": "ADMIN001",
+          "FNAME09O": "MARGARET            ",
+          "LNAME09O": "GOLD                ",
+          "UTYPE09O": "A",
           "SEL0010O": " ",
-          "USRID10O": "USER0005",
-          "FNAME10O": "LEE                 ",
-          "LNAME10O": "TING                ",
-          "UTYPE10O": "U",
-          "ERRMSGO": "Invalid selection. Valid values are U and D                                   "
+          "USRID10O": "ADMIN002",
+          "FNAME10O": "RUSSELL             ",
+          "LNAME10O": "RUSSELL             ",
+          "UTYPE10O": "A",
+          "ERRMSGO": "You have reached the top of the page...                                       "
         }
       }
     ],
@@ -192,81 +212,6 @@
       "dataset": "USRSEC",
       "rowIndex": 9,
       "expectedBytes": "USER0005LEE                 TING                PASSWORDU                       "
-    },
-    {
-      "dataset": "USRSEC",
-      "rowIndex": 10,
-      "expectedBytes": "ZUSER001SYNTHETIC1          EXTRA1              PASSWORDU                       "
-    },
-    {
-      "dataset": "USRSEC",
-      "rowIndex": 11,
-      "expectedBytes": "ZUSER002SYNTHETIC2          EXTRA2              PASSWORDU                       "
-    },
-    {
-      "dataset": "USRSEC",
-      "rowIndex": 12,
-      "expectedBytes": "ZUSER003SYNTHETIC3          EXTRA3              PASSWORDU                       "
-    },
-    {
-      "dataset": "USRSEC",
-      "rowIndex": 13,
-      "expectedBytes": "ZUSER004SYNTHETIC4          EXTRA4              PASSWORDU                       "
-    },
-    {
-      "dataset": "USRSEC",
-      "rowIndex": 14,
-      "expectedBytes": "ZUSER005SYNTHETIC5          EXTRA5              PASSWORDU                       "
-    },
-    {
-      "dataset": "USRSEC",
-      "rowIndex": 15,
-      "expectedBytes": "ZUSER006SYNTHETIC6          EXTRA6              PASSWORDU                       "
-    },
-    {
-      "dataset": "USRSEC",
-      "rowIndex": 16,
-      "expectedBytes": "ZUSER007SYNTHETIC7          EXTRA7              PASSWORDU                       "
-    },
-    {
-      "dataset": "USRSEC",
-      "rowIndex": 17,
-      "expectedBytes": "ZUSER008SYNTHETIC8          EXTRA8              PASSWORDU                       "
-    },
-    {
-      "dataset": "USRSEC",
-      "rowIndex": 18,
-      "expectedBytes": "ZUSER009SYNTHETIC9          EXTRA9              PASSWORDU                       "
-    },
-    {
-      "dataset": "USRSEC",
-      "rowIndex": 19,
-      "expectedBytes": "ZUSER010SYNTHETIC10         EXTRA10             PASSWORDU                       "
-    },
-    {
-      "dataset": "USRSEC",
-      "rowIndex": 20,
-      "expectedBytes": "ZUSER011SYNTHETIC11         EXTRA11             PASSWORDU                       "
-    },
-    {
-      "dataset": "USRSEC",
-      "rowIndex": 21,
-      "expectedBytes": "ZUSER012SYNTHETIC12         EXTRA12             PASSWORDU                       "
-    },
-    {
-      "dataset": "USRSEC",
-      "rowIndex": 22,
-      "expectedBytes": "ZUSER013SYNTHETIC13         EXTRA13             PASSWORDU                       "
-    },
-    {
-      "dataset": "USRSEC",
-      "rowIndex": 23,
-      "expectedBytes": "ZUSER014SYNTHETIC14         EXTRA14             PASSWORDU                       "
-    },
-    {
-      "dataset": "USRSEC",
-      "rowIndex": 24,
-      "expectedBytes": "ZUSER015SYNTHETIC15         EXTRA15             PASSWORDU                       "
     }
   ],
   "expectedReturnCode": 0,
@@ -275,6 +220,14 @@
     {
       "dataset": "USRSEC",
       "kind": "USRSEC_FILLER_PAD_57_TO_80"
+    }
+  ],
+  "expectedDatasets": [
+    {
+      "dataset": "USRSEC",
+      "channel": "FINAL_STATE",
+      "rowCount": 10,
+      "recordLength": 80
     }
   ]
 }

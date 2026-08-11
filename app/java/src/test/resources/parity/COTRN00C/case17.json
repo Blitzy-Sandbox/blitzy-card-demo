@@ -1,7 +1,7 @@
 {
   "program": "COTRN00C",
   "caseId": "case17",
-  "description": "A PARTIAL backward page, which is the path on which the page number changes not at all. PF7 from page two anchored on record six: the anchor read consumes record six, the loop reads records five down to one into screen rows ten down to six, and the sixth READPREV reports ENDFILE and sends. TRANSACT-EOF is now true, so the IF at :359 is FALSE and the entire rewind block - the extra read at :360, the NEXT-PAGE-YES test at :361, the SUBTRACT at :364 and the MOVE at :366 - is skipped. The page number therefore stays at TWO while displaying the first five records of the file, which is an inherited oddity of the program rather than a translation artefact and must be preserved (practice B5). CDEMO-CT00-TRNID-FIRST keeps its inbound value because WS-IDX never reached one; CDEMO-CT00-TRNID-LAST is record five, written at WS-IDX ten.",
+  "description": "The INVALID SELECTOR arm at app/cbl/COTRN00C.cbl:196-202, whose value is not the message it paints but the early exit it does NOT take. 'X' is typed into the second selection cell, so the ten-way EVALUATE TRUE at :148 stops at its SECOND arm: :152 tests presence only - NOT = SPACES AND LOW-VALUES - so any non-blank byte selects a row and only the inner EVALUATE ever judges it, and :153-154 move 'X' into CDEMO-CT00-TRN-SEL-FLG and the row-two identifier 0000000000000022 into CDEMO-CT00-TRN-SELECTED. Both conjuncts of :183-184 are therefore true, and the EVALUATE at :185 falls past WHEN 'S' (:186) and WHEN 's' (:187) into WHEN OTHER (:196), which is last as gate G30 requires. TWO STATEMENTS IN THAT ARM ARE COMMENTED OUT IN THE SOURCE - :197 '* SET TRANSACT-EOF TO TRUE' and :202 '* PERFORM SEND-TRNLST-SCREEN' - and nothing in the arm sets WS-ERR-FLG either, which is exactly what the non-numeric TRNIDINI arm at :212 does do. With no error flag, no end of file, no send, no XCTL and no GO TO, execution FALLS STRAIGHT THROUGH :203-204 into the rest of PROCESS-ENTER-KEY: TRNIDINI is spaces so :206-207 positions the browse at LOW-VALUES, :221 repositions the cursor, :224 resets the page number from the three it arrived with to zero, and :225 paints a FULL ten-row page - :285 is false because the AID is ENTER so there is no skip read, :290-292 blanks the ten row slots, :297-303 fills them with records 1 to 10 stepping WS-IDX at :301, :305 is true so :306-307 computes 0 + 1 = 1, and the look-ahead READNEXT at :308 finds record 11 and reaches :310 SET NEXT-PAGE-YES. The single send is :326's, and WS-MESSAGE still holds the invalid-selection text, so the terminal shows a fully populated page one AND an error line at the same time. That combination is this case's signature: an implementation that returned early on an invalid selector would paint an empty page and fail here. :227-229 then runs too, because ERR-FLG-ON is false, so TRNIDINO is blanked twice - at :325 and again at :228. The two commented statements must stay no-ops and the absent WS-ERR-FLG assignment must stay absent (practice B5): restoring either would be a behaviour change dressed up as a tidy-up. Note also that :196's WHEN OTHER does not blank the two cursor fields the way the scan's own WHEN OTHER at :179-181 would have, so CDEMO-CT00-TRN-SEL-FLG stays 'X' and CDEMO-CT00-TRN-SELECTED keeps 0000000000000022 even though TRNID02O now displays 0000000000000002 - the scan ran before the page was painted. INITIALIZE-TRAN-DATA at :450-505 blanks only the four data items of each row and never the selection cell, so the 'X' is redisplayed as well. COTRN00C LISTS transactions from the TRANSACT file, although rule R1 requires the migrated class to be called TransactionMenuController: the name comes from the prompt and every expectation here from the source. STATICALLY DERIVED - never captured from a running COBOL program. The expectations were read out of app/cbl/COTRN00C.cbl paragraph by paragraph and cross-checked against the 350-byte layout in app/cpy/CVTRA05Y.cpy, the symbolic-map widths in app/cpy-bms/COTRN00.CPY, the DFHMDF definitions in app/bms/COTRN00.bms and the CT00 binding in app/csd/CARDDEMO.CSD (practice B12, risk R-A).",
   "unitKind": "CONTROLLER_POJO",
   "inputs": {
     "TRANSACT": {
@@ -17,7 +17,19 @@
         "0000000000000009010001POS TERM  TRANSACTION 09 DESCRIPTION                                                                          0000001090{000000009MERCHANT 09                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    ",
         "0000000000000010010001POS TERM  TRANSACTION 10 DESCRIPTION                                                                          0000001100{000000010MERCHANT 10                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    ",
         "0000000000000011010001POS TERM  TRANSACTION 11 DESCRIPTION                                                                          0000001110{000000011MERCHANT 11                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    ",
-        "0000000000000012010001POS TERM  TRANSACTION 12 DESCRIPTION                                                                          0000001120{000000012MERCHANT 12                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    "
+        "0000000000000012010001POS TERM  TRANSACTION 12 DESCRIPTION                                                                          0000001120{000000012MERCHANT 12                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    ",
+        "0000000000000013010001POS TERM  TRANSACTION 13 DESCRIPTION                                                                          0000001130{000000013MERCHANT 13                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    ",
+        "0000000000000014010001POS TERM  TRANSACTION 14 DESCRIPTION                                                                          0000001140{000000014MERCHANT 14                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    ",
+        "0000000000000015010001POS TERM  TRANSACTION 15 DESCRIPTION                                                                          0000001150{000000015MERCHANT 15                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    ",
+        "0000000000000016010001POS TERM  TRANSACTION 16 DESCRIPTION                                                                          0000001160{000000016MERCHANT 16                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    ",
+        "0000000000000017010001POS TERM  TRANSACTION 17 DESCRIPTION                                                                          0000001170{000000017MERCHANT 17                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    ",
+        "0000000000000018010001POS TERM  TRANSACTION 18 DESCRIPTION                                                                          0000001180{000000018MERCHANT 18                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    ",
+        "0000000000000019010001POS TERM  TRANSACTION 19 DESCRIPTION                                                                          0000001190{000000019MERCHANT 19                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    ",
+        "0000000000000020010001POS TERM  TRANSACTION 20 DESCRIPTION                                                                          0000001200{000000020MERCHANT 20                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    ",
+        "0000000000000021010001POS TERM  TRANSACTION 21 DESCRIPTION                                                                          0000001210{000000021MERCHANT 21                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    ",
+        "0000000000000022010001POS TERM  TRANSACTION 22 DESCRIPTION                                                                          0000001220{000000022MERCHANT 22                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    ",
+        "0000000000000023010001POS TERM  TRANSACTION 23 DESCRIPTION                                                                          0000001230{000000023MERCHANT 23                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    ",
+        "0000000000000024010001POS TERM  TRANSACTION 24 DESCRIPTION                                                                          0000001240{000000024MERCHANT 24                                       SEATTLE                                           98101     41111111111111112022-06-10 19:27:53.0000002022-06-11 08:00:00.000000                    "
       ]
     }
   },
@@ -42,16 +54,29 @@
       "CDEMO-CARD-NUM": "0000000000000000",
       "CDEMO-LAST-MAP": "       ",
       "CDEMO-LAST-MAPSET": "       ",
-      "CDEMO-CT00-TRNID-FIRST": "0000000000000006",
-      "CDEMO-CT00-TRNID-LAST": "0000000000000012",
-      "CDEMO-CT00-PAGE-NUM": "00000002",
+      "CDEMO-CT00-TRNID-FIRST": "0000000000000021",
+      "CDEMO-CT00-TRNID-LAST": "0000000000000020",
+      "CDEMO-CT00-PAGE-NUM": "00000003",
       "CDEMO-CT00-NEXT-PAGE-FLG": "N",
       "CDEMO-CT00-TRN-SEL-FLG": " ",
       "CDEMO-CT00-TRN-SELECTED": "                "
     },
-    "mapFields": {},
+    "mapFields": {
+      "TRNIDINI": "                ",
+      "SEL0001I": " ",
+      "SEL0002I": "X",
+      "SEL0003I": " ",
+      "SEL0004I": " ",
+      "SEL0005I": " ",
+      "SEL0006I": " ",
+      "SEL0007I": " ",
+      "SEL0008I": " ",
+      "SEL0009I": " ",
+      "SEL0010I": " ",
+      "TRNID02I": "0000000000000022"
+    },
     "forcedOutcomes": {},
-    "aid": "DFHPF7"
+    "aid": "DFHENTER"
   },
   "expectedResponse": {
     "nextMapset": "COTRN00",
@@ -73,24 +98,14 @@
       "CDEMO-CARD-NUM": "0000000000000000",
       "CDEMO-LAST-MAP": "       ",
       "CDEMO-LAST-MAPSET": "       ",
-      "CDEMO-CT00-TRNID-FIRST": "0000000000000006",
-      "CDEMO-CT00-TRNID-LAST": "0000000000000005",
-      "CDEMO-CT00-PAGE-NUM": "00000002",
+      "CDEMO-CT00-TRNID-FIRST": "0000000000000001",
+      "CDEMO-CT00-TRNID-LAST": "0000000000000010",
+      "CDEMO-CT00-PAGE-NUM": "00000001",
       "CDEMO-CT00-NEXT-PAGE-FLG": "Y",
-      "CDEMO-CT00-TRN-SEL-FLG": " ",
-      "CDEMO-CT00-TRN-SELECTED": "                "
+      "CDEMO-CT00-TRN-SEL-FLG": "X",
+      "CDEMO-CT00-TRN-SELECTED": "0000000000000022"
     },
     "sends": [
-      {
-        "fields": {
-          "TITLE01O": "      AWS Mainframe Modernization       ",
-          "TITLE02O": "              CardDemo                  ",
-          "TRNNAMEO": "CT00",
-          "PGMNAMEO": "COTRN00C",
-          "CURDATEO": "07/19/22",
-          "CURTIMEO": "23:12:34"
-        }
-      },
       {
         "fields": {
           "TITLE01O": "      AWS Mainframe Modernization       ",
@@ -111,11 +126,11 @@
   "expectedMessages": [
     {
       "channel": "WS_MESSAGE_80",
-      "text": "You have reached the top of the page...                                         "
+      "text": "Invalid selection. Valid value is S                                             "
     },
     {
       "channel": "SCREEN_ERRMSG_78",
-      "text": "You have reached the top of the page...                                       "
+      "text": "Invalid selection. Valid value is S                                           "
     }
   ]
 }

@@ -1,32 +1,32 @@
 {
   "program": "CBACT04C",
   "caseId": "case03",
-  "description": "Truncation at the other end of the scale: the whole result is discarded. 0.05 at 15.00 - the rate discgrp.txt row 0 carries verbatim for A000000000 type 01 category 0001 - has an exact quotient of 0.000625, and the store at :464-465 keeps none of it. TRAN-AMT is 0000000000{, the zoned image of a positive zero, and not 0000000000A: a rounding mode would keep a tenth of a cent the COBOL never stores, and at this magnitude that is the entire amount. Nothing about the record differs from a genuinely zero-interest one, which is exactly the point - the difference between truncating and rounding here is the difference between writing zero and writing a cent that does not exist.",
+  "description": "THE BYTE-IMAGE CASE. This case exists to fix the shape of the 350-byte TRANSACT record that 1300-B-WRITE-TX produces at app/cbl/CBACT04C.cbl:473-515, field by field and byte by byte, so that every other case in this folder can rely on it. All fourteen CVTRA05Y spans are pinned BY NAME in copybook order AND the whole record image is pinned, which is two assertions rather than one: the named fields localise a failure to a single span, and the image proves the total width and therefore that the trailing FILLER X(20) was emitted at all - a record missing it is short by twenty bytes and every offset after byte 330 is wrong. ARITHMETIC, AND WHY THIS CASE IS THE ONE THAT CATCHES A ROUNDING MODE: COMPUTE WS-MONTHLY-INT = ( TRAN-CAT-BAL * DIS-INT-RATE) / 1200 at :464-465 carries no ROUNDED - the keyword appears zero times across all 28 programs - so the receiver WS-MONTHLY-INT PIC S9(09)V99 at :168 truncates, which in Java is setScale(2, RoundingMode.DOWN). 158.00 at 15.00 has the exact quotient 1.9750, and 1.9750 is deliberately chosen because it sits exactly on the halfway boundary: DOWN gives 1.97 while BOTH HALF_UP and HALF_EVEN give 1.98. TRAN-AMT is therefore 0000000019G and not 0000000019H, and this is a three-way discriminator no zero-amount case can be - a run that reports 1.98 has not reproduced the COBOL, it has rounded where the COBOL truncated. The zoned image is eleven bytes for S9(09)V99, p+2 with the sign overpunched into the LOW-ORDER byte, so the digits are 00000000197 and the trailing 7 becomes G under the positive table {ABCDEFGHI. SEED PROVENANCE, STATED RATHER THAN IMPLIED: four of the five seeds are unmodified fixture bytes named by row - ACCTFILE is acctdata.txt row 1, the only row whose ACCT-ID is 00000000002; XREFFILE and XREFFIL1 are both cardxref.txt row 2, the only row in that fixture whose XREF-ACCT-ID is 00000000002 (the fixture is ordered by card number, not by account id, so the row was found by matching bytes 26-36 rather than by assuming positional correspondence); and DISCGRP is discgrp.txt row 17, the DEFAULT/01/0001 row. Those cross-reference rows stay 36 bytes here, because parity.FieldDiffer owns the pad to CVACT03Y's declared 50 through the CARDXREF_FILLER_PAD_36_TO_50 normalisation declared below, so the fixture itself is never edited. XREFFILE and XREFFIL1 carry deliberately identical bytes: app/jcl/INTCALC.jcl:29-32 opens the base KSDS and an alternate-index PATH over that SAME cluster in one step, so they are two access paths and not two datasets. TCATBALF IS THE ONE SEED THAT IS NOT VERBATIM FIXTURE DATA, AND SAYING SO IS THE POINT: every one of tcatbal.txt's fifty rows carries TRAN-CAT-BAL '0000000000{', a zoned positive zero, so the raw fixture cannot exercise a non-zero interest amount at all and this case would be impossible on it. The row seeded here is fixture row 1 - account 00000000002, type 01, category 0001, the genuine 17-byte TRAN-CAT-KEY - with its balance span and ONLY its balance span replaced: the two images differ at exactly three bytes, all inside TRAN-CAT-BAL at 1-based 18-28, while the key at 1-11/12-13/14-17 and the FILLER X(22) at 29-50 are the fixture's own bytes untouched. The value 158.00 is not invented either: it is account 2's real ACCT-CURR-BAL from acctdata.txt row 1, '00000001580{' at 1-based 13-24, the same digits this record's '0000001580{' carries one byte narrower because ACCT-CURR-BAL is S9(10)V99 and TRAN-CAT-BAL is S9(09)V99. Presenting a modified row as fixture data without saying so is the specific failure this disclosure exists to prevent. CORRECTION TO THE FOLDER BRIEF, DOCUMENTED RATHER THAN ABSORBED: the brief claims acctdata's A000000000 is a group id that steers account rows into the DISCGRP A-block. It is not. Verified mechanically across all 50 rows against app/cpy/CVACT01Y.cpy, A000000000 sits in ACCT-ADDR-ZIP at 1-based 103-112, while ACCT-GROUP-ID at 113-122 is TEN SPACES on 50 of 50 rows. So MOVE ACCT-GROUP-ID TO FD-DIS-ACCT-GROUP-ID at :210 moves spaces, the READ at :416 is keyed '          ' + '01' + '0001' and misses with FILE STATUS '23', :422 tolerates '00' OR '23' so nothing abends, :418-419 display both disclosure-group lines, and :437 moves 'DEFAULT' into an X(10) receiver so the retry key is 'DEFAULT   ' and hits discgrp.txt row 17. DIS-INT-RATE is read at 1-based 17-22 as '00150{' = 15.00, because CVTRA02Y's DIS-GROUP-KEY is SIXTEEN bytes - X(10) + X(02) + 9(04) - and a 17-byte assumption would read the rate from 18-23 and corrupt it. An earlier revision of this case fabricated an ACCT-GROUP-ID of A000000000 into the account row to reach the A-block directly and disclosed nothing; that row is gone, and with it the two disclosure lines it silently suppressed. TWO NEGATIVE ASSERTIONS, BOTH DELIBERATE, BOTH PRESERVING A DEFECT RATHER THAN FIXING IT: ACCTFILE appears only in expectedFinalState and is byte-identical to its seed, because 1050-UPDATE-ACCOUNT never runs. It is reached from :196 only on an account break with WS-FIRST-TIME NOT = 'Y', and with one input record this break is the first, so :198 merely flips the flag; its only other call site, the ELSE at :219-220, is unreachable dead code, because the enclosing PERFORM UNTIL END-OF-FILE = 'Y' at :188 makes the IF END-OF-FILE = 'N' at :189 always true. The last account group's accumulated interest is therefore never flushed, and here the only account is the last one - so the 1.97 this case computes reaches SYSTRAN and never reaches ACCT-CURR-BAL. And 1400-COMPUTE-FEES, performed at :216 inside the satisfied IF DIS-INT-RATE NOT = 0 guard at :214, IS invoked on this path, but its body is the '* To be implemented' stub at :518-520 - a comment and an EXIT - so it contributes no record, no field and no message. Implementing either would be a new feature and a parity violation. PER-FIELD RULINGS THE TABLE ABOVE ENCODES: TRAN-ID ends 000001 and never 000000, because ADD 1 TO WS-TRANID-SUFFIX at :474 runs BEFORE the STRING at :476-480 and WS-TRANID-SUFFIX is PIC 9(06) VALUE 0 at :173; PARM-DATE contributes the ten characters of app/jcl/INTCALC.jcl:22 PARM='2022071800' verbatim, never parsed as a date, so 10 + 6 fills TRAN-ID PIC X(16) exactly with no padding. TRAN-CAT-CD is '0005' and not '05  ': :483 moves the alphanumeric literal '05' into a numeric-display PIC 9(04) receiver, which de-edits to the integer 5 and stores right-aligned and zero-filled - the most easily botched span in the record, because getting it wrong shifts bytes 19-22 and cascades into all 331 that follow. TRAN-SOURCE is 'System' plus FOUR trailing spaces, ten bytes. TRAN-DESC is 24 composed bytes then a 76-byte tail: the literal 'Int. for a/c ' is thirteen characters including its trailing space, ACCT-ID is the ACCOUNT-RECORD field PIC 9(11) so it contributes 00000000002, and STRING does not blank the remainder of its receiver - bytes 57-132 are left exactly as the receiver found them. common.FixedWidthCodec builds the record with every PIC X span space-initialised, so that tail is spaces; and because the composed prefix is invariably 24 bytes and never shrinks, the tail is invariant across every write in a run rather than incidental to this one. TRAN-MERCHANT-ID is nine zeros from MOVE 0 into PIC 9(09). TRAN-CARD-NUM is resolved through the alternate index: :495 moves XREF-CARD-NUM, which :394-395 filled by READ XREF-FILE INTO CARD-XREF-RECORD KEY IS FD-XREF-ACCT-ID over the XREFFIL1 path. DETERMINISM, AND A SECOND DOCUMENTED DEVIATION: TRAN-ORIG-TS and TRAN-PROC-TS are this program's only wall-clock values, both taking the same DB2-FORMAT-TS from Z-GET-DB2-FORMAT-TIMESTAMP at :496-498, whose redefinition at :150-165 composes YYYY-MM-DD-HH.MM.SS.mm0000 to exactly 26 bytes. No 'now' is ever captured. The case brief asked for these to be pinned at 2022-07-18-00.00.00.000000 and directed that the type be read and whatever it offers be used; the type offers pinnedClock on ScreenRequest ALONE, and ParityCase forbids a ScreenRequest on a BATCH_JOB outright, so a batch case cannot pin a clock of its own and 2022-07-18 is unreachable by construction. What applies instead is ParityHarness.DEFAULT_PINNED_CLOCK, which exists for exactly this reason and is fixed at 2022-07-19T23:12:34, rendering as the 26-byte '2022-07-19-23.12.34.000000'. That instant is traceable rather than arbitrary: the repository-wide source footer reads 'Ver: CardDemo_v1.0-15-g27d6c6f-68 Date: 2022-07-19' and app/cbl/CBACT04C.cbl:651 stamps 2022-07-19 23:12:31 CDT. Bytes are US-ASCII throughout, matching the app/data/ASCII fixtures, never a platform default. PROVENANCE OF THE EXPECTATIONS THEMSELVES: every expected value here is STATICALLY DERIVED - by structured reading of the COBOL paragraphs, cross-checked against the CVTRA05Y, CVTRA01Y, CVTRA02Y, CVACT01Y and CVACT03Y byte layouts read offset by offset, the INTCALC.jcl DD and PARM contracts including :39 RECFM=F,LRECL=350, and the real ASCII fixtures. It was never captured from, recorded against or replayed from any execution of the legacy COBOL, which is empirically impossible in this environment; that substitution is the plan's highest-severity open risk and is escalated rather than absorbed. No user rules were provided for this project, so no rule mandates or forbids anything here; the plan's enterprise best-practice substitutes govern instead, and this case is held to them.",
   "unitKind": "BATCH_JOB",
   "inputs": {
     "TCATBALF": {
       "rows": [
-        "000000000010100010000000000E0000000000000000000000"
+        "000000000020100010000001580{0000000000000000000000"
       ]
     },
     "ACCTFILE": {
-      "rows": [
-        "00000000001Y00000001940{00000020200{00000010200{2014-11-202025-05-202025-05-2000000000000{00000000000{A000000000A000000000                                                                                                                                                                                  "
-      ]
+      "fixture": "acctdata.txt",
+      "fromRow": 1,
+      "rowCount": 1
     },
     "XREFFILE": {
-      "rows": [
-        "968029415460369700000000100000000001"
-      ]
+      "fixture": "cardxref.txt",
+      "fromRow": 2,
+      "rowCount": 1
     },
     "XREFFIL1": {
-      "rows": [
-        "968029415460369700000000100000000001"
-      ]
+      "fixture": "cardxref.txt",
+      "fromRow": 2,
+      "rowCount": 1
     },
     "DISCGRP": {
       "fixture": "discgrp.txt",
-      "fromRow": 0,
+      "fromRow": 17,
       "rowCount": 1
     }
   },
@@ -37,34 +37,50 @@
     {
       "dataset": "SYSTRAN",
       "rowIndex": 0,
-      "expectedBytes": "2022071800000001010005System    Int. for a/c 00000000001                                                                            0000000000{000000000                                                                                                              96802941546036972022-07-19-23.12.34.0000002022-07-19-23.12.34.000000                    "
+      "fields": {
+        "TRAN-ID": "2022071800000001",
+        "TRAN-TYPE-CD": "01",
+        "TRAN-CAT-CD": "0005",
+        "TRAN-SOURCE": "System    ",
+        "TRAN-DESC": "Int. for a/c 00000000002                                                                            ",
+        "TRAN-AMT": "0000000019G",
+        "TRAN-MERCHANT-ID": "000000000",
+        "TRAN-MERCHANT-NAME": "                                                  ",
+        "TRAN-MERCHANT-CITY": "                                                  ",
+        "TRAN-MERCHANT-ZIP": "          ",
+        "TRAN-CARD-NUM": "0923877193247330",
+        "TRAN-ORIG-TS": "2022-07-19-23.12.34.000000",
+        "TRAN-PROC-TS": "2022-07-19-23.12.34.000000",
+        "FILLER": "                    "
+      },
+      "expectedBytes": "2022071800000001010005System    Int. for a/c 00000000002                                                                            0000000019G000000000                                                                                                              09238771932473302022-07-19-23.12.34.0000002022-07-19-23.12.34.000000                    "
     }
   ],
   "expectedFinalState": [
     {
       "dataset": "TCATBALF",
       "rowIndex": 0,
-      "expectedBytes": "000000000010100010000000000E0000000000000000000000"
+      "expectedBytes": "000000000020100010000001580{0000000000000000000000"
     },
     {
       "dataset": "ACCTFILE",
       "rowIndex": 0,
-      "expectedBytes": "00000000001Y00000001940{00000020200{00000010200{2014-11-202025-05-202025-05-2000000000000{00000000000{A000000000A000000000                                                                                                                                                                                  "
+      "expectedBytes": "00000000002Y00000001580{00000061300{00000054480{2013-06-192024-08-112024-08-1100000000000{00000000000{A000000000                                                                                                                                                                                            "
     },
     {
       "dataset": "XREFFILE",
       "rowIndex": 0,
-      "expectedBytes": "968029415460369700000000100000000001              "
+      "expectedBytes": "092387719324733000000000200000000002              "
     },
     {
       "dataset": "XREFFIL1",
       "rowIndex": 0,
-      "expectedBytes": "968029415460369700000000100000000001              "
+      "expectedBytes": "092387719324733000000000200000000002              "
     },
     {
       "dataset": "DISCGRP",
       "rowIndex": 0,
-      "expectedBytes": "A00000000001000100150{0000000000000000000000000000"
+      "expectedBytes": "DEFAULT   01000100150{0000000000000000000000000000"
     }
   ],
   "expectedReturnCode": 0,
@@ -75,7 +91,15 @@
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "000000000010100010000000000E0000000000000000000000"
+      "text": "000000000020100010000001580{0000000000000000000000"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "DISCLOSURE GROUP RECORD MISSING"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "TRY WITH DEFAULT GROUP CODE"
     },
     {
       "channel": "DISPLAY_LINE",
