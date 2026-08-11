@@ -1,13 +1,14 @@
 {
   "program": "CBTRN03C",
   "caseId": "case05",
-  "description": "The end-of-file write triple, exactly three records and no fourth. :202 performs 1110-WRITE-PAGE-TOTALS, which writes REPORT-PAGE-TOTALS and then a TRANSACTION-HEADER-2 rule and advances WS-LINE-COUNTER once for each; :203 performs 1110-WRITE-GRAND-TOTALS (:318-322), which writes REPORT-GRAND-TOTALS and advances the counter NOT AT ALL - it is the only write paragraph in the program with no ADD 1 TO WS-LINE-COUNTER. The absence is invisible in the report because the grand total is always the last record written, and this case pins that fact from the other side: no rule line follows the grand total and nothing else is written after it.",
+  "description": "EXACT ZERO and the all-Z blanking rule - the highest-risk formatting trap in this folder, and the one difference that would otherwise appear on every report this program has ever produced that happens to net to zero. THE RULE, DERIVED FROM THE PICTURE STRINGS. app/cpy/CVTRA07Y.cpy declares TRAN-REPORT-AMT as PIC -ZZZ,ZZZ,ZZZ.ZZ at line 30 and REPT-PAGE-TOTAL, REPT-ACCOUNT-TOTAL and REPT-GRAND-TOTAL as PIC +ZZZ,ZZZ,ZZZ.ZZ at lines 54, 60 and 66. Each mask is fifteen bytes - sign, three digit positions, comma, three, comma, three, decimal point, two - so it holds nine integer and two decimal digit positions, ELEVEN in all, and every single one of them is a Z. When every numeric character position of a PICTURE is Z and the value is zero, COBOL blanks the ENTIRE data item: not just the digits, but the fixed insertion sign position, both comma insertions and the decimal point with them. A zero amount therefore renders as EXACTLY FIFTEEN SPACES - never '+          0.00', never '           0.00', and never a bare '.00'. That is the discontinuity this case pins, and it is deliberate rather than a gap: case03 pins the positive renderings ('            .99', '          14.00', '   1,234,567.89') and case04 the negative ones ('-         25.99', '-  1,979,641.72'), all of which keep their sign, their commas and their point, and this case is the single point at which all three vanish at once. THE DATA, CHOSEN TO REACH BOTH A ZERO DETAIL AND A ZERO TOTAL. Three in-range records sit on the one card 0500024453765740, which is row 1 of app/data/ASCII/cardxref.txt and resolves to XREF-ACCT-ID 00000000050, so :181 finds WS-CURR-CARD-NUM equal to TRAN-CARD-NUM on records 2 and 3, re-reads the cross-reference only once, and never breaks the card - while 1500-B-LOOKUP-TRANTYPE and 1500-C-LOOKUP-TRANCATG still run on every record. Record 1 is a +25.99 type 01 'Regular Sales Draft' on TRAN-SOURCE 'POS TERM  ', record 2 the exactly offsetting -25.99 type 03 'Credit to Account' on 'OPERATOR  ' and record 3 an EXACT ZERO type 05 'Refund credit' on 'OPERATOR  '. Types 01, 03 and 05 are all in app/data/ASCII/trantype.txt and keys 010001, 030001 and 050001 are all in app/data/ASCII/trancatg.txt, so no lookup abends; the type description truncates into X(15) and the category description into X(29), both right-space-padded. THE ARITHMETIC, AT SCALE EXACTLY TWO AND TRUNCATING (practice B11, gates G23 and G24). TRAN-AMT is PIC S9(09)V99 at CVTRA05Y bytes 133-143: eleven zoned US-ASCII DISPLAY bytes whose sign is the trailing overpunch, where {ABCDEFGHI encodes +0 through +9 and }JKLMNOPQR encodes -0 through -9 - an alphabet confirmed against all 300 rows of app/data/ASCII/dailytran.txt. So +25.99 stores as 0000000259I, -25.99 as 0000000259R and zero as 0000000000{, the { being a final digit of 0 carrying a positive sign. :287-288 accumulates 25.99, then -25.99, then 0.00, leaving WS-PAGE-TOTAL and WS-ACCOUNT-TOTAL at exactly 0.00; the end-of-file arm adds 0.00 once more, so the sum is 25.99 - 25.99 + 0.00 + 0.00 = 0.00 and stays there. The keyword ROUNDED appears zero times in app/cbl/CBTRN03C.cbl, so COBOL truncates excess fractional digits on store and RoundingMode.DOWN at the receiver's declared scale of 2 is the only faithful semantics - nothing here is half-up, half-even, ceiling or floor, and no value is ever a double or a float. PRESERVED DEFECT 2 (practice B5). The READ TRANSACT-FILE INTO TRAN-RECORD at :249 leaves its receiving area untouched AT END, so at :197 TRAN-RECORD still holds record 3 - whose TRAN-AMT 1100-WRITE-TRANSACTION-REPORT has already added at :287-288 - and :200-201 adds it to both accumulators a second time. Here that duplicate is ARITHMETICALLY INVISIBLE, because the amount being double-counted is zero: 0.00 + 0.00 is still 0.00. Its invisibility is a property of the data this case chooses and is NOT evidence that the defect was repaired - the second ADD is still executed, and case06, case07 and case16 pin it numerically where the amount is non-zero. It is not fixed, because fixing it would change every report the program has ever produced. EDITED VERSUS RAW - THE DISTINCTION THAT PRODUCES A SILENT DIFF. The all-Z blanking rule governs NUMERIC-EDITED items only. The two DISPLAY lines at :198-199 emit plain PIC S9(09)V99 fields, which have no edit mask at all, so they show their raw stored bytes even when the value is zero: line 6 is 'TRAN-AMT ' - the trailing space is inside the literal - followed by 0000000000{, and line 7 is 'WS-PAGE-TOTAL' - which carries no trailing space, so its value runs straight on - followed by 0000000000{, the page total as it stood BEFORE the defect-2 addition. Blanking those eleven bytes, or conversely rendering the report's amount columns as zeros, is the same mistake made in opposite directions. THE LEDGER. 0550-DATEPARM-READ takes status '00' and displays the range; record 1 is in range and, because WS-FIRST-TIME is 'Y' at :275, writes the four-line header block and no account block, leaving WS-LINE-COUNTER at 4; FUNCTION MOD(4,20), MOD(5,20) and MOD(6,20) are all non-zero at :282, so no page breaks and the three detail lines take the counter to 5, 6 and 7. The fourth read returns '10', END-OF-FILE becomes 'Y', the range test still sees record 3's in-range TRAN-PROC-TS so the ELSE arm at :197-204 runs: the two DISPLAYs, the duplicate ADD, then 1110-WRITE-PAGE-TOTALS - a page-total line whose amount column is fifteen spaces, ADD WS-PAGE-TOTAL TO WS-GRAND-TOTAL at :297 leaving the grand total at 0.00, MOVE 0 TO WS-PAGE-TOTAL, counter 8, then TRANSACTION-HEADER-2, counter 9 - and finally 1110-WRITE-GRAND-TOTALS at :318-322, whose amount column is also fifteen spaces and which is the one write paragraph in the program that does not increment the counter, so it ends at 9 against ten written records. Only PAGE totals roll into the grand total; ACCOUNT totals never do, :310 having no ADD, and no REPORT-ACCOUNT-TOTALS record appears at all here because 1120-WRITE-ACCOUNT-TOTALS is reached only from :183 on a card change and one card never changes - REPT-ACCOUNT-TOTAL carries the identical +ZZZ,ZZZ,ZZZ.ZZ mask and would blank identically, and its accumulator does indeed end at 0.00. The case therefore carries exactly three blanked amount columns - record 3's detail line, the page total and the grand total - beside record 2's un-blanked '-         25.99', so the contrast is visible within the one case. GEOMETRY. Every one of the ten records is exactly 133 bytes, the LRECL app/jcl/TRANREPT.jcl:78 and app/proc/TRANREPT.prc:76 declare as RECFM=FB: the 115-byte name header padded by 18, WS-BLANK-LINE and TRANSACTION-HEADER-2 already full width at 133, the 114-byte header-1 and each 114-byte detail padded by 19, and each 112-byte total line - 86 '.' leader included - padded by 21 (gates G20 and G21). A fifteen-space amount column must not tempt anyone into trimming the line: the width stays 133 and every FILLER span, including TRAN-RECORD's own trailing X(20), is still present and space-filled. The reporting range comes from the DATEPARM DATASET and never from a PARM - app/jcl/TRANREPT.jcl:59 gives STEP10R none - so the case declares no job parameter and seeds an 80-byte DATEPARM row shaped exactly like line 15 of CORPT00C's generated skeleton at app/cbl/CORPT00C.cbl:117-121, two PIC X(10) dates around a one-byte separator and 59 trailing spaces, which 0550-DATEPARM-READ right-truncates into its 21-byte WS-DATEPARM-RECORD. CARDXREF is seeded from the fixture at its real 36 bytes and is NOT pre-padded: the 14-byte CVACT03Y FILLER is supplied once, at seed time, by the declared CARDXREF_FILLER_PAD_36_TO_50 normalisation (gate G16). The unit is the Spring Batch tasklet body, invoked with no JobLauncher and no HTTP layer in the path (gate G51), and every byte is compared under US-ASCII named explicitly rather than taken from the platform default (practice B8). Both EVALUATE statements in the program are '00' / '10' / WHEN OTHER with WHEN OTHER last (gate G30); this case exercises '00' on the DATEPARM read and on three transaction reads and '10' on the fourth, and abends nowhere, so RETURN-CODE stays 0. PROVENANCE (practice B12). Every value above is STATICALLY DERIVED - read out of app/cbl/CBTRN03C.cbl paragraph by paragraph and cross-checked against the byte layouts of app/cpy/CVTRA05Y.cpy, CVTRA03Y.cpy, CVTRA04Y.cpy, CVACT03Y.cpy and CVTRA07Y.cpy, the DD and DCB contracts of app/jcl/TRANREPT.jcl and app/proc/TRANREPT.prc, and the real ASCII fixtures in app/data/ASCII. None of it is captured from, recorded against or replayed from an execution of the legacy COBOL, which is empirically impossible in this environment - AAP section 0.7.6 documents eight independently verified blockers, among them a compiler whose indexed-file handler reports as disabled and the total absence of Language Environment CEE* services. Only the provenance of the expected values changes; the twenty cases, the field-for-field diffing and the diff-count-equals-zero gate are all preserved, and the substitution is escalated as risk R-A rather than silently absorbed.",
   "unitKind": "BATCH_JOB",
   "inputs": {
     "TRANFILE": {
       "rows": [
-        "TRN0000000000001010001POS TERM  A statically derived fixture transaction                                                            0000000010{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-03-15-11.22.33.4444442022-03-15-11.22.33.444444                    ",
-        "TRN0000000000002010001POS TERM  A statically derived fixture transaction                                                            0000000020{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-03-15-11.22.33.4444442022-03-15-11.22.33.444444                    "
+        "TRN0000000000001010001POS TERM  Statically derived fixture transaction - positive debit opens the page total                        0000000259I999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-02-01-11.22.33.4444442022-02-01-11.22.33.444444                    ",
+        "TRN0000000000002030001OPERATOR  Statically derived fixture transaction - offsetting credit nets the page total to zero              0000000259R999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-03-01-11.22.33.4444442022-03-01-11.22.33.444444                    ",
+        "TRN0000000000003050001OPERATOR  Statically derived fixture transaction - EXACT ZERO amount blanks the edited field                  0000000000{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-04-01-11.22.33.4444442022-04-01-11.22.33.444444                    "
       ]
     },
     "CARDXREF": {
@@ -50,27 +51,32 @@
     {
       "dataset": "TRANREPT",
       "rowIndex": 4,
-      "expectedBytes": "TRN0000000000001 00000000050 01-Purchase        0001-Regular Sales Draft           POS TERM                 1.00                     "
+      "expectedBytes": "TRN0000000000001 00000000050 01-Purchase        0001-Regular Sales Draft           POS TERM                25.99                     "
     },
     {
       "dataset": "TRANREPT",
       "rowIndex": 5,
-      "expectedBytes": "TRN0000000000002 00000000050 01-Purchase        0001-Regular Sales Draft           POS TERM                 2.00                     "
+      "expectedBytes": "TRN0000000000002 00000000050 03-Credit          0001-Credit to Account             OPERATOR      -         25.99                     "
     },
     {
       "dataset": "TRANREPT",
       "rowIndex": 6,
-      "expectedBytes": "Page Total ......................................................................................+          5.00                     "
+      "expectedBytes": "TRN0000000000003 00000000050 05-Refund          0001-Refund credit                 OPERATOR                                          "
     },
     {
       "dataset": "TRANREPT",
       "rowIndex": 7,
-      "expectedBytes": "-------------------------------------------------------------------------------------------------------------------------------------"
+      "expectedBytes": "Page Total ......................................................................................                                    "
     },
     {
       "dataset": "TRANREPT",
       "rowIndex": 8,
-      "expectedBytes": "Grand Total......................................................................................+          5.00                     "
+      "expectedBytes": "-------------------------------------------------------------------------------------------------------------------------------------"
+    },
+    {
+      "dataset": "TRANREPT",
+      "rowIndex": 9,
+      "expectedBytes": "Grand Total......................................................................................                                    "
     }
   ],
   "expectedFinalState": [
@@ -97,27 +103,32 @@
     {
       "dataset": "TRANREPT",
       "rowIndex": 4,
-      "expectedBytes": "TRN0000000000001 00000000050 01-Purchase        0001-Regular Sales Draft           POS TERM                 1.00                     "
+      "expectedBytes": "TRN0000000000001 00000000050 01-Purchase        0001-Regular Sales Draft           POS TERM                25.99                     "
     },
     {
       "dataset": "TRANREPT",
       "rowIndex": 5,
-      "expectedBytes": "TRN0000000000002 00000000050 01-Purchase        0001-Regular Sales Draft           POS TERM                 2.00                     "
+      "expectedBytes": "TRN0000000000002 00000000050 03-Credit          0001-Credit to Account             OPERATOR      -         25.99                     "
     },
     {
       "dataset": "TRANREPT",
       "rowIndex": 6,
-      "expectedBytes": "Page Total ......................................................................................+          5.00                     "
+      "expectedBytes": "TRN0000000000003 00000000050 05-Refund          0001-Refund credit                 OPERATOR                                          "
     },
     {
       "dataset": "TRANREPT",
       "rowIndex": 7,
-      "expectedBytes": "-------------------------------------------------------------------------------------------------------------------------------------"
+      "expectedBytes": "Page Total ......................................................................................                                    "
     },
     {
       "dataset": "TRANREPT",
       "rowIndex": 8,
-      "expectedBytes": "Grand Total......................................................................................+          5.00                     "
+      "expectedBytes": "-------------------------------------------------------------------------------------------------------------------------------------"
+    },
+    {
+      "dataset": "TRANREPT",
+      "rowIndex": 9,
+      "expectedBytes": "Grand Total......................................................................................                                    "
     }
   ],
   "expectedReturnCode": 0,
@@ -132,19 +143,23 @@
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "TRN0000000000001010001POS TERM  A statically derived fixture transaction                                                            0000000010{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-03-15-11.22.33.4444442022-03-15-11.22.33.444444                    "
+      "text": "TRN0000000000001010001POS TERM  Statically derived fixture transaction - positive debit opens the page total                        0000000259I999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-02-01-11.22.33.4444442022-02-01-11.22.33.444444                    "
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "TRN0000000000002010001POS TERM  A statically derived fixture transaction                                                            0000000020{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-03-15-11.22.33.4444442022-03-15-11.22.33.444444                    "
+      "text": "TRN0000000000002030001OPERATOR  Statically derived fixture transaction - offsetting credit nets the page total to zero              0000000259R999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-03-01-11.22.33.4444442022-03-01-11.22.33.444444                    "
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "TRAN-AMT 0000000020{"
+      "text": "TRN0000000000003050001OPERATOR  Statically derived fixture transaction - EXACT ZERO amount blanks the edited field                  0000000000{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-04-01-11.22.33.4444442022-04-01-11.22.33.444444                    "
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "WS-PAGE-TOTAL0000000030{"
+      "text": "TRAN-AMT 0000000000{"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "WS-PAGE-TOTAL0000000000{"
     },
     {
       "channel": "DISPLAY_LINE",
@@ -161,13 +176,13 @@
     {
       "dataset": "TRANREPT",
       "channel": "WRITES",
-      "rowCount": 9,
+      "rowCount": 10,
       "recordLength": 133
     },
     {
       "dataset": "TRANREPT",
       "channel": "FINAL_STATE",
-      "rowCount": 9,
+      "rowCount": 10,
       "recordLength": 133
     }
   ]

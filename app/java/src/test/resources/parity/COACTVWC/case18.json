@@ -1,7 +1,7 @@
 {
   "program": "COACTVWC",
   "caseId": "case18",
-  "description": "DFHPF7 is page-backward on the list screens and nothing at all here. CSSTRPFY stores CCARD-AID-PFK07, the gate rewrites it to ENTER, and the account is displayed. Its arm is app/cpy/CSSTRPFY.cpy:42-43, which sets CCARD-AID-PFK07 - a condition the gate at :307-308 does not accept - so :312-314 rewrites it to ENTER. Driving a key from the middle of the copybook's range rather than only its edges is what catches a resolver that mapped PF7 to the wrong condition name: the mapping is by raw EIBAID byte and adjacent keys differ by one.",
+  "description": "The invalid-PF-key silent remap at :306-314, driven with DFHPF12 - a key CSSTRPFY does match and this screen does not accept. app/cpy/CSSTRPFY.cpy:21-78 is one EVALUATE TRUE of 28 arms in a fixed order - DFHENTER, DFHCLEAR, DFHPA1, DFHPA2, DFHPF1 through DFHPF12, then DFHPF13 through DFHPF24 folded back onto PFK01 through PFK12 - and DFHPF12 is the sixteenth of them, at :52-53, where it SETs CCARD-AID-PFK12. That token is a real one: app/cpy/CVCRD01Y.cpy:3 declares CCARD-AID PIC X(5) and :19 gives it 88 CCARD-AID-PFK12 VALUE 'PFK12'. COACTVWC reaches the paragraph through COPY 'CSSTRPFY' at :913. So resolution succeeds cleanly and the interesting part is what the program then does with the answer. The gate is three statements and their order is the whole of it: :306 SET PFK-INVALID TO TRUE starts pessimistic against the 88-levels at :55-56; :307-310 IF CCARD-AID-ENTER OR CCARD-AID-PFK03 SET PFK-VALID TO TRUE, and PFK12 satisfies neither disjunct, so the flag stays PFK-INVALID; :312-314 IF PFK-INVALID SET CCARD-AID-ENTER TO TRUE. That third statement is the remap, and it is destructive - CCARD-AID is overwritten from PFK12 to ENTER and nothing anywhere restores it, so from :315 onwards the program cannot tell PF12 from Enter and neither can its response. Nothing else happens. No message is set, WS-RETURN-MSG stays as :278 left it, INPUT-ERROR is not set, and the user is never told the key was ignored: ERRMSGO is 78 spaces from :532 and expectedMessages is empty. app/cpy/CSMSG01Y.cpy:20-21 does define CCDA-MSG-INVALID-KEY PIC X(50) as 'Invalid key pressed. Please see below...', and twelve other programs move it - COADM01C, COBIL00C, COMEN01C, CORPT00C, COSGN00C, COTRN00C, COTRN01C, COTRN02C and COUSR00C through COUSR03C - but a search of app/cbl/COACTVWC.cbl finds zero occurrences of the name, so emitting it here would invent an acknowledgement the COBOL does not give (practice B5). After the rewrite the main EVALUATE TRUE at :323-383 runs in source order with CCARD-AID-ENTER true, so its first arm WHEN CCARD-AID-PFK03 at :324 is false and no XCTL is taken, and the inbound CDEMO-PGM-CONTEXT of 1 selects the third arm WHEN CDEMO-PGM-REENTER at :361 - which is the point of pairing this key with a valid filter rather than a blank one: the remap is asserted through a fully-populated screen instead of a bare prompt. CDEMO-FROM-PROGRAM is COCRDLIC rather than LIT-MENUPGM, so the fresh-start guard at :282-284 does not fire and the commarea survives. 2210-EDIT-ACCOUNT clears both its guards and takes the ELSE at :678-680, INPUT-ERROR is false at :364, and 9000-READ-ACCT at :687 issues its three reads in order with an early exit between each: the READ at :727 on DATASET(LIT-CARDXREFNAME-ACCT-PATH), which :192-193 fixes as 'CXACAIX ' - the alternate-index path over the CCXREF base and a second finder on one repository rather than a second table - for 50 bytes, moving XREF-CUST-ID and XREF-CARD-NUM into the commarea at :739-740; the READ at :776 on 'ACCTDAT ' for 300 bytes, setting FOUND-ACCT-IN-MASTER at :788; and the READ at :826 on 'CUSTDAT ' for 500 bytes on a nine-byte RIDFLD, setting FOUND-CUST-IN-MASTER at :838. Each of the three EVALUATE WS-RESP-CD blocks orders its arms NORMAL, NOTFND, WHEN OTHER and this case takes the first at :738, :787 and :837, so the '00' outcome is pinned at every call site. Both 1200 projections therefore run: ACCTSIDO from the ELSE at :468, the ten account fields at :471-491 including the misspelled ACCT-EXPIRAION-DATE at :488 and the five PIC +ZZZ,ZZZ,ZZZ.99 receivers declared at app/cpy-bms/COACTVW.CPY:302, :314, :326, :332 and :344, and the eighteen customer receivers at :493-523 - seventeen MOVEs plus the STRING at :496-504, whose twelfth byte stays a LOW-VALUE because :432 moved LOW-VALUES over CACTVWAO and the STRING transfers only eleven characters. Six header items, ACCTSIDO, ten, eighteen, INFOMSGO and ERRMSGO account for all 37 xxxO items exactly. INFOMSGO reads the prompt and not 'Displaying details of given Account', because WS-INFORM-OUTPUT at :115-116 is never SET while :689 SETs WS-NO-INFO-MESSAGE and no NORMAL arm replaces it, so the guard at :528-530 fires and :534 moves the literal of :113-114 into X(45); that is also why 1300 takes its ELSE at :569-570 and colours INFOMSGC DFHNEUTR. FLG-ACCTFILTER-BLANK is false, so the highlight at :561-565 does not fire even though CDEMO-PGM-REENTER holds - re-entry alone is not enough - and ACCTSIDC stays DFHDFCOL from :555 with no DFHRED and no asterisk anywhere. The cursor is ACCTSIDL either way, because the EVALUATE at :546-552 gives both arms the same body, and that duplication is preserved rather than collapsed. :579-581 then names COACTVW and CACTVWA and SETs CDEMO-PGM-REENTER, and COMMON-RETURN is reached by the GO TO at :373, bypassing the trailing IF INPUT-ERROR at :387-392, before EXEC CICS RETURN TRANSID at :402-406. The resolved AID is not a member of this contract, so the remap is asserted where it is actually observable: every expected byte here is identical to the DFHENTER case, and case03 is that case - diff the two and only caseId, the aid and this text differ. case17 presses DFHPF15, which :58-59 folds onto PFK03 and which therefore transfers instead; case19 presses DFHPA3, which has no arm at all and no WHEN OTHER to fall into. Statically derived and never captured from a live COBOL execution (risk R-A): the values come from app/cbl/COACTVWC.cbl, the byte offsets of app/cpy/CVACT03Y.cpy, app/cpy/CVACT01Y.cpy and app/cpy/CVCUS01Y.cpy summing to 50, 300 and 500 with their FILLER spans space-filled, the xxxI and xxxO PICTURE clauses of app/cpy-bms/COACTVW.CPY, the PICOUT masks of app/bms/COACTVW.bms:120-195, the titles at app/cpy/COTTL01Y.cpy:19 and the active :22, and the real fixture rows - cardxref.txt 0-based rows 0, 1 and 2, acctdata.txt 0-based row 49 and custdata.txt 0-based row 49. The cross reference is keyed by card number and is not ordered by account, so its row is named rather than assumed.",
   "unitKind": "CONTROLLER_POJO",
   "inputs": {
     "CCXREF": {
@@ -20,9 +20,10 @@
       "rowCount": 1
     }
   },
+  "jobParameters": {},
   "screenRequest": {
     "eibcalen": 172,
-    "aid": "DFHPF7",
+    "aid": "DFHPF12",
     "pinnedClock": "2022-07-19T23:12:32",
     "charset": "US-ASCII",
     "commarea": {
@@ -188,26 +189,80 @@
     {
       "dataset": "CCXREF",
       "rowIndex": 0,
+      "fields": {
+        "XREF-CARD-NUM": "0500024453765740",
+        "XREF-CUST-ID": "000000050",
+        "XREF-ACCT-ID": "00000000050",
+        "FILLER": "              "
+      },
       "expectedBytes": "050002445376574000000005000000000050              "
     },
     {
       "dataset": "CCXREF",
       "rowIndex": 1,
+      "fields": {
+        "XREF-CARD-NUM": "0683586198171516",
+        "XREF-CUST-ID": "000000027",
+        "XREF-ACCT-ID": "00000000027",
+        "FILLER": "              "
+      },
       "expectedBytes": "068358619817151600000002700000000027              "
     },
     {
       "dataset": "CCXREF",
       "rowIndex": 2,
+      "fields": {
+        "XREF-CARD-NUM": "0923877193247330",
+        "XREF-CUST-ID": "000000002",
+        "XREF-ACCT-ID": "00000000002",
+        "FILLER": "              "
+      },
       "expectedBytes": "092387719324733000000000200000000002              "
     },
     {
       "dataset": "ACCTDAT",
       "rowIndex": 0,
+      "fields": {
+        "ACCT-ID": "00000000050",
+        "ACCT-ACTIVE-STATUS": "Y",
+        "ACCT-CURR-BAL": "00000004920{",
+        "ACCT-CREDIT-LIMIT": "00000061690{",
+        "ACCT-CASH-CREDIT-LIMIT": "00000045870{",
+        "ACCT-OPEN-DATE": "2011-04-22",
+        "ACCT-EXPIRAION-DATE": "2023-03-09",
+        "ACCT-REISSUE-DATE": "2023-03-09",
+        "ACCT-CURR-CYC-CREDIT": "00000000000{",
+        "ACCT-CURR-CYC-DEBIT": "00000000000{",
+        "ACCT-ADDR-ZIP": "A000000000",
+        "ACCT-GROUP-ID": "          ",
+        "FILLER": "                                                                                                                                                                                  "
+      },
       "expectedBytes": "00000000050Y00000004920{00000061690{00000045870{2011-04-222023-03-092023-03-0900000000000{00000000000{A000000000                                                                                                                                                                                            "
     },
     {
       "dataset": "CUSTDAT",
       "rowIndex": 0,
+      "fields": {
+        "CUST-ID": "000000050",
+        "CUST-FIRST-NAME": "Aniya                    ",
+        "CUST-MIDDLE-NAME": "Alba                     ",
+        "CUST-LAST-NAME": "Von                      ",
+        "CUST-ADDR-LINE-1": "1588 Nienow Cape                                  ",
+        "CUST-ADDR-LINE-2": "Suite 187                                         ",
+        "CUST-ADDR-LINE-3": "New Aricchester                                   ",
+        "CUST-ADDR-STATE-CD": "OR",
+        "CUST-ADDR-COUNTRY-CD": "USA",
+        "CUST-ADDR-ZIP": "04257     ",
+        "CUST-PHONE-NUM-1": "(325)301-0827  ",
+        "CUST-PHONE-NUM-2": "(493)985-9283  ",
+        "CUST-SSN": "931248469",
+        "CUST-GOVT-ISSUED-ID": "00000000000030387824",
+        "CUST-DOB-YYYY-MM-DD": "1960-12-01",
+        "CUST-EFT-ACCOUNT-ID": "0074883577",
+        "CUST-PRI-CARD-HOLDER-IND": "Y",
+        "CUST-FICO-CREDIT-SCORE": "623",
+        "FILLER": "                                                                                                                                                                        "
+      },
       "expectedBytes": "000000050Aniya                    Alba                     Von                      1588 Nienow Cape                                  Suite 187                                         New Aricchester                                   ORUSA04257     (325)301-0827  (493)985-9283  931248469000000000000303878241960-12-010074883577Y623                                                                                                                                                                        "
     }
   ],

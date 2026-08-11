@@ -87,7 +87,9 @@ import org.junit.jupiter.params.provider.MethodSource;
  *
  * <ol>
  *   <li>{@code app/cbl/COTRN02C.cbl:5} - {@code Function : Add a new Transaction to TRANSACT file}.</li>
- *   <li>{@code README.md:224} - {@code | CT02 | COTRN02 | COTRN02C | Transaction Add |}.</li>
+ *   <li>{@code README.md} - the online inventory row
+ *       {@code | CT02 | COTRN02 | COTRN02C | Transaction Add |}, cited by row rather than by line
+ *       number because README.md gains a Java build section under this migration (gate G55).</li>
  *   <li>The map's own shape in {@code app/bms/COTRN02.bms} - {@code ACTIDIN 11},
  *       {@code CARDNIN 16} and {@code CONFIRM 1} are present, {@code TRNIDIN} and {@code TRNID} are
  *       absent, and <strong>14 of the 21</strong> labelled fields are {@code UNPROT}. A view screen
@@ -127,7 +129,7 @@ import org.junit.jupiter.params.provider.MethodSource;
  *       operands of every cross-width {@code MOVE} into this map.</li>
  *   <li>{@code app/csd/CARDDEMO.CSD} - {@code MAPSET(COTRN02)} at line 153,
  *       {@code PROGRAM(COTRN02C)} at line 271 and {@code TRANSACTION(CT02)} at line 439.</li>
- *   <li>{@code README.md:224} - the transaction inventory row quoted above.</li>
+ *   <li>{@code README.md} - the transaction inventory row quoted above.</li>
  * </ul>
  *
  * <h2>Counts reconciled, so an absence reads as a finding</h2>
@@ -2042,11 +2044,21 @@ class TransactionViewResponseTest {
         }
 
         @Test
-        @DisplayName("risk R-B evidence 1 and 2: COTRN02C.cbl:5 and README.md:224 both say ADD")
+        @DisplayName("risk R-B evidence 1 and 2: COTRN02C.cbl:5 and the README's CT02 row both say ADD")
         void theProgramHeaderAndTheReadmeBothSayAdd() throws IOException {
             assertThat(line(PROGRAM, 5))
                     .contains("Function    : Add a new Transaction to TRANSACT file");
-            assertThat(line(README, 224)).contains("CT02").contains("COTRN02")
+            // The README row is located by content, not by line number. README.md is the only oracle
+            // in this class's list that the migration itself changes - it gains a Java build section
+            // (AAP 0.4.9, gate G55) - so an absolute index into it goes stale as soon as the
+            // documentation grows, while the row remains unique and remains the evidence.
+            List<String> ct02Rows = lines(README).stream()
+                    .filter(row -> row.startsWith("|") && row.contains(" CT02 "))
+                    .toList();
+            assertThat(ct02Rows)
+                    .as("README.md carries exactly one CT02 row in its online inventory")
+                    .hasSize(1);
+            assertThat(ct02Rows.get(0)).contains("CT02").contains("COTRN02")
                     .contains("COTRN02C").contains("Transaction Add");
 
             // And the type is nonetheless named "View", by rule R1. Documented, not corrected.

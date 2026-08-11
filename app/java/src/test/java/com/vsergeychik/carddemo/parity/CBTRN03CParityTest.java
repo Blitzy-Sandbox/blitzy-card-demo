@@ -87,7 +87,7 @@ import org.springframework.transaction.PlatformTransactionManager;
  *       period is the one closing the entire {@code PERFORM UNTIL ... END-PERFORM.} at {@code :206} -
  *       not the {@code END-IF} two lines below. So the first record whose {@code TRAN-PROC-TS (1:10)}
  *       falls outside the reporting range does not get skipped: it truncates the report and suppresses
- *       the page and grand totals at {@code :202-203} entirely. {@code case08} pins it firing on the
+ *       the page and grand totals at {@code :202-203} entirely. {@code case13} pins it firing on the
  *       first record and {@code case17} pins it firing on an empty input. Turning the break into a
  *       {@code continue} makes both fail. The complement is pinned too: {@code case06} keeps all five
  *       of its records inside the range, with the first and the last sitting <em>on</em> the inclusive
@@ -98,9 +98,11 @@ import org.springframework.transaction.PlatformTransactionManager;
  *       has already added to both accumulators at {@code :287-288}. Adding it again at {@code :200-201}
  *       overstates the final page total and, through {@code :297}, the grand total. {@code case07} pins
  *       the doubling numerically, {@code case06} pins it at the foot of a five-record run where the
- *       five amounts sum to 1,819.34 and both totals nonetheless read 1,880.53, and {@code case16} pins
- *       the high-order truncation it causes at the top of {@code PIC S9(09)V99}. Removing the addition
- *       makes all three fail.</li>
+ *       five amounts sum to 1,819.34 and both totals nonetheless read 1,880.53, and {@code case15}
+ *       quantifies it across three records. Removing the addition makes all three fail. The high-order
+ *       truncation the doubling can cause at the top of {@code PIC S9(09)V99} is asserted directly by
+ *       {@link #theRunningTotalsTruncateAtNineIntegerDigitsAndScaleTwo()} rather than through a
+ *       fixture, because no case's amounts reach nine integer digits.</li>
  * </ul>
  * <p>Neither is fixed here. Fixing either would change every report this program has ever produced,
  * which is a behaviour change and a parity violation (practice B5).
@@ -124,6 +126,19 @@ import org.springframework.transaction.PlatformTransactionManager;
  * ({@code :283} then {@code :284}) and leaves thirty records written against a counter of twenty-nine,
  * the difference being {@code 1110-WRITE-GRAND-TOTALS} at {@code :318-322} - the one paragraph in the
  * program that writes without incrementing.
+ *
+ * <h2>All three INVALID KEY arms are pinned, one case each</h2>
+ * <p>The three keyed lookups fail identically in shape - display, {@code MOVE 23 TO IO-STATUS},
+ * {@code 9910-DISPLAY-IO-STATUS}, {@code 9999-ABEND-PROGRAM} - and differ only in the message literal
+ * and the width of the key they echo. {@code case16} pins the cross-reference arm at {@code :484-492},
+ * whose key is sixteen bytes and whose failure on the first record leaves the report entirely empty
+ * because {@code 1500-A-LOOKUP-XREF} at {@code :187} runs before
+ * {@code 1100-WRITE-TRANSACTION-REPORT} at {@code :196}; {@code case10} pins the transaction-type arm
+ * at {@code :494-502} on its two-byte key; and {@code case11} pins the category arm at {@code :504-512}
+ * on its six-byte key. {@code case20} then pins the same type arm failing <em>after</em> five records
+ * have been written, which is what separates the two record channels. All four state
+ * {@code expectedReturnCode} 12, because all four reach the one {@code CALL 'CEE3ABD'} at {@code :630}
+ * (gates G35 and G47).
  *
  * <h2>How it runs</h2>
  * <p>{@link ParityHarness} seeds each case's datasets, invokes the unit and captures a fingerprint;
@@ -446,13 +461,15 @@ class CBTRN03CParityTest {
      * The two numeric-edited masks of {@code app/cpy/CVTRA07Y.cpy}, compared as exact strings.
      *
      * <p>The mask <em>is</em> the value: a report amount is a fifteen-character image, not a number
-     * that happens to be formatted, so every one of these is an equality on characters. Three cases in
+     * that happens to be formatted, so every one of these is an equality on characters. Two cases in
      * the fixture set depend on the rules asserted here - {@code case14} on the fixed leading sign and
-     * the comma that falls inside the suppressed run, {@code case15} on a four-digit amount and a
-     * four-digit total whose thousands comma prints because suppression has already stopped, and
-     * {@code case16} on a value that fills every position. The all-{@code Z} zero rule - a value of
-     * zero blanks the entire item, the decimal point included - is asserted here directly rather than
-     * through a fixture, because every amount and every total across the twenty cases is non-zero.
+     * the comma that falls inside the suppressed run, and {@code case15} on a four-digit amount and a
+     * four-digit total whose thousands comma prints because suppression has already stopped. Two
+     * further rules are asserted here directly rather than through a fixture: the mask-filling
+     * magnitude, which suppresses nothing and prints both commas, because no case's amount occupies
+     * every position; and the all-{@code Z} zero rule - a value of zero blanks the entire item, the
+     * decimal point included - because every amount and every total across the twenty cases is
+     * non-zero.
      */
     @Test
     @DisplayName("the -ZZZ,ZZZ,ZZZ.ZZ and +ZZZ,ZZZ,ZZZ.ZZ masks render exactly (G24)")
@@ -492,8 +509,8 @@ class CBTRN03CParityTest {
     }
 
     /**
-     * The arithmetic behind {@code case16}: the running totals are {@link BigDecimal} at scale exactly
-     * two and every store truncates toward zero.
+     * The arithmetic behind the running totals: they are {@link BigDecimal} at scale exactly two and
+     * every store truncates toward zero.
      *
      * <p>{@code WS-PAGE-TOTAL}, {@code WS-ACCOUNT-TOTAL} and {@code WS-GRAND-TOTAL} are all
      * {@code PIC S9(09)V99} ({@code app/cbl/CBTRN03C.cbl:134-136}), and {@code ROUNDED} appears
@@ -501,8 +518,9 @@ class CBTRN03CParityTest {
      * digits rather than rounding them, and a sum that overflows nine integer digits loses its
      * high-order digit rather than raising anything, because there is no {@code ON SIZE ERROR} either.
      * {@link com.vsergeychik.carddemo.common.CobolDecimal} is the single seam that decides both, and
-     * this is the assertion that says why {@code case16}'s page total reads 999,999,999.98 where the
-     * arithmetic sum is 1,999,999,999.98 (gates G22 and G24).
+     * this is the assertion that pins them: a page total that stores 999,999,999.98 where the
+     * arithmetic sum is 1,999,999,999.98 (gates G22 and G24). No case fixture carries an amount that
+     * needs a tenth integer digit, so the rule is asserted here rather than through one.
      */
     @Test
     @DisplayName("the totals are BigDecimal at scale 2 and every store truncates, never rounds (G24)")
@@ -522,8 +540,8 @@ class CBTRN03CParityTest {
                 .isEqualByComparingTo(new BigDecimal("1999999999.98"));
         assertThat(CobolDecimal.storeAtPicture(doubled, TransactionReportJob.TOTAL_INTEGER_DIGITS,
                         TransactionReportJob.TOTAL_SCALE))
-                .as("storing it into PIC S9(09)V99 discards the high-order digit, which is what "
-                        + "case16's page and grand totals show")
+                .as("storing it into PIC S9(09)V99 discards the high-order digit, which is what a "
+                        + "page or grand total that overflows nine integer digits shows")
                 .isEqualTo(new BigDecimal("999999999.98"));
         assertThat(CobolDecimal.store(new BigDecimal("1.239"), CobolDecimal.MONETARY_SCALE))
                 .as("truncation toward zero, not half-up - 1.239 stores as 1.23")

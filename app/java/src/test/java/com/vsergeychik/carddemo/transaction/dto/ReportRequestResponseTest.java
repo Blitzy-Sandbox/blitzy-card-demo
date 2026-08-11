@@ -82,7 +82,10 @@ import org.junit.jupiter.params.provider.ValueSource;
  *   <li>{@code app/csd/CARDDEMO.CSD:137} {@code DEFINE MAPSET(CORPT00)}, {@code :242}
  *       {@code DEFINE PROGRAM(CORPT00C)} and {@code :409} {@code DEFINE TRANSACTION(CR00)
  *       PROGRAM(CORPT00C)}.</li>
- *   <li>{@code README.md:225} - {@code | CR00 | CORPT00 | CORPT00C | Transaction Reports |}.</li>
+ *   <li>{@code README.md} - the online inventory row
+ *       {@code | CR00 | CORPT00 | CORPT00C | Transaction Reports |}. Cited by row rather than by line
+ *       number, because README.md gains a Java build section under this migration (gate G55) and any
+ *       absolute index into it would go stale.</li>
  * </ul>
  *
  * <p>Where an expected value can be <em>read from a source</em> rather than retyped, it is. Several of
@@ -96,7 +99,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  *
  * <p>The prompt-mandated name and the verified source function <strong>agree</strong> here:
  * {@code CORPT00C.cbl:5} reads {@code Function : Print Transaction reports by submitting batch} and
- * {@code README.md:225} documents {@code CR00} as {@code Transaction Reports}. So although rule
+ * README.md's online inventory documents {@code CR00} as {@code Transaction Reports}. So although rule
  * <strong>R1</strong> - names from the prompt, behaviour from the source - governs this file as it
  * governs every other, it costs nothing to apply. That is worth stating explicitly, because two of the
  * seven sibling classes in this very package <em>are</em> R-B cases: {@code COTRN01C} is named
@@ -1732,7 +1735,7 @@ class ReportRequestResponseTest {
     class SourceProvenance {
 
         @Test
-        @DisplayName("CORPT00C:5 and README.md:225 agree, so this is NOT an R-B naming case")
+        @DisplayName("CORPT00C:5 and the README's CR00 row agree, so this is NOT an R-B naming case")
         void nameAndBehaviourAgree() throws IOException {
             List<String> program = Files.readAllLines(PROGRAM, ASCII);
             assertThat(program.get(4))
@@ -1740,9 +1743,19 @@ class ReportRequestResponseTest {
                     .contains("Function")
                     .contains("Print Transaction reports by submitting batch");
 
+            // Located by content, not by line number. README.md is the one oracle in this list that
+            // the migration is allowed to change - it gains a Java build section (AAP 0.4.9, gate
+            // G55) - so an absolute index into it is a citation that goes stale the moment the
+            // documentation grows. The row itself is the evidence, and it is unique in the file.
             List<String> readme = Files.readAllLines(README, ASCII);
-            assertThat(readme.get(224))
-                    .as("README.md:225, the CR00 row of the online inventory")
+            List<String> cr00Rows = readme.stream()
+                    .filter(row -> row.startsWith("|") && row.contains(" CR00 "))
+                    .toList();
+            assertThat(cr00Rows)
+                    .as("README.md carries exactly one CR00 row in its online inventory")
+                    .hasSize(1);
+            assertThat(cr00Rows.get(0))
+                    .as("the CR00 row of README.md's online inventory")
                     .contains("CR00")
                     .contains("CORPT00")
                     .contains("CORPT00C")

@@ -1,7 +1,7 @@
 {
   "program": "COCRDSLC",
   "caseId": "case18",
-  "description": "Two behaviours in one invocation, and they compose. First the PF13 fold: CSSTRPFY L54-55 maps DFHPF13 to CCARD-AID-PFK01, not to PFK13 - the copybook enumerates PF13 through PF24 back onto PFK01 through PFK12 - and PFK01 is not one of the two valid keys, so :298 coerces it to ENTER. Second the discard at :268-270: CDEMO-FROM-PROGRAM is 'COMEN01C' and CDEMO-PGM-REENTER is false, so INITIALIZE CARDDEMO-COMMAREA throws away the account and card the caller sent. EIBCALEN is 172, so 1200 takes its ELSE at :461 and reads the INITIALIZEd commarea, where CDEMO-ACCT-ID and CDEMO-CARD-NUM are zero - which is why both criterion fields are LOW-VALUES rather than the caller's values.",
+  "description": "THE DFHPF13-DFHPF24 FOLD-BACK at app/cpy/CSSTRPFY.cpy:58-59: PF15 is accepted as PFK03 and therefore EXITS. This is the exact complement of case17, and the two together pin BOTH outcomes of the :291-299 AID block - case17's DFHCLEAR is a token outside {ENTER, PFK03} and is silently rewritten to ENTER, going on to paint a screen, while this case's folded PFK03 is accepted and transfers control away. The outcome here is case15's, byte for byte: the inbound aid and this description are the ONLY two things that differ between case15.json and this file, and that identity IS the assertion. A PfKeyResolver that treated PF13-PF24 as unrecognised would coerce PF15 to ENTER at :298 and paint the screen instead of exiting, so the diff would land on nextProgram, termination, sends and eight navigation fields at once; that divergence is precisely what this case detects. Five statements, in order. (1) PERFORM YYYY-STORE-PFKEY THRU YYYY-STORE-PFKEY-EXIT at :284-285 runs the CSSTRPFY include brought in at :855 by the QUOTED form COPY 'CSSTRPFY' - both the bare and the quoted form appear in this codebase and both resolve identically. Its ordered EVALUATE TRUE at CSSTRPFY.cpy:21 matches arm NINETEEN, WHEN EIBAID IS EQUAL TO DFHPF15, and SETs CCARD-AID-PFK03: the SAME five-byte token 'PFK03' that arm SEVEN, WHEN EIBAID IS EQUAL TO DFHPF3 at CSSTRPFY.cpy:34-35, sets. The arm total is 28 and NOT 26 - arms 1-4 are DFHENTER, DFHCLEAR, DFHPA1 and DFHPA2, arms 5-16 map DFHPF1 through DFHPF12 onto PFK01 through PFK12, and arms 17-28 fold DFHPF13 through DFHPF24 back onto those same twelve tokens, so 4 + 12 + 12 = 28 and grep -c 'WHEN EIBAID IS EQUAL TO' app/cpy/CSSTRPFY.cpy returns 28. The count is taken mechanically from the copybook rather than from prose (practice B11), and common/PfKeyResolver.java reaches the same correction independently, recording the 26 as an arithmetic slip against a table that itself numbers its rows 17-28. The copybook has NO WHEN OTHER - the EVALUATE ends at CSSTRPFY.cpy:78 with END-EVALUATE and nothing between it and arm 28 - NO DFHPA3 branch, and it does NOT clear CCARD-AID before evaluating, so an unmatched AID would leave whatever the field already held; all three are facts common/PfKeyResolver.java must reproduce, including its explicit no-match outcome, and none of them is reached here because DFHPF15 matches. DFHAID is IBM-supplied and ABSENT from this repository, so common/CicsAid.java is the single reproduction of it and DFHPF15 is sourced from IBM CICS documentation, as are DFHENTER, DFHCLEAR, DFHPA1-DFHPA3 and DFHPF1-DFHPF24 (risk R-D). (2) :291 SET PFK-INVALID TO TRUE sets WS-PFK-FLAG pessimistically to '1' before anything is tested; the 88-levels at :67-68 are PFK-VALID VALUE '0' and PFK-INVALID VALUE '1'. (3) :292-295 IF CCARD-AID-ENTER OR CCARD-AID-PFK03 - the SECOND disjunct matches, because the fold has left CCARD-AID holding 'PFK03', so :294 SET PFK-VALID TO TRUE flips the flag valid. (4) :297-299 IF PFK-INVALID therefore does NOT fire and the :298 SET CCARD-AID-ENTER coercion never runs: the AID SURVIVES as PFK03. (5) the ordered EVALUATE TRUE at :304 matches its FIRST arm, WHEN CCARD-AID-PFK03 at :305, so it wins over the WHEN CDEMO-PGM-REENTER arm at :357 that CDEMO-PGM-CONTEXT = 1 would otherwise have selected, and over the two WHEN CDEMO-PGM-ENTER arms at :339 and :349 which do not apply at context 1; EVALUATE is ordered and first-match-wins, which is the gate G30 assertion here (rule R7). The response CCARD-AID is 'PFK03', exactly five bytes - CCARD-AID is PIC X(5) at app/cpy/CVCRD01Y.cpy:3 with fifteen 88-levels at :4-19, of which 'PA1  ' and 'PA2  ' are literally space-padded to five while ENTER, CLEAR and PFKnn fit exactly - and it is asserted HERE, in prose, because ExpectedResponse.navigation admits only CDEMO- prefixed COMMAREA names and CCARD-AID belongs to CC-WORK-AREA rather than to CARDDEMO-COMMAREA; no top-level member is invented to house it. It is NOT 'ENTER', which would mean the fold was missed and the coercion fired, and NOT 'PFK15', which is not one of the fifteen tokens and does not exist. The inbound DFHPF15 is retained NOWHERE: the fold is lossy, the token is all that survives, and that information loss is genuine behaviour preserved rather than repaired (practice B5). :268 takes its ELSE: EIBCALEN is 172, and the second disjunct at :269-270 needs CDEMO-FROM-PROGRAM to equal LIT-MENUPGM 'COMEN01C' while NOT CDEMO-PGM-REENTER, but LOW-VALUES is not 'COMEN01C' and the context is REENTER in any case - so the 172 bytes split 1-160 into CARDDEMO-COMMAREA and 161-172 into the 12-byte WS-THIS-PROGCOMMAREA of :200-203 rather than being INITIALIZEd away. Both fallback tests spell their subject out twice - IF CDEMO-FROM-TRANID EQUAL LOW-VALUES OR CDEMO-FROM-TRANID EQUAL SPACES at :309-310, and the same shape for CDEMO-FROM-PROGRAM at :316-317 - and this case carries a DELIBERATELY MIXED empty shape: the tranid is four SPACES and the program is eight LOW-VALUES bytes. One case therefore exercises the SPACES disjunct of the first test and the LOW-VALUES disjunct of the second, and that mixture is what proves the two IFs are INDEPENDENT - an implementation that computed a single shared 'the origin is empty' condition would still pass a case whose two fields carried the same pattern, and fails this one. LOW-VALUES is binary x'00' and SPACES is 0x20: they are different values, both mean empty here, and neither is JSON null (practice B8). So :311 moves LIT-MENUTRANID into CDEMO-TO-TRANID as CM00 and :318 moves LIT-MENUPGM into CDEMO-TO-PROGRAM as COMEN01C - the menu fallback of :179-182, not the :313 and :320 echo of the caller. :323-324 then record this screen as the caller, CCDL and COCRDSLC, from LIT-THISTRANID at :165-166 and LIT-THISPGM at :163-164. :326 SET CDEMO-USRTYP-USER TO TRUE is UNCONDITIONAL, so the ADMIN001 operator who arrived with CDEMO-USER-TYPE 'A' leaves with 'U'; app/cpy/COCOM01Y.cpy:27-28 declares those two 88-levels, the downgrade is the source's own behaviour, and it is reproduced and DOCUMENTED rather than corrected (practices B4 and B5). No authorisation check is added either, because the COBOL performs none. :327 SET CDEMO-PGM-ENTER leaves CDEMO-PGM-CONTEXT at 0 rather than 1, because 1400-SEND-SCREEN at :563 is what sets REENTER and it never runs on this arm. :328 moves LIT-THISMAPSET, PIC X(8) VALUE 'COCRDSL ' at :167-168, into CDEMO-LAST-MAPSET, PIC X(7) per COCOM01Y.cpy:44, so the MOVE RIGHT-TRUNCATES the literal's trailing space to exactly seven bytes, COCRDSL (rule R5); :329 moves LIT-THISMAP into CDEMO-LAST-MAP unchanged at X(7), CCRDSLA. EXEC CICS XCTL PROGRAM(CDEMO-TO-PROGRAM) COMMAREA(CARDDEMO-COMMAREA) at :331-334 becomes nextProgram COMEN01C and nothing more (gate G40): the client issues the follow-up call, there is no server-side forward, no redirect chain and no session affinity, and the whole conversation travels in the payload (rule R6, gate G37). nextMapset and nextMap are deliberately ABSENT, and which field carries the client's target is DERIVED from the source rather than assumed (practice B12): this arm never reaches 1400-SEND-SCREEN, so it never assigns CCARD-NEXT-MAPSET or CCARD-NEXT-MAP - both PIC X(7) at CVCRD01Y.cpy:23-24 - and card/CardSelectController's backNavigationPfk03 correspondingly sets nextProgram alone; the targets the client needs are carried by navigation instead, as CDEMO-LAST-MAPSET COCRDSL and CDEMO-LAST-MAP CCRDSLA. Only the 160-byte CARDDEMO-COMMAREA accompanies the transfer, never the 2000-byte WS-COMMAREA of :205 with the 12-byte WS-THIS-PROGCOMMAREA trailer that COMMON-RETURN appends at :397-400; that asymmetry between the XCTL and RETURN paths is real and is preserved (practice B5). Nothing else happens. sends is empty because 1000-SEND-MAP at :412 is never performed, so 1100-SCREEN-INIT, 1200-SETUP-SCREEN-VARS, 1300-SETUP-SCREEN-ATTRS and 1400-SEND-SCREEN all stay unreached and no TRNNAMEO, TITLE01O, TITLE02O, CURDATEO, CURTIMEO, PGMNAMEO, ACCTSIDO, CARDSIDO, INFOMSGO or ERRMSGO and no attribute or colour metadata is produced; that absence is what most sharply separates this case from case17, which sends one map. mapFields names CARDSIDI at exactly the value the inbound commarea carries, because CARDSID is the {cardNum} path variable and the handler binds it into both CARDSID and CDEMO-CARD-NUM before the dispatcher runs; the PFK03 arm itself neither receives nor reads it, since 2100-RECEIVE-MAP at :596 is reached only through 2000-PROCESS-INPUTS at :582-584, which this arm never performs, so the value survives only by being carried - which is what navigation asserts. expectedWrites is empty and expectedFinalState re-asserts the three seeded CARDDAT rows unchanged, because 9000-READ-DATA at :726 never runs: readByCardNumber is NOT invoked, and readByAccountIdViaAltIndex is not invoked either, since 9150-GETCARD-BYACCT is unreachable dead code whose only two occurrences in the program are its own labels at :779 and :810, so no CARDAIX alternate-index path is opened (gate G45). COMMON-RETURN at :394 is NOT reached, so there is no RETURN TRANSID(LIT-THISTRANID) at :402-406 carrying 'CCDL', and the :386-391 IF INPUT-ERROR guard is unreachable from here. The 88-level WS-EXIT-MESSAGE at :136-137 is declared under WS-RETURN-MSG PIC X(75) at :134 and is never SET anywhere in the program - a grep for a SET of it returns zero sites - so it is unreachable dead code preserved unmodelled and expectedMessages is deliberately empty; its literal text is deliberately not reproduced anywhere in this file, because listing it would fabricate an emission the program never makes (practices B1 and B5), and on this arm that is the most tempting error available. CSMSG01Y is copied at :221 but never referenced, so its invalid-key literal is likewise absent - and PF15 is a VALID key here in any case. The clock is pinned to 2022-07-19T23:12:33, which is this program's own version footer at :886 and the value case01, case14 and case15 carry, so the case stays deterministic (practice B7) even though this path paints no CURDATEO or CURTIMEO at all; app/cpy/CVCRD01Y.cpy:45 carries a later footer of 23:16:00, and the program's own footer is the one pinned for this exit family so that the byte-for-byte case15 comparison above holds (practice B12). The mandated name CardSelectController diverges from the source's own Function header at :4, 'Accept and process credit card detail request', from README.md:220 which lists CCDL as Credit Card View, and from app/csd/CARDDEMO.CSD:220 DESCRIPTION(VIEW CARD DETAIL), all three of which describe a detail VIEW rather than a select; the name is honoured per rule R1 and the divergence is DOCUMENTED rather than corrected (practice B4, register AAP 0.8.4). Gates G32, G35 and G39 have no site here: all nine GO TOs in this program are forward, five to the shared COMMON-RETURN terminal at :348, :356, :363, :369 and :390 and four to paragraph -EXIT labels at :660, :674, :701 and :715, so there is no backward loop to restructure; there is no CALL 'CEE3ABD' anywhere in COCRDSLC, whose abend path is the CICS-native HANDLE ABEND at :250 and :871 reaching ABCODE('9999') at :876; and COCRDSL declares no PAGENO field. Rule R4 has no site either - COCRDSLC declares no PIC 9(n)V99 monetary field, so gates G22-G28 have nothing to assert. This case contributes to G15, G18, G30, G37, G40, G45 and G51, and does not exercise G19, G21, G34, G38 or G47. Every expected value is STATICALLY DERIVED by structured reading of app/cbl/COCRDSLC.cbl, app/cpy/CSSTRPFY.cpy, app/cpy/CVCRD01Y.cpy, app/cpy/COCOM01Y.cpy and app/csd/CARDDEMO.CSD, cross-checked against the 160-byte commarea layout of 34 + 84 + 12 + 16 + 14 and seeded from the derived US-ASCII test copy of carddata.txt at 50 rows of 150 bytes, and is NEVER captured from an execution of the legacy COBOL, which is empirically impossible in this environment (AAP 0.7.6, eight verified blockers, risk R-A).",
   "unitKind": "CONTROLLER_POJO",
   "inputs": {
     "CARDDAT": {
@@ -12,16 +12,41 @@
   },
   "screenRequest": {
     "eibcalen": 172,
-    "aid": "DFHPF13",
+    "aid": "DFHPF15",
     "pinnedClock": "2022-07-19T23:12:33",
     "charset": "US-ASCII",
     "commarea": {
-      "CDEMO-FROM-TRANID": "CM00",
-      "CDEMO-FROM-PROGRAM": "COMEN01C",
+      "CDEMO-FROM-TRANID": "    ",
+      "CDEMO-FROM-PROGRAM": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
       "CDEMO-TO-TRANID": "    ",
       "CDEMO-TO-PROGRAM": "        ",
       "CDEMO-USER-ID": "ADMIN001",
       "CDEMO-USER-TYPE": "A",
+      "CDEMO-PGM-CONTEXT": "1",
+      "CDEMO-CUST-ID": "000000000",
+      "CDEMO-CUST-FNAME": "                         ",
+      "CDEMO-CUST-MNAME": "                         ",
+      "CDEMO-CUST-LNAME": "                         ",
+      "CDEMO-ACCT-ID": "00000000050",
+      "CDEMO-ACCT-STATUS": " ",
+      "CDEMO-CARD-NUM": "0500024453765740",
+      "CDEMO-LAST-MAP": "CCRDLIA",
+      "CDEMO-LAST-MAPSET": "COCRDLI"
+    },
+    "mapFields": {
+      "CARDSIDI": "0500024453765740"
+    },
+    "forcedOutcomes": {}
+  },
+  "expectedResponse": {
+    "nextProgram": "COMEN01C",
+    "navigation": {
+      "CDEMO-FROM-TRANID": "CCDL",
+      "CDEMO-FROM-PROGRAM": "COCRDSLC",
+      "CDEMO-TO-TRANID": "CM00",
+      "CDEMO-TO-PROGRAM": "COMEN01C",
+      "CDEMO-USER-ID": "ADMIN001",
+      "CDEMO-USER-TYPE": "U",
       "CDEMO-PGM-CONTEXT": "0",
       "CDEMO-CUST-ID": "000000000",
       "CDEMO-CUST-FNAME": "                         ",
@@ -30,90 +55,11 @@
       "CDEMO-ACCT-ID": "00000000050",
       "CDEMO-ACCT-STATUS": " ",
       "CDEMO-CARD-NUM": "0500024453765740",
-      "CDEMO-LAST-MAP": "COMEN1A",
-      "CDEMO-LAST-MAPSET": "COMEN01"
+      "CDEMO-LAST-MAP": "CCRDSLA",
+      "CDEMO-LAST-MAPSET": "COCRDSL"
     },
-    "mapFields": {
-      "CARDSIDI": "0500024453765740"
-    },
-    "forcedOutcomes": {}
-  },
-  "expectedResponse": {
-    "nextMapset": "COCRDSL",
-    "nextMap": "CCRDSLA",
-    "navigation": {
-      "CDEMO-FROM-TRANID": "    ",
-      "CDEMO-FROM-PROGRAM": "        ",
-      "CDEMO-TO-TRANID": "    ",
-      "CDEMO-TO-PROGRAM": "        ",
-      "CDEMO-USER-ID": "        ",
-      "CDEMO-USER-TYPE": " ",
-      "CDEMO-PGM-CONTEXT": "1",
-      "CDEMO-CUST-ID": "000000000",
-      "CDEMO-CUST-FNAME": "                         ",
-      "CDEMO-CUST-MNAME": "                         ",
-      "CDEMO-CUST-LNAME": "                         ",
-      "CDEMO-ACCT-ID": "00000000000",
-      "CDEMO-ACCT-STATUS": " ",
-      "CDEMO-CARD-NUM": "0000000000000000",
-      "CDEMO-LAST-MAP": "       ",
-      "CDEMO-LAST-MAPSET": "       "
-    },
-    "sends": [
-      {
-        "fields": {
-          "TRNNAMEO": "CCDL",
-          "TITLE01O": "      AWS Mainframe Modernization       ",
-          "CURDATEO": "07/19/22",
-          "PGMNAMEO": "COCRDSLC",
-          "TITLE02O": "              CardDemo                  ",
-          "CURTIMEO": "23:12:33",
-          "ACCTSIDO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
-          "CARDSIDO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
-          "CRDNAMEO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
-          "CRDSTCDO": "\u0000",
-          "EXPMONO": "\u0000\u0000",
-          "EXPYEARO": "\u0000\u0000\u0000\u0000",
-          "INFOMSGO": "Please enter Account and Card Number    ",
-          "ERRMSGO": "                                                                                ",
-          "FKEYSO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000"
-        },
-        "attributes": {
-          "TRNNAMEC": "DFHDFCOL",
-          "TITLE01C": "DFHDFCOL",
-          "CURDATEC": "DFHDFCOL",
-          "PGMNAMEC": "DFHDFCOL",
-          "TITLE02C": "DFHDFCOL",
-          "CURTIMEC": "DFHDFCOL",
-          "ACCTSIDC": "DFHDFCOL",
-          "CARDSIDC": "DFHDFCOL",
-          "CRDNAMEC": "DFHDFCOL",
-          "CRDSTCDC": "DFHDFCOL",
-          "EXPMONC": "DFHDFCOL",
-          "EXPYEARC": "DFHDFCOL",
-          "INFOMSGC": "DFHNEUTR",
-          "ERRMSGC": "DFHDFCOL",
-          "FKEYSC": "DFHDFCOL",
-          "TRNNAMEH": "DFHDFHI",
-          "TITLE01H": "DFHDFHI",
-          "CURDATEH": "DFHDFHI",
-          "PGMNAMEH": "DFHDFHI",
-          "TITLE02H": "DFHDFHI",
-          "CURTIMEH": "DFHDFHI",
-          "ACCTSIDH": "DFHDFHI",
-          "CARDSIDH": "DFHDFHI",
-          "CRDNAMEH": "DFHDFHI",
-          "CRDSTCDH": "DFHDFHI",
-          "EXPMONH": "DFHDFHI",
-          "EXPYEARH": "DFHDFHI",
-          "INFOMSGH": "DFHDFHI",
-          "ERRMSGH": "DFHDFHI",
-          "FKEYSH": "DFHDFHI"
-        }
-      }
-    ],
-    "cursorField": "ACCTSIDL",
-    "termination": "RETURN_TRANSID"
+    "sends": [],
+    "termination": "XCTL"
   },
   "expectedWrites": [],
   "expectedFinalState": [

@@ -1,7 +1,7 @@
 {
   "program": "COACTVWC",
   "caseId": "case15",
-  "description": "The other half of both fallbacks at :328-339: blank from-fields send the user to the main menu, CM00 and COMEN01C, rather than nowhere. Two OR conditions each test LOW-VALUES and SPACES; spaces are what a commarea INITIALIZE leaves, so this is the reachable half, and it is the one that decides where a user who pressed PF3 on a directly-entered transaction ends up.",
+  "description": "WHEN CCARD-AID-PFK03 at :324 - the FIRST arm of the main EVALUATE TRUE at :323-383 - reached with a fully populated caller context, and this folder's proof that EXEC CICS XCTL PROGRAM(CDEMO-TO-PROGRAM) at :349-352 becomes a response field rather than a server-side forward (gate G40, rule R6). EIBAID is DFHPF3, which app/cpy/CSSTRPFY.cpy:34-35 - the seventh of that copybook's twenty-eight ordered arms - stores as CCARD-AID-PFK03; PFK03 is one of only two AIDs the gate at :306-314 accepts, so it is not rewritten to ENTER, and because its arm is tested before both context arms it wins even though CDEMO-PGM-CONTEXT arrives as 1 (gate G30). The commarea survives the turn because :282-284 initialises only when EIBCALEN is zero or the from-program is COMEN01C on a non-reenter, and neither holds here: EIBCALEN is 172, which is CARDDEMO-COMMAREA's 160 bytes followed by WS-THIS-PROGCOMMAREA's 12. Both fallbacks at :328-339 take their ELSE, so the caller's CCLI and COCRDLIC become CDEMO-TO-TRANID and CDEMO-TO-PROGRAM - overwriting the CAVW and COACTVWC the card list had handed in, which is the swap this case pins - and :341-342 then records this screen as the from-pair. :344 SET CDEMO-USRTYP-USER is unconditional and :345 SET CDEMO-PGM-ENTER rewinds the target's context to 0. :346 moves LIT-THISMAPSET, declared PIC X(8) VALUE 'COACTVW ', into CDEMO-LAST-MAPSET, which app/cpy/COCOM01Y.cpy:43-44 declares PIC X(7) alongside CDEMO-LAST-MAP - so the alphanumeric MOVE truncates on the right and the literal's trailing space is deliberately discarded, giving COACTVW, while :347 moves the already-seven-character CACTVWA unchanged. Eight identity-bearing commarea fields arrive populated with real data: CDEMO-USER-ID is USER0001, a type-U row of app/jcl/DUSRSECJ.jcl, and the other seven come from the seeded rows themselves - card 0500024453765740 keys customer 000000050 and account 00000000050 in cardxref row 1, whose account is acctdata row 50 and whose customer, names included, is custdata row 50. The arm clears none of the eight, so every one is expected back byte-identical: statelessness asserted on real data rather than on an initialised area (gate G37). What this arm does NOT do is the rest of the expectation. XCTL transfers control and does not return, so :394 COMMON-RETURN is never reached, 1000-SEND-MAP and with it 1100-SCREEN-INIT, 1200-SETUP-SCREEN-VARS, 1300-SETUP-SCREEN-ATTRS and 1400-SEND-SCREEN never run, and the :387-391 INPUT-ERROR guard is unreachable. Therefore: no map is painted and no plain text is sent, so sends and expectedMessages are both EMPTY rather than a blank line - WS-RETURN-MSG was set to SPACES at :278 and the move to CCARD-ERROR-MSG lives in COMMON-RETURN, which is not reached; nextMapset and nextMap are UNSET because only 1400-SEND-SCREEN at :579-580 and 2000-PROCESS-INPUTS assign CCARD-NEXT-MAPSET and CCARD-NEXT-MAP and neither is performed; no cursor is positioned; 9000-READ-ACCT is never performed, so none of the three EXEC CICS READs runs and all five seeded rows are pinned exactly as seeded; and COACTVWC issues no WRITE, REWRITE or DELETE on any path, so expectedWrites is empty and RETURN-CODE is 0 with no CALL 'CEE3ABD' anywhere in this program (G35 not applicable, as are G32, G38 - no screen means no CSSETATY highlight - and G45/G47, since no read occurs). The clock is pinned at 2022-07-19T23:15:58 for determinism (practice B7) even though this path reads no clock at all. Every expected value here is STATICALLY DERIVED by reading app/cbl/COACTVWC.cbl:278-352, app/cpy/CSSTRPFY.cpy:21-78, app/cpy/COCOM01Y.cpy:19-44 and app/cpy/CVACT03Y.cpy, CVACT01Y.cpy and CVCUS01Y.cpy against the app/data/ASCII fixtures, and was NEVER captured from a live COBOL execution - the environment cannot run these programs (risk R-A), which is why the derivation is cited field by field here.",
   "unitKind": "CONTROLLER_POJO",
   "inputs": {
     "CCXREF": {
@@ -20,17 +20,27 @@
       "rowCount": 1
     }
   },
+  "jobParameters": {},
   "screenRequest": {
     "eibcalen": 172,
     "aid": "DFHPF3",
-    "pinnedClock": "2022-07-19T23:12:32",
+    "pinnedClock": "2022-07-19T23:15:58",
     "charset": "US-ASCII",
     "commarea": {
-      "CDEMO-FROM-TRANID": "    ",
-      "CDEMO-FROM-PROGRAM": "        ",
-      "CDEMO-USER-ID": "ADMIN001",
-      "CDEMO-USER-TYPE": "A",
+      "CDEMO-FROM-TRANID": "CCLI",
+      "CDEMO-FROM-PROGRAM": "COCRDLIC",
+      "CDEMO-TO-TRANID": "CAVW",
+      "CDEMO-TO-PROGRAM": "COACTVWC",
+      "CDEMO-USER-ID": "USER0001",
+      "CDEMO-USER-TYPE": "U",
       "CDEMO-PGM-CONTEXT": "1",
+      "CDEMO-CUST-ID": "000000050",
+      "CDEMO-CUST-FNAME": "Aniya                    ",
+      "CDEMO-CUST-MNAME": "Alba                     ",
+      "CDEMO-CUST-LNAME": "Von                      ",
+      "CDEMO-ACCT-ID": "00000000050",
+      "CDEMO-ACCT-STATUS": "Y",
+      "CDEMO-CARD-NUM": "0500024453765740",
       "CDEMO-LAST-MAP": "CCRDLIA",
       "CDEMO-LAST-MAPSET": "COCRDLI"
     },
@@ -40,22 +50,22 @@
     "forcedOutcomes": {}
   },
   "expectedResponse": {
-    "nextProgram": "COMEN01C",
+    "nextProgram": "COCRDLIC",
     "navigation": {
       "CDEMO-FROM-TRANID": "CAVW",
       "CDEMO-FROM-PROGRAM": "COACTVWC",
-      "CDEMO-TO-TRANID": "CM00",
-      "CDEMO-TO-PROGRAM": "COMEN01C",
-      "CDEMO-USER-ID": "ADMIN001",
+      "CDEMO-TO-TRANID": "CCLI",
+      "CDEMO-TO-PROGRAM": "COCRDLIC",
+      "CDEMO-USER-ID": "USER0001",
       "CDEMO-USER-TYPE": "U",
       "CDEMO-PGM-CONTEXT": "0",
-      "CDEMO-CUST-ID": "000000000",
-      "CDEMO-CUST-FNAME": "                         ",
-      "CDEMO-CUST-MNAME": "                         ",
-      "CDEMO-CUST-LNAME": "                         ",
-      "CDEMO-ACCT-ID": "00000000000",
-      "CDEMO-ACCT-STATUS": " ",
-      "CDEMO-CARD-NUM": "0000000000000000",
+      "CDEMO-CUST-ID": "000000050",
+      "CDEMO-CUST-FNAME": "Aniya                    ",
+      "CDEMO-CUST-MNAME": "Alba                     ",
+      "CDEMO-CUST-LNAME": "Von                      ",
+      "CDEMO-ACCT-ID": "00000000050",
+      "CDEMO-ACCT-STATUS": "Y",
+      "CDEMO-CARD-NUM": "0500024453765740",
       "CDEMO-LAST-MAP": "CACTVWA",
       "CDEMO-LAST-MAPSET": "COACTVW"
     },
@@ -67,6 +77,12 @@
     {
       "dataset": "CCXREF",
       "rowIndex": 0,
+      "fields": {
+        "XREF-CARD-NUM": "0500024453765740",
+        "XREF-CUST-ID": "000000050",
+        "XREF-ACCT-ID": "00000000050",
+        "FILLER": "              "
+      },
       "expectedBytes": "050002445376574000000005000000000050              "
     },
     {
@@ -82,11 +98,22 @@
     {
       "dataset": "ACCTDAT",
       "rowIndex": 0,
+      "fields": {
+        "ACCT-ID": "00000000050",
+        "ACCT-ACTIVE-STATUS": "Y",
+        "ACCT-EXPIRAION-DATE": "2023-03-09"
+      },
       "expectedBytes": "00000000050Y00000004920{00000061690{00000045870{2011-04-222023-03-092023-03-0900000000000{00000000000{A000000000                                                                                                                                                                                            "
     },
     {
       "dataset": "CUSTDAT",
       "rowIndex": 0,
+      "fields": {
+        "CUST-ID": "000000050",
+        "CUST-FIRST-NAME": "Aniya                    ",
+        "CUST-MIDDLE-NAME": "Alba                     ",
+        "CUST-LAST-NAME": "Von                      "
+      },
       "expectedBytes": "000000050Aniya                    Alba                     Von                      1588 Nienow Cape                                  Suite 187                                         New Aricchester                                   ORUSA04257     (325)301-0827  (493)985-9283  931248469000000000000303878241960-12-010074883577Y623                                                                                                                                                                        "
     }
   ],

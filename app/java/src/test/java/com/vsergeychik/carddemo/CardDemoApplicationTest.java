@@ -1,23 +1,53 @@
 package com.vsergeychik.carddemo;
 
+import com.vsergeychik.carddemo.config.BatchConfig;
+import com.vsergeychik.carddemo.config.CobolCharsetConfig;
+import com.vsergeychik.carddemo.config.DataSourceConfig;
+import com.vsergeychik.carddemo.config.WebConfig;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.springframework.batch.core.Job;
+import org.springframework.batch.core.JobParameters;
+import org.springframework.batch.core.Step;
+import org.springframework.batch.core.explore.JobExplorer;
+import org.springframework.batch.core.repository.JobRepository;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.boot.CommandLineRunner;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.context.ApplicationContext;
+import org.springframework.context.ConfigurableApplicationContext;
+import org.springframework.stereotype.Controller;
+import org.springframework.stereotype.Repository;
+import org.springframework.test.context.ActiveProfiles;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.util.ClassUtils;
+import org.springframework.web.bind.annotation.RestController;
 
+import javax.sql.DataSource;
+
+import java.io.File;
 import java.io.IOException;
 import java.lang.annotation.Annotation;
 import java.lang.reflect.Constructor;
+import java.lang.reflect.Field;
 import java.lang.reflect.Member;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
+import java.net.URI;
+import java.net.URL;
+import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Clock;
+import java.time.ZoneId;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
@@ -25,60 +55,122 @@ import java.util.stream.Stream;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Contract tests for {@link CardDemoApplication}, the module's composition root.
+ * The whole-graph context-load gate for this module - validation gate <strong>G3</strong> - and the
+ * contract suite for {@link CardDemoApplication}, its composition root.
  *
- * <p>This suite exists because the entry point's obligations are all <em>declarative</em>, and a
- * declarative mistake is silent. A dropped entry in the component-scan list does not fail to
- * compile: it removes a whole domain package from component scope, and the first symptom is a
- * {@code NoSuchBeanDefinitionException} at runtime, a long way from the edit that caused it.
- * Equally, the class name and package are a published contract - {@code app/java/pom.xml} pins
- * {@code com.vsergeychik.carddemo.CardDemoApplication} as the {@code spring-boot-maven-plugin}
- * {@code mainClass}, and Maven holds that value as a <em>string</em>, entirely outside the compiler's
- * symbol graph. Renaming the class therefore leaves the build green and the jar unbootable. Both
- * hazards are checked here.
+ * <h2>What this suite is for</h2>
+ * <p>Everything the entry point does is <em>declarative</em>, and a declarative mistake is silent. A
+ * dropped entry in the component-scan list does not fail to compile: it removes an entire domain
+ * package from component scope, and the first symptom is a {@code NoSuchBeanDefinitionException}
+ * raised at runtime, a long way from the edit that caused it. A configuration class named after the
+ * bean it publishes does not fail to compile either: bean-definition overriding is disabled by
+ * default in Spring Boot, so the two definitions neither merge nor shadow - the context refuses to
+ * start at all, and every unit test in the module still passes, because no unit test registers a
+ * bean definition. A {@code @Value} placeholder that nothing resolves behaves the same way.
  *
- * <h2>Why reflection and the source tree, and not {@code @SpringBootTest}</h2>
- * <p>A full context-load test is the natural way to prove component scan reaches every bean, and it
- * is the right test to have once every bean exists. It is not this test: at this point in the
- * migration many of the beans the eleven packages will hold have not been written, so a
- * {@code @SpringBootTest} would fail for reasons that have nothing to do with the entry point's
- * correctness and would say nothing about the declarations under examination. What can be proven
- * now, and is proven here, is that the declarations themselves are right and complete: the annotation
- * is present, the scan list names every package that actually exists in the source tree and nothing
- * that does not, the published name agrees with the build manifest, and nothing forbidden has crept
- * in. {@code main} is deliberately never invoked - calling it would start the very context this suite
- * is careful not to depend on.
+ * <p>So this suite starts <strong>the real application context</strong>, under the fixture-backed
+ * {@code test} profile, and asserts the shape of the graph that comes back: every controller, every
+ * batch job, every dataset repository, every writer, every configuration class and every piece of
+ * batch infrastructure the migration is specified to publish, and nothing beyond them. It is the one
+ * place in the module where the entire wiring graph is exercised at once; the per-package suites
+ * that delegate the whole-graph gate here (see {@code config/WebConfigTest},
+ * {@code config/BatchConfigTest} and {@code config/CobolCharsetConfigTest}) deliberately stay
+ * context-free slices.
+ *
+ * <h2>What it deliberately does not do</h2>
+ * <p>It asserts <strong>bean presence and wiring only</strong>. No business logic, no arithmetic, no
+ * HTTP request, no {@code JobLauncher}: those belong to the per-package unit suites and to the parity
+ * harness, which reach services and jobs directly so that a numeric assertion has neither a servlet
+ * nor a job launcher in its path (gate G51). Nothing here claims anything about COBOL parity -
+ * expected-value provenance is {@code parity/ParityHarness}'s subject, not this file's.
+ *
+ * <h2>The counts are what the graph actually contains, not what prose predicted</h2>
+ * <p>Two numbers in the plan's prose do not survive contact with the source, and this suite asserts
+ * the verified ones:
+ * <ul>
+ *   <li><strong>Eighteen {@code @RestController} beans, not seventeen.</strong> The seventeen screen
+ *       controllers are the seventeen CICS online programs, one each. The eighteenth is
+ *       {@link WebConfig.CobolErrorEndpoint}, which exists to <em>replace</em> Spring Boot's
+ *       {@code BasicErrorController} - declaring an {@code ErrorController} bean switches Boot's own
+ *       off - so it is a substitution rather than an addition, and it is named explicitly below so
+ *       that a genuinely unexpected eighteenth screen controller still fails.</li>
+ *   <li><strong>Nine {@code Job} beans, not ten.</strong> Counting {@code EXEC PGM=} across
+ *       {@code app/jcl} and {@code app/proc} yields eight distinct programs, plus {@code CBTRN01C},
+ *       which no JCL invokes anywhere and which migrates as a runnable job with no trigger (gate
+ *       G13) - nine. {@code app/java/pom.xml} records the same figure and identifies the cause of
+ *       the plan's "ten" (CBCUS01C counted twice), {@code application.yml} declares exactly nine
+ *       {@code carddemo.jobs} keys, and {@code BatchConfig.JobContracts} enforces those nine at
+ *       startup. Asserting ten would fail against a correct module.</li>
+ * </ul>
+ * <p>Two prompt-mandated names also do <em>not</em> denote jobs: {@code StatementGenerationJobB} is
+ * {@code CBSTM03A}'s data-access collaborator and is a {@code @Component}, and
+ * {@code DateUtilityJob} is a called date-validation subprogram and is a {@code @Service} (gate
+ * G12). Both are asserted to be absent from the job inventory rather than present in it.
+ *
+ * <h2>Why the inventories are fully-qualified names rather than imported types</h2>
+ * <p>This file's declared dependencies are the module descriptor, the entry point, the two
+ * configuration documents and the four {@code config/} classes. The four configuration classes are
+ * therefore imported and asserted as compile-checked types. The seventeen controllers, nine jobs, ten
+ * repositories, four writers and one reader are not among those dependencies, so they are asserted as
+ * explicit fully-qualified name strings read back off the live bean graph. Nothing is lost: a renamed
+ * or missing type fails here just as loudly, the inventory reads as data that can be diffed against
+ * the plan, and the root test package does not acquire a compile-time edge to all nine domain
+ * packages.
  *
  * <h2>Governing rules</h2>
- * <p>{@code review_rules} reports <strong>no user rules provided</strong> for this project, confirmed
- * for this file, so no project rule governs it and none has been invented. The enterprise practices
- * the Agent Action Plan puts in their place bind instead, and the ones this file both obeys and
- * enforces on its subject are:
+ * <p>{@code review_rules} reports <strong>no user rules provided</strong> for this project - a single
+ * line, which is the whole document - so no project rule governs this file and none has been
+ * invented. Their absence is not licence to lower the bar: the enterprise practices the Agent Action
+ * Plan puts in their place bind instead, and the ones that reach this file are:
  * <ul>
- *   <li><strong>B1 / B2</strong> - nothing outside the stack the build already pins. JUnit Jupiter
- *       and AssertJ arrive through {@code spring-boot-starter-test}; {@code SpringBootApplication},
- *       {@code ApplicationRunner} and {@code CommandLineRunner} through
- *       {@code spring-boot-starter-web}. No new dependency, and Spring Boot 3.5.x API only.</li>
- *   <li><strong>B4</strong> - no silent scope creep. The assertions below are deliberately
- *       two-sided: they check what must be present <em>and</em> that nothing else is.</li>
- *   <li><strong>B8</strong> - explicit over implicit. Every charset is named; there are no wildcard
- *       imports here and this suite proves there are none in its subject either.</li>
- *   <li><strong>B9</strong> - no static mutable state, proven rather than asserted in prose.</li>
+ *   <li><strong>B1 / B2</strong> - nothing outside the stack {@code app/java/pom.xml} already pins.
+ *       JUnit Jupiter, AssertJ and the Spring test support arrive through
+ *       {@code spring-boot-starter-test}; H2 is already test-scoped there. No dependency is added,
+ *       and only Spring Boot 3.5.x / Spring Batch 5.2.x API is used - the 5.x job and step builders,
+ *       never the builder-factory types that the 4.x line published and that Batch 5 removed.</li>
+ *   <li><strong>B3</strong> - the reference trees are untouched. Nothing here writes anywhere, and
+ *       nothing reads {@code app/cbl}, {@code app/cpy}, {@code app/bms}, {@code app/jcl} or
+ *       {@code app/data}: the {@code test} profile resolves everything from the classpath.</li>
+ *   <li><strong>B4</strong> - no silent scope creep. The assertions are two-sided wherever the
+ *       migration's surface is fixed, so an unexpected extra fails exactly as a missing one does, and
+ *       the two prose-versus-source conflicts above are recorded rather than quietly rounded away.</li>
+ *   <li><strong>B7</strong> - one command, {@code mvn -f app/java/pom.xml clean verify}, runs this
+ *       non-interactively. The one time-bearing bean is asserted by its zone rule, never by reading
+ *       an instant, so this suite has no dependence on the system clock.</li>
+ *   <li><strong>B8</strong> - explicit over implicit: no wildcard import here (gate G52), every
+ *       charset named, and assertions stated as named beans rather than opaque aggregates.</li>
+ *   <li><strong>B9</strong> - constructor injection, and no static mutable state (gate G53). Every
+ *       constant below is {@code static final} and immutable; the injected context is a
+ *       {@code private final} instance field.</li>
+ *   <li><strong>B12</strong> - environmental limits are recorded, not absorbed. Where the plan's
+ *       letter cannot hold - the Micrometer API jars that arrive as non-optional transitives of two
+ *       mandated starters - this suite asserts what is actually true and achievable: no registry
+ *       bean, so nothing is ever collected or exported.</li>
  * </ul>
+ *
+ * <h2>Coverage</h2>
+ * <p>{@code app/java/pom.xml} enforces BRANCH coverage of at least 0.90 per package. The root package
+ * holds only {@link CardDemoApplication}, whose BRANCH counter total is zero, and JaCoCo skips a rule
+ * whose counter total is zero - so this package is not a coverage violation and this file is not
+ * required to manufacture branches. Its job is structural verification.
+ *
+ * @see CardDemoApplication
  */
-@DisplayName("CardDemoApplication - the composition root, and the name the build manifest pins")
+@SpringBootTest(classes = CardDemoApplication.class)
+@ActiveProfiles("test")
+@DisplayName("CardDemoApplication - the whole-graph context-load gate (G3)")
 class CardDemoApplicationTest {
 
-    /** The published root package. Both the class's own package and the scan-list prefix. */
+    /** The published root package, and the prefix of every scanned package. */
     private static final String ROOT_PACKAGE = "com.vsergeychik.carddemo";
 
     /** The published fully-qualified name, which {@code app/java/pom.xml} carries as a string. */
     private static final String PUBLISHED_FQN = ROOT_PACKAGE + ".CardDemoApplication";
 
     /**
-     * The eleven packages the entry point must place in component scope, in the order the
-     * architecture reads in: the two foundation packages, then the nine domain packages holding the
-     * twenty-eight translated programs.
+     * The eleven packages the entry point places in component scope, in the order the architecture
+     * reads in: the two foundation packages, then the nine domain packages that hold the twenty-eight
+     * translated programs.
      */
     private static final List<String> EXPECTED_SCAN_PACKAGES = List.of(
             ROOT_PACKAGE + ".common",
@@ -92,6 +184,185 @@ class CardDemoApplicationTest {
             ROOT_PACKAGE + ".billing",
             ROOT_PACKAGE + ".statement",
             ROOT_PACKAGE + ".util");
+
+    /**
+     * The seventeen screen controllers - one per CICS online program, and the whole online surface.
+     *
+     * <p>Grouped by domain package and listed in the order the plan's transaction table lists them:
+     * sign-on and menus, then account, card, transaction and bill-payment, then user maintenance.
+     * {@code COCRDSEC} / transaction {@code CDV1} is defined in {@code app/csd/CARDDEMO.CSD} but has
+     * no source file anywhere, so it is deliberately absent (gate G14) - an eighteenth entry here
+     * would be an invented program.
+     */
+    private static final List<String> SCREEN_CONTROLLERS = List.of(
+            ROOT_PACKAGE + ".user.SignOnController",
+            ROOT_PACKAGE + ".admin.MainMenuController",
+            ROOT_PACKAGE + ".admin.AdminMenuController",
+            ROOT_PACKAGE + ".account.AccountViewController",
+            ROOT_PACKAGE + ".account.AccountUpdateController",
+            ROOT_PACKAGE + ".card.CardListController",
+            ROOT_PACKAGE + ".card.CardSelectController",
+            ROOT_PACKAGE + ".card.CardUpdateController",
+            ROOT_PACKAGE + ".transaction.TransactionMenuController",
+            ROOT_PACKAGE + ".transaction.TransactionAddController",
+            ROOT_PACKAGE + ".transaction.TransactionViewController",
+            ROOT_PACKAGE + ".transaction.ReportRequestController",
+            ROOT_PACKAGE + ".billing.BillPaymentController",
+            ROOT_PACKAGE + ".user.UserMenuController",
+            ROOT_PACKAGE + ".user.UserAddController",
+            ROOT_PACKAGE + ".user.UserUpdateController",
+            ROOT_PACKAGE + ".user.UserDeleteController");
+
+    /**
+     * The nine {@link Job} bean names, which are also the names a submission looks a job up by.
+     *
+     * <p>Eight are invoked by {@code EXEC PGM=} in {@code app/jcl} or {@code app/proc};
+     * {@code transactionPostingJob} is the ninth and is invoked by nothing anywhere, which is exactly
+     * why it has to be asserted present (gate G13).
+     */
+    private static final List<String> JOB_BEAN_NAMES = List.of(
+            "accountBalanceJob",
+            "accountBalanceReaderJob",
+            "accountBalanceUpdateJob",
+            "accountInterestCalcJob",
+            "customerFileReaderJob",
+            "transactionValidationJob",
+            "transactionReportJob",
+            "statementGenerationJobA",
+            "transactionPostingJob");
+
+    /**
+     * The nine job {@code @Configuration} beans, each named so that it cannot collide with the job it
+     * publishes.
+     *
+     * <p>This is the collision the plan's naming makes almost inevitable and that only a started
+     * context can detect: component scanning names a configuration bean after its class, so
+     * {@code AccountBalanceJob} would be registered as {@code accountBalanceJob} - the very name its
+     * {@code @Bean} method publishes the job under. Each class therefore sets an explicit
+     * configuration bean name, and both names are asserted to exist and to differ.
+     */
+    private static final List<String> JOB_CONFIGURATION_BEAN_NAMES = List.of(
+            "accountBalanceJobConfiguration",
+            "accountBalanceReaderJobConfiguration",
+            "accountBalanceUpdateJobConfiguration",
+            "accountInterestCalcJobConfiguration",
+            "customerFileReaderJobConfiguration",
+            "transactionValidationJobConfiguration",
+            "transactionReportJobConfiguration",
+            "statementGenerationJobAConfiguration",
+            "transactionPostingJobConfiguration");
+
+    /**
+     * The ten {@code @Repository} beans - one per base dataset, and the entire repository surface.
+     *
+     * <p>The plan counts twelve repositories, and that is a <em>logical</em> count of dataset access
+     * paths rather than a file count. There is no {@code DisclosureGroupRepository} and no
+     * {@code TrnxRepository}: {@code DISCGRP} is read by the interest job's own access collaborator,
+     * and {@code TRNXFILE} is owned by {@code StatementGenerationJobB}, which is faithful to
+     * {@code CBSTM03B.CBL} declaring all four of the statement job's input files. Both absences are
+     * asserted, so this list cannot drift into a bean that does not exist.
+     *
+     * <p>The two alternate indexes are finder methods on the base repositories rather than
+     * repositories of their own (gate G45), which is why {@code CARDAIX} and {@code CXACAIX} add no
+     * entry here.
+     */
+    private static final List<String> DATASET_REPOSITORIES = List.of(
+            ROOT_PACKAGE + ".account.AccountRepository",
+            ROOT_PACKAGE + ".card.CardRepository",
+            ROOT_PACKAGE + ".card.CardXrefRepository",
+            ROOT_PACKAGE + ".customer.CustomerRepository",
+            ROOT_PACKAGE + ".transaction.TransactionRepository",
+            ROOT_PACKAGE + ".transaction.DalyTranRepository",
+            ROOT_PACKAGE + ".transaction.TranCatBalRepository",
+            ROOT_PACKAGE + ".transaction.TranTypeRepository",
+            ROOT_PACKAGE + ".transaction.TranCategoryRepository",
+            ROOT_PACKAGE + ".user.SecUserRepository");
+
+    /**
+     * The four fixed-width output writers and the one parameter reader, with the JCL-declared width
+     * each of them owns.
+     *
+     * <p>{@code DALYREJS} is 430 bytes, {@code TRANREPT} is 133, {@code STMTFILE} is 80 and
+     * {@code HTMLFILE} is 100 - the last taken from the step that creates it, not the pre-delete step
+     * that declares 80 (gate G20). {@code DateParmReader} is the fifth member because
+     * {@code CBTRN03C} reads its report date range from the {@code DATEPARM} dataset rather than from
+     * a {@code PARM}, so it is a reader rather than a job parameter. The widths themselves are each
+     * writer's own suite to assert; what is asserted here is that all five beans exist.
+     */
+    private static final List<String> DATASET_WRITERS_AND_READERS = List.of(
+            ROOT_PACKAGE + ".transaction.DalyRejectWriter",
+            ROOT_PACKAGE + ".transaction.TranReportWriter",
+            ROOT_PACKAGE + ".statement.StatementTextWriter",
+            ROOT_PACKAGE + ".statement.StatementHtmlWriter",
+            ROOT_PACKAGE + ".transaction.DateParmReader");
+
+    /**
+     * The two called subprograms, whose prompt-mandated names end in "Job" and which are not jobs
+     * (gate G12).
+     *
+     * <p>Neither has an {@code EXEC PGM=} anywhere in {@code app/jcl} or {@code app/proc}.
+     * {@code CBSTM03B} is called at thirteen sites by {@code CBSTM03A} and {@code CSUTLDTC} is called
+     * from two online programs, so both are injected collaborators.
+     */
+    private static final List<String> SUBPROGRAM_BEAN_NAMES = List.of(
+            "statementGenerationJobB",
+            "dateUtilityJob");
+
+    /**
+     * The two repository types the plan's logical count could be misread as requiring, asserted
+     * absent.
+     *
+     * <p>Stated as an assertion rather than as a comment because a plausible-looking bean lookup on a
+     * type that does not exist is the failure this list exists to make impossible.
+     */
+    private static final List<String> ABSENT_REPOSITORY_TYPES = List.of(
+            ROOT_PACKAGE + ".account.DisclosureGroupRepository",
+            ROOT_PACKAGE + ".statement.TrnxRepository");
+
+    /**
+     * The excluded-technology boundary, as the one representative type each family cannot exist
+     * without.
+     *
+     * <p>Every entry is a type that would be on the classpath if the family had been introduced, so
+     * the check is a dependency-boundary assertion rather than a bean-count coincidence: no
+     * authentication or credential-hashing stack (gate G41), no object-relational mapper and no
+     * schema-migration tool (gate G44), no API-documentation generator and no reactive web stack.
+     */
+    private static final Map<String, String> EXCLUDED_TECHNOLOGY_TYPES = Map.of(
+            "Spring Security", "org.springframework.security.web.SecurityFilterChain",
+            "Jakarta Persistence", "jakarta.persistence.EntityManagerFactory",
+            "Hibernate", "org.hibernate.SessionFactory",
+            "Flyway", "org.flywaydb.core.Flyway",
+            "Liquibase", "liquibase.integration.spring.SpringLiquibase",
+            "springdoc-openapi", "org.springdoc.core.models.GroupedOpenApi",
+            "Spring WebFlux", "org.springframework.web.reactive.function.client.WebClient");
+
+    /**
+     * Package prefixes no bean in this context may come from, matching the families above that could
+     * otherwise contribute a bean silently.
+     */
+    private static final List<String> EXCLUDED_BEAN_PACKAGE_PREFIXES = List.of(
+            "org.springframework.security",
+            "jakarta.persistence",
+            "org.hibernate",
+            "org.flywaydb",
+            "liquibase");
+
+    /**
+     * The two Micrometer registry types that must have no bean, even though their API jars are on the
+     * classpath.
+     *
+     * <p>The jars are non-optional transitives of {@code spring-boot-starter-web} and
+     * {@code spring-boot-starter-batch}, both of which the plan mandates: the observation API is
+     * referenced from {@code AbstractJob} and {@code AbstractStep}, the base classes of every Spring
+     * Batch job and step, so excluding them would stop the module loading rather than slim it.
+     * {@code app/java/pom.xml} records that conflict in full. What the exclusion actually asks for -
+     * nothing collected, nothing exported, no observability stack operated - is what is asserted
+     * here, at the only place it can be: the bean graph.
+     */
+    private static final List<String> ABSENT_REGISTRY_TYPES = List.of(
+            "io.micrometer.observation.ObservationRegistry",
+            "io.micrometer.core.instrument.MeterRegistry");
 
     /**
      * The test-only package that holds the stereotyped fixtures, and the one package under the root
@@ -110,88 +381,787 @@ class CardDemoApplicationTest {
     private static final String REST_CONTROLLER_DESCRIPTOR =
             "Lorg/springframework/web/bind/annotation/RestController;";
 
-    /** Repository-relative path of the module descriptor, used as the checkout marker. */
-    private static final String POM_PATH = "app/java/pom.xml";
-
-    /** Repository-relative path of the package this class belongs to, inside the module. */
-    private static final String ROOT_PACKAGE_PATH =
-            "app/java/src/main/java/com/vsergeychik/carddemo";
-
-    /** Repository-relative path of this test's subject, read as text for the source-level checks. */
-    private static final String SUBJECT_SOURCE_PATH =
-            ROOT_PACKAGE_PATH + "/CardDemoApplication.java";
-
-    /** Extracts the {@code mainClass} the Boot plugin is configured with. */
+    /** Extracts the {@code mainClass} the Spring Boot plugin is configured with. */
     private static final Pattern MAIN_CLASS =
             Pattern.compile("<mainClass>\\s*([^<\\s]+)\\s*</mainClass>");
 
-    /** A star import, in the one shape Java can express it. */
-    private static final Pattern WILDCARD_IMPORT =
-            Pattern.compile("import\\s+(?:static\\s+)?[\\w.]+\\.\\*\\s*;");
+    /** The started context, injected through the constructor so this class holds no mutable state. */
+    private final ApplicationContext context;
+
+    /**
+     * Receives the started application context.
+     *
+     * <p>Constructor injection, not field injection (practice B9): the context is captured once in a
+     * {@code final} field, so nothing in this suite can replace it and no static holds it.
+     * {@code @Autowired} is required rather than decorative - Spring's default test-constructor
+     * autowire mode is {@code ANNOTATED}, so an unannotated constructor parameter would not be
+     * resolved at all and JUnit would fail to instantiate this class.
+     *
+     * @param context the context refreshed from {@link CardDemoApplication} under the {@code test}
+     *     profile; never {@code null}
+     */
+    @Autowired
+    CardDemoApplicationTest(ApplicationContext context) {
+        this.context = context;
+    }
 
     @Nested
-    @DisplayName("The published identity - the name and package the build manifest depends on")
-    class PublishedIdentity {
+    @DisplayName("The context starts, under the profile that can actually start it")
+    class TheContextStarts {
 
         @Test
-        @DisplayName("the class sits in com.vsergeychik.carddemo, the root of every generated import")
-        void classSitsInTheRootPackage() {
-            assertThat(CardDemoApplication.class.getPackageName()).isEqualTo(ROOT_PACKAGE);
-            assertThat(CardDemoApplication.class.getName()).isEqualTo(PUBLISHED_FQN);
-        }
+        @DisplayName("the context is refreshed and active, so every assertion below reads a live graph")
+        void theContextIsActive() {
+            assertThat(context)
+                    .as("the context is injected through the constructor; a null here means the "
+                            + "refresh never happened")
+                    .isNotNull();
+            assertThat(context.getStartupDate())
+                    .as("a refreshed context records the moment it started")
+                    .isPositive();
+            // A floor derived from the inventories this suite goes on to assert, rather than a round
+            // number: the graph must be at least as large as the module's own declared surface.
+            assertThat(context.getBeanDefinitionCount())
+                    .as("the graph is populated, not an empty container")
+                    .isGreaterThan(SCREEN_CONTROLLERS.size() + JOB_BEAN_NAMES.size()
+                            + DATASET_REPOSITORIES.size());
 
-        @Test
-        @DisplayName("the class is public and not final, as an entry point Boot must proxy-free load")
-        void classIsPublicAndNotFinal() {
-            int modifiers = CardDemoApplication.class.getModifiers();
-            assertThat(Modifier.isPublic(modifiers)).isTrue();
-            assertThat(Modifier.isFinal(modifiers)).isFalse();
-            assertThat(Modifier.isAbstract(modifiers)).isFalse();
-        }
-
-        @Test
-        @DisplayName("app/java/pom.xml pins exactly this class, so the Boot plugin target resolves")
-        void buildManifestPinsThisExactClass() throws IOException, ClassNotFoundException {
-            String pom = Files.readString(repositoryFile(POM_PATH), StandardCharsets.UTF_8);
-            Matcher matcher = MAIN_CLASS.matcher(pom);
-
-            assertThat(matcher.find())
-                    .as("%s must configure a <mainClass> for spring-boot-maven-plugin", POM_PATH)
+            // Narrowed rather than injected as ConfigurableApplicationContext: what this suite needs
+            // everywhere else is the read-only interface, and asking for the configurable one would
+            // hand every test the ability to mutate the very graph it is asserting on.
+            assertThat(context).isInstanceOf(ConfigurableApplicationContext.class);
+            assertThat(((ConfigurableApplicationContext) context).isActive())
+                    .as("active means refreshed and not yet closed")
                     .isTrue();
-            String configured = matcher.group(1);
-
-            // The value Maven holds is a plain string, so the compiler never checks it. Loading it is
-            // the check: if this resolves, the repackaged jar's Start-Class names a real class.
-            assertThat(configured).isEqualTo(PUBLISHED_FQN);
-            assertThat(Class.forName(configured)).isSameAs(CardDemoApplication.class);
-
-            assertThat(matcher.find())
-                    .as("<mainClass> must be configured exactly once; a second one would make the "
-                            + "effective entry point depend on plugin merge order")
-                    .isFalse();
         }
 
         @Test
-        @DisplayName("no module-info.java exists: this module is a classpath jar, not a JPMS module")
-        void moduleDescriptorIsAbsent() throws IOException {
-            Path moduleRoot = repositoryFile(POM_PATH).getParent();
-            try (Stream<Path> tree = Files.walk(moduleRoot.resolve("src"))) {
-                assertThat(tree.filter(path -> path.getFileName().toString()
-                                .equals("module-info.java")))
-                        .as("packaging is jar; a module descriptor would force a requires clause for "
-                                + "every Spring dependency, which nothing asked for")
-                        .isEmpty();
-            }
+        @DisplayName("the 'test' profile is the only one active, so the H2 DataSource is what is wired")
+        void theTestProfileIsActive() {
+            // This is load-bearing, not incidental. application.yml ships a deliberately driver-free,
+            // credential-free DataSource block, because indexed VSAM has no published JDBC driver and
+            // the site-specific driver is a deployment-time input: that block cannot start a context.
+            // The 'test' profile supplies the in-memory database that can, which is why gate G3 is
+            // asserted under this profile and not the default one.
+            assertThat(context.getEnvironment().getActiveProfiles())
+                    .as("exactly one profile, so no second profile can be quietly contributing beans")
+                    .containsExactly("test");
+        }
+
+        @Test
+        @DisplayName("the entry point is itself a bean, registered exactly once under its published name")
+        void theEntryPointIsRegisteredOnce() {
+            assertThat(context.getBeanNamesForType(CardDemoApplication.class))
+                    .as("the configuration class this context was refreshed from is a bean in it")
+                    .containsExactly("cardDemoApplication");
+            assertThat(context.getBean(CardDemoApplication.class)).isNotNull();
+
+            // Through getUserClass, because a @Configuration class may or may not be enhanced with a
+            // generated subclass depending on whether it declares @Bean methods - a framework
+            // implementation detail this assertion has no business being sensitive to.
+            assertThat(ClassUtils.getUserClass(context.getBean(CardDemoApplication.class).getClass())
+                    .getName())
+                    .as("the published fully-qualified name, which app/java/pom.xml carries as a "
+                            + "string and the repackaged jar carries as its Start-Class")
+                    .isEqualTo(PUBLISHED_FQN);
         }
     }
 
     @Nested
-    @DisplayName("@SpringBootApplication and the eleven-package scan list")
-    class ComponentScanDeclaration {
+    @DisplayName("The online surface - 17 screen controllers, and the one endpoint that replaces Boot's")
+    class TheOnlineSurface {
+
+        @Test
+        @DisplayName("every one of the 17 CICS online programs has exactly one controller bean")
+        void allSeventeenScreenControllersResolve() {
+            Map<String, List<String>> byType = beansByUserClassName(
+                    context.getBeanNamesForAnnotation(RestController.class));
+
+            assertThat(byType.keySet())
+                    .as("one controller per online program; a missing entry means a program lost its "
+                            + "REST surface")
+                    .containsAll(SCREEN_CONTROLLERS);
+            SCREEN_CONTROLLERS.forEach(controller ->
+                    assertThat(byType.get(controller))
+                            .as("%s must be registered exactly once - two definitions of the same "
+                                    + "controller would publish its routes twice", controller)
+                            .hasSize(1));
+        }
+
+        @Test
+        @DisplayName("the controller inventory is exactly those 17 plus the container error endpoint")
+        void theControllerInventoryIsClosed() {
+            List<String> expected = new ArrayList<>(SCREEN_CONTROLLERS);
+            expected.add(WebConfig.CobolErrorEndpoint.class.getName());
+
+            // Two-sided, and the second side is the point. A "contains" assertion would pass over an
+            // eighteenth screen controller - an invented program, or a test fixture that drifted into
+            // a scanned package - and one such fixture really did join this context once, publishing
+            // ten routes the deployed artifact does not have. Naming the error endpoint explicitly is
+            // what lets the count stay closed while still permitting the one non-screen controller the
+            // module legitimately publishes.
+            assertThat(beansByUserClassName(context.getBeanNamesForAnnotation(RestController.class))
+                    .keySet())
+                    .as("the whole online surface: 17 screens, plus the endpoint that replaces Spring "
+                            + "Boot's BasicErrorController rather than adding to it")
+                    .containsExactlyInAnyOrderElementsOf(expected);
+        }
+
+        @Test
+        @DisplayName("the online surface is 17 screens - the CSD's 18 programs less the one with no source")
+        void theOnlineSurfaceIsSeventeenScreens() {
+            // app/csd/CARDDEMO.CSD defines 18 programs and 18 transactions, and the eighteenth -
+            // COCRDSEC, "CREDIT CARD SEARCH", reached by transaction CDV1 - has no file in app/cbl and
+            // no reference in any COBOL source anywhere. The CSD count is 18; the migratable source
+            // count is 17. A Java type for the difference would be an invented program rather than a
+            // translated one, which is what gate G14 forbids, and setting the container error endpoint
+            // aside is what makes the remaining figure directly comparable to the CSD's.
+            assertThat(SCREEN_CONTROLLERS)
+                    .as("one entry per CICS online program that actually has source")
+                    .hasSize(17)
+                    .doesNotHaveDuplicates();
+
+            List<String> screens = new ArrayList<>(beansByUserClassName(
+                    context.getBeanNamesForAnnotation(RestController.class)).keySet());
+            screens.remove(WebConfig.CobolErrorEndpoint.class.getName());
+
+            assertThat(screens)
+                    .as("seventeen screen controllers and not an eighteenth")
+                    .hasSize(17)
+                    .containsExactlyInAnyOrderElementsOf(SCREEN_CONTROLLERS);
+        }
+
+        @Test
+        @DisplayName("@RestController and @Controller select the same beans, so none is MVC-only")
+        void everyControllerIsAJsonController() {
+            // @RestController is @Controller plus @ResponseBody. If the two selections ever differed,
+            // a controller would be rendering through a view resolver instead of writing a body - and
+            // this module has no view layer at all, so the response would be a whitelabel page rather
+            // than the screen payload.
+            assertThat(beansByUserClassName(context.getBeanNamesForAnnotation(Controller.class))
+                    .keySet())
+                    .containsExactlyInAnyOrderElementsOf(beansByUserClassName(
+                            context.getBeanNamesForAnnotation(RestController.class)).keySet());
+        }
+
+        @Test
+        @DisplayName("the report screen's job-submission port is wired, replacing the CICS TDQ write")
+        void theJobSubmissionPortIsWired() {
+            // CORPT00C writes 80-byte JCL skeletons to transient data queue JOBS. Java has no TDQ, so
+            // the write became a port whose default implementation is a component nested inside the
+            // controller that submits through it. It is asserted here because an unwired port fails
+            // only at the moment a report is requested, and no context-free test reaches that.
+            String portBeanName = "reportRequestController.InternalReaderJobSubmissionPort";
+
+            assertThat(context.containsBean(portBeanName))
+                    .as("the default job-submission port must be a bean, not merely a nested class")
+                    .isTrue();
+            Class<?> portType = ClassUtils.getUserClass(context.getType(portBeanName));
+            assertThat(portType.getName())
+                    .isEqualTo(ROOT_PACKAGE
+                            + ".transaction.ReportRequestController$InternalReaderJobSubmissionPort");
+            assertThat(portType.getInterfaces())
+                    .extracting(Class::getName)
+                    .as("the implementation is injected through the port interface, so the writer can "
+                            + "be substituted without touching the controller")
+                    .contains(ROOT_PACKAGE + ".transaction.ReportRequestController$JobSubmissionPort");
+        }
+    }
+
+    @Nested
+    @DisplayName("The batch surface - 9 jobs, their configuration beans, and the two subprograms that "
+            + "are not jobs")
+    class TheBatchSurface {
+
+        @Test
+        @DisplayName("exactly the nine jobs are published, under the names a submission looks up")
+        void exactlyTheNineJobsArePublished() {
+            assertThat(context.getBeanNamesForType(Job.class))
+                    .as("eight programs invoked by EXEC PGM= in app/jcl and app/proc, plus the "
+                            + "JCL-orphaned CBTRN01C - nine, and nothing else")
+                    .containsExactlyInAnyOrderElementsOf(JOB_BEAN_NAMES);
+        }
+
+        @Test
+        @DisplayName("each job's own name equals its bean name, so a submission by name resolves it")
+        void eachJobNameMatchesItsBeanName() {
+            // A submission is resolved by bean name and then run by job name, and Spring Batch keys a
+            // job's execution history by the job's OWN name. If the two ever diverged, the job would
+            // launch and its history would accumulate under a name nobody queries.
+            JOB_BEAN_NAMES.forEach(jobName ->
+                    assertThat(context.getBean(jobName, Job.class).getName())
+                            .as("bean '%s' must publish itself under that same name", jobName)
+                            .isEqualTo(jobName));
+        }
+
+        @Test
+        @DisplayName("each job's configuration bean exists under a name that cannot collide with it")
+        void eachJobConfigurationBeanIsNamedApart() {
+            JOB_CONFIGURATION_BEAN_NAMES.forEach(configurationBeanName -> {
+                assertThat(context.containsBean(configurationBeanName))
+                        .as("the @Configuration class that publishes a job is itself a bean")
+                        .isTrue();
+                assertThat(JOB_BEAN_NAMES)
+                        .as("a configuration bean named after its own job collides with the job bean, "
+                                + "and Spring Boot refuses the context rather than picking a winner")
+                        .doesNotContain(configurationBeanName);
+            });
+            assertThat(JOB_CONFIGURATION_BEAN_NAMES).hasSameSizeAs(JOB_BEAN_NAMES);
+        }
+
+        @Test
+        @DisplayName("the JCL-orphaned posting job is registered and runnable, with nothing to trigger it")
+        void theOrphanJobIsRegistered() {
+            // CBTRN01C is invoked by no JCL anywhere in the repository, yet it is one of the 28
+            // in-scope programs, so it migrates as a fully runnable job with no schedule (gate G13).
+            // Deleting it or wiring it into a pipeline would both be behaviour changes.
+            assertThat(context.getBeanNamesForType(Job.class)).contains("transactionPostingJob");
+            assertThat(context.getBean("transactionPostingJob", Job.class).getName())
+                    .isEqualTo("transactionPostingJob");
+        }
+
+        @Test
+        @DisplayName("neither called subprogram is a Job, despite a mandated name that ends in 'Job'")
+        void neitherSubprogramIsAJob() {
+            // Gate G12. CBSTM03B is CBSTM03A's data-access collaborator, called at 13 sites, and
+            // CSUTLDTC is a date-validation subprogram called from two ONLINE programs. Neither has an
+            // EXEC PGM= anywhere, so neither is a job; the names came from the build prompt and the
+            // behaviour comes from the source.
+            SUBPROGRAM_BEAN_NAMES.forEach(beanName -> {
+                assertThat(context.containsBean(beanName))
+                        .as("%s is an injected collaborator and must be in the context", beanName)
+                        .isTrue();
+                assertThat(context.getBean(beanName))
+                        .as("%s must NOT be a Spring Batch Job", beanName)
+                        .isNotInstanceOf(Job.class);
+                assertThat(context.getBeanNamesForType(Job.class)).doesNotContain(beanName);
+            });
+        }
+
+        @Test
+        @DisplayName("the declared job-contract graph covers exactly the nine published jobs")
+        void theContractGraphCoversExactlyThePublishedJobs() {
+            // application.yml declares one carddemo.jobs entry per job, keyed in kebab-case, and
+            // BatchConfig validates that graph at refresh. Comparing the declared keys against the
+            // published job beans is what proves the property document and the bean graph agree: a
+            // tenth contract, or a job with no contract, is a startup-time defect that no
+            // context-free test can surface.
+            BatchConfig batchConfig = context.getBean(BatchConfig.class);
+            List<String> declaredJobBeanNames = batchConfig.jobContracts().keySet().stream()
+                    .map(CardDemoApplicationTest::jobBeanNameOf)
+                    .toList();
+
+            assertThat(declaredJobBeanNames)
+                    .as("one declared contract per published job, and no contract for a job that "
+                            + "does not exist")
+                    .containsExactlyInAnyOrderElementsOf(JOB_BEAN_NAMES);
+            assertThat(batchConfig.jobContracts().keySet())
+                    .as("nine keys, so a tenth declared job would fail here as well as in the graph")
+                    .hasSameSizeAs(JOB_BEAN_NAMES);
+        }
+
+        @Test
+        @DisplayName("each declared contract names a distinct COBOL program, so no key is re-pointed")
+        void eachContractNamesADistinctProgram() {
+            BatchConfig batchConfig = context.getBean(BatchConfig.class);
+            List<String> programs = batchConfig.jobContracts().keySet().stream()
+                    .map(key -> batchConfig.contract(key).program())
+                    .toList();
+
+            assertThat(programs)
+                    .as("nine jobs, nine distinct PROGRAM-IDs; two keys pointing at one program would "
+                            + "mean a program was translated twice and another not at all")
+                    .doesNotHaveDuplicates()
+                    .hasSameSizeAs(JOB_BEAN_NAMES)
+                    .allSatisfy(program -> assertThat(program).isNotBlank());
+        }
+    }
+
+    @Nested
+    @DisplayName("The data-access surface - 10 repositories, 4 writers, 1 parameter reader")
+    class TheDataAccessSurface {
+
+        @Test
+        @DisplayName("exactly the ten dataset repositories are registered, one per base dataset")
+        void exactlyTheTenRepositoriesAreRegistered() {
+            Map<String, List<String>> byType = beansByUserClassName(
+                    context.getBeanNamesForAnnotation(Repository.class));
+
+            // Two-sided again: an eleventh @Repository would mean a dataset acquired a second access
+            // path, and the two alternate indexes are finder methods on their base repositories rather
+            // than repositories of their own (gate G45).
+            assertThat(byType.keySet())
+                    .as("one repository per base dataset - never a second one for an alternate index")
+                    .containsExactlyInAnyOrderElementsOf(DATASET_REPOSITORIES);
+            DATASET_REPOSITORIES.forEach(repository ->
+                    assertThat(byType.get(repository))
+                            .as("%s must be registered exactly once", repository)
+                            .hasSize(1));
+        }
+
+        @Test
+        @DisplayName("the four output writers and the DATEPARM reader are all wired")
+        void theWritersAndTheParameterReaderAreWired() {
+            DATASET_WRITERS_AND_READERS.forEach(type -> {
+                assertThat(typeIsOnClasspath(type))
+                        .as("%s must exist as a type before it can be a bean", type)
+                        .isTrue();
+                assertThat(beanNamesOfType(type))
+                        .as("%s must be registered exactly once", type)
+                        .hasSize(1);
+            });
+        }
+
+        @Test
+        @DisplayName("no repository exists for DISCGRP or TRNXFILE, whose access lives with its reader")
+        void theTwoLogicalRepositoriesHaveNoTypeOfTheirOwn() {
+            // The plan counts twelve repositories, and that is a count of dataset access paths rather
+            // than of files. DISCGRP is read by the interest job's own access collaborator, and
+            // TRNXFILE is owned by StatementGenerationJobB - faithful to CBSTM03B.CBL, which declares
+            // all four of the statement job's input files itself. Asserting the absence is what stops
+            // a later reader "restoring" a repository the module never had.
+            ABSENT_REPOSITORY_TYPES.forEach(type ->
+                    assertThat(typeIsOnClasspath(type))
+                            .as("%s does not exist: the plan's repository count is logical, not a file "
+                                    + "count", type)
+                            .isFalse());
+        }
+
+        @Test
+        @DisplayName("exactly one DataSource is wired, and no dataset name is hard-coded into Java")
+        void exactlyOneDataSourceIsWired() {
+            assertThat(context.getBeanNamesForType(DataSource.class))
+                    .as("one pooled DataSource; under this profile it is the in-memory database, and "
+                            + "in production it is the deployment-supplied driver")
+                    .containsExactly("dataSource");
+
+            // Gate G46, asserted where it is observable: every dataset name is resolved from
+            // configuration, so the environment - not any Java source - is what holds them.
+            assertThat(context.getEnvironment().getProperty("carddemo.datasets.ACCTDAT.dsname"))
+                    .as("the account master's dataset name is bound from configuration")
+                    .isNotBlank();
+        }
+    }
+
+    @Nested
+    @DisplayName("The configuration surface - the four config classes and the beans they publish")
+    class TheConfigurationSurface {
+
+        @Test
+        @DisplayName("all four config classes are registered, each exactly once")
+        void allFourConfigurationClassesAreRegistered() {
+            // These four are this file's declared dependencies, so they are asserted as compile-checked
+            // types rather than as names: a rename would fail the build here rather than at test time.
+            assertThat(context.getBeanNamesForType(DataSourceConfig.class)).hasSize(1);
+            assertThat(context.getBeanNamesForType(BatchConfig.class)).hasSize(1);
+            assertThat(context.getBeanNamesForType(WebConfig.class)).hasSize(1);
+            assertThat(context.getBeanNamesForType(CobolCharsetConfig.class)).hasSize(1);
+        }
+
+        @Test
+        @DisplayName("exactly one Clock bean exists, so every date-bearing screen has its instant source")
+        void exactlyOneClockIsPublished() {
+            // common/DateHeader is the Java form of the WS-DATE-TIME group in CSDAT01Y, which supplies
+            // the CURDATE and CURTIME fields in the top-right corner of all 17 screens. It never calls
+            // now() of its own accord: it takes a Clock and reads it once, so a test can pass
+            // Clock.fixed(...) and assert an exact header. That design needs exactly one Clock in the
+            // context, and its absence would break every date-bearing controller at startup.
+            assertThat(context.getBeanNamesForType(Clock.class)).containsExactly("clock");
+
+            Clock clock = context.getBean(Clock.class);
+            assertThat(clock).isNotNull();
+
+            // The zone, never an instant. Asserting a rendered time here would make this suite depend
+            // on the system clock (practice B7); asserting the zone rule is deterministic and is the
+            // property that matters - a fixed clock in a production context would freeze the date on
+            // every screen.
+            assertThat(clock.getZone())
+                    .as("the production clock follows the platform zone and is never a fixed instant")
+                    .isEqualTo(ZoneId.systemDefault());
+        }
+
+        @Test
+        @DisplayName("the three charsets are named beans, so no dataset is decoded by platform default")
+        void theCharsetsAreNamedBeans() {
+            // Practice B8, and the classic silent corrupter of mainframe data. Every charset in this
+            // module is named explicitly - the EBCDIC code page, the ASCII code page of the nine text
+            // fixtures, and the one the dataset layer actually uses - so nothing falls back to the
+            // platform default.
+            assertThat(context.getBeanNamesForType(Charset.class))
+                    .containsExactlyInAnyOrder(
+                            "carddemoEbcdicCharset",
+                            "carddemoAsciiCharset",
+                            "carddemoDatasetCharset");
+        }
+    }
+
+    @Nested
+    @DisplayName("The batch infrastructure - a DataSource-backed JobRepository and one transaction "
+            + "manager")
+    class TheBatchInfrastructure {
+
+        @Test
+        @DisplayName("exactly one JobRepository is wired, which is what Spring Batch 5 requires to start")
+        void exactlyOneJobRepositoryIsWired() {
+            // Spring Batch 5 requires a DataSource-backed JobRepository: there is no in-memory
+            // implementation to fall back on, so a batch context simply does not start without one. The
+            // in-memory database supplied by the 'test' profile is what satisfies it here, and the
+            // deployment-supplied driver is what satisfies it in production.
+            assertThat(context.getBeanNamesForType(JobRepository.class)).containsExactly("jobRepository");
+            assertThat(context.getBean(JobRepository.class)).isNotNull();
+        }
+
+        @Test
+        @DisplayName("the JobRepository really queries its database, so it is backed rather than stubbed")
+        void theJobRepositoryQueriesItsDatabase() {
+            // A read, not a launch (gate G51 keeps job execution out of this suite). It is the one way
+            // to distinguish "a JobRepository bean exists" from "a JobRepository whose schema is
+            // present and reachable": the query round-trips to the database and answers null for a job
+            // that has never run. That answer is also the proof required below that nothing was
+            // launched at startup.
+            JobRepository jobRepository = context.getBean(JobRepository.class);
+
+            JOB_BEAN_NAMES.forEach(jobName -> {
+                assertThat(jobRepository.isJobInstanceExists(jobName, new JobParameters()))
+                        .as("job '%s' must have no instance, because nothing launched it", jobName)
+                        .isFalse();
+                assertThat(jobRepository.getLastJobExecution(jobName, new JobParameters()))
+                        .as("job '%s' must have no execution history in a freshly refreshed context",
+                                jobName)
+                        .isNull();
+            });
+        }
+
+        @Test
+        @DisplayName("exactly one PlatformTransactionManager is wired, the one BatchConfig publishes")
+        void exactlyOneTransactionManagerIsWired() {
+            // One transaction manager, over the same DataSource the JobRepository uses. Two would make
+            // a step's business work and its own metadata update commit under different managers, which
+            // is how a step can be recorded as complete while its writes are rolled back.
+            assertThat(context.getBeanNamesForType(PlatformTransactionManager.class))
+                    .containsExactly("transactionManager");
+            assertThat(context.getBean(PlatformTransactionManager.class)).isNotNull();
+        }
+
+        @Test
+        @DisplayName("the batch step beans are registered for the jobs that declare them")
+        void theDeclaredStepBeansAreRegistered() {
+            // Only the steps that are published as beans in their own right, which is not every step
+            // in the module: a job may build its steps inline. What matters here is that the ones
+            // declared as beans resolve, because an unresolvable step definition fails the context.
+            assertThat(context.getBeanNamesForType(Step.class))
+                    .as("every published step must be a real bean")
+                    .isNotEmpty()
+                    .allSatisfy(stepBeanName ->
+                            assertThat(context.getBean(stepBeanName, Step.class)).isNotNull());
+        }
+    }
+
+    @Nested
+    @DisplayName("Nothing runs at startup - the jobs are registered and untriggered")
+    class NothingRunsAtStartup {
+
+        @Test
+        @DisplayName("spring.batch.job.enabled is false, so Boot launches no job on refresh")
+        void batchJobExecutionIsDisabled() {
+            assertThat(context.getEnvironment().getProperty("spring.batch.job.enabled"))
+                    .as("application.yml sets it false and the 'test' profile restates it; jobs are "
+                            + "launched explicitly, exactly as JCL submits one EXEC PGM= step at a time")
+                    .isEqualTo("false");
+        }
+
+        @Test
+        @DisplayName("no runner of any kind is registered, so a refresh starts no work")
+        void noRunnerIsRegistered() {
+            // Two mechanisms could launch something at startup and neither is present. Spring Boot's
+            // own JobLauncherApplicationRunner is conditional on spring.batch.job.enabled being true,
+            // and the module's JCL launcher is conditional on a submission naming a job. Asserting the
+            // ApplicationRunner and CommandLineRunner types rather than either implementation covers
+            // any third mechanism a later change might introduce.
+            assertThat(context.getBeanNamesForType(ApplicationRunner.class))
+                    .as("an ApplicationRunner would run during the refresh this suite performs")
+                    .isEmpty();
+            assertThat(context.getBeanNamesForType(CommandLineRunner.class)).isEmpty();
+            assertThat(context.getEnvironment().getProperty("carddemo.batch.job-name"))
+                    .as("no submission is being made, so the JCL launcher must not even exist")
+                    .isNull();
+        }
+
+        @Test
+        @DisplayName("no job has an execution, so the orphan posting job stays runnable and untriggered")
+        void noJobHasExecuted() {
+            // The observable form of gate G13. JobExplorer reports the jobs the repository has seen
+            // execute; an empty answer in a context holding nine job beans is exactly the required
+            // state - registered, launchable, and launched by nothing.
+            assertThat(context.getBean(JobExplorer.class).getJobNames())
+                    .as("nine jobs are registered and none of them has run")
+                    .isEmpty();
+            assertThat(context.getBeanNamesForType(Job.class))
+                    .as("registration is unaffected by never having run")
+                    .hasSize(JOB_BEAN_NAMES.size());
+        }
+    }
+
+    @Nested
+    @DisplayName("The excluded-technology boundary - what the closed dependency set keeps out")
+    class TheExcludedTechnologyBoundary {
+
+        @Test
+        @DisplayName("no excluded technology is even on the classpath, let alone in the graph")
+        void noExcludedTechnologyIsOnTheClasspath() {
+            // Asserted at the classpath rather than at the bean graph, because that is where the
+            // decision was actually made: app/java/pom.xml declares six dependencies and none of these
+            // families is among them. A bean-only check would pass while an unused jar sat on the
+            // classpath waiting for auto-configuration to notice it.
+            EXCLUDED_TECHNOLOGY_TYPES.forEach((family, type) ->
+                    assertThat(typeIsOnClasspath(type))
+                            .as("%s is excluded by the plan's closed dependency set, so %s must not be "
+                                    + "resolvable", family, type)
+                            .isFalse());
+        }
+
+        @Test
+        @DisplayName("no bean comes from a security, persistence or schema-migration package")
+        void noBeanComesFromAnExcludedPackage() {
+            // The second half of the same boundary, stated over the graph so that a family reaching the
+            // classpath transitively still cannot contribute a bean unnoticed. Authentication stays
+            // file-based against USRSEC with the plaintext comparison COSGN00C performs (gate G41), and
+            // there is no ORM, no entity manager and no migration tool anywhere (gate G44).
+            List<String> offenders = new ArrayList<>();
+            for (String beanName : context.getBeanDefinitionNames()) {
+                Class<?> type = context.getType(beanName);
+                if (type == null) {
+                    continue;
+                }
+                String packageName = ClassUtils.getUserClass(type).getPackageName();
+                if (EXCLUDED_BEAN_PACKAGE_PREFIXES.stream().anyMatch(packageName::startsWith)) {
+                    offenders.add(beanName + " (" + type.getName() + ")");
+                }
+            }
+
+            assertThat(offenders)
+                    .as("no bean may come from an excluded technology family")
+                    .isEmpty();
+        }
+
+        @Test
+        @DisplayName("no metrics or observation registry bean exists, so nothing is ever collected")
+        void noObservabilityRegistryIsWired() {
+            // This is the one exclusion whose letter cannot hold, and it is asserted honestly rather
+            // than falsely. The Micrometer observation and core jars ARE on the classpath: they are
+            // non-optional transitives of spring-boot-starter-web and spring-boot-starter-batch, both
+            // mandated by the plan, and they are referenced from AbstractJob and AbstractStep - the
+            // base classes of every Spring Batch job and step - so excluding them would stop the module
+            // loading rather than slim it. app/java/pom.xml records that conflict in full.
+            //
+            // What the exclusion actually asks for is that no telemetry is collected or exported, and
+            // that is exactly what is asserted: no registry bean of either kind, no Actuator, no
+            // exporter, nothing to scrape. The assertion is deliberately one-directional - it holds
+            // whether those jars are on the classpath or not - so that a future build which does manage
+            // to keep them out passes here rather than failing for having improved.
+            ABSENT_REGISTRY_TYPES.forEach(registryType ->
+                    assertThat(beanNamesOfType(registryType))
+                            .as("%s must have no bean: nothing is collected, aggregated or exported",
+                                    registryType)
+                            .isEmpty());
+        }
+
+        @Test
+        @DisplayName("no schema is created for the application's own data")
+        void noApplicationSchemaIsCreated() {
+            // Gate G44 from the configuration side. The batch metadata schema is initialised only
+            // against the throwaway in-memory database used by tests, and script-based initialisation
+            // is switched off outright, so no schema.sql or data.sql arriving on the classpath can
+            // quietly create an application table.
+            assertThat(context.getEnvironment().getProperty("spring.sql.init.mode"))
+                    .as("no schema.sql and no data.sql may be executed against the DataSource")
+                    .isEqualTo("never");
+        }
+    }
+
+    @Nested
+    @DisplayName("Component scope is the shipped graph, not the test tree's")
+    class ComponentScopeIsTheShippedGraph {
+
+        @Test
+        @DisplayName("every scanned package contributes at least one bean, so none fell out of scope")
+        void everyScannedPackageContributesABean() {
+            // The end-to-end form of the scan-list check. A dropped entry in scanBasePackages removes a
+            // whole domain package from component scope, and the first symptom is otherwise a missing
+            // bean at runtime. Stated as a minimum rather than an exact count on purpose: an exact
+            // count would break every time a package legitimately gained a bean.
+            Map<String, Long> beansPerPackage = new LinkedHashMap<>();
+            for (String scannedPackage : EXPECTED_SCAN_PACKAGES) {
+                beansPerPackage.put(scannedPackage, beanCountUnder(scannedPackage));
+            }
+
+            assertThat(beansPerPackage)
+                    .as("all eleven declared packages must be represented in the graph")
+                    .hasSize(EXPECTED_SCAN_PACKAGES.size())
+                    .allSatisfy((scannedPackage, beanCount) -> assertThat(beanCount)
+                            .as("package %s holds no bean at all, which means either it left component "
+                                    + "scope or it should never have been in the scan list",
+                                    scannedPackage)
+                            .isPositive());
+        }
+
+        @Test
+        @DisplayName("no bean comes from the test-support package, which is deliberately unscanned")
+        void noBeanComesFromTheTestSupportPackage() {
+            assertThat(beanCountUnder(TEST_SUPPORT_PACKAGE))
+                    .as("com.vsergeychik.carddemo.testsupport exists precisely to be out of component "
+                            + "scope; scanning it would put its fixtures into the container")
+                    .isZero();
+            assertThat(scanBasePackages())
+                    .as("and the scan list must not grow to cover it")
+                    .doesNotContain(TEST_SUPPORT_PACKAGE);
+        }
+
+        @Test
+        @DisplayName("every bean of this module is loaded from the main output, never from test-classes")
+        void everyBeanIsLoadedFromTheMainOutput() {
+            // The graph must be the graph the artifact ships. src/test/java compiles to
+            // target/test-classes, which is on the classpath of every test run and of a local run
+            // started from this module's build output, so a stereotyped class there is a scan candidate
+            // whose bean would exist in a developer's run and not in production.
+            List<String> offenders = new ArrayList<>();
+            for (String beanName : context.getBeanDefinitionNames()) {
+                Class<?> type = context.getType(beanName);
+                if (type == null) {
+                    continue;
+                }
+                Class<?> userType = ClassUtils.getUserClass(type);
+                if (!userType.getPackageName().startsWith(ROOT_PACKAGE)) {
+                    continue;
+                }
+                // Generated and hidden classes - lambdas registered as beans, and framework-generated
+                // subclasses - have no class file to locate, so there is nothing to attribute and
+                // nothing to judge. The class they were generated from is judged on its own account.
+                URL location =
+                        userType.getResource("/" + userType.getName().replace('.', '/') + CLASS_SUFFIX);
+                if (location == null) {
+                    continue;
+                }
+                if (location.toString().contains("test-classes")) {
+                    offenders.add(beanName + " (" + userType.getName() + ")");
+                }
+            }
+
+            assertThat(offenders)
+                    .as("a bean compiled from the test tree is in the container but not in the "
+                            + "artifact; put stereotyped fixtures in "
+                            + "com.vsergeychik.carddemo.testsupport, which is deliberately unscanned")
+                    .isEmpty();
+        }
+
+        /**
+         * The one defect in this area that a started context structurally cannot detect.
+         *
+         * <p>Spring Boot's test framework contributes a {@code TypeExcludeFilter} that excludes test
+         * classes and everything they enclose, so a controller-shaped fixture inside a scanned package
+         * is filtered out of exactly the contexts a test could assert on - and registered in the plain
+         * {@code main} run nobody asserts on. That is not hypothetical: a {@code @RestController}
+         * fixture nested in a {@code config} suite once joined the graph as an extra controller
+         * publishing ten routes the deployed artifact does not have, some of which abend by design.
+         *
+         * <p>So this reads the compiled test output directly - no context, no filter, no class
+         * loading - and matches the annotation descriptors in the class files as bytes. The output root
+         * comes from this suite's own code source rather than from a repository-relative path, so the
+         * check follows the build instead of a convention about where the build puts things.
+         *
+         * @throws IOException if the compiled test output cannot be walked
+         */
+        @Test
+        @DisplayName("no class compiled from the test tree inside a scanned package is a controller")
+        void noTestTreeClassInsideAScannedPackageIsAController() throws IOException {
+            List<String> offenders = new ArrayList<>();
+            Path testOutput = compiledTestOutput();
+            try (Stream<Path> files = Files.walk(testOutput)) {
+                for (Path file : files.filter(path -> path.toString().endsWith(CLASS_SUFFIX)).toList()) {
+                    String className = classNameOf(testOutput, file);
+                    if (liesInAScannedPackage(className) && declaresAControllerStereotype(file)) {
+                        offenders.add(className);
+                    }
+                }
+            }
+
+            assertThat(offenders)
+                    .as("a controller-shaped test fixture inside a scanned package is offered to every "
+                            + "context refreshed from target/test-classes, including a local run of the "
+                            + "application; put it in com.vsergeychik.carddemo.testsupport")
+                    .isEmpty();
+        }
+
+        /**
+         * Reports whether a class file declares {@code @Controller} or an annotation meta-annotated
+         * with it, {@code @RestController} being the one this module's fixtures used.
+         *
+         * <p>The class file is read as bytes and the annotation descriptors are matched as text, so
+         * nothing is loaded and no static initialiser of a test class runs during this check.
+         * ISO-8859-1 is named explicitly because it is the one charset that round-trips arbitrary bytes
+         * to characters without loss - this is a byte scan, not text (practice B8).
+         *
+         * @param classFile the compiled class to inspect
+         * @return {@code true} when the class declares a controller stereotype
+         * @throws IOException if the class file cannot be read
+         */
+        private boolean declaresAControllerStereotype(Path classFile) throws IOException {
+            String bytes = new String(Files.readAllBytes(classFile), StandardCharsets.ISO_8859_1);
+            return bytes.contains(CONTROLLER_DESCRIPTOR) || bytes.contains(REST_CONTROLLER_DESCRIPTOR);
+        }
+
+        /**
+         * Reports whether a class lies beneath one of the eleven packages the entry point scans.
+         *
+         * @param className the fully-qualified class name, with {@code $} for nesting
+         * @return {@code true} when component scanning would reach it
+         */
+        private boolean liesInAScannedPackage(String className) {
+            return scanBasePackages().stream()
+                    .anyMatch(scanned -> className.startsWith(scanned + "."));
+        }
+
+        /**
+         * Derives a class name from the path of its class file, relative to the output root.
+         *
+         * @param root the compiled output root
+         * @param classFile the class file beneath it
+         * @return the fully-qualified class name, with {@code $} retained for nested classes
+         */
+        private String classNameOf(Path root, Path classFile) {
+            String relative = root.relativize(classFile).toString();
+            return relative.substring(0, relative.length() - CLASS_SUFFIX.length())
+                    .replace(File.separatorChar, '.');
+        }
+
+        /**
+         * The directory this suite's own class file was loaded from, which is the compiled test tree.
+         *
+         * @return the compiled test output root
+         */
+        private Path compiledTestOutput() {
+            Path location = Path.of(URI.create(CardDemoApplicationTest.class.getProtectionDomain()
+                    .getCodeSource().getLocation().toString()));
+            assertThat(Files.isDirectory(location))
+                    .as("this suite runs from a directory of class files, which is what makes the test "
+                            + "tree walkable; a packaged test jar would need a different reader")
+                    .isTrue();
+            return location;
+        }
+    }
+
+    @Nested
+    @DisplayName("The published identity and the declarations that produce the graph above")
+    class ThePublishedIdentity {
 
         @Test
         @DisplayName("@SpringBootApplication is present, and is the only annotation on the class")
         void springBootApplicationIsTheSoleAnnotation() {
+            // Two-sided, and the second side is what makes it worth asserting. Spring Batch's own
+            // enablement annotation is the natural thing for someone to add here, and under Spring
+            // Boot 3 adding it DISABLES batch auto-configuration rather than enabling it - the nine job
+            // beans would simply cease to exist. A sole-annotation assertion refuses that, and every
+            // other well-meant addition, in one line.
             Annotation[] declared = CardDemoApplication.class.getDeclaredAnnotations();
 
             assertThat(declared).hasSize(1);
@@ -202,51 +1172,42 @@ class CardDemoApplicationTest {
         @DisplayName("scanBasePackages names exactly the eleven packages, in architectural order")
         void scanBasePackagesAreExactlyTheElevenInOrder() {
             assertThat(scanBasePackages())
-                    .as("order is foundation first, then the nine domain packages")
-                    .containsExactlyElementsOf(EXPECTED_SCAN_PACKAGES);
+                    .as("order is the two foundation packages first, then the nine domain packages")
+                    .containsExactlyElementsOf(EXPECTED_SCAN_PACKAGES)
+                    .doesNotHaveDuplicates()
+                    .allSatisfy(name -> assertThat(name).startsWith(ROOT_PACKAGE + "."));
         }
 
         @Test
-        @DisplayName("every scanned package lies under the root package and none repeats")
-        void scannedPackagesAreRootedAndDistinct() {
-            List<String> scanned = scanBasePackages();
+        @DisplayName("app/java/pom.xml pins exactly this class, so the Boot plugin target resolves")
+        void buildManifestPinsThisExactClass() throws IOException, ClassNotFoundException {
+            // The one thing in this suite that no context can answer. Maven holds mainClass as a plain
+            // STRING, entirely outside the compiler's symbol graph, so renaming or moving this class
+            // leaves the build green and the repackaged jar unbootable - its Start-Class would name a
+            // type that no longer exists.
+            String pom = Files.readString(moduleDescriptor(), StandardCharsets.UTF_8);
+            Matcher matcher = MAIN_CLASS.matcher(pom);
 
-            assertThat(scanned).doesNotHaveDuplicates();
-            assertThat(scanned).allSatisfy(name ->
-                    assertThat(name).startsWith(ROOT_PACKAGE + "."));
+            assertThat(matcher.find())
+                    .as("the module descriptor must configure a <mainClass> for "
+                            + "spring-boot-maven-plugin")
+                    .isTrue();
+            String configured = matcher.group(1);
+
+            assertThat(configured).isEqualTo(PUBLISHED_FQN);
+            assertThat(Class.forName(configured))
+                    .as("loading the configured value is the check: if it resolves, the jar's "
+                            + "Start-Class names a real class")
+                    .isSameAs(CardDemoApplication.class);
+            assertThat(matcher.find())
+                    .as("<mainClass> must be configured exactly once; a second one would make the "
+                            + "effective entry point depend on plugin merge order")
+                    .isFalse();
         }
-
-        @Test
-        @DisplayName("the scan list matches the source tree exactly - nothing dropped, nothing invented")
-        void scanListMatchesTheSourceTree() throws IOException {
-            Path packageRoot = repositoryFile(ROOT_PACKAGE_PATH);
-            List<String> onDisk = new ArrayList<>();
-            try (Stream<Path> children = Files.list(packageRoot)) {
-                children.filter(Files::isDirectory)
-                        .map(path -> ROOT_PACKAGE + "." + path.getFileName())
-                        .sorted()
-                        .forEach(onDisk::add);
-            }
-
-            // Two-sided on purpose. A missing entry silently drops a domain package out of component
-            // scope; a surplus entry names a package that does not exist, which is just as wrong and
-            // would not be caught by a "contains" assertion.
-            assertThat(scanBasePackages())
-                    .containsExactlyInAnyOrderElementsOf(onDisk)
-                    .hasSize(EXPECTED_SCAN_PACKAGES.size());
-        }
-    }
-
-    @Nested
-    @DisplayName("main - one line, and nothing that runs at startup")
-    class EntryPointMethod {
 
         @Test
         @DisplayName("main is the only public method, and is public static void(String[])")
         void mainIsTheOnlyPublicMethod() throws NoSuchMethodException {
-            // Everything beside main is package-private and exists for one reason: the launch mode has
-            // to be decided before the context exists, so the decision cannot live in a bean, and a
-            // decision nobody can call is a decision nobody can test.
             assertThat(authored(CardDemoApplication.class.getDeclaredMethods()).stream()
                     .filter(method -> Modifier.isPublic(method.getModifiers()))
                     .map(Method::getName)
@@ -260,26 +1221,13 @@ class CardDemoApplicationTest {
         }
 
         @Test
-        @DisplayName("every authored method is static, because none of them needs an instance")
-        void everyAuthoredMethodIsStatic() {
-            // The entry point is reached with no instance in existence, and so is the launch-mode
-            // decision it takes. An instance method here would imply state this class does not have.
-            assertThat(authored(CardDemoApplication.class.getDeclaredMethods()).stream()
-                    .filter(method -> !Modifier.isStatic(method.getModifiers()))
-                    .map(Method::getName)
-                    .toList())
-                    .isEmpty();
-        }
-
-        @Test
         @DisplayName("the class declares no field at all, so it holds no state of any kind")
         void theClassDeclaresNoField() {
-            // Gate G53, asserted at its strongest. "No mutable static" would permit a constant, and a
-            // constant here would be the beginning of configuration living in the composition root -
-            // the very thing application.yml exists for. A composition root needs no field, so it has
-            // none, and this asserts the absence rather than the harmlessness.
+            // Gate G53 at its strongest. "No mutable static" would permit a constant, and a constant
+            // here would be the beginning of configuration living in the composition root - which is
+            // what application.yml exists for. A composition root needs no field, so it has none.
             assertThat(authored(CardDemoApplication.class.getDeclaredFields()).stream()
-                    .map(java.lang.reflect.Field::getName)
+                    .map(Field::getName)
                     .toList())
                     .as("a composition root that needs no state should declare none")
                     .isEmpty();
@@ -297,11 +1245,16 @@ class CardDemoApplicationTest {
         }
 
         @Test
-        @DisplayName("the class is no runner: starting the context launches no batch job")
-        void theClassIsNotARunner() {
-            // application.yml sets spring.batch.job.enabled: false so that jobs are launched
-            // explicitly. A runner declared here would defeat that, and the job translated from the
-            // JCL-orphaned CBTRN01C must stay runnable yet untriggered.
+        @DisplayName("the class is public, not final, and is no runner of any kind")
+        void theClassIsAPlainConfigurationSource() {
+            int modifiers = CardDemoApplication.class.getModifiers();
+
+            assertThat(Modifier.isPublic(modifiers)).isTrue();
+            assertThat(Modifier.isFinal(modifiers)).isFalse();
+            assertThat(Modifier.isAbstract(modifiers)).isFalse();
+
+            // A runner declared on the entry point would defeat spring.batch.job.enabled: false, and
+            // the job translated from the JCL-orphaned CBTRN01C must stay runnable yet untriggered.
             assertThat(ApplicationRunner.class.isAssignableFrom(CardDemoApplication.class)).isFalse();
             assertThat(CommandLineRunner.class.isAssignableFrom(CardDemoApplication.class)).isFalse();
             assertThat(CardDemoApplication.class.getInterfaces()).isEmpty();
@@ -309,297 +1262,99 @@ class CardDemoApplicationTest {
         }
     }
 
-    @Nested
-    @DisplayName("The scanned packages hold no test-tree component, so the route table is the shipped "
-            + "one")
-    class TestTreeStaysOutOfComponentScope {
+    // =================================================================================================
+    // Helpers. Every one of them is a pure query - nothing here mutates the context, registers a bean
+    // definition or writes to the filesystem.
+    // =================================================================================================
 
-        /**
-         * The one thing the existing whole-context tests structurally cannot catch.
-         *
-         * <p>{@code src/test/java} compiles to {@code target/test-classes}, which is on the classpath
-         * of every test run and of a local run started from this module's build output. A test class
-         * carrying a bean stereotype inside one of the eleven scanned packages is therefore a
-         * component-scan candidate, and it was: a {@code @RestController} fixture nested in a
-         * {@code config} suite joined the context as an eighteenth controller publishing ten
-         * {@code /webconfig-fixture/**} routes, so a locally started application answered a route table
-         * the deployed artifact does not have - and some of those routes abend by design.
-         *
-         * <p>A {@code @SpringBootTest} cannot see this. Spring Boot's test framework contributes a
-         * {@code TypeExcludeFilter} that excludes test classes and everything they enclose, so the
-         * fixture is filtered out of exactly the contexts a test could assert on and is registered in
-         * the plain {@code main} run nobody asserts on. That is why this reads the compiled test output
-         * directly instead: no context, no filter, no class loading - the annotations are read from the
-         * class files themselves.
-         *
-         * @throws IOException if the compiled test output cannot be walked
-         */
-        @Test
-        @DisplayName("no class compiled from the test tree inside a scanned package is a controller")
-        void noTestTreeClassInsideAScannedPackageIsAController() throws IOException {
-            List<String> offenders = new ArrayList<>();
-            Path testOutput = compiledTestOutput();
-            try (Stream<Path> files = Files.walk(testOutput)) {
-                for (Path file : files.filter(path -> path.toString().endsWith(CLASS_SUFFIX))
-                        .toList()) {
-                    String className = classNameOf(testOutput, file);
-                    if (liesInAScannedPackage(className) && declaresAControllerStereotype(file)) {
-                        offenders.add(className);
-                    }
-                }
+    /**
+     * Groups bean names by the fully-qualified name of the class each of them was declared from.
+     *
+     * <p>Through {@link ClassUtils#getUserClass(Class)}, and that is essential rather than tidy: many
+     * beans in this context are container-generated subclasses -
+     * {@code UserAddController$$SpringCGLIB$$0} and every repository among them - so comparing raw bean
+     * types against an expected inventory would fail on beans that are perfectly correct. The user class
+     * is the class a reader wrote and the plan names.
+     *
+     * <p>A {@code List} per class rather than a single name, so a type accidentally registered twice is
+     * visible as two entries instead of silently collapsing to one.
+     *
+     * @param beanNames the bean names to group; never {@code null}
+     * @return name of declaring class to the bean names registered from it, in encounter order
+     */
+    private Map<String, List<String>> beansByUserClassName(String[] beanNames) {
+        Map<String, List<String>> grouped = new LinkedHashMap<>();
+        for (String beanName : beanNames) {
+            Class<?> type = context.getType(beanName);
+            if (type == null) {
+                continue;
             }
-
-            assertThat(offenders)
-                    .as("a controller-shaped test fixture inside a scanned package is offered to every "
-                            + "context refreshed from target/test-classes; put it in "
-                            + "com.vsergeychik.carddemo.testsupport, which is deliberately unscanned")
-                    .isEmpty();
+            grouped.computeIfAbsent(ClassUtils.getUserClass(type).getName(),
+                    key -> new ArrayList<>()).add(beanName);
         }
-
-        /**
-         * The counterpart assertion: the package that holds those fixtures is not scanned.
-         *
-         * <p>Stated separately because the two can fail independently. The check above passes the
-         * moment a fixture moves out of a scanned package; this one fails if the scan list later grows
-         * to cover where it moved to, which would restore the defect without touching a single test.
-         */
-        @Test
-        @DisplayName("the test-support package is not in the scan list, which is why it can hold them")
-        void theTestSupportPackageIsNotScanned() {
-            assertThat(scanBasePackages())
-                    .as("com.vsergeychik.carddemo.testsupport exists precisely to be out of component "
-                            + "scope; scanning it would put its fixtures into the container")
-                    .doesNotContain(TEST_SUPPORT_PACKAGE);
-        }
-
-        /**
-         * Reports whether a class file declares {@code @Controller} or an annotation meta-annotated
-         * with it, {@code @RestController} being the one this module's fixtures used.
-         *
-         * <p>The class file is read as bytes and the annotation descriptors are matched as text, so
-         * nothing is loaded and no static initialiser of a test class runs during this check.
-         *
-         * @param classFile the compiled class to inspect
-         * @return {@code true} when the class declares a controller stereotype
-         * @throws IOException if the class file cannot be read
-         */
-        private boolean declaresAControllerStereotype(Path classFile) throws IOException {
-            String bytes = new String(Files.readAllBytes(classFile), StandardCharsets.ISO_8859_1);
-            return bytes.contains(CONTROLLER_DESCRIPTOR) || bytes.contains(REST_CONTROLLER_DESCRIPTOR);
-        }
-
-        /**
-         * Reports whether a class lies in one of the eleven packages the entry point scans, or beneath
-         * one of them.
-         *
-         * @param className the fully-qualified class name, with {@code $} for nesting
-         * @return {@code true} when component scanning would reach it
-         */
-        private boolean liesInAScannedPackage(String className) {
-            return scanBasePackages().stream()
-                    .anyMatch(scanned -> className.startsWith(scanned + "."));
-        }
-
-        /**
-         * Derives a class name from the path of its class file, relative to the output root.
-         *
-         * @param root      the compiled output root
-         * @param classFile the class file beneath it
-         * @return the fully-qualified class name, with {@code $} retained for nested classes
-         */
-        private String classNameOf(Path root, Path classFile) {
-            String relative = root.relativize(classFile).toString();
-            return relative.substring(0, relative.length() - CLASS_SUFFIX.length())
-                    .replace(java.io.File.separatorChar, '.');
-        }
-
-        /**
-         * The directory this suite's own class file was loaded from, which is the compiled test tree.
-         *
-         * <p>Taken from the code source rather than assembled from a repository-relative path, so the
-         * check follows the build rather than a convention about where the build puts things.
-         *
-         * @return the compiled test output root
-         */
-        private Path compiledTestOutput() {
-            Path location = Path.of(java.net.URI.create(CardDemoApplicationTest.class
-                    .getProtectionDomain().getCodeSource().getLocation().toString()));
-            assertThat(Files.isDirectory(location))
-                    .as("this suite runs from a directory of class files, which is what makes the test "
-                            + "tree walkable; a packaged test jar would need a different reader")
-                    .isTrue();
-            return location;
-        }
+        return grouped;
     }
 
-    @Nested
-    @DisplayName("Source-level prohibitions, read from the file itself")
-    class SourceLevelProhibitions {
-
-        @Test
-        @DisplayName("every import is named, and the set is exactly the two Boot types the entry point "
-                + "needs")
-        void importsAreNamedAndExactlyWhatIsNeeded() throws IOException {
-            List<String> imports = code().lines()
-                    .map(String::strip)
-                    .filter(line -> line.startsWith("import "))
-                    .toList();
-
-            // Stated as an exact set rather than a count, so an import added for anything the entry
-            // point has no business doing - persistence, security, cloud, observability, or a launch
-            // decision that belongs to configuration - fails here. A composition root declares where
-            // beans come from and starts the context; it needs the annotation and the launcher, and
-            // nothing else. Two imports is the whole of it.
-            assertThat(imports).containsExactly(
-                    "import org.springframework.boot.SpringApplication;",
-                    "import org.springframework.boot.autoconfigure.SpringBootApplication;");
+    /**
+     * The bean names registered for a type named at runtime.
+     *
+     * <p>Named rather than imported because the domain types this suite inventories are not among this
+     * file's declared dependencies; a type that is absent altogether yields an empty result, which the
+     * caller asserts on explicitly rather than having it raised as an error here.
+     *
+     * @param typeName the fully-qualified type name; never {@code null}
+     * @return the bean names of that type, or an empty list when the type is not on the classpath
+     */
+    private List<String> beanNamesOfType(String typeName) {
+        if (!typeIsOnClasspath(typeName)) {
+            return List.of();
         }
-
-        @Test
-        @DisplayName("no wildcard import, so every type this file uses is named")
-        void noWildcardImport() throws IOException {
-            assertThat(WILDCARD_IMPORT.matcher(code()).find()).isFalse();
-        }
-
-        @Test
-        @DisplayName("none of the forbidden enablements or excluded technologies appears in the code")
-        void forbiddenDeclarationsAreAbsent() throws IOException {
-            // Deliberately over the comment-stripped text. The class documentation explains WHY
-            // several of these are absent and therefore names them; a scan over the raw file would
-            // read that explanation as the violation it warns against.
-            String text = code();
-            List<String> forbidden = List.of(
-                    // Under Boot 3 this DISABLES batch auto-configuration rather than enabling it.
-                    "@EnableBatchProcessing",
-                    // One scan mechanism, not two.
-                    "@ComponentScan",
-                    "@EnableScheduling",
-                    "@EnableAsync",
-                    "@EnableTransactionManagement",
-                    "@EnableJpaRepositories",
-                    "@EntityScan",
-                    "@PropertySource",
-                    "CommandLineRunner",
-                    "ApplicationRunner",
-                    "setDefaultProperties",
-                    // Excluded technologies, every one of them named in the plan's exclusion table.
-                    "springframework.security",
-                    "hibernate",
-                    "flyway",
-                    "liquibase",
-                    "micrometer",
-                    "testcontainers",
-                    "lombok",
-                    // Gate G46: no dataset name is ever written into Java.
-                    "AWS.M2.CARDDEMO.",
-                    // Gates G22 and G24: no binary floating point, no non-truncating rounding.
-                    "double",
-                    "float",
-                    "HALF_UP",
-                    "HALF_EVEN");
-
-            assertThat(forbidden.stream().filter(text::contains).toList())
-                    .as("%s must declare none of these", SUBJECT_SOURCE_PATH)
-                    .isEmpty();
-        }
-
-        @Test
-        @DisplayName("the entry point takes no launch-mode decision, because it is not the entry "
-                + "point's to take")
-        void theEntryPointTakesNoLaunchModeDecision() throws IOException {
-            // It is tempting to have this class choose a non-web mode when a job is being submitted,
-            // on the reasoning that a submission must end when its job ends and deliver the
-            // RETURN-CODE (gate G35), which a servlet container's non-daemon threads would prevent.
-            // That reasoning does not survive reading BatchConfig: JclJobLauncher is an
-            // ApplicationRunner and an ExitCodeGenerator, and it ends the process itself with
-            //     System.exit(SpringApplication.exit(applicationContext, () -> returnCode));
-            // System.exit terminates the JVM whatever else is running, so the RETURN-CODE contract is
-            // already satisfied where the batch concern lives. A mode decision here would be a second
-            // rule about what kind of process this is, duplicating a condition BatchConfig already
-            // owns, and it would put a branch in a composition root that should hold none. An operator
-            // who wants no container passes --spring.main.web-application-type=none, which is
-            // configuration, not code.
-            String text = code();
-
-            assertThat(text)
-                    .as("no launch mode is chosen in code, and no bean-lifecycle or property override "
-                            + "is applied to the application before it runs")
-                    .doesNotContain("setWebApplicationType")
-                    .doesNotContain("WebApplicationType")
-                    .doesNotContain("setAdditionalProfiles")
-                    .doesNotContain("setDefaultProperties");
-            assertThat(text)
-                    .as("the composition root names no configuration class, so it cannot drift with "
-                            + "one: it declares where beans come from and starts the context")
-                    .doesNotContain("BatchConfig");
-        }
-
-        @Test
-        @DisplayName("the executable part is a single statement, so there is nothing in it to get wrong")
-        void theExecutablePartIsASingleStatement() throws IOException {
-            // The declarations above are what this file is for; the executable part should be the
-            // smallest thing that starts a context. Anything that grows a second statement - a runner,
-            // a mode decision, an exit-code path, a log line - is logic that belongs in a bean, where
-            // it can be injected, mocked and covered. Asserted two ways: the statement is exactly the
-            // expected one, and it is the only one the class launches with.
-            String text = code();
-
-            assertThat(text)
-                    .as("the one statement Boot needs, with this class as the configuration source")
-                    .contains("SpringApplication.run(CardDemoApplication.class, args);");
-            assertThat(text.split("SpringApplication\\.run", -1).length - 1)
-                    .as("started once, in main, and nowhere else")
-                    .isOne();
-
-            // Semicolons over the comment-stripped text: the package declaration, the two imports and
-            // that single call. A fifth would be a statement this file has no business carrying.
-            assertThat(text.chars().filter(character -> character == ';').count())
-                    .as("package, two imports, one call")
-                    .isEqualTo(4L);
-        }
-
-        @Test
-        @DisplayName("every static in the code is final or a static method, never static mutable state")
-        void everyStaticIsFinalOrAMethod() throws IOException {
-            // Read from the source rather than by reflection so that a field declared and never read -
-            // which reflection would still report as final - is judged on how it is written. A static
-            // that is neither final nor a method signature would be shared mutable state (gate G53).
-            List<String> staticLines = code().lines()
-                    .map(String::strip)
-                    .filter(line -> line.startsWith("static ") || line.contains(" static "))
-                    .filter(line -> !line.contains("static final "))
-                    .filter(line -> !line.endsWith("{"))
-                    .toList();
-
-            assertThat(staticLines)
-                    .as("a static that is neither final nor a method signature is shared mutable state")
-                    .isEmpty();
+        try {
+            return List.of(context.getBeanNamesForType(
+                    Class.forName(typeName, false, getClass().getClassLoader())));
+        } catch (ClassNotFoundException unreachable) {
+            // typeIsOnClasspath already resolved this exact name against this exact loader.
+            throw new IllegalStateException(typeName + " resolved and then did not", unreachable);
         }
     }
 
     /**
-     * Keeps only the members a human wrote, discarding those the coverage agent adds.
+     * The number of beans in this context whose declaring class lies in a package or beneath it.
      *
-     * <p>This matters, and getting it wrong produces the worst kind of test: one that is green under
-     * {@code mvn test} and red under {@code mvn verify}. The build runs the JaCoCo agent, which
-     * instruments every loaded class by adding a {@code private static synthetic $jacocoInit} method
-     * and a {@code private static transient synthetic $jacocoData} field. A bare
-     * {@code getDeclaredMethods().length == 1} therefore holds only while coverage is switched off.
-     * Both the synthetic flag and the {@code $} in the generated names are checked, because an
-     * instrumenting agent that omitted the flag would otherwise slip through.
-     *
-     * @param members the reflected members
-     * @param <T> the member type
-     * @return the authored members, in reflection order
+     * @param packageName the package to count under; never {@code null}
+     * @return the number of matching beans
      */
-    private static <T extends Member> List<T> authored(T[] members) {
-        List<T> result = new ArrayList<>();
-        for (T member : members) {
-            if (!member.isSynthetic() && !member.getName().contains("$")) {
-                result.add(member);
+    private long beanCountUnder(String packageName) {
+        long count = 0;
+        for (String beanName : context.getBeanDefinitionNames()) {
+            Class<?> type = context.getType(beanName);
+            if (type == null) {
+                continue;
+            }
+            String beanPackage = ClassUtils.getUserClass(type).getPackageName();
+            if (beanPackage.equals(packageName) || beanPackage.startsWith(packageName + ".")) {
+                count++;
             }
         }
-        return result;
+        return count;
+    }
+
+    /**
+     * Reports whether a type is resolvable on this suite's classpath, without initialising it.
+     *
+     * <p>Initialisation is deliberately suppressed: this is an existence question, and running a static
+     * initialiser to answer it would be a side effect.
+     *
+     * @param typeName the fully-qualified type name; never {@code null}
+     * @return {@code true} when the type can be resolved
+     */
+    private boolean typeIsOnClasspath(String typeName) {
+        try {
+            Class.forName(typeName, false, getClass().getClassLoader());
+            return true;
+        } catch (ClassNotFoundException | LinkageError absent) {
+            return false;
+        }
     }
 
     /**
@@ -615,72 +1370,84 @@ class CardDemoApplicationTest {
     }
 
     /**
-     * The subject's own source text, decoded with an explicitly named charset.
+     * The job bean name a kebab-case {@code carddemo.jobs} key belongs to.
      *
-     * @return the contents of {@code CardDemoApplication.java}
-     * @throws IOException if the file cannot be read
+     * <p>Re-derived here rather than borrowed from the production converter, which is not visible from
+     * this package - and independence is a virtue in an assertion: if the two derivations ever
+     * disagreed, the comparison in {@code TheBatchSurface} would fail rather than agree with a mistake.
+     * The rule is Spring's canonical relaxed-binding form: {@code statement-generation-job-a} is the key
+     * of {@code statementGenerationJobA}.
+     *
+     * @param jobKey the kebab-case key exactly as {@code application.yml} declares it; never
+     *     {@code null}
+     * @return the camel-case bean name of the job it declares
      */
-    private static String source() throws IOException {
-        return Files.readString(repositoryFile(SUBJECT_SOURCE_PATH), StandardCharsets.UTF_8);
-    }
-
-    /**
-     * The subject's source with every comment removed, which is the text the prohibition checks below
-     * are actually about.
-     *
-     * <p>Stripping matters because the class documentation earns its keep by naming what it must
-     * <em>not</em> do and why - {@code @EnableBatchProcessing} disabling Batch auto-configuration
-     * under Boot 3, for instance. A scan over the raw file would flag that explanation as the very
-     * violation it exists to prevent, which would push the explanation out of the code and leave the
-     * next reader to rediscover it.
-     *
-     * <p>The stripper is a plain two-state scan over block and line comments and takes no account of
-     * a comment delimiter appearing inside a string literal. That is sufficient and is checked
-     * against the subject: its only literals are the eleven package names, none of which contains
-     * one.
-     *
-     * @return the source with comments replaced by nothing, line structure otherwise preserved
-     * @throws IOException if the file cannot be read
-     */
-    private static String code() throws IOException {
-        String text = source();
-        StringBuilder stripped = new StringBuilder(text.length());
-        int index = 0;
-        while (index < text.length()) {
-            if (text.startsWith("/*", index)) {
-                int close = text.indexOf("*/", index + 2);
-                index = close < 0 ? text.length() : close + 2;
-            } else if (text.startsWith("//", index)) {
-                int newLine = text.indexOf('\n', index);
-                index = newLine < 0 ? text.length() : newLine;
+    private static String jobBeanNameOf(String jobKey) {
+        StringBuilder beanName = new StringBuilder(jobKey.length());
+        boolean capitaliseNext = false;
+        for (int index = 0; index < jobKey.length(); index++) {
+            char character = jobKey.charAt(index);
+            if (character == '-') {
+                capitaliseNext = true;
+            } else if (capitaliseNext) {
+                beanName.append(Character.toUpperCase(character));
+                capitaliseNext = false;
             } else {
-                stripped.append(text.charAt(index));
-                index++;
+                beanName.append(character);
             }
         }
-        return stripped.toString();
+        return beanName.toString();
     }
 
     /**
-     * Resolves a repository-relative path by walking up from the working directory to the nearest
-     * ancestor that contains it, so the suite runs identically from the repository root, from
-     * {@code app/java} and from an IDE. The nearest ancestor wins, so a checkout nested inside
-     * another cannot be read by mistake.
+     * Keeps only the members a human wrote, discarding those the coverage agent adds.
      *
-     * @param relativePath the repository-relative path
-     * @return the resolved absolute path
+     * <p>This matters, and getting it wrong produces the worst kind of test: one that is green under
+     * {@code mvn test} and red under {@code mvn verify}. The build runs the JaCoCo agent, which
+     * instruments every loaded class by adding a {@code private static synthetic $jacocoInit} method and
+     * a {@code private static transient synthetic $jacocoData} field, so a bare
+     * {@code getDeclaredMethods().length == 1} holds only while coverage is switched off. Both the
+     * synthetic flag and the {@code $} in the generated names are checked, because an instrumenting agent
+     * that omitted the flag would otherwise slip through.
+     *
+     * @param members the reflected members; never {@code null}
+     * @param <T> the member type
+     * @return the authored members, in reflection order
      */
-    private static Path repositoryFile(String relativePath) {
-        Path candidate = Path.of("").toAbsolutePath();
-        while (candidate != null) {
-            Path resolved = candidate.resolve(relativePath);
-            if (Files.exists(resolved)) {
-                return resolved;
+    private static <T extends Member> List<T> authored(T[] members) {
+        List<T> authored = new ArrayList<>();
+        for (T member : members) {
+            if (!member.isSynthetic() && !member.getName().contains("$")) {
+                authored.add(member);
             }
-            candidate = candidate.getParent();
         }
-        throw new IllegalStateException("Could not find " + relativePath + " at or above "
-                + Path.of("").toAbsolutePath() + "; this suite reads the module descriptor and its "
-                + "own subject from the checkout rather than from a copy of them");
+        return authored;
+    }
+
+    /**
+     * This module's own descriptor, {@code app/java/pom.xml}.
+     *
+     * <p>Resolved from the module's base directory - which Surefire both sets as the fork's working
+     * directory and passes as the {@code basedir} system property - and <em>not</em> by walking upwards
+     * looking for a marker. The distinction is deliberate: an upward search makes a test's subject
+     * depend on where the process happened to start, and this module already had to fix one suite that
+     * read its oracle that way. Nothing outside {@code app/java} is read, and nothing at all is written
+     * (practice B3, gate G5).
+     *
+     * @return the path of the module descriptor
+     */
+    private static Path moduleDescriptor() {
+        List<Path> candidates = List.of(
+                Path.of(System.getProperty("basedir", ".")).resolve("pom.xml"),
+                Path.of(System.getProperty("user.dir", ".")).resolve("pom.xml"));
+        for (Path candidate : candidates) {
+            if (Files.isRegularFile(candidate)) {
+                return candidate;
+            }
+        }
+        throw new IllegalStateException("The module descriptor was not found at " + candidates
+                + ". This suite reads app/java/pom.xml from the module's own base directory, which "
+                + "Surefire supplies as both the working directory and the 'basedir' system property; "
+                + "run it through Maven, or set basedir when running it another way.");
     }
 }

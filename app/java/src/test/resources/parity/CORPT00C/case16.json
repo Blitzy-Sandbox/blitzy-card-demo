@@ -1,13 +1,13 @@
 {
   "program": "CORPT00C",
   "caseId": "case16",
-  "description": "The same rejection through the OTHER receiver: SDTYYYYI arrives as 'abcd' and the store at :313-315 goes through WS-NUM-9999 PIC 9999, so :315 writes '0000' back. Four digits rather than two, which is why the two receivers are separate statements in the source and separate cases here. '0000' satisfies the IS NUMERIC test at :347, so that edit passes too, and the composed '0000-07-01' is rejected by CSUTLDTC at :392 with message number 2521 (FC-YEAR-IN-ERA-ZERO) - again not the tolerated '2513', so :400 reports 'Start Date - Not a valid date...' with the cursor on SDTMML rather than on the year the operator actually got wrong. That misdirection is the program's, and it is preserved. Expected values are STATICALLY DERIVED by reading app/cbl/CORPT00C.cbl, its copybooks, app/bms/CORPT00.bms and app/csd/CARDDEMO.CSD - never captured from a COBOL run, which is impossible in this environment (risk R-A). Java has no transient data queue, so EXEC CICS WRITEQ TD QUEUE('JOBS') at :517 is reproduced through an explicit job-submission port; the eighty-byte content is identical and the dataset key JOBS names the TDQUEUE(JOBS) that app/csd/CARDDEMO.CSD:499-505 defines as RECORDSIZE(80) RECORDFORMAT(FIXED) BLOCKFORMAT(UNBLOCKED) DISPOSITION(MOD).",
+  "description": "The WHEN CUSTOMI arm at :256 taken with untidy but wholly valid input, both CSUTLDTC calls accepting on severity '0000' and CONFIRMI = 'Y' - the folder's only case that carries the in-place FUNCTION NUMVAL-C normalisation all the way through to a submitted job, and the second of its two seventeen-record renderings. SDTMMI arrives as ' 7' and SDTDDI as ' 1', each a leading space followed by one digit, so every one of the six date parts is non-blank and the ordered blank chain at :258-303 runs out of arms and reaches WHEN OTHER CONTINUE at :301-302 - the one arm of that EVALUATE no rejecting case can reach, and the reason all ten xxxI items are declared here rather than only the ones the arm reads (gate G30). Stage two then rewrites the six items in place at :305-327: ' 7' becomes '07' and ' 1' becomes '01' through WS-NUM-99 PIC 99 at :295, while '2022', '07', '31' and '2022' are already normal and survive unchanged, the years through WS-NUM-9999 PIC 9999 at :296. Two receivers, six statements, and the store is back into a PIC X item - so the result is always digit characters, zero filled on the left, which is why ' 7' becomes '07' and never '7 ' (gate G29, accept side; the rejecting side of the same intrinsic is case15's 'ab', which conforms to nothing and stores '00'). THE CONVENTION THIS RESTS ON IS STATED RATHER THAN ASSUMED (practice B12): FUNCTION NUMVAL-C's result for an argument that is not a well-formed numeric-edited or currency string is compiler-defined, and the reproduction adopts IBM Enterprise COBOL's documented behaviour - leading and trailing spaces ignored, an optional currency sign, optional digit-grouping commas and an optional leading or trailing sign including CR and DB accepted, and a wholly non-conforming argument yielding zero. This case uses only the leading-space form, which that convention accepts unambiguously. WHERE THE NORMALISATION IS OBSERVABLE, EXACTLY (practice B8): it is NOT on the screen. The success tail at :445-454 performs INITIALIZE-ALL-FIELDS first, and :636-645 blanks all ten input items, so SDTMMO and SDTDDO are sent as spaces and the '07' and '01' are gone by the time the map is transmitted. They survive only in the skeleton, through WS-START-DATE and WS-END-DATE composed at :381-386 and moved into all four PARM items at :429-432 - which is why rows 10, 11 and 14 below are the assertion that stage two ran, and why pinning the echo fields as spaces is an assertion in its own right rather than an omission. A PRESERVED DEFECT (practice B5): because stage two guarantees digit characters, the IS NOT NUMERIC halves of all six edits at :329-379 are unreachable through this path and only their range comparisons - > '12' for a month, > '31' for a day - can ever fail. The dead halves are reproduced as written and are driven directly by CORPT00CParityTest rather than removed; two further quirks are preserved the same way, the paragraph the source misspells WIRTE-JOBSUB-TDQ at :515 and the effectively always-true IF NOT ERR-FLG-ON guards at :434 and :445, which hold because SEND-TRNRPT-SCREEN ends GO TO RETURN-TO-CICS at :580 and never returns to its caller. CSUTLDTC IS A CALLED SUBPROGRAM, NOT A JOB (gate G12, implicit requirement I3): it has no EXEC PGM= anywhere in app/jcl, app/proc or app/csd and is reached only from this program and COTRN02C, so the translation is a constructor-injected @Service and it is invoked REAL here, never stubbed - a stub would replace the decision under test at :396 and :416 with the decision the stub was told to make. 2022-07-01 and 2022-07-31 are both convertible, so both calls return the token app/cbl/CSUTLDTC.cbl:129-130 spells FC-INVALID-DATE - whose VALUE X'0000000000000000' makes it, despite the name, the SUCCESS token - and both guards take their '0000' arm and CONTINUE. The consequence is worth stating because it is the point of this case: the nested IF CSUTLDTC-RESULT-MSG-NUM NOT = '2513' at :399 and :419 is NEVER EVALUATED here, and the tolerated-2513 path is case19's. CORPT00C reads only two spans of the eighty-byte result - CSUTLDTC-RESULT-SEV-CD X(04) at :133 and CSUTLDTC-RESULT-MSG-NUM X(04) at :135, that is bytes 1-4 and 16-19 - so those two are what its behaviour depends on; the composition of the full eighty-byte WS-MESSAGE is owned by the sibling folder parity/CSUTLDTC and is not restated or competed with here (practice B12). Eighty bytes and seventeen records are both derived mechanically rather than chosen (practice B11): app/csd/CARDDEMO.CSD:499-505 defines TDQUEUE(JOBS) with RECORDSIZE(80) RECORDFORMAT(FIXED) BLOCKFORMAT(UNBLOCKED) DISPOSITION(MOD), which :79's JCL-RECORD PIC X(80) matches, and the count and order are the declaration order of 02 JOB-DATA-1 at :83-125 read through 02 JOB-DATA-2 REDEFINES it as JOB-LINES OCCURS 1000 TIMES PIC X(80) at :126-127; the one-based OCCURS subscript maps to the zero-based rowIndex below as n minus one. Row 16 is '/*EOF' and IS emitted, because :502-504 sets END-LOOP-YES and :507 performs the write anyway, so the sentinel is itself the seventeenth record. Every row is written out in full to its eightieth character rather than summarised (practice B8), and none is a placeholder or an ellipsis standing in for content (practice B1). ROW 14 IS THIS FILE'S CROSS-FOLDER OBLIGATION: its leading twenty-one bytes, '2022-07-01 2022-07-31', ARE the DATEPARM record that transaction.DateParmReader consumes - startDate PIC X(10) at offset 0, a one-byte separator at 10, endDate PIC X(10) at 11 and X(59) of trailing spaces in eighty, read exactly as CBTRN03C's 0550-DATEPARM-READ reads it - and the sibling folder parity/CBTRN03C seeds that same line inline, so THIS FOLDER IS ITS AUTHORITATIVE PRODUCER and the line is spelt out here in full so the CBTRN03C author can match it rather than diverge. It is the one place in this migration where an online screen's output is a batch program's input. Its independent corroboration is app/jcl/TRANREPT.jcl and app/proc/TRANREPT.prc, whose report step is named STEP10R and declares //DATEPARM DD DISP=SHR,DSN=AWS.M2.CARDDEMO.DATEPARM - precisely the DD that skeleton row 13 overrides with inline data, just as row 7 overrides the sort step's own STEP05R SYMNAMES DD and row 5's PROC=TRANREPT resolves through the JCLLIB ORDER on row 3. The dates deliberately equal case09's, so rows 10, 11 and 14 are byte-identical to that case's and the two reach them by different routes - case09 by deriving the current month at :217-230, this case by normalising what the operator typed. On the success path :448 moves DFHGREEN into ERRMSGC OF CORPT0AO, the only colour assignment anywhere in this program, which is why ERRMSGC is the single attribute pinned on the send and why no field is recoloured red or starred - this program copies neither CSSETATY nor CSSTRPFY (gate G38). :449-452 then STRINGs WS-REPORT-NAME DELIMITED BY SPACE, which is 'Custom' at six characters from the PIC X(10) assigned at :433, with a thirty-four character literal DELIMITED BY SIZE, giving forty characters in WS-MESSAGE PIC X(80) - one shorter than the Monthly cases' forty-one - and :560 moves that into ERRMSGO PIC X(78), so the two message channels differ by exactly the two bytes COBOL loses on the right. unitKind is CONTROLLER_POJO: ReportRequestController is constructed as a plain object and called through mainPara, with no MockMvc, no TestRestTemplate, no servlet container and no JobLauncher (gate G51), and inputs is empty because every EXEC CICS in this program is WRITEQ TD, SEND, RECEIVE, RETURN or XCTL and no dataset is reachable. Java has no transient data queue, so the WRITEQ TD QUEUE('JOBS') at :517 is reproduced through an explicit job-submission port and the dataset key JOBS is the queue's own name from the CSD rather than a mainframe dataset-name literal (gate G46): the transport is substituted, the content is not. expectedReturnCode is 0 and is stated rather than defaulted - CORPT00C is online, sets no RETURN-CODE and contains no CALL 'CEE3ABD', and although CSUTLDTC itself does MOVE WS-SEVERITY-N TO RETURN-CODE at its own :98 this program never propagates that. Nothing is left to the wall clock and nothing is random (practice B7): 07/15/22 and 10:30:45 are the pinned instant read through :611-628, which on this arm feeds the header only because the dates come from the screen, and the code page is named US-ASCII rather than defaulted (practice B8). Titles come from app/cpy/COTTL01Y.cpy, whose line 21 is COMMENTED OUT, so TITLE02O is the CardDemo form at fourteen leading and eighteen trailing spaces and never 'Credit Card Demo Application (CCDA)'. review_rules returns exactly one line, 'No user rules provided', so ZERO user rules govern this fixture and enterprise practices B1, B3, B5, B7, B8, B11 and B12 stand in their place; their absence is not licence to lower the bar. Every expected value is STATICALLY DERIVED by reading app/cbl/CORPT00C.cbl and app/cbl/CSUTLDTC.cbl against app/csd/CARDDEMO.CSD, app/jcl/TRANREPT.jcl, app/proc/TRANREPT.prc, app/cpy-bms/CORPT00.CPY, app/bms/CORPT00.bms, app/cpy/COTTL01Y.cpy, app/cpy/CSDAT01Y.cpy and app/cpy/COCOM01Y.cpy, every one of which is read-only reference (practice B3), and NEVER captured from a running COBOL program, which is impossible in this environment (risk R-A). DFHENTER and DFHGREEN come from common.CicsAid and common.BmsAttributes because DFHAID and DFHBMSCA are IBM-supplied and absent from this repository (risk R-D).",
   "unitKind": "CONTROLLER_POJO",
   "inputs": {},
   "screenRequest": {
     "eibcalen": 160,
     "aid": "DFHENTER",
-    "pinnedClock": "2026-08-09T14:05:06",
+    "pinnedClock": "2022-07-15T10:30:45",
     "charset": "US-ASCII",
     "commarea": {
       "CDEMO-FROM-TRANID": "CM00",
@@ -28,13 +28,15 @@
       "CDEMO-LAST-MAPSET": "       "
     },
     "mapFields": {
-      "CUSTOMI": "Y",
-      "SDTMMI": "07",
-      "SDTDDI": "01",
-      "SDTYYYYI": "abcd",
-      "EDTMMI": "12",
+      "MONTHLYI": " ",
+      "YEARLYI": " ",
+      "CUSTOMI": "X",
+      "SDTMMI": " 7",
+      "SDTDDI": " 1",
+      "SDTYYYYI": "2022",
+      "EDTMMI": "07",
       "EDTDDI": "31",
-      "EDTYYYYI": "2026",
+      "EDTYYYYI": "2022",
       "CONFIRMI": "Y"
     },
     "forcedOutcomes": {}
@@ -66,41 +68,178 @@
         "fields": {
           "TRNNAMEO": "CR00",
           "TITLE01O": "      AWS Mainframe Modernization       ",
-          "CURDATEO": "08/09/26",
+          "CURDATEO": "07/15/22",
           "PGMNAMEO": "CORPT00C",
           "TITLE02O": "              CardDemo                  ",
-          "CURTIMEO": "14:05:06",
+          "CURTIMEO": "10:30:45",
           "MONTHLYO": " ",
           "YEARLYO": " ",
-          "CUSTOMO": "Y",
-          "SDTMMO": "07",
-          "SDTDDO": "01",
-          "SDTYYYYO": "0000",
-          "EDTMMO": "12",
-          "EDTDDO": "31",
-          "EDTYYYYO": "2026",
-          "CONFIRMO": "Y",
-          "ERRMSGO": "Start Date - Not a valid date...                                              "
+          "CUSTOMO": " ",
+          "SDTMMO": "  ",
+          "SDTDDO": "  ",
+          "SDTYYYYO": "    ",
+          "EDTMMO": "  ",
+          "EDTDDO": "  ",
+          "EDTYYYYO": "    ",
+          "CONFIRMO": " ",
+          "ERRMSGO": "Custom report submitted for printing ...                                      "
         },
         "attributes": {
-          "ERRMSGC": "DFHDFCOL"
+          "ERRMSGC": "DFHGREEN"
         }
       }
     ],
-    "cursorField": "SDTMML",
+    "cursorField": "MONTHLYL",
     "termination": "RETURN_TRANSID"
   },
-  "expectedWrites": [],
+  "expectedWrites": [
+    {
+      "dataset": "JOBS",
+      "rowIndex": 0,
+      "fields": {
+        "JCL-RECORD": "//TRNRPT00 JOB 'TRAN REPORT',CLASS=A,MSGCLASS=0,                                "
+      },
+      "expectedBytes": "//TRNRPT00 JOB 'TRAN REPORT',CLASS=A,MSGCLASS=0,                                "
+    },
+    {
+      "dataset": "JOBS",
+      "rowIndex": 1,
+      "fields": {
+        "JCL-RECORD": "// NOTIFY=&SYSUID                                                               "
+      },
+      "expectedBytes": "// NOTIFY=&SYSUID                                                               "
+    },
+    {
+      "dataset": "JOBS",
+      "rowIndex": 2,
+      "fields": {
+        "JCL-RECORD": "//*                                                                             "
+      },
+      "expectedBytes": "//*                                                                             "
+    },
+    {
+      "dataset": "JOBS",
+      "rowIndex": 3,
+      "fields": {
+        "JCL-RECORD": "//JOBLIB JCLLIB ORDER=('AWS.M2.CARDDEMO.PROC')                                  "
+      },
+      "expectedBytes": "//JOBLIB JCLLIB ORDER=('AWS.M2.CARDDEMO.PROC')                                  "
+    },
+    {
+      "dataset": "JOBS",
+      "rowIndex": 4,
+      "fields": {
+        "JCL-RECORD": "//*                                                                             "
+      },
+      "expectedBytes": "//*                                                                             "
+    },
+    {
+      "dataset": "JOBS",
+      "rowIndex": 5,
+      "fields": {
+        "JCL-RECORD": "//STEP10 EXEC PROC=TRANREPT                                                     "
+      },
+      "expectedBytes": "//STEP10 EXEC PROC=TRANREPT                                                     "
+    },
+    {
+      "dataset": "JOBS",
+      "rowIndex": 6,
+      "fields": {
+        "JCL-RECORD": "//*                                                                             "
+      },
+      "expectedBytes": "//*                                                                             "
+    },
+    {
+      "dataset": "JOBS",
+      "rowIndex": 7,
+      "fields": {
+        "JCL-RECORD": "//STEP05R.SYMNAMES DD *                                                         "
+      },
+      "expectedBytes": "//STEP05R.SYMNAMES DD *                                                         "
+    },
+    {
+      "dataset": "JOBS",
+      "rowIndex": 8,
+      "fields": {
+        "JCL-RECORD": "TRAN-CARD-NUM,263,16,ZD                                                         "
+      },
+      "expectedBytes": "TRAN-CARD-NUM,263,16,ZD                                                         "
+    },
+    {
+      "dataset": "JOBS",
+      "rowIndex": 9,
+      "fields": {
+        "JCL-RECORD": "TRAN-PROC-DT,305,10,CH                                                          "
+      },
+      "expectedBytes": "TRAN-PROC-DT,305,10,CH                                                          "
+    },
+    {
+      "dataset": "JOBS",
+      "rowIndex": 10,
+      "fields": {
+        "JCL-RECORD": "PARM-START-DATE,C'2022-07-01'                                                   "
+      },
+      "expectedBytes": "PARM-START-DATE,C'2022-07-01'                                                   "
+    },
+    {
+      "dataset": "JOBS",
+      "rowIndex": 11,
+      "fields": {
+        "JCL-RECORD": "PARM-END-DATE,C'2022-07-31'                                                     "
+      },
+      "expectedBytes": "PARM-END-DATE,C'2022-07-31'                                                     "
+    },
+    {
+      "dataset": "JOBS",
+      "rowIndex": 12,
+      "fields": {
+        "JCL-RECORD": "/*                                                                              "
+      },
+      "expectedBytes": "/*                                                                              "
+    },
+    {
+      "dataset": "JOBS",
+      "rowIndex": 13,
+      "fields": {
+        "JCL-RECORD": "//STEP10R.DATEPARM DD *                                                         "
+      },
+      "expectedBytes": "//STEP10R.DATEPARM DD *                                                         "
+    },
+    {
+      "dataset": "JOBS",
+      "rowIndex": 14,
+      "fields": {
+        "JCL-RECORD": "2022-07-01 2022-07-31                                                           "
+      },
+      "expectedBytes": "2022-07-01 2022-07-31                                                           "
+    },
+    {
+      "dataset": "JOBS",
+      "rowIndex": 15,
+      "fields": {
+        "JCL-RECORD": "/*                                                                              "
+      },
+      "expectedBytes": "/*                                                                              "
+    },
+    {
+      "dataset": "JOBS",
+      "rowIndex": 16,
+      "fields": {
+        "JCL-RECORD": "/*EOF                                                                           "
+      },
+      "expectedBytes": "/*EOF                                                                           "
+    }
+  ],
   "expectedFinalState": [],
   "expectedReturnCode": 0,
   "expectedMessages": [
     {
       "channel": "WS_MESSAGE_80",
-      "text": "Start Date - Not a valid date...                                                "
+      "text": "Custom report submitted for printing ...                                        "
     },
     {
       "channel": "SCREEN_ERRMSG_78",
-      "text": "Start Date - Not a valid date...                                              "
+      "text": "Custom report submitted for printing ...                                      "
     },
     {
       "channel": "DISPLAY_LINE",
@@ -108,5 +247,12 @@
     }
   ],
   "normalisations": [],
-  "expectedDatasets": []
+  "expectedDatasets": [
+    {
+      "dataset": "JOBS",
+      "channel": "WRITES",
+      "rowCount": 17,
+      "recordLength": 80
+    }
+  ]
 }

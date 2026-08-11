@@ -1,29 +1,30 @@
 {
   "program": "COACTVWC",
   "caseId": "case04",
-  "description": "The asterisk :628-633 translates back to LOW-VALUES, so 2210-EDIT-ACCOUNT takes its not-supplied guard at :653-662 and sets FLG-ACCTFILTER-BLANK. Two things then happen that are easy to get wrong. The cross-field edit at :640-642 OVERWRITES the 'Account number not provided' the guard had just set with 'No input received'. And because the context is REENTER, :561-565 fires: ACCTSIDO becomes '*' and ACCTSIDC becomes DFHRED. No file is read at all - the ELSE at :368 is what makes the reads conditional.",
+  "description": "The numeric-edit boundary case, and the only case in this folder whose ACCTDAT row is DERIVED rather than seeded from the fixture. Its control path is case03's exactly, so the one variable is the money. EIBCALEN is 172, so the guard at :282-284 takes its ELSE and splits DFHCOMMAREA into the 160-byte CARDDEMO-COMMAREA and the 12-byte WS-THIS-PROGCOMMAREA at :288-292; CDEMO-FROM-PROGRAM is COCRDLIC and not LIT-MENUPGM, so the INITIALIZE at :285-286 never runs and the inbound CDEMO-PGM-CONTEXT of 1 survives. EIBAID is DFHENTER, so YYYY-STORE-PFKEY - COPY 'CSSTRPFY' at :913, performed at :299-300 - takes its first arm and the stored AID stays ENTER, which leaves the PF-key arm at :324 unreached. The third arm of the main EVALUATE TRUE at :323-383, WHEN CDEMO-PGM-REENTER at :361, therefore wins: 2000-PROCESS-INPUTS runs, INPUT-ERROR is false at :364, and the ELSE at :368 performs 9000-READ-ACCT and then 1000-SEND-MAP before GO TO COMMON-RETURN at :373. 2210-EDIT-ACCOUNT clears both guards - the not-supplied test at :653-662 and the NOT NUMERIC OR ZEROES test at :666-676 - and takes its ELSE at :677-680, so :678 moves CC-ACCT-ID into CDEMO-ACCT-ID and :679 sets FLG-ACCTFILTER-ISVALID. The '*'-to-LOW-VALUES rewrite of :628-633 is therefore not what this case is about - both halves of that OR, the asterisk and all spaces, reach the not-supplied guard and are exercised by the blank-filter case instead, and here :632 moves an accepted eleven-digit ACCTSIDI into CC-ACCT-ID intact. All three EXEC CICS READs take WHEN DFHRESP(NORMAL), the first of the three arms each of their EVALUATE WS-RESP-CD blocks orders NORMAL, NOTFND, WHEN OTHER: 9200-GETCARDXREF-BYACCT at :727-735 reads the CXACAIX path on an eleven-byte RIDFLD for 50 bytes and moves XREF-CUST-ID and XREF-CARD-NUM into the commarea at :739-740 - the path is an alternate-key finder over the CCXREF base and never a second table; 9300-GETACCTDATA-BYACCT at :774 reads ACCTDAT for 300 bytes and sets FOUND-ACCT-IN-MASTER at :788; and 9400-GETCUSTDATA-BYCUST at :825 reads CUSTDAT on the nine-byte customer key for 500 bytes and sets FOUND-CUST-IN-MASTER at :838. Both 1200-SETUP-SCREEN-VARS projections therefore run - the ten account moves at :471-491 and the seventeen customer moves at :493-523 - and all 37 xxxO items are painted. WHY THIS CASE IS DERIVED. The five money receivers are declared PIC +ZZZ,ZZZ,ZZZ.99 at app/cpy-bms/COACTVW.CPY:302, :314, :326, :332 and :344, corroborated by PICOUT='+ZZZ,ZZZ,ZZZ.99' at app/bms/COACTVW.bms:120, :141, :162, :174 and :195, and two of that mask's conditions are unreachable from the fixture. Every one of the 50 rows of app/data/ASCII/acctdata.txt carries '{' - positive, low-order digit zero - in the trailing byte of all five of its PIC S9(10)V99 spans - 250 spans measured, 250 of them positive - so no real row can make the sign position print '-'. And the largest balance in the whole file is this very account's 00000008430{, which is only 843.00 with 733.00 on account 00000000016 behind it, nowhere near the 1,000,000,000.00 that would be needed to push a digit into a tenth integer position the nine-position mask does not have. WHAT WAS DERIVED, BYTE FOR BYTE. The source is app/data/ASCII/acctdata.txt 0-based row 38, account 00000000039 - the file is ascending by ACCT-ID. Exactly two twelve-byte spans are mutated and nothing else. ACCT-CURR-BAL goes from 00000008430{ to 00012345678R, turning a positive 843.00 into a negative 1234567.89 so that the sign position has something to print. ACCT-CREDIT-LIMIT goes from 00000097500{ to 12345678901B, raising 9750.00 to 1234567890.12 so that its integer part occupies all ten of the digit positions PIC S9(10)V99 declares. Everything else is carried over verbatim: ACCT-ID 00000000039, ACCT-ACTIVE-STATUS Y, ACCT-CASH-CREDIT-LIMIT 00000062120{, ACCT-OPEN-DATE 2018-08-26, the copybook's own misspelled ACCT-EXPIRAION-DATE 2025-09-08, ACCT-REISSUE-DATE 2025-09-08, both cycle amounts 00000000000{, ACCT-ADDR-ZIP A000000000, a blank ACCT-GROUP-ID and the 178-space FILLER PIC X(178). The record is still exactly 300 bytes, which is what 11+1+12+12+12+10+10+10+12+12+10+10+178 sums to, and the 20 bytes that differ from the source row all lie inside the two spans at offsets 12-23 and 24-35. THE OVERPUNCH. The sign occupies no character position of its own: it is overpunched into the trailing byte, which carries the low-order digit at the same time. A separate sign byte would make this record 305 bytes and fail its declared width. -1234567.89 at scale two is the twelve digits 000123456789, and a low-order 9 with a negative sign is 'R', the tenth character of }JKLMNOPQR, giving 00012345678R. 1234567890.12 is 123456789012, and a low-order 2 with a positive sign is 'B', the third character of {ABCDEFGHI, giving 12345678901B - 'C' would be a 3 and is the easy mistake here. Decoded back the other way 'R' is a negative 9 and 'B' a positive 2, which is how the two BigDecimals come back at scale exactly 2 with RoundingMode.DOWN, ROUNDED appearing zero times in all 28 programs. THE FIVE MASKS, HAND-DERIVED AND NOT FORMATTED BY A LOCALE. The mask occupies fifteen character positions - a sign, ZZZ, a comma, ZZZ, a comma, ZZZ, a point and 99 - the sign always prints, an integer Z suppresses a leading zero to a space, a comma blanks when every digit to its left was suppressed, and the two decimals are forced because they are 9s and not Zs. ACURBALO from 00012345678R: the value is negative so the sign prints '-'; the nine integer positions receive 001234567, the first significant digit is the third, so two spaces precede the 1, the first comma prints because a significant digit stands to its left, and the groups 234 and 567 follow, giving '-  1,234,567.89' - the only '-' anywhere in this folder. ACRDLIMO from 12345678901B: PIC S9(10)V99 offers ten integer digits and the mask has nine, so the high-order 1 is discarded on the LEFT before any editing happens; the nine positions then receive 234567890, every one of them significant, so nothing suppresses and both commas print, giving '+234,567,890.12'. The billions digit is simply absent from the rendering, which is what a COBOL numeric MOVE does and is the second condition this case exists to pin. The three unmutated spans re-derive to the real fixture values: ACSHLIMO from 00000062120{ is '+      6,212.00', and ACRCYCRO and ACRCYDBO from 00000000000{ are both '+           .00', every integer position suppressed and both commas with them while the decimals still print. The two non-zero fractions in this folder, .89 and .12, are both here, which is what proves the decimal digits are transferred rather than defaulted. THE REST OF THE SCREEN. The cross-width moves are the same ones case03 documents: ACSZIPCO PIC X(5) takes the leading five of CUST-ADDR-ZIP PIC X(10), so '74267     ' arrives as '74267'; ACSPHN1O and ACSPHN2O PIC X(13) each drop the two trailing characters of a PIC X(15) telephone number; ACSTSSNO PIC X(12) receives the eleven characters the STRING at :496-504 lays down from CUST-SSN 510793388 and leaves its twelfth byte as the LOW-VALUE that :432 put there; and ACSCITYO is fed from CUST-ADDR-LINE-3 at :513 rather than from any field named for a city. INFOMSGO reads the prompt and not 'Displaying details of given Account': WS-INFORM-OUTPUT is declared at :115-116 and nothing anywhere SETs it, 9000-READ-ACCT sets WS-NO-INFO-MESSAGE at :689 and no NORMAL arm replaces it, so the guard at :528-530 fires, SETs the WS-PROMPT-FOR-INPUT literal of :113-114 and :534 moves it into INFOMSGO PIC X(45). That same SET is why 1300 then takes its ELSE at :569-570 and colours INFOMSGC DFHNEUTR rather than the DFHBMDAR of :568. ERRMSGO is 78 spaces because WS-RETURN-MSG-OFF was SET at :278 and :532 moves 75 spaces into 78. FLG-ACCTFILTER-BLANK is false, so the highlight at :561-565 does not fire even though CDEMO-PGM-REENTER holds - the re-entry rule's negative half - and ACCTSIDC keeps the DFHDFCOL of :555 with no '*' written over the account number. The cursor is ACCTSIDL either way, because both arms of the EVALUATE at :546-552 have the same body, and that duplication is preserved rather than collapsed. 1400-SEND-SCREEN moves LIT-THISMAPSET and LIT-THISMAP into CCARD-NEXT-MAPSET and CCARD-NEXT-MAP at :579-580 and SETs CDEMO-PGM-REENTER at :581, so the response carries COACTVW, CACTVWA and a context of 1, and every byte of the conversation travels in the payload rather than in server-side state. THE CHANNELS. COACTVWC issues no WRITE, no REWRITE and no DELETE - its only file verbs are the three READs - so the write channel is empty and all five seeded rows are pinned unchanged on the final-state channel, each field by field and as a whole image, which is what proves the 50-, 300- and 500-byte widths and their space-filled FILLER spans together. PROVENANCE. Statically derived and never captured from a live COBOL execution. The two money spans are DERIVED - a reviewer must not read them as fixture data - and every other value comes from app/cbl/COACTVWC.cbl, the byte offsets of app/cpy/CVACT03Y.cpy, app/cpy/CVACT01Y.cpy and app/cpy/CVCUS01Y.cpy, the xxxO PICTURE clauses of app/cpy-bms/COACTVW.CPY, the PICOUT masks of app/bms/COACTVW.bms:120-195, the titles at app/cpy/COTTL01Y.cpy:19 and the active :22, and three real fixture rows: cardxref.txt 0-based rows 8 to 10, acctdata.txt 0-based row 38 as the base of the derivation, and custdata.txt 0-based row 38. The cross reference is keyed by card number and is not ordered by account - its rows 8 to 10 carry accounts 39, 24, 6 while their card numbers ascend - which is why the row was located on the XREF-ACCT-ID span at offset 25 for 11 bytes and is named here rather than assumed; measured over all 50 rows the file is ascending by XREF-CARD-NUM, which app/cpy/CVACT03Y.cpy:5 declares first and the cluster keys on, and is not ascending by XREF-ACCT-ID. The pinned clock is the version footer of app/cpy/COTTL01Y.cpy:26, 2022-07-19 23:15:58.",
   "unitKind": "CONTROLLER_POJO",
   "inputs": {
     "CCXREF": {
       "fixture": "cardxref.txt",
-      "fromRow": 0,
+      "fromRow": 8,
       "rowCount": 3
     },
     "ACCTDAT": {
-      "fixture": "acctdata.txt",
-      "fromRow": 49,
-      "rowCount": 1
+      "rows": [
+        "00000000039Y00012345678R12345678901B00000062120{2018-08-262025-09-082025-09-0800000000000{00000000000{A000000000                                                                                                                                                                                            "
+      ]
     },
     "CUSTDAT": {
       "fixture": "custdata.txt",
-      "fromRow": 49,
+      "fromRow": 38,
       "rowCount": 1
     }
   },
+  "jobParameters": {},
   "screenRequest": {
     "eibcalen": 172,
     "aid": "DFHENTER",
-    "pinnedClock": "2022-07-19T23:12:32",
+    "pinnedClock": "2022-07-19T23:15:58",
     "charset": "US-ASCII",
     "commarea": {
       "CDEMO-FROM-TRANID": "CCLI",
@@ -35,7 +36,7 @@
       "CDEMO-LAST-MAPSET": "COCRDLI"
     },
     "mapFields": {
-      "ACCTSIDI": "*          "
+      "ACCTSIDI": "00000000039"
     },
     "forcedOutcomes": {}
   },
@@ -51,13 +52,13 @@
       "CDEMO-USER-ID": "ADMIN001",
       "CDEMO-USER-TYPE": "A",
       "CDEMO-PGM-CONTEXT": "1",
-      "CDEMO-CUST-ID": "000000000",
+      "CDEMO-CUST-ID": "000000039",
       "CDEMO-CUST-FNAME": "                         ",
       "CDEMO-CUST-MNAME": "                         ",
       "CDEMO-CUST-LNAME": "                         ",
-      "CDEMO-ACCT-ID": "00000000000",
+      "CDEMO-ACCT-ID": "00000000039",
       "CDEMO-ACCT-STATUS": " ",
-      "CDEMO-CARD-NUM": "0000000000000000",
+      "CDEMO-CARD-NUM": "2745303720002090",
       "CDEMO-LAST-MAP": "CCRDLIA",
       "CDEMO-LAST-MAPSET": "COCRDLI"
     },
@@ -69,38 +70,38 @@
           "CURDATEO": "07/19/22",
           "PGMNAMEO": "COACTVWC",
           "TITLE02O": "              CardDemo                  ",
-          "CURTIMEO": "23:12:32",
-          "ACCTSIDO": "*          ",
-          "ACSTTUSO": "\u0000",
-          "ADTOPENO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
-          "ACRDLIMO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
-          "AEXPDTO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
-          "ACSHLIMO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
-          "AREISDTO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
-          "ACURBALO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
-          "ACRCYCRO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
-          "AADDGRPO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
-          "ACRCYDBO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
-          "ACSTNUMO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
-          "ACSTSSNO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
-          "ACSTDOBO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
-          "ACSTFCOO": "\u0000\u0000\u0000",
-          "ACSFNAMO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
-          "ACSMNAMO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
-          "ACSLNAMO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
-          "ACSADL1O": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
-          "ACSSTTEO": "\u0000\u0000",
-          "ACSADL2O": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
-          "ACSZIPCO": "\u0000\u0000\u0000\u0000\u0000",
-          "ACSCITYO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
-          "ACSCTRYO": "\u0000\u0000\u0000",
-          "ACSPHN1O": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
-          "ACSGOVTO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
-          "ACSPHN2O": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
-          "ACSEFTCO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
-          "ACSPFLGO": "\u0000",
+          "CURTIMEO": "23:15:58",
+          "ACCTSIDO": "00000000039",
+          "ACSTTUSO": "Y",
+          "ADTOPENO": "2018-08-26",
+          "ACRDLIMO": "+234,567,890.12",
+          "AEXPDTO": "2025-09-08",
+          "ACSHLIMO": "+      6,212.00",
+          "AREISDTO": "2025-09-08",
+          "ACURBALO": "-  1,234,567.89",
+          "ACRCYCRO": "+           .00",
+          "AADDGRPO": "          ",
+          "ACRCYDBO": "+           .00",
+          "ACSTNUMO": "000000039",
+          "ACSTSSNO": "510-79-3388\u0000",
+          "ACSTDOBO": "1972-08-26",
+          "ACSTFCOO": "475",
+          "ACSFNAMO": "Aliyah                   ",
+          "ACSMNAMO": "Horace                   ",
+          "ACSLNAMO": "Berge                    ",
+          "ACSADL1O": "5761 Pasquale Trail                               ",
+          "ACSSTTEO": "IA",
+          "ACSADL2O": "Apt. 616                                          ",
+          "ACSZIPCO": "74267",
+          "ACSCITYO": "New Sabryna                                       ",
+          "ACSCTRYO": "USA",
+          "ACSPHN1O": "(089)096-3287",
+          "ACSGOVTO": "00000000000553254403",
+          "ACSPHN2O": "(768)959-4733",
+          "ACSEFTCO": "0061869530",
+          "ACSPFLGO": "Y",
           "INFOMSGO": "Enter or update id of account to display     ",
-          "ERRMSGO": "No input received                                                             "
+          "ERRMSGO": "                                                                              "
         },
         "attributes": {
           "TRNNAMEC": "DFHDFCOL",
@@ -109,7 +110,7 @@
           "PGMNAMEC": "DFHDFCOL",
           "TITLE02C": "DFHDFCOL",
           "CURTIMEC": "DFHDFCOL",
-          "ACCTSIDC": "DFHRED",
+          "ACCTSIDC": "DFHDFCOL",
           "ACSTTUSC": "DFHDFCOL",
           "ADTOPENC": "DFHDFCOL",
           "ACRDLIMC": "DFHDFCOL",
@@ -188,27 +189,81 @@
     {
       "dataset": "CCXREF",
       "rowIndex": 0,
-      "expectedBytes": "050002445376574000000005000000000050              "
+      "fields": {
+        "XREF-CARD-NUM": "2745303720002090",
+        "XREF-CUST-ID": "000000039",
+        "XREF-ACCT-ID": "00000000039",
+        "FILLER": "              "
+      },
+      "expectedBytes": "274530372000209000000003900000000039              "
     },
     {
       "dataset": "CCXREF",
       "rowIndex": 1,
-      "expectedBytes": "068358619817151600000002700000000027              "
+      "fields": {
+        "XREF-CARD-NUM": "2760836797107565",
+        "XREF-CUST-ID": "000000024",
+        "XREF-ACCT-ID": "00000000024",
+        "FILLER": "              "
+      },
+      "expectedBytes": "276083679710756500000002400000000024              "
     },
     {
       "dataset": "CCXREF",
       "rowIndex": 2,
-      "expectedBytes": "092387719324733000000000200000000002              "
+      "fields": {
+        "XREF-CARD-NUM": "2871968252812490",
+        "XREF-CUST-ID": "000000006",
+        "XREF-ACCT-ID": "00000000006",
+        "FILLER": "              "
+      },
+      "expectedBytes": "287196825281249000000000600000000006              "
     },
     {
       "dataset": "ACCTDAT",
       "rowIndex": 0,
-      "expectedBytes": "00000000050Y00000004920{00000061690{00000045870{2011-04-222023-03-092023-03-0900000000000{00000000000{A000000000                                                                                                                                                                                            "
+      "fields": {
+        "ACCT-ID": "00000000039",
+        "ACCT-ACTIVE-STATUS": "Y",
+        "ACCT-CURR-BAL": "00012345678R",
+        "ACCT-CREDIT-LIMIT": "12345678901B",
+        "ACCT-CASH-CREDIT-LIMIT": "00000062120{",
+        "ACCT-OPEN-DATE": "2018-08-26",
+        "ACCT-EXPIRAION-DATE": "2025-09-08",
+        "ACCT-REISSUE-DATE": "2025-09-08",
+        "ACCT-CURR-CYC-CREDIT": "00000000000{",
+        "ACCT-CURR-CYC-DEBIT": "00000000000{",
+        "ACCT-ADDR-ZIP": "A000000000",
+        "ACCT-GROUP-ID": "          ",
+        "FILLER": "                                                                                                                                                                                  "
+      },
+      "expectedBytes": "00000000039Y00012345678R12345678901B00000062120{2018-08-262025-09-082025-09-0800000000000{00000000000{A000000000                                                                                                                                                                                            "
     },
     {
       "dataset": "CUSTDAT",
       "rowIndex": 0,
-      "expectedBytes": "000000050Aniya                    Alba                     Von                      1588 Nienow Cape                                  Suite 187                                         New Aricchester                                   ORUSA04257     (325)301-0827  (493)985-9283  931248469000000000000303878241960-12-010074883577Y623                                                                                                                                                                        "
+      "fields": {
+        "CUST-ID": "000000039",
+        "CUST-FIRST-NAME": "Aliyah                   ",
+        "CUST-MIDDLE-NAME": "Horace                   ",
+        "CUST-LAST-NAME": "Berge                    ",
+        "CUST-ADDR-LINE-1": "5761 Pasquale Trail                               ",
+        "CUST-ADDR-LINE-2": "Apt. 616                                          ",
+        "CUST-ADDR-LINE-3": "New Sabryna                                       ",
+        "CUST-ADDR-STATE-CD": "IA",
+        "CUST-ADDR-COUNTRY-CD": "USA",
+        "CUST-ADDR-ZIP": "74267     ",
+        "CUST-PHONE-NUM-1": "(089)096-3287  ",
+        "CUST-PHONE-NUM-2": "(768)959-4733  ",
+        "CUST-SSN": "510793388",
+        "CUST-GOVT-ISSUED-ID": "00000000000553254403",
+        "CUST-DOB-YYYY-MM-DD": "1972-08-26",
+        "CUST-EFT-ACCOUNT-ID": "0061869530",
+        "CUST-PRI-CARD-HOLDER-IND": "Y",
+        "CUST-FICO-CREDIT-SCORE": "475",
+        "FILLER": "                                                                                                                                                                        "
+      },
+      "expectedBytes": "000000039Aliyah                   Horace                   Berge                    5761 Pasquale Trail                               Apt. 616                                          New Sabryna                                       IAUSA74267     (089)096-3287  (768)959-4733  510793388000000000005532544031972-08-260061869530Y475                                                                                                                                                                        "
     }
   ],
   "expectedReturnCode": 0,

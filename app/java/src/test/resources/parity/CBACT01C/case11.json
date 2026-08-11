@@ -1,12 +1,12 @@
 {
   "program": "CBACT01C",
   "caseId": "case11",
-  "description": "FILLER carrying data. Every row of app/data/ASCII/acctdata.txt leaves FILLER PIC X(178) as spaces, so a codec that dropped the span entirely would still satisfy those rows' label lines and fail only on the record width. Here the span carries text, which the raw DISPLAY at app/cbl/CBACT01C.cbl:L78 must emit verbatim at offset 122 while no labelled line mentions it. A record whose FILLER was omitted or space-normalised cannot match this case.",
+  "description": "FILLER carrying data - the only case in this directory that proves the trailing span is read and re-emitted rather than assumed blank. All 50 rows of app/data/ASCII/acctdata.txt leave FILLER PIC X(178) as spaces, so a codec that dropped the span, zero-filled it or space-normalised it would still satisfy every labelled line of those rows and would fail only on the record width; here the span carries text at both of its boundaries, so a shift of even one byte is reported. The row is derived mechanically rather than invented: bytes 1-122 are row 1 of app/data/ASCII/acctdata.txt verbatim - ACCT-ID 00000000001, ACCT-ACTIVE-STATUS 'Y', the three monetary spans 00000001940{, 00000020200{ and 00000010200{, the dates 2014-11-20, 2025-05-20 and 2025-05-20, both cycle amounts 00000000000{, ACCT-ADDR-ZIP A000000000 and ACCT-GROUP-ID ten spaces - and only the FILLER span differs, because no fixture row can supply a FILLER that carries data. Deriving the offsets from app/cpy/CVACT01Y.cpy rather than from prose: ACCT-ID 9(11) occupies bytes 1-11, ACCT-ACTIVE-STATUS X(01) byte 12, the three S9(10)V99 spans twelve bytes each at 13-24, 25-36 and 37-48 - the sign is an overpunch on the trailing byte and consumes no position of its own, which is the only reading under which the copybook sums to its documented RECLN 300 - ACCT-OPEN-DATE X(10) 49-58, ACCT-EXPIRAION-DATE X(10) 59-68 (misspelled in the copybook and misspelled here, because correcting it would leave the diff looking for a field the decoder never produces), ACCT-REISSUE-DATE X(10) 69-78, ACCT-CURR-CYC-CREDIT 79-90, ACCT-CURR-CYC-DEBIT 91-102, ACCT-ADDR-ZIP X(10) 103-112 and ACCT-GROUP-ID X(10) 113-122. FILLER X(178) therefore begins at byte 123, which is offset 122 zero-based and is what AccountRecord.FILLER_OFFSET publishes, and ends at byte 300; the span reads FILLER-STARTS-AT-123, then 140 dots, then FILLER-ENDS-AT-300, and 20 + 140 + 18 = 178 exactly. What the run must produce, statement by statement: 0000-ACCTFILE-OPEN succeeds at app/cbl/CBACT01C.cbl:L133-L149; the loop at L74-L81 reads the one record, so 1000-ACCTFILE-GET-NEXT sees FILE STATUS '00' at L94 and performs 1100-DISPLAY-ACCT-RECORD, which emits eleven labelled lines at L119-L129 and the 49-hyphen separator at L130; the mainline's own DISPLAY ACCOUNT-RECORD at L78 then emits the raw 300-byte image with FILLER included, and that line is what this case exists for - the eleven labelled lines never mention FILLER, and ACCT-ADDR-ZIP is not labelled either, so the raw image is the only place either span is observable; the second read reports '10', APPL-EOF at L107 moves 'Y' into END-OF-FILE, 9000-ACCTFILE-CLOSE succeeds and L85 displays the closing banner. That is 1 + 13 + 1 = 15 lines and RETURN-CODE 0, because the program never touches RETURN-CODE. Nothing is written: CBACT01C opens the dataset INPUT and issues no WRITE and no REWRITE, so the empty expectedWrites is a positive assertion rather than an absence of interest, and ACCTFILE still holds its one row - pinned field by field under the copybook's own names, FILLER among them, and again as a whole 300-byte image so the total width is asserted too, since a record missing FILLER would be short by exactly 178 bytes. expectedDatasets adds that ACCTFILE reports exactly one row at 300 bytes on the FINAL_STATE channel. No job parameter is declared because app/jcl/READACCT.jcl:L22 is a bare EXEC PGM=CBACT01C with no PARM, and the dataset is addressed only by its binding key ACCTFILE, never by a fully-qualified dataset name. Every line is US-ASCII, the code page of app/data/ASCII and of ParityHarness.FIXTURE_CHARSET, never a platform default. The case is deterministic: it carries no wall-clock and no random value, and the row it seeds is a fixed literal. This case was assigned as a second OPEN-failure abend rendering FILE STATUS '39' as FILE STATUS IS: NNNN0039 through the ELSE arm of 9910-DISPLAY-IO-STATUS at L184-L187 - IO-STATUS '39' is numeric and IO-STAT1 '3' is not '9', so MOVE '0000' TO IO-STATUS-04 followed by MOVE IO-STATUS TO IO-STATUS-04(3:2) images 0, 0, 3 and 9 into the four-byte IO-STATUS-04 declared at L57-L59, which appended to the 20-character hard-coded literal 'FILE STATUS IS: NNNN' at L187 gives a 24-character line whose NNNN is part of the literal and not a placeholder awaiting substitution. That derivation is recorded here because the case it belongs to cannot be expressed against this harness, and the reason is a property of the frozen contract rather than an omission: a BATCH_JOB case may declare only its datasets and its JCL PARM values - ParityCase forbids it a screenRequest and with it the forced repository outcomes an online case can declare - and DatasetInput admits exactly one of rows, fixture or empty: true, so there is no member on which an OPEN-time status of '39' could be stated at all; the shape the assignment describes, an ACCTFILE entry carrying an empty row list, is refused at load time and takes all twenty cases of this directory down with it. Reaching the fatal open therefore means omitting the input, and the only status AccountRepository.open reports for a dataset it cannot describe is PERMANENT_ERROR_STATUS - '9' followed by a binary-zero feedback byte - which takes the IF arm at L177-L183 and renders FILE STATUS IS: NNNN9000 instead. The asymmetry the assigned case existed to pin is nonetheless recorded, because it is a behaviour to preserve: 0000-ACCTFILE-OPEN tests '00' at L136 and nothing else and moves 12 at L139 for every other status, so unlike 1000-ACCTFILE-GET-NEXT at L94-L103 - which tests '10' as well and tolerates end of file through 88 APPL-EOF at L107 - the open paragraph has no tolerant arm whatsoever, every non-'00' open status abends identically, and no empty-dataset or end-of-file tolerance may be added to it. That arm, that status and that four-line sequence are already pinned twice, by case10 and case12, and CBACT01CParityTest requires every case whose return code is not zero to end with exactly that rendering, so a third copy would assert nothing new while displacing the only coverage of a FILLER span carrying data anywhere in this suite. The arms this suite cannot reach are asserted where they can be: 9910's numeric ELSE arm and the '22' and '23' statuses by FileStatusTest against the paragraph itself, and the fatal close of 9000-ACCTFILE-CLOSE by AccountBalanceJobTest, which can refuse the second metadata probe of a run. The divergence is recorded rather than silently resolved. Provenance: statically derived by reading app/cbl/CBACT01C.cbl, app/cpy/CVACT01Y.cpy and app/jcl/READACCT.jcl, and by taking bytes 1-122 from app/data/ASCII/acctdata.txt, cross-checked against the constants published by AccountBalanceJob, AccountRecord, AbendException, AccountRepository and FileStatus. Nothing here was captured from a run of the legacy COBOL, which is impossible in this environment - there is no z/OS runtime, the available compiler reports its indexed file handler as disabled, and no Language Environment CEE service exists to link the CALL 'CEE3ABD' at L173 - and nothing was captured from a run of this Java translation either. That substitution of provenance, and nothing else about the gate, is the escalated deviation recorded as risk R-A.",
   "unitKind": "BATCH_JOB",
   "inputs": {
     "ACCTFILE": {
       "rows": [
-        "00000000501Y00000001940{00000020200{00000010200{2014-11-202025-05-202025-05-2000000000000{00000000000{A000000000          FILLER-CARRIES-DATA.....................................................................................................................................................END0000000"
+        "00000000001Y00000001940{00000020200{00000010200{2014-11-202025-05-202025-05-2000000000000{00000000000{A000000000          FILLER-STARTS-AT-123............................................................................................................................................FILLER-ENDS-AT-300"
       ]
     }
   },
@@ -16,7 +16,22 @@
     {
       "dataset": "ACCTFILE",
       "rowIndex": 0,
-      "expectedBytes": "00000000501Y00000001940{00000020200{00000010200{2014-11-202025-05-202025-05-2000000000000{00000000000{A000000000          FILLER-CARRIES-DATA.....................................................................................................................................................END0000000"
+      "fields": {
+        "ACCT-ID": "00000000001",
+        "ACCT-ACTIVE-STATUS": "Y",
+        "ACCT-CURR-BAL": "00000001940{",
+        "ACCT-CREDIT-LIMIT": "00000020200{",
+        "ACCT-CASH-CREDIT-LIMIT": "00000010200{",
+        "ACCT-OPEN-DATE": "2014-11-20",
+        "ACCT-EXPIRAION-DATE": "2025-05-20",
+        "ACCT-REISSUE-DATE": "2025-05-20",
+        "ACCT-CURR-CYC-CREDIT": "00000000000{",
+        "ACCT-CURR-CYC-DEBIT": "00000000000{",
+        "ACCT-ADDR-ZIP": "A000000000",
+        "ACCT-GROUP-ID": "          ",
+        "FILLER": "FILLER-STARTS-AT-123............................................................................................................................................FILLER-ENDS-AT-300"
+      },
+      "expectedBytes": "00000000001Y00000001940{00000020200{00000010200{2014-11-202025-05-202025-05-2000000000000{00000000000{A000000000          FILLER-STARTS-AT-123............................................................................................................................................FILLER-ENDS-AT-300"
     }
   ],
   "expectedReturnCode": 0,
@@ -27,7 +42,7 @@
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "ACCT-ID                 :00000000501"
+      "text": "ACCT-ID                 :00000000001"
     },
     {
       "channel": "DISPLAY_LINE",
@@ -75,12 +90,20 @@
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "00000000501Y00000001940{00000020200{00000010200{2014-11-202025-05-202025-05-2000000000000{00000000000{A000000000          FILLER-CARRIES-DATA.....................................................................................................................................................END0000000"
+      "text": "00000000001Y00000001940{00000020200{00000010200{2014-11-202025-05-202025-05-2000000000000{00000000000{A000000000          FILLER-STARTS-AT-123............................................................................................................................................FILLER-ENDS-AT-300"
     },
     {
       "channel": "DISPLAY_LINE",
       "text": "END OF EXECUTION OF PROGRAM CBACT01C"
     }
   ],
-  "normalisations": []
+  "normalisations": [],
+  "expectedDatasets": [
+    {
+      "dataset": "ACCTFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 300
+    }
+  ]
 }

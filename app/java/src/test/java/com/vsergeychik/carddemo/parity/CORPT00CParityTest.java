@@ -117,12 +117,15 @@ import org.junit.jupiter.params.provider.MethodSource;
  * {@code EVALUATE} plus its {@code WHEN OTHER}; the monthly month-end derivation at a thirty-one day
  * month, a thirty-day month and December, where the arm's own year roll-over runs - the leap and common
  * February forms of that same derivation are pinned mechanically by {@link TheDateIntrinsics} rather
- * than by a case, so no fixture spends its scenario on them; both ends of the six-arm blank
- * chain; {@code FUNCTION NUMVAL-C} accepting an embedded space and rejecting a non-conforming argument
- * through <em>both</em> of its receivers; the character comparison {@code SDTMMI > '12'}; all three
+ * than by a case, so no fixture spends its scenario on them; the yearly arm, whose range is built from
+ * literals alone and reaches neither date intrinsic; the first arm of the six-arm blank chain - its five
+ * lower arms are pinned mechanically by {@link TheScreenContract} for the same reason, so no fixture
+ * spends its scenario on them either; {@code FUNCTION NUMVAL-C} accepting an embedded space and
+ * rejecting a non-conforming argument through <em>both</em> of its receivers; the character comparison
+ * {@code SDTMMI > '12'}; all three
  * {@code CSUTLDTC} outcomes - converted, the tolerated {@code '2513'}, and rejected; the confirm prompt,
- * the {@code 'N'} arm, and a queue that refuses the first record; and the success notice with
- * {@code DFHGREEN} on {@code ERRMSGC}.
+ * <em>both</em> spellings of the {@code 'Y' OR 'y'} arm, the {@code 'N'} arm, and a queue that refuses
+ * the first record; and the success notice with {@code DFHGREEN} on {@code ERRMSGC}.
  *
  * <p>The unit is {@link ReportRequestController}, constructed as a <strong>plain Java object</strong>
  * and called through {@code mainPara} directly. There is no {@code MockMvc}, no
@@ -227,15 +230,25 @@ final class CORPT00CParityTest {
      * The first day of the month {@link #MONTHLY_CONFIRMED_CASE}'s pinned clock falls in, which
      * {@code :217-219} compose from {@code WS-CURDATE-YEAR}, {@code WS-CURDATE-MONTH} and the literal
      * {@code '01'}.
+     *
+     * <p>The year is 2022 because that is the year every shipped case pins - the source revision this
+     * migration was derived from is stamped {@code Ver: CardDemo_v1.0-15-g27d6c6f-68 Date: 2022-07-19},
+     * which is also {@link ParityHarness#DEFAULT_PINNED_CLOCK}. {@code case10} pins
+     * {@code 2022-12-10T09:05:00}, so this pair and that fixture read the same instant and neither can
+     * drift without the other failing.
      */
-    private static final String MONTHLY_CONFIRMED_START = "2026-12-01";
+    private static final String MONTHLY_CONFIRMED_START = "2022-12-01";
 
     /**
      * The last day of that same month, which {@code :223-230} reach by moving 1 into the day, adding 1
      * to the month - rolling the year, since the month is December - and subtracting a single day
      * through {@code FUNCTION DATE-OF-INTEGER} of {@code FUNCTION INTEGER-OF-DATE}.
+     *
+     * <p>Note where the year ends up. The roll-over at {@code :226} carries it FORWARD to 2023 so that
+     * the intrinsic pair is applied to 1 January 2023, and the {@code - 1} at {@code :230} then carries
+     * it BACK, which is why the answer is a 2022 date and not a 2023 one.
      */
-    private static final String MONTHLY_CONFIRMED_END = "2026-12-31";
+    private static final String MONTHLY_CONFIRMED_END = "2022-12-31";
 
     /**
      * The value that confirms, taken from the controller's own constant rather than re-typed, so the
@@ -1648,9 +1661,10 @@ final class CORPT00CParityTest {
             "SDTDD | 268 | SDTDDL",
             "SDTYYYY | 275 | SDTYYYYL",
             "EDTMM | 282 | EDTMML",
-            "EDTDD | 289 | EDTDDL"
+            "EDTDD | 289 | EDTDDL",
+            "EDTYYYY | 296 | EDTYYYYL"
         })
-        @DisplayName("the four middle arms of the blank chain, each with its own literal and cursor")
+        @DisplayName("the five arms of the blank chain below the first, each with its literal and cursor")
         void theRemainingBlankArms(String blanked, int sourceLine, String cursorItem) {
             ReportRequestRequest.ScreenField field =
                     ReportRequestRequest.ScreenField.valueOf(blanked);

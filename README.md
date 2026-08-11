@@ -4,6 +4,7 @@
 - [Description](#description)
 - [Technologies used](#technologies-used)
 - [Installation on the mainframe](#installation-on-the-mainframe)
+- [Building and running the Java module](#building-and-running-the-java-module)
 - [Application Details](#application-details)
   - [User Functions](#user-functions)
   - [Admin Functions](#admin-functions)
@@ -35,6 +36,9 @@ Note that the intent of this application is to provide mainframe coding scenario
 3. VSAM
 4. JCL
 5. RACF
+6. Java 21 (LTS)
+7. Apache Maven
+8. Spring Boot 3.x
 
 <br/>
 
@@ -103,6 +107,8 @@ To install this repository on the mainframe please follow the following steps
    You should use the compile process followed by your mainframe shopfloor
    
    We have however provided some sample JCLs in the samples folder in git to help you craft the JCL   
+
+   The Java module added under app/java is built with Maven instead. See [Building and running the Java module](#building-and-running-the-java-module) below
 
 5. Create resources in the CARDDEMO group in CICS
    
@@ -181,6 +187,91 @@ To install this repository on the mainframe please follow the following steps
     | CREASTMT | Produce transaction statement                       | 	
     | TRANIDX  | Define alternate index on transaction file          |
     | OPENFIL  | Makes files available to CICS                       |
+<br/>
+
+## Building and running the Java module
+
+The repository also carries a Java translation of the same application in `app/java`, added alongside the mainframe source rather than in place of it. It is a like-for-like migration of the COBOL programs in `app/cbl`: the CICS online transactions become stateless REST endpoints, the batch programs become Spring Batch jobs, and every observable output -- record bytes, field values, numeric scale, message text and return codes -- is held identical to what the COBOL produces. No mainframe artefact changes, and the installation path described above remains valid and complete on its own.
+
+### Prerequisites
+
+1. Java 21 (LTS) -- verified with OpenJDK 21.0.11
+2. Apache Maven 3.9 or newer -- verified with Maven 3.9.16. Maven 3.8.x is below the required floor
+
+Nothing else is needed to build and test the module: no database server, no container runtime, no cloud account and no mainframe connectivity.
+
+### Building and testing
+
+```shell
+mvn -f app/java/pom.xml clean verify
+```
+
+That one command is the gate. It compiles the module, runs every unit and parity test, and enforces the coverage threshold in a single pass. Add `-B` for a non-interactive batch-mode run and `-Dsurefire.useFile=false` to keep test output on the console. There is no watch mode: every command here runs to completion and stops.
+
+Narrower commands are useful when only one gate is of interest
+
+| Command                                         | What it does                                            |
+| :---------------------------------------------- | :------------------------------------------------------ |
+| `mvn -f app/java/pom.xml -B clean compile`      | Compiles the module and nothing else                    |
+| `mvn -f app/java/pom.xml -B dependency:resolve` | Confirms every dependency resolves from Maven Central   |
+| `mvn -f app/java/pom.xml -B clean package`      | Builds the runnable jar at app/java/target/carddemo.jar |
+
+### Running the online transactions
+
+The entry point is `com.vsergeychik.carddemo.CardDemoApplication`. Run it from the build, or from the jar the build produces - either form needs the data source described under Configuration and data access below, and refuses to start without it
+
+```shell
+mvn -f app/java/pom.xml spring-boot:run
+```
+
+```shell
+mvn -f app/java/pom.xml clean package
+java -jar app/java/target/carddemo.jar
+```
+
+The programs listed under Online below are served as REST resources under `/api`, one per CICS transaction -- `POST /api/signon`, `GET /api/menu`, `GET /api/accounts/{acctId}`, `GET /api/cards`, `GET /api/transactions`, `POST /api/billpay`, `GET /api/users` and their siblings. CICS is pseudo-conversational, so the migration keeps no server-side session: the communication area, the key that was pressed and the screen's own field values all travel in the request and response payloads, and every reply carries the state the next call needs.
+
+To start the service locally with no external data source at all, run it on the fixture-backed `test` profile. That profile reaches its in-memory settings through a classpath import that lives in the test tree, so the JVM that runs has to carry `target/test-classes`: `spring-boot:run` forks a JVM that does not, and asking the plugin for the test classpath is not enough. From `app/java`
+
+```shell
+mvn -B test-compile
+mvn -B dependency:build-classpath -Dmdep.outputFile=target/cp.txt -Dmdep.includeScope=test
+java -cp "target/test-classes:target/classes:$(cat target/cp.txt)" \
+     com.vsergeychik.carddemo.CardDemoApplication --spring.profiles.active=test
+```
+
+Started that way the service answers on `/api` with no mainframe and no database server in sight. Its datasets begin empty, so a batch job launched against a fresh in-memory database reads nothing until something seeds it.
+
+### Running a batch job
+
+`spring.batch.job.enabled` is `false`, so starting the application runs no job. Each job is submitted explicitly by name, one per process, exactly as JCL submits one `EXEC PGM=` step at a time
+
+```shell
+java -jar app/java/target/carddemo.jar --carddemo.batch.job-name=accountBalanceJob
+```
+
+The process exit code is the program's `RETURN-CODE`, so gating one job on the result of the one before it behaves as `COND` does on the mainframe.
+
+The interest calculation translated from CBACT04C is the only job that takes a parameter. It declares a single `parmDate` string job parameter, mirroring `PARM='2022071800'` in INTCALC.jcl. That value is character data: the program concatenates it verbatim into the transaction identifiers it generates, and it is never parsed as a date or reformatted. Override it with the `CARDDEMO_JOB_PARM_DATE` environment variable.
+
+### Configuration and data access
+
+Dataset names and the JDBC `DataSource` are entirely configuration bound in `app/java/src/main/resources/application.yml`, so no dataset name and no connection detail is compiled into the code. The site-specific data access driver is a deployment-time input, supplied through `CARDDEMO_DATASOURCE_URL`, `CARDDEMO_DATASOURCE_DRIVER_CLASS_NAME` and the matching credential variables; the build deliberately pins no driver of its own, and startup is refused with a message naming the missing property when none is supplied.
+
+The module reaches the existing datasets over plain JDBC and changes nothing about how they are stored: no DDL, no schema migration, no ORM and no new database. Record layouts stay exactly as the copybooks in `app/cpy` define them, which is why the dataset and copybook table above is the reference every Java record width is checked against, and why the code pages are named explicitly -- IBM037 for the EBCDIC datasets, US-ASCII for the sample text files -- rather than left to a platform default.
+
+`application-test.yml` rebinds every dataset onto in-memory test data seeded from the nine fixed-width fixtures derived from app/data/ASCII, so the test suite runs with no external database and no mainframe connectivity.
+
+### Verification gates
+
+* Branch coverage of at least 90% per module, enforced by JaCoCo at the `verify` phase. The build fails below the threshold rather than warning about it.
+* A parity suite of 20 declarative cases per program, 560 in all, each diffed field by field against the expected records, return code and messages. A module is not complete until its diff count is zero across all 20 of its cases.
+* The expected values in those cases are derived statically from the COBOL paragraphs, the copybook byte layouts, the JCL DD and PARM contracts, the BMS field definitions and the sample ASCII data. They are not captured from a run of the legacy programs, which needs a mainframe this build does not have.
+
+### Relationship to the COBOL sources
+
+app/cbl, app/cpy, app/bms, app/cpy-bms, app/jcl, app/proc, app/csd, app/ctl, app/catlg and app/data are the authoritative behavioural contract for the migration. They are read-only and unchanged by the Java module, because they are the only reference against which equivalence can be judged: where the two disagree, the COBOL is right and the Java is corrected.
+
 <br/>
 
 ## Application Details 

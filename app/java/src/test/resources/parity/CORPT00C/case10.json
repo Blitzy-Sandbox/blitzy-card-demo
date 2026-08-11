@@ -1,13 +1,13 @@
 {
   "program": "CORPT00C",
   "caseId": "case10",
-  "description": "The WHEN MONTHLYI arm at :213-238 with CONFIRMI = 'Y', pinned on DECEMBER, the one month where the arm's own roll-over runs: :224 adds 1 to WS-CURDATE-MONTH making it 13, :225 finds it greater than 12, :226-227 add 1 to the year and reset the month to 1, and the intrinsic pair is then applied to 1 January 2027 - so the answer comes back in the PREVIOUS year. A translation that omitted the roll-over would compute a month 13 date. The month end is derived exactly as :229-230 derives it - FUNCTION DATE-OF-INTEGER of FUNCTION INTEGER-OF-DATE minus one, applied to the first day of the following month - and both dates are asserted where they are observable: in records 11, 12 and 15 of the emitted stream. Expected values are STATICALLY DERIVED by reading app/cbl/CORPT00C.cbl, its copybooks, app/bms/CORPT00.bms and app/csd/CARDDEMO.CSD - never captured from a COBOL run, which is impossible in this environment (risk R-A). Java has no transient data queue, so EXEC CICS WRITEQ TD QUEUE('JOBS') at :517 is reproduced through an explicit job-submission port; the eighty-byte content is identical and the dataset key JOBS names the TDQUEUE(JOBS) that app/csd/CARDDEMO.CSD:499-505 defines as RECORDSIZE(80) RECORDFORMAT(FIXED) BLOCKFORMAT(UNBLOCKED) DISPOSITION(MOD).",
+  "description": "The WHEN MONTHLYI arm at :213-238 with CONFIRMI = 'Y', pinned in DECEMBER - the one month that reaches the TRUE side of :225 IF WS-CURDATE-MONTH > 12, where case09 pins July and its FALSE side. The two files together are that branch's whole truth table, and neither half is redundant (gate G29). THE ARITHMETIC, STEP BY STEP. The clock is fixed at 2022-12-10T09:05:00 and nothing is left to the wall clock and nothing is random (practice B7), so :215 MOVE FUNCTION CURRENT-DATE TO WS-CURDATE-DATA lands year 2022, month 12, day 10 and time 09 05 00 00 - app/cpy/CSDAT01Y.cpy declares WS-CURDATE-DATA as sixteen bytes YYYYMMDDhhmmssnn, so the move takes the first sixteen characters of the twenty-one character intrinsic and the two hundredths-of-a-second digits are the last of them. :217-219 compose the start date from WS-CURDATE-YEAR, WS-CURDATE-MONTH and the literal '01', and :220-221 move it into PARM-START-DATE-1 and PARM-START-DATE-2, which are distinct storage at :106 and :118: both carry 2022-12-01. :223 moves 1 into WS-CURDATE-DAY. :224 adds 1 to WS-CURDATE-MONTH, making it THIRTEEN - a value no calendar has. :225 finds thirteen greater than twelve, so :226 adds 1 to WS-CURDATE-YEAR giving 2023 and :227 moves 1 into WS-CURDATE-MONTH, and WS-CURDATE-N - the PIC 9(08) REDEFINES of WS-CURDATE that CSDAT01Y declares - therefore reads 20230101. Only then does :229-230 COMPUTE WS-CURDATE-N = FUNCTION DATE-OF-INTEGER(FUNCTION INTEGER-OF-DATE(WS-CURDATE-N) - 1) step back a single day, from 1 January 2023 to 20221231. THE YEAR MOVES FORWARD AND THEN BACK, and that is the part a translation loses quietly: an implementation that clamped the month inside one year, or that subtracted the day before rolling rather than after, or whose INTEGER-OF-DATE and DATE-OF-INTEGER disagree across a year boundary, still satisfies case09 and fails only here. :232-236 carry the result into WS-END-DATE and then into PARM-END-DATE-1 and PARM-END-DATE-2: both carry 2022-12-31. The pair's whole meaning is 'the last day of the current month', and its leap and common February forms are pinned mechanically by CORPT00CParityTest.TheDateIntrinsics.theMonthEndDerivation, so no fixture spends its scenario on them. MONTHLYI carries 'X' rather than 'Y' because :213 reads MONTHLYI NOT = SPACES AND LOW-VALUES: any non-blank value selects the arm, and a translation that wrote an equality test against 'Y' fails on this file and on case09 and nowhere else. All ten xxxI items are declared - the nine unselected ones present and blank at their declared widths - which is what proves the ordered EVALUATE takes its FIRST true arm and that the six custom-date items are ignored on this path (gate G30). The unitKind is CONTROLLER_POJO: ReportRequestController is constructed as a plain object and called through mainPara, with no MockMvc, no TestRestTemplate, no servlet container and no JobLauncher in the path (gate G51), and no dataset is seeded because this program issues no file command at all - every EXEC CICS in app/cbl/CORPT00C.cbl is WRITEQ TD, SEND, RECEIVE, RETURN or XCTL. THE SEVENTEEN RECORDS (gate G42). Java has no transient data queue, so EXEC CICS WRITEQ TD QUEUE('JOBS') at :517, reached through the paragraph the source misspells WIRTE-JOBSUB-TDQ at :515 and preserved with that spelling (practice B5), is reproduced through an explicit job-submission port: the transport is substituted, the content is not. Eighty bytes is app/csd/CARDDEMO.CSD:499-505's RECORDSIZE(80) RECORDFORMAT(FIXED) BLOCKFORMAT(UNBLOCKED) DISPOSITION(MOD), and :79's JCL-RECORD PIC X(80); the seventeen records and their order are the declaration order of 02 JOB-DATA-1 at :83-125 read through 02 JOB-DATA-2 REDEFINES it as 05 JOB-LINES OCCURS 1000 TIMES PIC X(80) at :126-127. Both numbers are therefore derived mechanically rather than chosen, and the derivation is auditable from this file (practice B11); COBOL's WS-IDX is one-based and rowIndex below is zero-based, so record n is rowIndex n minus one. Every row is written out in full, trailing spaces and all, and none is summarised or elided (practices B8 and B1). Rows 10 and 11 are 05 FILLER-1 and 05 FILLER-2 - an eighteen and a sixteen character prefix, the ten byte date, then a fifty-two and a fifty-four byte FILLER whose FIRST character is the closing quote, so a line that appended the quote instead could still measure eighty bytes and only a byte-exact expectation catches it. Row 16 is '/*EOF' and is present because :502-505 sets END-LOOP-YES and :507 performs the write anyway, making the sentinel itself the seventeenth record. ROW 14 IS THE CROSS-FOLDER CONTRACT: its leading twenty-one bytes, '2022-12-01 2022-12-31', ARE the DATEPARM record transaction.DateParmReader consumes at offsets 0:10 for the start date, 10:1 for the single separator space and 11:10 for the end date, with 21:59 the tail it discards - the one place in this migration where an online screen's output is a batch program's input, and parity/CBTRN03C seeds that same shape inline, so this folder is its authoritative producer. app/proc/TRANREPT.prc's own STEP05R (SORT, SYMNAMES DD) and STEP10R (PGM=CBTRN03C, DATEPARM DD) are the step names rows 7 and 13 override, and row 5's PROC=TRANREPT resolves through the JCLLIB ORDER on row 3. THE SUCCESS PATH. :445-456 runs INITIALIZE-ALL-FIELDS, which moves -1 into MONTHLYL and blanks the ten input items and WS-MESSAGE, then MOVE DFHGREEN TO ERRMSGC OF CORPT0AO - the ONLY colour assignment anywhere in this program, which is why ERRMSGC is pinned on the send and why no field is recoloured red or starred here (gate G38); this program copies neither CSSETATY nor CSSTRPFY. STRING WS-REPORT-NAME DELIMITED BY SPACE then yields 'Monthly' from the PIC X(10) field, and with the thirty-four character literal that is a forty-one character notice in WS-MESSAGE PIC X(80), which :560 moves into ERRMSGO PIC X(78) - so the two message channels differ by exactly the two bytes COBOL loses on the right. The IF NOT ERR-FLG-ON guards at :434 and :445 are effectively always true, because every SEND-TRNRPT-SCREEN ends GO TO RETURN-TO-CICS at :580 and never returns to its caller; they are preserved rather than tidied (practice B5). Titles come from app/cpy/COTTL01Y.cpy, whose line 21 is COMMENTED OUT, so TITLE02O is the CardDemo form and never 'Credit Card Demo Application (CCDA)'. The code page is named US-ASCII rather than defaulted (practice B8). review_rules returns exactly one line, 'No user rules provided', so ZERO user rules govern this fixture and enterprise practices B1, B3, B5, B7, B8, B11 and B12 stand in their place; their absence is not licence to lower the bar. Every expected value here is STATICALLY DERIVED (practice B12) by reading app/cbl/CORPT00C.cbl against app/csd/CARDDEMO.CSD, app/jcl/TRANREPT.jcl, app/proc/TRANREPT.prc, app/cpy-bms/CORPT00.CPY, app/bms/CORPT00.bms, app/cpy/COTTL01Y.cpy, app/cpy/CSDAT01Y.cpy and app/cpy/COCOM01Y.cpy, every one of which is read-only reference and none of which this work modifies (practice B3), and NEVER captured from a running COBOL program, which is impossible in this environment (risk R-A). DFHENTER and DFHGREEN come from common.CicsAid and common.BmsAttributes because DFHAID and DFHBMSCA are IBM-supplied and absent from this repository (risk R-D).",
   "unitKind": "CONTROLLER_POJO",
   "inputs": {},
   "screenRequest": {
     "eibcalen": 160,
     "aid": "DFHENTER",
-    "pinnedClock": "2026-12-15T23:59:59",
+    "pinnedClock": "2022-12-10T09:05:00",
     "charset": "US-ASCII",
     "commarea": {
       "CDEMO-FROM-TRANID": "CM00",
@@ -28,7 +28,15 @@
       "CDEMO-LAST-MAPSET": "       "
     },
     "mapFields": {
-      "MONTHLYI": "Y",
+      "MONTHLYI": "X",
+      "YEARLYI": " ",
+      "CUSTOMI": " ",
+      "SDTMMI": "  ",
+      "SDTDDI": "  ",
+      "SDTYYYYI": "    ",
+      "EDTMMI": "  ",
+      "EDTDDI": "  ",
+      "EDTYYYYI": "    ",
       "CONFIRMI": "Y"
     },
     "forcedOutcomes": {}
@@ -60,10 +68,10 @@
         "fields": {
           "TRNNAMEO": "CR00",
           "TITLE01O": "      AWS Mainframe Modernization       ",
-          "CURDATEO": "12/15/26",
+          "CURDATEO": "12/10/22",
           "PGMNAMEO": "CORPT00C",
           "TITLE02O": "              CardDemo                  ",
-          "CURTIMEO": "23:59:59",
+          "CURTIMEO": "09:05:00",
           "MONTHLYO": " ",
           "YEARLYO": " ",
           "CUSTOMO": " ",
@@ -169,17 +177,17 @@
       "dataset": "JOBS",
       "rowIndex": 10,
       "fields": {
-        "JCL-RECORD": "PARM-START-DATE,C'2026-12-01'                                                   "
+        "JCL-RECORD": "PARM-START-DATE,C'2022-12-01'                                                   "
       },
-      "expectedBytes": "PARM-START-DATE,C'2026-12-01'                                                   "
+      "expectedBytes": "PARM-START-DATE,C'2022-12-01'                                                   "
     },
     {
       "dataset": "JOBS",
       "rowIndex": 11,
       "fields": {
-        "JCL-RECORD": "PARM-END-DATE,C'2026-12-31'                                                     "
+        "JCL-RECORD": "PARM-END-DATE,C'2022-12-31'                                                     "
       },
-      "expectedBytes": "PARM-END-DATE,C'2026-12-31'                                                     "
+      "expectedBytes": "PARM-END-DATE,C'2022-12-31'                                                     "
     },
     {
       "dataset": "JOBS",
@@ -201,9 +209,9 @@
       "dataset": "JOBS",
       "rowIndex": 14,
       "fields": {
-        "JCL-RECORD": "2026-12-01 2026-12-31                                                           "
+        "JCL-RECORD": "2022-12-01 2022-12-31                                                           "
       },
-      "expectedBytes": "2026-12-01 2026-12-31                                                           "
+      "expectedBytes": "2022-12-01 2022-12-31                                                           "
     },
     {
       "dataset": "JOBS",

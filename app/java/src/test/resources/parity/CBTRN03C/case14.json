@@ -1,12 +1,19 @@
 {
   "program": "CBTRN03C",
   "caseId": "case14",
-  "description": "A negative amount through the detail mask. TRAN-REPORT-AMT is PIC -ZZZ,ZZZ,ZZZ.ZZ, whose leading minus is a fixed insertion character: it prints '-' for a negative value and a space for any other, so the sign occupies position 1 of the fifteen and never floats. Zero suppression replaces the leading zeros - and the comma that lies inside the suppressed run - with spaces and stops at the first significant digit, so 1234.56 negative renders as the exact string '-  1,234.56' with the mask's own geometry intact. The stored TRAN-AMT is a zoned S9(09)V99 whose sign is an overpunch in its trailing byte, which is what the DISPLAY lines at :198-199 show, and the page and grand totals go negative with it - through the + mask, where a negative value still prints '-'.",
+  "description": "PRESERVED DEFECT 1 via the UPPER bound, and the inclusivity of the bound itself. Eight records are seeded, every one of them on card 0500024453765740 - row 1 of app/data/ASCII/cardxref.txt, XREF-ACCT-ID 00000000050 - so a single account break cannot confound the trace. Rows 1-3 carry TRAN-PROC-TS (1:10) inside [2022-01-01, 2022-07-06] and report normally, and row 3 sits EXACTLY ON WS-END-DATE at 2022-07-06 23:59:59.999999; row 4 carries 2022-08-15, strictly ABOVE WS-END-DATE; rows 5-8 sit back inside the range and exist purely so that their ABSENCE from the output is observable - row 8 is itself on 2022-07-06, so an in-range record is lost by POSITION and not by value. ONE SHARED ELSE: the range test at app/cbl/CBTRN03C.cbl:173-178 is a SINGLE COMPOUND CONDITION - IF TRAN-PROC-TS (1:10) >= WS-START-DATE AND TRAN-PROC-TS (1:10) <= WS-END-DATE / CONTINUE / ELSE / NEXT SENTENCE / END-IF - with exactly one ELSE arm at :176 and one NEXT SENTENCE at :177. case12.json violates the FIRST conjunct by falling below WS-START-DATE; this case violates the SECOND by rising above WS-END-DATE; there is no separate handling and both land on the same :177. That is the whole point of this case: an upper-bound violation is not a distinct code path, only a distinct input, so the outcome here is byte-identical in SHAPE to case12.json - a header block, the details written before the violation, then nothing. An implementation that guarded the two bounds separately, or that treated an above-range record as skip-and-continue while treating a below-range record as stop, would pass case12.json and FAIL this case. THE MECHANISM: the inline PERFORM UNTIL block that opens at :170 and closes on END-PERFORM. at :206 is ONE COBOL sentence, and its terminating period sits on that END-PERFORM at :206 - not on the END-IF two lines below :177, which is where a reader expects it to go. NEXT SENTENCE transfers control to the first statement of the next sentence, which is PERFORM 9000-TRANFILE-CLOSE. at :208, so the loop is over. A 10-BYTE CHARACTER COMPARISON, NOT A TIMESTAMP COMPARISON: only TRAN-PROC-TS (1:10) is tested, so the time-of-day tail is irrelevant - row 3 at 2022-07-06 23:59:59.999999 is IN range because <= is inclusive and the compared bytes are 2022-07-06 exactly, while row 4 at 2022-08-15 00:00:00.000000 is out of range despite being the earliest possible instant of its day. Comparing 26 bytes, or parsing either operand into a date-time and comparing instants, would reverse row 3's outcome. CONSEQUENCES, every one of them pinned here: row 4 produces nothing at all - no DISPLAY TRAN-RECORD at :180, no 1500-A/1500-B/1500-C lookup, no detail line; rows 5-8 are never read; the end-of-file arm at :197-203 is never reached, so 1110-WRITE-PAGE-TOTALS and 1110-WRITE-GRAND-TOTALS never run and the report carries NO Page Total line, NO Grand Total line and NO Account Total line - 1120-WRITE-ACCOUNT-TOTALS at :183 is equally unreachable after that point, and would have written nothing anyway in a single-card run; and the two DISPLAYs at :198-199 never execute, which is why neither a 'TRAN-AMT ' line nor a 'WS-PAGE-TOTAL' line appears among the six expected messages. That pair of absences is the sharpest observable signature of the defect. The report is therefore exactly seven records: the single 1120-WRITE-HEADERS block (:324-341) that record 1 triggered because WS-FIRST-TIME was 'Y' at :275 - REPORT-NAME-HEADER padded from 115 to 133, WS-BLANK-LINE already 133 at :133, TRANSACTION-HEADER-1 padded from 114 to 133, TRANSACTION-HEADER-2 already 133 - and then three detail lines padded from 114 to 133, each carrying 00000000050 at bytes 18-28 from the one 1500-A-LOOKUP-XREF read that the account break at :181-188 performed on record 1. FUNCTION MOD(WS-LINE-COUNTER, WS-PAGE-SIZE) at :282 reads MOD(4,20), MOD(5,20) and MOD(6,20) across the three records and is never zero, so WS-PAGE-SIZE 20 breaks no page and no paging interferes. Each detail amount is rendered through TRAN-REPORT-AMT PIC -ZZZ,ZZZ,ZZZ.ZZ, fifteen characters wide - sign, three digits, comma, three digits, comma, three digits, point, two digits - whose leading minus is a FIXED insertion character: it prints '-' for a negative value and a space for anything else and never floats, while Z suppression blanks the run of leading zeros together with any insertion comma that falls inside that run and stops at the first significant digit. So +310.75 renders as nine spaces then 310.75, the negative -250.00 as '-' then eight spaces then 250.00 with the sign held at position 1 rather than beside the digits, and +99.99 as ten spaces then 99.99. On the input side those same amounts are stored as TRAN-AMT PIC S9(09)V99 DISPLAY: eleven bytes, ten plain digits and the sign overpunched into the trailing byte using {ABCDEFGHI for +0 through +9 and }JKLMNOPQR for -0 through -9, which is the convention app/data/ASCII/dailytran.txt carries - so 0000003107E is +310.75 and 0000002500} is -250.00. Every monetary value is scale exactly 2, and ROUNDED appears zero times in CBTRN03C, so a store truncates toward zero and never rounds. Terminal WS-LINE-COUNTER is 7 - four header records plus three details. WS-PAGE-TOTAL and WS-ACCOUNT-TOTAL each hold 160.74, the signed sum of 310.75 - 250.00 + 99.99 accumulated at :287-288, when the run ends, and NEITHER is ever written anywhere; WS-GRAND-TOTAL is still 0 because :297 never runs, and it is never written either. That invisible state is part of what makes this case meaningful. RETURN-CODE is 0: nothing abends, no error is reported, and the report is simply, silently truncated. NEXT SENTENCE appears exactly ONCE in the entire repository - this single site - and CBTRN03C contains zero GO TO statements, so this is the program's only non-structured control transfer. PRESERVED DEFECT 2, the end-of-file re-add of the last record's TRAN-AMT at :200-201 against a TRAN-RECORD the failed read left untouched, does NOT appear in this case at all, because the end-of-file arm is never reached - a useful negative signal that separates defect 1 from defect 2. In production defect 1 is LATENT: the upstream EXEC PGM=SORT step pre-filters the range with INCLUDE COND=(TRAN-PROC-DT,GE,PARM-START-DATE,AND,TRAN-PROC-DT,LE,PARM-END-DATE) at app/jcl/TRANREPT.jcl:47-48 - filtering on EXACTLY THE SAME TWO BOUNDS the COBOL then re-tests, over the same ten bytes TRAN-PROC-DT,305,10,CH names at :42 - so an out-of-range record normally never reaches CBTRN03C; this case seeds one deliberately to expose it. PRACTICE B5 GOVERNS: the truncated report IS the expected result. The correct-looking skip-and-continue reading would have produced eight detail lines plus a page total, its trailing rule line and a grand total; encoding that instead would be a behaviour change and a parity violation. The reporting range comes from the 80-byte DATEPARM record - line 15 of the skeleton at app/cbl/CORPT00C.cbl:117-121, right-truncated to the 21-byte WS-DATEPARM-RECORD at :122-125 - and never from a PARM, because app/jcl/TRANREPT.jcl:59 gives STEP10R none, so jobParameters is empty. The cross-reference rows are seeded from the 36-byte fixture and padded to the 50 bytes app/cpy/CVACT03Y.cpy declares, because that fixture omits the trailing FILLER PIC X(14). Every expected record is the 133 bytes app/jcl/TRANREPT.jcl:78 and app/proc/TRANREPT.prc:76 declare at RECFM=FB, and the padding from 115 and 114 up to 133 is what proves the FILLER spans are emitted rather than dropped. PRACTICE B12: every value here is STATICALLY DERIVED from the COBOL and cross-checked against the copybook byte layouts, the JCL DCBs and the real US-ASCII fixtures under app/data/ASCII - never captured from a live COBOL run, which AAP 0.7.6 documents as impossible in this environment behind eight independently verified blockers (risk R-A).",
   "unitKind": "BATCH_JOB",
   "inputs": {
     "TRANFILE": {
       "rows": [
-        "TRN0000000000001010001POS TERM  A statically derived fixture transaction                                                            0000012345O999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-03-15-11.22.33.4444442022-03-15-11.22.33.444444                    "
+        "0000000000000101010001POS TERM  Statically derived case14 row 01 - in range, reported                                               0000003107E400000001FIXTURE RETAIL STORE                              ATLANTA                                           30301     05000244537657402022-02-14 08:04:09.0000012022-02-14 08:04:11.000001                    ",
+        "0000000000000102020001BRANCH    Statically derived case14 row 02 - in range, reported, negative                                     0000002500}400000002FIXTURE BRANCH TELLER                             ATLANTA                                           30301     05000244537657402022-03-20 10:26:36.0000022022-03-20 10:26:38.000002                    ",
+        "0000000000000103010005ONLINE    Statically derived case14 row 03 - ON WS-END-DATE, in range, reported                               0000000999I400000003FIXTURE ONLINE PORTAL                             ATLANTA                                           30301     05000244537657402022-07-06 23:59:57.9999992022-07-06 23:59:59.999999                    ",
+        "0000000000000104030001MAIL ORDERStatically derived case14 row 04 - ABOVE WS-END-DATE, ends the read loop                            0000007770{400000004FIXTURE MAIL ORDER DESK                           ATLANTA                                           30301     05000244537657402022-08-15 00:00:00.0000002022-08-15 00:00:00.000000                    ",
+        "0000000000000105040001MOBILE    Statically derived case14 row 05 - in range, never read                                             0000000642{400000005FIXTURE MOBILE APP                                ATLANTA                                           30301     05000244537657402022-04-05 07:15:20.0000052022-04-05 07:15:22.000005                    ",
+        "0000000000000106050001CALL CTR  Statically derived case14 row 06 - in range, never read                                             0000000199N400000006FIXTURE CALL CENTRE                               ATLANTA                                           30301     05000244537657402022-05-11 13:42:01.0000062022-05-11 13:42:03.000006                    ",
+        "0000000000000107060002BATCH     Statically derived case14 row 07 - in range, never read                                             0000001400{400000007FIXTURE BATCH FEED                                ATLANTA                                           30301     05000244537657402022-06-02 02:00:00.0000072022-06-02 02:00:02.000007                    ",
+        "0000000000000108070001RECURRING Statically derived case14 row 08 - in range ON WS-END-DATE, never read                              0000000087E400000008FIXTURE RECURRING BILLER                          ATLANTA                                           30301     05000244537657402022-07-06 12:00:00.0000082022-07-06 12:00:02.000008                    "
       ]
     },
     "CARDXREF": {
@@ -49,22 +56,17 @@
     {
       "dataset": "TRANREPT",
       "rowIndex": 4,
-      "expectedBytes": "TRN0000000000001 00000000050 01-Purchase        0001-Regular Sales Draft           POS TERM      -      1,234.56                     "
+      "expectedBytes": "0000000000000101 00000000050 01-Purchase        0001-Regular Sales Draft           POS TERM               310.75                     "
     },
     {
       "dataset": "TRANREPT",
       "rowIndex": 5,
-      "expectedBytes": "Page Total ......................................................................................-      2,469.12                     "
+      "expectedBytes": "0000000000000102 00000000050 02-Payment         0001-Cash payment                  BRANCH        -        250.00                     "
     },
     {
       "dataset": "TRANREPT",
       "rowIndex": 6,
-      "expectedBytes": "-------------------------------------------------------------------------------------------------------------------------------------"
-    },
-    {
-      "dataset": "TRANREPT",
-      "rowIndex": 7,
-      "expectedBytes": "Grand Total......................................................................................-      2,469.12                     "
+      "expectedBytes": "0000000000000103 00000000050 01-Purchase        0005-Interest Amount               ONLINE                  99.99                     "
     }
   ],
   "expectedFinalState": [
@@ -91,22 +93,17 @@
     {
       "dataset": "TRANREPT",
       "rowIndex": 4,
-      "expectedBytes": "TRN0000000000001 00000000050 01-Purchase        0001-Regular Sales Draft           POS TERM      -      1,234.56                     "
+      "expectedBytes": "0000000000000101 00000000050 01-Purchase        0001-Regular Sales Draft           POS TERM               310.75                     "
     },
     {
       "dataset": "TRANREPT",
       "rowIndex": 5,
-      "expectedBytes": "Page Total ......................................................................................-      2,469.12                     "
+      "expectedBytes": "0000000000000102 00000000050 02-Payment         0001-Cash payment                  BRANCH        -        250.00                     "
     },
     {
       "dataset": "TRANREPT",
       "rowIndex": 6,
-      "expectedBytes": "-------------------------------------------------------------------------------------------------------------------------------------"
-    },
-    {
-      "dataset": "TRANREPT",
-      "rowIndex": 7,
-      "expectedBytes": "Grand Total......................................................................................-      2,469.12                     "
+      "expectedBytes": "0000000000000103 00000000050 01-Purchase        0005-Interest Amount               ONLINE                  99.99                     "
     }
   ],
   "expectedReturnCode": 0,
@@ -121,15 +118,15 @@
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "TRN0000000000001010001POS TERM  A statically derived fixture transaction                                                            0000012345O999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-03-15-11.22.33.4444442022-03-15-11.22.33.444444                    "
+      "text": "0000000000000101010001POS TERM  Statically derived case14 row 01 - in range, reported                                               0000003107E400000001FIXTURE RETAIL STORE                              ATLANTA                                           30301     05000244537657402022-02-14 08:04:09.0000012022-02-14 08:04:11.000001                    "
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "TRAN-AMT 0000012345O"
+      "text": "0000000000000102020001BRANCH    Statically derived case14 row 02 - in range, reported, negative                                     0000002500}400000002FIXTURE BRANCH TELLER                             ATLANTA                                           30301     05000244537657402022-03-20 10:26:36.0000022022-03-20 10:26:38.000002                    "
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "WS-PAGE-TOTAL0000012345O"
+      "text": "0000000000000103010005ONLINE    Statically derived case14 row 03 - ON WS-END-DATE, in range, reported                               0000000999I400000003FIXTURE ONLINE PORTAL                             ATLANTA                                           30301     05000244537657402022-07-06 23:59:57.9999992022-07-06 23:59:59.999999                    "
     },
     {
       "channel": "DISPLAY_LINE",
@@ -146,13 +143,13 @@
     {
       "dataset": "TRANREPT",
       "channel": "WRITES",
-      "rowCount": 8,
+      "rowCount": 7,
       "recordLength": 133
     },
     {
       "dataset": "TRANREPT",
       "channel": "FINAL_STATE",
-      "rowCount": 8,
+      "rowCount": 7,
       "recordLength": 133
     }
   ]

@@ -276,6 +276,31 @@ public record ParityCase(
     private static final Pattern COMMAREA_FIELD = Pattern.compile("CDEMO-[A-Z0-9]+(?:-[A-Z0-9]+)*");
 
     /**
+     * A field name of the <em>inbound</em> communication area, which is a wider thing than
+     * {@link #COMMAREA_FIELD}: what a program receives in {@code DFHCOMMAREA} is the shared
+     * {@code CARDDEMO-COMMAREA} <em>plus</em> whatever the receiving program appends to it, and the
+     * two halves arrive as one area.
+     *
+     * <p>Most programs name their own extension with the same {@code CDEMO-} prefix, which is why
+     * {@code COTRN00C}'s cases can state {@code CDEMO-CT00-PAGE-NUM}
+     * [{@code app/cbl/COTRN00C.cbl:62-70}] and be accepted by the narrower pattern.
+     * {@code COCRDLIC} does not: its 254-byte extension is {@code WS-THIS-PROGCOMMAREA} and its
+     * items are {@code WS-CA-LAST-CARD-NUM}, {@code WS-CA-FIRST-CARD-NUM},
+     * {@code WS-CA-SCREEN-NUM}, {@code WS-CA-LAST-PAGE-DISPLAYED}, {@code WS-CA-NEXT-PAGE-IND} and
+     * {@code WS-RETURN-FLAG} [{@code app/cbl/COCRDLIC.cbl:229-248}], restored from bytes 161
+     * onwards of the very same area the {@code CDEMO-} items come from bytes 1 to 160 of
+     * [{@code :327-331}]. A {@code WS-} prefixed item is therefore accepted here.
+     *
+     * <p>This is deliberately the <strong>inbound</strong> pattern only.
+     * {@link ExpectedResponse#navigation()} keeps the narrower {@link #COMMAREA_FIELD}, because the
+     * compared navigation image is the shared 160-byte {@code CARDDEMO-COMMAREA} and nothing else -
+     * a program's own extension leaves in the response payload, not in that image, and pinning it
+     * there would assert a field the fingerprint does not carry.
+     */
+    private static final Pattern INBOUND_COMMAREA_FIELD =
+        Pattern.compile("(?:CDEMO|WS)-[A-Z0-9]+(?:-[A-Z0-9]+)*");
+
+    /**
      * A symbolic-map <em>input</em> item: the {@code xxxI} items of a {@code COxxxxAI} group, which
      * are the only payload-bearing items of a received map. {@code USRIDINI}, {@code FNAMEI},
      * {@code TITLE01I}. The {@code xxxL}, {@code xxxF} and {@code xxxA} items are length, flag and
@@ -1133,9 +1158,13 @@ public record ParityCase(
             aid = requireNullOrAid(aid);
             pinnedClock = requireNullOrInstant(pinnedClock);
             charset = requireNullOrCharset(charset);
-            commarea = freezeNamedValues(commarea, COMMAREA_FIELD, "ScreenRequest.commarea",
+            commarea = freezeNamedValues(commarea, INBOUND_COMMAREA_FIELD,
+                "ScreenRequest.commarea",
                 "a CARDDEMO-COMMAREA field name as app/cpy/COCOM01Y.cpy spells it, such as "
-                    + "CDEMO-PGM-CONTEXT or CDEMO-CU02-USR-SELECTED");
+                    + "CDEMO-PGM-CONTEXT or CDEMO-CU02-USR-SELECTED, or an item of the receiving "
+                    + "program's own extension to that area, which arrives in the same "
+                    + "DFHCOMMAREA - COCRDLIC's WS-CA-SCREEN-NUM and WS-RETURN-FLAG at "
+                    + "app/cbl/COCRDLIC.cbl:229-248 are that");
             mapFields = freezeNamedValues(mapFields, MAP_INPUT_FIELD, "ScreenRequest.mapFields",
                 "a symbolic-map input item, which is an xxxI name such as USRIDINI or FNAMEI. The "
                     + "xxxL, xxxF and xxxA items are length, flag and attribute metadata and are "

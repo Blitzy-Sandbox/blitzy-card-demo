@@ -341,10 +341,18 @@ final class COCRDSLCParityTest {
      * positions the cursor by moving {@code -1} into the length item - {@code :518}, {@code :521} and
      * {@code :523} all do - so the length item is the cursor, and that is what a case declares.
      *
-     * <p><strong>{@code XCTL} and {@code RETURN} are distinguished by what was assigned, not by which
-     * key was pressed.</strong> A named next program with no map sent is the {@code XCTL} at
-     * {@code :331-334}, which transfers control and never reaches the {@code EXEC CICS RETURN} three
-     * paragraphs later; anything else returned.
+     * <p><strong>All three terminations are distinguished by what was assigned, not by which key was
+     * pressed.</strong> A named next program with no map sent is the {@code XCTL} at {@code :331-334},
+     * which transfers control and never reaches the {@code EXEC CICS RETURN} three paragraphs later. A
+     * map sent, or a program named alongside one, is {@code COMMON-RETURN} at {@code :394-406}, whose
+     * {@code EXEC CICS RETURN TRANSID(LIT-THISTRANID) COMMAREA(WS-COMMAREA)} keeps the
+     * pseudo-conversation alive. Neither one named, with the error line no longer holding
+     * {@code LOW-VALUES}, is {@code SEND-PLAIN-TEXT} at {@code :838-851} - see
+     * {@link #sentPlainText(CardSelectResponse)} - whose {@code EXEC CICS RETURN} at {@code :846-847} is
+     * <strong>bare</strong>, so it is reported as {@link Termination#RETURN_NO_TRANSID} and not as
+     * {@link Termination#RETURN_TRANSID}. Collapsing the third onto the second would assert that the
+     * conversation continues when the source ends it, which is exactly the normalisation the parity
+     * contract exists to prevent; {@code case20} is the case that pins it.
      *
      * @param painted the payload the handler returned
      * @return the observation
@@ -362,9 +370,15 @@ final class COCRDSLCParityTest {
         String cursorField = painted.getCursorField() == null
                 ? null
                 : painted.getCursorField() + LENGTH_ITEM_SUFFIX;
-        Termination termination = nextProgram != null && sends.isEmpty()
-                ? Termination.XCTL
-                : Termination.RETURN_TRANSID;
+
+        Termination termination;
+        if (nextProgram != null && sends.isEmpty()) {
+            termination = Termination.XCTL;
+        } else if (sentPlainText(painted)) {
+            termination = Termination.RETURN_NO_TRANSID;
+        } else {
+            termination = Termination.RETURN_TRANSID;
+        }
 
         return new ObservedResponse(nextProgram, nextMapset, nextMap,
                 navigation(painted), sends, cursorField, termination);
@@ -485,16 +499,43 @@ final class COCRDSLCParityTest {
      * @param recorder the recorder to write the line into
      */
     private static void emitPlainText(CardSelectResponse painted, UnitOutcome.Builder recorder) {
-        boolean sentMap = tokenOrAbsent(painted.getNextMap()) != null;
-        boolean transferred = tokenOrAbsent(painted.getNextProgram()) != null;
-        String errorLine = painted.getErrmsgo();
-        boolean untouched = errorLine.equals(
-                CardScreenState.lowValues(CardSelectResponse.ERRMSGO_LENGTH));
-        if (sentMap || transferred || untouched) {
+        if (!sentPlainText(painted)) {
             return;
         }
         recorder.message(new EmittedMessage(MessageChannel.DISPLAY_LINE,
-                errorLine.substring(0, CardScreenState.CCARD_RETURN_MSG_LENGTH)));
+                painted.getErrmsgo().substring(0, CardScreenState.CCARD_RETURN_MSG_LENGTH)));
+    }
+
+    /**
+     * Whether this invocation left through {@code SEND-PLAIN-TEXT} at
+     * {@code app/cbl/COCRDSLC.cbl:838-851} rather than through {@code COMMON-RETURN} or the
+     * {@code XCTL}.
+     *
+     * <p>The program has exactly three exits and this predicate separates the third from the other two.
+     * {@code COMMON-RETURN} at {@code :394-406} is always preceded by {@code 1400-SEND-SCREEN}, which
+     * names the map at {@code :565-566}; the {@code XCTL} at {@code :331-334} names the next program at
+     * {@code :332}; and {@code SEND-PLAIN-TEXT} names <em>neither</em> while writing the transmitted text
+     * onto the error-line carrier, displacing the {@code LOW-VALUES} that {@code MOVE LOW-VALUES TO
+     * CCRDSLAO} at {@code :428} left there. So "no map, no program, and an error line that is no longer
+     * {@code LOW-VALUES}" is not a heuristic - it is the exact complement of the other two exits.
+     *
+     * <p>Factored out because two separate observations depend on it and they must not be allowed to
+     * disagree: the emitted line, and the {@link Termination} reported by {@link #observed}. When they
+     * were computed independently one of them was wrong - the line was recorded correctly while the
+     * termination was reported as {@link Termination#RETURN_TRANSID}, which claims the
+     * pseudo-conversation continues under {@code TRANSID('CCDL')} with a 2000-byte commarea when in fact
+     * {@code :846-847} is a <strong>bare</strong> {@code EXEC CICS RETURN} carrying no {@code TRANSID}
+     * and no {@code COMMAREA} and the conversation ends. One predicate, one reading.
+     *
+     * @param painted the payload the handler returned
+     * @return {@code true} when the run ended at {@code :846-847}
+     */
+    private static boolean sentPlainText(CardSelectResponse painted) {
+        boolean sentMap = tokenOrAbsent(painted.getNextMap()) != null;
+        boolean transferred = tokenOrAbsent(painted.getNextProgram()) != null;
+        boolean errorLineUntouched = painted.getErrmsgo().equals(
+                CardScreenState.lowValues(CardSelectResponse.ERRMSGO_LENGTH));
+        return !sentMap && !transferred && !errorLineUntouched;
     }
 
     // =================================================================================================

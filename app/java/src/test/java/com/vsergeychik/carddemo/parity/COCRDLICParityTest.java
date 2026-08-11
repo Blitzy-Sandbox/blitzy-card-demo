@@ -210,6 +210,19 @@ class COCRDLICParityTest {
     private static final char LOW_VALUE = '\u0000';
 
     /**
+     * The prefix that tells {@code WS-THIS-PROGCOMMAREA}'s items apart from
+     * {@code CARDDEMO-COMMAREA}'s inside one declared communication area.
+     *
+     * <p>{@code app/cbl/COCRDLIC.cbl:229-248} names every item of this program's own 254-byte
+     * extension {@code WS-CA-...} or {@code WS-RETURN-FLAG}, while every item of the shared 160-byte
+     * area is named {@code CDEMO-...} [{@code app/cpy/COCOM01Y.cpy}]. The two halves arrive as one
+     * {@code DFHCOMMAREA} [{@code :327-331}], so a case declares them together and this prefix routes
+     * each name to the half it belongs to: {@link #navigationFrom} takes the {@code CDEMO-} items and
+     * {@link #pageCursorFrom} takes these.
+     */
+    private static final String CURSOR_FIELD_PREFIX = "WS-";
+
+    /**
      * The {@code xxxI} map items {@code COCRDLIC} actually reads, and nothing else.
      *
      * <p>{@code 2100-RECEIVE-SCREEN} reads {@code ACCTSIDI} and {@code CARDSIDI} [{@code :969-970}] and
@@ -372,6 +385,13 @@ class COCRDLICParityTest {
      * {@code RESP2} values matter as well as the arm, because {@code :1252-1253} moves both into the
      * composed {@code WS-FILE-ERROR-MESSAGE}.
      *
+     * <p>A case may equally declare {@link FileStatus.Outcome#DUPLICATE}, which is the other outcome no
+     * arrangement of seeded rows produces: {@code CARDDAT}'s primary key is unique, so only the
+     * alternate-index path this program never opens could present a duplicate key. Each read then serves
+     * the row the seed holds under {@code DFHRESP(DUPREC)}, which drives the second condition of the
+     * shared pair at {@code :1157-1158} and {@code :1208-1209}. See {@link #declaredReadOutcome} for why
+     * the remaining three outcomes stay refused.
+     *
      * @param invocation the invocation, consulted for a forced outcome
      * @param carddat    the seeded card master
      * @return the stub; never {@code null}
@@ -382,8 +402,15 @@ class COCRDLICParityTest {
 
         CardRepository repository = Mockito.mock(CardRepository.class);
         Mockito.when(repository.startBrowse(Mockito.anyString(), Mockito.any(BrowseDirection.class)))
-                .thenAnswer(call -> browseOver(rows, call.getArgument(0),
-                        call.getArgument(1), forcedReadOutcome(invocation)));
+                .thenAnswer(call -> {
+                    // Taken here, inside the answer, so a declared outcome is consumed only when the
+                    // unit actually opens a browse. Hoisting it into the method body would consume it
+                    // even on a path that never reads, and the harness could no longer tell a case that
+                    // drove an arm from one that only claimed to.
+                    Optional<ParityCase.ForcedOutcome> declared = declaredReadOutcome(invocation);
+                    return browseOver(rows, call.getArgument(0), call.getArgument(1),
+                            forcedFailure(declared), forcesDuplicateKey(declared));
+                });
         return repository;
     }
 
@@ -391,31 +418,89 @@ class COCRDLICParityTest {
      * The forced read outcome a case declared, taken through the invocation so the harness can see it
      * was consumed.
      *
-     * <p>Taken once per run, before the browse opens, and taken unconditionally when declared. The
-     * harness refuses a run that left a declared forced outcome unasked-for, and rightly: an unconsumed
-     * declaration forces nothing, the run takes the ordinary path, and the case passes while its
-     * description claims it drove a {@code WHEN OTHER}.
+     * <p>Taken when the browse opens, and taken unconditionally when declared. The harness refuses a run
+     * that left a declared forced outcome unasked-for, and rightly: an unconsumed declaration forces
+     * nothing, the run takes the ordinary path, and the case passes while its description claims it
+     * drove an arm it never reached.
+     *
+     * <p><strong>Two outcomes may be forced, and only two.</strong> Both name an arm of
+     * {@code EVALUATE WS-RESP-CD} that no arrangement of seeded {@code CARDDAT} rows can reach:
+     * <ul>
+     *   <li>{@link FileStatus.Outcome#OTHER} - {@code WHEN OTHER} at {@code :1246-1254},
+     *       {@code :1222-1230} and {@code :1361-1369}. It needs a genuine I/O failure, and the
+     *       {@code RESP} and {@code RESP2} values matter as well as the arm because {@code :1252-1253}
+     *       moves both into the composed {@code WS-FILE-ERROR-MESSAGE}.</li>
+     *   <li>{@link FileStatus.Outcome#DUPLICATE} - the {@code WHEN DFHRESP(DUPREC)} half of the shared
+     *       pair at {@code :1157-1158} and {@code :1208-1209}. {@code COCRDLIC} browses
+     *       {@code LIT-CARD-FILE} {@code 'CARDDAT '} [{@code :213-214}], whose primary key is unique, so
+     *       a base-KSDS read never presents a duplicate key however the rows are arranged - the
+     *       non-unique alternate key belongs to {@code CARDAIX} [{@code :215-217}], which this program
+     *       declares and never opens. Forcing is therefore the only route to an arm the source genuinely
+     *       has, and gate <strong>G47</strong> requires the {@code '22'} outcome to be driven at each
+     *       call site that has it.</li>
+     * </ul>
+     *
+     * <p>{@link FileStatus.Outcome#OK} and {@link FileStatus.Outcome#END_OF_FILE} stay refused because
+     * seeding produces them - a row, or fewer rows than the browse asks for - and forcing either would
+     * hide the seed that should have produced it. {@link FileStatus.Outcome#NOT_FOUND} stays refused
+     * because a browse never returns it at all.
      *
      * @param invocation the invocation
-     * @return the forced result, or {@link Optional#empty()} when the case forces nothing
+     * @return the outcome the case declared, or {@link Optional#empty()} when it forces nothing
      */
-    private static Optional<CardReadResult> forcedReadOutcome(Invocation invocation) {
+    private static Optional<ParityCase.ForcedOutcome> declaredReadOutcome(Invocation invocation) {
         if (!invocation.hasForcedOutcome(RepositoryOperation.READ_NEXT)) {
             return Optional.empty();
         }
         ParityCase.ForcedOutcome forced = invocation.forcedOutcome(RepositoryOperation.READ_NEXT);
-        if (forced.outcome() != FileStatus.Outcome.OTHER) {
+        if (forced.outcome() != FileStatus.Outcome.OTHER
+                && forced.outcome() != FileStatus.Outcome.DUPLICATE) {
             throw new IllegalArgumentException("Case " + invocation.program() + '/'
                     + invocation.caseId() + " forces read outcome " + forced.outcome()
-                    + ", but the only read outcome COCRDLIC cannot be driven to by seeding rows is "
-                    + FileStatus.Outcome.OTHER + ". OK and DUPLICATE arrive by seeding a row, "
-                    + "END_OF_FILE by seeding fewer rows than the browse asks for, and NOT_FOUND is "
-                    + "never returned by a browse at all - forcing any of those would hide the seed "
-                    + "that should have produced it.");
+                    + ", but the only read outcomes COCRDLIC cannot be driven to by seeding rows are "
+                    + FileStatus.Outcome.OTHER + " and " + FileStatus.Outcome.DUPLICATE
+                    + ". OK arrives by seeding a row, END_OF_FILE by seeding fewer rows than the "
+                    + "browse asks for, and NOT_FOUND is never returned by a browse at all - forcing "
+                    + "any of those would hide the seed that should have produced it.");
         }
+        return Optional.of(forced);
+    }
+
+    /**
+     * The failure a case declared, ready to be returned instead of a record.
+     *
+     * @param declared the declared outcome, if any
+     * @return the failure result, or {@link Optional#empty()} unless {@link FileStatus.Outcome#OTHER}
+     *     was declared
+     */
+    private static Optional<CardReadResult> forcedFailure(
+            Optional<ParityCase.ForcedOutcome> declared) {
+
+        if (declared.isEmpty() || declared.get().outcome() != FileStatus.Outcome.OTHER) {
+            return Optional.empty();
+        }
+        ParityCase.ForcedOutcome forced = declared.get();
         int resp = forced.resp() == null ? FileStatus.INVREQ : forced.resp();
         int resp2 = forced.resp2() == null ? FileStatus.NO_REASON_CODE : forced.resp2();
         return Optional.of(CardReadResult.reportedFailure(resp, resp2));
+    }
+
+    /**
+     * Whether every read of the browse must report {@code DFHRESP(DUPREC)} over the row it returns.
+     *
+     * <p>{@link ParityCase.ForcedOutcome} carries no occurrence index, so a per-operation declaration
+     * means every read of that operation - which is the whole assertion here. Each read still returns
+     * the record the seed would have returned, only under {@link FileStatus.Outcome#DUPLICATE}, so a
+     * translation that had split the shared {@code :1157-1158} body would place different rows and diff,
+     * while the faithful one produces a page byte-identical to the {@code NORMAL} run. The identity is
+     * the proof that consecutive {@code WHEN} phrases share the statements that follow them.
+     *
+     * @param declared the declared outcome, if any
+     * @return {@code true} when {@link FileStatus.Outcome#DUPLICATE} was declared
+     */
+    private static boolean forcesDuplicateKey(Optional<ParityCase.ForcedOutcome> declared) {
+        return declared.isPresent()
+                && declared.get().outcome() == FileStatus.Outcome.DUPLICATE;
     }
 
     /**
@@ -434,17 +519,57 @@ class COCRDLICParityTest {
     private static CardBrowse browseOver(List<String> rows, String anchor,
             BrowseDirection direction, Optional<CardReadResult> forced) {
 
+        return browseOver(rows, anchor, direction, forced, false);
+    }
+
+    /**
+     * One browse over the seeded rows, optionally reporting every record it returns as a duplicate key.
+     *
+     * @param rows              the seeded rows in key order
+     * @param anchor            {@code WS-CARD-RID-CARDNUM}, the {@code RIDFLD}
+     * @param direction         forward for {@code READNEXT}, backward for {@code READPREV}
+     * @param forced            a forced failure to return instead of a record, if the case declared one
+     * @param reportDuplicateKey whether each record-bearing read reports {@code DFHRESP(DUPREC)}
+     * @return the browse; never {@code null}
+     */
+    private static CardBrowse browseOver(List<String> rows, String anchor,
+            BrowseDirection direction, Optional<CardReadResult> forced,
+            boolean reportDuplicateKey) {
+
         CardBrowse browse = Mockito.mock(CardBrowse.class);
         // int[1] rather than a field: this is per-browse state, unreachable from anywhere else, and a
         // field would be shared mutable state on the test class (practice B9).
         int[] position = new int[1];
         boolean[] positioned = new boolean[1];
 
-        Mockito.when(browse.readNext()).thenAnswer(call ->
-                forced.orElseGet(() -> read(rows, anchor, direction, position, positioned)));
-        Mockito.when(browse.readPrev()).thenAnswer(call ->
-                forced.orElseGet(() -> read(rows, anchor, direction, position, positioned)));
+        Mockito.when(browse.readNext()).thenAnswer(call -> forced.orElseGet(() ->
+                asDeclared(read(rows, anchor, direction, position, positioned),
+                        reportDuplicateKey)));
+        Mockito.when(browse.readPrev()).thenAnswer(call -> forced.orElseGet(() ->
+                asDeclared(read(rows, anchor, direction, position, positioned),
+                        reportDuplicateKey)));
         return browse;
+    }
+
+    /**
+     * Re-reports a served read under {@code DFHRESP(DUPREC)} when the case declared that outcome.
+     *
+     * <p>The record and its exact bytes are the ones the seed served, and the browse has already
+     * advanced over them, so the only thing that changes is the response the program evaluates: the
+     * shared {@code WHEN DFHRESP(NORMAL)} / {@code WHEN DFHRESP(DUPREC)} body at {@code :1157-1158} is
+     * entered through its second condition rather than its first. An end of file is left alone -
+     * exhausting the rows is how {@code DFHRESP(ENDFILE)} arrives, and a duplicate-key declaration must
+     * not manufacture a record where the seed has none.
+     *
+     * @param served             the read the seeded browse produced
+     * @param reportDuplicateKey whether to re-report a record-bearing read as a duplicate key
+     * @return the read outcome the program sees; never {@code null}
+     */
+    private static CardReadResult asDeclared(CardReadResult served, boolean reportDuplicateKey) {
+        if (!reportDuplicateKey || !served.isRecordReturned()) {
+            return served;
+        }
+        return CardReadResult.duplicateKey(served.requireRecord(), served.requireStoredImage());
     }
 
     /**
@@ -548,6 +673,7 @@ class COCRDLICParityTest {
         }
         CardListRequest request = new CardListRequest();
         request.setNavigationContext(navigationFrom(invocation.commarea(), codec));
+        request.setPageCursor(pageCursorFrom(invocation.commarea(), codec, invocation));
 
         Map<String, String> map = invocation.mapFields();
         request.setAcctsid(codec.movePicX(mapFieldOf(map, "ACCTSIDI", invocation),
@@ -670,6 +796,10 @@ class COCRDLICParityTest {
         NavigationContext context = NavigationContext.empty();
         for (Map.Entry<String, String> entry : commarea.entrySet()) {
             String field = entry.getKey();
+            if (field.startsWith(CURSOR_FIELD_PREFIX)) {
+                // WS-THIS-PROGCOMMAREA, the second half of the same area; see pageCursorFrom.
+                continue;
+            }
             String value = entry.getValue();
             context = switch (field) {
                 case NavigationContext.FROM_TRANID_FIELD -> context.withFromTranid(
@@ -707,11 +837,98 @@ class COCRDLICParityTest {
                 default -> throw new IllegalStateException("Commarea field " + field
                         + " is not one of the sixteen CARDDEMO-COMMAREA items app/cpy/COCOM01Y.cpy "
                         + "defines. COCRDLIC's own extension is WS-THIS-PROGCOMMAREA at "
-                        + "app/cbl/COCRDLIC.cbl:229-248, whose fields are named WS-CA-... and are "
-                        + "carried in the response payload rather than in the shared commarea.");
+                        + "app/cbl/COCRDLIC.cbl:229-248, whose fields are named WS-CA-... and "
+                        + "WS-RETURN-FLAG; those are read by pageCursorFrom, not here.");
             };
         }
         return context;
+    }
+
+    /**
+     * The inbound {@code WS-THIS-PROGCOMMAREA} paging cursor, built from the {@code WS-} prefixed
+     * items of the same communication area.
+     *
+     * <p><strong>Why the cursor arrives in the commarea.</strong>
+     * {@code app/cbl/COCRDLIC.cbl:327-331} restores the two halves of one physical
+     * {@code DFHCOMMAREA}: {@code MOVE DFHCOMMAREA(1:LENGTH OF CARDDEMO-COMMAREA)} into the shared
+     * 160-byte area, then
+     * {@code MOVE DFHCOMMAREA(LENGTH OF CARDDEMO-COMMAREA + 1: LENGTH OF WS-THIS-PROGCOMMAREA)} into
+     * the program's own 254-byte extension - a 58-byte cursor prefix [{@code :229-248}] followed by
+     * the 196-byte row table [{@code :252-260}]. The row table reaches this adapter as the received
+     * {@code ACCTNOnI}, {@code CRDNUMnI} and {@code CRDSTSnI} items, because that is where the DTO
+     * carries it; the cursor prefix has no map items to travel in, so it is declared alongside the
+     * {@code CDEMO-} fields it physically shares an area with. {@code COTRN00C} does exactly the same
+     * thing and needs no special handling only because it happens to name its own extension
+     * {@code CDEMO-CT00-...} [{@code app/cbl/COTRN00C.cbl:62-70}].
+     *
+     * <p><strong>What a case that says nothing gets.</strong> {@link PageCursor#firstPage()} - which
+     * is what {@code new CardListRequest()} assigns anyway, and what {@code :324-325} and
+     * {@code :341-342} set: page 1 with {@code CA-LAST-PAGE-NOT-SHOWN}. A case declaring no
+     * {@code WS-} item is therefore unaffected by this method and keeps the exact state it had before
+     * the method existed. Only a case that means to arrive mid-browse has to say so, and it says so in
+     * the copybook's own field names.
+     *
+     * <p>None of this is server-side state (rule <strong>R6</strong>, gate <strong>G37</strong>): the
+     * cursor is read out of the payload on the way in and written back into the payload on the way
+     * out, and the harness holds no browse position between invocations.
+     *
+     * @param commarea   the case's communication-area fields, {@code CDEMO-} and {@code WS-} together
+     * @param codec      the codec, for the {@code PIC X} move rule and the {@code PIC 9} decode
+     * @param invocation the invocation, for a diagnostic
+     * @return the cursor the transaction is entered with; never {@code null}
+     */
+    private static PageCursor pageCursorFrom(Map<String, String> commarea, FixedWidthCodec codec,
+            Invocation invocation) {
+
+        PageCursor declared = PageCursor.firstPage();
+        String lastCardNum = declared.lastCardKey().cardNum();
+        long lastAcctId = declared.lastCardKey().acctId();
+        String firstCardNum = declared.firstCardKey().cardNum();
+        long firstAcctId = declared.firstCardKey().acctId();
+        int screenNum = declared.screenNum();
+        int lastPageDisplayed = declared.lastPageDisplayed();
+        String nextPageInd = declared.nextPageInd();
+        String returnFlag = declared.returnFlag();
+
+        for (Map.Entry<String, String> entry : commarea.entrySet()) {
+            String field = entry.getKey();
+            if (!field.startsWith(CURSOR_FIELD_PREFIX)) {
+                continue;
+            }
+            String value = entry.getValue();
+            switch (field) {
+                // :230-232  WS-CA-LAST-CARDKEY - X(16) then 9(11), what PF8 browses forward from.
+                case "WS-CA-LAST-CARD-NUM" -> lastCardNum =
+                        codec.movePicX(value, CardListRequest.CURSOR_CARD_NUM_LENGTH);
+                case "WS-CA-LAST-CARD-ACCT-ID" -> lastAcctId = codec.decodePic9(value);
+                // :233-235  WS-CA-FIRST-CARDKEY - what PF7 browses back from [:504-505].
+                case "WS-CA-FIRST-CARD-NUM" -> firstCardNum =
+                        codec.movePicX(value, CardListRequest.CURSOR_CARD_NUM_LENGTH);
+                case "WS-CA-FIRST-CARD-ACCT-ID" -> firstAcctId = codec.decodePic9(value);
+                // :237-238  WS-CA-SCREEN-NUM PIC 9(1), with 88 CA-FIRST-PAGE VALUE 1.
+                case "WS-CA-SCREEN-NUM" -> screenNum = codec.decodePic9AsInt(value);
+                // :239-241  WS-CA-LAST-PAGE-DISPLAYED PIC 9(1): 0 shown, 9 not shown.
+                case "WS-CA-LAST-PAGE-DISPLAYED" -> lastPageDisplayed =
+                        codec.decodePic9AsInt(value);
+                // :242-244  WS-CA-NEXT-PAGE-IND PIC X(1): LOW-VALUES off, 'Y' on.
+                case "WS-CA-NEXT-PAGE-IND" -> nextPageInd =
+                        codec.movePicX(value, CardListRequest.NEXT_PAGE_IND_LENGTH);
+                // :246-248  WS-RETURN-FLAG PIC X(1), declared and never assigned by the program.
+                case "WS-RETURN-FLAG" -> returnFlag =
+                        codec.movePicX(value, CardListRequest.RETURN_FLAG_LENGTH);
+                default -> throw new IllegalStateException("Case " + invocation.program() + '/'
+                        + invocation.caseId() + " states commarea field " + field
+                        + ", which is not one of the eight WS-THIS-PROGCOMMAREA cursor items "
+                        + "app/cbl/COCRDLIC.cbl:229-248 declares. The eight are "
+                        + "WS-CA-LAST-CARD-NUM, WS-CA-LAST-CARD-ACCT-ID, WS-CA-FIRST-CARD-NUM, "
+                        + "WS-CA-FIRST-CARD-ACCT-ID, WS-CA-SCREEN-NUM, WS-CA-LAST-PAGE-DISPLAYED, "
+                        + "WS-CA-NEXT-PAGE-IND and WS-RETURN-FLAG. The 196-byte row table that "
+                        + "follows them travels as the ACCTNOnI, CRDNUMnI and CRDSTSnI map items.");
+            }
+        }
+        return new PageCursor(new CardListRequest.CardKey(lastCardNum, lastAcctId),
+                new CardListRequest.CardKey(firstCardNum, firstAcctId),
+                screenNum, lastPageDisplayed, nextPageInd, returnFlag);
     }
 
     // =================================================================================================
@@ -1590,6 +1807,12 @@ class COCRDLICParityTest {
      * leaves {@code CARD-RECORD} untouched, so {@code :1236-1237} stores the {@code WORKING-STORAGE} zeros
      * as the page's last key and {@code :1241-1244} raises {@code 'NO RECORDS FOUND FOR THIS SEARCH
      * CONDITION.'} rather than the end-of-page message.
+     *
+     * <p>The {@code DFHRESP(DUPREC)} half of the shared pair is driven by
+     * {@code src/test/resources/parity/COCRDLIC/case03.json} rather than here, because its whole assertion
+     * is that a duplicate-key read paints a page byte-identical to a {@code NORMAL} one - which is a
+     * field-for-field comparison of all 45 items and all eight rows, and that is what the parameterized
+     * gate does. This method covers the arms whose observable effect is a single message or key.
      */
     @Test
     @DisplayName("G47: the response ladder - a full page, a short page, an empty browse, and a failure")

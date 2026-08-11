@@ -124,10 +124,10 @@ import static org.mockito.Mockito.when;
  * anywhere in the path, so step sequencing and line ordering are observed exactly as written
  * (gate G51). {@code SYSOUT} - {@code app/jcl/READCARD.jcl:27} - is the seam: the sink handed to
  * {@code execute} writes each line straight into the harness recorder, which is what makes the line
- * sequence survive the abend that ends eleven of the twenty cases.
+ * sequence survive the abend that ends eight of the twenty cases.
  *
  * <h2>Why the failure paths are driven by a stub</h2>
- * <p>Eleven cases turn on a status the seeded data cannot produce: an {@code OPEN} that refuses, a
+ * <p>Eight cases turn on a status the seeded data cannot produce: an {@code OPEN} that refuses, a
  * {@code READ} that reports {@code '23'}, a {@code CLOSE} that fails. A controller case would
  * declare those through {@code screenRequest.forcedOutcomes}, but {@link ParityCase} refuses a
  * {@code screenRequest} on a batch case - a batch job has no screen - so the only place the shape of
@@ -251,8 +251,16 @@ final class CBACT02CParityTest {
      */
     private static final BigDecimal POSITIVE_OVERPUNCH_VALUE = new BigDecimal("194.00");
 
-    /** Zero-based index of {@code case11} - the first-read {@code '23'} failure - in the case list. */
-    private static final int CASE11_INDEX = 10;
+    /**
+     * Zero-based index of {@code case12} - the first-read {@code '22'} failure - in the case list.
+     *
+     * <p>Used by the guard that perturbs an expected {@code RETURN-CODE}, which needs a case whose run
+     * genuinely abends: perturbing a case that already completes with zero to zero would compare a case
+     * against itself and report clean while claiming to prove the opposite. {@code case12} is the
+     * lowest-numbered case that reaches {@code :101 MOVE 12 TO APPL-RESULT} on its very first read,
+     * which is what makes it the natural choice now that {@code case11} pins a normal completion.
+     */
+    private static final int CASE12_INDEX = 11;
 
     /** Zero-based index of {@code case17} - the blank-{@code FILLER} geometry case. */
     private static final int CASE17_INDEX = 16;
@@ -464,7 +472,7 @@ final class CBACT02CParityTest {
                 //
                 // Compared as a prefix of a known length rather than through startsWith, because
                 // startsWith reads an empty sequence against a non-empty actual as a failure - and
-                // eight of these twenty cases legitimately display no record at all.
+                // seven of these twenty cases legitimately display no record at all.
                 final List<String> displayed = recordLinesOf(parityCase);
                 assertThat(displayed.size())
                         .as("%s/%s displays more records than its input holds", PROGRAM,
@@ -516,7 +524,7 @@ final class CBACT02CParityTest {
         @Test
         @DisplayName("changing the expected RETURN-CODE makes the gate fail")
         void aPerturbedReturnCodeIsRejected() {
-            final ParityCase clean = cases().get(CASE11_INDEX);
+            final ParityCase clean = cases().get(CASE12_INDEX);
             final ParityCase perturbed = withReturnCode(clean, AbendException.RETURN_CODE_OK);
 
             final FieldDiffer.DiffResult result = ParityHarness.usAscii()
@@ -524,7 +532,7 @@ final class CBACT02CParityTest {
                             CBACT02CParityTest::driveCbact02c);
 
             assertThat(result.count())
-                    .as("case11 abends with 12 from :101, so expecting 0 must be reported. A batch "
+                    .as("case12 abends with 12 from :101, so expecting 0 must be reported. A batch "
                             + "exit status carries that value out to the process, which is what makes "
                             + "a JCL COND test on a following step behave as it does today.")
                     .isPositive();
@@ -607,8 +615,15 @@ final class CBACT02CParityTest {
 
             // The seeded input is irrelevant on this path: the very first READ fails, so no row is
             // ever delivered.  An empty CARDFILE states that rather than leaving it to be inferred.
+            //
+            // The run shape is stated here rather than borrowed from whichever case file happens to
+            // carry it.  This guard is about the arm at :110-113 and the abend at :154-158, not about a
+            // case slot, and sourcing it from one meant that re-purposing that slot silently retargeted
+            // the guard - which is how a test ends up proving something other than what it says.
+            // '23' on the first read is the shape: case14 and case20 still pin it through the gate,
+            // after three and forty-nine records respectively.
             final CardRepository cardRepository = stubbedCardMaster(
-                    Scenario.forCase(cases().get(CASE11_INDEX).caseId()),
+                    Scenario.readFailingAfter(0, Terminator.NOT_FOUND),
                     ParityHarness.SeededDataset.empty(AccountBalanceReaderJob.DD_NAME,
                             CardRecord.RECORD_LENGTH, datasetCharset),
                     datasetCharset);
@@ -851,7 +866,7 @@ final class CBACT02CParityTest {
      *       is the tasklet's own body, so the pass runs with no launcher, no context and no HTTP
      *       (gate G51).</li>
      *   <li><strong>The abend is an observation.</strong> {@code PERFORM 9999-ABEND-PROGRAM} does not
-     *       return, so eleven of the twenty cases end in an {@link AbendException}. It is caught here
+     *       return, so eight of the twenty cases end in an {@link AbendException}. It is caught here
      *       only so the no-write proof runs on the failure paths too, and is then rethrown unchanged
      *       so the harness folds its {@code RETURN-CODE} into the fingerprint. Recording the lines
      *       into {@link ParityHarness.Invocation#recorder()} rather than returning them is what makes
@@ -1340,26 +1355,50 @@ final class CBACT02CParityTest {
                 case "case04" -> wholeFile();          // fixture row 49 - the last-record boundary
                 case "case05" -> wholeFile();          // fixture rows 43..49
                 case "case06" -> wholeFile();          // fixture rows 0..1
+                case "case07" -> wholeFile();          // fixture rows 45..49 - the tail window
+                // Three inline rows declared in CARD-NUM sequence.  :30-32 make CARDFILE a KSDS read
+                // sequentially on RECORD KEY IS FD-CARD-NUM, so the READ walks the key sequence and
+                // not the load order; this run pins that the delivered order is the key order.  It is
+                // a wholeFile() run and not a closeFailing() one because this folder's twenty fixtures
+                // spend their four abending OPEN shapes and their four abending READ shapes elsewhere,
+                // and this is the one run that can carry the ordering assertion.
+                case "case15" -> wholeFile();          // inline rows, ascending CARD-NUM
                 case "case17" -> wholeFile();          // inline row, blank FILLER
                 case "case18" -> wholeFile();          // inline row, negative overpunch in FILLER
                 case "case19" -> wholeFile();          // inline rows at the field boundaries
 
-                // --- 0000-CARDFILE-OPEN failures: :121 is two-armed, so anything but '00' abends. ---
-                case "case07" -> openReporting(FileStatus.NOTFND);   // '23'
+                // An inline row synthesized from carddata.txt row 1 with CARD-ACTIVE-STATUS set to
+                // 'N'.  It reads and displays exactly as an active card does, which is the claim:
+                // CBACT02C contains no reference to CARD-ACTIVE-STATUS, so there is no status filter
+                // for a run shape to express.  All fifty fixture rows carry 'Y', which is why the row
+                // is inline rather than a range over the fixture.
+                case "case11" -> wholeFile();
+
+                // --- 0000-CARDFILE-OPEN failures: :121 is two-armed, so anything but '00' abends.
+                //     The remaining status the open can report, '23', is driven at unit level by
+                //     AccountBalanceReaderJobTest.OpenStatusLadder, which walks '10', '22', '23' and an
+                //     untranslatable response through this same two-armed guard (gate G47). ---
                 case "case08" -> openReporting(FileStatus.ENDFILE);  // '10' - still a failure here
                 case "case09" -> openReporting(FileStatus.LENGERR);  // no batch equivalent -> '9'
                 case "case10" -> openRefusedOutright();              // unreachable -> '9'
+                // DUPREC, not DUPKEY: :32 declares RECORD KEY IS FD-CARD-NUM over the base KSDS, so a
+                // duplicate reported to this program is one on the base key. Both map to '22', and '22'
+                // is the last status the open can report that no other case in this directory forces -
+                // the open-side counterpart of case12, which reports the same status on the first READ.
+                case "case16" -> openReporting(FileStatus.DUPREC);    // '22'
 
                 // --- 1000-CARDFILE-GET-NEXT failures: :101, then the arm at :110-113. ---
-                case "case11" -> readFailingAfter(0, Terminator.NOT_FOUND);
                 case "case12" -> readFailingAfter(0, Terminator.DUPLICATE_KEY);
                 case "case13" -> readFailingAfter(0, Terminator.INVALID_REQUEST);
                 case "case14" -> readFailingAfter(3, Terminator.NOT_FOUND);
                 case "case20" -> readFailingAfter(49, Terminator.NOT_FOUND);
 
-                // --- 9000-CARDFILE-CLOSE failures: :139 takes its ELSE, and :85 is never reached. ---
-                case "case15" -> closeFailing();       // after all 50 rows
-                case "case16" -> closeFailing();       // over an empty file
+                // --- 9000-CARDFILE-CLOSE failure: :139 takes its ELSE, and :85 is never reached.
+                //     No fixture in this folder forces it - every one of the twenty declares either a
+                //     normal completion or an abending OPEN or READ - so the shape stays available in
+                //     closeFailing() and the arm itself is pinned at unit level by
+                //     AccountBalanceReaderJobTest.Close and .CloseArithmeticLadder, which drive :139's
+                //     ELSE, the lost end banner and the 8 -> 12 ladder (gates G47 and G28). ---
 
                 default -> throw new IllegalStateException("No run shape is declared for "
                         + PROGRAM + '/' + caseId + ". Every one of the "

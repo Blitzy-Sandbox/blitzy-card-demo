@@ -1,7 +1,7 @@
 {
   "program": "COACTVWC",
   "caseId": "case02",
-  "description": "WHEN CDEMO-PGM-ENTER at :353 with a commarea present, which is the arm a caller reaches this screen through. EIBCALEN is 172 so 1200 takes the ELSE at :464 and ACCTSIDO is painted from the blank-filter branch at :465-466 - INITIALIZE leaves WS-EDIT-ACCT-FLAG a space, so FLG-ACCTFILTER-BLANK is true on a path that never edited the field. CDEMO-PGM-CONTEXT is still 0 when 1300 runs, so the asterisk at :563 does NOT fire: that highlight is REENTER-only.",
+  "description": "COACTVWC ENTER via the main menu: the SECOND disjunct of the guard at :282-293, CDEMO-FROM-PROGRAM = LIT-MENUPGM AND NOT CDEMO-PGM-REENTER, which no other COACTVWC case takes. case01 takes the first disjunct with EIBCALEN = 0, and cases 03-20 all arrive from COCRDLIC or with a re-entry context, so without this case that second half of the compound condition is never true and the INITIALIZE it guards is only ever reached on a zero-length turn. A commarea DID travel here: EIBCALEN is 172, the length of CARDDEMO-COMMAREA plus WS-THIS-PROGCOMMAREA, and it carries CDEMO-FROM-TRANID 'CM00' and CDEMO-FROM-PROGRAM 'COMEN01C' with CDEMO-PGM-CONTEXT 0 - exactly what app/cbl/COMEN01C.cbl:146-153 leaves when a menu option is chosen, from WS-TRANID and WS-PGMNAME at :36-37 and MOVE ZEROS TO CDEMO-PGM-CONTEXT at :151. LIT-MENUPGM is PIC X(8) VALUE 'COMEN01C' at :168-169, so those eight characters have to match exactly: a value of any other length fails the comparison and silently reroutes this case to the ELSE at :288-292, which is the one way this fixture could look right and test the wrong thing. THE DECISIVE CONSEQUENCE, and the whole reason the case exists: the guard fires, :285-286 INITIALIZE CARDDEMO-COMMAREA WS-THIS-PROGCOMMAREA runs, and every one of the sixteen fields that arrived is DISCARDED. So the inbound area is declared full rather than minimal - ADMIN001 and user type 'A' from COSGN00C.cbl:226-227, which survive the menu because COMEN01C's own MOVEs into CDEMO-USER-ID and CDEMO-USER-TYPE at :149-150 are COMMENTED OUT and README.md:157 names ADMIN001 as the seeded administrator; account 00000000050 with status 'Y' from acctdata.txt row 49; customer 000000050 with Aniya, Alba and Von from custdata.txt row 49; card 0500024453765740 from cardxref.txt row 0; and the last map pair CACTVWA and COACTVW - and the response's navigation block is pinned as sixteen emptied fields, character for character what case01 returns: four blank tokens, a blank user id, a space user type, zero-filled CDEMO-CUST-ID, CDEMO-ACCT-ID and CDEMO-CARD-NUM, three blank name fields, a space account status and two seven-space map names, with only CDEMO-PGM-CONTEXT at 1 from the SET at :581. Not one of those inbound values is invented: each is a value its own field demonstrably holds - CDEMO-ACCT-ID at :678, CDEMO-CUST-ID and CDEMO-CARD-NUM at :739-740, CDEMO-LAST-MAPSET and CDEMO-LAST-MAP at :346-347, CDEMO-TO-TRANID and CDEMO-TO-PROGRAM at :330-338, and CDEMO-CUST-FNAME, CDEMO-CUST-MNAME, CDEMO-CUST-LNAME and CDEMO-ACCT-STATUS at app/cbl/COACTUPC.cbl:3807-3810 - and each is a real byte range of the three rows this case seeds. A translation that dropped the INITIALIZE, or reached it only through the EIBCALEN = 0 test, would hand ADMIN001 and account 00000000050 straight back, and the sixteen-field comparison would catch it while all 37 screen fields stayed identical - because CDEMO-ACCT-ID and CDEMO-CUST-ID are read only at :660, :675, :678, :691, :708 and :739-740, every one of them inside the 2000-PROCESS-INPUTS family this arm never performs. That asymmetry is the point: this case's evidence lives in the commarea and not on the screen, which is statelessness asserted rather than assumed (gate G37, rule R6). EIBAID is DFHENTER, so YYYY-STORE-PFKEY - the COPY 'CSSTRPFY' at :913 - yields ENTER, the gate at :306-314 accepts it as PFK-VALID and rewrites nothing, and the order-sensitive EVALUATE TRUE at :323 with arms :324 PFK03, :353 CDEMO-PGM-ENTER, :361 CDEMO-PGM-REENTER and :375 OTHER lands on the SECOND arm at :353, because INITIALIZE left the context 0. That arm performs 1000-SEND-MAP through the benign range PERFORM at :358-359 and leaves by the forward-only GO TO COMMON-RETURN at :360. 1000-SEND-MAP at :416-425 runs 1100-SCREEN-INIT at :431, 1200-SETUP-SCREEN-VARS at :460, 1300-SETUP-SCREEN-ATTRS at :541 and 1400-SEND-SCREEN at :577 in that order. THE ONE GENUINE SUBTLETY, and where this case parts company with case01: 1200's outer test at :462 is IF EIBCALEN = 0, not whether the commarea was initialised, and EIBCALEN is 172 - so this case takes the ELSE at :464-525 where case01 took the prompt arm at :463. Inside that ELSE, ACCTSIDO is set to LOW-VALUES EXPLICITLY by the blank-filter branch at :465-466 rather than merely left that way by MOVE LOW-VALUES TO CACTVWAO at :432, because INITIALIZE WS-MISC-STORAGE at :268-270 leaves WS-EDIT-ACCT-FLAG a space and a space IS FLG-ACCTFILTER-BLANK on a path that never edited the field; FOUND-ACCT-IN-MASTER and FOUND-CUST-IN-MASTER are both false because no read ran, so neither the account moves at :471-491 nor the customer moves at :493-523 execute; and because that ELSE sets no info message, the guard at :528-530 - IF WS-NO-INFO-MESSAGE SET WS-PROMPT-FOR-INPUT TO TRUE - fires just as it did on case01's arm. Arriving at an identical screen through a different branch is exactly what this case pins, and it was verified by reading :462-534 rather than inferred from the resemblance. INFOMSGO is the 88 WS-PROMPT-FOR-INPUT literal at :113-114, which is exactly 40 characters and therefore fills WS-INFO-MSG PIC X(40) with no pad at all, reaching INFOMSGO PIC X(45) through the MOVE at :534 with five trailing spaces; ERRMSGO is 78 spaces, because WS-RETURN-MSG X(75) is SPACES from SET WS-RETURN-MSG-OFF at :278 and is never overwritten before the MOVE at :532. Both are pinned on the send channel at those declared widths, 45 and 78, rather than in expectedMessages, because MessageChannel publishes no 45-byte channel and the message channel belongs to the SEND-PLAIN-TEXT path this case never reaches. The six 1100 writes are byte-exact: TITLE01O and TITLE02O from CCDA-TITLE01 and the ACTIVE CCDA-TITLE02 at app/cpy/COTTL01Y.cpy:19 and :22 - :21 is commented out and is ignored - through the MOVEs at :436-437, TRNNAMEO and PGMNAMEO from LIT-THISTRANID and LIT-THISPGM at :438-439, and CURDATEO 07/19/22 at :447 with CURTIMEO 23:15:58 at :453 from the clock this case pins, which is the source revision's own timestamp, COTTL01Y.cpy:26 'Date: 2022-07-19 23:15:58 CDT', and never a captured wall clock. The other 29 fields are LOW-VALUES - literal U+0000 characters, one per declared byte, since :432 put x'00' there and the differ compares the bytes - and that includes the five numeric-edited items ACRDLIMO, ACSHLIMO, ACURBALO, ACRCYCRO and ACRCYDBO: they are neither spaces nor a zero-filled edit mask such as '+           .00'. 1300 sets ACCTSIDA to DFHBMFSE at :543, ACCTSIDC to DFHDFCOL at :555 and INFOMSGC to DFHNEUTR through the ELSE at :570 because an info message is now present; FLG-ACCTFILTER-NOT-OK is false so the DFHRED at :558 does not fire; and the highlight at :561-565 is guarded by AND CDEMO-PGM-REENTER while the context is still 0 when 1300 runs - no '*' and no DFHRED, the negative half of the entry-versus-re-entry contract (gate G38). Its cursor EVALUATE at :546-552 has identical bodies on both arms, MOVE -1 TO ACCTSIDL either way, and that oddity is preserved rather than collapsed (practice B5). 1400 then names mapset COACTVW and map CACTVWA at :579-580 and SETs CDEMO-PGM-REENTER TO TRUE at :581 BEFORE the send, so the returned context is 1 and the next turn re-enters; nextProgram is absent because MOVE LIT-THISPGM TO CCARD-NEXT-PROG lives at :602 inside 2000-PROCESS-INPUTS, which this arm never performs. COMMON-RETURN at :394-406 repacks the two areas into WS-COMMAREA X(2000) and returns pseudo-conversationally at :402-406 with TRANSID(LIT-THISTRANID). Nothing is written - the program's only file verbs are the three EXEC CICS READs at :727, :776 and :826 - and none of them runs on this path either, so expectedWrites is empty and every seeded row is pinned unchanged on the final-state channel instead. CARDDAT and CARDAIX are declared as literals at :187 and :191 and never named by any EXEC CICS command, so they are neither seeded nor asserted and no CardRepository exists to seed them into; the inconsistency is recorded, not tidied. PROVENANCE: every expected value here was derived STATICALLY, by structured reading of those paragraphs - 0000-MAIN :262-402 with the guard at :282-293, COMMON-RETURN :394-406, 1100-SCREEN-INIT, 1200-SETUP-SCREEN-VARS, 1300-SETUP-SCREEN-ATTRS and 1400-SEND-SCREEN - and cross-checked against the copybook byte layouts (CVACT01Y 300, CVACT02Y 150, CVACT03Y 50, CVCUS01Y 500, and COCOM01Y 160 with CDEMO-LAST-MAP and CDEMO-LAST-MAPSET at X(7)), the xxxI PICTURE clauses of app/cpy-bms/COACTVW.CPY and the real app/data/ASCII fixtures. It was NEVER captured from a live COBOL execution: COBOL cannot be executed in this environment, and this static derivation is the recorded substitute for an execution baseline.",
   "unitKind": "CONTROLLER_POJO",
   "inputs": {
     "CCXREF": {
@@ -20,19 +20,29 @@
       "rowCount": 1
     }
   },
+  "jobParameters": {},
   "screenRequest": {
     "eibcalen": 172,
     "aid": "DFHENTER",
-    "pinnedClock": "2022-07-19T23:12:32",
+    "pinnedClock": "2022-07-19T23:15:58",
     "charset": "US-ASCII",
     "commarea": {
-      "CDEMO-FROM-TRANID": "CCLI",
-      "CDEMO-FROM-PROGRAM": "COCRDLIC",
+      "CDEMO-FROM-TRANID": "CM00",
+      "CDEMO-FROM-PROGRAM": "COMEN01C",
+      "CDEMO-TO-TRANID": "CM00",
+      "CDEMO-TO-PROGRAM": "COMEN01C",
       "CDEMO-USER-ID": "ADMIN001",
       "CDEMO-USER-TYPE": "A",
       "CDEMO-PGM-CONTEXT": "0",
-      "CDEMO-LAST-MAP": "CCRDLIA",
-      "CDEMO-LAST-MAPSET": "COCRDLI"
+      "CDEMO-CUST-ID": "000000050",
+      "CDEMO-CUST-FNAME": "Aniya                    ",
+      "CDEMO-CUST-MNAME": "Alba                     ",
+      "CDEMO-CUST-LNAME": "Von                      ",
+      "CDEMO-ACCT-ID": "00000000050",
+      "CDEMO-ACCT-STATUS": "Y",
+      "CDEMO-CARD-NUM": "0500024453765740",
+      "CDEMO-LAST-MAP": "CACTVWA",
+      "CDEMO-LAST-MAPSET": "COACTVW"
     },
     "mapFields": {
       "ACCTSIDI": "           "
@@ -43,12 +53,12 @@
     "nextMapset": "COACTVW",
     "nextMap": "CACTVWA",
     "navigation": {
-      "CDEMO-FROM-TRANID": "CCLI",
-      "CDEMO-FROM-PROGRAM": "COCRDLIC",
+      "CDEMO-FROM-TRANID": "    ",
+      "CDEMO-FROM-PROGRAM": "        ",
       "CDEMO-TO-TRANID": "    ",
       "CDEMO-TO-PROGRAM": "        ",
-      "CDEMO-USER-ID": "ADMIN001",
-      "CDEMO-USER-TYPE": "A",
+      "CDEMO-USER-ID": "        ",
+      "CDEMO-USER-TYPE": " ",
       "CDEMO-PGM-CONTEXT": "1",
       "CDEMO-CUST-ID": "000000000",
       "CDEMO-CUST-FNAME": "                         ",
@@ -57,8 +67,8 @@
       "CDEMO-ACCT-ID": "00000000000",
       "CDEMO-ACCT-STATUS": " ",
       "CDEMO-CARD-NUM": "0000000000000000",
-      "CDEMO-LAST-MAP": "CCRDLIA",
-      "CDEMO-LAST-MAPSET": "COCRDLI"
+      "CDEMO-LAST-MAP": "       ",
+      "CDEMO-LAST-MAPSET": "       "
     },
     "sends": [
       {
@@ -68,7 +78,7 @@
           "CURDATEO": "07/19/22",
           "PGMNAMEO": "COACTVWC",
           "TITLE02O": "              CardDemo                  ",
-          "CURTIMEO": "23:12:32",
+          "CURTIMEO": "23:15:58",
           "ACCTSIDO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
           "ACSTTUSO": "\u0000",
           "ADTOPENO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",

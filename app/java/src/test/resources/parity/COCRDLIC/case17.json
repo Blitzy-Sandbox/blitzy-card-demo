@@ -1,7 +1,7 @@
 {
   "program": "COCRDLIC",
   "caseId": "case17",
-  "description": "Both filters fail edit, which is the case the IF WS-ERROR-MSG-OFF guard at :1056 exists for. 2210-EDIT-ACCOUNT runs first [:989-990] and moves its message unconditionally; 2220-EDIT-CARD runs second [:992-993], finds the message line no longer off, and moves nothing. So the operator sees the account message and never the card one even though both fields are wrong - and both are still reddened, because :872-880 tests the two filter flags independently of which message was moved. The cursor lands on CARDSIDL rather than ACCTSIDL because :877-879 runs after :872-874 and the last MOVE -1 wins, so it rests on the field whose message was suppressed. Neither filter is browsable, so :431-435 skips the read and the restored WS-SCREEN-DATA rows are repainted, protected rather than reddened.",
+  "description": "Two action codes on one screen, which is the case 2250-EDIT-ARRAY's multi-selection guard exists for [:1073-1119]. REENTER from this program with 'S' typed on row one and 'U' on row seven, both filters blank and AID = ENTER: the INSPECT TALLYING at :1079-1082 counts two, :1084 IF I > +1 is true, and the screen comes back carrying 'PLEASE SELECT ONLY ONE RECORD TO VIEW OR UPDATE' - the 47-character 88 WS-MORE-THAN-1-ACTION value at :123-124 - with the two marked rows reddened and the cursor on row seven. PROVENANCE (practice B12): every value here is STATICALLY DERIVED from app/cbl/COCRDLIC.cbl, the byte layout of app/cpy/CVACT02Y.cpy, the item widths of app/cpy-bms/COCRDLI.CPY with app/bms/COCRDLI.bms, the AID and attribute mnemonics of common/CicsAid and common/BmsAttributes (reproduced from IBM CICS documentation because DFHAID, DFHBMSCA and DFHATTR are absent from this repository - risk R-D), and the real fixture app/data/ASCII/carddata.txt - and NEVER captured from a live COBOL execution, which the eight verified blockers of AAP 0.7.6 make impossible here (risk R-A, AAP 0.9.11). Encoding is US-ASCII, named rather than defaulted, and the clock is pinned to the same 2022-07-19T23:12:34 as case01 so CURDATEO and CURTIMEO are reproducible (practices B7, B8). ENTRY: :315 EIBCALEN > 0 so :327-331 restores the areas, and :336-337's re-init guard is false because CDEMO-FROM-PROGRAM already equals LIT-THISPGM. :357-358 is therefore satisfied and 2000-RECEIVE-MAP runs. 2100-RECEIVE-SCREEN moves exactly nine items [:969-978] - the two filters and the seven action codes; ACCTNOnI, CRDNUMnI and CRDSTSnI are transmitted and never copied, because WS-SCREEN-DATA travels in the communication area instead, and they are stated here as the page the operator was looking at. ENTER is one of the four keys :371-376 accepts, and since it is not PF08 :413 sets CA-LAST-PAGE-NOT-SHOWN. EDITS: both filters arrive LOW-VALUES, so 2210-EDIT-ACCOUNT takes :1007-1013 and 2220-EDIT-CARD takes :1042-1048 - each leaves its 88 ...-BLANK flag at a space and zeroes its commarea identifier - and neither sets INPUT-ERROR. That is what lets the array edit run at all: :1075-1077 IF INPUT-ERROR GO TO 2250-EDIT-ARRAY-EXIT is NOT taken, in contrast to case12 and case13 where a failed filter short-circuits it (rule R7 covers the GO TO, which is a forward jump to the paragraph's own exit and so a plain return). 2250-EDIT-ARRAY's multi-selection block spans :1079-1095, and every statement in it is reproduced: the INSPECT at :1079-1082 tallies FOR ALL 'S' ALL 'U' into I, which :90-91 starts at zero, so one 'S' plus one 'U' gives I = 2 and both tally phrases are exercised rather than only the 'S' one; :1084 IF I > +1 is true; :1085 SET INPUT-ERROR; :1086 SET WS-MORE-THAN-1-ACTION, whose 88 at :123-124 puts the 47-character text into WS-ERROR-MSG PIC X(75) [:117]; :1088-1095 moves WS-EDIT-SELECT-FLAGS onto WS-EDIT-SELECT-ERROR-FLAGS and INSPECTs it REPLACING ALL 'S' BY '1' ALL 'U' BY '1' CHARACTERS BY '0', so the seven-byte mask is exactly '1000001' - both REPLACING phrases fire, and the '1' at each end is what makes this case verify the FIRST and the LAST element of the OCCURS 7 tables at :76, :86 and :255 rather than only the interior (the 1-based-to-0-based conversion the plan calls the top defect risk); :1097 zeroes I-SELECTED; and the PERFORM VARYING at :1099-1105 walks subscripts one to seven with an ordered EVALUATE TRUE - WHEN SELECT-OK first, WHEN SELECT-BLANK second, WHEN OTHER last (gate G30). Rows one and seven take WHEN SELECT-OK [:1101], each moving its own subscript into I-SELECTED [:1102] and, because WS-MORE-THAN-1-ACTION now holds, re-stamping '1' into WS-ROW-CRDSELECT-ERROR(I) :1104 - redundant with the mask that already set it, and preserved as written (practice B5). Rows two to six hold LOW-VALUES, which 88 SELECT-BLANK [:80-82] accepts, so they CONTINUE [:1107] and no WHEN OTHER arm is reached. I-SELECTED therefore ends at 7 and not at 1: the loop keeps assigning, so the LAST marked row wins, and pinning two marked rows at the two ends of the table is what makes that observable at all. THE ROW-ONE ASTERISK IS UNREACHABLE, AND THIS CASE PROVES WHY RATHER THAN ASSERTING IT. :755-759 stamps '*' into CRDSEL1O only when WS-ROW-CRDSELECT-ERROR(1) = '1' AND WS-EDIT-SELECT(1) = SPACE OR LOW-VALUES - an abbreviated combined relation, so either alternative satisfies it - and the guarded block it sits in runs from :755 to the END-IF at :760, so :755-760 is the whole of it. WS-ROW-CRDSELECT-ERROR has exactly two writers: :1104, inside WHEN SELECT-OK, where the byte is 'S' or 'U', and :1110, inside WHEN OTHER, where it is some other NON-BLANK character; the group mask at :1088-1093 likewise writes '1' only where the byte is 'S' or 'U'. WS-EDIT-SELECT has exactly one writer, :972-978, and nothing between the mask and 1250-SETUP-ARRAY-ATTRIBS clears it - 9000-READ-FORWARD's MOVE LOW-VALUES at :1124 clears WS-ALL-ROWS, not the action codes. Every path that can flag row one therefore leaves row one's character non-blank, so the two halves of the guard cannot both hold and the MOVE at :758 is dead code. That is true of the WHEN OTHER path too, so case18 cannot exhibit it either; the statement is preserved and driven directly by COCRDLICParityTest.rowOneAsteriskIsPreservedThoughUnreachable instead (practices B4, B5). No '*' is asserted here, and CRDSEL1O carries the 'S' that :683 echoed. THE ROW ASYMMETRIES OF 1250-SETUP-ARRAY-ATTRIBS [:748-834] ARE REPRODUCED AS FOUND. Row one's block [:751-762] reddens CRDSEL1C [:756] and then moves NO -1: it has no cursor statement at all. Rows two to seven [:764-831] redden CRDSELnC and additionally MOVE -1 TO CRDSELnL [:770, :782, :794, :805, :817, :828]. So with row one and row seven both flagged, exactly one xxxL item receives a cursor request and cursorField is CRDSEL7L - the offending row one is denied the cursor and row seven gets it, which is the only arrangement of two selections that makes the asymmetry visible. The protected arm is split the same way and is equally preserved: DFHBMPRF on row one [:753] against DFHBMPRO on rows two to seven [:766, :777, :789, :801, :812, :824] for the identical situation. Neither arm is reached here - every row carries a browsed record and FLG-PROTECT-SELECT-ROWS stays '0' [:987], since neither filter failed edit [:1020, :1055] - so all seven rows end on DFHBMFSE. Those protection bytes target CRDSELnA OF CCRDLIAI, the INPUT group's attribute view, which is not one of the output group's C/P/H/V items and so has no home in a ScreenSend; they are asserted by the test class directly. :790 carries a stray 'I' token in the middle of row four's protected branch, with no operand and no effect; it is recorded and not 'fixed' (practices B4, B5). DISPATCH: the EVALUATE TRUE at :418 puts WHEN INPUT-ERROR first [:419], so it wins over the two transfer arms at :517 and :545 even though VIEW-REQUESTED-ON is true at subscript one and UPDATE-REQUESTED-ON is true at I-SELECTED = 7 - order alone is what prevents an XCTL here, and that is this case's second G30 assertion. The arm moves WS-ERROR-MSG into CCARD-ERROR-MSG [:423], restamps CDEMO-FROM-PROGRAM, CDEMO-LAST-MAPSET and CDEMO-LAST-MAP [:424-426] and names this program in CCARD-NEXT-PROG, -MAPSET and -MAP [:428-430]. Those three go into CC-WORK-AREA and NOT into the response's own navigation triple, which only the two transfer sites write, so nextProgram is blank and the termination is RETURN_TRANSID [:615-619] rather than XCTL. Then the guard at :431-435: BECAUSE the failure is in the array edit and not in a filter, neither FLG-ACCTFILTER-NOT-OK nor FLG-CARDFILTER-NOT-OK holds, so unlike case12 and case13 the read is NOT suppressed and 9000-READ-FORWARD runs. :436-437 then performs 1000-SEND-MAP THRU 1000-SEND-MAP - the one-paragraph range, which still performs all six of its sub-performs - and :438 GO TO COMMON-RETURN, which is why :586-601 is unreachable on this path. BROWSE: this arm is the only one that does NOT first load WS-CARD-RID-CARDNUM, so STARTBR ... GTEQ [:1129-1136] anchors on what INITIALIZE [:300-302] left there, which sorts below every key, and the page is the first seven records in CARD-NUM order - byte for byte the page case01 pins, so every row here is traceable to the same fixture rows. The look-ahead READNEXT at :1197-1205 finds the eighth record, so :1210-1214 sets CA-NEXT-PAGE-EXISTS and the ENDFILE arm's IF WS-ERROR-MSG-OFF [:1218] is never reached - which matters, because that arm would otherwise have overwritten the multi-selection text with 'NO MORE RECORDS TO SHOW'. Every read reports the NORMAL outcome, FileStatus.Outcome.OK (gate G47). All eight DATASET and FILE operands name LIT-CARD-FILE 'CARDDAT' - the single binding key this case seeds - while LIT-CARD-FILE-ACCT-PATH 'CARDAIX' [:215-217] is declared and referenced by no EXEC CICS and stays that way, an alternate index rather than a second table (gate G45). Nothing is written: expectedWrites is empty and all fifty rows come back unchanged, which is a positive assertion that the transaction left the card master as it found it. SCREEN: :643 MOVE LOW-VALUES TO CCRDLIAO paints the output group as x'00' and not as spaces, which is why ACCTSIDO and CARDSIDO are LOW-VALUES here - though by a different route than case01's, since :839's EIBCALEN = 0 short-circuit does not apply and both EVALUATEs instead reach WHEN CDEMO-ACCT-ID = 0 [:849-850] and WHEN CDEMO-CARD-NUM = 0 [:861-862], the zeroes :1011 and :1046 have just moved. :872-880 leaves the two filter fields uncoloured and un-cursored because neither flag is NOT-OK, and :884-886's MOVE -1 TO ACCTSIDL does not fire because INPUT-OK is false - so the cursor request from row seven is the only one on the screen. 1200-SCREEN-ARRAY-INIT [:678-742] moves only four items per row, so CRDSTP2O through CRDSTP7O are never written by the program at all and stay LOW-VALUES, a decisive expectation rather than an omission (practice B5); row one has no CRDSTP1 item to write [COCRDLI.CPY:73-79]; and COCRDLI declares no FKEYS item, so none is pinned. The projection is exactly 45 payload items - nine header, four for row one, five for each of rows two to seven, and the two message lines. The xxxL, xxxF and xxxA items and the xxxC, xxxP, xxxH and xxxV items are metadata and never payload; CRDSEL1O is payload, which is why an asterisk written into it WOULD have been a field expectation while the DFHRED beside it is an attribute one. MESSAGES: 1400-SETUP-MESSAGE [:897-931] is ordered, so its winner has to be walked to. Arms one and two [:898-899] need a filter flag at NOT-OK and neither is; arms three to five [:901-911] need PF07 or PF08 and the AID is ENTER; arm six, WHEN WS-NO-INFO-MESSAGE [:917], MATCHES, because :669 has already set WS-INFO-MSG to SPACES. Its body is shared with WHEN CA-NEXT-PAGE-EXISTS [:918] and is SET WS-INFORM-REC-ACTIONS [:919] - it touches WS-INFO-MSG only, so the multi-selection text in WS-ERROR-MSG survives untouched, which is the point of checking the body of each arm and not just its condition (gate G30). :924 then moves WS-ERROR-MSG, PIC X(75), into ERRMSGO, PIC X(78) [COCRDLI.CPY:288]: 47 characters of text, 28 spaces of the sender and 3 more from the right-padding of the wider receiver, 78 in all. The :926-930 guard passes - WS-INFO-MSG is no longer blank and WS-ERROR-MSG is not the 88 WS-NO-RECORDS-FOUND text - so INFOMSGO takes 'TYPE S FOR DETAIL, U TO UPDATE ANY RECORD' padded to the 45 of WS-INFO-MSG [:112, :115-116] and INFOMSGC takes DFHNEUTR [:929], overwriting the DFHBMDAR :671 had put there. The titles are byte-exact from COTTL01Y.cpy:18-22, where line 21 is commented out and line 22 is the ACTIVE one. GATES: G15 and G18 - one of twenty cases, and the module is not complete until the diff count is zero across all twenty. G19, G21 and I1 - every row is pinned at the full 150 bytes of CVACT02Y (16 + 11 + 3 + 50 + 10 + 1 + 59, summed by hand, practice B11) and the two marked rows plus the look-ahead are pinned span by span, including the FILLER X(59) that carries the record's width and the misspelled CARD-EXPIRAION-DATE, which stays misspelled. G33 - the mask's first and last elements are both '1' and both are verified, through DFHRED on CRDSEL1C and on CRDSEL7C. G37 and R6 - the seven action codes, the REENTER context and the page arrive in the payload and the response carries the state back; nothing is held server-side, and CDEMO-PGM-CONTEXT comes back as '1' because this arm, unlike the transfer arms at :523 and :551, never SETs CDEMO-PGM-ENTER. G38 - REENTER WITH a validation failure, so the highlight applies, but only in the shapes the source writes and not CSSETATY's: DFHRED on the two offending colour bytes, one cursor on row seven, and no asterisk. G39 - seven rows and a seven-element action array, both from WS-MAX-SCREEN-LINES PIC S9(4) COMP VALUE 7 [:177-178]; page size is behaviour, so no page-size key of any spelling appears here, and jobParameters is absent because CCLI has no JCL and ParityCase refuses job parameters for a CONTROLLER_POJO in any case. G51 - the unit is CardListController built through its constructor, with no HTTP in the path. G32 AND G35 DO NOT APPLY: all sixteen GO TO statements in this program are forward, to COMMON-RETURN [:604] or to a paragraph's own -EXIT label, so there is no backward loop-forming GO TO here, and the program contains no CALL 'CEE3ABD' and never moves anything into RETURN-CODE, so expectedReturnCode is 0. TWO CONTRACT LIMITS AND TWO CONFLICTS ARE RECORDED RATHER THAN WORKED AROUND (practice B4). The 58-byte WS-THIS-PROGCOMMAREA cursor [:229-248, which the folder brief frames as :228-250 - WS-CA-LAST-CARD-NUM X(16) + WS-CA-LAST-CARD-ACCT-ID 9(11) + WS-CA-FIRST-CARD-NUM X(16) + WS-CA-FIRST-CARD-ACCT-ID 9(11) + WS-CA-SCREEN-NUM 9(1) + WS-CA-LAST-PAGE-DISPLAYED 9(1) + WS-CA-NEXT-PAGE-IND X(1) + WS-RETURN-FLAG X(1) = 58] cannot be carried in this expectation, because ExpectedResponse.navigation admits only CDEMO-prefixed names and ScreenSend.fields only xxxO items; the frozen contract wins and COCRDLICParityTest asserts the cursor itself. For this case it leaves the page's last key at the look-ahead record 1561409106491600 with 00000000035, its first key at 0500024453765740 with 00000000050, screen number 1 - which is what PAGENOO renders as '1  ', a PIC 9(1) moved into a PIC X(3) - last-page-displayed 9 from :413 and the next-page indicator 'Y'. The 160-byte CARDDEMO-COMMAREA is carried in full, as the sixteen named images of the navigation map. Of the conflicts: the folder brief says CVCRD01Y declares 15 AID conditions, and it declares 16 - ENTER, CLEAR, PA1, PA2 and PFK01 through PFK12, with no PA3 [CVCRD01Y.cpy:4-19] - and the brief's fallback placement of the two selections on rows two and three was considered and set aside, because it would have left both ends of the OCCURS 7 mask unproven, would have made two rows request the cursor where the contract carries one, and would have put I-SELECTED at 3 rather than at the table's upper bound - and because case18 already pins this same :1084-1095 branch at subscripts one and THREE, so that placement would have duplicated it almost exactly. Marking subscripts one and seven instead brackets the OCCURS 7 table across the two cases: an off-by-one at the upper bound passes case18 and fails this one. It also pins two things case18 cannot - I-SELECTED at the table's upper bound, and a cursor request that follows the LAST flagged row rather than an interior one, since :770-828 keeps overwriting it. NO PROJECT RULES EXIST for this repository - review_rules returns the single line 'No user rules provided.' - so AAP 0.10.2's practices B1, B3, B4, B5, B7, B8, B11 and B12 govern this fixture instead, and nothing under app/cbl, app/cpy, app/cpy-bms, app/bms, app/csd or app/data was written to.",
   "unitKind": "CONTROLLER_POJO",
   "inputs": {
     "CARDDAT": {
@@ -11,17 +11,21 @@
   },
   "screenRequest": {
     "eibcalen": 160,
+    "aid": "DFHENTER",
     "pinnedClock": "2022-07-19T23:12:34",
     "charset": "US-ASCII",
     "commarea": {
       "CDEMO-FROM-TRANID": "CCLI",
       "CDEMO-FROM-PROGRAM": "COCRDLIC",
       "CDEMO-USER-TYPE": "U",
-      "CDEMO-PGM-CONTEXT": "0",
+      "CDEMO-PGM-CONTEXT": "1",
       "CDEMO-LAST-MAP": "CCRDLIA",
       "CDEMO-LAST-MAPSET": "COCRDLI"
     },
     "mapFields": {
+      "ACCTSIDI": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+      "CARDSIDI": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+      "CRDSEL1I": "S",
       "ACCTNO1I": "00000000050",
       "CRDNUM1I": "0500024453765740",
       "CRDSTS1I": "Y",
@@ -40,14 +44,11 @@
       "ACCTNO6I": "00000000044",
       "CRDNUM6I": "1014086565224350",
       "CRDSTS6I": "Y",
+      "CRDSEL7I": "U",
       "ACCTNO7I": "00000000037",
       "CRDNUM7I": "1142167692878931",
-      "CRDSTS7I": "Y",
-      "ACCTSIDI": "BAD-ACCT-X",
-      "CARDSIDI": "BAD-CARD-NUMBER"
-    },
-    "forcedOutcomes": {},
-    "aid": "DFHENTER"
+      "CRDSTS7I": "Y"
+    }
   },
   "expectedResponse": {
     "navigation": {
@@ -57,7 +58,7 @@
       "CDEMO-TO-PROGRAM": "        ",
       "CDEMO-USER-ID": "        ",
       "CDEMO-USER-TYPE": "U",
-      "CDEMO-PGM-CONTEXT": "0",
+      "CDEMO-PGM-CONTEXT": "1",
       "CDEMO-CUST-ID": "000000000",
       "CDEMO-CUST-FNAME": "                         ",
       "CDEMO-CUST-MNAME": "                         ",
@@ -78,9 +79,9 @@
           "TITLE02O": "              CardDemo                  ",
           "CURTIMEO": "23:12:34",
           "PAGENOO": "1  ",
-          "ACCTSIDO": "BAD-ACCT-X ",
-          "CARDSIDO": "BAD-CARD-NUMBER ",
-          "CRDSEL1O": "\u0000",
+          "ACCTSIDO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "CARDSIDO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "CRDSEL1O": "S",
           "ACCTNO1O": "00000000050",
           "CRDNUM1O": "0500024453765740",
           "CRDSTS1O": "Y",
@@ -109,22 +110,22 @@
           "ACCTNO6O": "00000000044",
           "CRDNUM6O": "1014086565224350",
           "CRDSTS6O": "Y",
-          "CRDSEL7O": "\u0000",
+          "CRDSEL7O": "U",
           "CRDSTP7O": "\u0000",
           "ACCTNO7O": "00000000037",
           "CRDNUM7O": "1142167692878931",
           "CRDSTS7O": "Y",
-          "INFOMSGO": "                                             ",
-          "ERRMSGO": "ACCOUNT FILTER,IF SUPPLIED MUST BE A 11 DIGIT NUMBER                          "
+          "INFOMSGO": "TYPE S FOR DETAIL, U TO UPDATE ANY RECORD    ",
+          "ERRMSGO": "PLEASE SELECT ONLY ONE RECORD TO VIEW OR UPDATE                               "
         },
         "attributes": {
-          "ACCTSIDC": "DFHRED",
-          "CARDSIDC": "DFHRED",
-          "INFOMSGC": "DFHBMDAR"
+          "CRDSEL1C": "DFHRED",
+          "CRDSEL7C": "DFHRED",
+          "INFOMSGC": "DFHNEUTR"
         }
       }
     ],
-    "cursorField": "CARDSIDL",
+    "cursorField": "CRDSEL7L",
     "termination": "RETURN_TRANSID"
   },
   "expectedWrites": [],
@@ -132,6 +133,15 @@
     {
       "dataset": "CARDDAT",
       "rowIndex": 0,
+      "fields": {
+        "CARD-NUM": "0500024453765740",
+        "CARD-ACCT-ID": "00000000050",
+        "CARD-CVV-CD": "747",
+        "CARD-EMBOSSED-NAME": "Aniya Von                                         ",
+        "CARD-EXPIRAION-DATE": "2023-03-09",
+        "CARD-ACTIVE-STATUS": "Y",
+        "FILLER": "                                                           "
+      },
       "expectedBytes": "050002445376574000000000050747Aniya Von                                         2023-03-09Y                                                           "
     },
     {
@@ -162,11 +172,29 @@
     {
       "dataset": "CARDDAT",
       "rowIndex": 6,
+      "fields": {
+        "CARD-NUM": "1142167692878931",
+        "CARD-ACCT-ID": "00000000037",
+        "CARD-CVV-CD": "625",
+        "CARD-EMBOSSED-NAME": "Shany Walker                                      ",
+        "CARD-EXPIRAION-DATE": "2023-10-24",
+        "CARD-ACTIVE-STATUS": "Y",
+        "FILLER": "                                                           "
+      },
       "expectedBytes": "114216769287893100000000037625Shany Walker                                      2023-10-24Y                                                           "
     },
     {
       "dataset": "CARDDAT",
       "rowIndex": 7,
+      "fields": {
+        "CARD-NUM": "1561409106491600",
+        "CARD-ACCT-ID": "00000000035",
+        "CARD-CVV-CD": "031",
+        "CARD-EMBOSSED-NAME": "Angelica Dach                                     ",
+        "CARD-EXPIRAION-DATE": "2025-09-23",
+        "CARD-ACTIVE-STATUS": "Y",
+        "FILLER": "                                                           "
+      },
       "expectedBytes": "156140910649160000000000035031Angelica Dach                                     2025-09-23Y                                                           "
     },
     {

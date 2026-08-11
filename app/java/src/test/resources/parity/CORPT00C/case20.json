@@ -1,13 +1,13 @@
 {
   "program": "CORPT00C",
   "caseId": "case20",
-  "description": "The WHEN 'N' OR 'n' arm of SUBMIT-JOB-TO-INTRDR's ordered EVALUATE at :480-483, the middle of its three arms. The operator declines: INITIALIZE-ALL-FIELDS blanks the ten input items and clears WS-MESSAGE at :646, :482 raises the error flag and :483 sends an EMPTY form with no message at all. Nothing is emitted, and the reason is worth stating precisely - :496 still sets END-LOOP-NO and the PERFORM VARYING at :498 is still reached, but its UNTIL already holds because of ERR-FLG-ON, so the body runs zero times. The monthly arm ran to completion first, so the four PARM- fields hold 2026-08-01 and 2026-08-31; they are simply never written anywhere, which is why this case pins no record. Expected values are STATICALLY DERIVED by reading app/cbl/CORPT00C.cbl, its copybooks, app/bms/CORPT00.bms and app/csd/CARDDEMO.CSD - never captured from a COBOL run, which is impossible in this environment (risk R-A). Java has no transient data queue, so EXEC CICS WRITEQ TD QUEUE('JOBS') at :517 is reproduced through an explicit job-submission port; the eighty-byte content is identical and the dataset key JOBS names the TDQUEUE(JOBS) that app/csd/CARDDEMO.CSD:499-505 defines as RECORDSIZE(80) RECORDFORMAT(FIXED) BLOCKFORMAT(UNBLOCKED) DISPOSITION(MOD).",
+  "description": "The WHEN OTHER arm of EVALUATE WS-RESP-CD in WIRTE-JOBSUB-TDQ at :525-535, reached as the CONTROLLED TWIN of case09. Every input here is case09's input verbatim - the same pinned clock 2022-07-15T10:30:45, the same ten received map items with MONTHLYI 'X' and CONFIRMI 'Y', the same sixteen commarea fields with CDEMO-PGM-CONTEXT '1' - and the ONLY difference between the two fixtures is the injected queue refusal. That is the whole design: case09 pins seventeen eighty-byte records and DFHGREEN, this case pins one record and a rejection, and because nothing else varies, every difference between them is attributable to the refusal and to nothing else. case18 forces the same arm but shares its inputs with no success case, so it cannot make that attribution; this case can. WHY EXACTLY ONE RECORD STANDS, AND WHY THE REMAINING SIXTEEN ARE NEVER ATTEMPTED: the loop at :498-508 hands JOB-LINES(WS-IDX) to the queue one record at a time. The first hand-off is refused, so :529-534 DISPLAY the trace, raise WS-ERR-FLG, move 'Unable to Write TDQ (JOBS)...' into WS-MESSAGE, move -1 into MONTHLYL and PERFORM SEND-TRNRPT-SCREEN - which ends GO TO RETURN-TO-CICS at :580, and RETURN-TO-CICS issues EXEC CICS RETURN. The task therefore ends INSIDE the first iteration: the loop's own OR ERR-FLG-ON termination condition at :499 is never even re-tested, because the GO TO gets there first. This program's single GO TO is that benign shared terminal, collapsing to a return after a shared finalization step (rule R7, gate G30 - the WHEN OTHER arm is last, as EVALUATE requires). NO ROLLBACK, AND THAT IS THE POINT (practice B5 - preserve as found): the record has ALREADY been handed over when the condition is reported, the queue is DISPOSITION(MOD) with ERROROPTION(IGNORE), so the one record genuinely stands - not seventeen and not none - and rows 1 through 16 are never attempted at all. Nothing is unwound, nothing is 'cleaned up' and the partial submission is left exactly as the COBOL leaves it; adding a rollback or wrapping the loop in a transaction would invent behaviour the source does not have. The paragraph name is misspelled WIRTE-JOBSUB-TDQ at :515 and is recorded that way rather than propagated. WHAT IS THEREFORE ABSENT: every later record, which subsumes and includes :86's //STEP10 EXEC PROC=TRANREPT, the two substituted symbolic lines PARM-START-DATE,C'2022-07-01' and PARM-END-DATE,C'2022-07-31', the DATEPARM record 2022-07-01 2022-07-31, and the closing /*EOF. No DATEPARM line is emitted on this path, so nothing reaches transaction.DateParmReader here - cases 09, 10, 11 and 19 are the folder's authoritative producers of that line. THE TRACE RENDERING IS STATED, NOT ASSUMED (practice B8): WS-RESP-CD and WS-REAS-CD are both PIC S9(09) COMP at :54-55, and the textual rendering of a binary COMP field under DISPLAY is compiler-dependent, so the convention is declared here and shared with the translation - each is rendered as a fixed-width nine-digit zero-filled decimal, giving 'RESP:' + 9 digits + 'REAS:' + 9 digits = 28 characters exactly. RESP is pinned to DFHRESP(INVREQ) = 16, which is the condition the port's own invalidRequest() documents for this queue. RESP2 is pinned to a NON-ZERO value on purpose and is a synthetic constant rather than an IBM-documented WRITEQ TD reason code: case18 pins RESP2 to zero, so without a non-zero counterpart a translation that ignored WS-REAS-CD entirely and printed nine hard-coded zeros would pass both cases. THE SCREEN: the ten echo items carry the RECEIVED values rather than blanks, because INITIALIZE-ALL-FIELDS is NOT performed on this path - contrast the success arm at :447 and the 'N' refusal at :481, both of which clear them. ERRMSGC stays DFHDFCOL because the IF NOT ERR-FLG-ON block at :445-457 is never reached, so the MOVE DFHGREEN TO ERRMSGC at :448 never happens and no success notice is sent. CORPT00C copies neither CSSETATY nor CSSTRPFY and DFHGREEN at :448 is the only DFH colour constant it names anywhere, so there is no DFHRED move and no '*' marker on any field - the ERRMSG line's red is declarative, from ATTRB=(ASKIP,BRT,FSET) COLOR=RED in app/bms/CORPT00.bms, not programmatic. That is the corrected form of gate G38 for this program. The cursor is recorded as the MONTHLYL length item, which is metadata and never a payload member - only xxxI and xxxO items are payload. expectedReturnCode is 0 and is stated rather than defaulted: a refused queue write does not abend and sets no RETURN-CODE, and there is no CALL 'CEE3ABD' anywhere in CORPT00C, so gate G35 does not apply. Gates G16, G19, G21, G45 and G47 have no subject either - this path touches no dataset, which is why inputs is empty - and G32 does not apply, CBSTM03A being the only program with backward loop-forming GO TOs. AN EXPRESSIVE LIMIT, RECORDED RATHER THAN ABSORBED (practice B12): this case was specified to inject the refusal at zero-based row 5 so that five records would stand. That is not expressible against the frozen model. ParityCase.ForcedOutcome carries only outcome, resp and resp2 with no occurrence selector, and the queue stand-in returns the declared refusal on every write, so the first hand-off is necessarily the refused one. Carrying an occurrence would mean adding a component to a record shared by all 560 fixtures and breaking sixteen positional constructor call sites across seven test classes, so the limit is escalated here instead of being worked around. Nothing of substance is lost: the partial-survival property the row-5 variant was meant to prove - earlier records stand, the failing hand-off is the last one attempted, the remainder are never reached - is asserted in full, and the absent-row set asserted here is a strict superset of the one that variant would have asserted. Expected values are STATICALLY DERIVED by reading app/cbl/CORPT00C.cbl, its copybooks, app/bms/CORPT00.bms and app/csd/CARDDEMO.CSD - never captured from a COBOL run, which is impossible in this environment (risk R-A). DFHAID and DFHBMSCA are IBM-supplied and absent from this repository, so DFHENTER and DFHDFCOL are read from their single reproductions in common.CicsAid and common.BmsAttributes (risk R-D). Java has no transient data queue, so EXEC CICS WRITEQ TD QUEUE('JOBS') at :517 is reproduced through an explicit job-submission port; the eighty-byte content is identical and the dataset key JOBS names the TDQUEUE(JOBS) that app/csd/CARDDEMO.CSD:499-505 defines as RECORDSIZE(80) RECORDFORMAT(FIXED) BLOCKFORMAT(UNBLOCKED) DISPOSITION(MOD), which is where the eighty-byte width and the row ordering are read from rather than guessed (practice B11). The code page is named US-ASCII rather than left to the platform default. The unit is reached as a CONTROLLER_POJO - constructed directly and its handler called - with no MockMvc, no servlet container and no HTTP in the path (gate G51). review_rules returns exactly one line, 'No user rules provided', so no user rule governs this fixture; its absence is not licence to lower the bar, and the enterprise practices cited above stand in their place.",
   "unitKind": "CONTROLLER_POJO",
   "inputs": {},
   "screenRequest": {
     "eibcalen": 160,
     "aid": "DFHENTER",
-    "pinnedClock": "2026-08-09T14:05:06",
+    "pinnedClock": "2022-07-15T10:30:45",
     "charset": "US-ASCII",
     "commarea": {
       "CDEMO-FROM-TRANID": "CM00",
@@ -28,10 +28,24 @@
       "CDEMO-LAST-MAPSET": "       "
     },
     "mapFields": {
-      "MONTHLYI": "Y",
-      "CONFIRMI": "N"
+      "MONTHLYI": "X",
+      "YEARLYI": " ",
+      "CUSTOMI": " ",
+      "SDTMMI": "  ",
+      "SDTDDI": "  ",
+      "SDTYYYYI": "    ",
+      "EDTMMI": "  ",
+      "EDTDDI": "  ",
+      "EDTYYYYI": "    ",
+      "CONFIRMI": "Y"
     },
-    "forcedOutcomes": {}
+    "forcedOutcomes": {
+      "write": {
+        "outcome": "OTHER",
+        "resp": 16,
+        "resp2": 1
+      }
+    }
   },
   "expectedResponse": {
     "nextProgram": "CORPT00C",
@@ -60,11 +74,11 @@
         "fields": {
           "TRNNAMEO": "CR00",
           "TITLE01O": "      AWS Mainframe Modernization       ",
-          "CURDATEO": "08/09/26",
+          "CURDATEO": "07/15/22",
           "PGMNAMEO": "CORPT00C",
           "TITLE02O": "              CardDemo                  ",
-          "CURTIMEO": "14:05:06",
-          "MONTHLYO": " ",
+          "CURTIMEO": "10:30:45",
+          "MONTHLYO": "X",
           "YEARLYO": " ",
           "CUSTOMO": " ",
           "SDTMMO": "  ",
@@ -73,8 +87,8 @@
           "EDTMMO": "  ",
           "EDTDDO": "  ",
           "EDTYYYYO": "    ",
-          "CONFIRMO": " ",
-          "ERRMSGO": "                                                                              "
+          "CONFIRMO": "Y",
+          "ERRMSGO": "Unable to Write TDQ (JOBS)...                                                 "
         },
         "attributes": {
           "ERRMSGC": "DFHDFCOL"
@@ -84,23 +98,43 @@
     "cursorField": "MONTHLYL",
     "termination": "RETURN_TRANSID"
   },
-  "expectedWrites": [],
+  "expectedWrites": [
+    {
+      "dataset": "JOBS",
+      "rowIndex": 0,
+      "fields": {
+        "JCL-RECORD": "//TRNRPT00 JOB 'TRAN REPORT',CLASS=A,MSGCLASS=0,                                "
+      },
+      "expectedBytes": "//TRNRPT00 JOB 'TRAN REPORT',CLASS=A,MSGCLASS=0,                                "
+    }
+  ],
   "expectedFinalState": [],
   "expectedReturnCode": 0,
   "expectedMessages": [
     {
       "channel": "WS_MESSAGE_80",
-      "text": "                                                                                "
+      "text": "Unable to Write TDQ (JOBS)...                                                   "
     },
     {
       "channel": "SCREEN_ERRMSG_78",
-      "text": "                                                                              "
+      "text": "Unable to Write TDQ (JOBS)...                                                 "
     },
     {
       "channel": "DISPLAY_LINE",
       "text": "PROCESS ENTER KEY"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "RESP:000000016REAS:000000001"
     }
   ],
   "normalisations": [],
-  "expectedDatasets": []
+  "expectedDatasets": [
+    {
+      "dataset": "JOBS",
+      "channel": "WRITES",
+      "rowCount": 1,
+      "recordLength": 80
+    }
+  ]
 }

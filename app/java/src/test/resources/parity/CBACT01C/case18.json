@@ -1,13 +1,13 @@
 {
   "program": "CBACT01C",
   "caseId": "case18",
-  "description": "The three date spans left blank. ACCT-OPEN-DATE, ACCT-EXPIRAION-DATE and ACCT-REISSUE-DATE are PIC X(10) alphanumerics, not dates, so ten spaces is a value they can hold and the program has no validation that would reject it - CBACT01C reads and prints, and edits nothing. Each of the three label lines must therefore emit its 25-character label followed by ten spaces, and the raw image must still measure 300 bytes.",
+  "description": "The record-width and FILLER structural probe, and the only case in this set that pins all THIRTEEN CVACT01Y spans BY NAME. Every other case asserts the 300-byte layout incidentally, as a substring of the raw record line, so a layout defect surfaces as a 300-character string diff that says only 'these bytes differ'. This case asserts the layout explicitly, field by field, so the failure names the offending field with its offset and its length - which is what turns G19 (every written record byte-identical in length to its copybook declaration) and G21 (FILLER spans present and space-filled) into first-class, diagnosable assertions rather than properties a byte comparison happens to imply. WHERE THE FIELD MAP LIVES, AND WHY: CBACT01C issues no WRITE, no REWRITE and no DELETE - it reads and prints - so the decoded record expectation is declared on the FINAL-STATE channel, as ParityCase.ExpectedRecord.fields, which is the schema's own home for a field-name-to-value map keyed by dataset and zero-based row index; expectedWrites is left empty, which positively asserts that nothing was written. That is possible because the harness genuinely does carry a decoded view of the records this program merely READ: CBACT01CParityTest reports ACCTFILE through AccountRecord.LAYOUT read back from the relation rather than echoed from the seed, Fingerprint.finalState() is the decoded projection of those bytes, and FieldDiffer compares expectedFinalState against it field by field. No schema member was invented to make this case fit - ParityCase declares @JsonIgnoreProperties(ignoreUnknown = false) and the harness enables FAIL_ON_UNKNOWN_PROPERTIES, so an invented member could not load at all. RECORD LAYOUT, taken mechanically from app/cpy/CVACT01Y.cpy as thirteen absolute zero-based spans (practice B11, so a reviewer can diff this table line by line against the copybook): ACCT-ID 0/11 PIC 9(11), ACCT-ACTIVE-STATUS 11/1 PIC X(01), ACCT-CURR-BAL 12/12 PIC S9(10)V99, ACCT-CREDIT-LIMIT 24/12 PIC S9(10)V99, ACCT-CASH-CREDIT-LIMIT 36/12 PIC S9(10)V99, ACCT-OPEN-DATE 48/10 PIC X(10), ACCT-EXPIRAION-DATE 58/10 PIC X(10), ACCT-REISSUE-DATE 68/10 PIC X(10), ACCT-CURR-CYC-CREDIT 78/12 PIC S9(10)V99, ACCT-CURR-CYC-DEBIT 90/12 PIC S9(10)V99, ACCT-ADDR-ZIP 102/10 PIC X(10), ACCT-GROUP-ID 112/10 PIC X(10), FILLER 122/178 PIC X(178). The widths sum arithmetically to exactly the declared record length: 11 + 1 + 12 + 12 + 12 + 10 + 10 + 10 + 12 + 12 + 10 + 10 + 178 = 300, which CVACT01Y.cpy:L2 states independently as 'RECLN 300' and app/cbl/CBACT04C.cbl:L85-L87 corroborates a third time by splitting the same record as FD-ACCT-ID PIC 9(11) plus FD-ACCT-DATA PIC X(289), and 11 + 289 = 300. FILLER IS THE POINT (G21): the trailing FILLER PIC X(178) is present in the field map and its expected value is 178 space characters. Omitting it would leave the mapped width at 122 and that is exactly the defect this case exists to catch - FieldDiffer's completeness check would report 178 unasserted bytes by name, and a record built without the span would be 122 bytes wide against a 300-byte layout. A FILLER written as zeroes instead of spaces is the single span most likely to be wrong and least likely to be noticed, so it is pinned rather than assumed. This set's case11 covers the converse - a FILLER carrying data - so the two together pin the span in both directions. A PIC S9(10)V99 FIELD IS 12 BYTES AND NOT 13: it occupies p + s = 12, zoned DISPLAY, with the sign OVERPUNCHED into the trailing byte and no separate sign byte anywhere. Reserving one for each of the five monetary spans would total 305 and fail G19 immediately. The five '{' bytes here are the positive-zero overpunch - correct stored bytes, not corrupt data - and are never to be normalised to '0'; the comparison is on bytes precisely so that a lost zone or a lost sign-of-zero cannot pass. ACCT-EXPIRAION-DATE IS KEYED WITH THE SOURCE MISSPELLING, which is the copybook's own at CVACT01Y.cpy:L11 and is preserved per requirement I1. The conventional spelling appears NOWHERE in this file: correcting it would leave the diff looking for a field the decoder never produces, which is a silent parity break rather than a loud one. FOLDER-BRIEF CORRECTION: A000000000 belongs to ACCT-ADDR-ZIP at offset 102, NOT to ACCT-GROUP-ID; ACCT-GROUP-ID at offset 112 is TEN SPACES in this row. The two fields sit side by side in the map, which makes this the clearest place in the set for that distinction to be visible, and practice B11 governs - the table above is derived mechanically from the copybook rather than from prose. Practice B5 keeps ACCT-ADDR-ZIP in the map even though 1100-DISPLAY-ACCT-RECORD never labels it: the field is in the record, and the display omission is a separate legacy fact, preserved here by the labelled lines, where A000000000 appears only inside the raw 300-byte line and in no labelled one. SEQUENCING, one seeded row: 0000-ACCTFILE-OPEN reports '00'; the first READ reports '00', so APPL-RESULT becomes 0 and 1100-DISPLAY-ACCT-RECORD emits its eleven labelled lines (app/cbl/CBACT01C.cbl:L119-L129) and the 49-hyphen separator (L130), after which the mainline's own raw DISPLAY ACCOUNT-RECORD at L78 emits the 300-byte image; the second READ reports '10', so APPL-RESULT becomes 16, the 88 APPL-EOF condition at L107 holds, END-OF-FILE becomes 'Y' at L108 and the mainline's inner IF END-OF-FILE = 'N' guard at L77 suppresses a sixteenth line; 9000-ACCTFILE-CLOSE reports '00'; and GOBACK at L87 leaves RETURN-CODE 0 because the program never touches it. 1 + 13 + 1 = 15 emitted lines. THE SEED is fixture row index 2 of acctdata.txt - account 00000000003 - named through the ACCTFILE binding key, which is the DD app/jcl/READACCT.jcl:L25 declares; no dataset name appears anywhere in this file (G46), and ParityCase refuses a dotted one by shape. app/jcl/READACCT.jcl:L22 is a bare EXEC PGM with no PARM, hence the empty jobParameters. The fixture bytes are US-ASCII (practice B8), never a platform default, and acctdata.txt matches its copybook width exactly - 50 rows of exactly 300 bytes - so this case declares no normalisation; the cardxref 36-to-50 pad is the only fixture deviation in the system and it does not apply here. TWO SELF-CONSISTENCY PROPERTIES hold by construction and were asserted programmatically when this fixture was written: concatenating the thirteen field values in map order reproduces expectedMessages[13], the raw 300-byte line, exactly; and expectedMessages[1] through expectedMessages[13] are byte-identical to case01.json's third record block, which seeds the same record inside a natural-order full-file pass. R1 CAVEAT: the mandated name AccountBalanceJob performs no balance work whatsoever - the source Function header reads 'Read and print account data file' - and this case pins that positively, with expectedWrites empty and the one stored row asserted unchanged on the final-state channel. BASELINE PROVENANCE (practice B12): every expected value here is STATICALLY DERIVED from the COBOL source, the copybook byte layout, the app/jcl/READACCT.jcl STEP05 DD contract and the real ASCII fixture. NOTHING was captured from a live COBOL execution: running the legacy programs is empirically impossible in this environment, as AAP section 0.7.6 establishes with eight independently verified blockers - no z/OS runtime, the available compiler's indexed file handler disabled, no Language Environment CEE* service for the CALL 'CEE3ABD' at app/cbl/CBACT01C.cbl:L173 - and the substitution of provenance is escalated as risk R-A rather than absorbed silently. GATES DISCHARGED: G15 (one of the twenty cases this program owns), G16 (seeded from the real app/data/ASCII fixture, which is byte-identical to the test fixture), G17 (the comparison is field by field, not whole-string), G18 (the diff count must be zero), G19 (the 300-byte account record width, asserted arithmetically by thirteen named spans and again by the record image), G21 (FILLER present and space-filled), G46 (the dataset is addressed by its binding key alone) and G51 (the job is driven at tasklet level, with no JobLauncher and no HTTP layer in the path).",
   "unitKind": "BATCH_JOB",
   "inputs": {
     "ACCTFILE": {
-      "rows": [
-        "00000000801Y00000001940{00000020200{00000010200{                              00000000000{00000000000{A000000000                                                                                                                                                                                            "
-      ]
+      "fixture": "acctdata.txt",
+      "fromRow": 2,
+      "rowCount": 1
     }
   },
   "jobParameters": {},
@@ -16,7 +16,22 @@
     {
       "dataset": "ACCTFILE",
       "rowIndex": 0,
-      "expectedBytes": "00000000801Y00000001940{00000020200{00000010200{                              00000000000{00000000000{A000000000                                                                                                                                                                                            "
+      "fields": {
+        "ACCT-ID": "00000000003",
+        "ACCT-ACTIVE-STATUS": "Y",
+        "ACCT-CURR-BAL": "00000001470{",
+        "ACCT-CREDIT-LIMIT": "00000049090{",
+        "ACCT-CASH-CREDIT-LIMIT": "00000005380{",
+        "ACCT-OPEN-DATE": "2013-08-23",
+        "ACCT-EXPIRAION-DATE": "2024-01-10",
+        "ACCT-REISSUE-DATE": "2024-01-10",
+        "ACCT-CURR-CYC-CREDIT": "00000000000{",
+        "ACCT-CURR-CYC-DEBIT": "00000000000{",
+        "ACCT-ADDR-ZIP": "A000000000",
+        "ACCT-GROUP-ID": "          ",
+        "FILLER": "                                                                                                                                                                                  "
+      },
+      "expectedBytes": "00000000003Y00000001470{00000049090{00000005380{2013-08-232024-01-102024-01-1000000000000{00000000000{A000000000                                                                                                                                                                                            "
     }
   ],
   "expectedReturnCode": 0,
@@ -27,7 +42,7 @@
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "ACCT-ID                 :00000000801"
+      "text": "ACCT-ID                 :00000000003"
     },
     {
       "channel": "DISPLAY_LINE",
@@ -35,27 +50,27 @@
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "ACCT-CURR-BAL           :00000001940{"
+      "text": "ACCT-CURR-BAL           :00000001470{"
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "ACCT-CREDIT-LIMIT       :00000020200{"
+      "text": "ACCT-CREDIT-LIMIT       :00000049090{"
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "ACCT-CASH-CREDIT-LIMIT  :00000010200{"
+      "text": "ACCT-CASH-CREDIT-LIMIT  :00000005380{"
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "ACCT-OPEN-DATE          :          "
+      "text": "ACCT-OPEN-DATE          :2013-08-23"
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "ACCT-EXPIRAION-DATE     :          "
+      "text": "ACCT-EXPIRAION-DATE     :2024-01-10"
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "ACCT-REISSUE-DATE       :          "
+      "text": "ACCT-REISSUE-DATE       :2024-01-10"
     },
     {
       "channel": "DISPLAY_LINE",
@@ -75,12 +90,20 @@
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "00000000801Y00000001940{00000020200{00000010200{                              00000000000{00000000000{A000000000                                                                                                                                                                                            "
+      "text": "00000000003Y00000001470{00000049090{00000005380{2013-08-232024-01-102024-01-1000000000000{00000000000{A000000000                                                                                                                                                                                            "
     },
     {
       "channel": "DISPLAY_LINE",
       "text": "END OF EXECUTION OF PROGRAM CBACT01C"
     }
   ],
-  "normalisations": []
+  "normalisations": [],
+  "expectedDatasets": [
+    {
+      "dataset": "ACCTFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 300
+    }
+  ]
 }

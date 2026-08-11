@@ -1,139 +1,39 @@
 {
   "program": "CBTRN03C",
   "caseId": "case19",
-  "description": "The two right-truncating moves of 1120-WRITE-DETAIL. TRAN-TYPE-DESC is PIC X(50) in app/cpy/CVTRA03Y.cpy moving into TRAN-REPORT-TYPE-DESC PIC X(15) at :366, and TRAN-CAT-TYPE-DESC is PIC X(50) in app/cpy/CVTRA04Y.cpy moving into TRAN-REPORT-CAT-DESC PIC X(29) at :368. An alphanumeric MOVE fills the receiver from its leftmost position and discards what does not fit on the RIGHT, so both descriptions keep their leading characters and lose their tails. Neither shipped fixture can prove it - no trantype description exceeds fifteen characters and no trancatg description exceeds twenty-nine - so both lookup datasets are seeded here with genuine 60-byte records built to their copybooks' shape and carrying descriptions that occupy all fifty bytes.",
+  "description": "AN EMPTY DATEPARM DATASET, which is the ONLY path in this program where the read loop body executes ZERO times. DATEPARM exists and holds no row, so the READ at :221 reports '10'; the EVALUATE DATEPARM-STATUS at :222-229 takes its SECOND arm and moves 16 to APPL-RESULT; APPL-EOF is 88 APPL-EOF VALUE 16 at :152, so it is true; and the ELSE-IF at :235 therefore reaches MOVE 'Y' TO END-OF-FILE at :236. THE ORDERING IS THE WHOLE CASE: PERFORM 0550-DATEPARM-READ is at :168 and PERFORM UNTIL END-OF-FILE = 'Y' does not open until :170, so the flag is ALREADY 'Y' the first time the loop evaluates its condition and the body never runs once. Three fully formed, fully resolvable transaction records are seeded into TRANFILE purely so that their COMPLETE NON-CONSUMPTION is observable - had the loop run they would have produced a whole report, and instead not one of them is read. WHAT DOES NOT HAPPEN, exhaustively. 1000-TRANFILE-GET-NEXT (:248-272) is never performed, so TRANFILE is opened by 0000-TRANFILE-OPEN (:376) and closed by 9000-TRANFILE-CLOSE (:514) without a single READ and there is no DISPLAY TRAN-RECORD line from :180. No lookup fires: no keyed read against CARDXREF at 1500-A, none against TRANTYPE at 1500-B, none against TRANCATG at 1500-C, because all three sit inside the detail path at :186-195. No report line is written: 1100-WRITE-TRANSACTION-REPORT is performed only at :196, and 1120-WRITE-HEADERS is reachable only from inside it at :279 under IF WS-FIRST-TIME = 'Y', so TRANREPT is created by 0100-REPTFILE-OPEN (:394-396), written ZERO times, and closed by 9100-REPTFILE-CLOSE (:532-548) still holding nothing - not even the four-record header block. 1120-WRITE-ACCOUNT-TOTALS never runs, because its only caller is :183. 1110-WRITE-PAGE-TOTALS and 1110-WRITE-GRAND-TOTALS never run, because the end-of-file arm at :197-203 is inside the loop the flag has already closed. Nothing abends. AND THE SUBTLE ONE, WHICH IS WHY THIS CASE EXISTS: there is NO 'Reporting from ' LINE. That DISPLAY lives at :232-233 inside the IF APPL-AOK arm, and this path takes the ELSE. WS-START-DATE and WS-END-DATE (:123-125, a group with no VALUE clause) are never populated - and never subsequently read either, because every reader of them is inside the loop, so their content cannot affect the output and no value is asserted for them here. THE UNWRITTEN STATE, invisible in the output and part of what this case means: WS-FIRST-TIME never leaves the 'Y' of :128, because the only MOVE 'N' is at :276; WS-LINE-COUNTER stays the 0 of :129-130 and WS-PAGE-SIZE stays 20 at :131-132 with no paging logic ever reached; WS-PAGE-TOTAL, WS-ACCOUNT-TOTAL and WS-GRAND-TOTAL all stay 0 at :134-136 and not one of them is ever written; and WS-CURR-CARD-NUM stays the SPACES of :137. All six files are nevertheless OPENED at :161-166 and CLOSED at :208-213 in the same order, and then :215 displays the closing line and :217 goes back - so the job reports SUCCESS while producing nothing. RETURN-CODE is 0 because CBTRN03C moves nothing to it on any path. An empty parameter dataset is a legitimate operational condition, not a defect: it yields a silent empty report, and pinning that is what stops an implementation from inventing a fallback. THE MESSAGE LIST IS THE SHORTEST IN THE FOLDER - EXACTLY TWO LINES, and the absences are the assertion. No 'Reporting from ' line, as above. No DISPLAY TRAN-RECORD line, because no record was ever read. No 'TRAN-AMT ' line and no 'WS-PAGE-TOTAL' line, because :198-199 are in an arm the loop never reached. No 'ERROR READING DATEPARM FILE' line, because that is the WHEN OTHER arm at :227-228 and this is the '10' arm. No 'INVALID CARD NUMBER : ' line from :487, no 'INVALID TRANSACTION TYPE : ' line from :497 and no 'INVALID TRAN CATG KEY : ' line from :507, because no lookup ran. No 'FILE STATUS IS: NNNN' line, because 9910-DISPLAY-IO-STATUS is never performed. No 'ABENDING PROGRAM' line, because 9999-ABEND-PROGRAM is never reached. THIS CASE CATCHES TWO PLAUSIBLE-BUT-WRONG IMPLEMENTATIONS AT ONCE, and both would pass every other case in the folder: one that DEFAULTS or hard-codes the date range when the parameter dataset is empty, which would run the loop and emit a full report; and one that emits the reporting banner UNCONDITIONALLY, which would produce three message lines instead of two. THE CONTRAST WITH case13 IS EXACTLY ONE LINE. Both cases end with an empty TRANREPT and a return code of 0, but case13 gets there through preserved defect 1 - its DATEPARM read SUCCEEDS, so it DOES emit 'Reporting from 2022-01-01 to 2022-07-06' and its message list has three entries - whereas here the read never succeeds and that middle line is absent. case17 is the third empty-report case and sits with case13: an empty TRANFILE, a successful DATEPARM read, and the banner present. GATE G30, honestly stated. CBTRN03C holds exactly TWO EVALUATE statements - DATEPARM-STATUS at :222 and TRANFILE-STATUS at :251 - and zero GO TO statements, so those two are the whole of its multi-way branching. This case reaches only the first of them, on its '10' arm, with WHEN OTHER last in source order. The sibling arms: DATEPARM '00' is covered by case01 and by most of the folder; TRANFILE '00' by case01 and case09; TRANFILE '10' by case09, and by case17 where an empty input reaches it on the very first READ. NEITHER WHEN OTHER ARM IS REACHABLE FROM A DECLARATIVE CASE AT ALL, and the reason is structural rather than a quota: a WHEN OTHER needs a backend refusal such as a file status of '35', no seeded row can make a READ report one, and ParityCase forbids screenRequest - and therefore ForcedOutcome - on a BATCH_JOB case. Both arms are consequently pinned by unit tests rather than by a fixture: the TRANFILE one by CBTRN03CParityTest's own aTranFileReadFailureAbendsWithTheStatusItReported, and the DATEPARM one - 'ERROR READING DATEPARM FILE', the rendered status, then the abend - by TransactionReportJobTest's nested '0550-DATEPARM-READ - the three arms of its EVALUATE'. That is also where the >=90% BRANCH bar of gates G49 and G50 is enforced. Saying so is practice B4 and B12 rather than an omission. For the same reason: the two right-truncating moves of 1120-WRITE-DETAIL - TRAN-TYPE-DESC PIC X(50) into TRAN-REPORT-TYPE-DESC PIC X(15) at :366 and TRAN-CAT-TYPE-DESC PIC X(50) into TRAN-REPORT-CAT-DESC PIC X(29) at :368 - are owned by TranReportWriterTest's dedicated nested class, not by this file. jobParameters IS EMPTY, AND THIS CASE IS THE SHARPEST ILLUSTRATION OF WHY. app/jcl/TRANREPT.jcl:59 reads //STEP10R EXEC PGM=CBTRN03C and carries no PARM= at all, and :73-74 declare //DATEPARM DD DISP=SHR with no DCB whatsoever; app/proc/TRANREPT.prc:71-72 declare the same DD. The reporting range is a DATASET, not a parameter - which is precisely what makes an EMPTY range a real, reachable state rather than a missing argument. The record the reader expects is line 15 of the seventeen-line, 80-byte JCL skeleton CORPT00C builds at app/cbl/CORPT00C.cbl:83-125: FILLER-3 at :117-121, PARM-START-DATE-2 PIC X(10) then FILLER PIC X VALUE SPACE then PARM-END-DATE-2 PIC X(10) then FILLER PIC X(59) VALUE SPACES, eighty bytes exactly, right-truncated by the READ INTO at :221 into the 21-byte WS-DATEPARM-RECORD at :122-125. Here that record is simply absent. DATEPARM IS DECLARED EMPTY RATHER THAN OMITTED, and the distinction decides the case. An omitted dataset is one the case says nothing about; an empty one is a positive statement that the program opened a real dataset and reached end-of-file on its first READ, which is the only way to reach this '10' arm and something no seeded row can produce. The declaration therefore carries its width and the member that declares it: 80 bytes, from 01 FD-DATEPARM-REC PIC X(80) at app/cbl/CBTRN03C.cbl:87-88. DATEPARM is the one dataset in this program with NO copybook - its record is declared inline in the FD and its receiver inline in WORKING-STORAGE - so the mandatory copybook member names CBTRN03C itself, the only member a reviewer can open to check the width against. GATES G20 AND G21 ARE SATISFIED VACUOUSLY: there is no 133-byte line to measure and no FILLER span to prove emitted, so the dataset-level expectation of zero rows at the 133 bytes app/jcl/TRANREPT.jcl:78 and app/proc/TRANREPT.prc:76 declare IS the assertion, and the absence of any line is itself what is being asserted - a state no row-level expectation can describe, which is why expectedWrites and expectedFinalState are present and empty rather than omitted. THE THREE UNREAD ROWS ARE REAL VALUES, not filler (practice B1). Each is a genuine 350-byte CVTRA05Y image built at that copybook's absolute offsets - TRAN-ID 1-16, TRAN-TYPE-CD 17-18, TRAN-CAT-CD 19-22, TRAN-SOURCE 23-32, TRAN-DESC 33-132, TRAN-AMT 133-143, TRAN-MERCHANT-ID 144-152, TRAN-MERCHANT-NAME 153-202, TRAN-MERCHANT-CITY 203-252, TRAN-MERCHANT-ZIP 253-262, TRAN-CARD-NUM 263-278, TRAN-ORIG-TS 279-304, TRAN-PROC-TS 305-330 and a trailing FILLER PIC X(20) of twenty spaces. All three sit on card 0500024453765740, which is row 1 of app/data/ASCII/cardxref.txt carrying XREF-ACCT-ID 00000000050, so no account break could have confounded the trace either. Their type and category keys 010001, 040002 and 070001 are all real rows of app/data/ASCII/trancatg.txt and their types 01, 04 and 07 are all real rows of app/data/ASCII/trantype.txt, even though not one is ever looked up. Their TRAN-PROC-TS (1:10) dates are 2022-01-01, 2022-04-15 and 2022-07-06 - two of them exactly on the inclusive boundaries of the range app/jcl/TRANREPT.jcl:41-48 pins through SYMNAMES and INCLUDE COND - so had DATEPARM carried that range, all three would have been in range and the run would have produced ten records: the four-record header block, three detail lines, a page total, its trailing rule line and a grand total, with both totals reading 2,449.47 once defect 2's end-of-file re-add of row 3 is applied to the 2,537.46 the three amounts sum to. Ten records where this case expects none. EVERY AMOUNT IS TRAN-AMT PIC S9(09)V99 DISPLAY: eleven bytes, ten plain digits and the sign overpunched into the TRAILING byte using {ABCDEFGHI for +0 through +9 and }JKLMNOPQR for -0 through -9, the convention app/data/ASCII/dailytran.txt carries - so 0000001254E is +125.45, 0000025000{ is +2500.00 and 0000000879R is -87.99. Every one is scale exactly 2 (gate G23), and ROUNDED appears zero times in CBTRN03C and zero times in any of the 28 programs, so a store truncates toward zero rather than rounding (gate G24) - but NO ARITHMETIC IS PERFORMED IN THIS CASE AT ALL, because every ADD in the program sits inside the loop. The cross-reference rows are seeded from the 36-byte fixture UNPADDED and the declared CARDXREF_FILLER_PAD_36_TO_50 normalisation is what widens them to the 50 bytes app/cpy/CVACT03Y.cpy declares, so the fixture's absent trailing FILLER PIC X(14) is padded once at seed time by its single owner rather than hidden (gate G16, risk R-F). TRANTYPE, TRANCATG and CARDXREF are all seeded from their real fixtures despite never being read, because the program OPENS them at :163-165: an unseeded dataset would change the open outcome at :415, :433 or :451 and turn a silent empty report into an abend. The code page is US-ASCII, stated explicitly rather than taken from the platform default (practice B8). PROVENANCE (practice B12): every value here is STATICALLY DERIVED by structured reading of the COBOL, cross-checked against the byte layouts of CVTRA05Y, CVTRA07Y, CVACT03Y, CVTRA03Y and CVTRA04Y, the DD and DCB contracts of TRANREPT.jcl and TRANREPT.prc, and the real ASCII fixtures under app/data/ASCII - it is NEVER captured from an execution of the legacy COBOL, which AAP section 0.7.6 documents as impossible in this environment behind eight independently verified blockers, and that substitution of provenance alone is escalated as risk R-A rather than silently absorbed.",
   "unitKind": "BATCH_JOB",
   "inputs": {
     "TRANFILE": {
       "rows": [
-        "TRN0000000000001010001POS TERM  A statically derived fixture transaction                                                            0000000888H999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-03-15-11.22.33.4444442022-03-15-11.22.33.444444                    "
+        "0000000000000001010001POS TERM  Statically derived case19 row 01 - Regular Sales Draft, never read                                  0000001254E000000001FIXTURE MERCHANT 01                               FIXTURE CITY                                      000000000005000244537657402022-01-01 08:15:42.1234562022-01-01 08:15:42.123456                    ",
+        "0000000000000002040002ONLINE    Statically derived case19 row 02 - Online purchase authorization, never read                        0000025000{000000002FIXTURE MERCHANT 02                               FIXTURE CITY                                      000000000005000244537657402022-04-15 10:31:05.1234562022-04-15 10:31:05.123456                    ",
+        "0000000000000003070001BRANCH    Statically derived case19 row 03 - Sales draft credit adjustment, never read                        0000000879R000000003FIXTURE MERCHANT 03                               FIXTURE CITY                                      000000000005000244537657402022-07-06 16:47:58.1234562022-07-06 16:47:58.123456                    "
       ]
     },
     "CARDXREF": {
       "fixture": "cardxref.txt"
     },
     "TRANTYPE": {
-      "rows": [
-        "01Purchase of goods and services at a merchant              "
-      ]
+      "fixture": "trantype.txt"
     },
     "TRANCATG": {
-      "rows": [
-        "010001Regular sales draft presented for settlement now      "
-      ]
+      "fixture": "trancatg.txt"
     },
     "DATEPARM": {
-      "rows": [
-        "2022-01-01 2022-07-06                                                           "
-      ]
+      "empty": true,
+      "recordLength": 80,
+      "copybook": "CBTRN03C"
     }
   },
   "jobParameters": {},
-  "expectedWrites": [
-    {
-      "dataset": "TRANREPT",
-      "rowIndex": 0,
-      "expectedBytes": "DALYREPT                              Daily Transaction Report                 Date Range: 2022-01-01 to 2022-07-06                  "
-    },
-    {
-      "dataset": "TRANREPT",
-      "rowIndex": 1,
-      "expectedBytes": "                                                                                                                                     "
-    },
-    {
-      "dataset": "TRANREPT",
-      "rowIndex": 2,
-      "expectedBytes": "Transaction ID   Account ID  Transaction Type   Tran Category                      Tran Source            Amount                     "
-    },
-    {
-      "dataset": "TRANREPT",
-      "rowIndex": 3,
-      "expectedBytes": "-------------------------------------------------------------------------------------------------------------------------------------"
-    },
-    {
-      "dataset": "TRANREPT",
-      "rowIndex": 4,
-      "expectedBytes": "TRN0000000000001 00000000050 01-Purchase of goo 0001-Regular sales draft presented POS TERM                88.88                     "
-    },
-    {
-      "dataset": "TRANREPT",
-      "rowIndex": 5,
-      "expectedBytes": "Page Total ......................................................................................+        177.76                     "
-    },
-    {
-      "dataset": "TRANREPT",
-      "rowIndex": 6,
-      "expectedBytes": "-------------------------------------------------------------------------------------------------------------------------------------"
-    },
-    {
-      "dataset": "TRANREPT",
-      "rowIndex": 7,
-      "expectedBytes": "Grand Total......................................................................................+        177.76                     "
-    }
-  ],
-  "expectedFinalState": [
-    {
-      "dataset": "TRANREPT",
-      "rowIndex": 0,
-      "expectedBytes": "DALYREPT                              Daily Transaction Report                 Date Range: 2022-01-01 to 2022-07-06                  "
-    },
-    {
-      "dataset": "TRANREPT",
-      "rowIndex": 1,
-      "expectedBytes": "                                                                                                                                     "
-    },
-    {
-      "dataset": "TRANREPT",
-      "rowIndex": 2,
-      "expectedBytes": "Transaction ID   Account ID  Transaction Type   Tran Category                      Tran Source            Amount                     "
-    },
-    {
-      "dataset": "TRANREPT",
-      "rowIndex": 3,
-      "expectedBytes": "-------------------------------------------------------------------------------------------------------------------------------------"
-    },
-    {
-      "dataset": "TRANREPT",
-      "rowIndex": 4,
-      "expectedBytes": "TRN0000000000001 00000000050 01-Purchase of goo 0001-Regular sales draft presented POS TERM                88.88                     "
-    },
-    {
-      "dataset": "TRANREPT",
-      "rowIndex": 5,
-      "expectedBytes": "Page Total ......................................................................................+        177.76                     "
-    },
-    {
-      "dataset": "TRANREPT",
-      "rowIndex": 6,
-      "expectedBytes": "-------------------------------------------------------------------------------------------------------------------------------------"
-    },
-    {
-      "dataset": "TRANREPT",
-      "rowIndex": 7,
-      "expectedBytes": "Grand Total......................................................................................+        177.76                     "
-    }
-  ],
+  "expectedWrites": [],
+  "expectedFinalState": [],
   "expectedReturnCode": 0,
   "expectedMessages": [
     {
       "channel": "DISPLAY_LINE",
       "text": "START OF EXECUTION OF PROGRAM CBTRN03C"
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "Reporting from 2022-01-01 to 2022-07-06"
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "TRN0000000000001010001POS TERM  A statically derived fixture transaction                                                            0000000888H999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-03-15-11.22.33.4444442022-03-15-11.22.33.444444                    "
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "TRAN-AMT 0000000888H"
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "WS-PAGE-TOTAL0000000888H"
     },
     {
       "channel": "DISPLAY_LINE",
@@ -150,13 +50,13 @@
     {
       "dataset": "TRANREPT",
       "channel": "WRITES",
-      "rowCount": 8,
+      "rowCount": 0,
       "recordLength": 133
     },
     {
       "dataset": "TRANREPT",
       "channel": "FINAL_STATE",
-      "rowCount": 8,
+      "rowCount": 0,
       "recordLength": 133
     }
   ]

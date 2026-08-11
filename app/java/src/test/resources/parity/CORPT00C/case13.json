@@ -1,13 +1,13 @@
 {
   "program": "CORPT00C",
   "caseId": "case13",
-  "description": "The SIXTH and last arm of the same blank chain at :294-300: EDTYYYYI = SPACES, with the five preceding parts all present. Reaching this arm rather than an earlier one is what pins the chain's order, and :296 moves 'End Date - Year can NOT be empty...' with the cursor on EDTYYYYL. Together with case12 this covers both ends of the chain; the four arms between them share the identical four-statement shape. Expected values are STATICALLY DERIVED by reading app/cbl/CORPT00C.cbl, its copybooks, app/bms/CORPT00.bms and app/csd/CARDDEMO.CSD - never captured from a COBOL run, which is impossible in this environment (risk R-A). Java has no transient data queue, so EXEC CICS WRITEQ TD QUEUE('JOBS') at :517 is reproduced through an explicit job-submission port; the eighty-byte content is identical and the dataset key JOBS names the TDQUEUE(JOBS) that app/csd/CARDDEMO.CSD:499-505 defines as RECORDSIZE(80) RECORDFORMAT(FIXED) BLOCKFORMAT(UNBLOCKED) DISPOSITION(MOD).",
+  "description": "The WHEN YEARLYI arm at :239-255 with CONFIRMI = 'y' - the folder's ONLY yearly case, and the only case that reaches either of the two branches it pins. MONTHLYI arrives BLANK, and that is what forces the ordered EVALUATE TRUE at :212-443 past its FIRST arm: :213 tests MONTHLYI NOT = SPACES AND LOW-VALUES and fails, so :239 claims the request and WS-REPORT-NAME becomes 'Yearly' rather than 'Monthly'. All ten xxxI items are declared - YEARLYI 'X', the other nine present and blank - so a translation that reordered the arms, or that tested YEARLYI for equality with 'Y' instead of for non-blankness, fails here and only here (gate G30). CONFIRMI arrives as the LOWER-CASE 'y': :478 reads WHEN CONFIRMI OF CORPT0AI = 'Y' OR 'y', and this is the only case in the folder that takes the second half of that alternation, so a translation that had folded the comparison to upper case, or written a single-valued equality against 'Y', fails here too. NO DATE INTRINSIC RUNS ON THIS PATH. The yearly range is built from literals alone: :241 reads FUNCTION CURRENT-DATE and only the YEAR is taken from it, :243-244 is a SINGLE MOVE of WS-CURDATE-YEAR to TWO receivers so both dates share 2022, :245-246 is a SINGLE MOVE of '01' to both WS-START-DATE-MM and WS-START-DATE-DD, and :250 and :251 move '12' and '31'. FUNCTION DATE-OF-INTEGER, FUNCTION INTEGER-OF-DATE and the IF WS-CURDATE-MONTH > 12 roll-over at :225 belong to the monthly arm and are NOT executed here, so a reimplementation that routed both arms through one shared 'compute the range' helper would be structurally wrong even where its output happened to agree. That contrast is the reason the clock is pinned to the SAME instant as case09, 2022-07-15T10:30:45: one instant yields 2022-07-01 .. 2022-07-31 there and 2022-01-01 .. 2022-12-31 here, which is the widest range this folder produces. Nothing is left to the wall clock and nothing is random (practice B7); 07/15/22 and 10:30:45 are that same pinned instant read through WS-CURDATE-MM-DD-YY and WS-CURTIME-HH-MM-SS at :618-628 using WS-CURDATE-YEAR(3:2) at :620, and the code page is named US-ASCII rather than defaulted (practice B8). Java has no transient data queue, so EXEC CICS WRITEQ TD QUEUE('JOBS') at :517 - reached through the paragraph the source misspells WIRTE-JOBSUB-TDQ at :515, preserved with that spelling (practice B5) - is reproduced through an explicit job-submission port: the transport is substituted, the content is not. All seventeen eighty-byte records are written out IN FULL below rather than summarised or elided (practices B8 and B1). Eighty bytes is app/csd/CARDDEMO.CSD:499-505's RECORDSIZE(80) RECORDFORMAT(FIXED) BLOCKFORMAT(UNBLOCKED) DISPOSITION(MOD) and :79's JCL-RECORD PIC X(80); the seventeen records and their order are the declaration order of 02 JOB-DATA-1 at :83-125 read through 02 JOB-DATA-2 REDEFINES it as JOB-LINES OCCURS 1000 TIMES PIC X(80) at :126-127. Both numbers are therefore derived mechanically rather than chosen, and the derivation is auditable from this file (practice B11); the one-based OCCURS subscript maps to the zero-based rowIndex below as n minus one. Rows 10 and 11 are 05 FILLER-1 and 05 FILLER-2 - an eighteen and a sixteen character prefix, the ten byte date, then a fifty-two and a fifty-four byte FILLER whose FIRST character is the closing quote - so the row 10 image PARM-START-DATE,C'2022-01-01' is twenty-nine characters followed by fifty-one spaces, and the row 11 image PARM-END-DATE,C'2022-12-31' is twenty-seven followed by fifty-three. Row 16 is '/*EOF' and is present because :502-505 sets END-LOOP-YES and :507 writes anyway, making the sentinel itself the seventeenth record. ROW 14 IS THE CROSS-FOLDER CONTRACT: its leading twenty-one bytes, '2022-01-01 2022-12-31', ARE the DATEPARM record transaction.DateParmReader consumes at offsets 0:10/10:1/11:10/21:59 in eighty - one PIC X(10) start date, one separator byte, one PIC X(10) end date and the fifty-nine byte tail the reader discards - and it is the one place in this migration where an online screen's output is a batch program's input. This folder is that layout's authoritative producer and parity/CBTRN03C seeds the same shape inline; of this folder's variants the full calendar year is the widest, so it is the useful one to mirror. app/proc/TRANREPT.prc corroborates the skeleton independently: its own STEP05R (SORT, SYMNAMES DD) and STEP10R (PGM=CBTRN03C, DATEPARM DD) are the step names rows 7 and 13 override, row 5's PROC=TRANREPT resolves through the JCLLIB ORDER on row 3, and the proc's SYMNAMES carries a PARM-START-DATE,C'2022-01-01' line of exactly this form. On the success path :445-456 runs INITIALIZE-ALL-FIELDS, which blanks the ten xxxI items and WS-MESSAGE - which is why YEARLYO comes back blank although YEARLYI arrived as 'X', and CONFIRMO blank although CONFIRMI arrived as 'y' - then MOVE DFHGREEN TO ERRMSGC OF CORPT0AO, the ONLY colour assignment anywhere in this program, which is why ERRMSGC is pinned on the send and why no field is recoloured red or starred here (gate G38). :449-452 then STRINGs the notice: WS-REPORT-NAME is PIC X(10) holding 'Yearly' plus four spaces and DELIMITED BY SPACE contributes only the six characters before the first one, so with the thirty-four character literal ' report submitted for printing ...' the notice is the FORTY characters 'Yearly report submitted for printing ...' - one shorter than the monthly cases' forty-one, so the padding differs and a translation that hard-coded either width fails on the other. WS-MESSAGE PIC X(80) therefore carries forty characters and forty spaces, and :560 moves it into ERRMSGO PIC X(78), so the two message channels carry the same forty characters and differ only by the two bytes COBOL loses on the right. The IF NOT ERR-FLG-ON guards at :434 and :445 are effectively always true, because every SEND-TRNRPT-SCREEN ends GO TO RETURN-TO-CICS at :580 and never returns to its caller; they are preserved rather than tidied (practice B5). Titles come from app/cpy/COTTL01Y.cpy, whose line 21 is COMMENTED OUT, so TITLE02O is the CardDemo form and never 'Credit Card Demo Application (CCDA)'. The unitKind is CONTROLLER_POJO: ReportRequestController is constructed as a plain object and called through mainPara - no MockMvc, no TestRestTemplate, no servlet container, no JobLauncher (gate G51) - and no dataset is seeded, because this program issues no file command at all. review_rules returns exactly one line, 'No user rules provided', so ZERO user rules govern this fixture and enterprise practices B1, B3, B5, B7, B8, B11 and B12 stand in their place; their absence is not licence to lower the bar. Every expected value here is STATICALLY DERIVED by reading app/cbl/CORPT00C.cbl against app/csd/CARDDEMO.CSD, app/jcl/TRANREPT.jcl, app/proc/TRANREPT.prc, app/cpy-bms/CORPT00.CPY, app/bms/CORPT00.bms, app/cpy/COTTL01Y.cpy, app/cpy/CSDAT01Y.cpy and app/cpy/COCOM01Y.cpy, every one of which is read-only reference (practice B3), and NEVER captured from a running COBOL program, which is impossible in this environment (risk R-A, practice B12). DFHENTER and DFHGREEN come from common.CicsAid and common.BmsAttributes because DFHAID and DFHBMSCA are IBM-supplied and absent from this repository (risk R-D). No value below is a placeholder or an ellipsis standing in for content (practice B1).",
   "unitKind": "CONTROLLER_POJO",
   "inputs": {},
   "screenRequest": {
     "eibcalen": 160,
     "aid": "DFHENTER",
-    "pinnedClock": "2026-08-09T14:05:06",
+    "pinnedClock": "2022-07-15T10:30:45",
     "charset": "US-ASCII",
     "commarea": {
       "CDEMO-FROM-TRANID": "CM00",
@@ -28,14 +28,16 @@
       "CDEMO-LAST-MAPSET": "       "
     },
     "mapFields": {
-      "CUSTOMI": "Y",
-      "SDTMMI": "07",
-      "SDTDDI": "01",
-      "SDTYYYYI": "2026",
-      "EDTMMI": "07",
-      "EDTDDI": "31",
+      "MONTHLYI": " ",
+      "YEARLYI": "X",
+      "CUSTOMI": " ",
+      "SDTMMI": "  ",
+      "SDTDDI": "  ",
+      "SDTYYYYI": "    ",
+      "EDTMMI": "  ",
+      "EDTDDI": "  ",
       "EDTYYYYI": "    ",
-      "CONFIRMI": "Y"
+      "CONFIRMI": "y"
     },
     "forcedOutcomes": {}
   },
@@ -66,41 +68,178 @@
         "fields": {
           "TRNNAMEO": "CR00",
           "TITLE01O": "      AWS Mainframe Modernization       ",
-          "CURDATEO": "08/09/26",
+          "CURDATEO": "07/15/22",
           "PGMNAMEO": "CORPT00C",
           "TITLE02O": "              CardDemo                  ",
-          "CURTIMEO": "14:05:06",
+          "CURTIMEO": "10:30:45",
           "MONTHLYO": " ",
           "YEARLYO": " ",
-          "CUSTOMO": "Y",
-          "SDTMMO": "07",
-          "SDTDDO": "01",
-          "SDTYYYYO": "2026",
-          "EDTMMO": "07",
-          "EDTDDO": "31",
+          "CUSTOMO": " ",
+          "SDTMMO": "  ",
+          "SDTDDO": "  ",
+          "SDTYYYYO": "    ",
+          "EDTMMO": "  ",
+          "EDTDDO": "  ",
           "EDTYYYYO": "    ",
-          "CONFIRMO": "Y",
-          "ERRMSGO": "End Date - Year can NOT be empty...                                           "
+          "CONFIRMO": " ",
+          "ERRMSGO": "Yearly report submitted for printing ...                                      "
         },
         "attributes": {
-          "ERRMSGC": "DFHDFCOL"
+          "ERRMSGC": "DFHGREEN"
         }
       }
     ],
-    "cursorField": "EDTYYYYL",
+    "cursorField": "MONTHLYL",
     "termination": "RETURN_TRANSID"
   },
-  "expectedWrites": [],
+  "expectedWrites": [
+    {
+      "dataset": "JOBS",
+      "rowIndex": 0,
+      "fields": {
+        "JCL-RECORD": "//TRNRPT00 JOB 'TRAN REPORT',CLASS=A,MSGCLASS=0,                                "
+      },
+      "expectedBytes": "//TRNRPT00 JOB 'TRAN REPORT',CLASS=A,MSGCLASS=0,                                "
+    },
+    {
+      "dataset": "JOBS",
+      "rowIndex": 1,
+      "fields": {
+        "JCL-RECORD": "// NOTIFY=&SYSUID                                                               "
+      },
+      "expectedBytes": "// NOTIFY=&SYSUID                                                               "
+    },
+    {
+      "dataset": "JOBS",
+      "rowIndex": 2,
+      "fields": {
+        "JCL-RECORD": "//*                                                                             "
+      },
+      "expectedBytes": "//*                                                                             "
+    },
+    {
+      "dataset": "JOBS",
+      "rowIndex": 3,
+      "fields": {
+        "JCL-RECORD": "//JOBLIB JCLLIB ORDER=('AWS.M2.CARDDEMO.PROC')                                  "
+      },
+      "expectedBytes": "//JOBLIB JCLLIB ORDER=('AWS.M2.CARDDEMO.PROC')                                  "
+    },
+    {
+      "dataset": "JOBS",
+      "rowIndex": 4,
+      "fields": {
+        "JCL-RECORD": "//*                                                                             "
+      },
+      "expectedBytes": "//*                                                                             "
+    },
+    {
+      "dataset": "JOBS",
+      "rowIndex": 5,
+      "fields": {
+        "JCL-RECORD": "//STEP10 EXEC PROC=TRANREPT                                                     "
+      },
+      "expectedBytes": "//STEP10 EXEC PROC=TRANREPT                                                     "
+    },
+    {
+      "dataset": "JOBS",
+      "rowIndex": 6,
+      "fields": {
+        "JCL-RECORD": "//*                                                                             "
+      },
+      "expectedBytes": "//*                                                                             "
+    },
+    {
+      "dataset": "JOBS",
+      "rowIndex": 7,
+      "fields": {
+        "JCL-RECORD": "//STEP05R.SYMNAMES DD *                                                         "
+      },
+      "expectedBytes": "//STEP05R.SYMNAMES DD *                                                         "
+    },
+    {
+      "dataset": "JOBS",
+      "rowIndex": 8,
+      "fields": {
+        "JCL-RECORD": "TRAN-CARD-NUM,263,16,ZD                                                         "
+      },
+      "expectedBytes": "TRAN-CARD-NUM,263,16,ZD                                                         "
+    },
+    {
+      "dataset": "JOBS",
+      "rowIndex": 9,
+      "fields": {
+        "JCL-RECORD": "TRAN-PROC-DT,305,10,CH                                                          "
+      },
+      "expectedBytes": "TRAN-PROC-DT,305,10,CH                                                          "
+    },
+    {
+      "dataset": "JOBS",
+      "rowIndex": 10,
+      "fields": {
+        "JCL-RECORD": "PARM-START-DATE,C'2022-01-01'                                                   "
+      },
+      "expectedBytes": "PARM-START-DATE,C'2022-01-01'                                                   "
+    },
+    {
+      "dataset": "JOBS",
+      "rowIndex": 11,
+      "fields": {
+        "JCL-RECORD": "PARM-END-DATE,C'2022-12-31'                                                     "
+      },
+      "expectedBytes": "PARM-END-DATE,C'2022-12-31'                                                     "
+    },
+    {
+      "dataset": "JOBS",
+      "rowIndex": 12,
+      "fields": {
+        "JCL-RECORD": "/*                                                                              "
+      },
+      "expectedBytes": "/*                                                                              "
+    },
+    {
+      "dataset": "JOBS",
+      "rowIndex": 13,
+      "fields": {
+        "JCL-RECORD": "//STEP10R.DATEPARM DD *                                                         "
+      },
+      "expectedBytes": "//STEP10R.DATEPARM DD *                                                         "
+    },
+    {
+      "dataset": "JOBS",
+      "rowIndex": 14,
+      "fields": {
+        "JCL-RECORD": "2022-01-01 2022-12-31                                                           "
+      },
+      "expectedBytes": "2022-01-01 2022-12-31                                                           "
+    },
+    {
+      "dataset": "JOBS",
+      "rowIndex": 15,
+      "fields": {
+        "JCL-RECORD": "/*                                                                              "
+      },
+      "expectedBytes": "/*                                                                              "
+    },
+    {
+      "dataset": "JOBS",
+      "rowIndex": 16,
+      "fields": {
+        "JCL-RECORD": "/*EOF                                                                           "
+      },
+      "expectedBytes": "/*EOF                                                                           "
+    }
+  ],
   "expectedFinalState": [],
   "expectedReturnCode": 0,
   "expectedMessages": [
     {
       "channel": "WS_MESSAGE_80",
-      "text": "End Date - Year can NOT be empty...                                             "
+      "text": "Yearly report submitted for printing ...                                        "
     },
     {
       "channel": "SCREEN_ERRMSG_78",
-      "text": "End Date - Year can NOT be empty...                                           "
+      "text": "Yearly report submitted for printing ...                                      "
     },
     {
       "channel": "DISPLAY_LINE",
@@ -108,5 +247,12 @@
     }
   ],
   "normalisations": [],
-  "expectedDatasets": []
+  "expectedDatasets": [
+    {
+      "dataset": "JOBS",
+      "channel": "WRITES",
+      "rowCount": 17,
+      "recordLength": 80
+    }
+  ]
 }

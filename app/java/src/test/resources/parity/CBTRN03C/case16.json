@@ -1,12 +1,13 @@
 {
   "program": "CBTRN03C",
   "caseId": "case16",
-  "description": "An amount that fills the mask, and the high-order truncation the double add then causes. 999999999.99 renders as ' 999,999,999.99' in the detail's - mask and '+999,999,999.99' in the totals' + mask, with no suppression anywhere and both commas printing. Then defect 2 adds the same amount to WS-PAGE-TOTAL a second time at :200: the sum is 1999999999.98, which does not fit the nine integer digits of PIC S9(09)V99, and COBOL stores it without ON SIZE ERROR by discarding the high-order digit - so the page total, and through :297 the grand total, print 999,999,999.98 rather than the mathematical sum. Truncation, never rounding: ROUNDED appears zero times in all 28 programs.",
+  "description": "THE CROSS-REFERENCE NOT-FOUND ABEND, and the only case in this set that pins it: 1500-A-LOOKUP-XREF (app/cbl/CBTRN03C.cbl:484-492) cannot resolve the first record's card, so the run ends inside the lookup having written nothing at all. Record 1 carries TRAN-CARD-NUM 9999999999999999 at bytes 263-278, a value verified absent from all fifty rows of app/data/ASCII/cardxref.txt - the five cards that do begin with a 9 are 9056297931664011, 9349107475869214, 9501733721429893, 9680294154603697 and 9805583408996588 - so the keyed READ cannot succeed and takes its INVALID KEY arm. Had it succeeded it would have filled CARD-XREF-RECORD as app/cpy/CVACT03Y.cpy declares it: XREF-CARD-NUM X(16) at 1-16, XREF-CUST-ID 9(09) at 17-25, XREF-ACCT-ID 9(11) at 26-36 and FILLER X(14) at 37-50, of which the fixture supplies only the first 36 bytes. CARDXREF is therefore seeded unpadded and the case declares CARDXREF_FILLER_PAD_36_TO_50, so the fourteen absent bytes are supplied once, at seed time, before anything decodes a row (gate G16, risk R-F). ORDERING is what makes the observation clean. The card-break block at :181-188 performs 1500-A-LOOKUP-XREF at :187 BEFORE 1500-B-LOOKUP-TRANTYPE at :190, 1500-C-LOOKUP-TRANCATG at :195 and 1100-WRITE-TRANSACTION-REPORT at :196, and 1120-WRITE-HEADERS is reachable only from inside 1100 - so when the cross-reference read fails on the first record not one TRANREPT record exists, not even a header block. Record 1's TRAN-TYPE-CD 01 and TRAN-CAT-CD 0001 both resolve, in trantype.txt's seven keys 01 through 07 and trancatg.txt's eighteen keys, and that is deliberate: an implementation that reordered the three lookups would fail on a different key and emit a different diagnostic, so this case would still catch it rather than passing for the wrong reason. THE DIAGNOSTIC TRAIL is six DISPLAY lines and no seventh. :160 the start banner. :232-233 'Reporting from ' with WS-START-DATE and WS-END-DATE, both taken from the 80-byte DATEPARM row that READ ... INTO right-truncates into the 21-byte WS-DATEPARM-RECORD of :122-125, which is the whole of the PARM-versus-dataset distinction - app/jcl/TRANREPT.jcl:59 gives STEP10R no PARM at all, so jobParameters is empty. :180 DISPLAY TRAN-RECORD, which fires BEFORE the lookup and emits the whole 350-byte group item untrimmed: TRAN-AMT as its stored zoned image 0000000100{, which is +10.00 because the sign is overpunched into the trailing byte ({ABCDEFGHI for +0 through +9 and }JKLMNOPQR for -0 through -9, as app/data/ASCII/dailytran.txt confirms with 0000005047G = +504.77 and 0000000259R = -25.99), and FILLER as its twenty spaces. :487 'INVALID CARD NUMBER : ' concatenated with the sixteen-byte FD-XREF-CARD-NUM, which is 22 + 16 = 38 characters. Then :488-489 MOVE 23 TO IO-STATUS and PERFORM 9910-DISPLAY-IO-STATUS. THE STATUS LINE IS DERIVED, not assumed. 9910-DISPLAY-IO-STATUS (:633-646) tests IF IO-STATUS NOT NUMERIC OR IO-STAT1 = '9' at :634-635; IO-STATUS holds '23', which IS numeric, and IO-STAT1 is '2' rather than '9', so both halves are false and the ELSE arm runs. It moves '0000' into IO-STATUS-04 and then overwrites positions 3-4 with IO-STATUS through the reference modification IO-STATUS-04(3:2), giving '0023', and DISPLAY 'FILE STATUS IS: NNNN' IO-STATUS-04 emits the literal followed by those four digits: FILE STATUS IS: NNNN0023, 20 + 4 = 24 characters. The doubled NNNN is not a transcription slip - the literal in the source really is 'FILE STATUS IS: NNNN' and the four-character image follows it - so it is reproduced verbatim. Finally 9999-ABEND-PROGRAM (:626-630) displays ABENDING PROGRAM, moves 0 to TIMING and 999 to ABCODE, and reaches CALL 'CEE3ABD' at :630 - a BARE call with no USING clause, the same form as app/cbl/CBACT01C.cbl:169-173. WHAT DOES NOT HAPPEN is half the assertion. 1500-B, 1500-C and 1100 never run. Record 2 is never read: it is seeded on card 0500024453765740, row 1 of cardxref.txt and therefore a card that resolves, so its non-processing is observable rather than merely assumed. The six close paragraphs at :208-213 never run. And END OF EXECUTION OF PROGRAM CBTRN03C at :215 is never emitted, which is the clearest signature separating an abend from a normal termination - the message list asserts that absence by having no seventh entry. THE RETURN CODE is derived rather than guessed. CBTRN03C contains zero references to RETURN-CODE, verified by exhaustive search, so the severity travels in APPL-RESULT and in ABCODE 999 alone; the migration's common.AbendException carries 12, which is AbendException.RETURN_CODE_IO_ERROR and the MOVE 12 TO APPL-RESULT value every WHEN OTHER arm of this program uses, and the three keyed lookups never touch APPL-RESULT at all so the same fatal value serves them. 12 is also what the sibling abend cases case10, case11 and case20 state, and that consistency is deliberate: four cases disagreeing about the exit code of one CALL 'CEE3ABD' would fail gate G18 for this module (gate G35). THE RECORD CHANNELS both hold nothing, for two different reasons. TRANREPT is opened by 0100-REPTFILE-OPEN and never written, so the writes channel is empty; and app/jcl/TRANREPT.jcl:76-80 declares it DISP=(NEW,CATLG,DELETE), whose third positional deletes the generation on an abnormal end, so the final state is empty too. Both are declared at the 133 bytes DCB=(LRECL=133,RECFM=FB) fixes, which is how a case pins the identity of a dataset that has no row whose width could be checked. Gates G20 and G21 are therefore satisfied VACUOUSLY here, and this case says so rather than appearing to prove a width it never wrote. GATE G47 is the other half of this case: the '23' not-found outcome of the cross-reference call site, whose '00' found outcome case06 and case08 cover, while case10 and case11 cover the same '23' arm on the transaction-type and category call sites. The three INVALID KEY arms are identical in shape - display, MOVE 23 TO IO-STATUS, 9910, 9999 - and differ only in the message literal and the echoed key width, sixteen bytes here against two for the type and six for the category, so the four cases are kept mutually consistent. Gate G30 holds throughout: both EVALUATE statements keep WHEN OTHER last, and this run takes '00' on the DATEPARM read at :222-229 and on the TRANFILE read at :251-258, reaching neither '10' nor WHEN OTHER. Gate G51: the unit is the tasklet, invoked with no JobLauncher and no HTTP layer in the path. The repositories - card.CardXrefRepository here - surface the not-found outcome rather than abending on their caller's behalf, so the display-then-abend sequence belongs to transaction.TransactionReportJob and the expectation is attributed there. CBTRN03C has zero GO TO, so this path is reached by ordinary PERFORM nesting rather than by a jump. PRACTICE B5: nothing here is handled more gracefully than the COBOL handles it. The program abends on an unresolvable card, and the expectation says so - an empty report, a deleted generation and a non-zero exit code - rather than recording a skipped record or a warning the legacy program never produces. PRACTICE B12: every value above is STATICALLY DERIVED from the COBOL, cross-checked against app/cpy/CVTRA05Y.cpy's 350-byte layout, app/cpy/CVACT03Y.cpy's 50-byte layout, the DCB and DISP contracts of app/jcl/TRANREPT.jcl and the real US-ASCII fixtures under app/data/ASCII - never captured from a live COBOL run, which section 0.7.6 of the plan proves impossible in this environment with eight independently verified blockers (risk R-A).",
   "unitKind": "BATCH_JOB",
   "inputs": {
     "TRANFILE": {
       "rows": [
-        "TRN0000000000001010001POS TERM  A statically derived fixture transaction                                                            9999999999I999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-03-15-11.22.33.4444442022-03-15-11.22.33.444444                    "
+        "TRN0000000000001010001POS TERM  A statically derived fixture transaction                                                            0000000100{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000099999999999999992022-03-15-11.22.33.4444442022-03-15-11.22.33.444444                    ",
+        "TRN0000000000002010001POS TERM  A statically derived fixture transaction                                                            0000000200{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-03-15-11.22.33.4444442022-03-15-11.22.33.444444                    "
       ]
     },
     "CARDXREF": {
@@ -25,91 +26,9 @@
     }
   },
   "jobParameters": {},
-  "expectedWrites": [
-    {
-      "dataset": "TRANREPT",
-      "rowIndex": 0,
-      "expectedBytes": "DALYREPT                              Daily Transaction Report                 Date Range: 2022-01-01 to 2022-07-06                  "
-    },
-    {
-      "dataset": "TRANREPT",
-      "rowIndex": 1,
-      "expectedBytes": "                                                                                                                                     "
-    },
-    {
-      "dataset": "TRANREPT",
-      "rowIndex": 2,
-      "expectedBytes": "Transaction ID   Account ID  Transaction Type   Tran Category                      Tran Source            Amount                     "
-    },
-    {
-      "dataset": "TRANREPT",
-      "rowIndex": 3,
-      "expectedBytes": "-------------------------------------------------------------------------------------------------------------------------------------"
-    },
-    {
-      "dataset": "TRANREPT",
-      "rowIndex": 4,
-      "expectedBytes": "TRN0000000000001 00000000050 01-Purchase        0001-Regular Sales Draft           POS TERM       999,999,999.99                     "
-    },
-    {
-      "dataset": "TRANREPT",
-      "rowIndex": 5,
-      "expectedBytes": "Page Total ......................................................................................+999,999,999.98                     "
-    },
-    {
-      "dataset": "TRANREPT",
-      "rowIndex": 6,
-      "expectedBytes": "-------------------------------------------------------------------------------------------------------------------------------------"
-    },
-    {
-      "dataset": "TRANREPT",
-      "rowIndex": 7,
-      "expectedBytes": "Grand Total......................................................................................+999,999,999.98                     "
-    }
-  ],
-  "expectedFinalState": [
-    {
-      "dataset": "TRANREPT",
-      "rowIndex": 0,
-      "expectedBytes": "DALYREPT                              Daily Transaction Report                 Date Range: 2022-01-01 to 2022-07-06                  "
-    },
-    {
-      "dataset": "TRANREPT",
-      "rowIndex": 1,
-      "expectedBytes": "                                                                                                                                     "
-    },
-    {
-      "dataset": "TRANREPT",
-      "rowIndex": 2,
-      "expectedBytes": "Transaction ID   Account ID  Transaction Type   Tran Category                      Tran Source            Amount                     "
-    },
-    {
-      "dataset": "TRANREPT",
-      "rowIndex": 3,
-      "expectedBytes": "-------------------------------------------------------------------------------------------------------------------------------------"
-    },
-    {
-      "dataset": "TRANREPT",
-      "rowIndex": 4,
-      "expectedBytes": "TRN0000000000001 00000000050 01-Purchase        0001-Regular Sales Draft           POS TERM       999,999,999.99                     "
-    },
-    {
-      "dataset": "TRANREPT",
-      "rowIndex": 5,
-      "expectedBytes": "Page Total ......................................................................................+999,999,999.98                     "
-    },
-    {
-      "dataset": "TRANREPT",
-      "rowIndex": 6,
-      "expectedBytes": "-------------------------------------------------------------------------------------------------------------------------------------"
-    },
-    {
-      "dataset": "TRANREPT",
-      "rowIndex": 7,
-      "expectedBytes": "Grand Total......................................................................................+999,999,999.98                     "
-    }
-  ],
-  "expectedReturnCode": 0,
+  "expectedWrites": [],
+  "expectedFinalState": [],
+  "expectedReturnCode": 12,
   "expectedMessages": [
     {
       "channel": "DISPLAY_LINE",
@@ -121,19 +40,19 @@
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "TRN0000000000001010001POS TERM  A statically derived fixture transaction                                                            9999999999I999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-03-15-11.22.33.4444442022-03-15-11.22.33.444444                    "
+      "text": "TRN0000000000001010001POS TERM  A statically derived fixture transaction                                                            0000000100{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000099999999999999992022-03-15-11.22.33.4444442022-03-15-11.22.33.444444                    "
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "TRAN-AMT 9999999999I"
+      "text": "INVALID CARD NUMBER : 9999999999999999"
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "WS-PAGE-TOTAL9999999999I"
+      "text": "FILE STATUS IS: NNNN0023"
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "END OF EXECUTION OF PROGRAM CBTRN03C"
+      "text": "ABENDING PROGRAM"
     }
   ],
   "normalisations": [
@@ -146,13 +65,13 @@
     {
       "dataset": "TRANREPT",
       "channel": "WRITES",
-      "rowCount": 8,
+      "rowCount": 0,
       "recordLength": 133
     },
     {
       "dataset": "TRANREPT",
       "channel": "FINAL_STATE",
-      "rowCount": 8,
+      "rowCount": 0,
       "recordLength": 133
     }
   ]

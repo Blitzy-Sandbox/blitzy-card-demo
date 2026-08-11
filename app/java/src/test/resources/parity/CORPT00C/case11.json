@@ -1,13 +1,13 @@
 {
   "program": "CORPT00C",
   "caseId": "case11",
-  "description": "The WHEN MONTHLYI arm at :213-238 with CONFIRMI = 'Y', pinned on a THIRTY-day month, which is the third distinct month length the composite has to produce. The month end is derived exactly as :229-230 derives it - FUNCTION DATE-OF-INTEGER of FUNCTION INTEGER-OF-DATE minus one, applied to the first day of the following month - and both dates are asserted where they are observable: in records 11, 12 and 15 of the emitted stream. Expected values are STATICALLY DERIVED by reading app/cbl/CORPT00C.cbl, its copybooks, app/bms/CORPT00.bms and app/csd/CARDDEMO.CSD - never captured from a COBOL run, which is impossible in this environment (risk R-A). Java has no transient data queue, so EXEC CICS WRITEQ TD QUEUE('JOBS') at :517 is reproduced through an explicit job-submission port; the eighty-byte content is identical and the dataset key JOBS names the TDQUEUE(JOBS) that app/csd/CARDDEMO.CSD:499-505 defines as RECORDSIZE(80) RECORDFORMAT(FIXED) BLOCKFORMAT(UNBLOCKED) DISPOSITION(MOD).",
+  "description": "The WHEN MONTHLYI arm at :212-238 with CONFIRMI = 'Y', pinned in FEBRUARY OF A LEAP YEAR so that the month-end derivation has to be a real Gregorian calendar rather than a table of fixed month lengths (gate G29). The clock is 2024-02-05T14:22:33, and 2024 is divisible by four and not by one hundred, so its February has twenty-nine days. The arm is walked statement by statement. :215 moves FUNCTION CURRENT-DATE into the sixteen byte WS-CURDATE-DATA of app/cpy/CSDAT01Y.cpy. :217-219 compose the start from WS-CURDATE-YEAR, WS-CURDATE-MONTH and the literal '01', giving 2024-02-01, which :220-221 move into BOTH PARM-START-DATE-1 and PARM-START-DATE-2 - distinct storage at :106 and :118 that must agree. :223 moves 1 into WS-CURDATE-DAY and :224 adds 1 to WS-CURDATE-MONTH, making it 03, so :225 IF WS-CURDATE-MONTH > 12 takes its FALSE side and no year roll-over runs; case10 pins December and the TRUE side, case09 an ordinary thirty-one day month. WS-CURDATE-N, the PIC 9(08) REDEFINES of WS-CURDATE, therefore reads 20240301, and :229-230 COMPUTE WS-CURDATE-N = FUNCTION DATE-OF-INTEGER(FUNCTION INTEGER-OF-DATE(WS-CURDATE-N) - 1) steps back one single day from the first of the following month, landing on 20240229, which :232-236 render into PARM-END-DATE-1 and PARM-END-DATE-2. THE ASSERTION THIS FIXTURE EXISTS FOR IS ROW 11: a reimplementation that tabulated February as twenty-eight days, or that wrote the leap rule as year modulo four alone, or that reached for a month-length lookup instead of the day-number round trip, produces 2024-02-28 and fails here. The composite's whole meaning is 'the last day of the current month'. Its common-February counterpart, 2023-02-15 yielding 2023-02-28, sits beside this one in the CsvSource of CORPT00CParityTest.TheDateIntrinsics.theMonthEndDerivation, which pins the leap and the common form mechanically; this fixture states the leap case at fixture level, where the whole seventeen record rendering is observable, and does not restate that table. THE DAY IS PINNED AT 05, NEITHER 01 NOR 29, AND IT IS LOAD-BEARING TWICE. First, :217-219 never read the received day at all - '01' is a literal - so a start date of 2024-02-01 from a clock reading the fifth proves the day is composed rather than copied. Second, POPULATE-HEADER-INFO RE-READS the clock at :611 into the very same WS-CURDATE-DATA this arm has just mutated to 20240229, so CURDATEO below is 02/05/24, the real current date, and a translation that dropped that re-read and projected the mutated area would render 02/29/24 - a difference no case pinned on the first or the last of a month could see. MONTHLYI carries 'X' rather than 'Y': :213 reads MONTHLYI NOT = SPACES AND LOW-VALUES, so any non-blank value selects the arm and an equality test against 'Y' would be wrong. All ten xxxI items are declared, the nine others present and blank, which is what proves the ordered EVALUATE takes its FIRST true arm and that the six custom-date items are ignored on this path (gate G30). The unitKind is CONTROLLER_POJO: ReportRequestController is constructed as a plain object and called through mainPara - no MockMvc, no TestRestTemplate, no servlet container, no JobLauncher (gate G51) - and no dataset is seeded, because this program issues no file command at all; every EXEC CICS in it is WRITEQ TD, SEND, RECEIVE, RETURN or XCTL. Java has no transient data queue, so EXEC CICS WRITEQ TD QUEUE('JOBS') at :517, reached through the paragraph the source misspells WIRTE-JOBSUB-TDQ at :515 and preserved with that spelling (practice B5), is reproduced through an explicit job-submission port: the transport is substituted, the content is not. Eighty bytes is app/csd/CARDDEMO.CSD:499-505's RECORDSIZE(80) RECORDFORMAT(FIXED) BLOCKFORMAT(UNBLOCKED) DISPOSITION(MOD) and :79's JCL-RECORD PIC X(80); the seventeen records and their order are the declaration order of 02 JOB-DATA-1 at :83-125 read through 02 JOB-DATA-2 REDEFINES it as JOB-LINES OCCURS 1000 TIMES PIC X(80) at :126-127. Both numbers are therefore derived mechanically rather than chosen, and the derivation is auditable from this file (practice B11); the one-based OCCURS subscript maps to the zero-based rowIndex below as n minus one. Rows 10 and 11 are 05 FILLER-1 and 05 FILLER-2 - an eighteen and a sixteen character prefix, the ten byte date, then a fifty-two and a fifty-four byte FILLER whose FIRST character is the closing quote, so a malformed line can still measure eighty bytes if the quote is appended instead; 18+10+52 and 16+10+54 both being eighty is the check that catches it. Row 16 is '/*EOF' and is present because :502-505 sets END-LOOP-YES and :507 performs the write anyway, making the sentinel itself the seventeenth record. ROW 14 IS THE CROSS-FOLDER CONTRACT: its leading twenty-one bytes, '2024-02-01 2024-02-29', ARE the DATEPARM record transaction.DateParmReader consumes at offsets 0:10/10:1/11:10/21:59 in eighty - that reader's own layout note cites app/cbl/CORPT00C.cbl:L121's FILLER PIC X(59) as its authority - and it is the one place in this migration where an online screen's output is a batch program's input. parity/CBTRN03C seeds that same line inline; this folder is its authoritative producer, and a leap-year range is the sharpest thing it can hand over, since 29 is a day number no non-leap February can carry. app/proc/TRANREPT.prc's own STEP05R (SORT, SYMNAMES DD) and STEP10R (PGM=CBTRN03C, DATEPARM DD) are the step names rows 7 and 13 override, and row 5's PROC=TRANREPT resolves through the JCLLIB ORDER on row 3. On the success path :445-456 runs INITIALIZE-ALL-FIELDS, which blanks the ten items and WS-MESSAGE, then MOVE DFHGREEN TO ERRMSGC OF CORPT0AO - the ONLY colour assignment anywhere in this program, which is why ERRMSGC is pinned on the send and why no field is recoloured red or starred here (gate G38) - then STRING WS-REPORT-NAME DELIMITED BY SPACE with ' report submitted for printing ...' DELIMITED BY SIZE builds a forty-one character notice, seven bytes of 'Monthly' with the PIC X(10) trailing spaces dropped by the delimiter plus the thirty-four byte literal, into WS-MESSAGE PIC X(80); :560 then moves it into ERRMSGO PIC X(78), so the two message channels below differ by exactly the two bytes COBOL loses on the right. :453 moves -1 into MONTHLYL, which is the cursor: COBOL positions by length item, so the cursor is reported under the xxxL name and not the field's. The IF NOT ERR-FLG-ON guard at :445 is effectively always true, because every SEND-TRNRPT-SCREEN ends GO TO RETURN-TO-CICS at :580 and never returns to its caller; it is preserved rather than tidied (practice B5). The task ends at :587-591 EXEC CICS RETURN TRANSID, never XCTL, so this screen re-invites itself. Titles come from app/cpy/COTTL01Y.cpy, whose line 21 is COMMENTED OUT, so TITLE02O is the CardDemo form and never 'Credit Card Demo Application (CCDA)'. The xxxL, xxxF and xxxA items of app/cpy-bms/CORPT00.CPY are length, flag and attribute metadata and are recorded as such - the cursor and the colour - never as payload members; only the xxxI and xxxO items are payload. Nothing is left to the wall clock and nothing is random (practice B7): 02/05/24 and 14:22:33 are the pinned instant read through WS-CURDATE-MM-DD-YY and WS-CURTIME-HH-MM-SS at :618-628 using WS-CURDATE-YEAR(3:2) at :620, and the code page is named US-ASCII rather than defaulted (practice B8), as is every one of the seventeen records' trailing spaces, written out in full rather than summarised. review_rules returns exactly one line, 'No user rules provided', so ZERO user rules govern this fixture and enterprise practices B1, B3, B5, B7, B8, B11 and B12 stand in their place; their absence is not licence to lower the bar. Every expected value here is STATICALLY DERIVED by reading app/cbl/CORPT00C.cbl against app/csd/CARDDEMO.CSD, app/jcl/TRANREPT.jcl, app/proc/TRANREPT.prc, app/cpy-bms/CORPT00.CPY, app/bms/CORPT00.bms, app/cpy/COTTL01Y.cpy, app/cpy/CSDAT01Y.cpy and app/cpy/COCOM01Y.cpy, every one of which is read-only reference (practice B3), and NEVER captured from a running COBOL program, which is impossible in this environment (risk R-A). DFHENTER and DFHGREEN come from common.CicsAid and common.BmsAttributes because DFHAID and DFHBMSCA are IBM-supplied and absent from this repository (risk R-D). No line below is a placeholder or an ellipsis standing in for content (practice B1).",
   "unitKind": "CONTROLLER_POJO",
   "inputs": {},
   "screenRequest": {
     "eibcalen": 160,
     "aid": "DFHENTER",
-    "pinnedClock": "2026-04-15T00:00:00",
+    "pinnedClock": "2024-02-05T14:22:33",
     "charset": "US-ASCII",
     "commarea": {
       "CDEMO-FROM-TRANID": "CM00",
@@ -28,7 +28,15 @@
       "CDEMO-LAST-MAPSET": "       "
     },
     "mapFields": {
-      "MONTHLYI": "Y",
+      "MONTHLYI": "X",
+      "YEARLYI": " ",
+      "CUSTOMI": " ",
+      "SDTMMI": "  ",
+      "SDTDDI": "  ",
+      "SDTYYYYI": "    ",
+      "EDTMMI": "  ",
+      "EDTDDI": "  ",
+      "EDTYYYYI": "    ",
       "CONFIRMI": "Y"
     },
     "forcedOutcomes": {}
@@ -60,10 +68,10 @@
         "fields": {
           "TRNNAMEO": "CR00",
           "TITLE01O": "      AWS Mainframe Modernization       ",
-          "CURDATEO": "04/15/26",
+          "CURDATEO": "02/05/24",
           "PGMNAMEO": "CORPT00C",
           "TITLE02O": "              CardDemo                  ",
-          "CURTIMEO": "00:00:00",
+          "CURTIMEO": "14:22:33",
           "MONTHLYO": " ",
           "YEARLYO": " ",
           "CUSTOMO": " ",
@@ -169,17 +177,17 @@
       "dataset": "JOBS",
       "rowIndex": 10,
       "fields": {
-        "JCL-RECORD": "PARM-START-DATE,C'2026-04-01'                                                   "
+        "JCL-RECORD": "PARM-START-DATE,C'2024-02-01'                                                   "
       },
-      "expectedBytes": "PARM-START-DATE,C'2026-04-01'                                                   "
+      "expectedBytes": "PARM-START-DATE,C'2024-02-01'                                                   "
     },
     {
       "dataset": "JOBS",
       "rowIndex": 11,
       "fields": {
-        "JCL-RECORD": "PARM-END-DATE,C'2026-04-30'                                                     "
+        "JCL-RECORD": "PARM-END-DATE,C'2024-02-29'                                                     "
       },
-      "expectedBytes": "PARM-END-DATE,C'2026-04-30'                                                     "
+      "expectedBytes": "PARM-END-DATE,C'2024-02-29'                                                     "
     },
     {
       "dataset": "JOBS",
@@ -201,9 +209,9 @@
       "dataset": "JOBS",
       "rowIndex": 14,
       "fields": {
-        "JCL-RECORD": "2026-04-01 2026-04-30                                                           "
+        "JCL-RECORD": "2024-02-01 2024-02-29                                                           "
       },
-      "expectedBytes": "2026-04-01 2026-04-30                                                           "
+      "expectedBytes": "2024-02-01 2024-02-29                                                           "
     },
     {
       "dataset": "JOBS",

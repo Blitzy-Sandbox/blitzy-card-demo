@@ -1,13 +1,13 @@
 {
   "program": "CBACT02C",
   "caseId": "case05",
-  "description": "The tail seven rows, 43 through 49: a mid-volume slice that reaches the end of the file after several successful reads. It pins iteration order, which a single-record case cannot: the seven lines must appear in ascending key order exactly as carddata.txt holds them, because app/cbl/CBACT02C.cbl:31 declares ACCESS MODE IS SEQUENTIAL and :93 simply READs, so the file is walked in key order and each DISPLAY at :78 happens before the next READ at :93. Nine lines out: the two banners and the seven records.",
+  "description": "The two-record run, and the case that pins INTER-RECORD ORDERING together with the one property no other case in this folder can state: that NOTHING IS EMITTED BETWEEN THE TWO IMAGES. Two records is the narrowest input that has a between at all - case02 seeds none and case03 and case04 seed one each, so not one of the three can tell 'one line per record' apart from 'one line per record plus a separator, a header, a blank line or a page break'. case06 widens the same shape to three records and decomposes every field; this case isolates the adjacency itself, which is why the two images here must sit immediately next to each other with no third entry of any kind between them. WHY THAT NEEDS SAYING: the sibling read-and-print programs emit a different shape per record, and importing either one here is the single most likely way to fail the diff gate. CBACT01C emits thirteen lines per record including a 49-hyphen separator; CBACT03C emits two identical lines per record. CBACT02C emits EXACTLY ONE. app/cbl/CBACT02C.cbl:78 DISPLAY CARD-RECORD is the only live display in the program - the DISPLAY at :96 inside 1000-CARDFILE-GET-NEXT is a COMMENT, and no 1100-DISPLAY paragraph exists to add a second. One record in, one line out, and nothing in between. WHAT THIS CASE PINS ABOVE ALL ELSE: the unit under test is account.AccountBalanceReaderJob - an Account-named class in the account package - yet CBACT02C reads the CARD file and never touches the account file. :29-33 is SELECT CARDFILE-FILE ASSIGN TO CARDFILE, ORGANIZATION INDEXED, ACCESS MODE SEQUENTIAL, RECORD KEY FD-CARD-NUM, over an FD of FD-CARD-NUM X(16) plus FD-CARD-DATA X(134) = 150, and :45 is COPY CVACT02Y. AAP rule R1 governs - the name comes from the prompt, the behaviour comes from the source - and the divergence is catalogued in the register at AAP 0.8.4. A reviewer who trusts the class name authors the wrong twenty cases. THE LOOP, WALKED THREE TIMES. :74-81 is PERFORM UNTIL END-OF-FILE = 'Y' wrapping two nested guards, and with two records seeded it turns exactly three times. (1) END-OF-FILE is 'N' so the outer guard at :75 passes; 1000-CARDFILE-GET-NEXT READs at :93 and delivers row 0; :94 takes the CARDFILE-STATUS = '00' arm and :95 moves 0 into APPL-RESULT; the inner guard at :77 still sees 'N', so :78 displays the first image. (2) The same again for row 1, giving the second image. (3) The third READ reports '10', :99 moves 16 into APPL-RESULT, :107 finds the 88-level APPL-EOF true and :108 moves 'Y' into END-OF-FILE - so the INNER guard at :77 is now false and THE EOF ITERATION DISPLAYS NOTHING, after which the outer PERFORM UNTIL sees 'Y' and ends. That silent third iteration is precisely why a two-record file yields two images rather than three, and why the end banner is adjacent to the second image rather than separated from it. Then :83 performs 9000-CARDFILE-CLOSE, which reports '00' at :139 so :140 SUBTRACT APPL-RESULT FROM APPL-RESULT leaves zero, :85 displays the end banner, and :87 GOBACK leaves RETURN-CODE 0. MESSAGE ARITHMETIC: 1 start banner + 2 record images + 1 end banner = 4 ordered DISPLAY_LINE entries, of 38, 150, 150 and 36 characters. There is no fifth entry, and the two 150-character images are positions 2 and 3 with nothing whatever between them. ORDERING: the seeded rows are zero-based fixture rows 0 and 1, whose keys are 0500024453765740 and 0683586198171516 - strictly ascending, as carddata.txt is held throughout. :31 declares ACCESS MODE IS SEQUENTIAL and :93 is a bare READ, so the file is walked from its first record forward, and :78 writes each row before :93 reads the next. The images must therefore appear in that order, Aniya Von's row first and Ward Jones's second; a transposition is a diff, not a detail. In repository terms the sequence is startBrowse '00', then readNext '00' delivering row 0, then readNext '00' delivering row 1, then readNext '10' at end of file, then endBrowse '00' (gate G47). The job is driven at tasklet/step level, with no JobLauncher and no HTTP in the path (gate G51). RECORD GEOMETRY, taken mechanically from app/cpy/CVACT02Y.cpy (RECLN 150), one-based and cumulative so a reviewer can check this file against the copybook without running anything: CARD-NUM X(16) at 1-16 and also the RECORD KEY, CARD-ACCT-ID 9(11) at 17-27, CARD-CVV-CD 9(03) at 28-30, CARD-EMBOSSED-NAME X(50) at 31-80, CARD-EXPIRAION-DATE X(10) at 81-90 - carrying the copybook's own misspelling, never corrected - CARD-ACTIVE-STATUS X(01) at 91, and FILLER X(59) at 92-150. 16+11+3+50+10+1+59 = 150 (gate G19). Row 0 decomposes to 0500024453765740, then 00000000050, then 747, then 'Aniya Von' followed by 41 spaces, then 2023-03-09, then Y, then 59 spaces; row 1 to 0683586198171516, then 00000000027, then 567, then 'Ward Jones' followed by 40 spaces, then 2025-07-13, then Y, then 59 spaces. Both images therefore end in 59 significant spaces which must not be trimmed (gate G21) - and since a trailing span is exactly what a careless serialiser drops, the adjacency this case pins is also what would expose it. The copybook declares no COMP-3, no PACKED-DECIMAL and no S9, so every numeric span is unsigned zoned DISPLAY and there is no sign overpunch to model on this path. WIRING: app/jcl/READCARD.jcl:22 is a bare //STEP05 EXEC PGM=CBACT02C and the job declares no PARM anywhere, so jobParameters is empty; its single //CARDFILE DD at :25-26 is the only dataset seeded, addressed by the CARDFILE binding key that application.yml resolves at record length 150 and never by a dataset name, so no DSNAME literal appears in this file (gate G46). The two rows are seeded from the fixture rather than written inline so that the record bytes are the authoritative ones and each expected line is that row verbatim. ENCODING is US-ASCII, named explicitly rather than left to a platform default. NOTHING IS WRITTEN: expectedWrites and expectedFinalState are empty because :120 opens INPUT and the program contains no WRITE, REWRITE or DELETE - SYSOUT at READCARD.jcl:27 is its only output - and no normalisation is declared, because carddata.txt rows are already the full 150 bytes CVACT02Y declares. PROVENANCE: every expected value here is STATICALLY DERIVED by structured reading of app/cbl/CBACT02C.cbl, cross-checked against app/cpy/CVACT02Y.cpy for each offset and width, app/jcl/READCARD.jcl for the step and DD contract, and the real app/data/ASCII/carddata.txt for the two seeded rows. It was NEVER captured from a live COBOL execution: AAP 0.7.6 proves that impossible in this environment with eight independently verified blockers - no z/OS runtime, the available compiler's indexed file handler disabled, subprogram linkage that cannot be made executable, a copybook that will not parse, no Language Environment CEE services, no CICS emulator plus three absent IBM copybooks, EBCDIC fixtures needing binary handling, and no alternative compiler installable - and the substitution is recorded as risk R-A. Two records in, four lines out, nothing between the two images, RETURN-CODE 0.",
   "unitKind": "BATCH_JOB",
   "inputs": {
     "CARDFILE": {
       "fixture": "carddata.txt",
-      "fromRow": 43,
-      "rowCount": 7
+      "fromRow": 0,
+      "rowCount": 2
     }
   },
   "jobParameters": {},
@@ -21,31 +21,11 @@
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "851786695820600800000000014955Chelsea Marks                                     2025-12-11Y                                                           "
+      "text": "050002445376574000000000050747Aniya Von                                         2023-03-09Y                                                           "
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "893136935189478300000000008230Kelsie Dicki                                      2024-05-20Y                                                           "
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "905629793166401100000000025931Elliott Howell                                    2025-07-10Y                                                           "
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "934910747586921400000000017218Sigrid Mann                                       2025-03-01Y                                                           "
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "950173372142989300000000009725Melvin Ondricka                                   2024-12-27Y                                                           "
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "968029415460369700000000001045Immanuel Kessler                                  2025-05-20Y                                                           "
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "980558340899658800000000040908Davon Emmerich                                    2023-10-27Y                                                           "
+      "text": "068358619817151600000000027567Ward Jones                                        2025-07-13Y                                                           "
     },
     {
       "channel": "DISPLAY_LINE",
