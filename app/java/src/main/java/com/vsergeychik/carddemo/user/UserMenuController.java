@@ -8,6 +8,7 @@ import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.NavigationContext;
 import com.vsergeychik.carddemo.common.PfKeyResolver;
+import com.vsergeychik.carddemo.common.ScreenInputRejectedException;
 import com.vsergeychik.carddemo.common.ScreenFieldImage;
 import com.vsergeychik.carddemo.common.ScreenMetadata;
 import com.vsergeychik.carddemo.common.ScreenResponse;
@@ -802,6 +803,13 @@ public final class UserMenuController {
      *       that cannot reach a branch the operator could not have reached.</li>
      * </ol>
      *
+     * <p>"Names no key" and "names a key this program does not handle" are different states and are
+     * answered differently: only the first defaults. A token matching none of the sixteen resolves to
+     * {@link CicsAid#DFHNULL} - see {@link #aidByteOfToken(String)} - and so reaches the
+     * {@code WHEN OTHER} arm at {@code :133-137}, which is where an unhandled key belongs. The numeric
+     * carrier has always behaved this way: any byte in {@code 0..255} that is not one of the program's
+     * four named values takes {@code WHEN OTHER} too.
+     *
      * @param eibaid  the unsigned byte value, or {@code null} when the caller named none
      * @param request the payload, whose token is the second carrier; may be {@code null}
      * @return the raw AID byte
@@ -811,10 +819,8 @@ public final class UserMenuController {
         if (eibaid != null) {
             int value = eibaid;
             if (value < AID_MIN || value > AID_MAX) {
-                throw new IllegalArgumentException("The " + EIBAID_PARAM + " parameter carries one EIBAID "
-                        + "byte and must be " + AID_MIN + " to " + AID_MAX + ", but was " + value
-                        + ". Narrowing it silently would select an attention identifier the caller never "
-                        + "pressed.");
+                throw ScreenInputRejectedException.outsideRange(EIBAID_PARAM,
+                    "one EIBAID byte", AID_MIN, AID_MAX);
             }
             return (byte) value;
         }
@@ -835,16 +841,35 @@ public final class UserMenuController {
      * {@code PIC X(5)} image so that both {@code "PA1"} and {@code "PA1  "} resolve - the copybook
      * literal carries two trailing spaces and a client may send either form.
      *
-     * <p>Three inputs yield no key at all, and the caller falls back rather than guessing: {@code null},
-     * a token that is blank or {@code LOW-VALUES}, and a token matching none of the sixteen. The last is
-     * <strong>not</strong> mapped to {@link CicsAid#DFHNULL} here: this program's {@code WHEN OTHER} at
-     * {@code :133-137} flags an error and re-sends, so answering an unintelligible token that way would
-     * turn a caller's mistake into the operator-facing "invalid key" message. Falling back to ENTER
-     * instead reaches the arm the program handles first, which is what a terminal presenting no
-     * recognised key would have produced.
+     * <p>Three outcomes, and the distinction between the second and the third is the whole point:
+     *
+     * <ul>
+     *   <li><strong>No carrier at all</strong> - {@code null}, or a token that is blank or
+     *       {@code LOW-VALUES} - yields {@link OptionalInt#empty()}, and the caller falls back to
+     *       {@link CicsAid#DFHENTER}. A CICS terminal always presents some AID and blank is not one, so
+     *       a payload that states no key is a payload that has not said which key was pressed; ENTER is
+     *       the arm this program handles first [{@code :123}] and the only default that cannot reach a
+     *       branch the operator could not have reached.</li>
+     *   <li><strong>A recognised token</strong> yields the byte it stands for.</li>
+     *   <li><strong>A token matching none of the sixteen</strong> yields {@link CicsAid#DFHNULL}, which
+     *       {@link PfKeyResolver#resolve(byte)} matches to no condition name at all. That is the
+     *       faithful representation of "a key this program does not handle", and it lands on
+     *       {@code WHEN OTHER} at {@code :133-137} - error flag, cursor to {@code USRIDINL}, the
+     *       invalid-key message, re-send - exactly as an unhandled key does on a terminal.</li>
+     * </ul>
+     *
+     * <p>The third outcome used to be folded into the first, so an unintelligible token was silently
+     * executed as ENTER: {@code "PF8  "} - a plausible spelling of the token this screen's own paging
+     * key would carry - ran {@code PROCESS-ENTER-KEY} and answered {@code 200} with no message, and
+     * {@code WHEN OTHER} was unreachable over HTTP on this route while its sibling
+     * {@code COTRN00C:129} reached it. Sending an operator down a branch they did not ask for is worse
+     * than telling them the key was not understood, which is what the program itself does; and the
+     * "invalid key" text is not a caller's mistake dressed up as an operator message - it is the answer
+     * the source writes for precisely this input.
      *
      * @param token the token as received, of any length, or {@code null}
-     * @return the byte the token stands for, or {@link OptionalInt#empty()} when it names no key
+     * @return the byte the token stands for, {@link CicsAid#DFHNULL} when it names a key this program
+     *         does not handle, or {@link OptionalInt#empty()} when it states no key at all
      */
     static OptionalInt aidByteOfToken(String token) {
         if (token == null) {
@@ -859,7 +884,7 @@ public final class UserMenuController {
                 return OptionalInt.of(canonicalByteOf(candidate) & 0xFF);
             }
         }
-        return OptionalInt.empty();
+        return OptionalInt.of(CicsAid.DFHNULL & 0xFF);
     }
 
     /**

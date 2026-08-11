@@ -24,6 +24,7 @@ import com.vsergeychik.carddemo.common.FileStatus.Outcome;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.NavigationContext;
 import com.vsergeychik.carddemo.common.PfKeyResolver;
+import com.vsergeychik.carddemo.common.ScreenInputRejectedException;
 import com.vsergeychik.carddemo.common.PfKeyResolver.AidKey;
 import com.vsergeychik.carddemo.common.ScreenResponse;
 import com.vsergeychik.carddemo.common.ScreenTitles;
@@ -882,10 +883,8 @@ public class CardListController {
         }
         int value = eibaid;
         if (value < AID_MIN || value > AID_MAX) {
-            throw new IllegalArgumentException("The " + EIBAID_PARAM + " parameter carries one EIBAID "
-                    + "byte and must be " + AID_MIN + " to " + AID_MAX + ", but was " + value
-                    + ". Narrowing it silently would select an attention identifier the caller never "
-                    + "pressed.");
+            throw ScreenInputRejectedException.outsideRange(EIBAID_PARAM,
+                    "one EIBAID byte", AID_MIN, AID_MAX);
         }
         return (byte) value;
     }

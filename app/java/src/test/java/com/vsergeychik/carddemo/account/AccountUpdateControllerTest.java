@@ -4106,7 +4106,7 @@ class AccountUpdateControllerTest {
                     .isInstanceOf(ScreenInputRejectedException.class)
                     .satisfies(thrown -> {
                         ScreenInputRejectedException rejected = (ScreenInputRejectedException) thrown;
-                        assertThat(rejected.member()).contains("ACSLNAM");
+                        assertThat(rejected.member()).contains("acslnam");
                         assertThat(rejected.getMessage()).contains("ACSLNAMI").doesNotContain("MU");
                     });
         }

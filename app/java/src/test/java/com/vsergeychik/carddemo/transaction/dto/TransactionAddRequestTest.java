@@ -245,7 +245,8 @@ class TransactionAddRequestTest {
      *
      * <p>Each row supplies the JSON/bean property name, its declared width, that width plus one, a
      * mutator that fills it to exactly the declared width, and a mutator that overfills it by one
-     * character. Twenty-one payload fields plus the one-byte {@code EIBAID} carrier.
+     * character. Twenty-one payload fields plus the {@code EIBAID} carrier, whose declared width is
+     * the {@code CCARD-AID} token width because it accepts either spelling.
      *
      * @return one argument row per constrained property
      */
@@ -282,7 +283,9 @@ class TransactionAddRequestTest {
                 sized("mcity", 25, TransactionAddRequest::setMcity),
                 sized("mzip", 10, TransactionAddRequest::setMzip),
                 sized("errmsg", 78, TransactionAddRequest::setErrmsg),
-                sized("aid", 1, TransactionAddRequest::setAid));
+                // The aid member is declared at the CCARD-AID token width, not at the EIBAID byte
+                // width, because it accepts either spelling. Its declared maximum is therefore 5.
+                sized("aid", TransactionAddRequest.AID_TOKEN_LENGTH, TransactionAddRequest::setAid));
     }
 
     /**
@@ -1199,12 +1202,19 @@ class TransactionAddRequestTest {
         }
 
         @Test
-        @DisplayName("the EIBAID attention identifier is one byte and is carried in the payload")
+        @DisplayName("the EIBAID attention identifier is carried in the payload, as the raw byte or as "
+                + "the five-character CCARD-AID token")
         void attentionIdentifierIsCarried() {
+            // AID_LENGTH is the width of EIBAID itself - one byte - and AID_TOKEN_LENGTH is the width
+            // of the member, because the member accepts the mnemonic token this module's responses
+            // publish as well as the byte the source's EVALUATE compares.
             assertThat(TransactionAddRequest.AID_LENGTH).isEqualTo(1);
+            assertThat(TransactionAddRequest.AID_TOKEN_LENGTH).isEqualTo(5);
             TransactionAddRequest request = new TransactionAddRequest();
             request.setAid("\u0027");
             assertThat(request.getAid()).isEqualTo("\u0027");
+            request.setAid("PFK05");
+            assertThat(request.getAid()).isEqualTo("PFK05");
         }
     }
 
@@ -1266,8 +1276,9 @@ class TransactionAddRequestTest {
         /**
          * Both sides of every constrained field, one field at a time.
          *
-         * <p>Twenty-one payload fields plus the one-byte {@code EIBAID} carrier: for each, a value at
-         * exactly the declared width must pass and a value one character wider must be the single
+         * <p>Twenty-one payload fields plus the {@code EIBAID} carrier, declared at the
+         * {@code CCARD-AID} token width: for each, a value at exactly the declared width must pass and
+         * a value one character wider must be the single
          * reported violation. Driving only the happy side would leave every {@code @Size} boundary
          * asserted in one direction, which is the direction a mistyped {@code max} survives.
          */

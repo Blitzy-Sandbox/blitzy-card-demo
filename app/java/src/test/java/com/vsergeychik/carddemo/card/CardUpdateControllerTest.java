@@ -4069,7 +4069,7 @@ class CardUpdateControllerTest {
                     .isInstanceOf(ScreenInputRejectedException.class)
                     .satisfies(thrown -> {
                         ScreenInputRejectedException rejected = (ScreenInputRejectedException) thrown;
-                        assertThat(rejected.member()).contains("CRDNAME");
+                        assertThat(rejected.member()).contains("crdname");
                         assertThat(rejected.getMessage()).contains("CRDNAMEI").contains("U+00C9");
                     });
         }

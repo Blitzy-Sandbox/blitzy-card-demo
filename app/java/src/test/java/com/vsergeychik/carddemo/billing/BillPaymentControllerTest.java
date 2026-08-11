@@ -2547,7 +2547,7 @@ class BillPaymentControllerTest {
                             .contentType(MediaType.APPLICATION_JSON)
                             .content(productionMapper().writeValueAsString(tooWide)))
                     .andExpect(status().isBadRequest())
-                    .andExpect(jsonPath("$.fieldErrors[0].field").value("actIdIn"));
+                    .andExpect(jsonPath("$.fieldErrors[0].field").value("actidin"));
 
             verify(sliceService, never()).processEnterKey(any(), any(),
                     any(NavigationContext.class));

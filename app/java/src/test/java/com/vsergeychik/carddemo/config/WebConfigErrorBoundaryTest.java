@@ -232,6 +232,49 @@ class WebConfigErrorBoundaryTest {
 
             assertThat(CobolErrorHandler.malformedRequestResponse(indexed).fieldErrors()).isEmpty();
         }
+
+        @Test
+        @DisplayName("A screen value refused at the JSON boundary is answered as the refusal it is, not "
+                + "as a malformed body: the body parsed perfectly well")
+        void aScreenInputRefusalIsUnwrapped() {
+            // ScreenTextDeserializer can only fail through Jackson, so its refusal arrives wrapped.
+            // Answering MALFORMED_REQUEST would be wrong twice over - the body was well formed, and the
+            // caller would be told to check its shape rather than which member carries the bad
+            // character - so the handler unwraps it and gives the one answer this module gives for a
+            // screen value it refuses, from wherever it was raised.
+            ScreenInputRejectedException refusal =
+                    ScreenInputRejectedException.controlCharacter("fname", 0x09);
+            JsonMappingException mapping =
+                    JsonMappingException.from((JsonParser) null, "boom", refusal);
+            HttpMessageNotReadableException wrapped = new HttpMessageNotReadableException(
+                    "JSON parse error", mapping, mock(HttpInputMessage.class));
+
+            assertThat(CobolErrorHandler.screenInputCause(wrapped)).isSameAs(refusal);
+
+            ResponseEntity<CobolErrorResponse> response =
+                    new CobolErrorHandler().handleUnreadableRequestBody(wrapped);
+
+            assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+            assertThat(response.getBody()).isNotNull();
+            assertThat(response.getBody().code()).isEqualTo(CobolErrorHandler.REJECTED_VALUE_CODE);
+            assertThat(response.getBody().fieldErrors()).singleElement()
+                    .satisfies(field -> assertThat(field.field()).isEqualTo("fname"));
+            assertThat(response.getBody().toString()).doesNotContain(PAN);
+        }
+
+        @Test
+        @DisplayName("A genuine parse failure still answers MALFORMED_REQUEST, so unwrapping has not "
+                + "widened the arm")
+        void aGenuineParseFailureIsUnaffected() {
+            assertThat(CobolErrorHandler.screenInputCause(unreadableAt("cardNumber"))).isNull();
+
+            HttpMessageNotReadableException noCause = new HttpMessageNotReadableException(
+                    "JSON parse error", mock(HttpInputMessage.class));
+            assertThat(CobolErrorHandler.screenInputCause(noCause)).isNull();
+
+            assertThat(new CobolErrorHandler().handleUnreadableRequestBody(unreadableAt("cardNumber"))
+                    .getBody().code()).isEqualTo(CobolErrorHandler.MALFORMED_REQUEST_CODE);
+        }
     }
 
     @Nested
@@ -259,16 +302,23 @@ class WebConfigErrorBoundaryTest {
         }
 
         @Test
-        @DisplayName("Neither the rejected value nor the required type is echoed")
-        void neitherTheValueNorTheTypeIsEchoed() {
+        @DisplayName("The parameter is named, while neither the rejected value nor the required type "
+                + "is echoed")
+        void theParameterIsNamedButNeitherTheValueNorTheTypeIsEchoed() {
             MethodArgumentTypeMismatchException mismatch = new MethodArgumentTypeMismatchException(
                     PAN, Long.class, "acctId", null, new NumberFormatException(PAN));
 
             assertThat(mismatch.getValue()).isEqualTo(PAN);
-            assertThat(HANDLER.handleTypeMismatch(mismatch).getBody().toString())
+            ResponseEntity<CobolErrorResponse> response = HANDLER.handleTypeMismatch(mismatch);
+
+            // The name is the one the route publishes and the caller typed into the URL, so it is
+            // already known to them and discloses nothing; the value and the Java type are not.
+            assertThat(response.getBody()).isNotNull();
+            assertThat(response.getBody().fieldErrors()).singleElement()
+                    .satisfies(field -> assertThat(field.field()).isEqualTo("acctId"));
+            assertThat(response.getBody().toString())
                     .doesNotContain(PAN)
-                    .doesNotContain("Long")
-                    .doesNotContain("acctId");
+                    .doesNotContain("Long");
         }
 
         @Test
@@ -326,7 +376,7 @@ class WebConfigErrorBoundaryTest {
                 + "\"a field does not fit\" is unactionable on a 54-field screen")
         void aScreenInputRefusalNamesTheMember() {
             ResponseEntity<CobolErrorResponse> response = HANDLER.handleRejectedValue(
-                    ScreenInputRejectedException.unrepresentable("ACSLNAM", "ACSLNAMI",
+                    ScreenInputRejectedException.unrepresentable("acslnam", "ACSLNAMI",
                             StandardCharsets.US_ASCII, 0x00D1));
 
             assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
@@ -334,15 +384,17 @@ class WebConfigErrorBoundaryTest {
             assertThat(response.getBody().code()).isEqualTo(CobolErrorHandler.REJECTED_VALUE_CODE);
             assertThat(response.getBody().fieldErrors()).singleElement()
                     .satisfies(field -> {
-                        assertThat(field.field()).isEqualTo("ACSLNAM");
+                        // The lowercase JSON member the caller sent, not the uppercase COBOL label:
+                        // one vocabulary across every arm of the envelope.
+                        assertThat(field.field()).isEqualTo("acslnam");
                         assertThat(field.message()).contains("U+00D1").contains("US-ASCII");
                     });
-            assertThat(response.getBody().detail()).contains("ACSLNAM").contains("U+00D1");
+            assertThat(response.getBody().detail()).contains("acslnam").contains("U+00D1");
         }
 
         @Test
         @DisplayName("It is the one IllegalArgumentException whose message is published, and it is safe "
-                + "to publish because the type is final with two value-free factories")
+                + "to publish because the type is final and every factory is value-free")
         void theScreenInputMessageIsSafeToPublishBecauseTheTypeIsSealedShut() {
             assertThat(java.lang.reflect.Modifier.isFinal(ScreenInputRejectedException.class
                     .getModifiers()))

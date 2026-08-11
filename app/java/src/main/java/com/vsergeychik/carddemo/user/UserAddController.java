@@ -8,6 +8,7 @@ import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.NavigationContext;
 import com.vsergeychik.carddemo.common.PfKeyResolver;
+import com.vsergeychik.carddemo.common.ScreenInputRejectedException;
 import com.vsergeychik.carddemo.common.ScreenFieldImage;
 import com.vsergeychik.carddemo.common.ScreenMetadata;
 import com.vsergeychik.carddemo.common.ScreenResponse;
@@ -20,7 +21,9 @@ import jakarta.validation.Valid;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.OptionalInt;
@@ -616,6 +619,16 @@ public class UserAddController {
                     + "as a reference-modification length, so a negative value has no meaning.");
         }
 
+        // Ahead of the flow, and outside it: a character the screen code page cannot represent is a
+        // value no RECEIVE MAP at :89 could have delivered, so there is no COBOL behaviour to
+        // reproduce for it and the caller is told which member carries it. Judging here rather than
+        // where the record is encoded is what makes the answer name a field: by the time the value
+        // reaches WRITE-USER-SEC-FILE at :238-274 it is one span of an eighty-byte image and the
+        // member it came from is no longer known. Sweeping before any state exists also means the
+        // refusal precedes every read and every write, so nothing partial is left behind - the same
+        // placement, and the same reason, as the account and card update routes.
+        ScreenInputRejectedException.requireRepresentable(receivedMapValues(request), codec);
+
         ProgramState state = new ProgramState(codec, eibAid, eibcalen);
 
         // L73: SET ERR-FLG-OFF TO TRUE. The flag starts explicitly off on every entry.
@@ -882,6 +895,51 @@ public class UserAddController {
 
         // L190-196: EXEC CICS SEND ... ERASE CURSOR.
         state.recordSend();
+    }
+
+    /**
+     * The five operator-typed values of the received map, keyed by {@code DFHMDF} label, for the code
+     * page judgement {@link #mainPara(UserAddRequest, byte, int)} makes before the flow begins.
+     *
+     * <p>Exactly the five fields {@code RECEIVE-USRADD-SCREEN} at {@code :201-209} takes from the
+     * terminal and {@code WRITE-USER-SEC-FILE} at {@code :238-274} then stores, in copybook declaration
+     * order. The six header fields are not judged: the program overwrites every one of them in
+     * {@code POPULATE-HEADER-INFO} at {@code :214-233} before the next send, so nothing a caller puts
+     * there survives to reach a record, and {@code ERRMSG} is output-only.
+     *
+     * <p>A {@code null} payload yields an empty map rather than an entry per field: a cold start has no
+     * received map at all, and a {@code null} value carries no character to judge.
+     *
+     * @param request the received map; may be {@code null}
+     * @return the values to judge, keyed by label; never {@code null}
+     */
+    private static Map<String, String> receivedMapValues(UserAddRequest request) {
+        if (request == null) {
+            return Map.of();
+        }
+        Map<String, String> values = new LinkedHashMap<>();
+        values.put(label(UserAddRequest.FNAME_FIELD), request.fName());
+        values.put(label(UserAddRequest.LNAME_FIELD), request.lName());
+        values.put(label(UserAddRequest.USERID_FIELD), request.userId());
+        values.put(label(UserAddRequest.PASSWD_FIELD), request.passwd());
+        values.put(label(UserAddRequest.USRTYPE_FIELD), request.usrType());
+        return values;
+    }
+
+    /**
+     * The {@code DFHMDF} label of a symbolic-map input item, which is the item name without its
+     * trailing {@code I}.
+     *
+     * <p>Derived from the item name rather than declared a second time, so the label and the item can
+     * never drift apart: {@code app/cpy-bms/COUSR01.CPY} names the input item {@code FNAMEI} and
+     * {@code app/bms/COUSR01.bms} names the field {@code FNAME}, and that relation holds for every
+     * field of all seventeen mapsets.
+     *
+     * @param itemName the {@code xxxI} item name, ending in {@code I}; must not be {@code null}
+     * @return the {@code DFHMDF} label
+     */
+    private static String label(String itemName) {
+        return itemName.substring(0, itemName.length() - 1);
     }
 
     /**
@@ -1371,10 +1429,8 @@ public class UserAddController {
         if (eibAid != null) {
             int value = eibAid;
             if (value < AID_MIN || value > AID_MAX) {
-                throw new IllegalArgumentException("The " + EIBAID_PARAM + " parameter carries one "
-                        + "EIBAID byte and must be " + AID_MIN + " to " + AID_MAX + ", but was " + value
-                        + ". Narrowing it silently would select an attention identifier the caller "
-                        + "never pressed.");
+                throw ScreenInputRejectedException.outsideRange(EIBAID_PARAM,
+                        "one EIBAID byte", AID_MIN, AID_MAX);
             }
             return (byte) value;
         }
@@ -1678,16 +1734,31 @@ public class UserAddController {
          * they are {@code xxxL} and {@code xxxC} metadata, and putting them on the wire would break the
          * rule that every payload field traces to a name-labelled {@code DFHMDF}.
          *
-         * <p>{@code nextMapset} and {@code nextMap} are populated only where the program actually names
-         * a map: on a send, the conversation stays on {@code COUSR1A} of {@code COUSR01} and returns to
+         * <p>{@code nextMapset} and {@code nextMap} name a map only where the program names one: on a
+         * send, the conversation stays on {@code COUSR1A} of {@code COUSR01} and returns to
          * {@code COUSR01C}, whereas {@code XCTL} at {@code COUSR01C:176} passes a program and a
-         * communication area and no map at all, so both stay {@code null} there.
+         * communication area and no map at all.
+         *
+         * <p><strong>"No map" travels as blank at the declared width, never as JSON {@code null}.</strong>
+         * COBOL has no null: an unset {@code PIC X(7)} holds spaces or {@code LOW-VALUES}, and
+         * {@code CDEMO-LAST-MAPSET}/{@code CDEMO-LAST-MAP} are exactly that width. Two further reasons
+         * make blank the only defensible form here. First, every {@code EIBCALEN = 0} arm in this estate
+         * is an {@code XCTL} to {@code COSGN00C}, so the transfer arm <em>is</em> the cold-start path -
+         * the very first request a client makes to this route took it, and answered with two nulls.
+         * Second, {@code null} made the member's TYPE depend on the branch, which a statically typed
+         * client cannot bind. The sibling {@code user/UserUpdateController} already answers blank, and
+         * the other sixteen routes emit a seven-character string on both arms; this route is now the
+         * same, so the whole seventeen-route surface carries no JSON {@code null} anywhere.
          *
          * @return the response payload
          */
         public UserAddResponse response() {
-            String responseNextMapset = transferred ? null : MAPSET_NAME;
-            String responseNextMap = transferred ? null : MAP_NAME;
+            String responseNextMapset = transferred
+                    ? String.valueOf(SPACE).repeat(UserAddResponse.NEXT_MAPSET_LENGTH)
+                    : MAPSET_NAME;
+            String responseNextMap = transferred
+                    ? String.valueOf(SPACE).repeat(UserAddResponse.NEXT_MAP_LENGTH)
+                    : MAP_NAME;
             String responseNextProgram = transferred ? nextProgram : WS_PGMNAME;
             return new UserAddResponse(trnName,
                                        title01,

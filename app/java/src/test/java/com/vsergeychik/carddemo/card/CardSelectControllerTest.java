@@ -30,6 +30,7 @@ import com.vsergeychik.carddemo.common.CicsAid;
 import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.NavigationContext;
+import com.vsergeychik.carddemo.common.ScreenInputRejectedException;
 import com.vsergeychik.carddemo.common.PfKeyResolver;
 import com.vsergeychik.carddemo.common.ScreenResponse;
 import com.vsergeychik.carddemo.common.ScreenTitles;
@@ -2307,15 +2308,28 @@ class CardSelectControllerTest {
         }
 
         @Test
-        @DisplayName("a body naming a DIFFERENT card has that value replaced by the URI's")
-        void aContradictingCardNumberIsProjectedOver() {
-            // CARDSID is the typed criterion the re-entry arm edits. The URI is the resource identity, so
-            // the body's second statement of it is replaced rather than acted on.
-            CardSelectRequest bound =
-                    controller.bind(CARD_NUMBER, request("4000000000000002", ACCOUNT_ID, null));
+        @DisplayName("a body naming a DIFFERENT card is refused, naming the member and echoing no value")
+        void aContradictingCardNumberIsRefused() {
+            // CARDSID is the typed criterion the re-entry arm edits, and the URI states the same key. Two
+            // different keys in one request is a screen that cannot exist, so it is refused at the
+            // boundary rather than having one of the two values dropped with no message.
+            assertThatThrownBy(() ->
+                    controller.bind(CARD_NUMBER, request("4000000000000002", ACCOUNT_ID, null)))
+                    .isInstanceOf(ScreenInputRejectedException.class)
+                    .hasMessageContaining("cardsid")
+                    .hasMessageNotContaining("4000000000000002");
+            verifyNoInteractions(repository);
+        }
+
+        @Test
+        @DisplayName("the asterisk COCRDSLC paints for 'no criterion' agrees with the URI")
+        void theAsteriskNoCriterionImageAgrees() {
+            // app/cbl/COCRDSLC.cbl:543,549 MOVE '*' TO the output fields when nothing was supplied and
+            // :615,622 read = '*' back as exactly that, so an asterisk names no card. A client echoing
+            // that painted screen must bind, not be refused.
+            CardSelectRequest bound = controller.bind(CARD_NUMBER, request("*", ACCOUNT_ID, null));
 
             assertThat(bound.getCardsid()).isEqualTo(CARD_NUMBER);
-            verifyNoInteractions(repository);
         }
 
         @Test

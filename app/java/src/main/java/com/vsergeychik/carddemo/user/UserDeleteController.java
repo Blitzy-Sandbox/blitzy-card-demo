@@ -6,6 +6,7 @@ import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.NavigationContext;
 import com.vsergeychik.carddemo.common.PfKeyResolver;
+import com.vsergeychik.carddemo.common.ScreenInputRejectedException;
 import com.vsergeychik.carddemo.common.ScreenMetadata;
 import com.vsergeychik.carddemo.common.ScreenResponse;
 import com.vsergeychik.carddemo.common.PfKeyResolver.AidKey;
@@ -359,6 +360,15 @@ public class UserDeleteController {
     /** {@code USRIDINI PIC X(8)} - {@code app/cpy-bms/COUSR03.CPY:60}. */
     public static final int USR_ID_IN_LENGTH = UserDeleteRequest.USRIDIN_LENGTH;
 
+    /**
+     * The payload member the URI's user identity binds, spelled as the client sends it.
+     *
+     * <p>Lowercase and {@code xxxI}-derived, which is this module's one JSON naming convention, so a
+     * refusal names the member the caller can find in its own request body.
+     */
+    static final String USRIDIN_MEMBER = "usridin";
+
+
     /** {@code FNAMEI PIC X(20)} - {@code app/cpy-bms/COUSR03.CPY:66}. */
     public static final int F_NAME_LENGTH = UserDeleteRequest.FNAME_LENGTH;
 
@@ -562,11 +572,10 @@ public class UserDeleteController {
      */
     static void requireIdentityFits(String userId) {
         if (userId.length() > USR_ID_IN_LENGTH) {
-            throw new IllegalArgumentException("The user id in the path is " + userId.length()
-                    + " characters, but USRIDIN is USRIDINI PIC X(" + USR_ID_IN_LENGTH
-                    + ") and SEC-USR-ID is PIC X(" + USR_ID_IN_LENGTH + "). Padding it would keep the "
-                    + "leading " + USR_ID_IN_LENGTH + " characters and delete a different user than the "
-                    + "one the URI names.");
+            throw ScreenInputRejectedException.tooWide(USRIDIN_MEMBER,
+                    "USRIDINI PIC X(" + USR_ID_IN_LENGTH + ") and SEC-USR-ID PIC X("
+                            + USR_ID_IN_LENGTH + ")",
+                    USR_ID_IN_LENGTH, userId.length());
         }
     }
 
@@ -596,6 +605,11 @@ public class UserDeleteController {
         if (request == null) {
             return null;
         }
+        // The URI and USRIDIN state the same key, so the payload's member must not contradict it:
+        // overwriting it silently discarded the operator's own typed identity with no message, on a
+        // route whose action is a delete. Absent, blank, LOW-VALUES or the URI's key agree.
+        ScreenInputRejectedException.requireKeyAgreement(USRIDIN_MEMBER, userId, request.usrIdIn(),
+                USR_ID_IN_LENGTH, codec);
         String identity = codec.movePicX(userId, USR_ID_IN_LENGTH);
         Cu03Info extension = request.cu03Info();
         return new UserDeleteRequest(request.trnName(),

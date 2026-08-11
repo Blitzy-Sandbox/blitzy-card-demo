@@ -1852,6 +1852,25 @@ public class CardUpdateController {
     /** The name of the query parameter carrying {@code EIBCALEN}. */
     static final String EIBCALEN_PARAM = "eibcalen";
 
+    /**
+     * The payload member the URI's card number binds, spelled as the client sends it.
+     *
+     * <p>Lowercase and {@code xxxI}-derived, which is this module's one JSON naming convention, so a
+     * refusal names the member the caller can find in its own request body.
+     */
+    static final String CARDSID_MEMBER = "cardsid";
+    /**
+     * The one-character image a screen paints into a key field when no criterion was supplied.
+     *
+     * <p>{@code app/cbl/COACTVWC.cbl:563} and {@code app/cbl/COCRDSLC.cbl:543,549} move {@code '*'} into
+     * the output field, and {@code COACTVWC:628}, {@code COACTUPC:1051} and {@code COCRDSLC:615,622} read
+     * {@code = '*'} back as "not supplied". So an asterisk names no record, and a client echoing that
+     * painted screen is agreeing with the URI rather than contradicting it.
+     */
+    static final String NO_CRITERION_IMAGE = "*";
+
+
+
     /** The route: {@code PUT /api/cards/{cardNum}}, CSD transaction {@code CCUP}. */
     static final String CARD_UPDATE_PATH = "/api/cards/{cardNum}";
 
@@ -1967,17 +1986,28 @@ public class CardUpdateController {
      *         {@code CDEMO-CARD-NUM} both set from the path; never {@code null}
      * @throws IllegalArgumentException if the path value, or the bound {@code ACCTSID}, is wider than
      *                                 its declared width
+     *
+     * <h4>The payload's own key field must not contradict the URI</h4>
+     * This route states the record's key twice - in the URI and in {@code CARDSIDI}, the field the URI
+     * binds - and a terminal has only one. The payload's member is therefore required to agree before it
+     * is overwritten: absent, blank, {@code LOW-VALUES} or the URI's key is accepted, anything else is
+     * refused at the boundary by
+     * {@link ScreenInputRejectedException#requireKeyAgreement(String, String, String, int, FixedWidthCodec)}.
+     * Overwriting it silently, which is what happened before, discarded the operator's own typed card
+     * number with no message. A client that echoes a painted screen agrees with the URI and never reaches
+     * the refusal.
      */
     CardUpdateRequest bind(String cardNum, CardUpdateRequest request) {
         if (cardNum.length() > CardUpdateRequest.CARDSID_LENGTH) {
-            throw new IllegalArgumentException("The card number in the path is " + cardNum.length()
-                    + " characters, but CARDSID is CARDSIDI PIC X(" + CardUpdateRequest.CARDSID_LENGTH
-                    + "). Padding it would keep the leading " + CardUpdateRequest.CARDSID_LENGTH
-                    + " characters and update a different card than the one the URI names.");
+            throw ScreenInputRejectedException.tooWide(CARDSID_MEMBER,
+                    "CARDSIDI PIC X(" + CardUpdateRequest.CARDSID_LENGTH + ")",
+                    CardUpdateRequest.CARDSID_LENGTH, cardNum.length());
         }
 
         CardUpdateRequest received = request == null ? new CardUpdateRequest()
                 : new CardUpdateRequest(request);
+        ScreenInputRejectedException.requireKeyAgreement(CARDSID_MEMBER, cardNum,
+                received.getCardsid(), CardUpdateRequest.CARDSID_LENGTH, codec, NO_CRITERION_IMAGE);
         received.setCardsid(codec.movePicX(cardNum, CardUpdateRequest.CARDSID_LENGTH));
 
         // The communication area's own card number, the one :491 reads. Projected only when an area was
@@ -2106,10 +2136,8 @@ public class CardUpdateController {
         }
         int value = eibAid;
         if (value < AID_MIN || value > AID_MAX) {
-            throw new IllegalArgumentException("The " + EIBAID_PARAM + " parameter carries one EIBAID "
-                    + "byte and must be " + AID_MIN + " to " + AID_MAX + ", but was " + value
-                    + ". Narrowing it silently would select an attention identifier the caller never "
-                    + "pressed - and on this screen PF5 saves.");
+            throw ScreenInputRejectedException.outsideRange(EIBAID_PARAM,
+                    "one EIBAID byte", AID_MIN, AID_MAX);
         }
         return (byte) value;
     }

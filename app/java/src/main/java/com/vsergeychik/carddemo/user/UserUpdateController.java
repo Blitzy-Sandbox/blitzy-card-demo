@@ -9,6 +9,7 @@ import com.vsergeychik.carddemo.common.DiagnosticText;
 import com.vsergeychik.carddemo.common.NavigationContext;
 import com.vsergeychik.carddemo.common.SensitiveDiagnostics;
 import com.vsergeychik.carddemo.common.PfKeyResolver;
+import com.vsergeychik.carddemo.common.ScreenInputRejectedException;
 import com.vsergeychik.carddemo.common.PfKeyResolver.AidKey;
 import com.vsergeychik.carddemo.common.ScreenMetadata;
 import com.vsergeychik.carddemo.common.ScreenResponse;
@@ -235,6 +236,15 @@ public class UserUpdateController {
      * <p>Named once so the handler signature, the two refusal messages and every test agree on it.
      */
     public static final String EIBCALEN_PARAM = "eibcalen";
+
+    /**
+     * The payload member the URI's user identity binds, spelled as the client sends it.
+     *
+     * <p>Lowercase and {@code xxxI}-derived, which is this module's one JSON naming convention, so a
+     * refusal names the member the caller can find in its own request body.
+     */
+    static final String USRIDIN_MEMBER = "usridin";
+
 
     /** Declared width of {@code WS-MESSAGE PIC X(80)} - line 38. Two wider than {@code ERRMSGO}. */
     public static final int WS_MESSAGE_LENGTH = 80;
@@ -646,6 +656,11 @@ public class UserUpdateController {
         // what occupies the USRIDIN slot of the terminal input area AND what the extension's selected id
         // carries, because lines 99-102 read the extension rather than the screen field on first entry.
         // The path has already been required to fit, so both MOVEs below only pad.
+        // The URI and USRIDIN state the same key, so the payload's member must not contradict it:
+        // overwriting it silently discarded the operator's own typed identity with no message. Absent,
+        // blank, LOW-VALUES or the URI's key agree; anything else is two keys in one request.
+        ScreenInputRejectedException.requireKeyAgreement(USRIDIN_MEMBER, userId, request.usrIdIn(),
+                UserUpdateRequest.USRIDIN_LENGTH, PICTURE_RULES);
         String identity = PICTURE_RULES.movePicX(userId, UserUpdateRequest.USRIDIN_LENGTH);
         Cu02Info arrived = request.cu02Info();
         Cu02Info cu02Info = new Cu02Info(arrived.usridFirst(),
@@ -685,12 +700,10 @@ public class UserUpdateController {
      */
     static void requireIdentityFits(String userId) {
         if (userId.length() > UserUpdateRequest.USRIDIN_LENGTH) {
-            throw new IllegalArgumentException("The user id in the path is " + userId.length()
-                    + " characters, but USRIDIN is USRIDINI PIC X("
-                    + UserUpdateRequest.USRIDIN_LENGTH + ") and SEC-USR-ID is PIC X("
-                    + UserUpdateRequest.USRIDIN_LENGTH + "). Padding it would keep the leading "
-                    + UserUpdateRequest.USRIDIN_LENGTH + " characters and address a different user "
-                    + "than the one the URI names.");
+            throw ScreenInputRejectedException.tooWide(USRIDIN_MEMBER,
+                    "USRIDINI PIC X(" + UserUpdateRequest.USRIDIN_LENGTH
+                            + ") and SEC-USR-ID PIC X(" + UserUpdateRequest.USRIDIN_LENGTH + ")",
+                    UserUpdateRequest.USRIDIN_LENGTH, userId.length());
         }
     }
 

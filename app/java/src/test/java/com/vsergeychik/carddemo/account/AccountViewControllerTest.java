@@ -32,6 +32,7 @@ import com.vsergeychik.carddemo.common.FieldAttributeSetter;
 import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.NavigationContext;
+import com.vsergeychik.carddemo.common.ScreenInputRejectedException;
 import com.vsergeychik.carddemo.common.PfKeyResolver;
 import com.vsergeychik.carddemo.common.SystemMessages;
 import com.vsergeychik.carddemo.config.WebConfig;
@@ -306,10 +307,40 @@ class AccountViewControllerTest {
         assertThat(controller.bind("11", null).getAcctsid()).isEqualTo("11         ");
         assertThatThrownBy(() -> controller.bind("123456789012", null))
                 .isInstanceOf(IllegalArgumentException.class);
-        AccountViewRequest caller = request("99999999999", reenter());
-        AccountViewRequest bound = controller.bind("11", caller);
-        assertThat(caller.getAcctsid()).isEqualTo("99999999999");
+        // The copy-not-mutate property, probed with a body value that AGREES with the URI: a body naming
+        // a different account is refused outright (see aDisagreeingAccountFilterIsRefused), so it cannot
+        // be used to observe the copy.
+        AccountViewRequest caller = request("11", reenter());
+        String asTheCallerLeftIt = caller.getAcctsid();
+        AccountViewRequest bound = controller.bind("11         ", caller);
+        assertThat(caller.getAcctsid()).as("the caller's object is never altered")
+                .isEqualTo(asTheCallerLeftIt);
+        assertThat(bound).as("a copy, not the same object").isNotSameAs(caller);
         assertThat(bound.getAcctsid()).isEqualTo("11         ");
+    }
+
+    @Test
+    @DisplayName("bind: a body whose ACCTSID names a different account is refused, naming the member")
+    void aDisagreeingAccountFilterIsRefused() {
+        // The URI and ACCTSIDI state the same key, and a terminal has one key field. Two different keys
+        // in one request used to have the typed one silently discarded; it is now refused at the
+        // boundary, before any read, with neither value echoed.
+        assertThatThrownBy(() -> controller.bind("11", request("99999999999", reenter())))
+                .isInstanceOf(ScreenInputRejectedException.class)
+                .hasMessageContaining("acctsid")
+                .hasMessageNotContaining("99999999999");
+    }
+
+    @ParameterizedTest(name = "a body stating ACCTSID as \"{0}\" lets the URI supply it")
+    @ValueSource(strings = {"", "           ", "*", "11", "11         ",
+        "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000"})
+    @DisplayName("bind: blank, LOW-VALUES, the asterisk COACTVWC paints, and the URI's own key all agree")
+    void theStatesThatAgreeWithTheUriAreAccepted(String stated) {
+        // app/cbl/COACTVWC.cbl:563 MOVEs '*' TO ACCTSIDO when nothing was supplied and :628 reads = '*'
+        // back as exactly that, so an asterisk names no account and a client echoing that painted screen
+        // must bind rather than be refused.
+        assertThat(controller.bind("11", request(stated, reenter())).getAcctsid())
+                .isEqualTo("11         ");
     }
 
     // ---------------------------------------------------------------------------------------------

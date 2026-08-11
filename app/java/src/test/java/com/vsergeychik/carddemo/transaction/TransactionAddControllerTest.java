@@ -2,6 +2,8 @@ package com.vsergeychik.carddemo.transaction;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.catchThrowable;
 import static org.assertj.core.api.Assertions.assertThatIllegalStateException;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 import static org.mockito.Mockito.mock;
@@ -22,6 +24,7 @@ import com.vsergeychik.carddemo.common.DateHeader;
 import com.vsergeychik.carddemo.common.FieldAttributeSetter;
 import com.vsergeychik.carddemo.common.NavigationContext;
 import com.vsergeychik.carddemo.common.PfKeyResolver;
+import com.vsergeychik.carddemo.common.ScreenInputRejectedException;
 import com.vsergeychik.carddemo.common.PfKeyResolver.AidKey;
 import com.vsergeychik.carddemo.common.ScreenTitles;
 import com.vsergeychik.carddemo.common.SystemMessages;
@@ -52,6 +55,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.http.MediaType;
 import org.springframework.http.converter.json.MappingJackson2HttpMessageConverter;
@@ -1528,9 +1532,19 @@ class TransactionAddControllerTest {
                             + (char) Integer.parseInt(hex.substring(4), 16)
                     : String.valueOf((char) Integer.parseInt(hex, 16));
 
-            assertThatIllegalArgumentException()
-                    .isThrownBy(() -> TransactionAddController.eibAidOf(aid))
-                    .withMessageContaining("EIBAID is one byte");
+            // The guard applies to the byte form, which is the only form that IS a byte. A
+            // surrogate-shaped value - two characters, the only way a String carries a code point above
+            // U+FFFF - is read as a CCARD-AID token instead, matches none of the sixteen, and so
+            // resolves to DFHNULL and takes WHEN OTHER. Either way it cannot reach the PF3 arm, which is
+            // what this test exists to prove, and neither way narrows anything.
+            if (aid.length() > TransactionAddRequest.AID_LENGTH) {
+                assertThat(TransactionAddController.eibAidOf(aid)).isEqualTo(CicsAid.DFHNULL);
+                assertThat(PfKeyResolver.resolve(TransactionAddController.eibAidOf(aid))).isEmpty();
+            } else {
+                assertThatIllegalArgumentException()
+                        .isThrownBy(() -> TransactionAddController.eibAidOf(aid))
+                        .withMessageContaining("one EIBAID byte");
+            }
         }
 
         @Test
@@ -1547,12 +1561,48 @@ class TransactionAddControllerTest {
         }
 
         @Test
-        @DisplayName("an AID longer than one character is refused: EIBAID is one byte")
-        void anAidLongerThanOneCharacterIsRefused() {
-            assertThatIllegalArgumentException()
-                    .isThrownBy(() -> TransactionAddController.eibAidOf("\u007D\u00F3"))
-                    .withMessageContaining("characters");
+        @DisplayName("two to five characters is the CCARD-AID token form, and every one of the sixteen "
+                + "resolves to the byte it stands for")
+        void theTokenFormResolvesToItsByte() {
+            // The token form is what every response of this module publishes, so a client that echoes
+            // what it was given states the key this way. It used to be refused here on width alone,
+            // which meant "ENTER" - a value this route's own responses carry - could not be sent back
+            // to it while nine sibling routes accepted nothing else.
+            assertThat(TransactionAddController.eibAidOf("ENTER")).isEqualTo(CicsAid.DFHENTER);
+            assertThat(TransactionAddController.eibAidOf("PFK03")).isEqualTo(CicsAid.DFHPF3);
+            assertThat(TransactionAddController.eibAidOf("PFK04")).isEqualTo(CicsAid.DFHPF4);
+            assertThat(TransactionAddController.eibAidOf("PFK05")).isEqualTo(CicsAid.DFHPF5);
+            // Unpadded spellings resolve too, because the value is put through the PIC X move first.
+            assertThat(TransactionAddController.eibAidOf("PA1")).isEqualTo(CicsAid.DFHPA1);
+            assertThat(TransactionAddController.eibAidOf("PA1  ")).isEqualTo(CicsAid.DFHPA1);
+            // A token naming no key of the sixteen, and one that is blank or LOW-VALUES, are DFHNULL,
+            // which matches no condition name and so takes WHEN OTHER at :130-134.
+            assertThat(TransactionAddController.eibAidOf("PFK99")).isEqualTo(CicsAid.DFHNULL);
+            assertThat(TransactionAddController.eibAidOf("     ")).isEqualTo(CicsAid.DFHNULL);
+            assertThat(TransactionAddController.eibAidOf("\u0000".repeat(5)))
+                    .isEqualTo(CicsAid.DFHNULL);
+            // AID_LENGTH is still the width of EIBAID itself; AID_TOKEN_LENGTH is the member's width.
             assertThat(TransactionAddRequest.AID_LENGTH).isEqualTo(1);
+            assertThat(TransactionAddRequest.AID_TOKEN_LENGTH)
+                    .isEqualTo(PfKeyResolver.AID_TOKEN_LENGTH);
+        }
+
+        @ParameterizedTest(name = "the token {0} maps back to the byte PfKeyResolver maps onto it")
+        @EnumSource(PfKeyResolver.AidKey.class)
+        @DisplayName("every one of the sixteen tokens round-trips through the shared resolver")
+        void everyTokenRoundTripsThroughTheResolver(PfKeyResolver.AidKey key) {
+            // The inverse must agree with PfKeyResolver for all sixteen, or a client echoing a token it
+            // was given would be understood as a different key than the one that produced it.
+            assertThat(PfKeyResolver.resolve(TransactionAddController.eibAidOf(key.token())))
+                    .contains(key);
+        }
+
+        @Test
+        @DisplayName("a value wider than the token itself is refused: neither spelling can carry it")
+        void anAidWiderThanTheTokenIsRefused() {
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> TransactionAddController.eibAidOf("ENTER!"))
+                    .withMessageContaining("refused rather than truncated");
         }
 
         @Test
@@ -2561,20 +2611,61 @@ class TransactionAddControllerTest {
 
             assertThatIllegalArgumentException()
                     .isThrownBy(() -> controller.bind(tooWide, reentry(CicsAid.DFHENTER)))
-                    .withMessageContaining("Padding it would keep the leading");
+                    .withMessageContaining("refused rather than truncated");
         }
 
         @Test
-        @DisplayName("a body naming a different transaction has both carriers replaced by the URI's")
-        void aDisagreeingBodyIsProjectedOver() {
+        @DisplayName("a body whose TRNIDIN names a different transaction is refused, naming the member")
+        void aDisagreeingScreenFieldIsRefused() {
+            // TRNIDINI is the field the operator types into, so a value there naming a second
+            // transaction is two keys in one request. Replacing it silently discarded the typed identity
+            // with no message; a client echoing a painted screen always agrees and never gets here.
             TransactionAddRequest stating = reentry(CicsAid.DFHENTER);
             stating.setTrnidin("0000000000000099");
+
+            assertThatThrownBy(() -> controller.bind(KNOWN_TRAN_ID, stating))
+                    .isInstanceOf(ScreenInputRejectedException.class)
+                    .hasMessageContaining("trnidin")
+                    .hasMessageNotContaining("0000000000000099");
+            assertThat(((ScreenInputRejectedException) catchThrowable(
+                    () -> controller.bind(KNOWN_TRAN_ID, stating))).member()).contains("trnidin");
+        }
+
+        @Test
+        @DisplayName("the extension is still projected: its only writer is the list program, not the "
+                + "operator")
+        void theExtensionIsStillProjected() {
+            // CDEMO-CT01-TRN-SELECTED is a communication-area carrier the transaction-list program
+            // writes when a row is marked, not a screen field, so projecting it from the URI is what
+            // closes the second client-controlled identity rather than a discard of typed input.
+            TransactionAddRequest stating = reentry(CicsAid.DFHENTER);
             stating.getCt01Info().setTrnSelected("0000000000000098");
 
             TransactionAddRequest bound = controller.bind(KNOWN_TRAN_ID, stating);
 
             assertThat(bound.getTrnidin()).isEqualTo(KNOWN_TRAN_ID);
             assertThat(bound.getCt01Info().getTrnSelected()).isEqualTo(KNOWN_TRAN_ID);
+        }
+
+        @ParameterizedTest(name = "a body stating TRNIDIN as \"{0}\" lets the URI supply it")
+        @ValueSource(strings = {"", "   ", "0000000000000001", "0000000000000001    "})
+        @DisplayName("the no-criterion states and the URI's own key all agree")
+        void theStatesThatAgreeAreAccepted(String stated) {
+            TransactionAddRequest stating = reentry(CicsAid.DFHENTER);
+            stating.setTrnidin(stated);
+
+            assertThat(controller.bind(KNOWN_TRAN_ID, stating).getTrnidin())
+                    .isEqualTo(KNOWN_TRAN_ID);
+        }
+
+        @Test
+        @DisplayName("a LOW-VALUES key field agrees too: that is what an unmodified BMS field carries")
+        void aLowValuesKeyFieldAgrees() {
+            TransactionAddRequest stating = reentry(CicsAid.DFHENTER);
+            stating.setTrnidin("\u0000".repeat(TransactionAddRequest.TRNIDIN_LENGTH));
+
+            assertThat(controller.bind(KNOWN_TRAN_ID, stating).getTrnidin())
+                    .isEqualTo(KNOWN_TRAN_ID);
         }
 
         @Test

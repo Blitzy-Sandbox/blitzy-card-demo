@@ -1865,10 +1865,15 @@ class UserMenuControllerTest {
                     .isEqualTo(CicsAid.DFHENTER);
             assertThat(UserMenuController.resolveEibAid(null, entering().withAid("\u0000".repeat(5))))
                     .isEqualTo(CicsAid.DFHENTER);
-            // A token naming no key of the sixteen is not turned into the operator-facing "invalid key"
-            // message: WHEN OTHER at :133-137 belongs to a key the terminal really presented.
+            // A token naming no key of the sixteen is NOT defaulted: it resolves to DFHNULL, which
+            // matches no condition name and so reaches WHEN OTHER at :133-137 - the arm the source
+            // writes for a key this program does not handle. Executing it as ENTER instead sent the
+            // operator down a branch they never asked for and left that arm unreachable over HTTP.
             assertThat(UserMenuController.resolveEibAid(null, entering().withAid("PFK99")))
-                    .isEqualTo(CicsAid.DFHENTER);
+                    .isEqualTo(CicsAid.DFHNULL);
+            assertThat(UserMenuController.resolveEibAid(null, entering().withAid("PF8  ")))
+                    .as("a plausible misspelling of this screen's own paging key is not ENTER")
+                    .isEqualTo(CicsAid.DFHNULL);
         }
 
         @ParameterizedTest(name = "the token {0} maps back to the byte PfKeyResolver maps onto it")
@@ -1883,7 +1888,8 @@ class UserMenuControllerTest {
         }
 
         @Test
-        @DisplayName("the three inputs that name no key are each answered with no key")
+        @DisplayName("stating no key and naming a key this program does not handle are different "
+                + "outcomes: the first is empty, the second is DFHNULL")
         void theInputsThatNameNoKeyAreEmpty() {
             // The three empty results the method documents, asserted on the method itself rather than
             // through resolveEibAid, because one of them cannot arrive that way: UserListRequest's
@@ -1892,7 +1898,12 @@ class UserMenuControllerTest {
             assertThat(UserMenuController.aidByteOfToken(null)).isEmpty();
             assertThat(UserMenuController.aidByteOfToken("     ")).isEmpty();
             assertThat(UserMenuController.aidByteOfToken("\u0000".repeat(5))).isEmpty();
-            assertThat(UserMenuController.aidByteOfToken("PFK99")).isEmpty();
+
+            // An unintelligible token is a fourth outcome and not one of those three: it names a key,
+            // just not one of the sixteen, so it resolves to DFHNULL and reaches WHEN OTHER instead of
+            // being executed as whatever the caller happens to fall back to.
+            assertThat(UserMenuController.aidByteOfToken("PFK99")).hasValue(CicsAid.DFHNULL & 0xFF);
+            assertThat(UserMenuController.aidByteOfToken("ZZZZZ")).hasValue(CicsAid.DFHNULL & 0xFF);
 
             // And the positive case, so the emptiness above is not vacuous.
             assertThat(UserMenuController.aidByteOfToken(AidKey.PFK07.token()))

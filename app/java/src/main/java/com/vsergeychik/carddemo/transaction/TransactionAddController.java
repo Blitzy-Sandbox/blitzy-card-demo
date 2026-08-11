@@ -10,6 +10,7 @@ import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.NavigationContext;
 import com.vsergeychik.carddemo.common.PfKeyResolver;
+import com.vsergeychik.carddemo.common.ScreenInputRejectedException;
 import com.vsergeychik.carddemo.common.PfKeyResolver.AidKey;
 import com.vsergeychik.carddemo.common.ScreenFieldImage;
 import com.vsergeychik.carddemo.common.ScreenMetadata;
@@ -232,6 +233,23 @@ public final class TransactionAddController {
     /** The path variable that carries the transaction id: the {@code RIDFLD} of the read. */
     public static final String TRAN_ID_VARIABLE = "tranId";
 
+    /**
+     * The payload member the URI's transaction identifier binds, spelled as the client sends it.
+     *
+     * <p>Lowercase and {@code xxxI}-derived, which is this module's one JSON naming convention, so a
+     * refusal names the member the caller can find in its own 21-field request body.
+     */
+    static final String TRNIDIN_MEMBER = "trnidin";
+
+    /**
+     * The payload member carrying {@code EIBAID}, spelled as the client sends it.
+     *
+     * <p>Named in a refusal so a caller with a 21-field body knows which member to correct.
+     */
+    static final String AID_MEMBER = "aid";
+
+
+
     // =============================================================================================
     // Navigation targets - the three program names the source moves into CDEMO-TO-PROGRAM.
     // =============================================================================================
@@ -271,6 +289,17 @@ public final class TransactionAddController {
      * {@link #eibAidOf(String)} and its tests read the same bound.
      */
     public static final char MAX_AID_CODE_POINT = 0x00FF;
+
+    /**
+     * The {@code PIC X} move rule, applied to an inbound {@code CCARD-AID} token so that an unpadded
+     * spelling matches the copybook literal - {@code "PA1"} and {@code "PA1  "} alike.
+     *
+     * <p>{@code static final} and immutable, and {@link FixedWidthCodec#movePicX(String, int)} is a pure
+     * {@link String} operation that never consults the charset, so the code page named here selects
+     * nothing and this is not shared mutable state.
+     */
+    private static final FixedWidthCodec AID_TOKEN_RULES =
+            new FixedWidthCodec(StandardCharsets.US_ASCII);
 
     /**
      * The character count of {@code WS-TRAN-AMT PIC +99999999.99} - {@code :49}.
@@ -554,12 +583,22 @@ public final class TransactionAddController {
      * not name - and with the extension blank, the path-driven immediate lookup the URI asks for would not
      * happen at all. Projecting both closes both.
      *
-     * <p>No disagreement error is raised. {@code COTRN01C} has no such condition, so inventing one would
-     * add a failure mode the legacy screen cannot produce; a client that echoes a painted screen agrees
-     * with the path and sees no difference, and one that names a second transaction has that value
-     * replaced rather than acted on. The blank-field branch at {@code :147} stays reachable, because a
-     * path segment of percent-encoded spaces is a blank identifier and {@link #mainPara} is callable
-     * directly with any buffer at all.
+     * <h4>The screen field must agree; the extension is projected</h4>
+     * The two carriers are treated differently because they are different things. {@code TRNIDINI} is the
+     * screen field the operator types into, so a value there that names a <em>different</em> transaction
+     * from the URI is two keys in one request and is refused at the boundary by
+     * {@link ScreenInputRejectedException#requireKeyAgreement(String, String, String, int, FixedWidthCodec)}
+     * - absent, blank, {@code LOW-VALUES} or the URI's key agree, and a client echoing a painted screen
+     * always agrees. Replacing it silently instead, which is what happened before, discarded the
+     * operator's own typed identity with no message; this is not an invented COBOL condition but a
+     * refusal of the REST transport, which is the only layer that has a URI to disagree with.
+     *
+     * <p>{@code CDEMO-CT01-TRN-SELECTED} is <em>not</em> a screen field: its only writer is the
+     * transaction-list program handing a marked row over in the communication area. It is therefore still
+     * projected from the path rather than judged, which is what closes the second independently
+     * client-controlled identity described above. The blank-field branch at {@code :147} stays reachable,
+     * because a path segment of percent-encoded spaces is a blank identifier and {@link #mainPara} is
+     * callable directly with any buffer at all.
      *
      * @param tranId  the path variable; must not be {@code null}
      * @param request the bound body, or {@code null} for a cold start
@@ -569,12 +608,10 @@ public final class TransactionAddController {
      */
     TransactionAddRequest bind(String tranId, TransactionAddRequest request) {
         if (tranId.length() > TransactionAddRequest.TRNIDIN_LENGTH) {
-            throw new IllegalArgumentException("The transaction id in the path is " + tranId.length()
-                    + " characters, but TRNIDIN is TRNIDINI PIC X("
-                    + TransactionAddRequest.TRNIDIN_LENGTH + ") and TRAN-ID is PIC X("
-                    + TransactionAddRequest.TRNIDIN_LENGTH + "). Padding it would keep the leading "
-                    + TransactionAddRequest.TRNIDIN_LENGTH + " characters and read a different "
-                    + "transaction than the one the URI names.");
+            throw ScreenInputRejectedException.tooWide(TRNIDIN_MEMBER,
+                    "TRNIDINI PIC X(" + TransactionAddRequest.TRNIDIN_LENGTH
+                            + ") and TRAN-ID PIC X(" + TransactionAddRequest.TRNIDIN_LENGTH + ")",
+                    TransactionAddRequest.TRNIDIN_LENGTH, tranId.length());
         }
 
         // A cold start has no body at all, which is exactly EIBCALEN = 0: a fresh request carries no
@@ -588,7 +625,10 @@ public final class TransactionAddController {
         // required to fit, so this MOVE only pads.
         String identity = codec.movePicX(tranId, TransactionAddRequest.TRNIDIN_LENGTH);
 
-        // :147, :217-224 read TRNIDINI on re-entry.
+        // :147, :217-224 read TRNIDINI on re-entry. The screen field is judged before it is written, so a
+        // payload naming a second transaction is refused rather than having its value dropped.
+        ScreenInputRejectedException.requireKeyAgreement(TRNIDIN_MEMBER, tranId, received.getTrnidin(),
+                TransactionAddRequest.TRNIDIN_LENGTH, codec);
         received.setTrnidin(identity);
 
         // :103-106 read CDEMO-CT01-TRN-SELECTED on first entry. Written at Ct01Info's own declared width
@@ -1410,12 +1450,28 @@ public final class TransactionAddController {
     /**
      * The raw {@code EIBAID} byte the {@code EVALUATE} at {@code :112} compares against.
      *
-     * <p>{@link TransactionAddRequest#getAid()} carries one character, because that is what
-     * {@code EIBAID} is and what every {@code DFHAID} token holds; its numeric value <em>is</em> the
-     * attention-identifier byte, so {@code DFHENTER} travels as {@code U+007D} and {@code DFHPF3} as
-     * {@code U+00F3}. Nothing is resolved, folded or defaulted on the way through: this is a cast, and
-     * the four tests that follow it are byte equalities exactly as the source's {@code EVALUATE}
-     * compares them.
+     * <p>{@link TransactionAddRequest#getAid()} carries the key in either of the two spellings this API
+     * uses, and the length says which:
+     *
+     * <ul>
+     *   <li><strong>One character - the raw {@code EIBAID} byte.</strong> Its numeric value <em>is</em>
+     *       the attention-identifier byte, so {@code DFHENTER} travels as {@code U+007D} and
+     *       {@code DFHPF3} as {@code U+00F3}. Nothing is resolved, folded or defaulted: this is a cast,
+     *       and the four tests that follow it are byte equalities exactly as the source's
+     *       {@code EVALUATE} compares them.</li>
+     *   <li><strong>Two to {@value TransactionAddRequest#AID_TOKEN_LENGTH} characters - the
+     *       {@code CCARD-AID} mnemonic token</strong> - is resolved by {@link #aidByteOfToken(String)}
+     *       back onto the byte it stands for. This is the form every response of this module publishes
+     *       and the form the nine sibling screens accept, so a client that echoes what it was given
+     *       states the key this way and no other. It was previously refused here with a width
+     *       violation, which meant {@code "ENTER"} - a value this route's own responses carry - could
+     *       not be sent back to it, and one {@code aid} member carried two incompatible value spaces
+     *       across a single API.</li>
+     * </ul>
+     *
+     * <p>Accepting the token adds no arm and removes none: it resolves to one of the same bytes the
+     * byte form carries, and a token this program does not handle resolves to {@link CicsAid#DFHNULL}
+     * and so takes {@code WHEN OTHER}, exactly as an unhandled byte does.
      *
      * <p>An absent or empty value becomes {@link CicsAid#DFHNULL}, the AID CICS reports when no key
      * raised the interrupt. {@code DFHNULL} matches none of the program's four named values and so
@@ -1431,33 +1487,115 @@ public final class TransactionAddController {
      * rather than folded, which is the same rule the sibling screens apply to their numeric AID
      * parameters over the range {@code 0}-{@code 255}.
      *
-     * <p>A value longer than one character is likewise refused: {@code aid} projects a one-byte item,
-     * and a surrogate pair - the only way a Java {@code String} carries a code point above
-     * {@code U+FFFF} - is two characters of which the first alone is meaningless.
+     * <p>The code-point guard applies to the byte form only, which is the only form that <em>is</em> a
+     * byte. A surrogate pair - the only way a Java {@code String} carries a code point above
+     * {@code U+FFFF} - is two characters, so it is read as a token, matches none, and takes
+     * {@code WHEN OTHER}: it can no more reach the PF3 arm than before, because no folding happens on
+     * that path either. A value wider than the token itself is refused, since neither spelling can
+     * carry it.
      *
-     * @param aid the one-character attention identifier from the payload, possibly {@code null}
+     * @param aid the attention identifier from the payload - the raw {@code EIBAID} byte or the
+     *            {@code CCARD-AID} token - possibly {@code null}
      * @return the raw {@code EIBAID} byte
      * @throws IllegalArgumentException if {@code aid} is longer than
-     *                                  {@value TransactionAddRequest#AID_LENGTH} character or its
-     *                                  character is above {@code U+00FF}
+     *                                  {@value TransactionAddRequest#AID_TOKEN_LENGTH} characters, or
+     *                                  is one character whose code point is above {@code U+00FF}
      */
     public static byte eibAidOf(String aid) {
         if (aid == null || aid.isEmpty()) {
             return CicsAid.DFHNULL;
         }
+        if (aid.length() > TransactionAddRequest.AID_TOKEN_LENGTH) {
+            throw ScreenInputRejectedException.tooWide(AID_MEMBER,
+                    "EIBAID, one byte, or the CCARD-AID token, five characters",
+                    TransactionAddRequest.AID_TOKEN_LENGTH, aid.length());
+        }
         if (aid.length() > TransactionAddRequest.AID_LENGTH) {
-            throw new IllegalArgumentException("The attention identifier is " + aid.length()
-                    + " characters, but EIBAID is one byte and every DFHAID token holds exactly one "
-                    + "character. Send a single character whose code point is the AID byte.");
+            return aidByteOfToken(aid);
         }
         char aidCharacter = aid.charAt(0);
         if (aidCharacter > MAX_AID_CODE_POINT) {
-            throw new IllegalArgumentException("The attention identifier is a character above "
-                    + "U+00FF, but EIBAID is one byte, so the whole of the AID space is U+0000 to "
-                    + "U+00FF. Narrowing it would keep only the low eight bits and could match a "
-                    + "named key the terminal never presented.");
+            // The whole of the AID space is U+0000 to U+00FF, because EIBAID is one byte. A narrowing
+            // cast of anything wider keeps only the low eight bits, and U+01F3 narrows onto 0xF3, which
+            // IS DFHPF3 - the key this program transfers on at :115. So it is refused, never folded.
+            throw ScreenInputRejectedException.outsideRange(AID_MEMBER, "one EIBAID byte",
+                    0, MAX_AID_CODE_POINT);
         }
         return (byte) aidCharacter;
+    }
+
+    /**
+     * Maps a {@code CCARD-AID} token back onto the {@code EIBAID} byte it stands for.
+     *
+     * <p>The inverse of {@link PfKeyResolver#resolve(byte)}, matched against the tokens
+     * {@link AidKey#token()} itself publishes so the two cannot drift apart, and matched on the token's
+     * declared {@code PIC X(5)} image so an unpadded spelling resolves as well as the copybook literal.
+     *
+     * <p>A token that is blank or {@code LOW-VALUES}, and a token matching none of the sixteen, both
+     * yield {@link CicsAid#DFHNULL} - the AID CICS reports when no key raised the interrupt. On this
+     * screen that is not a fallback but the faithful answer: {@code DFHNULL} matches none of the four
+     * values {@code EVALUATE EIBAID} names at {@code :112-129} and so takes {@code WHEN OTHER} at
+     * {@code :130-134}, which is the arm the source writes for a key it does not handle. It is also
+     * what {@link #eibAidOf(String)} already returns for an absent or empty value, so all three ways of
+     * saying "no key I recognise" land on one arm.
+     *
+     * <p>Note the deliberate difference from the two <em>list</em> screens, whose token resolvers
+     * default to {@link CicsAid#DFHENTER} when no key is stated: those programs' first arm is the one a
+     * terminal presenting nothing would reach, whereas this program has always answered a blank
+     * {@code aid} with the invalid-key message, and preserving that is what keeps this fix free of a
+     * behaviour change.
+     *
+     * @param token the token as received, at most {@value TransactionAddRequest#AID_TOKEN_LENGTH}
+     *              characters; must not be {@code null}
+     * @return the byte the token stands for, or {@link CicsAid#DFHNULL} when it names no key this
+     *         program handles
+     */
+    private static byte aidByteOfToken(String token) {
+        String image = AID_TOKEN_RULES.movePicX(token, TransactionAddRequest.AID_TOKEN_LENGTH);
+        if (image.isBlank() || image.chars().allMatch(character -> character == LOW_VALUE)) {
+            return CicsAid.DFHNULL;
+        }
+        for (AidKey candidate : AidKey.values()) {
+            if (candidate.token().equals(image)) {
+                return canonicalByteOf(candidate);
+            }
+        }
+        return CicsAid.DFHNULL;
+    }
+
+    /**
+     * The {@code EIBAID} byte {@link PfKeyResolver#resolve(byte)} maps onto each token.
+     *
+     * <p>{@code CSSTRPFY} folds {@code DFHPF13}-{@code DFHPF24} onto {@code PFK01}-{@code PFK12}, so a
+     * token has more than one possible origin; the low key of each pair is returned, which is the one
+     * the resolver and every {@code EVALUATE EIBAID} in this program treat identically to its high twin.
+     *
+     * <p>An exhaustive {@code switch} over {@link AidKey} rather than a table, so a condition name
+     * added to the shared resolver fails to compile here rather than silently resolving to nothing and
+     * sending a request down the wrong arm.
+     *
+     * @param key the token's condition name; must not be {@code null}
+     * @return the canonical byte for that key
+     */
+    private static byte canonicalByteOf(AidKey key) {
+        return switch (key) {
+            case ENTER -> CicsAid.DFHENTER;
+            case CLEAR -> CicsAid.DFHCLEAR;
+            case PA1 -> CicsAid.DFHPA1;
+            case PA2 -> CicsAid.DFHPA2;
+            case PFK01 -> CicsAid.DFHPF1;
+            case PFK02 -> CicsAid.DFHPF2;
+            case PFK03 -> CicsAid.DFHPF3;
+            case PFK04 -> CicsAid.DFHPF4;
+            case PFK05 -> CicsAid.DFHPF5;
+            case PFK06 -> CicsAid.DFHPF6;
+            case PFK07 -> CicsAid.DFHPF7;
+            case PFK08 -> CicsAid.DFHPF8;
+            case PFK09 -> CicsAid.DFHPF9;
+            case PFK10 -> CicsAid.DFHPF10;
+            case PFK11 -> CicsAid.DFHPF11;
+            case PFK12 -> CicsAid.DFHPF12;
+        };
     }
 
     /**

@@ -562,12 +562,36 @@ final class COUSR01CParityTest {
     private static ObservedResponse observed(FixedWidthCodec codec, ProgramState state) {
         UserAddResponse response = state.response();
         return new ObservedResponse(response.nextProgram(),
-                response.nextMapset(),
-                response.nextMap(),
+                mapReferenceOrAbsent(response.nextMapset()),
+                mapReferenceOrAbsent(response.nextMap()),
                 navigationOf(codec, state.commarea()),
                 sendsOf(state),
                 state.cursorField().orElse(null),
                 terminationOf(state));
+    }
+
+    /**
+     * Projects a {@code CDEMO-LAST-MAPSET} or {@code CDEMO-LAST-MAP} image onto the differ's
+     * vocabulary, in which "no map" is an absent member.
+     *
+     * <p>The two are {@code PIC X(07)} [{@code app/cpy/COCOM01Y.cpy}] and COBOL has no null, so the
+     * {@code XCTL} arm at {@code :175-178} - which passes {@code PROGRAM} and {@code COMMAREA} and no
+     * map at all - leaves them holding <strong>seven spaces</strong>, and that is what the response
+     * carries. The fixture cannot pin that image directly: {@link ParityCase.ExpectedResponse} refuses
+     * a blank {@code nextMapset} and directs the author to omit the key, so that a case can never
+     * appear to assert a map reference while asserting nothing. Both sides therefore meet in the same
+     * place - spaces are read as absence - which is exactly how the sibling folders project theirs
+     * ({@code COADM01CParityTest.named}, {@code COACTVWCParityTest.tokenOrAbsent}).
+     *
+     * <p>This is a projection for comparison only and hides nothing: that the wire value is spaces
+     * rather than {@code null} is asserted directly, at the response's declared width, by
+     * {@code UserAddControllerTest} and by {@code UserAddResponseTest}.
+     *
+     * @param image the mapset or map image as the response carries it, possibly {@code null}
+     * @return the trimmed reference, or {@code null} when it names no map
+     */
+    private static String mapReferenceOrAbsent(String image) {
+        return image == null || image.isBlank() ? null : image.trim();
     }
 
     /**
@@ -1157,8 +1181,10 @@ final class COUSR01CParityTest {
      * compares the navigation context in both directions - a field the case says nothing about is a
      * field nobody has checked, and the commarea is what the next transaction is handed. On the
      * {@code XCTL} paths {@code nextProgram} carries the target while {@code nextMapset} and
-     * {@code nextMap} are absent, because {@code :175-178} passes {@code PROGRAM} and
-     * {@code COMMAREA} and no map at all; on every sending path the conversation stays on
+     * {@code nextMap} are absent <em>in the fixture</em>, because {@code :175-178} passes
+     * {@code PROGRAM} and {@code COMMAREA} and no map at all; on the wire that same "no map" is seven
+     * spaces at the declared width, and the two meet through
+     * {@link #mapReferenceOrAbsent(String)}. On every sending path the conversation stays on
      * {@code COUSR01}/{@code COUSR1A}.
      */
     @Test

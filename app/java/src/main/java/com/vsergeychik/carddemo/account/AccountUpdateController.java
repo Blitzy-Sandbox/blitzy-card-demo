@@ -661,6 +661,24 @@ public class AccountUpdateController {
     /** The name of the query parameter carrying {@code EIBCALEN}. */
     static final String EIBCALEN_PARAM = "eibcalen";
 
+    /**
+     * The payload member the URI's account identifier binds, spelled as the client sends it.
+     *
+     * <p>Lowercase and {@code xxxI}-derived, which is this module's one JSON naming convention, so a
+     * refusal names the member the caller can find in its own 54-field request body.
+     */
+    static final String ACCTSID_MEMBER = "acctsid";
+    /**
+     * The one-character image a screen paints into a key field when no criterion was supplied.
+     *
+     * <p>{@code app/cbl/COACTVWC.cbl:563} and {@code app/cbl/COCRDSLC.cbl:543,549} move {@code '*'} into
+     * the output field, and {@code COACTVWC:628}, {@code COACTUPC:1051} and {@code COCRDSLC:615,622} read
+     * {@code = '*'} back as "not supplied". So an asterisk names no record, and a client echoing that
+     * painted screen is agreeing with the URI rather than contradicting it.
+     */
+    static final String NO_CRITERION_IMAGE = "*";
+
+
     /** The route: {@code PUT /api/accounts/{acctId}}, CSD transaction {@code CAUP}. */
     static final String ACCOUNT_UPDATE_PATH = "/api/accounts/{acctId}";
 
@@ -1542,10 +1560,8 @@ public class AccountUpdateController {
             return alternate;
         }
         if (alternate != null && !canonical.equals(alternate)) {
-            throw new IllegalArgumentException("The " + EIBAID_PARAM + " parameter says " + canonical
-                    + " and the " + EIBAID_PARAM_ALIAS + " parameter says " + alternate
-                    + "; one terminal interaction has one EIBAID, so the two spellings of the same "
-                    + "parameter cannot disagree.");
+            throw ScreenInputRejectedException.contradictorySpellings(EIBAID_PARAM,
+                    EIBAID_PARAM_ALIAS, "one EIBAID");
         }
         return canonical;
     }
@@ -1563,20 +1579,33 @@ public class AccountUpdateController {
      * <p>The request is copied rather than mutated, so a caller's object is never altered by having been
      * passed here - which is also what makes concurrent requests independent.
      *
+     * <h4>The payload's own key field must not contradict the URI</h4>
+     * This route states the record's key twice - in the URI and in {@code ACCTSIDI}, the field the URI
+     * binds - and a terminal has only one. The payload's member is therefore required to agree before it
+     * is overwritten: absent, blank, {@code LOW-VALUES} or the URI's key is accepted, anything else is
+     * refused at the boundary by
+     * {@link ScreenInputRejectedException#requireKeyAgreement(String, String, String, int, FixedWidthCodec)}.
+     * Overwriting it silently, which is what happened before, discarded the operator's own typed key with
+     * no message on the estate's busiest write route. A client that echoes a painted screen agrees with
+     * the URI and never reaches the refusal.
+     *
      * @param acctId  the account identifier from the URI
      * @param request the received payload, or {@code null} on a cold start
      * @return a request whose {@code ACCTSIDI} is the eleven-character image of {@code acctId}
-     * @throws IllegalArgumentException if {@code acctId} is wider than {@code ACCTSIDI}
+     * @throws IllegalArgumentException     if {@code acctId} is wider than {@code ACCTSIDI}
+     * @throws ScreenInputRejectedException if the payload's {@code acctsid} names a different account
      */
     AccountUpdateRequest bind(String acctId, AccountUpdateRequest request) {
         if (acctId.length() > AccountUpdateRequest.ACCTSID_LENGTH) {
-            throw new IllegalArgumentException("The account identifier in the path is " + acctId.length()
-                    + " characters, but ACCTSID is ACCTSIDI PIC X(" + AccountUpdateRequest.ACCTSID_LENGTH
-                    + ") in app/cpy-bms/COACTUP.CPY. Truncating it would keep the leading "
-                    + AccountUpdateRequest.ACCTSID_LENGTH + " characters and update a different account "
-                    + "than the one the URI names.");
+            throw ScreenInputRejectedException.tooWide(ACCTSID_MEMBER,
+                    "ACCTSIDI PIC X(" + AccountUpdateRequest.ACCTSID_LENGTH
+                            + ") in app/cpy-bms/COACTUP.CPY",
+                    AccountUpdateRequest.ACCTSID_LENGTH, acctId.length());
         }
         AccountUpdateRequest received = request == null ? AccountUpdateRequest.initial() : request;
+        ScreenInputRejectedException.requireKeyAgreement(ACCTSID_MEMBER, acctId,
+                received.value(AccountUpdateRequest.ScreenField.ACCTSID),
+                AccountUpdateRequest.ACCTSID_LENGTH, PIC_X_CODEC, NO_CRITERION_IMAGE);
         return received.withValue(AccountUpdateRequest.ScreenField.ACCTSID,
                 PIC_X_CODEC.movePicX(acctId, AccountUpdateRequest.ACCTSID_LENGTH));
     }
@@ -1640,10 +1669,8 @@ public class AccountUpdateController {
         }
         int value = eibAid;
         if (value < AID_MIN || value > AID_MAX) {
-            throw new IllegalArgumentException("The " + EIBAID_PARAM + " parameter carries one EIBAID "
-                    + "byte and must be " + AID_MIN + " to " + AID_MAX + ", but was " + value
-                    + ". Narrowing it silently would select an attention identifier the caller never "
-                    + "pressed - and on this screen PF5 saves and PF12 cancels.");
+            throw ScreenInputRejectedException.outsideRange(EIBAID_PARAM,
+                    "one EIBAID byte", AID_MIN, AID_MAX);
         }
         return (byte) value;
     }
@@ -5619,6 +5646,24 @@ public class AccountUpdateController {
      * the fetched values again. Which one runs is observable output, so the selection is transcribed
      * rather than simplified.
      *
+     * <h4>Both zero tests read a span that has not been class-tested, so neither may decode it</h4>
+     * {@code IF CC-ACCT-ID-N = 0} at {@code :2704} and {@code WHEN CC-ACCT-ID-N = 0} at {@code :2711}
+     * are reached on <strong>every</strong> re-entry, including the one where
+     * {@code 1210-EDIT-ACCOUNT} has just rejected the filter as {@code NOT NUMERIC} at {@code :1801}.
+     * {@code CC-ACCT-ID-N} is the {@code PIC 9(11)} redefinition of eleven characters that may hold
+     * anything the operator typed, and COBOL answers {@code EQUAL ZEROS} over it by reading the digit
+     * positions of the bytes that are there - it does not fail, and it certainly does not abend.
+     *
+     * <p>So both tests are asked through {@link CardScreenState#isCcAcctIdNZeros()}, the total
+     * predicate that exists for precisely this position in the flow, and <strong>not</strong> through
+     * {@code getCcAcctIdN() == 0}: the numeric view's decoder refuses a span that is neither digits nor
+     * a zero-valued state, by deliberate policy, so asking it here turned an ordinary rejected filter -
+     * {@code /api/accounts/ABCDEFGHIJK} - into {@code ABEND-ROUTINE} and an HTTP 500, and made the
+     * {@code INPUT-ERROR} arm at {@code :1806} unreachable for every non-numeric identifier. The screen
+     * the fixed path paints is the one the source paints: the filter echoed by {@code :2707}, the other
+     * 41 fields left {@code LOW-VALUES} by {@code 3201}, and the message
+     * {@code 1210-EDIT-ACCOUNT} composed.
+     *
      * @param task this interaction's storage
      */
     void setupScreenVars3200(Conversation task) {
@@ -5627,8 +5672,9 @@ public class AccountUpdateController {
             return;
         }
 
-        // :2704-2708.
-        if (task.ccWorkArea.getCcAcctIdN() == 0L && task.flgAcctfilterIsvalid()) {
+        // :2704-2708. The zero test, not a decode: see this method's note on the two class-test-free
+        // reads of CC-ACCT-ID-N.
+        if (task.ccWorkArea.isCcAcctIdNZeros() && task.flgAcctfilterIsvalid()) {
             task.cactupao = task.cactupao.withValue(AccountUpdateResponse.ScreenField.ACCTSID,
                     lowValues(AccountUpdateResponse.declaredLength(
                             AccountUpdateResponse.ScreenField.ACCTSID)));
@@ -5639,8 +5685,9 @@ public class AccountUpdateController {
                                     AccountUpdateResponse.ScreenField.ACCTSID)));
         }
 
-        // :2710-2725 - the paint-mode selection, in source order with WHEN OTHER last.
-        if (task.acupChangeAction.isDetailsNotFetched() || task.ccWorkArea.getCcAcctIdN() == 0L) {
+        // :2710-2725 - the paint-mode selection, in source order with WHEN OTHER last. The second arm is
+        // the same class-test-free zero test as :2704, asked the same total way.
+        if (task.acupChangeAction.isDetailsNotFetched() || task.ccWorkArea.isCcAcctIdNZeros()) {
             showInitialValues3201(task);
         } else if (task.acupChangeAction.isShowDetails()) {
             showOriginalValues3202(task);

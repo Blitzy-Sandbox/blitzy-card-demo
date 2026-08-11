@@ -311,6 +311,35 @@ public final class TransactionAddRequest {
     /** {@code EIBAID} is a single-byte attention identifier; the {@code DFHAID} tokens are one byte. */
     public static final int AID_LENGTH = 1;
 
+    /**
+     * Characters in the {@code CCARD-AID} token form of {@link #getAid()}: five.
+     *
+     * <p>{@link #AID_LENGTH} above is the width of {@code EIBAID} itself, and it is not this. The
+     * member accepts <strong>either</strong> form, so its declared width is the wider of the two:
+     *
+     * <ul>
+     *   <li><strong>One character</strong> is the raw {@code EIBAID} byte, whose numeric value
+     *       <em>is</em> the attention identifier - {@code DFHENTER} as {@code U+007D}. That is what
+     *       {@code COTRN01C}'s {@code EVALUATE EIBAID} at {@code :112} compares and it stays accepted
+     *       unchanged.</li>
+     *   <li><strong>Two to five characters</strong> is the mnemonic token, five wide to match
+     *       {@code 10 CCARD-AID PIC X(5)} of {@code app/cpy/CVCRD01Y.cpy} and the width
+     *       {@code common.PfKeyResolver.AID_TOKEN_LENGTH} publishes. It is the form every response of
+     *       this module publishes and the form the nine sibling screens accept, so a client that
+     *       echoes what it was given states the key this way.</li>
+     * </ul>
+     *
+     * <p>Before the member was widened, this route alone accepted only the byte form while its nine
+     * siblings accepted only the token form, so one {@code aid} member carried two incompatible value
+     * spaces across one API and {@code "ENTER"} - the value this route's own responses publish - was
+     * refused here with a width violation. {@code COTRN01C} copies neither {@code CVCRD01Y} nor
+     * {@code CSSTRPFY}, so the token form is the module's convention rather than this program's
+     * copybook; accepting it changes no arm of the {@code EVALUATE}, only the spelling a caller may use
+     * to reach one. {@code common.PfKeyResolver.AidKey#token()} space-pads the shorter mnemonics to
+     * this width, so a caller must not trim what it produces.
+     */
+    public static final int AID_TOKEN_LENGTH = 5;
+
     // =================================================================================================
     // Field names, carried VERBATIM as the symbolic map spells them. These are the keys the parity
     // differ compares field by field and the keys the metadata map is addressed by, so a "tidied up"
@@ -919,13 +948,21 @@ public final class TransactionAddRequest {
      * The {@code EIBAID} attention identifier the terminal raised.
      *
      * <p>{@code COTRN01C} evaluates it at line 112 and acts on {@code DFHENTER} (line 113),
-     * {@code DFHPF3} (115), {@code DFHPF4} (123) and {@code DFHPF5} (125). One byte, because that is
-     * what {@code EIBAID} is and what each {@code DFHAID} token holds. Carried as a plain
-     * {@code String} token rather than an enum so this payload stays free of any dependency the
-     * migration plan does not grant it.
+     * {@code DFHPF3} (115), {@code DFHPF4} (123) and {@code DFHPF5} (125). Carried as a plain
+     * {@code String} rather than an enum so this payload stays free of any dependency the migration
+     * plan does not grant it.
+     *
+     * <p>Two spellings reach the same {@code EVALUATE}: the raw {@code EIBAID} byte, one character
+     * wide, and the {@code CCARD-AID} mnemonic token this module's responses publish, up to
+     * {@value #AID_TOKEN_LENGTH} wide. The declared width is therefore
+     * {@value #AID_TOKEN_LENGTH} and not {@value #AID_LENGTH}, and
+     * {@code TransactionAddController#eibAidOf(String)} decides which form it was given by its length.
+     * The default is spaces at that width, which states no key and takes {@code WHEN OTHER} at
+     * {@code :130-134} - the same arm a single space byte takes, so widening the default changed no
+     * outcome.
      */
-    @Size(max = AID_LENGTH)
-    private String aid = spaces(AID_LENGTH);
+    @Size(max = AID_TOKEN_LENGTH)
+    private String aid = spaces(AID_TOKEN_LENGTH);
 
     /**
      * The {@code xxxL}, {@code xxxF} and {@code xxxA} items, one carrier per screen field, keyed by

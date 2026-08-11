@@ -14,6 +14,7 @@ import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.NavigationContext;
 import com.vsergeychik.carddemo.common.PfKeyResolver;
+import com.vsergeychik.carddemo.common.ScreenInputRejectedException;
 import com.vsergeychik.carddemo.common.ScreenTitles;
 import com.vsergeychik.carddemo.common.SystemMessages;
 import com.vsergeychik.carddemo.customer.CustomerRepository;
@@ -675,6 +676,24 @@ public class AccountViewController {
     /** The name of the query parameter carrying {@code EIBCALEN}. */
     static final String EIBCALEN_PARAM = "eibcalen";
 
+    /**
+     * The payload member the URI's account identifier binds, spelled as the client sends it.
+     *
+     * <p>Lowercase and {@code xxxI}-derived, which is this module's one JSON naming convention, so a
+     * refusal names the member the caller can find in its own request body.
+     */
+    static final String ACCTSID_MEMBER = "acctsid";
+    /**
+     * The one-character image a screen paints into a key field when no criterion was supplied.
+     *
+     * <p>{@code app/cbl/COACTVWC.cbl:563} and {@code app/cbl/COCRDSLC.cbl:543,549} move {@code '*'} into
+     * the output field, and {@code COACTVWC:628}, {@code COACTUPC:1051} and {@code COCRDSLC:615,622} read
+     * {@code = '*'} back as "not supplied". So an asterisk names no record, and a client echoing that
+     * painted screen is agreeing with the URI rather than contradicting it.
+     */
+    static final String NO_CRITERION_IMAGE = "*";
+
+
     /** The lowest value an unsigned {@code EIBAID} byte can carry. */
     private static final int AID_MIN = 0;
 
@@ -861,10 +880,8 @@ public class AccountViewController {
             return alternate;
         }
         if (alternate != null && !canonical.equals(alternate)) {
-            throw new IllegalArgumentException("The " + EIBAID_PARAM + " parameter says " + canonical
-                    + " and the " + EIBAID_PARAM_ALIAS + " parameter says " + alternate
-                    + "; one terminal interaction has one EIBAID, so the two spellings of the same "
-                    + "parameter cannot disagree.");
+            throw ScreenInputRejectedException.contradictorySpellings(EIBAID_PARAM,
+                    EIBAID_PARAM_ALIAS, "one EIBAID");
         }
         return canonical;
     }
@@ -882,21 +899,33 @@ public class AccountViewController {
      * <p>Second, the request is copied rather than mutated in place, so a caller's object is never
      * altered by having been passed here.
      *
+     * <h4>The payload's own key field must not contradict the URI</h4>
+     * This route states the record's key twice - in the URI and in the screen field the URI binds - and
+     * a terminal has only one. The payload's member is therefore required to agree before it is
+     * overwritten: absent, blank, {@code LOW-VALUES} or the URI's key is accepted, anything else is
+     * refused at the boundary by
+     * {@link ScreenInputRejectedException#requireKeyAgreement(String, String, String, int, FixedWidthCodec)}.
+     * Overwriting it silently, which is what happened before, discarded the operator's own typed key with
+     * no message. A client that echoes a painted screen agrees with the URI and never reaches the
+     * refusal.
+     *
      * @param acctId  the account identifier from the URI
      * @param request the received payload, or {@code null} on a cold start
      * @return a request whose {@code ACCTSIDI} is the eleven-character image of {@code acctId}
-     * @throws IllegalArgumentException if {@code acctId} is wider than {@code ACCTSIDI}
+     * @throws IllegalArgumentException     if {@code acctId} is wider than {@code ACCTSIDI}
+     * @throws ScreenInputRejectedException if the payload's {@code acctsid} names a different account
      */
     AccountViewRequest bind(String acctId, AccountViewRequest request) {
         if (acctId.length() > AccountViewRequest.ACCTSID_LENGTH) {
-            throw new IllegalArgumentException("The account identifier in the path is " + acctId.length()
-                    + " characters, but ACCTSID is ACCTSIDI PIC 9(" + AccountViewRequest.ACCTSID_LENGTH
-                    + ") - LENGTH=11 in app/bms/COACTVW.bms:84-90. Truncating it would keep the leading "
-                    + AccountViewRequest.ACCTSID_LENGTH + " characters and read a different account than "
-                    + "the one the URI names.");
+            throw ScreenInputRejectedException.tooWide(ACCTSID_MEMBER,
+                    "ACCTSIDI PIC 9(" + AccountViewRequest.ACCTSID_LENGTH
+                            + ") - LENGTH=11 in app/bms/COACTVW.bms:84-90",
+                    AccountViewRequest.ACCTSID_LENGTH, acctId.length());
         }
         AccountViewRequest received =
                 request == null ? coldStartRequest() : new AccountViewRequest(request);
+        ScreenInputRejectedException.requireKeyAgreement(ACCTSID_MEMBER, acctId,
+                received.getAcctsid(), AccountViewRequest.ACCTSID_LENGTH, PIC_X_CODEC, NO_CRITERION_IMAGE);
         received.setAcctsid(PIC_X_CODEC.movePicX(acctId, AccountViewRequest.ACCTSID_LENGTH));
         return received;
     }
@@ -975,10 +1004,8 @@ public class AccountViewController {
         }
         int value = eibAid;
         if (value < AID_MIN || value > AID_MAX) {
-            throw new IllegalArgumentException("The " + EIBAID_PARAM + " parameter carries one EIBAID "
-                    + "byte and must be " + AID_MIN + " to " + AID_MAX + ", but was " + value
-                    + ". Narrowing it silently would select an attention identifier the caller never "
-                    + "pressed.");
+            throw ScreenInputRejectedException.outsideRange(EIBAID_PARAM,
+                    "one EIBAID byte", AID_MIN, AID_MAX);
         }
         return (byte) value;
     }

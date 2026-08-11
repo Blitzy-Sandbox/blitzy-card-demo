@@ -1,6 +1,7 @@
 package com.vsergeychik.carddemo.config;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.core.JsonGenerator;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.JsonMappingException;
@@ -17,6 +18,7 @@ import jakarta.validation.ConstraintViolation;
 import jakarta.validation.ConstraintViolationException;
 import jakarta.validation.metadata.ConstraintDescriptor;
 
+import java.lang.reflect.Field;
 import java.nio.charset.Charset;
 import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
@@ -52,6 +54,7 @@ import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 
 /**
@@ -224,7 +227,12 @@ public class WebConfig implements WebMvcConfigurer {
                         DeserializationFeature.FAIL_ON_TRAILING_TOKENS,
                         JsonGenerator.Feature.WRITE_BIGDECIMAL_AS_PLAIN)
                 .featuresToDisable(
-                        DeserializationFeature.ACCEPT_EMPTY_STRING_AS_NULL_OBJECT);
+                        DeserializationFeature.ACCEPT_EMPTY_STRING_AS_NULL_OBJECT)
+                // Every payload member of all seventeen screens projects a PIC X(n) item, so the one
+                // rule about what a RECEIVE MAP could have delivered is applied once, here, to every
+                // inbound string - rather than seventeen times over per-route member lists, where a
+                // member left off any one list is a silent hole.
+                .deserializerByType(String.class, new ScreenTextDeserializer());
     }
 
     /**
@@ -428,6 +436,36 @@ public class WebConfig implements WebMvcConfigurer {
      * {@link ErrorResponse#getStatusCode()} when the exception implements that interface and falls
      * back to {@code 500} only when it does not. The status is preserved; only the message is
      * withheld.
+     *
+     * <h2>One rule for {@code fieldErrors[].field}: the name the caller used</h2>
+     * A caller told "a field is wrong" without being told <em>which</em> field cannot act on the answer,
+     * and a caller told a name it never sent cannot map it back. So every arm that identifies an input
+     * names it, and names it the way the caller spelled it:
+     *
+     * <ul>
+     *   <li><strong>a request-body member</strong> is named by its JSON member - the lowercase
+     *       {@code xxxI}-derived name this module publishes. Bean Validation reports the Java property
+     *       path instead ({@code userId} for the member {@code userid}), so
+     *       {@link #jsonMemberOf(Object, String)} resolves it back through {@code @JsonProperty} before
+     *       it is published;</li>
+     *   <li><strong>a query parameter</strong> is named by its parameter name, taken from the framework's
+     *       own {@link MethodArgumentTypeMismatchException#getName()} or from the constant the guard
+     *       tests - {@code eibaid}, {@code eibAid}, {@code eibcalen}. That is a name the caller typed
+     *       into the URL, not a Java identifier;</li>
+     *   <li><strong>a path variable</strong> is named by the URI template variable the route publishes -
+     *       {@code acctId}, {@code cardNum}, {@code userId}, {@code tranId} - or, where the value binds
+     *       a screen field, by that field's JSON member.</li>
+     * </ul>
+     *
+     * <p><strong>Naming a field is not the same as quoting a value, and the second is still refused.</strong>
+     * The name came from the caller, so returning it discloses nothing; the value may be a card number, a
+     * government identifier or a password (CWE-532). Only two exception families name a field here, and
+     * both are value-free <em>by construction</em>: Bean Validation, whose entries are built from a
+     * constraint code and its declared bound and never from the rejected value, and
+     * {@link ScreenInputRejectedException}, which is {@code final} with private constructors and
+     * factories that compose their message from a member name, a code page, a code point and a width.
+     * The open-ended {@link IllegalArgumentException} family - an arbitrary guard that may have quoted
+     * what it was handed - still publishes neither its message nor a field name.
      */
     @RestControllerAdvice
     public static class CobolErrorHandler {
@@ -450,6 +488,15 @@ public class WebConfig implements WebMvcConfigurer {
 
         /** The stable public code of a request body that could not be read at all. */
         public static final String MALFORMED_REQUEST_CODE = "MALFORMED_REQUEST";
+
+        /**
+         * How far {@link #screenInputCause(HttpMessageNotReadableException)} follows a cause chain.
+         *
+         * <p>Jackson wraps a deserializer's failure once or twice - a mapping failure, sometimes inside a
+         * value-instantiation failure - so this is generous rather than tight, and it exists to bound the
+         * walk rather than to express a real depth.
+         */
+        private static final int MAX_CAUSE_DEPTH = 8;
 
         /**
          * The stable public code of a request whose fields were read but did not satisfy the widths and
@@ -691,8 +738,44 @@ public class WebConfig implements WebMvcConfigurer {
         @ExceptionHandler(HttpMessageNotReadableException.class)
         public ResponseEntity<CobolErrorResponse> handleUnreadableRequestBody(
                 final HttpMessageNotReadableException unreadable) {
+            final ScreenInputRejectedException screenInput = screenInputCause(unreadable);
+            if (screenInput != null) {
+                return handleRejectedValue(screenInput);
+            }
             logUnreadableRequestBody(unreadable);
             return json(HttpStatus.BAD_REQUEST, malformedRequestResponse(unreadable));
+        }
+
+        /**
+         * The screen-input refusal inside a parse failure, when the body was well-formed JSON that
+         * carried a value no {@code RECEIVE MAP} could have delivered.
+         *
+         * <p>A {@link com.fasterxml.jackson.databind.JsonDeserializer} can only fail through Jackson, so
+         * {@link ScreenTextDeserializer}'s refusal arrives wrapped - typically as a mapping failure
+         * inside {@link HttpMessageNotReadableException}. Answering that as
+         * {@link #MALFORMED_REQUEST_CODE} would be wrong twice over: the body parsed perfectly well, and
+         * the caller would be told to check its shape rather than which member carries the offending
+         * character. Unwrapping it restores the one answer this module gives for a screen value it
+         * refuses, from wherever it was raised.
+         *
+         * <p>The walk is bounded and follows {@link Throwable#getCause()} only, so a cause cycle - which
+         * a well-behaved chain does not have but a hand-built one could - cannot spin here.
+         *
+         * @param unreadable the parse failure; must not be {@code null}
+         * @return the refusal found in the cause chain, or {@code null} when the failure is a genuine
+         *         parse error
+         */
+        static ScreenInputRejectedException screenInputCause(
+                final HttpMessageNotReadableException unreadable) {
+            Objects.requireNonNull(unreadable, "A binding failure is required to inspect one");
+            Throwable cause = unreadable.getCause();
+            for (int depth = 0; cause != null && depth < MAX_CAUSE_DEPTH; depth++) {
+                if (cause instanceof ScreenInputRejectedException screenInput) {
+                    return screenInput;
+                }
+                cause = cause.getCause();
+            }
+            return null;
         }
 
         /**
@@ -780,8 +863,9 @@ public class WebConfig implements WebMvcConfigurer {
          * @return the response body, never {@code null} and never carrying framework detail
          */
         static CobolErrorResponse validationResponse(final MethodArgumentNotValidException invalid) {
+            final Object bound = invalid.getBindingResult().getTarget();
             final List<FieldMessage> rejected = invalid.getBindingResult().getFieldErrors().stream()
-                    .map(CobolErrorHandler::fieldMessage)
+                    .map(error -> fieldMessage(bound, error))
                     .sorted(Comparator.comparing(FieldMessage::field))
                     .toList();
             return CobolErrorResponse.of(VALIDATION_FAILED_CODE,
@@ -859,7 +943,7 @@ public class WebConfig implements WebMvcConfigurer {
                     : List.of();
         }
 
-        // There is deliberately NO handler for MethodArgumentTypeMismatchException here.
+        // There is still deliberately NO handler for MethodArgumentTypeMismatchException here.
         //
         // It is a subclass of TypeMismatchException, so Spring's closest-match resolution would give
         // it precedence over handleTypeMismatch(TypeMismatchException) below - and the narrower
@@ -870,14 +954,18 @@ public class WebConfig implements WebMvcConfigurer {
         // TYPE_MISMATCH_MESSAGE the broader handler already returns: whichever handler wins must say
         // the same value-free, type-free sentence.
         //
-        // Removing the narrower handler rather than rewording it is the stronger fix. Two handlers
-        // for one failure family means one of them can drift, and a future reader adding a "helpful"
-        // detail to the specific one would silently reintroduce the disclosure. With a single
-        // handler for the whole family, a path variable, a query parameter and a conversion refused
-        // during binding all take the same route to the same body, and there is no narrower arm left
-        // to widen. The parameter name is not reported either: it reaches the caller for a rejected
-        // request BODY field, where the caller named it, but a failed conversion is reported by the
-        // container against its own bound parameter name, which is Java identifier detail.
+        // Keeping ONE handler for the whole family is what stops the two from drifting: a future
+        // reader adding a "helpful" detail to a narrower arm would silently reintroduce the
+        // disclosure. So the family's one handler covers a path variable, a query parameter and a
+        // conversion refused during binding alike.
+        //
+        // What that one handler DOES now do is name the parameter, by narrowing INSIDE itself rather
+        // than by declaring a second @ExceptionHandler. Withholding the name was over-broad: a caller
+        // told only "a request value could not be converted" on a route with several numeric
+        // parameters cannot tell which one it mistyped. MethodArgumentTypeMismatchException#getName()
+        // is not a Java identifier - it is the @RequestParam/@PathVariable name the route publishes
+        // and the caller literally typed into the URL - so returning it discloses nothing the caller
+        // did not already write. The required TYPE is still withheld, and so is the value.
 
         /**
          * Maps a value a domain guard rejected onto {@code 400 Bad Request}.
@@ -922,15 +1010,20 @@ public class WebConfig implements WebMvcConfigurer {
          *
          * <p>This is the one {@link IllegalArgumentException} whose own message <em>is</em> published,
          * and the reason is structural rather than a judgement about the current wording.
-         * {@link ScreenInputRejectedException} is {@code final} with a private constructor and exactly
-         * two factories, both of which compose their message from a member name, a code page, a Unicode
-         * code point and a statement of what the program writes - never from the value. So there is no
-         * path by which a guard added later can widen this response by wording its message differently,
-         * which is the risk {@link #rejectedValueResponse()} exists to close for the open-ended family.
+         * {@link ScreenInputRejectedException} is {@code final}, every one of its constructors is
+         * private, and every factory composes its message from a member name, a code page, a Unicode
+         * code point, a width or a statement of what the program writes - never from the value. So there
+         * is no path by which a guard added later can widen this response by wording its message
+         * differently, which is the risk {@link #rejectedValueResponse()} exists to close for the
+         * open-ended family.
          *
-         * <p>Naming the member is the point of the type. These two screens carry 54 and 17 fields, and
-         * a caller told only that "a field value does not fit" has no way to find which - the answer
-         * would be unactionable on a screen that size.
+         * <p>Naming the member is the point of the type, and it is why this arm is reached from two
+         * directions: a refusal raised inside a controller arrives here as the
+         * {@link IllegalArgumentException} it is, and one raised at the JSON boundary by
+         * {@link ScreenTextDeserializer} arrives wrapped in a parse failure and is unwrapped by
+         * {@link #screenInputCause(HttpMessageNotReadableException)}. Both produce this body, so the
+         * envelope has one shape however deep the refusal was raised. A caller told only that "a field
+         * value does not fit" has no way to find which of 54 fields it was.
          *
          * @param rejected the refusal, carrying the member name and a value-free message
          * @return {@code 400} with the member named in {@code fieldErrors} and no value echoed
@@ -1020,12 +1113,124 @@ public class WebConfig implements WebMvcConfigurer {
          * reported: the caller supplied that member itself, so naming it discloses nothing and is
          * what lets the caller correct the input.
          *
+         * <p>The field is named as the <strong>caller</strong> spelled it. Bean Validation reports the
+         * Java property path - {@code userId} for the JSON member {@code userid}, {@code usrIdIn} for
+         * {@code usridin} - and a caller handed a name it never sent cannot map it back to anything in its
+         * own request. {@link #jsonMemberOf(Object, String)} therefore resolves the path through
+         * {@code @JsonProperty} first, so one lowercase {@code xxxI}-derived vocabulary is used on every
+         * arm of this class.
+         *
+         * @param bound the object the body bound to, used only to resolve the member's JSON name; may be
+         *              {@code null}, in which case the Java property path is reported unchanged
          * @param error the field error Spring produced
          * @return the entry naming the field and a stable, public description of the violation
          */
-        private static FieldMessage fieldMessage(final FieldError error) {
-            return new FieldMessage(error.getField(),
+        private static FieldMessage fieldMessage(final Object bound, final FieldError error) {
+            return new FieldMessage(jsonMemberOf(bound, error.getField()),
                     publicConstraintText(error.getCode(), constraintAttributes(error)));
+        }
+
+        /**
+         * Resolves a Bean Validation property path onto the JSON member names the caller actually sent.
+         *
+         * <p>Walks the path one segment at a time from the bound object's type, mapping each segment to
+         * its {@code @JsonProperty} value when the declaring type carries one and descending into that
+         * member's type for the next segment. A segment that names an element - {@code rows[3]} - keeps
+         * its subscript, and resolution descends into the element type when the member is a collection or
+         * an array.
+         *
+         * <p><strong>Total by construction.</strong> This runs while an error response is being built, so
+         * it can never be the thing that fails: any segment it cannot resolve - an unknown name, a type
+         * with no such member, a member whose type cannot be introspected - is emitted unchanged and
+         * resolution of the remaining segments stops. Reporting a name imprecisely is strictly better
+         * than failing to report a validation failure at all.
+         *
+         * <p>Reflection reads annotations only; no member value is read, so no caller-supplied value can
+         * reach the response through this method. {@code @JsonProperty} on a record component propagates
+         * to the field, the accessor and the constructor parameter, so a record DTO and a
+         * getter/setter DTO both resolve through the declared field.
+         *
+         * @param bound the object the body bound to, or {@code null} when the failure names no target
+         * @param path  the Java property path Bean Validation reported; must not be {@code null}
+         * @return the same path with every segment it could resolve replaced by its JSON member name
+         */
+        static String jsonMemberOf(final Object bound, final String path) {
+            if (bound == null || path == null || path.isEmpty()) {
+                return path;
+            }
+            final String[] segments = path.split("\\.", -1);
+            final StringBuilder resolved = new StringBuilder(path.length());
+            Class<?> declaring = bound.getClass();
+            for (int index = 0; index < segments.length; index++) {
+                if (index > 0) {
+                    resolved.append('.');
+                }
+                final String segment = segments[index];
+                final int subscript = segment.indexOf('[');
+                final String name = subscript < 0 ? segment : segment.substring(0, subscript);
+                final String suffix = subscript < 0 ? "" : segment.substring(subscript);
+                final Field member = declaring == null ? null : declaredMember(declaring, name);
+                if (member == null) {
+                    // Unresolvable: emit this segment and everything after it exactly as it arrived.
+                    resolved.append(segment);
+                    for (int rest = index + 1; rest < segments.length; rest++) {
+                        resolved.append('.').append(segments[rest]);
+                    }
+                    return resolved.toString();
+                }
+                final JsonProperty renamed = member.getAnnotation(JsonProperty.class);
+                final boolean named = renamed != null && !renamed.value().isEmpty()
+                        && !JsonProperty.USE_DEFAULT_NAME.equals(renamed.value());
+                resolved.append(named ? renamed.value() : name).append(suffix);
+                declaring = nextDeclaringType(member, !suffix.isEmpty());
+            }
+            return resolved.toString();
+        }
+
+        /**
+         * The declared member of a type or of any of its supertypes, by name.
+         *
+         * @param declaring the type to search; must not be {@code null}
+         * @param name      the member's Java name; must not be {@code null}
+         * @return the field, or {@code null} when no type in the hierarchy declares it
+         */
+        private static Field declaredMember(final Class<?> declaring, final String name) {
+            for (Class<?> type = declaring; type != null && type != Object.class;
+                    type = type.getSuperclass()) {
+                try {
+                    return type.getDeclaredField(name);
+                } catch (NoSuchFieldException notHere) {
+                    // Try the supertype: a DTO may inherit the member. Nothing is logged, because a
+                    // property path that names no field is a framework detail, not a fault.
+                    continue;
+                }
+            }
+            return null;
+        }
+
+        /**
+         * The type the next path segment is declared on.
+         *
+         * @param member    the member the current segment resolved to; must not be {@code null}
+         * @param subscript whether the segment carried an element subscript
+         * @return the element type for a subscripted collection or array, the member's own type
+         *         otherwise, or {@code null} when it cannot be determined
+         */
+        private static Class<?> nextDeclaringType(final Field member, final boolean subscript) {
+            if (!subscript) {
+                return member.getType();
+            }
+            if (member.getType().isArray()) {
+                return member.getType().getComponentType();
+            }
+            final java.lang.reflect.Type generic = member.getGenericType();
+            if (generic instanceof java.lang.reflect.ParameterizedType parameterized) {
+                final java.lang.reflect.Type[] arguments = parameterized.getActualTypeArguments();
+                if (arguments.length > 0 && arguments[arguments.length - 1] instanceof Class<?> element) {
+                    return element;
+                }
+            }
+            return null;
         }
 
         /**
@@ -1191,13 +1396,42 @@ public class WebConfig implements WebMvcConfigurer {
          * handler covers a path variable, a query parameter and a conversion refused during binding
          * alike, and no case is left to fall through because a narrower type was chosen.
          *
+         * <p>The parameter is <strong>named</strong> when the framework knows its name, which it does for
+         * the MVC form: {@link MethodArgumentTypeMismatchException#getName()} carries the
+         * {@code @RequestParam} or {@code @PathVariable} name the route publishes and the caller typed
+         * into the URL. Naming it is what makes the answer actionable on a route with more than one
+         * numeric parameter. The required Java type is still withheld, the rejected value is still
+         * withheld, and a plain {@link TypeMismatchException} - which carries no such name - still names
+         * nothing.
+         *
          * @param mismatch the conversion failure, whose message is intentionally discarded
-         * @return {@code 400} carrying {@link #TYPE_MISMATCH_MESSAGE} and nothing else
+         * @return {@code 400} carrying {@link #TYPE_MISMATCH_MESSAGE} and, where the framework supplies
+         *         one, the name of the parameter that could not be converted
          */
         @ExceptionHandler(TypeMismatchException.class)
         public ResponseEntity<CobolErrorResponse> handleTypeMismatch(
                 final TypeMismatchException mismatch) {
-            return sanitized(TYPE_MISMATCH_CODE, HttpStatus.BAD_REQUEST, TYPE_MISMATCH_MESSAGE);
+            return json(HttpStatus.BAD_REQUEST, typeMismatchResponse(mismatch));
+        }
+
+        /**
+         * The body for a conversion failure, and the directly testable form of
+         * {@link #handleTypeMismatch(TypeMismatchException)}.
+         *
+         * @param mismatch the conversion failure; may be {@code null}
+         * @return the response body, naming the parameter when the framework supplies its name
+         */
+        static CobolErrorResponse typeMismatchResponse(final TypeMismatchException mismatch) {
+            final String parameter = mismatch instanceof MethodArgumentTypeMismatchException named
+                    ? named.getName()
+                    : null;
+            if (parameter == null || parameter.isBlank()) {
+                return sanitizedBody(TYPE_MISMATCH_CODE, HttpStatus.BAD_REQUEST, TYPE_MISMATCH_MESSAGE);
+            }
+            return CobolErrorResponse.of(TYPE_MISMATCH_CODE,
+                    HttpStatus.BAD_REQUEST,
+                    TYPE_MISMATCH_MESSAGE,
+                    List.of(new FieldMessage(parameter, TYPE_MISMATCH_MESSAGE)));
         }
 
         /**

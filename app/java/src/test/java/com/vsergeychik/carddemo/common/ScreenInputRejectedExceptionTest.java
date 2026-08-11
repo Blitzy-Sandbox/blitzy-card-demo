@@ -2,6 +2,7 @@ package com.vsergeychik.carddemo.common;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
+import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 import static org.assertj.core.api.Assertions.assertThatCode;
 
@@ -55,7 +56,7 @@ class ScreenInputRejectedExceptionTest {
                 + "second error contract")
         void extendsIllegalArgumentException() {
             ScreenInputRejectedException rejected =
-                    ScreenInputRejectedException.unrepresentable("ACSFNAM", "ACSFNAMI", ASCII, 0xE9);
+                    ScreenInputRejectedException.unrepresentable("acsfnam", "ACSFNAMI", ASCII, 0xE9);
 
             assertThat(rejected).isInstanceOf(IllegalArgumentException.class);
             assertThat(rejected).isInstanceOf(RuntimeException.class);
@@ -64,7 +65,7 @@ class ScreenInputRejectedExceptionTest {
         @Test
         @DisplayName("is NOT an AbendException: staying out of that family is the whole reason it exists")
         void isNotAnAbend() {
-            assertThat(ScreenInputRejectedException.unrepresentable("ACSFNAM", "ACSFNAMI", ASCII, 0xE9))
+            assertThat(ScreenInputRejectedException.unrepresentable("acsfnam", "ACSFNAMI", ASCII, 0xE9))
                     .isNotInstanceOf(AbendException.class);
         }
     }
@@ -77,10 +78,10 @@ class ScreenInputRejectedExceptionTest {
         @DisplayName("names the member, so a caller can find it among 54 fields")
         void namesTheMember() {
             ScreenInputRejectedException rejected =
-                    ScreenInputRejectedException.unrepresentable("ACSFNAM", "ACSFNAMI", ASCII, 0xE9);
+                    ScreenInputRejectedException.unrepresentable("acsfnam", "ACSFNAMI", ASCII, 0xE9);
 
-            assertThat(rejected.member()).contains("ACSFNAM");
-            assertThat(rejected.getMessage()).contains("ACSFNAM").contains("ACSFNAMI");
+            assertThat(rejected.member()).contains("acsfnam");
+            assertThat(rejected.getMessage()).contains("acsfnam").contains("ACSFNAMI");
         }
 
         @Test
@@ -88,7 +89,7 @@ class ScreenInputRejectedExceptionTest {
                 + "names the code page that refused it")
         void reportsTheCodePointAndTheCodePage() {
             ScreenInputRejectedException rejected =
-                    ScreenInputRejectedException.unrepresentable("ACSFNAM", "ACSFNAMI", ASCII, 0xE9);
+                    ScreenInputRejectedException.unrepresentable("acsfnam", "ACSFNAMI", ASCII, 0xE9);
 
             assertThat(rejected.getMessage())
                     .contains("U+00E9")
@@ -101,7 +102,7 @@ class ScreenInputRejectedExceptionTest {
         @DisplayName("renders any code point, including one outside the BMP, without the character")
         void rendersAnyCodePoint(int codePoint) {
             String message = ScreenInputRejectedException
-                    .unrepresentable("ACSFNAM", "ACSFNAMI", ASCII, codePoint).getMessage();
+                    .unrepresentable("acsfnam", "ACSFNAMI", ASCII, codePoint).getMessage();
 
             assertThat(message).contains("U+" + String.format("%04X", codePoint));
             assertThat(message).doesNotContain(new String(Character.toChars(codePoint)));
@@ -111,7 +112,7 @@ class ScreenInputRejectedExceptionTest {
         @DisplayName("carries the code page it was given, so an EBCDIC deployment reports IBM037")
         void carriesTheCodePageItWasGiven() {
             assertThat(ScreenInputRejectedException
-                    .unrepresentable("ACSFNAM", "ACSFNAMI", EBCDIC, 0x1F600).getMessage())
+                    .unrepresentable("acsfnam", "ACSFNAMI", EBCDIC, 0x1F600).getMessage())
                     .contains("IBM037");
         }
 
@@ -120,7 +121,7 @@ class ScreenInputRejectedExceptionTest {
                 + "wondering whether it was")
         void saysTheValueIsNotEchoed() {
             assertThat(ScreenInputRejectedException
-                    .unrepresentable("ACSFNAM", "ACSFNAMI", ASCII, 0xE9).getMessage())
+                    .unrepresentable("acsfnam", "ACSFNAMI", ASCII, 0xE9).getMessage())
                     .contains("not echoed");
         }
 
@@ -131,9 +132,9 @@ class ScreenInputRejectedExceptionTest {
             assertThatNullPointerException().isThrownBy(() -> ScreenInputRejectedException
                     .unrepresentable(null, "ACSFNAMI", ASCII, 0xE9));
             assertThatNullPointerException().isThrownBy(() -> ScreenInputRejectedException
-                    .unrepresentable("ACSFNAM", null, ASCII, 0xE9));
+                    .unrepresentable("acsfnam", null, ASCII, 0xE9));
             assertThatNullPointerException().isThrownBy(() -> ScreenInputRejectedException
-                    .unrepresentable("ACSFNAM", "ACSFNAMI", null, 0xE9));
+                    .unrepresentable("acsfnam", "ACSFNAMI", null, 0xE9));
         }
     }
 
@@ -194,7 +195,7 @@ class ScreenInputRejectedExceptionTest {
                             map("ACSFNAM", "JOHN", "ACSLNAM", "MU\u00D1OZ", "ACSTNUM", "123456789"),
                             ASCII_CODEC))
                     .satisfies(rejected -> {
-                        assertThat(rejected.member()).contains("ACSLNAM");
+                        assertThat(rejected.member()).contains("acslnam");
                         assertThat(rejected.getMessage()).contains("ACSLNAMI").contains("U+00D1");
                     });
         }
@@ -215,7 +216,7 @@ class ScreenInputRejectedExceptionTest {
             assertThatExceptionOfType(ScreenInputRejectedException.class)
                     .isThrownBy(() -> ScreenInputRejectedException.requireRepresentable(
                             map("ACSFNAM", "JOS\u00C9", "ACSLNAM", "MU\u00D1OZ"), ASCII_CODEC))
-                    .satisfies(rejected -> assertThat(rejected.member()).contains("ACSFNAM"));
+                    .satisfies(rejected -> assertThat(rejected.member()).contains("acsfnam"));
         }
 
         @Test
@@ -267,6 +268,205 @@ class ScreenInputRejectedExceptionTest {
                     ScreenInputRejectedException.requireRepresentable(null, ASCII_CODEC));
             assertThatNullPointerException().isThrownBy(() ->
                     ScreenInputRejectedException.requireRepresentable(Map.of(), null));
+        }
+    }
+
+    @Nested
+    @DisplayName("requireDeliverable - a control character no 3270 could have transmitted")
+    class RequireDeliverable {
+
+        @ParameterizedTest(name = "U+{0} inside a value is refused")
+        @ValueSource(strings = {"0000", "0009", "000A", "000D", "001B", "001F", "007F", "0085", "009F"})
+        @DisplayName("every C0 control, DEL and C1 is refused when it sits among data")
+        void everyControlAmongDataIsRefused(String hex) {
+            String value = "A" + (char) Integer.parseInt(hex, 16) + "B";
+
+            assertThatExceptionOfType(ScreenInputRejectedException.class)
+                    .isThrownBy(() -> ScreenInputRejectedException.requireDeliverable("fname", value))
+                    .satisfies(rejected -> {
+                        assertThat(rejected.member()).contains("fname");
+                        assertThat(rejected.getMessage())
+                                .contains("U+" + hex.toUpperCase(java.util.Locale.ROOT))
+                                .contains("control character")
+                                .doesNotContain(value);
+                    });
+        }
+
+        @Test
+        @DisplayName("a value that is entirely LOW-VALUES is accepted: that is how BMS delivers an "
+                + "unmodified field, and how this module renders an unpainted one")
+        void allLowValuesIsAccepted() {
+            assertThatCode(() -> ScreenInputRejectedException
+                    .requireDeliverable("fname", "\u0000".repeat(20)))
+                    .doesNotThrowAnyException();
+        }
+
+        @Test
+        @DisplayName("data followed by a trailing run of LOW-VALUES is accepted: that is padding")
+        void trailingLowValuesAreAccepted() {
+            assertThatCode(() -> ScreenInputRejectedException
+                    .requireDeliverable("fname", "JOHN" + "\u0000".repeat(16)))
+                    .doesNotThrowAnyException();
+            assertThatCode(() -> ScreenInputRejectedException
+                    .requireDeliverable("fname", "JOHN   " + "\u0000".repeat(13)))
+                    .doesNotThrowAnyException();
+        }
+
+        @Test
+        @DisplayName("a LOW-VALUE with data after it is refused: Read Modified suppresses nulls, so no "
+                + "terminal can put one between data bytes")
+        void anEmbeddedLowValueIsRefused() {
+            assertThatExceptionOfType(ScreenInputRejectedException.class)
+                    .isThrownBy(() -> ScreenInputRejectedException
+                            .requireDeliverable("fname", "A\u0000B" + " ".repeat(17)));
+            assertThatExceptionOfType(ScreenInputRejectedException.class)
+                    .isThrownBy(() -> ScreenInputRejectedException
+                            .requireDeliverable("fname", "\u0000AB"));
+            // A trailing run interrupted by a space is not a trailing run.
+            assertThatExceptionOfType(ScreenInputRejectedException.class)
+                    .isThrownBy(() -> ScreenInputRejectedException
+                            .requireDeliverable("fname", "JOHN\u0000\u0000 "));
+        }
+
+        @Test
+        @DisplayName("the first offending character is the one reported, so the answer is stable")
+        void theFirstOffenderIsReported() {
+            assertThatExceptionOfType(ScreenInputRejectedException.class)
+                    .isThrownBy(() -> ScreenInputRejectedException
+                            // The line feed is built rather than written as a \\u escape: javac
+                            // processes unicode escapes before lexing, so one inside a literal would
+                            // end the literal.
+                            .requireDeliverable("fname", "A\u0009B" + (char) 0x0A + "C"))
+                    .satisfies(rejected ->
+                            assertThat(rejected.getMessage()).contains("U+0009").doesNotContain("U+000A"));
+        }
+
+        @Test
+        @DisplayName("an ordinary value, a null and an empty value are all accepted unchanged")
+        void ordinaryValuesAreAccepted() {
+            assertThatCode(() -> {
+                ScreenInputRejectedException.requireDeliverable("fname", "JOHN Q. PUBLIC-SMITH");
+                ScreenInputRejectedException.requireDeliverable("fname", null);
+                ScreenInputRejectedException.requireDeliverable("fname", "");
+                ScreenInputRejectedException.requireDeliverable("fname", " ".repeat(20));
+            }).doesNotThrowAnyException();
+        }
+
+        @Test
+        @DisplayName("never echoes the rejected value, even when it is a card number")
+        void neverEchoesTheValue() {
+            assertThatExceptionOfType(ScreenInputRejectedException.class)
+                    .isThrownBy(() -> ScreenInputRejectedException
+                            .requireDeliverable("cardsid", SENSITIVE + "\u0009"))
+                    .satisfies(rejected ->
+                            assertThat(rejected.getMessage()).doesNotContain(SENSITIVE));
+        }
+
+        @Test
+        @DisplayName("rejects a null member rather than composing a message with \"null\" in it")
+        void rejectsANullMember() {
+            assertThatNullPointerException().isThrownBy(() ->
+                    ScreenInputRejectedException.requireDeliverable(null, "A\u0009B"));
+            assertThatNullPointerException().isThrownBy(() ->
+                    ScreenInputRejectedException.controlCharacter(null, 0x09));
+        }
+
+        @Test
+        @DisplayName("controlCharacter names the member and the code point without rendering it")
+        void controlCharacterNamesTheMemberAndCodePoint() {
+            ScreenInputRejectedException rejected =
+                    ScreenInputRejectedException.controlCharacter("acsfnam", 0x001B);
+
+            assertThat(rejected.member()).contains("acsfnam");
+            assertThat(rejected.getMessage())
+                    .contains("acsfnam")
+                    .contains("U+001B")
+                    .contains("not echoed")
+                    .doesNotContain("\u001B");
+        }
+    }
+
+    @Nested
+    @DisplayName("requireKeyAgreement - one key per request, stated once in the URI and once on the "
+            + "screen")
+    class RequireKeyAgreement {
+
+        @Test
+        @DisplayName("a member the payload omits states no key, so there is nothing to disagree with")
+        void anAbsentMemberStatesNoKey() {
+            assertThatCode(() -> ScreenInputRejectedException.requireKeyAgreement(
+                    "acctsid", "00000000011", null, 11, ASCII_CODEC))
+                    .doesNotThrowAnyException();
+        }
+
+        @Test
+        @DisplayName("a blank or LOW-VALUES screen field states no key either, and a client echoing a "
+                + "painted screen always agrees")
+        void aBlankMemberStatesNoKey() {
+            assertThatCode(() -> {
+                ScreenInputRejectedException.requireKeyAgreement(
+                        "acctsid", "00000000011", " ".repeat(11), 11, ASCII_CODEC);
+                ScreenInputRejectedException.requireKeyAgreement(
+                        "acctsid", "00000000011", "\u0000".repeat(11), 11, ASCII_CODEC);
+                ScreenInputRejectedException.requireKeyAgreement(
+                        "acctsid", "00000000011", "00000000011", 11, ASCII_CODEC);
+            }).doesNotThrowAnyException();
+        }
+
+        @Test
+        @DisplayName("a second, different key is refused rather than silently discarded, and the value "
+                + "is not echoed")
+        void aSecondKeyIsRefused() {
+            assertThatExceptionOfType(ScreenInputRejectedException.class)
+                    .isThrownBy(() -> ScreenInputRejectedException.requireKeyAgreement(
+                            "acctsid", "00000000011", "00000000002", 11, ASCII_CODEC))
+                    .satisfies(rejected -> {
+                        assertThat(rejected.member()).contains("acctsid");
+                        assertThat(rejected.getMessage()).doesNotContain("00000000002");
+                    });
+        }
+
+        @Test
+        @DisplayName("an image the screen itself uses to mean \"no criterion supplied\" agrees, which is "
+                + "why the account and card screens pass their asterisk and the user screens pass none")
+        void aNoCriterionImageAgrees() {
+            assertThatCode(() -> ScreenInputRejectedException.requireKeyAgreement(
+                    "acctsid", "00000000011", "*", 11, ASCII_CODEC, "*"))
+                    .doesNotThrowAnyException();
+            assertThatExceptionOfType(ScreenInputRejectedException.class)
+                    .isThrownBy(() -> ScreenInputRejectedException.requireKeyAgreement(
+                            "usridin", "USER0001", "*", 8, ASCII_CODEC));
+        }
+
+        @Test
+        @DisplayName("a zero width never reaches the comparison at all: the PIC X move refuses it "
+                + "first, so no key can agree vacuously through an empty image")
+        void aZeroWidthNeverReachesTheComparison() {
+            // Worth pinning rather than assuming, because it is what makes the "is the image entirely
+            // spaces or entirely LOW-VALUES" guard safe: every image it sees is at least one character,
+            // so an empty image - which would make every key look like "no key supplied" - cannot be
+            // constructed. FixedWidthCodec, not this class, is what holds that.
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> ScreenInputRejectedException.requireKeyAgreement(
+                            "acctsid", "00000000011", "00000000002", 0, ASCII_CODEC))
+                    .withMessageContaining("at least one character position");
+        }
+
+        @Test
+        @DisplayName("rejects a null member, URI key, codec or no-criterion image")
+        void rejectsNullArguments() {
+            assertThatNullPointerException().isThrownBy(() ->
+                    ScreenInputRejectedException.requireKeyAgreement(
+                            null, "00000000011", "x", 11, ASCII_CODEC));
+            assertThatNullPointerException().isThrownBy(() ->
+                    ScreenInputRejectedException.requireKeyAgreement(
+                            "acctsid", null, "x", 11, ASCII_CODEC));
+            assertThatNullPointerException().isThrownBy(() ->
+                    ScreenInputRejectedException.requireKeyAgreement(
+                            "acctsid", "00000000011", "x", 11, null));
+            assertThatNullPointerException().isThrownBy(() ->
+                    ScreenInputRejectedException.requireKeyAgreement(
+                            "acctsid", "00000000011", "x", 11, ASCII_CODEC, (String) null));
         }
     }
 }

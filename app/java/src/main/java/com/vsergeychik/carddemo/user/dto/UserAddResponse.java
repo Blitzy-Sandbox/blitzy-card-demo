@@ -316,9 +316,14 @@ import java.util.List;
  *                          {@code 'COSGN00C'} at lines 79 and 168, {@code 'COADM01C'} at line 94. Not
  *                          a {@code DFHMDF} field
  * @param nextMapset        the mapset the client should render next, {@value #MAPSET_NAME} for this
- *                          screen. Not a {@code DFHMDF} field
- * @param nextMap           the map the client should render next, {@value #MAP_NAME} for this screen.
- *                          Not a {@code DFHMDF} field
+ *                          screen and {@value #NEXT_MAPSET_LENGTH} spaces on the {@code XCTL} arm,
+ *                          which passes a program and a communication area and no map at all. Blank
+ *                          rather than {@code null}: COBOL has no null, an unset {@code PIC X(7)} is
+ *                          spaces, and a member whose type changed with the branch could not be bound
+ *                          by a statically typed client. Not a {@code DFHMDF} field
+ * @param nextMap           the map the client should render next, {@value #MAP_NAME} for this screen
+ *                          and {@value #NEXT_MAP_LENGTH} spaces on the {@code XCTL} arm, for the
+ *                          reason given for {@code nextMapset}. Not a {@code DFHMDF} field
  */
 public record UserAddResponse(@JsonProperty("trnname") String trnName,
                               String title01,

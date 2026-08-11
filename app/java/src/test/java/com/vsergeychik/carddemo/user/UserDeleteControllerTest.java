@@ -25,6 +25,7 @@ import com.vsergeychik.carddemo.common.FieldAttributeSetter.FieldHighlight;
 import com.vsergeychik.carddemo.common.FieldAttributeSetter.FieldValidationState;
 import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.NavigationContext;
+import com.vsergeychik.carddemo.common.ScreenInputRejectedException;
 import com.vsergeychik.carddemo.common.ScreenFieldImage;
 import com.vsergeychik.carddemo.common.ScreenResponse;
 import com.vsergeychik.carddemo.common.PfKeyResolver.AidKey;
@@ -1917,11 +1918,13 @@ class UserDeleteControllerTest {
         @Test
         @DisplayName("over HTTP, a body naming another user cannot make the URI delete it")
         void theUriIsTheOnlyIdentityOverHttp() throws Exception {
-            // Only reachable through the HTTP binder: DELETE /api/users/A with USRIDIN naming B used to
-            // reach B's record, and a blank USRIDIN reached no record at all.
+            // Only reachable through the HTTP binder. A blank USRIDIN lets the URI state the key alone,
+            // which is the state a client echoing a cold-start screen sends, and the record deleted is
+            // the URI's.
             HeldRecord hold = stubHeldRead(USER_ID);
             when(hold.deleteHeld()).thenReturn(WriteResult.written());
-            String body = mapper.writeValueAsString(withAid(screen("USER0002", reenter()), "PFK05"));
+            String body = mapper.writeValueAsString(
+                    withAid(screen(" ".repeat(8), reenter()), "PFK05"));
 
             mockMvc.perform(delete("/api/users/{userId}", USER_ID)
                             .contentType(MediaType.APPLICATION_JSON)
@@ -1936,6 +1939,28 @@ class UserDeleteControllerTest {
 
             verify(repository).readForUpdate(USER_ID);
             verify(repository, never()).readForUpdate("USER0002");
+        }
+
+        @Test
+        @DisplayName("a USRIDIN naming a different user is refused over HTTP, naming the member and "
+                + "deleting nothing")
+        void aDisagreeingIdentityIsRefusedOverHttp() throws Exception {
+            // This MockMvc is a standalone setup, so config/WebConfig's CobolErrorHandler is not in the
+            // chain and the refusal surfaces as the wrapped exception rather than as the 400 envelope the
+            // deployed application answers with. What is asserted here is the boundary behaviour that
+            // belongs to this controller: the refusal reaches HTTP at all, names the member, echoes
+            // neither value, and no read is issued. WebConfigErrorContractTest owns the envelope.
+            String body = mapper.writeValueAsString(withAid(screen("USER0002", reenter()), "PFK05"));
+
+            assertThatThrownBy(() -> mockMvc.perform(delete("/api/users/{userId}", USER_ID)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(body)))
+                    .rootCause()
+                    .isInstanceOf(ScreenInputRejectedException.class)
+                    .hasMessageContaining("usridin")
+                    .hasMessageNotContaining("USER0002");
+
+            verify(repository, never()).readForUpdate(anyString());
         }
 
         @Test
@@ -2058,7 +2083,7 @@ class UserDeleteControllerTest {
         void anOverWidePathIdentityIsRefused() {
             assertThatThrownBy(() -> controller.deleteUser("USER00012345", null))
                     .isInstanceOf(IllegalArgumentException.class)
-                    .hasMessageContaining("Padding it would keep the leading");
+                    .hasMessageContaining("refused rather than truncated");
             verify(repository, never()).readForUpdate(anyString());
         }
 
@@ -2072,17 +2097,29 @@ class UserDeleteControllerTest {
 
         @Test
         @DisplayName("a body USRIDIN naming a different user is replaced by the path, which is the key")
-        void aBodyIdentityThatDisagreesIsProjectedOver() {
-            // The URI is the resource identity. A second, client-controlled statement of it must not be
-            // able to act on a record the URI does not name, so re-entry reads the path's user - never
-            // USER0002 - and the painted field shows the path's user too.
+        void aBodyIdentityThatDisagreesIsRefused() {
+            // The URI is the resource identity, and USRIDIN is the field the operator types into. A
+            // second, differing statement of the key is two keys in one request: it is refused before any
+            // read, rather than replaced with no message, which is what used to discard the typed value.
+            assertThatThrownBy(() -> controller
+                    .deleteUser(USER_ID, withAid(screen("USER0002", reenter()), "ENTER")))
+                    .isInstanceOf(ScreenInputRejectedException.class)
+                    .hasMessageContaining("usridin")
+                    .hasMessageNotContaining("USER0002");
+
+            verify(repository, never()).readForUpdate(anyString());
+        }
+
+        @ParameterizedTest(name = "a body stating USRIDIN as \"{0}\" lets the URI supply it")
+        @ValueSource(strings = {"        ", "USER0001", "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000"})
+        @DisplayName("blank, LOW-VALUES and the URI's own key all agree with the URI")
+        void theStatesThatAgreeAreAccepted(String stated) {
             stubHeldRead(USER_ID);
 
             UserDeleteResponse screen = controller
-                    .deleteUser(USER_ID, withAid(screen("USER0002", reenter()), "ENTER")).screen();
+                    .deleteUser(USER_ID, withAid(screen(stated, reenter()), "ENTER")).screen();
 
             verify(repository).readForUpdate(USER_ID);
-            verify(repository, never()).readForUpdate("USER0002");
             assertThat(screen.usrIdIn()).isEqualTo(USER_ID);
         }
 

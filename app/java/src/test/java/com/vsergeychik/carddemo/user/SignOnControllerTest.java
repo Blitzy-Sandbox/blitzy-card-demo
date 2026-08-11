@@ -1701,7 +1701,7 @@ class SignOnControllerTest {
                             .contentType(MediaType.APPLICATION_JSON)
                             .content(objectMapper.writeValueAsBytes(tooWide)))
                     .andExpect(status().isBadRequest())
-                    .andExpect(jsonPath("$.fieldErrors[0].field").value("userId"));
+                    .andExpect(jsonPath("$.fieldErrors[0].field").value("userid"));
 
             verify(decisionCore, never()).handle(any(SignOnInput.class));
         }

@@ -959,25 +959,30 @@ class WebConfigTest {
         }
 
         @Test
-        @DisplayName("a conversion failure answers the one fixed body, naming no Java type")
-        void aConversionFailureNamesNoJavaType() throws Exception {
+        @DisplayName("a conversion failure names the parameter and no Java type")
+        void aConversionFailureNamesTheParameterAndNoJavaType() throws Exception {
             // MethodArgumentTypeMismatchException extends TypeMismatchException and there is exactly
             // ONE handler for the family, so the same fixed sentence answers a path variable, a query
             // parameter and a conversion refused during binding alike. There used to be a narrower
             // handler for the MVC subclass which, because closest-match resolution preferred it,
             // reported the required type - "is not a valid long" - and so published the internal Java
             // type of a screen field to an unauthenticated caller.
+            //
+            // The parameter's NAME is a different matter from its type: the route publishes it in its
+            // own URI template and the caller typed the value into that position, so naming it back
+            // discloses nothing they did not already have, and it is the only thing that makes the
+            // answer actionable on a route carrying more than one parameter.
             final String body = adviceDispatcher()
                     .perform(get("/webconfig-fixture/accounts/not-a-number"))
                     .andExpect(status().isBadRequest())
                     .andExpect(jsonPath("$.code").value(CobolErrorHandler.TYPE_MISMATCH_CODE))
                     .andExpect(jsonPath("$.detail").value(CobolErrorHandler.TYPE_MISMATCH_MESSAGE))
+                    .andExpect(jsonPath("$.fieldErrors[0].field").value("accountId"))
                     .andReturn().getResponse().getContentAsString();
 
             assertThat(body)
                     .doesNotContain("long")
                     .doesNotContain("Long")
-                    .doesNotContain("accountId")
                     .doesNotContain("not-a-number");
         }
 

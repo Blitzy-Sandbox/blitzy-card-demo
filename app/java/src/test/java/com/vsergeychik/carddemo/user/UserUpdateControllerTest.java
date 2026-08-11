@@ -27,6 +27,7 @@ import com.vsergeychik.carddemo.common.FieldAttributeSetter.FieldValidationState
 import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.NavigationContext;
+import com.vsergeychik.carddemo.common.ScreenInputRejectedException;
 import com.vsergeychik.carddemo.common.ScreenResponse;
 import com.vsergeychik.carddemo.common.PfKeyResolver;
 import com.vsergeychik.carddemo.common.PfKeyResolver.AidKey;
@@ -1441,8 +1442,38 @@ class UserUpdateControllerTest {
         void thePathVariableIsTheIdentity() {
             stubFoundRead();
 
+            // A blank USRIDIN lets the URI state the key alone, which is what a client echoing a
+            // cold-start screen sends.
             UserUpdateResponse response = screenOf(controller.updateUser(USER_ID,
-                    screen("IGNORED1", "Sam", "Spade", STORED_PWD, "U", reenter()), null));
+                    screen(" ".repeat(8), "Sam", "Spade", STORED_PWD, "U", reenter()), null));
+
+            verify(repository).readForUpdate(USER_ID);
+            assertThat(response.usrIdIn()).isEqualTo(USER_ID);
+        }
+
+        @Test
+        @DisplayName("a USRIDIN naming a different user is refused, naming the member and reading nothing")
+        void aDisagreeingIdentityIsRefused() {
+            // USRIDIN is the field the operator types into, so a value there naming a second user is two
+            // keys in one request. It used to be replaced with no message, which discarded the typed
+            // identity; it is now refused before any read.
+            assertThatThrownBy(() -> controller.updateUser(USER_ID,
+                    screen("IGNORED1", "Sam", "Spade", STORED_PWD, "U", reenter()), null))
+                    .isInstanceOf(ScreenInputRejectedException.class)
+                    .hasMessageContaining("usridin")
+                    .hasMessageNotContaining("IGNORED1");
+
+            verify(repository, never()).readForUpdate(anyString());
+        }
+
+        @ParameterizedTest(name = "a body stating USRIDIN as \"{0}\" lets the URI supply it")
+        @ValueSource(strings = {"        ", "USER0001", "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000"})
+        @DisplayName("blank, LOW-VALUES and the URI's own key all agree with the URI")
+        void theStatesThatAgreeAreAccepted(String stated) {
+            stubFoundRead();
+
+            UserUpdateResponse response = screenOf(controller.updateUser(USER_ID,
+                    screen(stated, "Sam", "Spade", STORED_PWD, "U", reenter()), null));
 
             verify(repository).readForUpdate(USER_ID);
             assertThat(response.usrIdIn()).isEqualTo(USER_ID);

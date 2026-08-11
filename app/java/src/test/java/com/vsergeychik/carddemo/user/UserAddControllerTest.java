@@ -272,8 +272,17 @@ class UserAddControllerTest {
             assertThat(state.screenSent()).isFalse();
             UserAddResponse response = state.response();
             assertThat(response.nextProgram()).isEqualTo(UserAddController.ADMIN_MENU_PROGRAM);
-            assertThat(response.nextMapset()).as("XCTL passes PROGRAM and COMMAREA only").isNull();
-            assertThat(response.nextMap()).isNull();
+            // XCTL passes PROGRAM and COMMAREA only, so no map is named - and "no map" travels as blank
+            // at the declared width, never as JSON null. COBOL has no null: an unset PIC X(7) holds
+            // spaces. This arm is also the cold-start path (EIBCALEN = 0 is an XCTL to COSGN00C), so a
+            // null here was the very first thing a client saw, and it made the member's type depend on
+            // the branch. The sibling UserUpdateController already answers blank; this route now matches,
+            // and the seventeen-route surface carries no JSON null anywhere.
+            assertThat(response.nextMapset())
+                    .as("no map named, at NEXT_MAPSET_LENGTH spaces rather than null")
+                    .isEqualTo(" ".repeat(UserAddResponse.NEXT_MAPSET_LENGTH));
+            assertThat(response.nextMap())
+                    .isEqualTo(" ".repeat(UserAddResponse.NEXT_MAP_LENGTH));
             verify(repository, never()).add(any(SecUserRecord.class));
         }
 
@@ -1916,20 +1925,22 @@ class UserAddControllerTest {
                             .contentType(MediaType.APPLICATION_JSON)
                             .content(body(request(twentyOne, "Doe", "USR1", "PASS1234", "U"))))
                     .andExpect(status().isBadRequest())
-                    .andExpect(jsonPath("$.fieldErrors[0].field").value("fName"));
+                    // The member is named with the spelling the caller sent, which is the JSON member
+                    // this record pins with @JsonProperty("fname"), not the Java property fName.
+                    .andExpect(jsonPath("$.fieldErrors[0].field").value("fname"));
 
             verify(repository, never()).add(any(SecUserRecord.class));
         }
 
         @ParameterizedTest(name = "an over-width {0} earns 400")
-        @CsvSource({"fName, 21", "lName, 21", "userId, 9", "passwd, 9", "usrType, 2"})
+        @CsvSource({"fname, 21", "lname, 21", "userid, 9", "passwd, 9", "usrtype, 2"})
         @DisplayName("every data field's @Size maximum is the width its xxxI item declares")
         void everyDataFieldEnforcesItsDeclaredWidth(String member, int overWidth) throws Exception {
             String tooWide = "X".repeat(overWidth);
             UserAddRequest payload = switch (member) {
-                case "fName" -> request(tooWide, "Doe", "USR1", "PASS1234", "U");
-                case "lName" -> request("John", tooWide, "USR1", "PASS1234", "U");
-                case "userId" -> request("John", "Doe", tooWide, "PASS1234", "U");
+                case "fname" -> request(tooWide, "Doe", "USR1", "PASS1234", "U");
+                case "lname" -> request("John", tooWide, "USR1", "PASS1234", "U");
+                case "userid" -> request("John", "Doe", tooWide, "PASS1234", "U");
                 case "passwd" -> request("John", "Doe", "USR1", tooWide, "U");
                 default -> request("John", "Doe", "USR1", "PASS1234", tooWide);
             };
