@@ -1,32 +1,85 @@
 {
   "program": "COCRDLIC",
   "caseId": "case11",
-  "description": "The literal transfer at :402-405. PF3 reaches it because :384-385 also requires CDEMO-FROM-PROGRAM to equal LIT-THISPGM, and :319 has already moved LIT-THISPGM there as part of the EIBCALEN = 0 initialisation - so a cold start satisfies the guard on its first keystroke. :386-392 restates the identity and names LIT-MENUPGM as CDEMO-TO-PROGRAM; :394-395 sets the next mapset to LIT-MENUMAPSET and the next map to LIT-THISMAP, not LIT-MENUMAP, which is declared at :193-194 and never used - preserved rather than corrected. :396 sets WS-EXIT-MESSAGE and the transfer then discards it, because XCTL never reaches 1000-SEND-MAP: nothing moves it into ERRMSGO and no screen is sent at all, which is why this case pins zero sends. CDEMO-PGM-ENTER is set twice, at :389 and again at :400.",
+  "description": "A VALID eleven-digit ACCOUNT filter that matches FOUR of nine records, producing a MULTI-ROW PARTIAL page - and the ONLY case of the twenty that seeds its own rows instead of naming the shared fixture. WHY THIS CASE IS INLINE, from two MEASURED properties of app/data/ASCII/carddata.txt rather than from an assumption: first, bytes 17-27 of the fifty rows hold fifty DISTINCT account ids, 00000000001 through 00000000050, each occurring EXACTLY ONCE, so the card-to-account relationship in that fixture is strictly 1:1 and a valid account filter over it can return AT MOST ONE row; second, byte 91 is 'Y' on ALL FIFTY rows, so no other CARD-ACTIVE-STATUS value is reachable from it at all. This case needs a multi-row account match AND a non-'Y' status, so neither is reachable from carddata.txt and the rows are declared inline (practice B12). The fixture is READ as the oracle for shape and style and is never edited (practice B3). PROVENANCE (practice B12): every value below is STATICALLY DERIVED from app/cbl/COCRDLIC.cbl, the byte layout of app/cpy/CVACT02Y.cpy, the three REDEFINES pairs of app/cpy/CVCRD01Y.cpy, the literals of app/cpy/COTTL01Y.cpy, the commarea of app/cpy/COCOM01Y.cpy, the EIBAID ladder of app/cpy/CSSTRPFY.cpy and the symbolic-map field definitions of app/cpy-bms/COCRDLI.CPY with app/bms/COCRDLI.bms - and is NEVER captured from a live COBOL execution, which the eight verified blockers of AAP 0.7.6 make impossible in this environment (risk R-A, AAP 0.9.11). The encoding is US-ASCII, named explicitly, which matters most in this case because the nine record images below are authored as raw bytes: a space is 0x20 under US-ASCII and 0x40 under IBM037, so the code page is never left to a platform default (practice B8). The clock is pinned to 2022-07-19T23:12:34, the same instant case01, case09 and case10 pin, so CURDATEO and CURTIMEO reproduce on every run (practice B7). THE NINE SEEDED ROWS, each built mechanically from app/cpy/CVACT02Y.cpy by summing its PICTURE clauses by hand - CARD-NUM X(16) at 1-16, CARD-ACCT-ID 9(11) at 17-27, CARD-CVV-CD 9(03) at 28-30, CARD-EMBOSSED-NAME X(50) at 31-80, CARD-EXPIRAION-DATE X(10) at 81-90, CARD-ACTIVE-STATUS X(01) at 91 and FILLER X(59) at 92-150, which sum to 16+11+3+50+10+1+59 = 150 (practice B11, gate G19). Every PIC X span is left justified and space padded on the right, every PIC 9 span is right justified and zero filled on the left, and the trailing FILLER is present and all spaces on all nine rows, so each image ends in a space and each measures EXACTLY 150 characters (gate G21). The field is spelled CARD-EXPIRAION-DATE, missing the second T, exactly as app/cpy/CVACT02Y.cpy:9 spells it; renaming it would break field-for-field diffing (I1). The rows ASCEND by CARD-NUM because CARDDAT is a KSDS keyed on CARD-NUM at offset 0 and 9000-READ-FORWARD walks it with STARTBR ... GTEQ at :1129-1136, and because the real fixture's own ordering demonstrates the dataset is key-ordered. FOUR of the nine carry account 00000000031 - 2317884560923145, 4629301877450063, 6011329845760012 and 8734005621198430 - and the other five carry accounts 00000000018, 00000000007, 00000000044, 00000000002 and 00000000050. The five non-matching rows sit BEFORE the first match, BETWEEN each pair of matches and AFTER the last one, so exclusion is proven at the head, in the middle and at the tail of the browse rather than only at one end. Card 4629301877450063 carries CARD-ACTIVE-STATUS 'N', which is what proves CRDSTS2O reproduces the record's own byte rather than a constant 'Y'; rows 3044120987654321 and 9640118273645509 carry 'N' as well and are EXCLUDED, so a filter that leaked an unmatched row could not hide behind a uniform status either. Account 00000000031 holding four cards is exactly the state the CARDAIX alternate-index path and this screen's account filter exist to serve, and three of the four are embossed to one cardholder with the fourth to a supplementary cardholder, so CARD-EMBOSSED-NAME is likewise per record. All nine images are complete, realistic 150-byte records: no filler names, no all-zero card numbers standing in for data, no truncated row (practice B1). INBOUND. EIBCALEN is 160, the width app/cpy/COCOM01Y.cpy declares, and CDEMO-FROM-PROGRAM is 'COCRDLIC', so the guard at :357-358 is satisfied and 2000-RECEIVE-MAP runs; the EIBCALEN = 0 fresh-start INITIALIZE at :315-325 is skipped. The AID is DFHENTER, one of the four keys :371-376 accepts, so PFK-VALID holds, :378-380 does not force ENTER, and the PF3 transfer at :384-406 is not taken. Because the AID is not PF08, :410-414 re-asserts CA-LAST-PAGE-NOT-SHOWN. The 58-byte WS-THIS-PROGCOMMAREA cursor of :229-248 - two 27-byte card-key pairs plus WS-CA-SCREEN-NUM, WS-CA-LAST-PAGE-DISPLAYED, WS-CA-NEXT-PAGE-IND and WS-RETURN-FLAG, summing to 16+11+16+11+1+1+1+1 = 58 - arrives as a COHERENT prior state rather than a convenient blank: the previous invocation painted page one of the UNFILTERED browse over these same nine rows, so it filled all seven screen lines, reached WS-SCRN-COUNTER = WS-MAX-SCREEN-LINES, took the :1191 block, and its look-ahead READNEXT at :1197-1205 returned an eighth record and drove :1210-1214. That is why WS-CA-FIRST-CARD-NUM arrives as '1198237456031288' with account 00000000018 - seeded row one, captured at :1174-1176 - why WS-CA-LAST-CARD-NUM arrives as '8734005621198430' with account 00000000031 - seeded row EIGHT, the look-ahead record, not seeded row seven - and why WS-CA-NEXT-PAGE-IND arrives as 'Y' per the 88 CA-NEXT-PAGE-EXISTS at :244. WS-CA-SCREEN-NUM is 1 and WS-CA-LAST-PAGE-DISPLAYED is 9. The seven ACCTNOnI, CRDNUMnI and CRDSTSnI items likewise carry that prior page - seeded rows one to seven - and the operator has typed '00000000031' into ACCTSIDI, left CARDSIDI at LOW-VALUES and typed no selection character, so every CRDSELnI is LOW-VALUES. This is not decoration: :1124 moves LOW-VALUES to WS-ALL-ROWS before the browse begins, so the inbound row items are DISCARDED and the four rows painted below come from the browse alone. A case that arrived with a blank screen could not make that point. THE EDITS, in the order 2200-EDIT-INPUTS performs them at :989-996 (gate G30). 2100-RECEIVE-SCREEN moves ACCTSIDI into CC-ACCT-ID at :969 and CARDSIDI into CC-CARD-NUM at :970, then :972-978 move the seven CRDSELnI into WS-EDIT-SELECT. 2210-EDIT-ACCOUNT (:1003-1032) evaluates its not-supplied guard at :1007-1009, which is a single condition reading the account span through BOTH of its aliases - CC-ACCT-ID as X(11) against LOW-VALUES and against SPACES, and CC-ACCT-ID-N as 9(11) against ZEROS - and all three terms are FALSE for '00000000031'. IS NOT NUMERIC at :1017 is false too, all eleven characters being digits, so the ELSE at :1027-1028 runs: MOVE CC-ACCT-ID TO CDEMO-ACCT-ID and SET FLG-ACCTFILTER-ISVALID TO TRUE. 2220-EDIT-CARD (:1036-1069) finds the mirror guard at :1042-1044 TRUE, because CC-CARD-NUM arrives LOW-VALUES, so it takes SET FLG-CARDFILTER-BLANK, MOVE ZEROES TO CDEMO-CARD-NUM and GO TO 2220-EDIT-CARD-EXIT - a benign forward early exit restructured to a plain return with the fall-through outcome unchanged (rule R7). 2250-EDIT-ARRAY (:1073-1119) finds INPUT-ERROR false, tallies I to zero at :1079-1082 because no CRDSELnI carries 'S' or 'U', leaves I-SELECTED zero at :1097, and takes WHEN SELECT-BLANK(I) CONTINUE on all seven iterations, the 88 SELECT-BLANK at :80-82 covering both ' ' and LOW-VALUES. With I-SELECTED zero neither the ENTER-and-view arm at :517-541 nor the ENTER-and-update arm at :545-569 matches, so the EVALUATE reaches WHEN OTHER at :572-582 and browses forward. THE DELIBERATE ALIAS ASYMMETRY, recorded and NOT harmonised (practices B4 and B5). 2210's success path at :1027 moves CC-ACCT-ID, the X(11) CHARACTER alias, into CDEMO-ACCT-ID, while 2220's success path at :1064 moves CC-CARD-NUM-N, the 9(16) NUMERIC alias, into CDEMO-CARD-NUM. Two paragraphs, the same REDEFINES idiom, opposite halves of their respective pairs. This case exercises the ACCOUNT half and case10 exercises the CARD half; between them the pair-per-paragraph asymmetry is pinned in both directions. Making them agree would be a redesign, so both are reproduced exactly as written. THE ACCOUNT REDEFINES PAIR IN BOTH DIRECTIONS (gate G34). app/cpy/CVCRD01Y.cpy declares three pairs over one backing span each, every one with VALUE SPACES on the X side - CC-ACCT-ID X(11) / CC-ACCT-ID-N 9(11) at :34-36, CC-CARD-NUM X(16) / CC-CARD-NUM-N 9(16) at :37-39 and CC-CUST-ID X(09) / CC-CUST-ID-N 9(9) at :40-42 - which with the six items above them sum to the 213-byte CardScreenState span, 5+8+7+7+75+75+11+16+9 (practice B11). The account pair is read here in both directions over ONE eleven-byte span and never through Integer.parseInt: the blank guard at :1007-1009 reads the span as CHARACTERS and as a NUMBER in the same condition, :1027 STORES it through the character view, :1386 COMPARES through the character view, and :847 REDISPLAYS it through the character view. One span, four readings, no parallel field and no parsed copy. THE BROWSE. :1124 blanks WS-ALL-ROWS to LOW-VALUES; :1129-1136 issues STARTBR GTEQ on the WS-CA-FIRST-CARD-NUM the payload carried, '1198237456031288', which is the key of seeded row one, so GTEQ anchors on that row and the walk covers all nine; :1140 zeroes WS-SCRN-COUNTER and :1141 sets CA-NEXT-PAGE-EXISTS. The READNEXT loop at :1146 then walks every seeded record. 9500-FILTER-RECORDS (:1382-1405) runs its two stages in source order: the account stage at :1385-1391 compares CARD-ACCT-ID against CC-ACCT-ID and, for the five non-matching rows, takes SET WS-EXCLUDE-THIS-RECORD and GO TO 9500-FILTER-RECORDS-EXIT; the card stage at :1396-1405 then takes ELSE CONTINUE, because FLG-CARDFILTER-ISVALID is false while FLG-CARDFILTER-BLANK is set. A SEMANTIC DETAIL DERIVED FROM THE SOURCE RATHER THAN ASSUMED, and recorded (practice B4): :1386 compares CARD-ACCT-ID, declared PIC 9(11) DISPLAY in app/cpy/CVACT02Y.cpy:6, against CC-ACCT-ID, declared PIC X(11) - a numeric-to-alphanumeric comparison, and one that reaches across the REDEFINES boundary of the pair above. COBOL permits it only because the numeric operand is an unsigned integer, and it proceeds by treating that operand as though it were an alphanumeric item of the same size, so the test is an ELEVEN-BYTE comparison. Because :1017 has already established that CC-ACCT-ID is all digits, the byte reading and the numeric reading coincide here, which is why the four rows whose bytes 17-27 read '00000000031' survive and the five others do not. The comparison is reproduced as a byte comparison over the span, not as a parsed integer equality. THE PARTIAL PAGE. Each surviving record drives :1163 ADD 1 TO WS-SCRN-COUNTER and the three MOVEs at :1165-1171, which fill WS-ROW-CARD-NUM, WS-ROW-ACCTNO and WS-ROW-CARD-STATUS for that counter position - 28 bytes per row into the 196-byte WS-ALL-ROWS of :252-260. On the FIRST survivor :1173-1176 captures WS-CA-FIRST-CARD-ACCT-ID '00000000031' and WS-CA-FIRST-CARD-NUM '2317884560923145', and the nested IF at :1177 does NOT fire because WS-CA-SCREEN-NUM is already 1 rather than 0, so the page number is not incremented. WS-SCRN-COUNTER finishes at FOUR. It therefore never reaches WS-MAX-SCREEN-LINES, so the :1191 block never executes and with it neither the mid-loop last-key capture at :1194-1195 nor the look-ahead READNEXT at :1197-1205 - which is precisely the contrast this case draws with case01, where seven rows fill the page and both do run. Seven nonetheless remains the bound, taken from WS-MAX-SCREEN-LINES PIC S9(4) COMP VALUE 7 at :177-178, and a partial page is what proves seven is a MAXIMUM rather than a fill count. It is behaviour, not configuration (gate G39): no tunable page-size member appears anywhere in this fixture and there is no environment seam through which seven could be changed. THE ENDFILE ARM (gate G47, FileStatus.Outcome.END_OF_FILE) arrives by EXHAUSTING the nine seeded records rather than by being forced, which is why forcedOutcomes is empty. :1233-1245 sets READ-LOOP-EXIT and CA-NEXT-PAGE-NOT-EXISTS, then captures the last key pair at :1236-1237 from the record STILL SITTING IN CARD-RECORD, which the failed READNEXT did not overwrite: that is seeded row NINE, card 9640118273645509 account 00000000050 - the last row of the DATASET, not the last row that MATCHED. Because WS-ERROR-MSG is still off, :1238-1240 moves 'NO MORE RECORDS TO SHOW' into it. THE TEST AT :1241-1242 IS FALSE HERE, because WS-SCRN-COUNTER is 4 and not 0, so WS-NO-RECORDS-FOUND is never set and that message SURVIVES to the screen. This is the deliberate contrast with case09, which reaches the IDENTICAL arm with the IDENTICAL kind of valid account filter but an EMPTY page, and has the message overwritten by the 88-level 'NO RECORDS FOUND FOR THIS SEARCH CONDITION.' text of :121-122. ENDBR follows at :1258. THE PAINT. 1000-SEND-MAP (:624-636) runs 1100, 1200, 1250, 1300, 1400 and 1500 in that order. 1100-SCREEN-INIT blanks CCRDLIAO to LOW-VALUES at :643 - which is why every field this run does not write reads as LOW-VALUES and NOT as spaces, a distinction the values below preserve (practice B8) - then writes TITLE01O and TITLE02O at :647-648 from app/cpy/COTTL01Y.cpy, whose ACTIVE title-two line is '              CardDemo                  ' on line 22, the '  Credit Card Demo Application (CCDA)   ' variant on line 21 being commented out; TRNNAMEO 'CCLI' and PGMNAMEO 'COCRDLIC' at :649-650; CURDATEO at :658; CURTIMEO at :664; and PAGENOO at :667, where WS-CA-SCREEN-NUM PIC 9(1) moving into PIC X(3) left-justifies and space-pads to '1  '. :669-671 then sets WS-NO-INFO-MESSAGE, paints INFOMSGO with the resulting spaces and INFOMSGC with DFHBMDAR; both are defaults that the trailing guard of 1400-SETUP-MESSAGE overwrites on this path. 1200-SCREEN-ARRAY-INIT (:678-742) writes only rows whose WS-EACH-CARD is not LOW-VALUES and gives each populated row exactly FOUR fields - CRDSELnO, ACCTNOnO, CRDNUMnO and CRDSTSnO. Rows one to four are therefore populated, in browse order, with ACCTNOnO '00000000031' on all four and CRDSTSnO carrying 'Y', 'N', 'Y' and 'Y' respectively; CRDSELnO is LOW-VALUES on each because :972-978 moved LOW-VALUES into WS-EDIT-SELECT. Rows FIVE, SIX and SEVEN take CONTINUE, so all five of their items stay LOW-VALUES. CRDSTP2O through CRDSTP7O are LOW-VALUES for a stronger reason than an unfilled row: NO paragraph in the program writes a CRDSTPnO on ANY path, so they are LOW-VALUES even when all seven rows are full, as case01 shows. That dead span is preserved rather than tidied (practice B5). 1250-SETUP-ARRAY-ATTRIBS (:748-831) sends rows one to four down their ELSE branches, since those WS-EACH-CARD entries are populated and FLG-PROTECT-SELECT-ROWS-NO holds, and with WS-ROW-CRDSELECT-ERROR unset each receives DFHBMFSE on its CRDSELnA item and no highlight; rows five, six and seven take the LOW-VALUES branch and receive DFHBMPRO. A source asymmetry is recorded rather than corrected (practice B5): row one's protected branch at :753 applies DFHBMPRF, not the DFHBMPRO its six siblings use at :766, :777, :789, :801, :812 and :824. It is unreachable on this path, because row one is populated, and it is left exactly as written. Those are all A items, so none of them appears among the projected attributes, which carry colours only. 1300-SETUP-SCREEN-ATTRS (:837-889) finds its guard at :839-841 false, because EIBCALEN is not zero and CDEMO-FROM-PROGRAM is not LIT-MENUPGM, so both EVALUATEs run in source order. The account EVALUATE matches its FIRST arm, WHEN FLG-ACCTFILTER-ISVALID at :845, and takes :847-848: MOVE CC-ACCT-ID TO ACCTSIDO and MOVE DFHBMFSE TO ACCTSIDA - so ACCTSIDO echoes '00000000031' through the character alias. The two later account arms are therefore never reached: the WHEN CDEMO-ACCT-ID = 0 arm at :849-850 that case01 takes, and the WHEN OTHER at :851-853 that would have moved CDEMO-ACCT-ID instead. The card EVALUATE falls past FLG-CARDFILTER-ISVALID and FLG-CARDFILTER-NOT-OK to WHEN CDEMO-CARD-NUM = 0 at :861, which :1046 made true, and moves LOW-VALUES to CARDSIDO at :862 without setting an attribute. Neither filter is NOT-OK, so the two DFHRED blocks at :872-880 are skipped and there is NO CSSETATY DFHRED-plus-asterisk highlight anywhere on this screen (gate G38); case12 and case13 are the invalid-filter contrasts. INPUT-OK still holds, so :884-885 moves -1 into ACCTSIDL and the cursor lands there. 1400-SETUP-MESSAGE (:895-930) is walked arm by arm in source order (gate G30): the two filter-error arms at :898-900 fail because both filters are acceptable - the account filter is ISVALID, not NOT-OK, and the card filter is BLANK; the PFK07 arm at :901-904 fails on the AID; both PFK08 arms at :905-916 fail on the AID; and WHEN WS-NO-INFO-MESSAGE at :917 MATCHES, because :669 left WS-INFO-MSG spaces, so :919 SET WS-INFORM-REC-ACTIONS runs. WHEN CA-NEXT-PAGE-EXISTS at :918 and WHEN OTHER at :920-921 are consequently never reached, and CA-NEXT-PAGE-EXISTS would NOT have matched anyway since the ENDFILE arm cleared it. :924 then moves WS-ERROR-MSG PIC X(75) into ERRMSGO PIC X(78), which is where the THREE pad spaces beyond the 75-byte source come from: 'NO MORE RECORDS TO SHOW' is 23 characters, WS-ERROR-MSG pads it to 75, and ERRMSGO carries 78. The trailing guard at :926-930 holds on BOTH terms - the info message is no longer spaces, and WS-NO-RECORDS-FOUND was never set - so INFOMSGO receives WS-INFO-MSG, the 41-character 88-level text of :115-116 padded to its declared X(45), and INFOMSGC receives DFHNEUTR. THE PROJECTION is exactly 45 members, and that number is counted from app/cpy-bms/COCRDLI.CPY rather than assumed: nine header items, FOUR for row one, thirty for rows two to seven at five each, and two message lines. Row one has NO CRDSTP1 item to pin at all - the symbolic map jumps straight from CRDSEL1I to ACCTNO1I at :73-84 - and COCRDLI declares no FKEYS field, so neither appears. The xxxL, xxxF and xxxA items are length, flag and attribute metadata and the xxxC, xxxP, xxxH and xxxV items are attribute metadata; none of them is a payload field, and every payload width above comes from an xxxI PICTURE clause in that copybook (practice B11). OUTBOUND CURSOR. The 58-byte area returns with WS-CA-FIRST-CARDKEY '2317884560923145' plus 00000000031 from :1174-1176, WS-CA-LAST-CARDKEY '9640118273645509' plus 00000000050 from :1236-1237, WS-CA-SCREEN-NUM 1 - unchanged, because :1177 did not fire and no paging arm ran - WS-CA-LAST-PAGE-DISPLAYED 9 from :413, WS-CA-NEXT-PAGE-IND LOW-VALUES per the 88 CA-NEXT-PAGE-NOT-EXISTS at :243, and WS-RETURN-FLAG off. It is recorded here in prose rather than as navigation members because ParityCase.ExpectedResponse.navigation admits only the sixteen CDEMO- items app/cpy/COCOM01Y.cpy defines, WS- items being accepted on the inbound commarea alone. STATELESSNESS (gate G37, rule R6): the filter value, the AID, the whole cursor and the previous screen's own field values all arrive in the payload and leave in the payload; nothing whatever is held server-side, and :1124 discarding the inbound row table is what makes the painted rows a function of the browse rather than of retained state. The transaction ends by returning to itself at :604-619, so termination is RETURN_TRANSID and no nextProgram is named - :572-582 reaches COMMON-RETURN by GO TO, so the MOVE LIT-THISPGM TO CCARD-NEXT-PROG at :600 is never executed on this path. DATA ACCESS (gate G45): one CARDDAT binding key and no other. The account filter is applied record by record inside 9500-FILTER-RECORDS over the BASE browse - never by a keyed read on the account, and never by switching to the CARDAIX path, which :215-217 declares as LIT-CARD-FILE-ACCT-PATH but which no EXEC CICS in this program references, another dead span left as found (practice B5). CARDAIX is an alternate-index path over the same base dataset, never a second table and never a second repository. Every seeded record is 150 bytes with its FILLER X(59) present and space-filled (gates G19 and G21), and this path is read-only, so expectedWrites is empty as a POSITIVE assertion that nothing was written and expectedFinalState is the nine-row pre-state unchanged, pinned both as field maps and as whole record images so a single wrong byte is caught twice. GATES G32 AND G35 DO NOT APPLY to COCRDLIC: none of its GO TO statements is backward or loop-forming - every one targets either a paragraph's own -EXIT label or the shared COMMON-RETURN - and the program contains no CALL 'CEE3ABD', no ABEND and no RETURN-CODE assignment, so expectedReturnCode is 0, matching FileStatus.APPL_AOK. jobParameters is empty because a CONTROLLER_POJO takes none. TWO FURTHER DIVERGENCES ARE RECORDED RATHER THAN CORRECTED (practice B4). The brief for this file counts 15 AID conditions on CCARD-AID where app/cpy/CVCRD01Y.cpy:4-19 declares SIXTEEN - ENTER, CLEAR, PA1, PA2 and PFK01 through PFK12; the copybook is the oracle and is not edited to suit either count. And the three EXEC CICS XCTL verbs stand at :402, :538 and :566 with their PROGRAM operands on the following lines - LIT-MENUPGM at :403, CCARD-NEXT-PROG at :539 and :567 - so a citation of the verb line and a citation of the operand line both describe the same site; none of the three is reached on this path. The four commented-out CVCRD01Y groups - CCARD-LAST-PROG, CCARD-RETURN-TO-PROG, CCARD-RETURN-FLAG and CCARD-FUNCTION - remain unmodelled (practice B5).",
   "unitKind": "CONTROLLER_POJO",
   "inputs": {
     "CARDDAT": {
-      "fixture": "carddata.txt",
-      "rowCount": 50
+      "rows": [
+        "119823745603128800000000018431Marlene Kozey                                     2024-05-14Y                                                           ",
+        "231788456092314500000000031208Rosalind Bergstrom                                2025-02-28Y                                                           ",
+        "304412098765432100000000007917Ignacio Wehner                                    2023-11-30N                                                           ",
+        "462930187745006300000000031771Rosalind Bergstrom                                2026-08-31N                                                           ",
+        "521866093412770500000000044356Thurman Nitzsche                                  2026-01-19Y                                                           ",
+        "601132984576001200000000031349Rosalind Bergstrom                                2024-09-30Y                                                           ",
+        "785209441330678900000000002640Delphia Schamberger                               2025-06-22Y                                                           ",
+        "873400562119843000000000031562Emeline Bergstrom                                 2027-03-31Y                                                           ",
+        "964011827364550900000000050175Kaleigh Hilpert                                   2023-08-05N                                                           "
+      ]
     }
   },
+  "jobParameters": {},
   "screenRequest": {
-    "eibcalen": 0,
+    "eibcalen": 160,
+    "aid": "DFHENTER",
     "pinnedClock": "2022-07-19T23:12:34",
     "charset": "US-ASCII",
-    "commarea": {},
-    "mapFields": {},
-    "forcedOutcomes": {},
-    "aid": "DFHPF3"
+    "commarea": {
+      "CDEMO-FROM-TRANID": "CCLI",
+      "CDEMO-FROM-PROGRAM": "COCRDLIC",
+      "CDEMO-USER-TYPE": "U",
+      "CDEMO-PGM-CONTEXT": "0",
+      "CDEMO-LAST-MAP": "CCRDLIA",
+      "CDEMO-LAST-MAPSET": "COCRDLI",
+      "WS-CA-LAST-CARD-NUM": "8734005621198430",
+      "WS-CA-LAST-CARD-ACCT-ID": "00000000031",
+      "WS-CA-FIRST-CARD-NUM": "1198237456031288",
+      "WS-CA-FIRST-CARD-ACCT-ID": "00000000018",
+      "WS-CA-SCREEN-NUM": "1",
+      "WS-CA-LAST-PAGE-DISPLAYED": "9",
+      "WS-CA-NEXT-PAGE-IND": "Y",
+      "WS-RETURN-FLAG": " "
+    },
+    "mapFields": {
+      "ACCTSIDI": "00000000031",
+      "CARDSIDI": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+      "CRDSEL1I": "\u0000",
+      "ACCTNO1I": "00000000018",
+      "CRDNUM1I": "1198237456031288",
+      "CRDSTS1I": "Y",
+      "CRDSEL2I": "\u0000",
+      "ACCTNO2I": "00000000031",
+      "CRDNUM2I": "2317884560923145",
+      "CRDSTS2I": "Y",
+      "CRDSEL3I": "\u0000",
+      "ACCTNO3I": "00000000007",
+      "CRDNUM3I": "3044120987654321",
+      "CRDSTS3I": "N",
+      "CRDSEL4I": "\u0000",
+      "ACCTNO4I": "00000000031",
+      "CRDNUM4I": "4629301877450063",
+      "CRDSTS4I": "N",
+      "CRDSEL5I": "\u0000",
+      "ACCTNO5I": "00000000044",
+      "CRDNUM5I": "5218660934127705",
+      "CRDSTS5I": "Y",
+      "CRDSEL6I": "\u0000",
+      "ACCTNO6I": "00000000031",
+      "CRDNUM6I": "6011329845760012",
+      "CRDSTS6I": "Y",
+      "CRDSEL7I": "\u0000",
+      "ACCTNO7I": "00000000002",
+      "CRDNUM7I": "7852094413306789",
+      "CRDSTS7I": "Y"
+    },
+    "forcedOutcomes": {}
   },
   "expectedResponse": {
-    "nextProgram": "COMEN01C",
-    "nextMapset": "COMEN01",
-    "nextMap": "CCRDLIA",
     "navigation": {
       "CDEMO-FROM-TRANID": "CCLI",
       "CDEMO-FROM-PROGRAM": "COCRDLIC",
       "CDEMO-TO-TRANID": "    ",
-      "CDEMO-TO-PROGRAM": "COMEN01C",
+      "CDEMO-TO-PROGRAM": "        ",
       "CDEMO-USER-ID": "        ",
       "CDEMO-USER-TYPE": "U",
       "CDEMO-PGM-CONTEXT": "0",
@@ -34,268 +87,206 @@
       "CDEMO-CUST-FNAME": "                         ",
       "CDEMO-CUST-MNAME": "                         ",
       "CDEMO-CUST-LNAME": "                         ",
-      "CDEMO-ACCT-ID": "00000000000",
+      "CDEMO-ACCT-ID": "00000000031",
       "CDEMO-ACCT-STATUS": " ",
       "CDEMO-CARD-NUM": "0000000000000000",
       "CDEMO-LAST-MAP": "CCRDLIA",
       "CDEMO-LAST-MAPSET": "COCRDLI"
     },
-    "sends": [],
-    "termination": "XCTL"
+    "sends": [
+      {
+        "fields": {
+          "TRNNAMEO": "CCLI",
+          "TITLE01O": "      AWS Mainframe Modernization       ",
+          "CURDATEO": "07/19/22",
+          "PGMNAMEO": "COCRDLIC",
+          "TITLE02O": "              CardDemo                  ",
+          "CURTIMEO": "23:12:34",
+          "PAGENOO": "1  ",
+          "ACCTSIDO": "00000000031",
+          "CARDSIDO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "CRDSEL1O": "\u0000",
+          "ACCTNO1O": "00000000031",
+          "CRDNUM1O": "2317884560923145",
+          "CRDSTS1O": "Y",
+          "CRDSEL2O": "\u0000",
+          "CRDSTP2O": "\u0000",
+          "ACCTNO2O": "00000000031",
+          "CRDNUM2O": "4629301877450063",
+          "CRDSTS2O": "N",
+          "CRDSEL3O": "\u0000",
+          "CRDSTP3O": "\u0000",
+          "ACCTNO3O": "00000000031",
+          "CRDNUM3O": "6011329845760012",
+          "CRDSTS3O": "Y",
+          "CRDSEL4O": "\u0000",
+          "CRDSTP4O": "\u0000",
+          "ACCTNO4O": "00000000031",
+          "CRDNUM4O": "8734005621198430",
+          "CRDSTS4O": "Y",
+          "CRDSEL5O": "\u0000",
+          "CRDSTP5O": "\u0000",
+          "ACCTNO5O": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "CRDNUM5O": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "CRDSTS5O": "\u0000",
+          "CRDSEL6O": "\u0000",
+          "CRDSTP6O": "\u0000",
+          "ACCTNO6O": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "CRDNUM6O": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "CRDSTS6O": "\u0000",
+          "CRDSEL7O": "\u0000",
+          "CRDSTP7O": "\u0000",
+          "ACCTNO7O": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "CRDNUM7O": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "CRDSTS7O": "\u0000",
+          "INFOMSGO": "TYPE S FOR DETAIL, U TO UPDATE ANY RECORD    ",
+          "ERRMSGO": "NO MORE RECORDS TO SHOW                                                       "
+        },
+        "attributes": {
+          "INFOMSGC": "DFHNEUTR"
+        }
+      }
+    ],
+    "cursorField": "ACCTSIDL",
+    "termination": "RETURN_TRANSID"
   },
   "expectedWrites": [],
   "expectedFinalState": [
     {
       "dataset": "CARDDAT",
       "rowIndex": 0,
-      "expectedBytes": "050002445376574000000000050747Aniya Von                                         2023-03-09Y                                                           "
+      "fields": {
+        "CARD-NUM": "1198237456031288",
+        "CARD-ACCT-ID": "00000000018",
+        "CARD-CVV-CD": "431",
+        "CARD-EMBOSSED-NAME": "Marlene Kozey                                     ",
+        "CARD-EXPIRAION-DATE": "2024-05-14",
+        "CARD-ACTIVE-STATUS": "Y",
+        "FILLER": "                                                           "
+      },
+      "expectedBytes": "119823745603128800000000018431Marlene Kozey                                     2024-05-14Y                                                           "
     },
     {
       "dataset": "CARDDAT",
       "rowIndex": 1,
-      "expectedBytes": "068358619817151600000000027567Ward Jones                                        2025-07-13Y                                                           "
+      "fields": {
+        "CARD-NUM": "2317884560923145",
+        "CARD-ACCT-ID": "00000000031",
+        "CARD-CVV-CD": "208",
+        "CARD-EMBOSSED-NAME": "Rosalind Bergstrom                                ",
+        "CARD-EXPIRAION-DATE": "2025-02-28",
+        "CARD-ACTIVE-STATUS": "Y",
+        "FILLER": "                                                           "
+      },
+      "expectedBytes": "231788456092314500000000031208Rosalind Bergstrom                                2025-02-28Y                                                           "
     },
     {
       "dataset": "CARDDAT",
       "rowIndex": 2,
-      "expectedBytes": "092387719324733000000000002028Enrico Rosenbaum                                  2024-08-11Y                                                           "
+      "fields": {
+        "CARD-NUM": "3044120987654321",
+        "CARD-ACCT-ID": "00000000007",
+        "CARD-CVV-CD": "917",
+        "CARD-EMBOSSED-NAME": "Ignacio Wehner                                    ",
+        "CARD-EXPIRAION-DATE": "2023-11-30",
+        "CARD-ACTIVE-STATUS": "N",
+        "FILLER": "                                                           "
+      },
+      "expectedBytes": "304412098765432100000000007917Ignacio Wehner                                    2023-11-30N                                                           "
     },
     {
       "dataset": "CARDDAT",
       "rowIndex": 3,
-      "expectedBytes": "092798710863623200000000020003Carter Veum                                       2024-03-13Y                                                           "
+      "fields": {
+        "CARD-NUM": "4629301877450063",
+        "CARD-ACCT-ID": "00000000031",
+        "CARD-CVV-CD": "771",
+        "CARD-EMBOSSED-NAME": "Rosalind Bergstrom                                ",
+        "CARD-EXPIRAION-DATE": "2026-08-31",
+        "CARD-ACTIVE-STATUS": "N",
+        "FILLER": "                                                           "
+      },
+      "expectedBytes": "462930187745006300000000031771Rosalind Bergstrom                                2026-08-31N                                                           "
     },
     {
       "dataset": "CARDDAT",
       "rowIndex": 4,
-      "expectedBytes": "098249621362979500000000012075Maci Robel                                        2023-07-07Y                                                           "
+      "fields": {
+        "CARD-NUM": "5218660934127705",
+        "CARD-ACCT-ID": "00000000044",
+        "CARD-CVV-CD": "356",
+        "CARD-EMBOSSED-NAME": "Thurman Nitzsche                                  ",
+        "CARD-EXPIRAION-DATE": "2026-01-19",
+        "CARD-ACTIVE-STATUS": "Y",
+        "FILLER": "                                                           "
+      },
+      "expectedBytes": "521866093412770500000000044356Thurman Nitzsche                                  2026-01-19Y                                                           "
     },
     {
       "dataset": "CARDDAT",
       "rowIndex": 5,
-      "expectedBytes": "101408656522435000000000044640Irving Emard                                      2024-01-17Y                                                           "
+      "fields": {
+        "CARD-NUM": "6011329845760012",
+        "CARD-ACCT-ID": "00000000031",
+        "CARD-CVV-CD": "349",
+        "CARD-EMBOSSED-NAME": "Rosalind Bergstrom                                ",
+        "CARD-EXPIRAION-DATE": "2024-09-30",
+        "CARD-ACTIVE-STATUS": "Y",
+        "FILLER": "                                                           "
+      },
+      "expectedBytes": "601132984576001200000000031349Rosalind Bergstrom                                2024-09-30Y                                                           "
     },
     {
       "dataset": "CARDDAT",
       "rowIndex": 6,
-      "expectedBytes": "114216769287893100000000037625Shany Walker                                      2023-10-24Y                                                           "
+      "fields": {
+        "CARD-NUM": "7852094413306789",
+        "CARD-ACCT-ID": "00000000002",
+        "CARD-CVV-CD": "640",
+        "CARD-EMBOSSED-NAME": "Delphia Schamberger                               ",
+        "CARD-EXPIRAION-DATE": "2025-06-22",
+        "CARD-ACTIVE-STATUS": "Y",
+        "FILLER": "                                                           "
+      },
+      "expectedBytes": "785209441330678900000000002640Delphia Schamberger                               2025-06-22Y                                                           "
     },
     {
       "dataset": "CARDDAT",
       "rowIndex": 7,
-      "expectedBytes": "156140910649160000000000035031Angelica Dach                                     2025-09-23Y                                                           "
+      "fields": {
+        "CARD-NUM": "8734005621198430",
+        "CARD-ACCT-ID": "00000000031",
+        "CARD-CVV-CD": "562",
+        "CARD-EMBOSSED-NAME": "Emeline Bergstrom                                 ",
+        "CARD-EXPIRAION-DATE": "2027-03-31",
+        "CARD-ACTIVE-STATUS": "Y",
+        "FILLER": "                                                           "
+      },
+      "expectedBytes": "873400562119843000000000031562Emeline Bergstrom                                 2027-03-31Y                                                           "
     },
     {
       "dataset": "CARDDAT",
       "rowIndex": 8,
-      "expectedBytes": "274530372000209000000000039033Aliyah Berge                                      2025-09-08Y                                                           "
-    },
-    {
-      "dataset": "CARDDAT",
-      "rowIndex": 9,
-      "expectedBytes": "276083679710756500000000024859Stefanie Dickinson                                2025-02-11Y                                                           "
-    },
-    {
-      "dataset": "CARDDAT",
-      "rowIndex": 10,
-      "expectedBytes": "287196825281249000000000006775Ignacio Douglas                                   2025-10-08Y                                                           "
-    },
-    {
-      "dataset": "CARDDAT",
-      "rowIndex": 11,
-      "expectedBytes": "294013936230044900000000022876Allene Brown                                      2025-12-28Y                                                           "
-    },
-    {
-      "dataset": "CARDDAT",
-      "rowIndex": 12,
-      "expectedBytes": "298809135309431200000000004795Delbert Parisian                                  2023-12-16Y                                                           "
-    },
-    {
-      "dataset": "CARDDAT",
-      "rowIndex": 13,
-      "expectedBytes": "326076361233756000000000010342Maybell Mann                                      2023-01-27Y                                                           "
-    },
-    {
-      "dataset": "CARDDAT",
-      "rowIndex": 14,
-      "expectedBytes": "376628198415515400000000041622Lucinda Dach                                      2023-04-24Y                                                           "
-    },
-    {
-      "dataset": "CARDDAT",
-      "rowIndex": 15,
-      "expectedBytes": "394024601614148900000000019375Hadley Hamill                                     2025-07-23Y                                                           "
-    },
-    {
-      "dataset": "CARDDAT",
-      "rowIndex": 16,
-      "expectedBytes": "399916924637588500000000003317Larry Homenick                                    2024-01-10Y                                                           "
-    },
-    {
-      "dataset": "CARDDAT",
-      "rowIndex": 17,
-      "expectedBytes": "401150089177736700000000013390Mariane Fadel                                     2024-08-04Y                                                           "
-    },
-    {
-      "dataset": "CARDDAT",
-      "rowIndex": 18,
-      "expectedBytes": "438527147662781900000000034709Faustino Schmidt                                  2025-10-06Y                                                           "
-    },
-    {
-      "dataset": "CARDDAT",
-      "rowIndex": 19,
-      "expectedBytes": "453478410271395100000000036644Toney Gerhold                                     2024-12-23Y                                                           "
-    },
-    {
-      "dataset": "CARDDAT",
-      "rowIndex": 20,
-      "expectedBytes": "485945261287706500000000007321Cooper Mayert                                     2024-12-13Y                                                           "
-    },
-    {
-      "dataset": "CARDDAT",
-      "rowIndex": 21,
-      "expectedBytes": "540709985047986600000000021524Jerrold Maggio                                    2023-01-06Y                                                           "
-    },
-    {
-      "dataset": "CARDDAT",
-      "rowIndex": 22,
-      "expectedBytes": "565683054498121600000000046196Cindy Cremin                                      2025-06-20Y                                                           "
-    },
-    {
-      "dataset": "CARDDAT",
-      "rowIndex": 23,
-      "expectedBytes": "567118447850584400000000018137Emile White                                       2023-09-10Y                                                           "
-    },
-    {
-      "dataset": "CARDDAT",
-      "rowIndex": 24,
-      "expectedBytes": "578735122887933900000000047067Rigoberto Hoeger                                  2025-08-23Y                                                           "
-    },
-    {
-      "dataset": "CARDDAT",
-      "rowIndex": 25,
-      "expectedBytes": "597511751661607700000000042426Heather Nienow                                    2025-09-19Y                                                           "
-    },
-    {
-      "dataset": "CARDDAT",
-      "rowIndex": 26,
-      "expectedBytes": "600961915067452600000000005021Treva Schowalter                                  2025-03-09Y                                                           "
-    },
-    {
-      "dataset": "CARDDAT",
-      "rowIndex": 27,
-      "expectedBytes": "634925033164850900000000015735Aubree Hermann                                    2025-06-09Y                                                           "
-    },
-    {
-      "dataset": "CARDDAT",
-      "rowIndex": 28,
-      "expectedBytes": "650353518179599200000000048413Lyric Pacocha                                     2025-02-06Y                                                           "
-    },
-    {
-      "dataset": "CARDDAT",
-      "rowIndex": 29,
-      "expectedBytes": "650923036255381600000000030236Layla Ullrich                                     2024-06-27Y                                                           "
-    },
-    {
-      "dataset": "CARDDAT",
-      "rowIndex": 30,
-      "expectedBytes": "672300046320776400000000028486Hester Hane                                       2024-05-09Y                                                           "
-    },
-    {
-      "dataset": "CARDDAT",
-      "rowIndex": 31,
-      "expectedBytes": "672705519061601400000000016641Carroll Bergstrom                                 2024-01-25Y                                                           "
-    },
-    {
-      "dataset": "CARDDAT",
-      "rowIndex": 32,
-      "expectedBytes": "683267604769808700000000033983Bernice Herman                                    2025-10-07Y                                                           "
-    },
-    {
-      "dataset": "CARDDAT",
-      "rowIndex": 33,
-      "expectedBytes": "702663761503227700000000031920Lucious O'Connell                                 2025-06-08Y                                                           "
-    },
-    {
-      "dataset": "CARDDAT",
-      "rowIndex": 34,
-      "expectedBytes": "705826726183775200000000043401Britney Waters                                    2025-08-29Y                                                           "
-    },
-    {
-      "dataset": "CARDDAT",
-      "rowIndex": 35,
-      "expectedBytes": "709414275105555100000000032659Stephany Fisher                                   2025-05-19Y                                                           "
-    },
-    {
-      "dataset": "CARDDAT",
-      "rowIndex": 36,
-      "expectedBytes": "725150814918888300000000029717Rickie Daugherty                                  2024-06-04Y                                                           "
-    },
-    {
-      "dataset": "CARDDAT",
-      "rowIndex": 37,
-      "expectedBytes": "737933563466114200000000045134Dixie Beier                                       2025-07-09Y                                                           "
-    },
-    {
-      "dataset": "CARDDAT",
-      "rowIndex": 38,
-      "expectedBytes": "742768486342320900000000011892Hayden Pfannerstill                               2025-03-12Y                                                           "
-    },
-    {
-      "dataset": "CARDDAT",
-      "rowIndex": 39,
-      "expectedBytes": "744387098889753000000000038708Angela Ankunding                                  2023-07-23Y                                                           "
-    },
-    {
-      "dataset": "CARDDAT",
-      "rowIndex": 40,
-      "expectedBytes": "804058041034868000000000026971Marjory Stracke                                   2024-12-19Y                                                           "
-    },
-    {
-      "dataset": "CARDDAT",
-      "rowIndex": 41,
-      "expectedBytes": "811254583423973500000000023440Johnson Ruecker                                   2025-03-18Y                                                           "
-    },
-    {
-      "dataset": "CARDDAT",
-      "rowIndex": 42,
-      "expectedBytes": "826259360247307600000000049457Immanuel Bednar                                   2023-09-17Y                                                           "
-    },
-    {
-      "dataset": "CARDDAT",
-      "rowIndex": 43,
-      "expectedBytes": "851786695820600800000000014955Chelsea Marks                                     2025-12-11Y                                                           "
-    },
-    {
-      "dataset": "CARDDAT",
-      "rowIndex": 44,
-      "expectedBytes": "893136935189478300000000008230Kelsie Dicki                                      2024-05-20Y                                                           "
-    },
-    {
-      "dataset": "CARDDAT",
-      "rowIndex": 45,
-      "expectedBytes": "905629793166401100000000025931Elliott Howell                                    2025-07-10Y                                                           "
-    },
-    {
-      "dataset": "CARDDAT",
-      "rowIndex": 46,
-      "expectedBytes": "934910747586921400000000017218Sigrid Mann                                       2025-03-01Y                                                           "
-    },
-    {
-      "dataset": "CARDDAT",
-      "rowIndex": 47,
-      "expectedBytes": "950173372142989300000000009725Melvin Ondricka                                   2024-12-27Y                                                           "
-    },
-    {
-      "dataset": "CARDDAT",
-      "rowIndex": 48,
-      "expectedBytes": "968029415460369700000000001045Immanuel Kessler                                  2025-05-20Y                                                           "
-    },
-    {
-      "dataset": "CARDDAT",
-      "rowIndex": 49,
-      "expectedBytes": "980558340899658800000000040908Davon Emmerich                                    2023-10-27Y                                                           "
+      "fields": {
+        "CARD-NUM": "9640118273645509",
+        "CARD-ACCT-ID": "00000000050",
+        "CARD-CVV-CD": "175",
+        "CARD-EMBOSSED-NAME": "Kaleigh Hilpert                                   ",
+        "CARD-EXPIRAION-DATE": "2023-08-05",
+        "CARD-ACTIVE-STATUS": "N",
+        "FILLER": "                                                           "
+      },
+      "expectedBytes": "964011827364550900000000050175Kaleigh Hilpert                                   2023-08-05N                                                           "
     }
   ],
   "expectedReturnCode": 0,
-  "expectedMessages": []
+  "expectedMessages": [],
+  "expectedDatasets": [
+    {
+      "dataset": "CARDDAT",
+      "channel": "FINAL_STATE",
+      "rowCount": 9,
+      "recordLength": 150
+    }
+  ]
 }

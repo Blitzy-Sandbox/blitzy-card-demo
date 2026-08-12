@@ -1,13 +1,20 @@
 {
   "program" : "COTRN01C",
   "caseId" : "case20",
-  "description" : "The positive proof that this program views and does not add, stated at dataset level. The run reads a record successfully - the one path on which a program named TransactionAddController would most plausibly have written something - and the case declares an empty expectedWrites together with a FINAL_STATE expectation naming the exact row count and the exact 350-byte record length, plus the full byte image of every seeded row. Together those say: nothing was written, no row was rewritten, and not one of the 20 FILLER bytes CVTRA05Y declares at offset 330 was disturbed - which is the assertion no field-level expectation can make, because FILLER belongs to no field. This is risk R-B checked from the data side; the class Javadoc records it from the source side.",
+  "description" : "RISK R-B FIRST, because the class name inverts the behaviour. The prompt-mandated Java class for COTRN01C is TransactionAddController, and this program adds nothing - it VIEWS. Four independent artefacts of this checkout say so: app/cbl/COTRN01C.cbl:5 'Function    : View a Transaction from TRANSACT file'; README.md:314 '| CT01 | COTRN01 | COTRN01C | Transaction View |' against :315 '| CT02 | COTRN02 | COTRN02C | Transaction Add |', which is the inverse of the prompt's mapping; app/bms/COTRN01.bms:2 '*    CardDemo - Transaction View'; and the on-screen literal at app/bms/COTRN01.bms:75-79, DFHMDF ATTRB=(ASKIP,BRT) COLOR=NEUTRAL LENGTH=16 POS=(4,30) INITIAL='View Transaction'. Rule R1 governs - the name comes from the prompt, the behaviour comes from the source - and practice B4 says document the conflict, never correct it. So no insert expectation appears anywhere in this file: expectedWrites is empty and stays empty, and the add half of the pair is parity/COTRN02C. The brief for this file cited README.md:221; that was the row's offset before this migration added the Java build section to README.md, and the row now sits at :314, which is also where case08 and case19 cite it. The fact is unchanged, only its line number moved. WHAT THIS CASE IS FOR. Case 20 of 20 and the last file of the folder, so gate G15 - twenty declarative cases per program - is satisfied only once it exists. Its subject is the numeric edit mask of WS-TRAN-AMT and its LEFT-truncation edge, and it is the deliberate mirror image of case19, which covers the RIGHT-truncating alphanumeric moves. Together the two cover both halves of COBOL MOVE semantics for this program: alphanumeric PIC X truncates on the RIGHT, numeric PIC 9 truncates on the LEFT. THE TWO DECLARATIONS IN TENSION. app/cpy/CVTRA05Y.cpy:10 declares TRAN-AMT PIC S9(09)V99 - NINE integer digits and two fractional, stored as 9 + 2 = ELEVEN zoned DISPLAY bytes at record offsets 133-143, with the sign carried as an overpunch in the trailing byte 143 and never as a leading character. app/cbl/COTRN01C.cbl:49 declares WS-TRAN-AMT PIC +99999999.99 - one sign position, EIGHT integer digits, an actual decimal point and two fractional = TWELVE characters. :177 then does MOVE TRAN-AMT TO WS-TRAN-AMT. A COBOL numeric MOVE aligns the two items on the decimal point, so the receiver's eight integer positions take the sender's eight LOW-order integer digits and the ninth, high-order digit is discarded. An amount of eight integer digits or fewer therefore renders in full; an amount of NINE integer digits silently loses its high-order digit. :183 then does MOVE WS-TRAN-AMT TO TRNAMTI - twelve characters into the TRNAMTI PIC X(12) of app/cpy-bms/COTRN01.CPY:102 - which is exact and loses nothing. THREE FURTHER PROPERTIES OF THE MASK, each asserted rather than assumed. First, the integer positions are 9 and not Z, so every one of them is printed including leading zeros: a small amount is zero-filled, never blank-padded. Second, the leading + is a FIXED insertion character, so a sign position is always printed - + for zero and for a positive value, - for a negative one - and the result is always exactly twelve characters, never eleven. Third, zero renders with the + and the full zero fill. SILENT IS CORRECT (practice B5). The program contains no ON SIZE ERROR phrase, no SIZE ERROR clause and no message for a discarded digit; the EVALUATE at :280-296 has arms for DFHRESP(NORMAL), DFHRESP(NOTFND) and WHEN OTHER and none of them is about arithmetic. The truncation is therefore silent, WS-ERR-FLG stays 'N' at its :88 initial value, and this case asserts that silence: expectedMessages carries two blank state lines and nothing else, ERRMSGO is 78 blanks, and no highlight is expected. A Java implementation that reports an overflow, throws, widens the mask to nine digits or rounds instead of discarding is WRONG, and each of those four wrong behaviours produces a visibly different result here. THE FIVE PINNED AMOUNTS, DERIVED DIGIT BY DIGIT (practice B12, static-derivation provenance). The expected values below are not captured from a COBOL execution - AAP section 0.7.6 records eight independently verified blockers that make executing the 28 legacy programs impossible in this environment - they are derived by structured reading of the source, cross-checked against the copybook byte layout, the symbolic-map widths and this folder's own already-asserted values. Row 1, the headline: TRAN-AMT = 923456789.04, nine integer digits. Its eleven digit positions are 9 2 3 4 5 6 7 8 9 . 0 4, so the stored image is the first ten characters '9234567890' followed by the overpunch of the low-order digit 4 - POSITIVE_DIGITS is '{ABCDEFGHI' and its element for 4 is 'D' - giving '9234567890D' at offsets 133-143. Aligning on the decimal point discards the high-order 9 and leaves 23456789.04, so TRNAMTO is '+' then the eight integer digits '23456789' then '.' then '04' = '+23456789.04', twelve characters, and the 9 IS GONE. That lost digit is deliberately non-zero and the eight survivors are the ascending run 2 3 4 5 6 7 8 9, so an implementation that keeps nine digits, slices one position off, overflows or throws cannot produce this string by accident. Row 2: 7.05, one integer digit. Digits 0 0 0 0 0 0 0 0 7 . 0 5 give the stored image '0000000070' plus the overpunch of 5, which is 'E', so '0000000070E'; no truncation, and TRNAMTO is '+00000007.05' - the six leading zeros are the proof that the mask is 9 and not Z. Row 3: -246.80, negative. Digits 0 0 0 0 0 0 2 4 6 . 8 0 give '0000002468' plus the NEGATIVE overpunch of 0 - NEGATIVE_DIGITS is '}JKLMNOPQR' and its element for 0 is '}' - so '0000002468}', which is where the sign lives: in byte 143, not in front of the number. TRNAMTO is '-00000246.80', with the - in position 1. Row 4: 0.00. Digits are all zero, the positive overpunch of 0 is '{', so the stored image is '0000000000{' and TRNAMTO is '+00000000.00' - a + and a full zero fill, twelve characters. Row 5, the boundary: 99999999.99, EIGHT integer digits at their maximum. The eleven digit positions are 0 9 9 9 9 9 9 9 9 . 9 9, so the stored image is '0999999999' plus the positive overpunch of 9, which is 'I', giving '0999999999I'. Eight integer digits fit the receiver exactly, so nothing is discarded and TRNAMTO is '+99999999.99'. Rows 1 and 5 are the two sides of the same boundary and that is why both are here: 5 is the largest amount that survives intact, 1 is the next digit position up and it does not. WHY THE STORED AMOUNT IS THE FULL NINE-DIGIT VALUE. Row 1's record holds 923456789.04 in all eleven of its bytes, high-order 9 included. The loss happens in the MOVE at :177, not in storage, and pre-truncating the record would defeat the case entirely - the read would then hand the program a value that already fits and nothing would be exercised. So the record and the screen deliberately disagree, and that disagreement is the assertion: expectedFinalState row 0 pins '9234567890D' with the 9 present, and the send pins '+23456789.04' with the 9 absent. HOW THE AMOUNT IS PINNED. Every TRAN-AMT expectation in this file is written as its eleven-character zoned image rather than as a decimal literal. Both forms are accepted - FieldDiffer.canonicalSignedImage takes a value whose length equals the span width and which decodes as a zoned image to be its own bytes, and reads anything else as a literal through SignedZoned.ofLiteral - and both reduce to identical bytes. The image form is chosen here because this case is about representation, so the overpunch character occupying byte 143 is written out literally instead of being inferred (practice B8). Each row additionally pins its complete 350-byte expectedBytes, which asserts the total width and therefore proves that the FILLER X(20) at offsets 331-350 was emitted at all: a record missing it is short by exactly twenty bytes (gates G19, G21). NUMERIC POLICY (rules R2 and R4). The keyword ROUNDED appears ZERO times across all 28 programs, so every scaling in this migration is RoundingMode.DOWN and never HALF_UP or HALF_EVEN; and no PIC 9...V... value is ever a double or a float, only a BigDecimal at the declared scale. Both matter here even though COTRN01C performs no arithmetic whatsoever - zero ADD, zero SUBTRACT, zero COMPUTE, zero MULTIPLY, zero DIVIDE - because the amount still passes through common/CobolDecimal on its way to the mask, where the scale-2 store and the discard-the-high-order-digit reduction both happen. The whole codebase declares only three distinct signed decimal forms - PIC S9(10)V99, PIC S9(09)V99 and PIC S9(9)V99 - so every monetary field is scale 2 and TRAN-AMT's S9(09)V99 is the middle one (gate G23). No copybook in the repository declares COMP-3, verified across all 28, so every persisted numeric field is zoned DISPLAY and the codec needs no packed-decimal nibble unpacking: TRAN-AMT is a plain eleven-byte zoned value with an overpunched sign. SINGLE-PURPOSED ON PURPOSE. The alphanumeric content of all five rows is kept comfortably within its screen width - the widest TRAN-DESC holds 40 characters against the TDESCI X(60) receiver, the widest TRAN-MERCHANT-NAME 26 against MNAMEI X(30) and the widest TRAN-MERCHANT-CITY 20 against MCITYI X(25) - so the amount is the only field where the record and the screen diverge. The right-truncating edges belong to case19 and are not re-fought here. The one projection that cannot be avoided is the X(26) timestamp into the X(10) receivers at :185-186; it lands exactly on the ten-character ISO date, so it is structural rather than an edge, and every case in this folder has it. EXECUTION PATH. REENTER - CDEMO-PGM-CONTEXT = 1, so MAIN-PARA takes the :110 ELSE arm, performs RECEIVE-TRNVIEW-SCREEN and evaluates EIBAID - with AID DFHENTER, which selects the :113 arm and performs PROCESS-ENTER-KEY (gate G30: the EVALUATE arms are tested in source order and WHEN OTHER is last). TRNIDINI is '0000000000002001', neither spaces nor LOW-VALUES, so the :146 EVALUATE takes its WHEN OTHER arm, moves -1 into TRNIDINL and continues; ERR-FLG is off, so the thirteen output fields are cleared at :159-171, TRNIDINI is moved into TRAN-ID at :172 and READ-TRANSACT-FILE runs. forcedOutcomes is empty, so the read is answered from the seeded rows and reports DFHRESP(NORMAL) - FileStatus '00' - for a key that matches (gate G47); the repository returns a discriminated outcome and never abends on the caller's behalf. The :281 WHEN DFHRESP(NORMAL) arm is CONTINUE, ERR-FLG is still off, so :177-190 project the record onto the map and :191 sends it. The map is sent EXACTLY ONCE. Control then falls to the EXEC CICS RETURN TRANSID(WS-TRANID) COMMAREA(CARDDEMO-COMMAREA) at :136-139, which is why termination is RETURN_TRANSID and nextProgram is COTRN01C itself: there is no XCTL on this path, so gate G40 does not apply. Neither do G32 - the program contains no GO TO - nor G35 - no CALL 'CEE3ABD' - nor G39 - there is no pagination - nor G43 - there is no 9300-CHECK-CHANGE-IN-REC, because the EXEC CICS READ ... UPDATE at :269-278 is never followed by a REWRITE anywhere in the program. TWO STRUCTURAL FACTS OF THE HARNESS, STATED SO THE FIXTURE IS NOT MISREAD. First, one case is one invocation, and this path sends once, so exactly ONE TRNAMTO can be compared by the judge. It is row 1's, the headline, because that is the value a wrong implementation cannot reproduce. The other four amounts are asserted where a seeded row can be asserted - their stored zoned images and their full 350-byte record images in expectedFinalState, which is precisely what gates G19, G21 and G23 ask for - and their edited renderings are derived above in the open rather than claimed as harness-verified. Positive-with-leading-zeros is additionally asserted as a send by two sibling cases: case08 pins '+00012345.67' and case19 pins '+00087654.32'. Second, the two entries in expectedMessages are STATE channels, not console output: WS_MESSAGE_80 is the 80-byte WS-MESSAGE that :91 blanks, and SCREEN_ERRMSG_78 is the 78-byte ERRMSGO that :217 receives it into, right-truncating two bytes on the way. Both are blank here because nothing failed. There is no DISPLAY_LINE entry, which is the assertion that the NORMAL arm reaches no DISPLAY - the only DISPLAY in the program is at :290, on the WHEN OTHER arm this case never takes. NO HIGHLIGHT, AND THAT IS AN ASSERTION (gate G38). This is a REENTER invocation, which is the state in which CSSETATY would apply DFHRED and a '*' to an offending field - but COTRN01C does not copy CSSETATY at all. Its eight COPY statements are COCOM01Y, COTRN01, COTTL01Y, CSDAT01Y, CSMSG01Y, CVTRA05Y, DFHAID and DFHBMSCA, it declares no FLG- family of validation flags, and it moves no attribute byte. The empty attributes map on the send says exactly that, and it says it on a run that succeeded, where a discarded high-order digit produced no error to highlight. DFHAID and DFHBMSCA are IBM-supplied and absent from this repository (risk R-D), so the AID and attribute constants come from common/CicsAid and common/BmsAttributes. STATELESSNESS (gate G37, rule R6). Nothing is held server-side. The inbound area is 218 bytes: the shared 160-byte CARDDEMO-COMMAREA of app/cpy/COCOM01Y.cpy - 34 general + 84 customer + 12 account + 16 card + 14 more - plus the 58-byte CDEMO-CT01-INFO this program appends at app/cbl/COTRN01C.cbl:53-61, which is 16 + 16 + 8 + 1 + 1 + 16. The 58-byte extension travels as a separate DTO field and is never folded into the shared 160-byte NavigationContext; the navigation map below pins both halves because the fingerprint carries both. CDEMO-PGM-CONTEXT goes in as 1 and comes back as 1, because the :100 SET CDEMO-PGM-REENTER runs only on the not-reentered arm. DEAD STORAGE LEFT ALONE (practice B5). WS-USR-MODIFIED at :45-47 is set once at :89 and never read, and WS-TRAN-DATE PIC X(08) VALUE '00/00/00' at :50 is never referenced at all. Neither is modelled and neither is pressed into service for the timestamp projection, which reads TRAN-ORIG-TS and TRAN-PROC-TS directly. CONVENTIONS. Charset is named explicitly as US-ASCII and is never the platform default (practice B8); TRANSACT has no ASCII fixture - app/data/ASCII holds exactly nine files and none is a transaction master - so all five rows are declared inline and no tenth fixture is requested. Every amount, both 26-byte timestamps and the header date and time are pinned constants, never a captured now (practice B7); the clock is 2022-07-19T23:12:34, the same pinned instant as case01 through case19, which is why CURDATEO is '07/19/22' and CURTIMEO is '23:12:34'. TITLE02O carries the ACTIVE line of app/cpy/COTTL01Y.cpy - line 22, '              CardDemo                  ' - because line 21 is commented out; and neither COTTL01Y's X(40) CCDA-THANK-YOU nor CSMSG01Y's X(50) CCDA-MSG-THANK-YOU is emitted on this path. The unit is reached as a CONTROLLER_POJO, called directly with no MockMvc and no HTTP in the path, so the projection and the mask are asserted with no web layer in the way (gate G51). jobParameters is empty because this is not a batch case, and expectedReturnCode is 0. app/cbl, app/cpy, app/cpy-bms, app/bms and app/csd were read and not written (practice B3), and no user rules govern this fixture - review_rules returns exactly one line, 'No user rules provided.' - so the enterprise-standard substitutes of AAP section 0.10.2 bind instead.",
   "unitKind" : "CONTROLLER_POJO",
   "inputs" : {
     "TRANSACT" : {
-      "rows" : [ "0000000000000001010005POS TERM  GROCERY PURCHASE AT PARITY MARKET WITH A DESCRIPTION THAT OVERFLOWS THE SCREEN FIELD                0000005047G800000001PARITY MARKET NUMBER ONE OF SEVERAL LONG NAMES    SPRINGFIELD MASSACHUSETTS USA                     01103-123441111111111111112022-07-19 23:12:34.1234562022-07-20 01:02:03.654321                    ", "0000000000000002020010ONLINE    REFUND ISSUED BY MERCHANT                                                                           0000000500}800000002PARITY REFUNDS LIMITED                            PORTLAND OREGON                                   97201-000242222222222222222022-07-18 08:00:00.0000012022-07-18 09:30:00.000002                    ", "0000000000000003034444BATCH     LARGE SETTLEMENT                                                                                    1234567891B800000003PARITY SETTLEMENT HOUSE                           NEW YORK NEW YORK                                 10001-000343333333333333332022-07-17 12:00:00.0000032022-07-17 12:00:01.000004                    " ]
+      "rows" : [
+        "0000000000002001012001POS TERM  NINE INTEGER DIGITS LEFT TRUNCATION EDGE                                                            9234567890D800002001PARITY NINE DIGIT MERCHANT                        SPRINGFIELD ILLINOIS                              62701-200140000000000020012022-07-20 04:05:06.2020012022-07-21 07:08:09.202001                    ",
+        "0000000000002002022002ONLINE    SMALL POSITIVE WITH LEADING ZEROS                                                                   0000000070E800002002PARITY CORNER SHOP                                PORTLAND OREGON                                   97201-200240000000000020022022-07-20 04:05:06.2020022022-07-21 07:08:09.202002                    ",
+        "0000000000002003032003BRANCH    NEGATIVE AMOUNT SIGN IN POSITION ONE                                                                0000002468}800002003PARITY REFUNDS LIMITED                            NEW YORK NEW YORK                                 10001-200340000000000020032022-07-20 04:05:06.2020032022-07-21 07:08:09.202003                    ",
+        "0000000000002004042004BATCH     ZERO RENDERS PLUS AND FULL ZERO FILL                                                                0000000000{800002004PARITY ZERO VALUE DESK                            AUSTIN TEXAS                                      73301-200440000000000020042022-07-20 04:05:06.2020042022-07-21 07:08:09.202004                    ",
+        "0000000000002005052005POS TERM  EIGHT INTEGER DIGITS AT MAXIMUM NO LOSS                                                             0999999999I800002005PARITY BOUNDARY MERCHANT                          DENVER COLORADO                                   80201-200540000000000020052022-07-20 04:05:06.2020052022-07-21 07:08:09.202005                    "
+      ]
     }
   },
+  "jobParameters" : { },
   "screenRequest" : {
     "eibcalen" : 218,
     "aid" : "DFHENTER",
@@ -17,7 +24,7 @@
       "CDEMO-PGM-CONTEXT" : "1"
     },
     "mapFields" : {
-      "TRNIDINI" : "0000000000000001"
+      "TRNIDINI" : "0000000000002001"
     },
     "forcedOutcomes" : { }
   },
@@ -49,62 +56,119 @@
       "CDEMO-CT01-TRN-SEL-FLG" : " ",
       "CDEMO-CT01-TRN-SELECTED" : "                "
     },
-    "sends" : [ {
-      "fields" : {
-        "TRNNAMEO" : "CT01",
-        "TITLE01O" : "      AWS Mainframe Modernization       ",
-        "CURDATEO" : "07/19/22",
-        "PGMNAMEO" : "COTRN01C",
-        "TITLE02O" : "              CardDemo                  ",
-        "CURTIMEO" : "23:12:34",
-        "TRNIDINO" : "0000000000000001",
-        "TRNIDO" : "0000000000000001",
-        "CARDNUMO" : "4111111111111111",
-        "TTYPCDO" : "01",
-        "TCATCDO" : "0005",
-        "TRNSRCO" : "POS TERM  ",
-        "TDESCO" : "GROCERY PURCHASE AT PARITY MARKET WITH A DESCRIPTION THAT OV",
-        "TRNAMTO" : "+00000504.77",
-        "TORIGDTO" : "2022-07-19",
-        "TPROCDTO" : "2022-07-20",
-        "MIDO" : "800000001",
-        "MNAMEO" : "PARITY MARKET NUMBER ONE OF SE",
-        "MCITYO" : "SPRINGFIELD MASSACHUSETTS",
-        "MZIPO" : "01103-1234",
-        "ERRMSGO" : "                                                                              "
-      },
-      "attributes" : { }
-    } ],
+    "sends" : [
+      {
+        "fields" : {
+          "TRNNAMEO" : "CT01",
+          "TITLE01O" : "      AWS Mainframe Modernization       ",
+          "CURDATEO" : "07/19/22",
+          "PGMNAMEO" : "COTRN01C",
+          "TITLE02O" : "              CardDemo                  ",
+          "CURTIMEO" : "23:12:34",
+          "TRNIDINO" : "0000000000002001",
+          "TRNIDO" : "0000000000002001",
+          "CARDNUMO" : "4000000000002001",
+          "TTYPCDO" : "01",
+          "TCATCDO" : "2001",
+          "TRNSRCO" : "POS TERM  ",
+          "TDESCO" : "NINE INTEGER DIGITS LEFT TRUNCATION EDGE                    ",
+          "TRNAMTO" : "+23456789.04",
+          "TORIGDTO" : "2022-07-20",
+          "TPROCDTO" : "2022-07-21",
+          "MIDO" : "800002001",
+          "MNAMEO" : "PARITY NINE DIGIT MERCHANT    ",
+          "MCITYO" : "SPRINGFIELD ILLINOIS     ",
+          "MZIPO" : "62701-2001",
+          "ERRMSGO" : "                                                                              "
+        },
+        "attributes" : { }
+      }
+    ],
     "cursorField" : "TRNIDINL",
     "termination" : "RETURN_TRANSID"
   },
   "expectedWrites" : [ ],
-  "expectedFinalState" : [ {
-    "dataset" : "TRANSACT",
-    "rowIndex" : 0,
-    "expectedBytes" : "0000000000000001010005POS TERM  GROCERY PURCHASE AT PARITY MARKET WITH A DESCRIPTION THAT OVERFLOWS THE SCREEN FIELD                0000005047G800000001PARITY MARKET NUMBER ONE OF SEVERAL LONG NAMES    SPRINGFIELD MASSACHUSETTS USA                     01103-123441111111111111112022-07-19 23:12:34.1234562022-07-20 01:02:03.654321                    "
-  }, {
-    "dataset" : "TRANSACT",
-    "rowIndex" : 1,
-    "expectedBytes" : "0000000000000002020010ONLINE    REFUND ISSUED BY MERCHANT                                                                           0000000500}800000002PARITY REFUNDS LIMITED                            PORTLAND OREGON                                   97201-000242222222222222222022-07-18 08:00:00.0000012022-07-18 09:30:00.000002                    "
-  }, {
-    "dataset" : "TRANSACT",
-    "rowIndex" : 2,
-    "expectedBytes" : "0000000000000003034444BATCH     LARGE SETTLEMENT                                                                                    1234567891B800000003PARITY SETTLEMENT HOUSE                           NEW YORK NEW YORK                                 10001-000343333333333333332022-07-17 12:00:00.0000032022-07-17 12:00:01.000004                    "
-  } ],
+  "expectedFinalState" : [
+    {
+      "dataset" : "TRANSACT",
+      "rowIndex" : 0,
+      "fields" : {
+        "TRAN-ID" : "0000000000002001",
+        "TRAN-TYPE-CD" : "01",
+        "TRAN-CAT-CD" : "2001",
+        "TRAN-SOURCE" : "POS TERM  ",
+        "TRAN-DESC" : "NINE INTEGER DIGITS LEFT TRUNCATION EDGE                                                            ",
+        "TRAN-AMT" : "9234567890D",
+        "TRAN-MERCHANT-ID" : "800002001",
+        "TRAN-MERCHANT-NAME" : "PARITY NINE DIGIT MERCHANT                        ",
+        "TRAN-MERCHANT-CITY" : "SPRINGFIELD ILLINOIS                              ",
+        "TRAN-MERCHANT-ZIP" : "62701-2001",
+        "TRAN-CARD-NUM" : "4000000000002001",
+        "TRAN-ORIG-TS" : "2022-07-20 04:05:06.202001",
+        "TRAN-PROC-TS" : "2022-07-21 07:08:09.202001",
+        "FILLER" : "                    "
+      },
+      "expectedBytes" : "0000000000002001012001POS TERM  NINE INTEGER DIGITS LEFT TRUNCATION EDGE                                                            9234567890D800002001PARITY NINE DIGIT MERCHANT                        SPRINGFIELD ILLINOIS                              62701-200140000000000020012022-07-20 04:05:06.2020012022-07-21 07:08:09.202001                    "
+    },
+    {
+      "dataset" : "TRANSACT",
+      "rowIndex" : 1,
+      "fields" : {
+        "TRAN-ID" : "0000000000002002",
+        "TRAN-AMT" : "0000000070E",
+        "FILLER" : "                    "
+      },
+      "expectedBytes" : "0000000000002002022002ONLINE    SMALL POSITIVE WITH LEADING ZEROS                                                                   0000000070E800002002PARITY CORNER SHOP                                PORTLAND OREGON                                   97201-200240000000000020022022-07-20 04:05:06.2020022022-07-21 07:08:09.202002                    "
+    },
+    {
+      "dataset" : "TRANSACT",
+      "rowIndex" : 2,
+      "fields" : {
+        "TRAN-ID" : "0000000000002003",
+        "TRAN-AMT" : "0000002468}",
+        "FILLER" : "                    "
+      },
+      "expectedBytes" : "0000000000002003032003BRANCH    NEGATIVE AMOUNT SIGN IN POSITION ONE                                                                0000002468}800002003PARITY REFUNDS LIMITED                            NEW YORK NEW YORK                                 10001-200340000000000020032022-07-20 04:05:06.2020032022-07-21 07:08:09.202003                    "
+    },
+    {
+      "dataset" : "TRANSACT",
+      "rowIndex" : 3,
+      "fields" : {
+        "TRAN-ID" : "0000000000002004",
+        "TRAN-AMT" : "0000000000{",
+        "FILLER" : "                    "
+      },
+      "expectedBytes" : "0000000000002004042004BATCH     ZERO RENDERS PLUS AND FULL ZERO FILL                                                                0000000000{800002004PARITY ZERO VALUE DESK                            AUSTIN TEXAS                                      73301-200440000000000020042022-07-20 04:05:06.2020042022-07-21 07:08:09.202004                    "
+    },
+    {
+      "dataset" : "TRANSACT",
+      "rowIndex" : 4,
+      "fields" : {
+        "TRAN-ID" : "0000000000002005",
+        "TRAN-AMT" : "0999999999I",
+        "FILLER" : "                    "
+      },
+      "expectedBytes" : "0000000000002005052005POS TERM  EIGHT INTEGER DIGITS AT MAXIMUM NO LOSS                                                             0999999999I800002005PARITY BOUNDARY MERCHANT                          DENVER COLORADO                                   80201-200540000000000020052022-07-20 04:05:06.2020052022-07-21 07:08:09.202005                    "
+    }
+  ],
   "expectedReturnCode" : 0,
-  "expectedMessages" : [ {
-    "channel" : "WS_MESSAGE_80",
-    "text" : "                                                                                "
-  }, {
-    "channel" : "SCREEN_ERRMSG_78",
-    "text" : "                                                                              "
-  } ],
+  "expectedMessages" : [
+    {
+      "channel" : "WS_MESSAGE_80",
+      "text" : "                                                                                "
+    },
+    {
+      "channel" : "SCREEN_ERRMSG_78",
+      "text" : "                                                                              "
+    }
+  ],
   "normalisations" : [ ],
-  "expectedDatasets" : [ {
-    "dataset" : "TRANSACT",
-    "channel" : "FINAL_STATE",
-    "rowCount" : 3,
-    "recordLength" : 350
-  } ]
+  "expectedDatasets" : [
+    {
+      "dataset" : "TRANSACT",
+      "channel" : "FINAL_STATE",
+      "rowCount" : 5,
+      "recordLength" : 350
+    }
+  ]
 }

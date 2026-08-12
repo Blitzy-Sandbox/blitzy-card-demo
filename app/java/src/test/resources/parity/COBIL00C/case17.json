@@ -1,0 +1,148 @@
+{
+  "program": "COBIL00C",
+  "caseId": "case17",
+  "description": "WHEN OTHER of the ordered EVALUATE WS-RESP-CD in READ-ACCTDAT-FILE at app/cbl/COBIL00C.cbl:356-372 - the arm at :365-371 that displays the response pair and then rejects with 'Unable to lookup Account...'. SERVICE, driving billing.BillPaymentService.processEnterKey directly through its own constructor: no MockMvc, no TestRestTemplate, no WebTestClient, no servlet container, no JobLauncher and no ApplicationContext anywhere in the path, because that is where the decision logic lives and a parity case must reach it with nothing in between (gate G51). THIS IS THE FIRST CASE IN THIS DIRECTORY TO ASSERT A COBOL DISPLAY LINE: case01 through case16 emit none, so the rendering convention fixed below is the one siblings case18, case19 and case20 must match at the remaining WHEN OTHER sites. WHICH ARM THIS FILE COVERS, AND WHY ONLY ONE. READ-ACCTDAT-FILE has exactly three arms and this file encodes the third. A ParityCase carries one screenRequest, which is one invocation, and :345-354 issues its EXEC CICS READ exactly once per invocation - :177 and :184 are two mutually exclusive arms of the EVALUATE CONFIRMI above it, not two reads - so the model has no member in which a second arm of the same EVALUATE could be stated and no ordered multi-step shape to state it in. One arm per file is therefore forced by the model rather than chosen, and this file says which one it is rather than leaving a reader to infer it. The WHEN OTHER arm is the one encoded here because it is the only arm that emits the DISPLAY at :366, and that diagnostic is this case's structural contribution: it cannot be relocated to a sibling without the convention being invented twice. THE OTHER TWO ARMS OF THIS SAME CALL SITE. DFHRESP(NORMAL) at :357-358 is already covered twice over - by case10, where WHEN SPACES reaches the read and the 300-byte record is decoded into the working area, and by case15, where the completed payment reads, debits and rewrites. DFHRESP(NOTFND) at :359-364 IS NOT COVERED BY THIS FILE AND IS NOT COVERED BY ANY OF case01 THROUGH case16: it needs a sibling, and gate G47 for this call site is not satisfied until one exists. That is stated plainly rather than glossed, and the missing arm's shape is fully determined, so whichever sibling adopts it has an exact contract. Seed ACCTDAT from acctdata.txt exactly as this file does and supply the same out-of-range ACTIDINI, but declare NO forced outcome at all; the keyed read then misses and :360 raises WS-ERR-FLG, :361-362 moves 'Account ID NOT found...' - twenty-three characters - into WS-MESSAGE, :363 moves -1 into ACTIDINL and :364 sends. That produces one send, NO DISPLAY line at all, ERRMSGO holding that literal left-justified in seventy-eight, cursorField ACTIDINL, termination RETURN_TRANSID, expectedWrites and expectedFinalState identical to this file's, and expectedReturnCode 0. IN SOURCE ORDER, AND THE ORDER IS THE BEHAVIOUR. :156 SET CONF-PAY-NO TO TRUE. :158-167 EVALUATE TRUE finds ACTIDINI is neither SPACES nor LOW-VALUES, so it takes WHEN OTHER / CONTINUE at :165-166 - a genuine no-op arm, and no error is raised. :169 IF NOT ERR-FLG-ON opens because the flag is still 'N'. :170-171 MOVE ACTIDINI OF COBIL0AI TO ACCT-ID / XREF-ACCT-ID - one MOVE with two receivers, which is the single place a screen field becomes a record identification field. :173-191 EVALUATE CONFIRMI matches 'Y' at :174, so :176 SET CONF-PAY-YES TO TRUE and :177 PERFORM READ-ACCTDAT-FILE. Inside that paragraph :345-354 issues the read and :356 evaluates the response, reaching :365-371: :366 DISPLAY, :367 MOVE 'Y' TO WS-ERR-FLG, :368-369 MOVE 'Unable to lookup Account...' TO WS-MESSAGE, :370 MOVE -1 TO ACTIDINL OF COBIL0AI, :371 PERFORM SEND-BILLPAY-SCREEN. Control returns to :193, which runs AFTER that send, and then :197 and :208 both test IF NOT ERR-FLG-ON and both find the flag on, so the whole payment sequence at :210-242 is never entered. GATE G30 - THE ARM ORDER. EVALUATE is ordered and the first matching WHEN wins, so :365 is reached only because :357 DFHRESP(NORMAL) did not match and :359 DFHRESP(NOTFND) did not match either. WHEN OTHER is last in the source and is last in the translation; a restructuring that hoisted it, or that tested NOTFND after it, would take this arm for a response that has a name and would report 'Unable to lookup Account...' where the program reports 'Account ID NOT found...'. Both preceding tests are therefore part of what this case asserts, not merely part of how it is reached. HOW THE ARM IS REACHED - THE INDUCTION, CONCRETELY. No arrangement of seeded rows can produce a non-NORMAL, non-NOTFND response from a keyed read: a row is either there or it is not. The arm is reachable only from a genuine I/O refusal, which is exactly what forcedOutcomes exists for, so this case declares readForUpdate with outcome OTHER. The chain is verified end to end rather than assumed. The gate hands the declared outcome to the ACCTDAT stub, which classifies it and builds a failed read carrying FileStatus.RECORD_LENGTH_CONFLICT, the two-character status '04'; CicsResponse.ofBatchStatus('04') then reports an EMPTY RESP, because FileStatus.cicsRespOfBatchStatus translates only '00', '10' and '23' into NORMAL, ENDFILE and NOTFND and has no CICS name for '04'; RESP2 stays at FileStatus.NO_REASON_CODE, which is zero. BillPaymentService.readAcctdatFile then stores RESP as FileStatus.RESP_NOT_REPORTED, finds the result neither found nor not-found, and falls through to the WHEN OTHER arm. Because '04' has no CICS counterpart, resp and resp2 are declared null here rather than given numbers: the outcome carries no reportable pair, and writing resp 19 or resp 16 would state a value the run cannot produce and would misstate the very line this case exists to pin. THE DISPLAY RENDERING CONVENTION, FIXED HERE FOR case18, case19 AND case20. :366 reads DISPLAY 'RESP:' WS-RESP-CD 'REAS:' WS-REAS-CD - four operands, two five-character literals with no trailing space and no separator of any kind between the operands, so the line is the concatenation and nothing else. WS-RESP-CD and WS-REAS-CD are both PIC S9(09) COMP at :46-47, and DISPLAY renders a binary field at its declared nine digit positions: UNSIGNED, so no leading '+' or '-' appears even though the picture is signed, and ZERO-FILLED on the left to exactly nine characters. The line is therefore always 5 + 9 + 5 + 9 = 28 characters, which is what MessageChannel.DISPLAY_LINE documents. Where a code has no CICS value to report - the case here - it is rendered as NINE ASTERISKS by FileStatus.respNotReportedImage, deliberately not as nine zeros, because zero IS DFHRESP(NORMAL) and rendering an unreported response as zero would print a failed command as a successful one. So this case pins exactly 'RESP:' + nine '*' + 'REAS:' + nine '0'. A sibling whose refusal DOES map onto a CICS response prints digits in the same nine positions instead - the cross-reference read at :430 reports DFHRESP(NOTOPEN), which renders 'RESP:000000019REAS:000000000' - and that difference is behaviour and is asserted rather than normalised away. The six DISPLAY sites are :366 here, :397 in UPDATE-ACCTDAT-FILE, :430 in READ-CXACAIX-FILE, :461 in STARTBR-TRANSACT-FILE, :490 in READPREV-TRANSACT-FILE and :541 in WRITE-TRANSACT-FILE; all six are the same statement and all six render by this rule. WHY expectedMessages IS ORDERED THE WAY IT IS. The list is in emission order, and on this arm the order is observable: :366 displays BEFORE :368-369 fills WS-MESSAGE and before :371 sends, so the DISPLAY_LINE entry comes first and the WS_MESSAGE_80 entry second. Reversing them would claim the program had described a failure it had not yet classified. The two entries are two different channels with two different widths and are not interchangeable: DISPLAY_LINE is as wide as its operands, while WS_MESSAGE_80 is the eighty-byte WORKING-STORAGE field WS-MESSAGE PIC X(80) at :39, space-padded on the right. The screen field is deliberately NOT declared as a third SCREEN_ERRMSG_78 entry: screen text belongs in the send, where ERRMSGO is pinned, and stating it twice would create two opinions about one value. THE 80-TO-78 TRUNCATION, MEASURED NOT ASSUMED. 'Unable to lookup Account...' is twenty-seven characters - lower-case 'lookup', capital 'Account', exactly three trailing dots - and :368-369 moves it into WS-MESSAGE PIC X(80), which pads it right with fifty-three spaces. :293 then moves WS-MESSAGE into ERRMSGO, and the symbolic map declares ERRMSGI PIC X(78) in app/cpy-bms/COBIL00.CPY with 01 COBIL0AO REDEFINES COBIL0AI, so an eighty-byte alphanumeric source lands in a seventy-eight-byte alphanumeric receiver and COBOL discards the two rightmost bytes. Both of those bytes are spaces here, so the visible text is unchanged and the widths still differ: the WS_MESSAGE_80 entry is eighty characters and ERRMSGO is seventy-eight, twenty-seven of text plus fifty-one of padding. Every width in this file is taken from a declaration rather than counted by eye: ACTIDINI PIC X(11), CURBALI PIC X(14), CONFIRMI PIC X(1) and ERRMSGI PIC X(78) from app/cpy-bms/COBIL00.CPY; WS-MESSAGE PIC X(80) from COBIL00C.cbl:39; WS-RESP-CD and WS-REAS-CD PIC S9(09) COMP from :46-47; and the thirteen spans of the 300-byte record, FILLER X(178) included, from app/cpy/CVACT01Y.cpy. PROVENANCE OF 'Account ID NOT found...' - THREE CALL SITES, ONE TEXT. That sentence is moved into WS-MESSAGE from three distinct places: :361 in READ-ACCTDAT-FILE, :392 in UPDATE-ACCTDAT-FILE and :425 in READ-CXACAIX-FILE. The text is byte-identical at all three, so the message alone cannot tell them apart and only the surrounding side effects can. This file does not encode any of the three - it encodes the sibling arm at :365-371, whose literal is the distinguishable 'Unable to lookup Account...' - and the distinguishing marks are recorded here for the cases that do. The :361 site is the only one of the three at which NOTHING IS WRITTEN ANYWHERE: it fires before the :208 guard, so the payment sequence is never entered and both ACCTDAT and TRANSACT report zero rows written. The :425 site fires INSIDE the payment sequence at :211, which contains no guard of any kind, so the transaction at :233 is still written and the account at :235 is still rewritten after the rejection - the sibling that owns it reports one row on each writes channel. The :392 site is the rewrite's own failure at the very end of the sequence, so the transaction has already landed and only the account rewrite is refused. Same sentence, three completely different dataset outcomes. THE UNPOPULATED ACCOUNT-RECORD, AND WHY :193-194 CHANGES NOTHING HERE. A failed read fills nothing, so ACCOUNT-RECORD is left in the state it had on entry and ACCT-CURR-BAL was never assigned. :193 MOVE ACCT-CURR-BAL TO WS-CURR-BAL and :194 MOVE WS-CURR-BAL TO CURBALI OF COBIL0AI both sit inside the :169 block and both run AFTER :371 has already transmitted the screen, so whatever they produce never reaches a terminal on this path. What the send carries is therefore the field's pre-:194 content, and that is the fourteen spaces of WS-CURR-BAL PIC +9999999999.99 before any MOVE reaches it - one sign, ten integer digits, the decimal point and two fraction digits, fourteen positions. This is exactly the determination case12 made for the same unpopulated record on the invalid-confirmation arm, and it is reused here unchanged rather than re-derived differently. The service is also never handed a balance: its entry point takes the account identifier, the confirmation flag and the communication area and nothing else, so there is no route by which a received CURBALI could reach the send. THE RECEIVED FIELDS SURVIVE THE REJECTION, BECAUSE NOTHING CLEARS THEM. ACTIDINO is the identifier exactly as received, at its declared eleven characters, and CONFIRMO is the flag exactly as received, at one - both unchanged - because INITIALIZE-ALL-FIELDS at :560-566 is never invoked on this path. Only two places perform it: CLEAR-CURRENT-SCREEN at :552-555, which is reached from the 'N' arm at :180 and from the PF4 arm at :137, and the write's own success arm at :524. Neither is on this path, and neither failing arm of READ-ACCTDAT-FILE performs it either, so a rejection here leaves the operator's input on the screen. A translation that blanked the fields on rejection would be a different program. CONFIRMI is 'Y' by deliberate choice rather than convenience: it puts the invocation on the confirmed-payment branch at :174-177, so this case proves that a CONFIRMED payment is aborted outright by a failed account read - which a blank or an absent confirmation could not show, because those arms reach the read without ever setting CONF-PAY-YES. THE READ IS ISSUED WITH UPDATE, AND THAT IS PRESERVED. :351 states the UPDATE option, so the Java counterpart is readForUpdate and not a plain read, and it runs inside the unit of work the service opens - even on this arm, where the read fails, holds no record and locks nothing. Tidying it to a plain read because the arm fails would lose the fact that the source asks for a lock before it knows whether there is a record to lock. THE FOUR FIELDS THE SEND PINS, AND THE SIX IT DOES NOT. A SERVICE case pins the items this program's own paragraphs write - ACTIDINO, CURBALO, CONFIRMO and ERRMSGO. The header six are POPULATE-HEADER-INFO's at :319-338 and are the controller's projection, so a service case does not claim them; the CONTROLLER_POJO cases in this directory - case01, case03, case06 and case07 - are where they are asserted, together with nextMapset COBIL00 and nextMap COBIL0A from :296-297. Their values on this path are nevertheless fully determined by the pinned clock and are recorded here so nothing is left unstated: TRNNAMEO is 'CB00' in four, PGMNAMEO is 'COBIL00C' in eight, TITLE01O is CCDA-TITLE01 from app/cpy/COTTL01Y.cpy:18-19 which is six spaces then 'AWS Mainframe Modernization' then seven spaces in forty, TITLE02O is CCDA-TITLE02 from :20-22 which is fourteen spaces then 'CardDemo' then eighteen spaces in forty, CURDATEO is '07/19/22' in the MM/DD/YY form of WS-CURDATE-MM-DD-YY and CURTIMEO is '23:12:32' in the HH:MM:SS form of WS-CURTIME-HH-MM-SS. nextProgram, nextMapset and nextMap are absent from the response for the same reason: the two XCTL sites at :281-284 are performed only from MAIN-PARA, so naming a next target from a service invocation would claim a transfer that did not happen. termination is RETURN_TRANSID because :146-149 EXEC CICS RETURN TRANSID(WS-TRANID) COMMAREA(CARDDEMO-COMMAREA) is where this path ends and the pseudo-conversation continues with the area travelling in the payload (gates G6 and G37). attributes is empty: the only attribute assignment in all 572 lines is MOVE DFHGREEN TO ERRMSGC at :526, on the write's success arm, which this path never reaches. DETERMINISM. The clock is pinned to 2022-07-19T23:12:32 - the same instant as every other case in this directory, and the instant in the source's own version footer at :571 - and it is injected, never read from the host. No twenty-six-byte WS-TIMESTAMP is produced on this path at all: GET-CURRENT-TIMESTAMP at :249-267 is performed from :230, inside the payment sequence, which the raised error flag prevents :208 from entering. The rendered RESP and REAS images are fixed by the rule above and are not environment-dependent. Nothing in this file was captured from a running clock or a running process. WHAT THE DATASETS ASSERT. ACCTDAT is seeded from the real fixture - all fifty rows of fixtures/acctdata.txt, byte-identical to app/data/ASCII/acctdata.txt, at exactly three hundred bytes per row (gate G16). ACTIDINI is '00000000099', which is PROVABLY absent: the fifty keys ascend from '00000000001' to '00000000050' and none exceeds that, so no key in the file can match. That choice is deliberate beyond reaching the arm - it makes the case fail-safe. If the forced outcome were ever dropped, the seeded data would take the NOTFND arm at :359-364, which has a different literal and no DISPLAY line, so the case would fail loudly; it could never quietly degrade into asserting the NORMAL arm and reporting green. expectedWrites is EMPTY and both writes channels report zero rows, which is the whole point of this case: a refusal before the payment sequence aborts everything, because the :208 IF NOT ERR-FLG-ON guard is never satisfied. expectedFinalState pins the first and the last seeded rows, field by field and as complete three-hundred-byte images, so 'the account file is untouched' is asserted at both ends of the file rather than asserted about one row and assumed about forty-nine. Pinning the whole image is also what proves FILLER was emitted: a record missing its FILLER X(178) span is short by 178 bytes and the image comparison fails immediately. TRANSACT is not seeded and appears on both channels at zero rows, which positively states that it was opened and produced nothing rather than saying nothing about it. CXACAIX is absent from inputs entirely because READ-CXACAIX-FILE at :211 is never reached; sibling case18 owns that alternate-index finder, and normalisations is empty because the only fixture in this system needing a width pad is cardxref.txt at 36 bytes against the 50 its copybook declares, which this case does not use. NUMERIC POLICY, STATED EVEN THOUGH NO ARITHMETIC RUNS. The one COMPUTE in this program is at :234, ACCT-CURR-BAL = ACCT-CURR-BAL - TRAN-AMT, and it is inside the unreached sequence, so this case exercises no arithmetic at all. The policy still governs the default ACCT-CURR-BAL that :193 reads: every PIC S9...V.. span in this system is held as BigDecimal at the scale its picture declares - scale 2 for ACCT-CURR-BAL PIC S9(10)V99 - and never as double or float, and every store truncates with RoundingMode.DOWN because the keyword ROUNDED appears zero times in all twenty-eight programs. HALF_UP and HALF_EVEN are both wrong here and neither appears (gates G22, G23 and G24). The record images are read and compared as US-ASCII, named explicitly and never left to a platform default; the twelve-character zoned images such as '00000001940{' carry their sign as the standard trailing overpunch, where '{' is a positive zero low-order digit. NOT APPLICABLE ON THIS PATH - DO NOT INVENT. There is no CSSETATY error highlight and no DFHRED: COBIL00C copies neither CSSETATY nor CSSTRPFY and the literal DFHRED does not appear in its 572 lines, so the MOVE -1 into ACTIDINL at :370 is the only emphasis the arm applies and the mapset's own COLOR=RED on the ERRMSG field stands unaltered. There is no CALL 'CEE3ABD' anywhere in the program and the identifier RETURN-CODE does not appear in it either, so expectedReturnCode is 0 as a positive statement about the failure path and not as a default - gate G35 does not apply to this program. G19 and G21 do not apply as write assertions because nothing is written; G24 and G28 do not apply because the :234 COMPUTE is unreached; G45 does not apply because the alternate-index finder is unreached; G32 does not apply because the program contains no GO TO; G39 does not apply because the program paginates nothing; G40 does not apply because no XCTL is reached from the service. PROVENANCE - STATICALLY DERIVED, NOT CAPTURED. Every expected value in this file was derived by reading app/cbl/COBIL00C.cbl:343-372, :193-194, :289-301 and :319-338 against app/cpy-bms/COBIL00.CPY, app/cpy/CVACT01Y.cpy, app/cpy/COTTL01Y.cpy and the real fixture rows, and NONE OF IT WAS CAPTURED FROM A LIVE COBOL EXECUTION. No z/OS runtime and no CICS emulator is available here, the available compiler has its indexed file handler disabled and provides no Language Environment services, and the three IBM-supplied copybooks these programs include are absent from the repository - eight independently verified blockers in total. That substitution is recorded as risk R-A and it changes the provenance of the expected values and nothing else: the twenty cases per program, the field-by-field diffing and the diff-count-must-be-zero gate all stand. Read this expectation as a careful reading of the source, which is what it is, and not as a recording of a run. GATES: G15, G16, G18, G23, G30, G37, G38 on the REENTER side with no DFHGREEN override because no TRANSACT write occurs, G47 as the primary gate for the WHEN OTHER arm of the READ-ACCTDAT-FILE call site, and G51.",
+  "unitKind": "SERVICE",
+  "inputs": {
+    "ACCTDAT": {
+      "fixture": "acctdata.txt",
+      "fromRow": 0,
+      "rowCount": 50
+    }
+  },
+  "jobParameters": {},
+  "screenRequest": {
+    "eibcalen": 218,
+    "aid": "DFHENTER",
+    "pinnedClock": "2022-07-19T23:12:32",
+    "charset": "US-ASCII",
+    "commarea": {
+      "CDEMO-PGM-CONTEXT": "1"
+    },
+    "mapFields": {
+      "ACTIDINI": "00000000099",
+      "CONFIRMI": "Y"
+    },
+    "forcedOutcomes": {
+      "readForUpdate": {
+        "outcome": "OTHER",
+        "resp": null,
+        "resp2": null
+      }
+    }
+  },
+  "expectedResponse": {
+    "navigation": {
+      "CDEMO-FROM-TRANID": "    ",
+      "CDEMO-FROM-PROGRAM": "        ",
+      "CDEMO-TO-TRANID": "    ",
+      "CDEMO-TO-PROGRAM": "        ",
+      "CDEMO-USER-ID": "        ",
+      "CDEMO-USER-TYPE": " ",
+      "CDEMO-PGM-CONTEXT": "1",
+      "CDEMO-CUST-ID": "000000000",
+      "CDEMO-CUST-FNAME": "                         ",
+      "CDEMO-CUST-MNAME": "                         ",
+      "CDEMO-CUST-LNAME": "                         ",
+      "CDEMO-ACCT-ID": "00000000000",
+      "CDEMO-ACCT-STATUS": " ",
+      "CDEMO-CARD-NUM": "0000000000000000",
+      "CDEMO-LAST-MAP": "       ",
+      "CDEMO-LAST-MAPSET": "       "
+    },
+    "sends": [
+      {
+        "fields": {
+          "ACTIDINO": "00000000099",
+          "CURBALO": "              ",
+          "CONFIRMO": "Y",
+          "ERRMSGO": "Unable to lookup Account...                                                   "
+        },
+        "attributes": {}
+      }
+    ],
+    "cursorField": "ACTIDINL",
+    "termination": "RETURN_TRANSID"
+  },
+  "expectedWrites": [],
+  "expectedFinalState": [
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 0,
+      "fields": {
+        "ACCT-ID": "00000000001",
+        "ACCT-ACTIVE-STATUS": "Y",
+        "ACCT-CURR-BAL": "00000001940{",
+        "ACCT-CREDIT-LIMIT": "00000020200{",
+        "ACCT-CASH-CREDIT-LIMIT": "00000010200{",
+        "ACCT-OPEN-DATE": "2014-11-20",
+        "ACCT-EXPIRAION-DATE": "2025-05-20",
+        "ACCT-REISSUE-DATE": "2025-05-20",
+        "ACCT-CURR-CYC-CREDIT": "00000000000{",
+        "ACCT-CURR-CYC-DEBIT": "00000000000{",
+        "ACCT-ADDR-ZIP": "A000000000",
+        "ACCT-GROUP-ID": "          ",
+        "FILLER": "                                                                                                                                                                                  "
+      },
+      "expectedBytes": "00000000001Y00000001940{00000020200{00000010200{2014-11-202025-05-202025-05-2000000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 49,
+      "fields": {
+        "ACCT-ID": "00000000050",
+        "ACCT-ACTIVE-STATUS": "Y",
+        "ACCT-CURR-BAL": "00000004920{",
+        "ACCT-CREDIT-LIMIT": "00000061690{",
+        "ACCT-CASH-CREDIT-LIMIT": "00000045870{",
+        "ACCT-OPEN-DATE": "2011-04-22",
+        "ACCT-EXPIRAION-DATE": "2023-03-09",
+        "ACCT-REISSUE-DATE": "2023-03-09",
+        "ACCT-CURR-CYC-CREDIT": "00000000000{",
+        "ACCT-CURR-CYC-DEBIT": "00000000000{",
+        "ACCT-ADDR-ZIP": "A000000000",
+        "ACCT-GROUP-ID": "          ",
+        "FILLER": "                                                                                                                                                                                  "
+      },
+      "expectedBytes": "00000000050Y00000004920{00000061690{00000045870{2011-04-222023-03-092023-03-0900000000000{00000000000{A000000000                                                                                                                                                                                            "
+    }
+  ],
+  "expectedReturnCode": 0,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "RESP:*********REAS:000000000"
+    },
+    {
+      "channel": "WS_MESSAGE_80",
+      "text": "Unable to lookup Account...                                                     "
+    }
+  ],
+  "normalisations": [],
+  "expectedDatasets": [
+    {
+      "dataset": "ACCTDAT",
+      "channel": "WRITES",
+      "rowCount": 0,
+      "recordLength": 300
+    },
+    {
+      "dataset": "ACCTDAT",
+      "channel": "FINAL_STATE",
+      "rowCount": 50,
+      "recordLength": 300
+    },
+    {
+      "dataset": "TRANSACT",
+      "channel": "WRITES",
+      "rowCount": 0,
+      "recordLength": 350
+    },
+    {
+      "dataset": "TRANSACT",
+      "channel": "FINAL_STATE",
+      "rowCount": 0,
+      "recordLength": 350
+    }
+  ]
+}

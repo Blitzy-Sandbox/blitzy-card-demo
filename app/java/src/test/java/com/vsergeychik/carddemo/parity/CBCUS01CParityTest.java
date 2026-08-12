@@ -173,7 +173,7 @@ import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException
  *   <tr><td>arranges nothing, and declares a {@code CUSTFILE}</td>
  *       <td>a private in-memory relation holding the declared rows, read through the real
  *           {@link CustomerRepository}</td>
- *       <td>the ordinary path: {@code '00'} per record, then {@code '10'}. Twelve cases</td></tr>
+ *       <td>the ordinary path: {@code '00'} per record, then {@code '10'}. Eleven cases</td></tr>
  *   <tr><td>arranges nothing, and declares no {@code CUSTFILE} at all</td>
  *       <td>a database with no such relation</td>
  *       <td>{@code 0000-CUSTFILE-OPEN}'s fatal arm, from a dataset that is genuinely not there. No
@@ -183,7 +183,7 @@ import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException
  *   <tr><td>arranges an open, read or close outcome</td>
  *       <td>a stubbed repository reporting exactly that status, with the reads assembled from the
  *           case's own declared rows through the real {@link CustomerRecord#decode(String, Charset)}</td>
- *       <td>the {@code WHEN OTHER} arms and both branches of {@code Z-DISPLAY-IO-STATUS}. Eight
+ *       <td>the {@code WHEN OTHER} arms and both branches of {@code Z-DISPLAY-IO-STATUS}. Nine
  *           cases</td></tr>
  * </table>
  * The real relation is used wherever it can be, because it is the only backend against which "the
@@ -350,7 +350,7 @@ class CBCUS01CParityTest {
         /**
          * Nothing is arranged: the case's declared inputs alone decide what happens.
          *
-         * <p>Used by the thirteen ordinary cases. A case that reaches a fatal arm through its inputs
+         * <p>Used by the eleven ordinary cases. A case that reaches a fatal arm through its inputs
          * alone - by declaring no {@code CUSTFILE} at all, so the {@code OPEN}'s metadata probe finds
          * no such relation - would also be declared this way, because that is a property of its
          * inputs and not something this table has to say.
@@ -386,14 +386,20 @@ class CBCUS01CParityTest {
         /**
          * Every read succeeds and the {@code CLOSE} at {@code L138} then fails.
          *
-         * <p>{@code case18} is the one entry in {@link #declaredScenarios()} that arranges this, and
-         * it is necessarily the only shape that can: {@link Scenario} refuses a failing {@code CLOSE}
-         * beside a failing {@code READ}, and every read failure in this table abends before
-         * {@code L83} runs the close at all, so the close site is reachable only from a run that was
-         * clean through to its last statement. The vocabulary of this table is therefore the three
-         * I/O paragraphs {@code CBCUS01C} actually has, and each of them is reached from it.
-         * {@code customer.CustomerServiceTest} drives {@code 9000-CUSTFILE-CLOSE} directly as well,
-         * at the service rather than the case level.
+         * <p>{@code case18} and {@code case19} are the two entries in {@link #declaredScenarios()}
+         * that arrange this, and a run that was clean through to its last statement is necessarily the
+         * only shape that can: {@link Scenario} refuses a failing {@code CLOSE} beside a failing
+         * {@code READ}, and every read failure in this table abends before {@code L83} runs the close
+         * at all. The two differ in <strong>record count and nothing else</strong> - {@code case18}
+         * refuses the close after three complete record pairs and {@code case19} after none, over a
+         * dataset that exists and holds no row - which is what makes them a pair rather than a
+         * duplicate: {@code L137}'s {@code ADD 8 TO ZERO GIVING APPL-RESULT} resets the register on
+         * entry regardless of the {@code 16} the end-of-file read left in it, so both must reach the
+         * same three trailing lines and the same return code, and an implementation that carried
+         * {@code APPL-RESULT} forward instead of resetting it passes one and fails the other. The
+         * vocabulary of this table is therefore the three I/O paragraphs {@code CBCUS01C} actually
+         * has, and each of them is reached from it. {@code customer.CustomerServiceTest} drives
+         * {@code 9000-CUSTFILE-CLOSE} directly as well, at the service rather than the case level.
          *
          * @param status the status it reports
          * @return the scenario
@@ -441,7 +447,7 @@ class CBCUS01CParityTest {
     /**
      * One scenario per case, in case order - the arranged input side of all twenty cases.
      *
-     * <p>Twelve cases arrange nothing and differ only in what they seed; eight arrange a failure,
+     * <p>Eleven cases arrange nothing and differ only in what they seed; nine arrange a failure,
      * and between them they reach all three abend sites and both arms of
      * {@code Z-DISPLAY-IO-STATUS}:
      * <ul>
@@ -472,19 +478,25 @@ class CBCUS01CParityTest {
      *       ahead of the failure to hide behind - which is what makes it the complement of
      *       {@code case04}, where the first read reports {@code '10'} instead and the very same
      *       {@code IF} ladder ends the loop quietly rather than abending;</li>
-     *   <li>{@code case18} fails the {@code CLOSE} at {@code L138} with {@code '42'} - a close
-     *       against a file that is not open - on a run that read everything it was given. It is the
-     *       only entry that reaches the third abend site, the one inside
-     *       {@code 9000-CUSTFILE-CLOSE} at {@code L147-L150}, and the only one that arranges a
-     *       failure <em>after</em> a complete record pass and a normal end-of-file transition, which
-     *       is the one arrangement that can state that {@code L85}'s banner is still never
-     *       displayed: {@code CALL 'CEE3ABD'} at {@code L158} ends the enclave inside the close, so
-     *       control never returns from the {@code PERFORM} at {@code L83}. An implementation that
-     *       emitted that banner from a finally block, or that treated a refused close as
-     *       recoverable, passes every other case in this folder and fails that one. {@code '42'} is
-     *       two digits whose first byte is not {@code '9'}, so it renders through the {@code ELSE}
-     *       arm of {@code Z-DISPLAY-IO-STATUS}; the {@code IO-STAT1 = '9'} arm is reached from the
-     *       open and read sites instead, by {@code case10} and {@code case17}.</li>
+     *   <li>{@code case18} and {@code case19} both fail the {@code CLOSE} at {@code L138} with
+     *       {@code '42'} - a close against a file that is not open - and they are the only two entries
+     *       that reach the third abend site, the one inside {@code 9000-CUSTFILE-CLOSE} at
+     *       {@code L147-L150}. Each arranges its failure <em>after</em> a record pass that completed
+     *       and a normal end-of-file transition, which is the one arrangement that can state that
+     *       {@code L85}'s banner is still never displayed: {@code CALL 'CEE3ABD'} at {@code L158} ends
+     *       the enclave inside the close, so control never returns from the {@code PERFORM} at
+     *       {@code L83}. An implementation that emitted that banner from a finally block, or that
+     *       treated a refused close as recoverable, passes every other case in this folder and fails
+     *       both of these. What separates the two is the <strong>record count</strong> and nothing
+     *       else: {@code case18} reads three seeded rows first, {@code case19} reads none because its
+     *       {@code CUSTFILE} exists and holds no row, and both must still produce the same three
+     *       trailing lines and the same return code {@code 12} - which is the statement that the close
+     *       paragraph is independent of record-processing state, true by construction because
+     *       {@code L137} resets {@code APPL-RESULT} on entry over whatever the read loop left there.
+     *       {@code '42'} is two digits whose first byte is not {@code '9'}, so it renders through the
+     *       {@code ELSE} arm of {@code Z-DISPLAY-IO-STATUS}, identically for both; the
+     *       {@code IO-STAT1 = '9'} arm is reached from the open and read sites instead, by
+     *       {@code case10} and {@code case17}.</li>
      * </ul>
      *
      * <p>Deeply immutable: an unmodifiable view over a map of records built once by
@@ -574,16 +586,29 @@ class CBCUS01CParityTest {
         declared.put("case17", Scenario.readFailsAfter(1, CustomerRepository.PERMANENT_ERROR_STATUS));
 
         // case18 fails the CLOSE after every seeded row has been read and end of file has been
-        // reported normally - the one arrangement in this table where the fatal arm is reached on a
-        // run that was clean up to its last statement. It is the complement of case06, which seeds
-        // the same three fixture rows and closes successfully, and of case16, which refuses the very
-        // first READ and so never reaches the close. '42' has no named constant in FileStatus because
-        // no CBCUS01C paragraph tests for it, so it is written here as the literal the CLOSE
-        // reports, exactly as case10's '92' and case13's '37' are; being two digits with a first
-        // byte other than '9' it renders through the ELSE arm of Z-DISPLAY-IO-STATUS as
-        // FILE STATUS IS: NNNN0042, which is that arm reached from the close site for the only time.
+        // reported normally - the fatal arm reached on a run that was clean up to its last statement.
+        // It is the complement of case06, which seeds the same three fixture rows and closes
+        // successfully, and of case16, which refuses the very first READ and so never reaches the
+        // close. '42' has no named constant in FileStatus because no CBCUS01C paragraph tests for it,
+        // so it is written here as the literal the CLOSE reports, exactly as case10's '92' and
+        // case13's '37' are; being two digits with a first byte other than '9' it renders through the
+        // ELSE arm of Z-DISPLAY-IO-STATUS as FILE STATUS IS: NNNN0042.
         declared.put("case18", Scenario.closeFails("42"));
-        declared.put("case19", Scenario.asDeclared());
+
+        // case19 fails the same CLOSE with the same '42' over an empty CUSTFILE, which brackets the
+        // close site's error arm at both ends of the record count: case18 refuses the close after
+        // three record pairs, case19 after none. The pair is not a duplicate, and the difference it
+        // states cannot be stated by either case alone - 9000-CUSTFILE-CLOSE opens with
+        // ADD 8 TO ZERO GIVING APPL-RESULT at L137, which resets the register over whatever the read
+        // loop last left in it, and on both of these paths that value is the 16 the end-of-file read
+        // moved in at L99. So both must render the identical three trailing lines and the identical
+        // return code 12 from L142, and an implementation that carried APPL-RESULT forward instead of
+        // resetting it would pass one of the two and fail the other. Arranging it over an empty
+        // dataset also makes case19 the exact counterpart of case04, which declares the same empty
+        // CUSTFILE and differs in nothing but what the CLOSE answers - '00' there, two lines and
+        // return code 0, against '42' here, four lines and 12 - so that the close outcome is isolated
+        // as the single variable between them.
+        declared.put("case19", Scenario.closeFails("42"));
         declared.put("case20", Scenario.asDeclared());
         return Collections.unmodifiableMap(declared);
     }
@@ -1021,7 +1046,7 @@ class CBCUS01CParityTest {
      * The program never writes to the customer master, verified against the repository rather than
      * inferred from the absence of an expectation.
      *
-     * <p>Eleven of the twenty cases pin the dataset's final state row by row after reading it back out
+     * <p>Ten of the twenty cases pin the dataset's final state row by row after reading it back out
      * of a real relation, which is the strongest form of this assertion. This is the complementary one,
      * and it is worth having because it answers a different question: not "did the stored rows change"
      * but "was a write ever attempted at all". A rewrite that failed silently would leave the rows

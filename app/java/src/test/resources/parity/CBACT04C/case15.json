@@ -1,59 +1,375 @@
 {
   "program": "CBACT04C",
   "caseId": "case15",
-  "description": "AN EMPTY TCATBALF: end of file on the very first READ, which is the one branch no seeded row can reach. 1000-TCATBALF-GET-NEXT sees FILE STATUS '10', moves 16 into APPL-RESULT, APPL-EOF is true and :340 moves 'Y' into END-OF-FILE, so PERFORM UNTIL at :188 exits without ever entering its body. Nothing is displayed between the two banner lines - no record image, because :193 is inside the loop - nothing is read from the other four datasets even though all five are opened at :182-186, and SYSTRAN is opened and left with zero rows. The empty input is DECLARED, at its copybook width and naming CVTRA01Y, rather than omitted: an omitted dataset is one the case says nothing about, while an empty one asserts that the program opened a real dataset and reached end of file immediately. The distinction is the whole point of this case.",
+  "description": "MIXED RATES IN ONE RUN - the only case in this folder where the IF DIS-INT-RATE NOT = 0 guard at :214 is satisfied on some records and fails on others inside a single execution, and therefore the only one that can say where WS-TRANID-SUFFIX is incremented. THE HEADLINE ASSERTION: WS-TRANID-SUFFIX PIC 9(06) VALUE 0 (:173) is incremented at :474 and nowhere else, and :474 is reached only through PERFORM 1300-B-WRITE-TX at :468, which is reached only through PERFORM 1300-COMPUTE-INTEREST at :215, which runs only when the :214 guard is satisfied. On a zero-rate record not one link of that chain executes, so the counter does not move. Four records are read here and two of them write, so the two generated identifiers are 2022071800000001 and 2022071800000002 - contiguous, starting at one, and NOT the ordinals of the input rows that produced them, which are the second and the third. THE WRONG ANSWERS, NAMED SO THE CASE IS DIAGNOSTIC AND NOT MERELY CORRECT: 000002 and 000003 would mean the counter was incremented once per record read - before the guard rather than inside the write - or equivalently that the suffix was taken from the one-based input row ordinal, since here the two models coincide; 000000 and 000001 would mean the ADD at :474 was placed after the STRING at :476-480 instead of before it. SAID HONESTLY RATHER THAN OVERCLAIMED (practice B12): a suffix derived from the ZERO-based input row index would also produce 000001 and 000002 here, because the two writing records sit at zero-based indices one and two, so that particular model is NOT caught by the identifiers. It is caught by the two independent assertions below, which is why they are here. SECOND ASSERTION - THE MESSAGE-TO-RECORD ASYMMETRY: PERFORM 1200-GET-INTEREST-RATE at :213 sits OUTSIDE the :214 guard, so the disclosure-group lookup happens once per RECORD while the write happens once per RATE-BEARING record. expectedMessages therefore carries FOUR 50-byte record images and FOUR fallback pairs against only TWO records in expectedWrites, and that 4:2 mismatch is deliberate. An implementation that skipped the DISCGRP read on records it was not going to write would emit two fallback pairs and fail here even with two perfect records. The record image is DISPLAY TRAN-CAT-BAL-RECORD at :193, which precedes both the account-break test at :194 and the guard, so it is emitted for every record unconditionally. THIRD ASSERTION - THE FOURTH ROW IS A GROUP-ID DISCRIMINATOR: type 07 category 0001 is the ONE key whose rate differs between the two populated disclosure groups of discgrp.txt - 0.00 in the 'DEFAULT   ' block (row 33) but 15.00 in the 'A000000000' block (row 16). This corrects the folder brief, which asserts the DEFAULT rates hold 'identically in A000000000'; they do not, at exactly this key (practice B4). All 51 discgrp rows are seeded precisely so the A-block is available, which arms the discriminator: an implementation that misread ACCT-ADDR-ZIP as the account group id - the one mistake this fixture set invites - would find 15.00 for the fourth record and write a THIRD transaction with suffix 000003. There is no such record, and 000003 appears nowhere in this file. THE ARRANGEMENT: four TCATBALF rows, all for account 00000000008, in ascending order on the type-and-category half of the 17-byte TRAN-CAT-KEY, since app/cbl/CBACT04C.cbl:28-32 declares TCATBALF with ACCESS MODE IS SEQUENTIAL. 02/0001 rate 0.00 SKIPS, 04/0001 rate 15.00 WRITES suffix 000001, 06/0001 rate 15.00 WRITES suffix 000002, 07/0001 rate 0.00 SKIPS. A zero-rate record both PRECEDES the first write and FOLLOWS the last, so the skip is exercised on both sides; with four rows and two writes that shape is the only one the ascending-key constraint permits, because 07/0001 is the sole zero-rate key that sorts above any rate-bearing one. Every row carries the SAME balance, which is a control: only the rate varies, so the write-and-skip pattern cannot be attributed to the amount. All four rows belong to one account, so there is exactly one account break and it is the first. PROVENANCE, DISCLOSED IN FULL (practice B12): all four TCATBALF rows are MODIFIED. The fixture cannot supply them - every one of the fifty rows of app/data/ASCII/tcatbal.txt carries type 01 category 0001 and TRAN-CAT-BAL '0000000000{' = 0.00, so it offers neither four different category keys nor a non-zero balance. The four type/category keys are all REAL keys, present in every one of the three 17-row blocks of discgrp.txt. The balance is 6050.00, encoded '0000060500{' at S9(09)V99: a deliberate ten-fold scaling of account 00000000008's real ACCT-CURR-BAL, which acctdata.txt row 7 carries as '00000006050{' and which decodes at S9(10)V99 to 605.00. The scaling is not cosmetic - it is what puts the quotient exactly on a half cent and makes this case a rounding-mode discriminator as well as a sequencing one. It also corrects the folder brief, which equates '0000006050{' with 6050.00 (practice B4): that eleven-byte literal decodes to 605.00, whose interest is 7.5625 truncating to 7.56 - a value HALF_UP would also give, and one that contradicts the brief's own stated TRAN-AMT of '0000000756B'. The brief's arithmetic is right and its balance literal is wrong, so the literal is the half that was corrected. ACCTFILE, XREFFILE, XREFFIL1 and DISCGRP are all unmodified fixture rows. THE ARITHMETIC: COMPUTE WS-MONTHLY-INT = ( TRAN-CAT-BAL * DIS-INT-RATE) / 1200 at :464-465 carries no ROUNDED phrase - the keyword appears zero times in all 28 programs - so the store into the receiver PIC S9(09)V99 truncates, which is scale 2 with RoundingMode.DOWN. 6050.00 at 15.00 has an exact product of 90750.0000 and an exact quotient of 75.625, whose discarded remainder is exactly half a cent - a genuine tie, and that is what makes this operand pair a rounding-mode discriminator: truncation stores 75.62 where HALF_UP would store 75.63. STATED PRECISELY RATHER THAN OVERSTATED (practice B12, and a further correction to the folder brief under practice B4): HALF_EVEN would give 75.62 here too, NOT 75.63, because the retained low-order digit 2 is even and a tie rounds to even. So this pair separates DOWN from HALF_UP, HALF_EVEN from HALF_UP and DOWN from CEILING, but it does NOT separate DOWN from HALF_EVEN; the brief claims both rounding modes would give 75.63 and only one of them does. Separating DOWN from HALF_EVEN needs a non-terminating quotient, which is what the 1000.00-at-12.50 and 0.05-at-15.00 assertions in CBACT04CParityTest carry, so the two kinds of evidence are complementary rather than duplicated. TRAN-AMT is therefore '0000000756B' - eleven bytes, the trailing 'B' being the zoned overpunch for a positive low-order 2 - and never '0000000756C', which is the 75.63 a half-up mode would store. Both writes charge the same balance at the same rate, so the assertion is made twice. WS-TOTAL-INT accumulates 75.62 twice to 151.24 by the ADD at :467. THE NEGATIVE ASSERTIONS, BOTH DELIBERATE (practice B5): ACCTFILE appears only in expectedFinalState and is byte-identical to its seed, because 1050-UPDATE-ACCOUNT never runs. Its first call site, :196, is guarded by IF WS-FIRST-TIME NOT = 'Y' and this run's only account break is the first, so :198 merely flips the flag; records two, three and four break nothing because :194 is false for them. Its only other call site, the ELSE at :219-220, is unreachable dead code - the enclosing PERFORM UNTIL END-OF-FILE = 'Y' at :188 makes the IF END-OF-FILE = 'N' at :189 always true. So the final account group's accumulated 151.24 is never posted to ACCT-CURR-BAL and both cycle amounts keep their seeded values: a defect preserved verbatim, not repaired. And 1400-COMPUTE-FEES is invoked EXACTLY TWICE, from :216 inside the satisfied guard, and skipped exactly twice on the zero-rate records - both invocation states in one run, which no other case in this folder does. Its body is the comment '* To be implemented' followed by EXIT (:518-520), so it contributes no record, no field and no message either time. DETERMINISM (practice B7): TRAN-ORIG-TS and TRAN-PROC-TS are this program's only wall-clock values and both take the same DB2-FORMAT-TS from Z-GET-DB2-FORMAT-TIMESTAMP at :496-498, reached only on a writing record. No 'now' is ever captured. A BATCH_JOB case pins no clock of its own - ParityCase publishes pinnedClock on screenRequest only, which a batch case must not carry - so ParityHarness.DEFAULT_PINNED_CLOCK applies, fixed at 2022-07-19T23:12:34 after the repository-wide source footer 'Ver: CardDemo_v1.0-15-g27d6c6f-68 Date: 2022-07-19' and rendering as the 26-byte '2022-07-19-23.12.34.000000' on both records. The folder brief names '2022-07-18-00.00.00.000000'; that value is unreachable through the harness and is corrected here rather than absorbed silently (practice B4). SHAPE AND CONVENTIONS: unitKind is BATCH_JOB, so account.AccountInterestCalcJob is reached at step level with no HTTP layer and no JobLauncher in the path (gate G51). The brief asks for a member named 'expectedRecords'; ParityCase declares no such member and refuses an unknown one, splitting the record channel into expectedWrites, in write order, and expectedFinalState, which must account for every row of every seeded dataset because FieldDiffer reports an undeclared row as an EXTRA_RECORD. Both are used here and the brief's name is not (practice B4). Datasets are addressed by DD and CICS file name - TCATBALF, ACCTFILE, XREFFILE, XREFFIL1, DISCGRP and the generated output, which is addressed as SYSTRAN because that is the generation the TRANSACT DD creates at app/jcl/INTCALC.jcl:37-41 and the name ParityHarness and every sibling case in this folder record it under - the brief calls it TRANSACT, which is the DD rather than the dataset. No mainframe DSNAME literal appears in this file at all (gate G46). XREFFILE and XREFFIL1 are deliberately the same 36-byte cross-reference row, because XREFFIL1 is an alternate-index PATH over the same base cluster (INTCALC.jcl:29-32) and not a second dataset (gate G45); the row is card 8931369351894783, cardxref.txt row 44, the only row whose XREF-ACCT-ID is 00000000008 - found by matching bytes 26-36, since that file is ordered by card number and has no positional correspondence to account id. It stays 36 bytes here: the declared CARDXREF_FILLER_PAD_36_TO_50 normalisation supplies CVACT03Y's absent FILLER PIC X(14) as fourteen spaces once, at seed time, so the fixture is never edited (gate G16). Row indices are zero-based; each generated record is pinned by name across all fourteen CVTRA05Y spans in copybook order AND as its whole 350-byte image, so a failure localises to one field while the total width still proves the trailing FILLER PIC X(20) was emitted as twenty spaces (gates G19, G20, G21). TRAN-CAT-CD is '0005' and never '05  ' or any of the four input categories: :483 moves the literal '05' into a numeric-display PIC 9(04) receiver unconditionally, so the input category drives the rate lookup only and never reaches the output. TRAN-DESC is the 24 bytes 'Int. for a/c ' - thirteen characters including its trailing space - plus the eleven-digit ACCT-ID, followed by 76 spaces: the STRING at :485-489 writes only the composed bytes and leaves the receiver tail untouched, and common.FixedWidthCodec builds the record with every PIC X span space-initialised. Both records carry the same description because all four rows share one account. Bytes are US-ASCII throughout, matching the app/data/ASCII fixtures, never a platform default. This case supersedes an earlier case15 that declared an empty TCATBALF; no branch is lost, because the loop-not-entered path is the same end-of-file arm that terminates all twenty runs. PROVENANCE OF THE EXPECTATIONS: every value here is STATICALLY DERIVED - by structured reading of the COBOL paragraphs cross-checked against the CVTRA01Y, CVTRA02Y, CVTRA05Y, CVACT01Y and CVACT03Y byte layouts, the INTCALC.jcl DD and PARM contracts (:22 PARM='2022071800', :39 RECFM=F,LRECL=350) and the real ASCII fixtures. It was never captured from, recorded against or replayed from any execution of the legacy COBOL, which is empirically impossible in this environment.",
   "unitKind": "BATCH_JOB",
   "inputs": {
     "TCATBALF": {
-      "empty": true,
-      "recordLength": 50,
-      "copybook": "CVTRA01Y"
+      "rows": [
+        "000000000080200010000060500{0000000000000000000000",
+        "000000000080400010000060500{0000000000000000000000",
+        "000000000080600010000060500{0000000000000000000000",
+        "000000000080700010000060500{0000000000000000000000"
+      ]
     },
     "ACCTFILE": {
       "fixture": "acctdata.txt",
-      "fromRow": 0,
+      "fromRow": 7,
       "rowCount": 1
     },
     "XREFFILE": {
-      "rows": [
-        "968029415460369700000000100000000001"
-      ]
+      "fixture": "cardxref.txt",
+      "fromRow": 44,
+      "rowCount": 1
     },
     "XREFFIL1": {
-      "rows": [
-        "968029415460369700000000100000000001"
-      ]
+      "fixture": "cardxref.txt",
+      "fromRow": 44,
+      "rowCount": 1
     },
     "DISCGRP": {
       "fixture": "discgrp.txt",
       "fromRow": 0,
-      "rowCount": 1
+      "rowCount": 51
     }
   },
   "jobParameters": {
     "parmDate": "2022071800"
   },
-  "expectedWrites": [],
+  "expectedWrites": [
+    {
+      "dataset": "SYSTRAN",
+      "rowIndex": 0,
+      "fields": {
+        "TRAN-ID": "2022071800000001",
+        "TRAN-TYPE-CD": "01",
+        "TRAN-CAT-CD": "0005",
+        "TRAN-SOURCE": "System    ",
+        "TRAN-DESC": "Int. for a/c 00000000008                                                                            ",
+        "TRAN-AMT": "0000000756B",
+        "TRAN-MERCHANT-ID": "000000000",
+        "TRAN-MERCHANT-NAME": "                                                  ",
+        "TRAN-MERCHANT-CITY": "                                                  ",
+        "TRAN-MERCHANT-ZIP": "          ",
+        "TRAN-CARD-NUM": "8931369351894783",
+        "TRAN-ORIG-TS": "2022-07-19-23.12.34.000000",
+        "TRAN-PROC-TS": "2022-07-19-23.12.34.000000",
+        "FILLER": "                    "
+      },
+      "expectedBytes": "2022071800000001010005System    Int. for a/c 00000000008                                                                            0000000756B000000000                                                                                                              89313693518947832022-07-19-23.12.34.0000002022-07-19-23.12.34.000000                    "
+    },
+    {
+      "dataset": "SYSTRAN",
+      "rowIndex": 1,
+      "fields": {
+        "TRAN-ID": "2022071800000002",
+        "TRAN-TYPE-CD": "01",
+        "TRAN-CAT-CD": "0005",
+        "TRAN-SOURCE": "System    ",
+        "TRAN-DESC": "Int. for a/c 00000000008                                                                            ",
+        "TRAN-AMT": "0000000756B",
+        "TRAN-MERCHANT-ID": "000000000",
+        "TRAN-MERCHANT-NAME": "                                                  ",
+        "TRAN-MERCHANT-CITY": "                                                  ",
+        "TRAN-MERCHANT-ZIP": "          ",
+        "TRAN-CARD-NUM": "8931369351894783",
+        "TRAN-ORIG-TS": "2022-07-19-23.12.34.000000",
+        "TRAN-PROC-TS": "2022-07-19-23.12.34.000000",
+        "FILLER": "                    "
+      },
+      "expectedBytes": "2022071800000002010005System    Int. for a/c 00000000008                                                                            0000000756B000000000                                                                                                              89313693518947832022-07-19-23.12.34.0000002022-07-19-23.12.34.000000                    "
+    }
+  ],
   "expectedFinalState": [
+    {
+      "dataset": "TCATBALF",
+      "rowIndex": 0,
+      "expectedBytes": "000000000080200010000060500{0000000000000000000000"
+    },
+    {
+      "dataset": "TCATBALF",
+      "rowIndex": 1,
+      "expectedBytes": "000000000080400010000060500{0000000000000000000000"
+    },
+    {
+      "dataset": "TCATBALF",
+      "rowIndex": 2,
+      "expectedBytes": "000000000080600010000060500{0000000000000000000000"
+    },
+    {
+      "dataset": "TCATBALF",
+      "rowIndex": 3,
+      "expectedBytes": "000000000080700010000060500{0000000000000000000000"
+    },
     {
       "dataset": "ACCTFILE",
       "rowIndex": 0,
-      "expectedBytes": "00000000001Y00000001940{00000020200{00000010200{2014-11-202025-05-202025-05-2000000000000{00000000000{A000000000                                                                                                                                                                                            "
+      "expectedBytes": "00000000008Y00000006050{00000061040{00000013180{2012-01-042024-05-202024-05-2000000000000{00000000000{A000000000                                                                                                                                                                                            "
     },
     {
       "dataset": "XREFFILE",
       "rowIndex": 0,
-      "expectedBytes": "968029415460369700000000100000000001              "
+      "expectedBytes": "893136935189478300000000800000000008              "
     },
     {
       "dataset": "XREFFIL1",
       "rowIndex": 0,
-      "expectedBytes": "968029415460369700000000100000000001              "
+      "expectedBytes": "893136935189478300000000800000000008              "
     },
     {
       "dataset": "DISCGRP",
       "rowIndex": 0,
       "expectedBytes": "A00000000001000100150{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 1,
+      "expectedBytes": "A00000000001000200250{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 2,
+      "expectedBytes": "A00000000001000300250{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 3,
+      "expectedBytes": "A00000000001000400250{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 4,
+      "expectedBytes": "A00000000002000100000{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 5,
+      "expectedBytes": "A00000000002000200000{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 6,
+      "expectedBytes": "A00000000002000300000{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 7,
+      "expectedBytes": "A00000000003000100000{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 8,
+      "expectedBytes": "A00000000003000200000{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 9,
+      "expectedBytes": "A00000000003000300000{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 10,
+      "expectedBytes": "A00000000004000100150{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 11,
+      "expectedBytes": "A00000000004000200150{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 12,
+      "expectedBytes": "A00000000004000300150{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 13,
+      "expectedBytes": "A00000000005000100150{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 14,
+      "expectedBytes": "A00000000006000100150{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 15,
+      "expectedBytes": "A00000000006000200150{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 16,
+      "expectedBytes": "A00000000007000100150{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 17,
+      "expectedBytes": "DEFAULT   01000100150{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 18,
+      "expectedBytes": "DEFAULT   01000200250{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 19,
+      "expectedBytes": "DEFAULT   01000300250{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 20,
+      "expectedBytes": "DEFAULT   01000400250{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 21,
+      "expectedBytes": "DEFAULT   02000100000{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 22,
+      "expectedBytes": "DEFAULT   02000200000{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 23,
+      "expectedBytes": "DEFAULT   02000300000{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 24,
+      "expectedBytes": "DEFAULT   03000100000{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 25,
+      "expectedBytes": "DEFAULT   03000200000{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 26,
+      "expectedBytes": "DEFAULT   03000300000{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 27,
+      "expectedBytes": "DEFAULT   04000100150{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 28,
+      "expectedBytes": "DEFAULT   04000200150{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 29,
+      "expectedBytes": "DEFAULT   04000300150{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 30,
+      "expectedBytes": "DEFAULT   05000100150{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 31,
+      "expectedBytes": "DEFAULT   06000100150{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 32,
+      "expectedBytes": "DEFAULT   06000200150{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 33,
+      "expectedBytes": "DEFAULT   07000100000{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 34,
+      "expectedBytes": "ZEROAPR   01000100000{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 35,
+      "expectedBytes": "ZEROAPR   01000200000{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 36,
+      "expectedBytes": "ZEROAPR   01000300000{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 37,
+      "expectedBytes": "ZEROAPR   01000400000{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 38,
+      "expectedBytes": "ZEROAPR   02000100000{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 39,
+      "expectedBytes": "ZEROAPR   02000200000{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 40,
+      "expectedBytes": "ZEROAPR   02000300000{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 41,
+      "expectedBytes": "ZEROAPR   03000100000{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 42,
+      "expectedBytes": "ZEROAPR   03000200000{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 43,
+      "expectedBytes": "ZEROAPR   03000300000{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 44,
+      "expectedBytes": "ZEROAPR   04000100000{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 45,
+      "expectedBytes": "ZEROAPR   04000200000{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 46,
+      "expectedBytes": "ZEROAPR   04000300000{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 47,
+      "expectedBytes": "ZEROAPR   05000100000{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 48,
+      "expectedBytes": "ZEROAPR   06000100000{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 49,
+      "expectedBytes": "ZEROAPR   06000200000{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 50,
+      "expectedBytes": "ZEROAPR   07000100000{0000000000000000000000000000"
     }
   ],
   "expectedReturnCode": 0,
@@ -61,6 +377,54 @@
     {
       "channel": "DISPLAY_LINE",
       "text": "START OF EXECUTION OF PROGRAM CBACT04C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "000000000080200010000060500{0000000000000000000000"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "DISCLOSURE GROUP RECORD MISSING"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "TRY WITH DEFAULT GROUP CODE"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "000000000080400010000060500{0000000000000000000000"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "DISCLOSURE GROUP RECORD MISSING"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "TRY WITH DEFAULT GROUP CODE"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "000000000080600010000060500{0000000000000000000000"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "DISCLOSURE GROUP RECORD MISSING"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "TRY WITH DEFAULT GROUP CODE"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "000000000080700010000060500{0000000000000000000000"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "DISCLOSURE GROUP RECORD MISSING"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "TRY WITH DEFAULT GROUP CODE"
     },
     {
       "channel": "DISPLAY_LINE",
@@ -81,13 +445,13 @@
     {
       "dataset": "SYSTRAN",
       "channel": "WRITES",
-      "rowCount": 0,
+      "rowCount": 2,
       "recordLength": 350
     },
     {
       "dataset": "TCATBALF",
       "channel": "FINAL_STATE",
-      "rowCount": 0,
+      "rowCount": 4,
       "recordLength": 50
     },
     {
@@ -111,7 +475,7 @@
     {
       "dataset": "DISCGRP",
       "channel": "FINAL_STATE",
-      "rowCount": 1,
+      "rowCount": 51,
       "recordLength": 50
     }
   ]

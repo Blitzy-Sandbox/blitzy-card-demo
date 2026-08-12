@@ -1,0 +1,267 @@
+{
+  "program": "COUSR03C",
+  "caseId": "case10",
+  "description": "PF5 on the FIRST seeded USRSEC row - the successful confirm-then-delete whose survivors REINDEX, and the SEC-USR-TYPE 'A' variant. DELETE-USER-INFO at app/cbl/COUSR03C.cbl:174-192 is reached through the fourth arm of the ordered EVALUATE EIBAID at :108-130, the WHEN DFHPF5 of :121-122, which is taken only after DFHENTER, DFHPF3 and DFHPF4 have each failed to match: the arms are ordered, WHEN OTHER is last, and that order is part of the behaviour. USRIDINI carries 'ADMIN001', so the EVALUATE TRUE at :176-186 falls through to WHEN OTHER, which moves -1 into USRIDINL and CONTINUEs without raising the error flag. The single IF NOT ERR-FLG-ON at :188 then wraps BOTH the read at :190 and the delete at :191 - there is NO second guard between them - so on this path both run, and the case models the guard as it is written rather than as an imaginary one placed between the two performs. READ-USER-SEC-FILE at :267-300 issues EXEC CICS READ ... UPDATE with RIDFLD(SEC-USR-ID) and takes the NORMAL arm at :281-286, named as the FileStatus outcome NORMAL and never as a raw numeric RESP: its dead CONTINUE at :282 is a no-op artifact preserved rather than tidied, then 'Press PF5 key to delete this user ...' goes to WS-MESSAGE, DFHNEUTR goes to ERRMSGC, and SEND-USRDEL-SCREEN paints the confirmation prompt - send 1 of 2. DELETE-USER-SEC-FILE at :302-336 then issues EXEC CICS DELETE at :307-311 with DATASET, RESP and RESP2 and NO RIDFLD, so it removes the record the preceding read-for-update left the task HOLDING rather than one located by key: the repository contract asserted here is readForUpdate then deleteHeld, both answering NORMAL, and never a delete-by-key - a translation exposing delete(userId) would satisfy a naive test while succeeding where the COBOL cannot. No forced outcome is declared, and that is a positive statement rather than an omission: ADMIN001 is genuinely seeded, so both NORMAL arms are reached by the data itself, and RepositoryOperation deliberately carries no deleteHeld key because that operation is reached from the hold and not from a key. The delete's NORMAL arm at :314-322 runs four steps whose ORDER is the assertion: INITIALIZE-ALL-FIELDS at :315 (:349-356) blanks USRIDINI, FNAMEI, LNAMEI, USRTYPEI and WS-MESSAGE and re-cursors USRIDINL, which is why all four data items of the last send are BLANK even though the request transmitted MARGARET, GOLD and 'A'; the redundant MOVE SPACES at :316 is left in place; DFHGREEN replaces the read's DFHNEUTR on ERRMSGC at :317; and only THEN does the STRING at :318-321 compose the sentence out of a SEC-USER-DATA that INITIALIZE-ALL-FIELDS deliberately does not touch, which is how the identifier survives into a message painted over an emptied screen. SEC-USR-ID is PIC X(08) and 'ADMIN001' fills all eight characters with no embedded space, so the DELIMITED BY SPACE middle operand contributes all eight and the sentence reads 'User ADMIN001 has been deleted ...' - thirty-four characters, pinned at 80 on WS-MESSAGE's own channel and at 78 on the screen's, because MOVE WS-MESSAGE TO ERRMSGO at :217 is an 80-to-78 RIGHT truncation and both widths are stated so the direction of that truncation is assertable. Only the FINAL message state is observable: the prompt of send 1 was overwritten at :316-321 before the last send, which is why the two ordered message entries carry the same composed text at their two declared widths, while the DFHNEUTR-then-DFHGREEN transition is asserted where a colour actually lives - on the sends, the first carrying the six repainted header items alone and the last additionally carrying the five variable items and the ERRMSGC colour byte. THE POINT OF THIS CASE, and what case09 cannot show: case09 removes the LAST row it seeds, so every survivor keeps the index it started with and a harness that indexed by ORIGINAL position would pass it unnoticed. This case deletes ADMIN001, the FIRST of the ten in-stream rows of app/jcl/DUSRSECJ.jcl:35-44, so every survivor MOVES DOWN BY ONE: nine rows remain at zero-based indices 0 to 8, index 0 is ADMIN002 - not a hole and not ADMIN001 - and ADMIN001 is absent altogether. A harness that left a gap where the deleted row was, or that reported pre-state positions, fails here and passes there; together the two cases pin the post-delete state unambiguously, and they also cover both values of SEC-USR-TYPE - 'U' there, the admin 'A' here, which is the type this case's target and its four ADMIN survivors carry. Every survivor is pinned twice over: field by field, so the named SEC-USR-FILLER X(23) is asserted BY NAME as 23 spaces, and as its whole 80-byte image, so the total width is asserted too and an omitted FILLER would collapse the record to 57 and fail loudly. SEC-USR-PWD holds the literal PASSWORD in all ten seeded and all nine asserted records because app/jcl/DUSRSECJ.jcl does and the eighty bytes cannot be asserted without it: plaintext credentials are an INHERITED property of the legacy design rather than a choice made here - COSGN00C compares that span in plaintext, this screen has no password field among its eleven xxxI items and never reads or paints the span, and no hashing, token or filter chain is introduced because that would change observable behaviour. SEND-USRDEL-SCREEN at :213-225 repaints all six header items through POPULATE-HEADER-INFO at :243-262 on BOTH sends under the case's pinned clock. The invocation ends at the EXEC CICS RETURN TRANSID('CU03') COMMAREA of :134-137, so the termination is RETURN_TRANSID and not an XCTL, and all twenty-two commarea items travel in the payload and leave unchanged - this path writes none of them - so there is no server-side session state and no COMMAREA held on the server, in keeping with the pseudo-conversational contract. The state is REENTER and the path SUCCEEDS, so no DFHRED-plus-asterisk highlight appears anywhere: that highlight is both REENTER-only and error-only, and COUSR03C copies neither CSSETATY nor CSSTRPFY and moves exactly one attribute item, ERRMSGC, at :285 and :317. No optimistic-concurrency or version-column expectation is stated, because COUSR03C has no 9300-CHECK-CHANGE-IN-REC to reproduce. The dataset is addressed only by its binding key USRSEC and never by a dataset name; app/csd/CARDDEMO.CSD declares DELETE(YES) on FILE(USRSEC) at :94 and binds TRANSACTION(CU03) to PROGRAM(COUSR03C) at :479-480, which is what authorises this path. review_rules reports 'No user rules provided' for this project, so no user rule governs this fixture and its absence is not licence to assert less: it is held instead to the plan's enterprise practices B1 to B12. PROVENANCE: every value here is STATICALLY DERIVED by structured reading of the sources named above and is NOT captured from, recorded against or replayed from any execution of the legacy COBOL - running it is empirically impossible in this environment (no z/OS or CICS runtime, the available compiler's indexed-file handler is disabled, no Language Environment CEE* services, and DFHAID, DFHBMSCA and DFHATTR are absent from the repository, so the AID and colour mnemonics are reproduced from IBM CICS documentation in common/CicsAid and common/BmsAttributes), the documented eight-blocker deviation escalated as risk R-A; it changes the provenance of the expected values and nothing else. Derived from app/cbl/COUSR03C.cbl:106-137, :174-192, :213-225, :243-262, :267-300, :302-336 and :349-356, cross-checked against app/cpy/CSUSR01Y.cpy:17-23 (SEC-USR-ID X(08) at offset 0, SEC-USR-FNAME X(20) at 8, SEC-USR-LNAME X(20) at 28, SEC-USR-PWD X(08) at 48, SEC-USR-TYPE X(01) at 56 = 57, plus SEC-USR-FILLER X(23) at 57 = 80), app/cpy-bms/COUSR03.CPY with app/bms/COUSR03.bms (COUSR3AO REDEFINES COUSR3AI, eleven xxxI items and no password item, the xxxL, xxxF and xxxA items being length, flag and attribute metadata rather than payload), app/cpy/COCOM01Y.cpy with app/cbl/COUSR03C.cbl:50-58 (160 bytes plus the 34-byte CDEMO-CU03-INFO extension, which is the 194 of EIBCALEN), app/cpy/COTTL01Y.cpy for the two 40-character titles, app/cpy/CSDAT01Y.cpy for the header clock, app/cpy/CSMSG01Y.cpy for the message texts this path does not reach, app/csd/CARDDEMO.CSD for the USRSEC capabilities and the CU03 binding, and the ten in-stream rows of app/jcl/DUSRSECJ.jcl:35-44, whose 57-character width against the LRECL=80,RECFM=FB of :48 and the RECORDSIZE(80,80) KEYS(8,0) of :65-66 is exactly what the declared 57-to-80 normalisation supplies. The ten-row seed block, the pinned 2022-07-19T23:12:35 clock taken from the version footer at :358, the six record field names and that normalisation are case01's conventions, matched here byte for byte; everything structural is case09's, and the only intended differences are the target identifier, the SEC-USR-TYPE variant, the composed message and the survivor list with its shifted indices.",
+  "unitKind": "CONTROLLER_POJO",
+  "inputs": {
+    "USRSEC": {
+      "rows": [
+        "ADMIN001MARGARET            GOLD                PASSWORDA",
+        "ADMIN002RUSSELL             RUSSELL             PASSWORDA",
+        "ADMIN003RAYMOND             WHITMORE            PASSWORDA",
+        "ADMIN004EMMANUEL            CASGRAIN            PASSWORDA",
+        "ADMIN005GRANVILLE           LACHAPELLE          PASSWORDA",
+        "USER0001LAWRENCE            THOMAS              PASSWORDU",
+        "USER0002AJITH               KUMAR               PASSWORDU",
+        "USER0003LAURITZ             ALME                PASSWORDU",
+        "USER0004AVERARDO            MAZZI               PASSWORDU",
+        "USER0005LEE                 TING                PASSWORDU"
+      ]
+    }
+  },
+  "jobParameters": {},
+  "screenRequest": {
+    "eibcalen": 194,
+    "aid": "DFHPF5",
+    "pinnedClock": "2022-07-19T23:12:35",
+    "charset": "US-ASCII",
+    "commarea": {
+      "CDEMO-FROM-TRANID": "CU00",
+      "CDEMO-FROM-PROGRAM": "COUSR00C",
+      "CDEMO-TO-TRANID": "CU03",
+      "CDEMO-TO-PROGRAM": "COUSR03C",
+      "CDEMO-USER-ID": "ADMIN001",
+      "CDEMO-USER-TYPE": "A",
+      "CDEMO-PGM-CONTEXT": "1",
+      "CDEMO-CUST-ID": "000000000",
+      "CDEMO-CUST-FNAME": "                         ",
+      "CDEMO-CUST-MNAME": "                         ",
+      "CDEMO-CUST-LNAME": "                         ",
+      "CDEMO-ACCT-ID": "00000000000",
+      "CDEMO-ACCT-STATUS": " ",
+      "CDEMO-CARD-NUM": "0000000000000000",
+      "CDEMO-LAST-MAP": "COUSR3A",
+      "CDEMO-LAST-MAPSET": "COUSR03",
+      "CDEMO-CU03-USRID-FIRST": "ADMIN001",
+      "CDEMO-CU03-USRID-LAST": "USER0005",
+      "CDEMO-CU03-PAGE-NUM": "00000001",
+      "CDEMO-CU03-NEXT-PAGE-FLG": "N",
+      "CDEMO-CU03-USR-SEL-FLG": " ",
+      "CDEMO-CU03-USR-SELECTED": "        "
+    },
+    "mapFields": {
+      "USRIDINI": "ADMIN001",
+      "FNAMEI": "MARGARET            ",
+      "LNAMEI": "GOLD                ",
+      "USRTYPEI": "A"
+    },
+    "forcedOutcomes": {}
+  },
+  "expectedResponse": {
+    "nextProgram": "COUSR03C",
+    "nextMapset": "COUSR03",
+    "nextMap": "COUSR3A",
+    "navigation": {
+      "CDEMO-FROM-TRANID": "CU00",
+      "CDEMO-FROM-PROGRAM": "COUSR00C",
+      "CDEMO-TO-TRANID": "CU03",
+      "CDEMO-TO-PROGRAM": "COUSR03C",
+      "CDEMO-USER-ID": "ADMIN001",
+      "CDEMO-USER-TYPE": "A",
+      "CDEMO-PGM-CONTEXT": "1",
+      "CDEMO-CUST-ID": "000000000",
+      "CDEMO-CUST-FNAME": "                         ",
+      "CDEMO-CUST-MNAME": "                         ",
+      "CDEMO-CUST-LNAME": "                         ",
+      "CDEMO-ACCT-ID": "00000000000",
+      "CDEMO-ACCT-STATUS": " ",
+      "CDEMO-CARD-NUM": "0000000000000000",
+      "CDEMO-LAST-MAP": "COUSR3A",
+      "CDEMO-LAST-MAPSET": "COUSR03",
+      "CDEMO-CU03-USRID-FIRST": "ADMIN001",
+      "CDEMO-CU03-USRID-LAST": "USER0005",
+      "CDEMO-CU03-PAGE-NUM": "00000001",
+      "CDEMO-CU03-NEXT-PAGE-FLG": "N",
+      "CDEMO-CU03-USR-SEL-FLG": " ",
+      "CDEMO-CU03-USR-SELECTED": "        "
+    },
+    "sends": [
+      {
+        "fields": {
+          "TRNNAMEO": "CU03",
+          "TITLE01O": "      AWS Mainframe Modernization       ",
+          "CURDATEO": "07/19/22",
+          "PGMNAMEO": "COUSR03C",
+          "TITLE02O": "              CardDemo                  ",
+          "CURTIMEO": "23:12:35"
+        },
+        "attributes": {}
+      },
+      {
+        "fields": {
+          "TRNNAMEO": "CU03",
+          "TITLE01O": "      AWS Mainframe Modernization       ",
+          "CURDATEO": "07/19/22",
+          "PGMNAMEO": "COUSR03C",
+          "TITLE02O": "              CardDemo                  ",
+          "CURTIMEO": "23:12:35",
+          "USRIDINO": "        ",
+          "FNAMEO": "                    ",
+          "LNAMEO": "                    ",
+          "USRTYPEO": " ",
+          "ERRMSGO": "User ADMIN001 has been deleted ...                                            "
+        },
+        "attributes": {
+          "ERRMSGC": "DFHGREEN"
+        }
+      }
+    ],
+    "cursorField": "USRIDINL",
+    "termination": "RETURN_TRANSID"
+  },
+  "expectedWrites": [],
+  "expectedFinalState": [
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 0,
+      "fields": {
+        "SEC-USR-ID": "ADMIN002",
+        "SEC-USR-FNAME": "RUSSELL             ",
+        "SEC-USR-LNAME": "RUSSELL             ",
+        "SEC-USR-PWD": "PASSWORD",
+        "SEC-USR-TYPE": "A",
+        "SEC-USR-FILLER": "                       "
+      },
+      "expectedBytes": "ADMIN002RUSSELL             RUSSELL             PASSWORDA                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 1,
+      "fields": {
+        "SEC-USR-ID": "ADMIN003",
+        "SEC-USR-FNAME": "RAYMOND             ",
+        "SEC-USR-LNAME": "WHITMORE            ",
+        "SEC-USR-PWD": "PASSWORD",
+        "SEC-USR-TYPE": "A",
+        "SEC-USR-FILLER": "                       "
+      },
+      "expectedBytes": "ADMIN003RAYMOND             WHITMORE            PASSWORDA                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 2,
+      "fields": {
+        "SEC-USR-ID": "ADMIN004",
+        "SEC-USR-FNAME": "EMMANUEL            ",
+        "SEC-USR-LNAME": "CASGRAIN            ",
+        "SEC-USR-PWD": "PASSWORD",
+        "SEC-USR-TYPE": "A",
+        "SEC-USR-FILLER": "                       "
+      },
+      "expectedBytes": "ADMIN004EMMANUEL            CASGRAIN            PASSWORDA                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 3,
+      "fields": {
+        "SEC-USR-ID": "ADMIN005",
+        "SEC-USR-FNAME": "GRANVILLE           ",
+        "SEC-USR-LNAME": "LACHAPELLE          ",
+        "SEC-USR-PWD": "PASSWORD",
+        "SEC-USR-TYPE": "A",
+        "SEC-USR-FILLER": "                       "
+      },
+      "expectedBytes": "ADMIN005GRANVILLE           LACHAPELLE          PASSWORDA                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 4,
+      "fields": {
+        "SEC-USR-ID": "USER0001",
+        "SEC-USR-FNAME": "LAWRENCE            ",
+        "SEC-USR-LNAME": "THOMAS              ",
+        "SEC-USR-PWD": "PASSWORD",
+        "SEC-USR-TYPE": "U",
+        "SEC-USR-FILLER": "                       "
+      },
+      "expectedBytes": "USER0001LAWRENCE            THOMAS              PASSWORDU                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 5,
+      "fields": {
+        "SEC-USR-ID": "USER0002",
+        "SEC-USR-FNAME": "AJITH               ",
+        "SEC-USR-LNAME": "KUMAR               ",
+        "SEC-USR-PWD": "PASSWORD",
+        "SEC-USR-TYPE": "U",
+        "SEC-USR-FILLER": "                       "
+      },
+      "expectedBytes": "USER0002AJITH               KUMAR               PASSWORDU                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 6,
+      "fields": {
+        "SEC-USR-ID": "USER0003",
+        "SEC-USR-FNAME": "LAURITZ             ",
+        "SEC-USR-LNAME": "ALME                ",
+        "SEC-USR-PWD": "PASSWORD",
+        "SEC-USR-TYPE": "U",
+        "SEC-USR-FILLER": "                       "
+      },
+      "expectedBytes": "USER0003LAURITZ             ALME                PASSWORDU                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 7,
+      "fields": {
+        "SEC-USR-ID": "USER0004",
+        "SEC-USR-FNAME": "AVERARDO            ",
+        "SEC-USR-LNAME": "MAZZI               ",
+        "SEC-USR-PWD": "PASSWORD",
+        "SEC-USR-TYPE": "U",
+        "SEC-USR-FILLER": "                       "
+      },
+      "expectedBytes": "USER0004AVERARDO            MAZZI               PASSWORDU                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 8,
+      "fields": {
+        "SEC-USR-ID": "USER0005",
+        "SEC-USR-FNAME": "LEE                 ",
+        "SEC-USR-LNAME": "TING                ",
+        "SEC-USR-PWD": "PASSWORD",
+        "SEC-USR-TYPE": "U",
+        "SEC-USR-FILLER": "                       "
+      },
+      "expectedBytes": "USER0005LEE                 TING                PASSWORDU                       "
+    }
+  ],
+  "expectedReturnCode": 0,
+  "expectedMessages": [
+    {
+      "channel": "WS_MESSAGE_80",
+      "text": "User ADMIN001 has been deleted ...                                              "
+    },
+    {
+      "channel": "SCREEN_ERRMSG_78",
+      "text": "User ADMIN001 has been deleted ...                                            "
+    }
+  ],
+  "normalisations": [
+    {
+      "dataset": "USRSEC",
+      "kind": "USRSEC_FILLER_PAD_57_TO_80"
+    }
+  ],
+  "expectedDatasets": [
+    {
+      "dataset": "USRSEC",
+      "channel": "FINAL_STATE",
+      "rowCount": 9,
+      "recordLength": 80
+    }
+  ]
+}
