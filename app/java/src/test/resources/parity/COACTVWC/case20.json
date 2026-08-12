@@ -1,7 +1,7 @@
 {
   "program": "COACTVWC",
   "caseId": "case20",
-  "description": "WHEN OTHER of the EVALUATE at :375-382. CDEMO-PGM-CONTEXT is PIC 9(01) with only 0 and 1 named, so any other digit reaches this arm - it is a real branch, not dead code. It fills ABEND-DATA with culprit COACTVWC, code '0001' and a blank reason, moves 'UNEXPECTED DATA SCENARIO' to WS-RETURN-MSG, and leaves through SEND-PLAIN-TEXT at :877-887 - which is EXEC CICS SEND TEXT followed by a PLAIN EXEC CICS RETURN. It does NOT abend: the abend data is composed and then never used. So there is no map send, no next map and no next program, and the return code stays zero.",
+  "description": "The WHEN OTHER arm at app/cbl/COACTVWC.cbl:375-382 - the FOURTH AND LAST arm of the ordered EVALUATE TRUE opened at :323 and closed at :383, and the ONLY ONE OF THE TWENTY CASES IN THIS FOLDER THAT NEITHER SENDS A MAP NOR TRANSFERS TO A PROGRAM. It fills four ABEND-DATA fields that are never transmitted, sends a bare 75-byte plain text, and ends the task with an EXEC CICS RETURN carrying no TRANSID and no COMMAREA - so the pseudo-conversation ENDS rather than continuing. REACHABILITY IS THE SUBJECT OF THIS CASE AND IT IS PROVED RATHER THAN ASSERTED. CDEMO-PGM-CONTEXT is PIC 9(01) at app/cpy/COCOM01Y.cpy:29 carrying exactly two condition names - 88 CDEMO-PGM-ENTER VALUE 0 at :30 and 88 CDEMO-PGM-REENTER VALUE 1 at :31 - so a single unsigned display digit represents 2 through 9 perfectly well and every one of them satisfies NEITHER. The digit declared below is 2. That one fact is the key to the arm, and the inbound state clears three separate obstacles standing between it and the arm. (1) THE AID GATE AT :306-314. SET PFK-INVALID TO TRUE; IF CCARD-AID-ENTER OR CCARD-AID-PFK03 SET PFK-VALID TO TRUE; IF PFK-INVALID SET CCARD-AID-ENTER TO TRUE. The AID declared here is DFHENTER, which YYYY-STORE-PFKEY - the COPY 'CSSTRPFY' at :913 - matches on its first arm, so the gate takes its VALID branch at :307-310, WS-PFK-FLAG becomes '0' and the remap at :312-314 does NOT fire. This is deliberately the opposite of sibling case18 (DFHPF12) and case19 (DFHPA3), which both take the invalid-and-remap branch: between the three of them both branches of the :307-310 IF are discharged. A PF3 press would have matched arm A1 instead and left through the XCTL. (2) THE RE-INITIALISATION AT :282-293. IF EIBCALEN IS EQUAL TO 0 OR (CDEMO-FROM-PROGRAM = LIT-MENUPGM AND NOT CDEMO-PGM-REENTER) INITIALIZE CARDDEMO-COMMAREA, WS-THIS-PROGCOMMAREA at :285-286. INITIALIZE sets a PIC 9 item to ZERO, which would make CDEMO-PGM-ENTER true and route the run to arm A2 instead, so the commarea MUST survive intact and the ELSE at :287-293 must be the branch taken. THE TRAP IS THE SECOND DISJUNCT, AND IT IS AN 88-LEVEL NEGATION HAZARD WORTH PINNING: at context 2 the term NOT CDEMO-PGM-REENTER is TRUE, because that guard reads 'is not REENTER' and holds for 0 AND for 2 through 9 alike, so an origin of COMEN01C - LIT-MENUPGM - would satisfy the disjunct ON ITS OWN and destroy the very state this case exists to reach. A translation written as if (context == ENTER) would evaluate that guard INCORRECTLY; common.NavigationContext.isReenter() is strict equality on 1 and the guard is its negation, which is what the source says (practice B5, gate G30). Only CDEMO-FROM-PROGRAM != COMEN01C keeps the disjunct false, so the origin declared is COCRDLIC with CDEMO-FROM-TRANID 'CCLI'. EIBCALEN is 172, which is the 160-byte CARDDEMO-COMMAREA (4+8+4+8+8+1+1+9+25+25+25+11+1+16+7+7) plus the 12-byte WS-THIS-PROGCOMMAREA trailer at :213-216, CA-FROM-PROGRAM PIC X(08) and CA-FROM-TRANID PIC X(04); the ELSE then splits bytes 1-160 into the commarea and bytes 161-172 into the trailer by reference modification, and COACTVWC packs that trailer back at :398-400 without ever looking inside it. (3) THE THREE PRECEDING ARMS, WALKED IN SOURCE ORDER (gate G30, rule R7). A1 WHEN CCARD-AID-PFK03 at :324 - FALSE, the AID is ENTER. A2 WHEN CDEMO-PGM-ENTER at :353 - FALSE, the context is 2 and not 0; note that this arm tests CDEMO-PGM-CONTEXT, a DIFFERENT FIELD from CCARD-AID, so CCARD-AID-ENTER being true does NOT satisfy it, and a reader who conflates the two would expect the wrong arm. A3 WHEN CDEMO-PGM-REENTER at :361 - FALSE, the context is 2 and not 1. Therefore WHEN OTHER at :375. The arm is reachable ONLY through a corrupt or out-of-band context digit, which is to say it is a genuine defensive branch the author wrote against a state this program's own callers cannot produce; it is preserved exactly as found rather than optimised away (practice B5). The inbound area nevertheless carries a fully coherent selection - account 00000000050, card 0500024453765740 and customer 000000050, the keys of cardxref.txt row 0 - which makes the not-invoked reads below mean something: the record the program would have fetched is sitting in the commarea and is still never fetched. THE ARM, STATEMENT BY STATEMENT. :376 MOVE LIT-THISPGM TO ABEND-CULPRIT - the eight characters COACTVWC into ABEND-CULPRIT PIC X(8) at app/cpy/CSMSG02Y.cpy:24, exact, with neither padding nor truncation. :377 MOVE '0001' TO ABEND-CODE - ABEND-CODE PIC X(4) at :22, and note that this is the four-CHARACTER STRING 0001 and not a number, so it is never rendered as 1. :378 MOVE SPACES TO ABEND-REASON - ABEND-REASON PIC X(50) at :26, fifty spaces. ABEND-MSG PIC X(72) at :28 is NEVER ASSIGNED on this path and keeps its VALUE SPACES initial, seventy-two spaces: ABEND-DATA is a standalone 01 group brought in by COPY CSMSG02Y at :238 and is NOT among the items named by INITIALIZE CC-WORK-AREA WS-MISC-STORAGE WS-COMMAREA at :268-270, so nothing else touches it - which also means ABEND-ROUTINE's IF ABEND-MSG EQUAL LOW-VALUES guard at :918 can never pass and the default text it would have moved is unreachable dead text (practice B5). :379-380 MOVE 'UNEXPECTED DATA SCENARIO' TO WS-RETURN-MSG - a 24-character literal into the PIC X(75) item declared at :117, whose 88 WS-RETURN-MSG-OFF is VALUE SPACES at :118 (SPACES, not LOW-VALUES) and which was set OFF at :278; a MOVE to a PIC X receiver is left-justified and space-fills on the right, so the field becomes the literal FOLLOWED BY 51 SPACES and 24 + 51 = 75 sums mechanically (rule R5, practice B11). :381-382 PERFORM SEND-PLAIN-TEXT THRU SEND-PLAIN-TEXT-EXIT. ABEND-DATA IS SET AND THEN NEVER TRANSMITTED, AND THAT ASYMMETRY IS THE HEART OF THIS CASE. app/cpy/CSMSG02Y.cpy:21-29 declares the group as ABEND-CODE X(4) plus ABEND-CULPRIT X(8) plus ABEND-REASON X(50) plus ABEND-MSG X(72), and 4 + 8 + 50 + 72 = 134 bytes in that group order (practice B11). The ONLY statement in the program that transmits it is EXEC CICS SEND FROM (ABEND-DATA) LENGTH(LENGTH OF ABEND-DATA) NOHANDLE at :924-928, inside ABEND-ROUTINE, which is reached solely when CICS drives the EXEC CICS HANDLE ABEND LABEL(ABEND-ROUTINE) armed at :264-266 on a genuine abend - a path that then disarms itself with EXEC CICS HANDLE ABEND CANCEL at :930-932 and ends in EXEC CICS ABEND ABCODE('9999') at :934-936. IT IS NOT REACHED HERE. So the four documented assignments - ABEND-CULPRIT COACTVWC, ABEND-CODE 0001, ABEND-REASON fifty spaces and ABEND-MSG seventy-two spaces - are internal state that no channel in this model carries, and they are DELIBERATELY NOT declared as a 134-byte payload in expectedMessages. Two consequences are pinned in their place: expectedMessages holds the 75-byte plain text ALONE, and expectedReturnCode is 0. This set-but-unsent shape is exactly the kind of thing a translation tidies up, and it is preserved verbatim (practice B5). READ THE RETURN CODE CAREFULLY: DESPITE THE ABEND-* FIELD NAMES, THIS PATH DOES NOT ABEND. A bare EXEC CICS RETURN is a NORMAL TASK END. COACTVWC contains ZERO occurrences of CALL 'CEE3ABD', verified by exhaustive search of the source, so gate G35 has no call site anywhere in this program; its only abend is the EXEC CICS ABEND ABCODE('9999') inside the unreached ABEND-ROUTINE, and no common.AbendException is raised. Encoding a non-zero code merely because the arm is named after an abend structure would be wrong: the values are populated, the abend is not raised. SEND-PLAIN-TEXT AT :877-887, WHOSE OWN COMMENT READS 'Plain text exit - Dont use in production'. EXEC CICS SEND TEXT FROM(WS-RETURN-MSG) LENGTH(LENGTH OF WS-RETURN-MSG) ERASE FREEKB at :878-883 transmits exactly 75 bytes - the 24-character literal plus its 51 trailing spaces - and this is a PLAIN TEXT send and not a BMS map send. :885-886 is then a BARE EXEC CICS RETURN: no TRANSID, no COMMAREA, NO LENGTH. Six consequences follow, and each is stated POSITIVELY so that a reviewer cannot read an absence as an omission. FIRST, THE TASK TERMINATES INSIDE THE PERFORM. Control never returns to END-EVALUATE at :383, so the trailing IF INPUT-ERROR guard at :387-392 never runs and 0000-MAIN never completes. SECOND, COMMON-RETURN AT :394-406 IS NEVER REACHED, so MOVE WS-RETURN-MSG TO CCARD-ERROR-MSG at :395 never executes, WS-COMMAREA is never rebuilt at :397-400, and the EXEC CICS RETURN TRANSID(LIT-THISTRANID) COMMAREA(WS-COMMAREA) LENGTH(LENGTH OF WS-COMMAREA) at :402-406 - the exit every other case in this folder that returns takes - does not happen. The termination pinned below is therefore RETURN_NO_TRANSID and emphatically NOT RETURN_TRANSID: collapsing the two would assert that the pseudo-conversation continues under TRANSID('CAVW') when the source ends it, which is precisely the normalisation the parity contract exists to prevent. THIRD, 1000-SEND-MAP AT :416-427 NEVER RUNS. 1100-SCREEN-INIT never group-moves LOW-VALUES to CACTVWAO, 1200-SETUP-SCREEN-VARS never runs, :532 MOVE WS-RETURN-MSG TO ERRMSGO and :534 MOVE WS-INFO-MSG TO INFOMSGO never execute, and NONE of the 37 xxxI-derived fields of app/cpy-bms/COACTVW.CPY is produced: no TRNNAME, no PGMNAME, no TITLE01 or TITLE02, no CURDATE or CURTIME, and not one of the five PIC +ZZZ,ZZZ,ZZZ.99 money masks. This case therefore declares an EMPTY sends list where the painting cases declare one send. If a title literal, a date-and-time header or a money mask appears here, the case is wrong. The transmitted text is reported instead on the variable-width DISPLAY_LINE channel, which is the honest channel for a SEND TEXT - a line the program EMITTED rather than a screen field it painted - and it is the only one of the three channels whose width is not fixed at 78 or 80. There is NO ERRMSG entry, NO INFOMSG entry and NO 134-byte abend payload. FOURTH, 1300-SETUP-SCREEN-ATTRS NEVER RUNS, so no DFHRED and no '*' is set on any field and no MOVE -1 positions the cursor: cursorField is absent and gate G38 is VACUOUSLY SATISFIED, which is said here rather than left to inference. FIFTH, THE CONVERSATION CHAIN IS BROKEN. The bare RETURN names no transaction, so there is no next transaction and nothing for a commarea to be carried back to. The response accordingly names NO next program, NO next mapset and NO next map - none is synthesised - and RETURN_NO_TRANSID is how this model states 'no commarea handed back'. For gate G37 and rule R6 the point is sharper than usual: the 160-byte area itself DOES travel on the payload, which is the only reason the out-of-band digit is assertable at all, so all sixteen CARDDEMO-COMMAREA fields are pinned unchanged below - CDEMO-PGM-CONTEXT still 2, because SET CDEMO-PGM-REENTER TO TRUE inside 1400-SEND-SCREEN never executes - but there is no continuation, and no server-side session state either way. SIXTH, 9000-READ-ACCT AT :687-720 IS NEVER PERFORMED, so NO DATASET IS READ: no CXACAIX keyed read, no ACCTDAT read through 9300-GETACCTDATA-BYACCT at :776-784, and no CUSTDAT read. expectedWrites is empty because COACTVWC issues no WRITE, no REWRITE and no DELETE on any path, and the three files are pinned UNCHANGED on the final-state channel, which is the positive form of that statement. Gates G45 and G47 have no site in this case because no repository call is made and no RESP is produced. THE THREE FILES ARE SEEDED WITH REAL ROWS ANYWAY, ON PURPOSE. A case that passed only because the data was missing would prove nothing; seeding cardxref.txt rows 0-2, acctdata.txt row 49 and custdata.txt row 49 - the rows that would have answered every one of the three reads - proves the reads are SKIPPED rather than merely unavailable. The rows come from the derived test copies under src/test/resources/fixtures/, which are byte-identical to app/data/ASCII, and never from app/data/ASCII itself, which is read-only parity oracle (practice B3). The cross-reference rows are the 36-byte fixture rows right-padded to the 50 bytes app/cpy/CVACT03Y.cpy declares, by the CARDXREF_FILLER_PAD_36_TO_50 normalisation declared below and applied once at seed time (gate G16, risk R-F). COACTVWC declares five files; CARDDAT and CARDAIX are DECLARED-BUT-NEVER-READ on every path of this program, so no input is declared for them (practice B5) and this case seeds exactly the three access paths the program reads. CARDAIX and CXACAIX are alternate-index finders over the CARDDAT and CCXREF base clusters and never second tables, which is why the cross-reference rows are seeded into the base key CCXREF (gate G45). THE FINAL-STATE ROWS ARE PINNED AT FULL COPYBOOK WIDTH - 50, 300 and 500 - with both their field maps and their whole record images, so the FILLER spans are asserted as spaces and the total widths prove they were emitted at all. The field names are the copybooks' own, verbatim, including the MISSPELLED ACCT-EXPIRAION-DATE of app/cpy/CVACT01Y.cpy and the HYPHENATED CUST-DOB-YYYY-MM-DD of app/cpy/CVCUS01Y.cpy, which is deliberately distinct from CUSTREC's CUST-DOB-YYYYMMDD (requirement I1). CARD-EXPIRAION-DATE belongs to CVACT02Y and has no site here, because no card record is projected on this path. Gates G19 and G21 have no site either, in the sense that no record is written or projected onto a screen; the widths above are nevertheless the same declared widths those gates fix. THE CLOCK IS PINNED AT 2022-07-19T23:15:58 (practice B7) - deliberately the version footer of app/cpy/CSMSG02Y.cpy:34, the copybook whose ABEND-DATA this arm fills - and it is carried even though NO DATE-OR-TIME HEADER IS PRODUCED ON THIS PATH, which is stated rather than omitted. The code page is named US-ASCII explicitly rather than inherited from the platform (practice B8); IBM037 belongs to app/data/EBCDIC and is out of scope here. jobParameters is present and empty because a CONTROLLER_POJO takes none - a job parameter comes from a JCL PARM, and COACTVWC has no JCL at all. PROVENANCE (practice B12): every expected value here was STATICALLY DERIVED by structured reading of app/cbl/COACTVWC.cbl:117-118, :238, :264-270, :278, :282-293, :306-314, :323-383, :375-382, :387-406, :687-720, :877-887 and :913-936, of app/cpy/COCOM01Y.cpy:29-31 and of app/cpy/CSMSG02Y.cpy:21-29, cross-checked against the xxxI widths of app/cpy-bms/COACTVW.CPY, the DFHMDF definitions of app/bms/COACTVW.bms, the CVACT03Y, CVACT01Y and CVCUS01Y byte layouts and the real ASCII fixtures - and NEVER captured from, recorded against or replayed from a live COBOL execution, which plan 0.7.6 proves impossible in this environment with eight independently verified blockers (risk R-A, escalated rather than absorbed). GATES. This is the TWENTIETH AND LAST file of gate G15 for COACTVWC, and it completes gate G18, whose module verdict is the conjunction of zero diffs across all twenty. It is decisive for gate G30: it discharges the FOURTH AND LAST arm of the main EVALUATE, so together with case15, case16 and case17 on arm A1, case01 and case02 on arm A2, and case03 through case14 plus case18 and case19 on arm A3, all four arms are now covered IN SOURCE ORDER WITH WHEN OTHER LAST; and it also discharges the VALID branch of the :307-310 IF. It is the sole COACTVWC outcome that hands back no navigation target (gate G37), it satisfies gate G38 vacuously, it seeds the cross-reference at 36 bytes unpadded (gate G16), and the controller is reached as a plain Java object with no MockMvc, no servlet container, no web application context and no JobLauncher in the path (gate G51). Not applicable, and why: G19 and G21, because no record is written or projected; G45 and G47, because no repository call is made and no RESP is produced; G35, because there is no CALL 'CEE3ABD' in this program; G32, because CBSTM03A alone forms backward loops; G40, because no XCTL is taken on this arm; and G22 through G28, because no monetary arithmetic runs on a path that computes nothing.",
   "unitKind": "CONTROLLER_POJO",
   "inputs": {
     "CCXREF": {
@@ -20,17 +20,27 @@
       "rowCount": 1
     }
   },
+  "jobParameters": {},
   "screenRequest": {
     "eibcalen": 172,
     "aid": "DFHENTER",
-    "pinnedClock": "2022-07-19T23:12:32",
+    "pinnedClock": "2022-07-19T23:15:58",
     "charset": "US-ASCII",
     "commarea": {
       "CDEMO-FROM-TRANID": "CCLI",
       "CDEMO-FROM-PROGRAM": "COCRDLIC",
+      "CDEMO-TO-TRANID": "    ",
+      "CDEMO-TO-PROGRAM": "        ",
       "CDEMO-USER-ID": "ADMIN001",
       "CDEMO-USER-TYPE": "A",
-      "CDEMO-PGM-CONTEXT": "7",
+      "CDEMO-PGM-CONTEXT": "2",
+      "CDEMO-CUST-ID": "000000050",
+      "CDEMO-CUST-FNAME": "                         ",
+      "CDEMO-CUST-MNAME": "                         ",
+      "CDEMO-CUST-LNAME": "                         ",
+      "CDEMO-ACCT-ID": "00000000050",
+      "CDEMO-ACCT-STATUS": " ",
+      "CDEMO-CARD-NUM": "0500024453765740",
       "CDEMO-LAST-MAP": "CCRDLIA",
       "CDEMO-LAST-MAPSET": "COCRDLI"
     },
@@ -47,45 +57,99 @@
       "CDEMO-TO-PROGRAM": "        ",
       "CDEMO-USER-ID": "ADMIN001",
       "CDEMO-USER-TYPE": "A",
-      "CDEMO-PGM-CONTEXT": "7",
-      "CDEMO-CUST-ID": "000000000",
+      "CDEMO-PGM-CONTEXT": "2",
+      "CDEMO-CUST-ID": "000000050",
       "CDEMO-CUST-FNAME": "                         ",
       "CDEMO-CUST-MNAME": "                         ",
       "CDEMO-CUST-LNAME": "                         ",
-      "CDEMO-ACCT-ID": "00000000000",
+      "CDEMO-ACCT-ID": "00000000050",
       "CDEMO-ACCT-STATUS": " ",
-      "CDEMO-CARD-NUM": "0000000000000000",
+      "CDEMO-CARD-NUM": "0500024453765740",
       "CDEMO-LAST-MAP": "CCRDLIA",
       "CDEMO-LAST-MAPSET": "COCRDLI"
     },
     "sends": [],
-    "termination": "RETURN_TRANSID"
+    "termination": "RETURN_NO_TRANSID"
   },
   "expectedWrites": [],
   "expectedFinalState": [
     {
       "dataset": "CCXREF",
       "rowIndex": 0,
+      "fields": {
+        "XREF-CARD-NUM": "0500024453765740",
+        "XREF-CUST-ID": "000000050",
+        "XREF-ACCT-ID": "00000000050",
+        "FILLER": "              "
+      },
       "expectedBytes": "050002445376574000000005000000000050              "
     },
     {
       "dataset": "CCXREF",
       "rowIndex": 1,
+      "fields": {
+        "XREF-CARD-NUM": "0683586198171516",
+        "XREF-CUST-ID": "000000027",
+        "XREF-ACCT-ID": "00000000027",
+        "FILLER": "              "
+      },
       "expectedBytes": "068358619817151600000002700000000027              "
     },
     {
       "dataset": "CCXREF",
       "rowIndex": 2,
+      "fields": {
+        "XREF-CARD-NUM": "0923877193247330",
+        "XREF-CUST-ID": "000000002",
+        "XREF-ACCT-ID": "00000000002",
+        "FILLER": "              "
+      },
       "expectedBytes": "092387719324733000000000200000000002              "
     },
     {
       "dataset": "ACCTDAT",
       "rowIndex": 0,
+      "fields": {
+        "ACCT-ID": "00000000050",
+        "ACCT-ACTIVE-STATUS": "Y",
+        "ACCT-CURR-BAL": "00000004920{",
+        "ACCT-CREDIT-LIMIT": "00000061690{",
+        "ACCT-CASH-CREDIT-LIMIT": "00000045870{",
+        "ACCT-OPEN-DATE": "2011-04-22",
+        "ACCT-EXPIRAION-DATE": "2023-03-09",
+        "ACCT-REISSUE-DATE": "2023-03-09",
+        "ACCT-CURR-CYC-CREDIT": "00000000000{",
+        "ACCT-CURR-CYC-DEBIT": "00000000000{",
+        "ACCT-ADDR-ZIP": "A000000000",
+        "ACCT-GROUP-ID": "          ",
+        "FILLER": "                                                                                                                                                                                  "
+      },
       "expectedBytes": "00000000050Y00000004920{00000061690{00000045870{2011-04-222023-03-092023-03-0900000000000{00000000000{A000000000                                                                                                                                                                                            "
     },
     {
       "dataset": "CUSTDAT",
       "rowIndex": 0,
+      "fields": {
+        "CUST-ID": "000000050",
+        "CUST-FIRST-NAME": "Aniya                    ",
+        "CUST-MIDDLE-NAME": "Alba                     ",
+        "CUST-LAST-NAME": "Von                      ",
+        "CUST-ADDR-LINE-1": "1588 Nienow Cape                                  ",
+        "CUST-ADDR-LINE-2": "Suite 187                                         ",
+        "CUST-ADDR-LINE-3": "New Aricchester                                   ",
+        "CUST-ADDR-STATE-CD": "OR",
+        "CUST-ADDR-COUNTRY-CD": "USA",
+        "CUST-ADDR-ZIP": "04257     ",
+        "CUST-PHONE-NUM-1": "(325)301-0827  ",
+        "CUST-PHONE-NUM-2": "(493)985-9283  ",
+        "CUST-SSN": "931248469",
+        "CUST-GOVT-ISSUED-ID": "00000000000030387824",
+        "CUST-DOB-YYYY-MM-DD": "1960-12-01",
+        "CUST-EFT-ACCOUNT-ID": "0074883577",
+        "CUST-PRI-CARD-HOLDER-IND": "Y",
+        "CUST-FICO-CREDIT-SCORE": "623",
+        "FILLER": "                                                                                                                                                                        "
+      },
       "expectedBytes": "000000050Aniya                    Alba                     Von                      1588 Nienow Cape                                  Suite 187                                         New Aricchester                                   ORUSA04257     (325)301-0827  (493)985-9283  931248469000000000000303878241960-12-010074883577Y623                                                                                                                                                                        "
     }
   ],

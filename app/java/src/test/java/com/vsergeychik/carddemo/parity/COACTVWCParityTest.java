@@ -785,10 +785,20 @@ class COACTVWCParityTest {
      * moves {@code -1} into {@code ACCTSIDL} and no unpainted path runs {@code 1300} at all, so the two
      * conditions are the same condition.
      *
-     * <p><strong>{@code XCTL} and {@code RETURN} are not interchangeable.</strong> A transfer names a
-     * next program and sends no map; a return sends a map and, on the re-entry paths, <em>also</em>
-     * names this program as the next one - {@code MOVE LIT-THISPGM TO CCARD-NEXT-PROG} at {@code :602}.
-     * So the discriminator is a named program with no send, never a named program alone.
+     * <p><strong>All three terminations are distinguished by what was assigned, not by which key was
+     * pressed.</strong> A transfer names a next program and sends no map - the {@code XCTL} at
+     * {@code :349-352}, which never reaches the {@code EXEC CICS RETURN} that follows it. A return sends
+     * a map and, on the re-entry paths, <em>also</em> names this program as the next one -
+     * {@code MOVE LIT-THISPGM TO CCARD-NEXT-PROG} at {@code :602} - so the transfer discriminator is a
+     * named program with no send, never a named program alone. Neither one named, with the error line no
+     * longer holding {@code LOW-VALUES}, is {@code SEND-PLAIN-TEXT} at {@code :877-887} - see
+     * {@link #sentPlainText(AccountViewResponse)} - whose {@code EXEC CICS RETURN} at {@code :885-886}
+     * is <strong>bare</strong>, carrying no {@code TRANSID}, no {@code COMMAREA} and no {@code LENGTH}.
+     * It is therefore reported as {@link Termination#RETURN_NO_TRANSID} and not as
+     * {@link Termination#RETURN_TRANSID}: collapsing the third onto the second would assert that the
+     * pseudo-conversation continues under {@code TRANSID('CAVW')} with a 2000-byte commarea when the
+     * source ends it, which is exactly the normalisation the parity contract exists to prevent.
+     * {@code case20} is the case that pins it, and it is the only one of the twenty that reaches it.
      *
      * @param painted the payload the handler returned
      * @return the observation
@@ -804,9 +814,14 @@ class COACTVWCParityTest {
         }
 
         String cursorField = sends.isEmpty() ? null : CURSOR_ITEM;
-        Termination termination = nextProgram != null && sends.isEmpty()
-                ? Termination.XCTL
-                : Termination.RETURN_TRANSID;
+        Termination termination;
+        if (nextProgram != null && sends.isEmpty()) {
+            termination = Termination.XCTL;
+        } else if (sentPlainText(painted)) {
+            termination = Termination.RETURN_NO_TRANSID;
+        } else {
+            termination = Termination.RETURN_TRANSID;
+        }
 
         return new ObservedResponse(nextProgram, nextMapset, nextMap, navigation(painted), sends,
                 cursorField, termination);
@@ -925,16 +940,41 @@ class COACTVWCParityTest {
      * @param recorder the recorder to append to
      */
     private static void emitPlainText(AccountViewResponse painted, UnitOutcome.Builder recorder) {
-        boolean sentMap = tokenOrAbsent(painted.getNextMap()) != null;
-        boolean transferred = tokenOrAbsent(painted.getNextProgram()) != null;
-        String errorLine = painted.getErrmsg();
-        boolean untouched = errorLine.equals(
-                CardScreenState.lowValues(AccountViewResponse.ERRMSG_LENGTH));
-        if (sentMap || transferred || untouched) {
+        if (!sentPlainText(painted)) {
             return;
         }
         recorder.message(new EmittedMessage(MessageChannel.DISPLAY_LINE,
-                errorLine.substring(0, CardScreenState.CCARD_RETURN_MSG_LENGTH)));
+                painted.getErrmsg().substring(0, CardScreenState.CCARD_RETURN_MSG_LENGTH)));
+    }
+
+    /**
+     * Whether this invocation left through {@code SEND-PLAIN-TEXT} at {@code :877-887} rather than
+     * through {@code COMMON-RETURN} or the {@code XCTL}.
+     *
+     * <p>The program has exactly three exits and this predicate separates the third from the other two.
+     * {@code COMMON-RETURN} at {@code :394-406} is always preceded by {@code 1400-SEND-SCREEN}, which
+     * names the map at {@code :579-580}; the {@code XCTL} at {@code :349-352} names the next program at
+     * {@code :350}; and {@code SEND-PLAIN-TEXT} names <em>neither</em> while writing the transmitted text
+     * onto the error-line carrier, displacing the {@code LOW-VALUES} that
+     * {@code MOVE LOW-VALUES TO CACTVWAO} at {@code :432} would have left there. So "no map, no program,
+     * and an error line that is no longer {@code LOW-VALUES}" is not a heuristic - it is the exact
+     * complement of the other two exits.
+     *
+     * <p>Factored out because two separate observations depend on it and they must not be allowed to
+     * disagree: the emitted line, and the {@link Termination} reported by {@link #observed}. Computed
+     * independently, one of them was wrong - the line was recorded correctly while the termination fell
+     * through to {@link Termination#RETURN_TRANSID}, which claims a pseudo-conversation the bare
+     * {@code EXEC CICS RETURN} at {@code :885-886} ends. One predicate, two uses, no drift.
+     *
+     * @param painted the payload the handler returned
+     * @return {@code true} only when the invocation left through {@code SEND-PLAIN-TEXT}
+     */
+    private static boolean sentPlainText(AccountViewResponse painted) {
+        boolean sentMap = tokenOrAbsent(painted.getNextMap()) != null;
+        boolean transferred = tokenOrAbsent(painted.getNextProgram()) != null;
+        boolean errorLineUntouched = painted.getErrmsg().equals(
+                CardScreenState.lowValues(AccountViewResponse.ERRMSG_LENGTH));
+        return !sentMap && !transferred && !errorLineUntouched;
     }
 
     // =================================================================================================
