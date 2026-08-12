@@ -1,29 +1,74 @@
 {
   "program": "COACTVWC",
   "caseId": "case10",
-  "description": "WHEN DFHRESP(NOTFND) of 9300-GETACCTDATA-BYACCT at :789-807, and the most consequential case in the set. SET DID-NOT-FIND-ACCT-IN-ACCTDAT is COMMENTED OUT at :792, so the guard at :704 that would have stopped the sequence is a comparison against a literal WS-RETURN-MSG never holds and is always false: the CUSTDAT read runs, succeeds on the customer id the cross reference supplied, and the screen shows customer details beside an account that was never found. 1200's :471 guard is FOUND-ACCT OR FOUND-CUST, so the account projection runs too - out of an untouched WORKING-STORAGE group, which is why the status and dates are blank and the five amounts render as the zero image of the mask.",
+  "description": "WHEN DFHRESP(NOTFND) of 9300-GETACCTDATA-BYACCT at :789-807 - the second of the three read sites and the one case in this folder whose subject is a preserved legacy defect rather than a branch. Path: EIBCALEN 172 with CDEMO-PGM-CONTEXT 1 and CDEMO-FROM-PROGRAM COCRDLIC, so :282-293 takes its ELSE and copies the inbound area; EIBAID DFHENTER is left alone by the PF-key gate at :306-314; the main EVALUATE TRUE at :323-383 reaches its third arm WHEN CDEMO-PGM-REENTER at :361, whose WHEN order - PFK03 at :324, ENTER at :353, REENTER at :361, OTHER at :375 - is preserved exactly (gate G30); 2210-EDIT-ACCOUNT takes its ELSE, so INPUT-ERROR is false at :364 and :368-373 performs 9000-READ-ACCT, then 1000-SEND-MAP, then GO TO COMMON-RETURN, which bypasses the trailing IF INPUT-ERROR at :387-392. CURATION, stated plainly because it is the only way to reach this arm: measured over the whole fixtures, every XREF-ACCT-ID in cardxref.txt has a matching acctdata.txt row and every XREF-CUST-ID a matching custdata.txt row, so an account-master miss is impossible from the unmodified data. ACCTDAT is therefore seeded from an ordered list of literal rows rather than from the fixture: rows 0 to 48 of app/data/ASCII/acctdata.txt copied verbatim, 49 rows of exactly 300 bytes, with zero-based row 49 - account 00000000050, the account this case asks for - WITHHELD. Nothing else is altered: no surviving row's bytes are touched and no value is derived, which is what keeps this case distinct from case04, whose ACCTDAT row is a derivation. CCXREF and CUSTDAT are seeded from the complete unmodified fixtures, all 50 rows each, so the cross-reference alternate-key finder and the customer keyed read have to discriminate on their keys rather than return the only row present. 9200-GETCARDXREF-BYACCT SUCCEEDS on the '00' outcome (gate G47) and :739-740 moves XREF-CUST-ID 000000050 and XREF-CARD-NUM 0500024453765740 into the commarea; cardxref.txt is ordered by card number, not by account, so that row is zero-based row 0 and its XREF-ACCT-ID span sits at offset 25 for 11 bytes. CXACAIX is a PATH over the CCXREF base, reached through the one CardXrefRepository's alternate-key finder and never through a second repository or a second table (gate G45). The guard at :696-699 - whose original condition on :696 is itself commented out in favour of the flag test on :697 - does not fire. 9300 then reads DATASET(LIT-ACCTFILENAME), which is PIC X(8) VALUE 'ACCTDAT ' at :184-185 with its trailing space part of the value, RIDFLD(WS-CARD-RID-ACCT-ID-X) at 11 bytes per :79-80, KEYLENGTH 11, INTO(ACCOUNT-RECORD), LENGTH 300 - and misses. That is the '23' outcome of gate G47 on this call site, the second arm of the EVALUATE WS-RESP-CD at :786 whose order - NORMAL :787, NOTFND :789, OTHER :809 - is preserved (gate G30). The arm sets INPUT-ERROR at :790 and FLG-ACCTFILTER-NOT-OK at :791, then :793 finds WS-RETURN-MSG-OFF true because :278 set it and the 88 at :118 is VALUE SPACES, so :794-806 runs. The message is composed by STRING from seven operands, all DELIMITED BY SIZE so each contributes its full declared width including trailing spaces: 'Account:' (8, :797), WS-CARD-RID-ACCT-ID-X (11), ' not found in' (13, :799), ' Acct Master file.Resp:' (23, :800 - the period is followed immediately by 'Resp:', unlike 9200's ' Cross ref file.  Resp:' at :751 which carries two spaces), ERROR-RESP (10), ' Reas:' (6, :802) and ERROR-RESP2 (10). 8+11+13+23+10+6+10 is 81 characters into WS-RETURN-MSG PIC X(75) at :117, so the receiver fills and the last six characters are lost - four of ERROR-RESP2's nine digits survive. The two response codes are not case data and cannot drift: a keyed miss reports no CICS RESP, so AccountViewController.cicsResp falls back to FileStatus.cicsRespOfBatchStatus('23'), which is DFHRESP(NOTFND) = 13, and RESP2 is CICS_RESP2_NOT_APPLICABLE = 0; both are compile-time constants (practice B7). MOVE WS-RESP-CD PIC S9(09) COMP TO ERROR-RESP PIC X(10) at :794-795 renders nine unsigned digits left justified with one pad space, giving '000000013 ' and '000000000 ', which is why two spaces separate the digits from ' Reas:'. :532 then moves the 75 characters into ERRMSGO PIC X(78), appending three. THE PRESERVED DEFECT, which is the point of this case: :792 reads '*           SET DID-NOT-FIND-ACCT-IN-ACCTDAT TO TRUE' - it is COMMENTED OUT. DID-NOT-FIND-ACCT-IN-ACCTDAT is an 88-level on WS-RETURN-MSG at :131-132 whose VALUE is 'Did not find this account in account master file', and the STRING above wrote a different text, so the condition is false and the guard at :704-706 that would have gone to 9000-READ-ACCT-EXIT NEVER FIRES. Execution therefore continues: :708 moves CDEMO-CUST-ID into WS-CARD-RID-CUST-ID and :710-711 PERFORMS 9400-GETCUSTDATA-BYCUST, which reads DATASET('CUSTDAT ') at :826 with a 9-byte RIDFLD and LENGTH 500, finds customer 000000050 and takes WHEN DFHRESP(NORMAL) at :837-838, setting FOUND-CUST-IN-MASTER. This is reproduced, not repaired (practice B5): a case that expected an early exit here would be asserting a program this repository does not contain. A second consequence follows from the same STRING: WS-RETURN-MSG-OFF is no longer true, so any later text guarded by IF WS-RETURN-MSG-OFF would be skipped. 9400 succeeds so nothing tries, but the single error line below is deliberate rather than incidental. 1200-SETUP-SCREEN-VARS then takes its ELSE at :464 with FLG-ACCTFILTER-BLANK false, so :468 echoes CC-ACCT-ID into ACCTSIDO. Its guard at :471-472 is FOUND-ACCT-IN-MASTER OR FOUND-CUST-IN-MASTER - OR, not AND - and the customer flag is set, so the ten account moves at :473-490 DO run, over an ACCOUNT-RECORD that no read ever filled. COPY CVACT01Y at :244 is its own 01 group and is not among the three areas INITIALIZE names at :268-270, so it holds its allocated state, which FixedWidthRecord.forLayout builds with COBOL INITIALIZE category defaults: alphanumeric spans spaces, numeric spans zeros. ACSTTUSO is therefore one space, ADTOPENO, AEXPDTO - :488 moves ACCT-EXPIRAION-DATE, and the copybook's misspelling is preserved verbatim - AREISDTO and AADDGRPO are ten spaces each, and the five PIC +ZZZ,ZZZ,ZZZ.99 receivers at :475-485 render '+           .00': the sign is forced, all nine Z positions are suppressed because the integer part is zero and both commas are blanked with them, and the two decimals are still present because the mask ends .99 and not .ZZ - 15 characters, the LENGTH the mapset declares. :493-523 then populates all eighteen customer fields from the real row, with the width-driven truncations the fixtures force: ACSZIPCO PIC X(5) keeps '04257' of CUST-ADDR-ZIP PIC X(10), ACSPHN1O and ACSPHN2O PIC X(13) each drop two characters of a PIC X(15) source, ACSTSSNO is the :496-504 STRING '931-24-8469' laid into a PIC X(12) item whose twelfth byte STRING leaves as the LOW-VALUES :432 put there, and the field the screen labels City is fed from CUST-ADDR-LINE-3 at :513. :528-530 flips WS-NO-INFO-MESSAGE - set at :689 - to WS-PROMPT-FOR-INPUT, whose 88 literal at :113-114 is exactly 40 characters and therefore fills PIC X(40) with no pad before :534 moves it into INFOMSGO PIC X(45), appending five. 1300-SETUP-SCREEN-ATTRS moves DFHBMFSE into ACCTSIDA at :543, takes the identically-bodied EVALUATE at :546-552 - both arms and WHEN OTHER move -1 into ACCTSIDL, and the redundancy is left exactly as written (practice B5) - and colours the field DFHDFCOL at :555 and then DFHRED at :557-559 because FLG-ACCTFILTER-NOT-OK is set. The asterisk at :561-565 stays away because it needs FLG-ACCTFILTER-BLANK: red WITHOUT the marker, which is FieldAttributeSetter's rule, implemented inline here because COACTVWC does not copy CSSETATY (gate G38). INFOMSGC is DFHNEUTR at :570 rather than DFHBMDAR because :529 already flipped the flag :567 tests, and every xxxH item stays DFHDFHI because the program writes no extended highlight. 1400-SEND-SCREEN names mapset COACTVW and map CACTVWA at :579-580 and sets CDEMO-PGM-REENTER at :581, so the response context is 1 and CDEMO-CUST-ID and CDEMO-CARD-NUM are populated from the successful 9200; COMMON-RETURN at :394-407 is an EXEC CICS RETURN TRANSID('CAVW') carrying the whole area, and no state is held server side (gate G37, rule R6). The program writes nothing - its only file verbs are the three EXEC CICS READs at :727, :776 and :826 - so expectedWrites is empty as a positive assertion, the return code is 0, and all 149 seeded rows are pinned unchanged on the final-state channel: 50 cross-reference rows at the 50 bytes CVACT03Y declares, normalised from the fixture's 36 by CARDXREF_FILLER_PAD_36_TO_50 with the trailing FILLER X(14) as 14 spaces (gate G16, risk R-F), 49 account rows at 300 and 50 customer rows at 500 with their FILLER X(168) space filled (gates G19 and G21). The two composed texts are carried in ERRMSGO and INFOMSGO rather than in expectedMessages, because the message channel of this harness records only SEND-PLAIN-TEXT at :877-887, which a path that paints a map never reaches; an entry there would assert an emission this path does not make. Every value above is STATICALLY DERIVED by structured reading of the COBOL - 9300 at :776-820, the commented-out SET at :792, the consequently dead guard at :704-706, 9400 at :826-870 and 1200's OR at :471-472 - cross-checked against the copybook offsets in app/cpy, the xxxI PICTURE clauses of app/cpy-bms/COACTVW.CPY, the PICOUT masks of app/bms/COACTVW.bms and the real app/data/ASCII fixtures. None of it was captured from a live COBOL execution, which this environment cannot run (risk R-A). The clock is pinned at 2022-07-19T23:15:58, the instant the CardDemo version footer carries, so CURDATEO and CURTIMEO are fixed rather than sampled (practice B7).",
   "unitKind": "CONTROLLER_POJO",
   "inputs": {
     "CCXREF": {
-      "fixture": "cardxref.txt",
-      "fromRow": 0,
-      "rowCount": 3
+      "fixture": "cardxref.txt"
     },
     "ACCTDAT": {
-      "fixture": "acctdata.txt",
-      "fromRow": 0,
-      "rowCount": 1
+      "rows": [
+        "00000000001Y00000001940{00000020200{00000010200{2014-11-202025-05-202025-05-2000000000000{00000000000{A000000000                                                                                                                                                                                            ",
+        "00000000002Y00000001580{00000061300{00000054480{2013-06-192024-08-112024-08-1100000000000{00000000000{A000000000                                                                                                                                                                                            ",
+        "00000000003Y00000001470{00000049090{00000005380{2013-08-232024-01-102024-01-1000000000000{00000000000{A000000000                                                                                                                                                                                            ",
+        "00000000004Y00000000400{00000035030{00000027890{2012-11-172023-12-162023-12-1600000000000{00000000000{A000000000                                                                                                                                                                                            ",
+        "00000000005Y00000003450{00000038190{00000024300{2012-10-032025-03-092025-03-0900000000000{00000000000{A000000000                                                                                                                                                                                            ",
+        "00000000006Y00000002180{00000035840{00000029480{2017-12-232025-10-082025-10-0800000000000{00000000000{A000000000                                                                                                                                                                                            ",
+        "00000000007Y00000001930{00000020650{00000002640{2012-10-122024-12-132024-12-1300000000000{00000000000{A000000000                                                                                                                                                                                            ",
+        "00000000008Y00000006050{00000061040{00000013180{2012-01-042024-05-202024-05-2000000000000{00000000000{A000000000                                                                                                                                                                                            ",
+        "00000000009Y00000005600{00000082010{00000020650{2016-08-272024-12-272024-12-2700000000000{00000000000{A000000000                                                                                                                                                                                            ",
+        "00000000010Y00000001590{00000054010{00000044420{2015-09-132023-01-272023-01-2700000000000{00000000000{A000000000                                                                                                                                                                                            ",
+        "00000000011Y00000002120{00000049980{00000031750{2014-09-122025-03-122025-03-1200000000000{00000000000{A000000000                                                                                                                                                                                            ",
+        "00000000012Y00000001760{00000046360{00000003880{2009-06-172023-07-072023-07-0700000000000{00000000000{A000000000                                                                                                                                                                                            ",
+        "00000000013Y00000000410{00000075420{00000049220{2017-10-012024-08-042024-08-0400000000000{00000000000{A000000000                                                                                                                                                                                            ",
+        "00000000014Y00000000150{00000022540{00000002120{2010-12-042025-12-112025-12-1100000000000{00000000000{A000000000                                                                                                                                                                                            ",
+        "00000000015Y00000004890{00000084410{00000038330{2009-10-062025-06-092025-06-0900000000000{00000000000{A000000000                                                                                                                                                                                            ",
+        "00000000016Y00000007330{00000089220{00000026320{2014-09-112024-01-252024-01-2500000000000{00000000000{A000000000                                                                                                                                                                                            ",
+        "00000000017Y00000000330{00000005680{00000005100{2014-05-172025-03-012025-03-0100000000000{00000000000{A000000000                                                                                                                                                                                            ",
+        "00000000018Y00000001440{00000029030{00000014960{2018-11-152023-09-102023-09-1000000000000{00000000000{A000000000                                                                                                                                                                                            ",
+        "00000000019Y00000004800{00000069860{00000037230{2011-12-142025-07-232025-07-2300000000000{00000000000{A000000000                                                                                                                                                                                            ",
+        "00000000020Y00000003690{00000037670{00000010400{2014-02-272024-03-132024-03-1300000000000{00000000000{A000000000                                                                                                                                                                                            ",
+        "00000000021Y00000001120{00000012640{00000001800{2011-10-192023-01-062023-01-0600000000000{00000000000{A000000000                                                                                                                                                                                            ",
+        "00000000022Y00000000550{00000085990{00000047120{2016-11-212025-12-282025-12-2800000000000{00000000000{A000000000                                                                                                                                                                                            ",
+        "00000000023Y00000001040{00000033770{00000029040{2012-03-152025-03-182025-03-1800000000000{00000000000{A000000000                                                                                                                                                                                            ",
+        "00000000024Y00000004000{00000051740{00000041290{2015-08-082025-02-112025-02-1100000000000{00000000000{A000000000                                                                                                                                                                                            ",
+        "00000000025Y00000000610{00000081940{00000065820{2012-10-262025-07-102025-07-1000000000000{00000000000{A000000000                                                                                                                                                                                            ",
+        "00000000026Y00000000460{00000021810{00000013750{2009-04-202024-12-192024-12-1900000000000{00000000000{A000000000                                                                                                                                                                                            ",
+        "00000000027Y00000002840{00000055720{00000020750{2012-09-302025-07-132025-07-1300000000000{00000000000{A000000000                                                                                                                                                                                            ",
+        "00000000028Y00000000680{00000008680{00000005470{2015-05-202024-05-092024-05-0900000000000{00000000000{A000000000                                                                                                                                                                                            ",
+        "00000000029Y00000003390{00000055110{00000043610{2015-11-032024-06-042024-06-0400000000000{00000000000{A000000000                                                                                                                                                                                            ",
+        "00000000030Y00000000020{00000001200{00000000930{2011-08-262024-06-272024-06-2700000000000{00000000000{A000000000                                                                                                                                                                                            ",
+        "00000000031Y00000000310{00000011400{00000010770{2017-02-252025-06-082025-06-0800000000000{00000000000{A000000000                                                                                                                                                                                            ",
+        "00000000032Y00000000300{00000011750{00000008460{2013-11-102025-05-192025-05-1900000000000{00000000000{A000000000                                                                                                                                                                                            ",
+        "00000000033Y00000004100{00000064040{00000009510{2012-10-112025-10-072025-10-0700000000000{00000000000{A000000000                                                                                                                                                                                            ",
+        "00000000034Y00000002530{00000036420{00000027700{2009-05-102025-10-062025-10-0600000000000{00000000000{A000000000                                                                                                                                                                                            ",
+        "00000000035Y00000001660{00000019470{00000015250{2018-02-022025-09-232025-09-2300000000000{00000000000{A000000000                                                                                                                                                                                            ",
+        "00000000036Y00000001100{00000033280{00000008390{2018-07-182024-12-232024-12-2300000000000{00000000000{A000000000                                                                                                                                                                                            ",
+        "00000000037Y00000000070{00000004460{00000001660{2016-09-102023-10-242023-10-2400000000000{00000000000{A000000000                                                                                                                                                                                            ",
+        "00000000038Y00000006120{00000065050{00000034760{2010-08-122023-07-232023-07-2300000000000{00000000000{A000000000                                                                                                                                                                                            ",
+        "00000000039Y00000008430{00000097500{00000062120{2018-08-262025-09-082025-09-0800000000000{00000000000{A000000000                                                                                                                                                                                            ",
+        "00000000040Y00000000430{00000058230{00000016740{2010-02-132023-10-272023-10-2700000000000{00000000000{A000000000                                                                                                                                                                                            ",
+        "00000000041Y00000003750{00000067210{00000034290{2015-02-072023-04-242023-04-2400000000000{00000000000{A000000000                                                                                                                                                                                            ",
+        "00000000042Y00000003020{00000065630{00000051030{2016-09-192025-09-192025-09-1900000000000{00000000000{A000000000                                                                                                                                                                                            ",
+        "00000000043Y00000006100{00000061680{00000012060{2012-04-092025-08-292025-08-2900000000000{00000000000{A000000000                                                                                                                                                                                            ",
+        "00000000044Y00000002630{00000068990{00000044320{2018-12-012024-01-172024-01-1700000000000{00000000000{A000000000                                                                                                                                                                                            ",
+        "00000000045Y00000001860{00000027190{00000006880{2010-12-312025-07-092025-07-0900000000000{00000000000{A000000000                                                                                                                                                                                            ",
+        "00000000046Y00000003960{00000070070{00000054380{2013-09-062025-06-202025-06-2000000000000{00000000000{A000000000                                                                                                                                                                                            ",
+        "00000000047Y00000000320{00000023380{00000001590{2014-04-032025-08-232025-08-2300000000000{00000000000{A000000000                                                                                                                                                                                            ",
+        "00000000048Y00000002260{00000023060{00000006120{2017-03-182025-02-062025-02-0600000000000{00000000000{A000000000                                                                                                                                                                                            ",
+        "00000000049Y00000001000{00000090480{00000048070{2019-04-062023-09-172023-09-1700000000000{00000000000{A000000000                                                                                                                                                                                            "
+      ]
     },
     "CUSTDAT": {
-      "fixture": "custdata.txt",
-      "fromRow": 49,
-      "rowCount": 1
+      "fixture": "custdata.txt"
     }
   },
+  "jobParameters": {},
   "screenRequest": {
     "eibcalen": 172,
     "aid": "DFHENTER",
-    "pinnedClock": "2022-07-19T23:12:32",
+    "pinnedClock": "2022-07-19T23:15:58",
     "charset": "US-ASCII",
     "commarea": {
       "CDEMO-FROM-TRANID": "CCLI",
@@ -69,7 +114,7 @@
           "CURDATEO": "07/19/22",
           "PGMNAMEO": "COACTVWC",
           "TITLE02O": "              CardDemo                  ",
-          "CURTIMEO": "23:12:32",
+          "CURTIMEO": "23:15:58",
           "ACCTSIDO": "00000000050",
           "ACSTTUSO": " ",
           "ADTOPENO": "          ",
@@ -201,13 +246,733 @@
       "expectedBytes": "092387719324733000000000200000000002              "
     },
     {
+      "dataset": "CCXREF",
+      "rowIndex": 3,
+      "expectedBytes": "092798710863623200000002000000000020              "
+    },
+    {
+      "dataset": "CCXREF",
+      "rowIndex": 4,
+      "expectedBytes": "098249621362979500000001200000000012              "
+    },
+    {
+      "dataset": "CCXREF",
+      "rowIndex": 5,
+      "expectedBytes": "101408656522435000000004400000000044              "
+    },
+    {
+      "dataset": "CCXREF",
+      "rowIndex": 6,
+      "expectedBytes": "114216769287893100000003700000000037              "
+    },
+    {
+      "dataset": "CCXREF",
+      "rowIndex": 7,
+      "expectedBytes": "156140910649160000000003500000000035              "
+    },
+    {
+      "dataset": "CCXREF",
+      "rowIndex": 8,
+      "expectedBytes": "274530372000209000000003900000000039              "
+    },
+    {
+      "dataset": "CCXREF",
+      "rowIndex": 9,
+      "expectedBytes": "276083679710756500000002400000000024              "
+    },
+    {
+      "dataset": "CCXREF",
+      "rowIndex": 10,
+      "expectedBytes": "287196825281249000000000600000000006              "
+    },
+    {
+      "dataset": "CCXREF",
+      "rowIndex": 11,
+      "expectedBytes": "294013936230044900000002200000000022              "
+    },
+    {
+      "dataset": "CCXREF",
+      "rowIndex": 12,
+      "expectedBytes": "298809135309431200000000400000000004              "
+    },
+    {
+      "dataset": "CCXREF",
+      "rowIndex": 13,
+      "expectedBytes": "326076361233756000000001000000000010              "
+    },
+    {
+      "dataset": "CCXREF",
+      "rowIndex": 14,
+      "expectedBytes": "376628198415515400000004100000000041              "
+    },
+    {
+      "dataset": "CCXREF",
+      "rowIndex": 15,
+      "expectedBytes": "394024601614148900000001900000000019              "
+    },
+    {
+      "dataset": "CCXREF",
+      "rowIndex": 16,
+      "expectedBytes": "399916924637588500000000300000000003              "
+    },
+    {
+      "dataset": "CCXREF",
+      "rowIndex": 17,
+      "expectedBytes": "401150089177736700000001300000000013              "
+    },
+    {
+      "dataset": "CCXREF",
+      "rowIndex": 18,
+      "expectedBytes": "438527147662781900000003400000000034              "
+    },
+    {
+      "dataset": "CCXREF",
+      "rowIndex": 19,
+      "expectedBytes": "453478410271395100000003600000000036              "
+    },
+    {
+      "dataset": "CCXREF",
+      "rowIndex": 20,
+      "expectedBytes": "485945261287706500000000700000000007              "
+    },
+    {
+      "dataset": "CCXREF",
+      "rowIndex": 21,
+      "expectedBytes": "540709985047986600000002100000000021              "
+    },
+    {
+      "dataset": "CCXREF",
+      "rowIndex": 22,
+      "expectedBytes": "565683054498121600000004600000000046              "
+    },
+    {
+      "dataset": "CCXREF",
+      "rowIndex": 23,
+      "expectedBytes": "567118447850584400000001800000000018              "
+    },
+    {
+      "dataset": "CCXREF",
+      "rowIndex": 24,
+      "expectedBytes": "578735122887933900000004700000000047              "
+    },
+    {
+      "dataset": "CCXREF",
+      "rowIndex": 25,
+      "expectedBytes": "597511751661607700000004200000000042              "
+    },
+    {
+      "dataset": "CCXREF",
+      "rowIndex": 26,
+      "expectedBytes": "600961915067452600000000500000000005              "
+    },
+    {
+      "dataset": "CCXREF",
+      "rowIndex": 27,
+      "expectedBytes": "634925033164850900000001500000000015              "
+    },
+    {
+      "dataset": "CCXREF",
+      "rowIndex": 28,
+      "expectedBytes": "650353518179599200000004800000000048              "
+    },
+    {
+      "dataset": "CCXREF",
+      "rowIndex": 29,
+      "expectedBytes": "650923036255381600000003000000000030              "
+    },
+    {
+      "dataset": "CCXREF",
+      "rowIndex": 30,
+      "expectedBytes": "672300046320776400000002800000000028              "
+    },
+    {
+      "dataset": "CCXREF",
+      "rowIndex": 31,
+      "expectedBytes": "672705519061601400000001600000000016              "
+    },
+    {
+      "dataset": "CCXREF",
+      "rowIndex": 32,
+      "expectedBytes": "683267604769808700000003300000000033              "
+    },
+    {
+      "dataset": "CCXREF",
+      "rowIndex": 33,
+      "expectedBytes": "702663761503227700000003100000000031              "
+    },
+    {
+      "dataset": "CCXREF",
+      "rowIndex": 34,
+      "expectedBytes": "705826726183775200000004300000000043              "
+    },
+    {
+      "dataset": "CCXREF",
+      "rowIndex": 35,
+      "expectedBytes": "709414275105555100000003200000000032              "
+    },
+    {
+      "dataset": "CCXREF",
+      "rowIndex": 36,
+      "expectedBytes": "725150814918888300000002900000000029              "
+    },
+    {
+      "dataset": "CCXREF",
+      "rowIndex": 37,
+      "expectedBytes": "737933563466114200000004500000000045              "
+    },
+    {
+      "dataset": "CCXREF",
+      "rowIndex": 38,
+      "expectedBytes": "742768486342320900000001100000000011              "
+    },
+    {
+      "dataset": "CCXREF",
+      "rowIndex": 39,
+      "expectedBytes": "744387098889753000000003800000000038              "
+    },
+    {
+      "dataset": "CCXREF",
+      "rowIndex": 40,
+      "expectedBytes": "804058041034868000000002600000000026              "
+    },
+    {
+      "dataset": "CCXREF",
+      "rowIndex": 41,
+      "expectedBytes": "811254583423973500000002300000000023              "
+    },
+    {
+      "dataset": "CCXREF",
+      "rowIndex": 42,
+      "expectedBytes": "826259360247307600000004900000000049              "
+    },
+    {
+      "dataset": "CCXREF",
+      "rowIndex": 43,
+      "expectedBytes": "851786695820600800000001400000000014              "
+    },
+    {
+      "dataset": "CCXREF",
+      "rowIndex": 44,
+      "expectedBytes": "893136935189478300000000800000000008              "
+    },
+    {
+      "dataset": "CCXREF",
+      "rowIndex": 45,
+      "expectedBytes": "905629793166401100000002500000000025              "
+    },
+    {
+      "dataset": "CCXREF",
+      "rowIndex": 46,
+      "expectedBytes": "934910747586921400000001700000000017              "
+    },
+    {
+      "dataset": "CCXREF",
+      "rowIndex": 47,
+      "expectedBytes": "950173372142989300000000900000000009              "
+    },
+    {
+      "dataset": "CCXREF",
+      "rowIndex": 48,
+      "expectedBytes": "968029415460369700000000100000000001              "
+    },
+    {
+      "dataset": "CCXREF",
+      "rowIndex": 49,
+      "expectedBytes": "980558340899658800000004000000000040              "
+    },
+    {
       "dataset": "ACCTDAT",
       "rowIndex": 0,
       "expectedBytes": "00000000001Y00000001940{00000020200{00000010200{2014-11-202025-05-202025-05-2000000000000{00000000000{A000000000                                                                                                                                                                                            "
     },
     {
+      "dataset": "ACCTDAT",
+      "rowIndex": 1,
+      "expectedBytes": "00000000002Y00000001580{00000061300{00000054480{2013-06-192024-08-112024-08-1100000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 2,
+      "expectedBytes": "00000000003Y00000001470{00000049090{00000005380{2013-08-232024-01-102024-01-1000000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 3,
+      "expectedBytes": "00000000004Y00000000400{00000035030{00000027890{2012-11-172023-12-162023-12-1600000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 4,
+      "expectedBytes": "00000000005Y00000003450{00000038190{00000024300{2012-10-032025-03-092025-03-0900000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 5,
+      "expectedBytes": "00000000006Y00000002180{00000035840{00000029480{2017-12-232025-10-082025-10-0800000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 6,
+      "expectedBytes": "00000000007Y00000001930{00000020650{00000002640{2012-10-122024-12-132024-12-1300000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 7,
+      "expectedBytes": "00000000008Y00000006050{00000061040{00000013180{2012-01-042024-05-202024-05-2000000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 8,
+      "expectedBytes": "00000000009Y00000005600{00000082010{00000020650{2016-08-272024-12-272024-12-2700000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 9,
+      "expectedBytes": "00000000010Y00000001590{00000054010{00000044420{2015-09-132023-01-272023-01-2700000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 10,
+      "expectedBytes": "00000000011Y00000002120{00000049980{00000031750{2014-09-122025-03-122025-03-1200000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 11,
+      "expectedBytes": "00000000012Y00000001760{00000046360{00000003880{2009-06-172023-07-072023-07-0700000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 12,
+      "expectedBytes": "00000000013Y00000000410{00000075420{00000049220{2017-10-012024-08-042024-08-0400000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 13,
+      "expectedBytes": "00000000014Y00000000150{00000022540{00000002120{2010-12-042025-12-112025-12-1100000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 14,
+      "expectedBytes": "00000000015Y00000004890{00000084410{00000038330{2009-10-062025-06-092025-06-0900000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 15,
+      "expectedBytes": "00000000016Y00000007330{00000089220{00000026320{2014-09-112024-01-252024-01-2500000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 16,
+      "expectedBytes": "00000000017Y00000000330{00000005680{00000005100{2014-05-172025-03-012025-03-0100000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 17,
+      "expectedBytes": "00000000018Y00000001440{00000029030{00000014960{2018-11-152023-09-102023-09-1000000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 18,
+      "expectedBytes": "00000000019Y00000004800{00000069860{00000037230{2011-12-142025-07-232025-07-2300000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 19,
+      "expectedBytes": "00000000020Y00000003690{00000037670{00000010400{2014-02-272024-03-132024-03-1300000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 20,
+      "expectedBytes": "00000000021Y00000001120{00000012640{00000001800{2011-10-192023-01-062023-01-0600000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 21,
+      "expectedBytes": "00000000022Y00000000550{00000085990{00000047120{2016-11-212025-12-282025-12-2800000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 22,
+      "expectedBytes": "00000000023Y00000001040{00000033770{00000029040{2012-03-152025-03-182025-03-1800000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 23,
+      "expectedBytes": "00000000024Y00000004000{00000051740{00000041290{2015-08-082025-02-112025-02-1100000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 24,
+      "expectedBytes": "00000000025Y00000000610{00000081940{00000065820{2012-10-262025-07-102025-07-1000000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 25,
+      "expectedBytes": "00000000026Y00000000460{00000021810{00000013750{2009-04-202024-12-192024-12-1900000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 26,
+      "expectedBytes": "00000000027Y00000002840{00000055720{00000020750{2012-09-302025-07-132025-07-1300000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 27,
+      "expectedBytes": "00000000028Y00000000680{00000008680{00000005470{2015-05-202024-05-092024-05-0900000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 28,
+      "expectedBytes": "00000000029Y00000003390{00000055110{00000043610{2015-11-032024-06-042024-06-0400000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 29,
+      "expectedBytes": "00000000030Y00000000020{00000001200{00000000930{2011-08-262024-06-272024-06-2700000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 30,
+      "expectedBytes": "00000000031Y00000000310{00000011400{00000010770{2017-02-252025-06-082025-06-0800000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 31,
+      "expectedBytes": "00000000032Y00000000300{00000011750{00000008460{2013-11-102025-05-192025-05-1900000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 32,
+      "expectedBytes": "00000000033Y00000004100{00000064040{00000009510{2012-10-112025-10-072025-10-0700000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 33,
+      "expectedBytes": "00000000034Y00000002530{00000036420{00000027700{2009-05-102025-10-062025-10-0600000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 34,
+      "expectedBytes": "00000000035Y00000001660{00000019470{00000015250{2018-02-022025-09-232025-09-2300000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 35,
+      "expectedBytes": "00000000036Y00000001100{00000033280{00000008390{2018-07-182024-12-232024-12-2300000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 36,
+      "expectedBytes": "00000000037Y00000000070{00000004460{00000001660{2016-09-102023-10-242023-10-2400000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 37,
+      "expectedBytes": "00000000038Y00000006120{00000065050{00000034760{2010-08-122023-07-232023-07-2300000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 38,
+      "expectedBytes": "00000000039Y00000008430{00000097500{00000062120{2018-08-262025-09-082025-09-0800000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 39,
+      "expectedBytes": "00000000040Y00000000430{00000058230{00000016740{2010-02-132023-10-272023-10-2700000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 40,
+      "expectedBytes": "00000000041Y00000003750{00000067210{00000034290{2015-02-072023-04-242023-04-2400000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 41,
+      "expectedBytes": "00000000042Y00000003020{00000065630{00000051030{2016-09-192025-09-192025-09-1900000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 42,
+      "expectedBytes": "00000000043Y00000006100{00000061680{00000012060{2012-04-092025-08-292025-08-2900000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 43,
+      "expectedBytes": "00000000044Y00000002630{00000068990{00000044320{2018-12-012024-01-172024-01-1700000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 44,
+      "expectedBytes": "00000000045Y00000001860{00000027190{00000006880{2010-12-312025-07-092025-07-0900000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 45,
+      "expectedBytes": "00000000046Y00000003960{00000070070{00000054380{2013-09-062025-06-202025-06-2000000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 46,
+      "expectedBytes": "00000000047Y00000000320{00000023380{00000001590{2014-04-032025-08-232025-08-2300000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 47,
+      "expectedBytes": "00000000048Y00000002260{00000023060{00000006120{2017-03-182025-02-062025-02-0600000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 48,
+      "expectedBytes": "00000000049Y00000001000{00000090480{00000048070{2019-04-062023-09-172023-09-1700000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
       "dataset": "CUSTDAT",
       "rowIndex": 0,
+      "expectedBytes": "000000001Immanuel                 Madeline                 Kessler                  618 Deshaun Route                                 Apt. 802                                          Altenwerthshire                                   NCUSA12546     (908)119-8310  (373)693-8684  020973888000000000000493684371961-06-080053581756Y274                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 1,
+      "expectedBytes": "000000002Enrico                   April                    Rosenbaum                4917 Myrna Flats                                  Apt. 453                                          West Bernita                                      INUSA22770     (429)706-9510  (744)950-5272  587518382000000000005062103711961-10-080069194009Y268                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 2,
+      "expectedBytes": "000000003Larry                    Cody                     Homenick                 362 Esta Parks                                    Apt. 390                                          New Gladys                                        GAUSA19852-6716(950)396-9024  (685)168-8826  317460867000000000000524193031987-11-300006465789Y616                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 3,
+      "expectedBytes": "000000004Delbert                  Kaia                     Parisian                 638 Blanda Gateway                                Apt. 076                                          Lake Virginie                                     MIUSA39035-0455(801)603-4121  (156)074-6837  660354258000000000000685792491985-01-130040802739Y776                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 4,
+      "expectedBytes": "000000005Treva                    Manley                   Schowalter               5653 Legros Plaza                                 Apt. 968                                          Alvinaport                                        MIUSA02251-1698(978)775-4633  (439)943-7644  611264288000000000006397997541971-09-290006365573Y529                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 5,
+      "expectedBytes": "000000006Ignacio                  Emery                    Douglas                  3963 Yasmin Port                                  Suite 756                                         Port Josephstad                                   VIUSA46713-5148(277)743-4266  (519)010-8739  880329521000000000009755354961994-11-290067163009Y753                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 6,
+      "expectedBytes": "000000007Cooper                   Dennis                   Mayert                   6490 Zakary Locks                                 Apt. 765                                          Madieport                                         ALUSA34206-2974(698)282-4096  (458)199-0016  835138951000000000009590131701977-05-060024571415Y499                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 7,
+      "expectedBytes": "000000008Kelsie                   Jordyn                   Dicki                    0925 Welch Streets                                Apt. 152                                          North Nanniestad                                  SCUSA27610     (345)563-7159  (443)197-1271  295270759000000000001097469911964-03-250033132723Y051                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 8,
+      "expectedBytes": "000000009Melvin                   Regan                    Ondricka                 87893 Samson Flats                                Apt. 135                                          New Braden                                        VIUSA21113     (035)456-1404  (412)440-3130  842035847000000000005682994511975-11-070039446039Y699                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 9,
+      "expectedBytes": "000000010Maybell                  Creola                   Mann                     77933 Adah Dale                                   Suite 343                                         Andersonfurt                                      CTUSA44803-4279(614)594-2619  (667)057-0235  754755746000000000002128247551980-06-110093803568Y476                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 10,
+      "expectedBytes": "000000011Hayden                   Ressie                   Pfannerstill             14895 Everette Ridges                             Apt. 443                                          Julianneburgh                                     WAUSA24984     (002)533-6980  (553)586-7718  493538586000000000001111908551986-11-030002650577Y209                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 11,
+      "expectedBytes": "000000012Maci                     Alan                     Robel                    80501 Isac Cliffs                                 Suite 623                                         Predovicton                                       MNUSA78861     (584)045-5200  (610)244-0407  666114218000000000009021433511984-02-180061317348Y688                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 12,
+      "expectedBytes": "000000013Mariane                  Oma                      Fadel                    2689 Derick Mission                               Suite 055                                         Bruenfurt                                         ORUSA02322     (875)943-7287  (075)550-6435  757924569000000000001813772201999-03-090044807431Y053                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 13,
+      "expectedBytes": "000000014Chelsea                  Ignacio                  Marks                    747 Dino Lodge                                    Apt. 850                                          West Chase                                        RIUSA12914-8465(141)807-6571  (284)088-9052  655128548000000000005259552221974-11-290048306401Y243                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 14,
+      "expectedBytes": "000000015Aubree                   Elliot                   Hermann                  36365 Ledner Drives                               Suite 882                                         Port Efrainland                                   DEUSA63205-7014(769)100-7971  (366)310-2061  033922034000000000002303699411964-12-060000634612Y681                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 15,
+      "expectedBytes": "000000016Carroll                  Cicero                   Bergstrom                06988 Thiel Falls                                 Suite 148                                         Concepcionland                                    VTUSA84390     (631)343-8667  (938)648-3716  649827971000000000002932657521983-04-270012556599Y326                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 16,
+      "expectedBytes": "000000017Sigrid                   Angeline                 Mann                     95666 Dare Isle                                   Suite 286                                         New Presley                                       FMUSA56181-0584(087)314-2070  (541)003-6606  303334693000000000004976063571979-01-260052356071Y054                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 17,
+      "expectedBytes": "000000018Emile                    Jairo                    White                    133 Bergnaum Square                               Apt. 328                                          Hansenville                                       APUSA96003-5867(303)654-3323  (520)186-2176  385849271000000000000883418211987-03-250086459831Y340                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 18,
+      "expectedBytes": "000000019Hadley                   Sigrid                   Hamill                   6273 Ondricka Meadows                             Apt. 130                                          New Arturoshire                                   RIUSA48161     (817)452-4986  (724)901-6019  439569907000000000002701763871991-01-070036492057Y259                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 19,
+      "expectedBytes": "000000020Carter                   Oren                     Veum                     5845 Allison Valleys                              Suite 934                                         Mitchellmouth                                     MHUSA72362     (618)994-0531  (571)695-4136  717778238000000000003426612931996-04-140036749754Y493                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 20,
+      "expectedBytes": "000000021Jerrold                  Adolphus                 Maggio                   401 Haylie Crest                                  Apt. 320                                          North Myrnaton                                    CAUSA72407     (399)526-3254  (326)193-1118  336490822000000000000276562601977-11-150011744660Y163                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 21,
+      "expectedBytes": "000000022Allene                   Icie                     Brown                    4467 Donnie Crossroad                             Apt. 437                                          Anabelton                                         MDUSA01993-9116(231)251-5792  (494)652-0009  292059024000000000006911598531994-02-200024791470Y597                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 22,
+      "expectedBytes": "000000023Johnson                  Blanca                   Ruecker                  2433 Jacobi Forks                                 Apt. 845                                          Hendersonbury                                     KSUSA78239-9466(981)873-1589  (131)638-5974  944154289000000000002689671221998-12-070075158529Y337                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 23,
+      "expectedBytes": "000000024Stefanie                 Verla                    Dickinson                6367 Stracke River                                Apt. 444                                          East Otho                                         KSUSA15414     (617)348-9142  (330)116-5634  017590544000000000004392446331996-01-240005459662Y711                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 24,
+      "expectedBytes": "000000025Elliott                  Fermin                   Howell                   9524 McKenzie Lakes                               Suite 245                                         West Alexa                                        NHUSA75721-7382(092)336-8599  (311)969-1460  788820436000000000005482230481989-03-270032297533Y355                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 25,
+      "expectedBytes": "000000026Marjory                  Damien                   Stracke                  30161 Bogan Canyon                                Suite 916                                         Walshberg                                         ILUSA59945     (584)772-2867  (819)733-9809  840478806000000000009474116261990-03-170060808858Y001                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 26,
+      "expectedBytes": "000000027Ward                     Henri                    Jones                    210 Amaya Turnpike                                Suite 180                                         Port Dwight                                       GUUSA07923-8822(935)027-1145  (103)537-5007  980161210000000000008815587571986-11-080050024139Y078                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 27,
+      "expectedBytes": "000000028Hester                   Vesta                    Hane                     06816 Ursula Meadows                              Suite 605                                         South Aurore                                      ASUSA77442-7954(122)357-7257  (050)352-6579  677986013000000000005141877961991-06-050026946180Y114                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 28,
+      "expectedBytes": "000000029Rickie                   Otho                     Daugherty                676 Funk Curve                                    Apt. 375                                          Hayesstad                                         NHUSA01226     (418)291-9023  (795)634-7776  015027332000000000000627456551973-04-050067736493Y552                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 29,
+      "expectedBytes": "000000030Layla                    Dannie                   Ullrich                  269 Eleazar Circle                                Apt. 817                                          Kutchland                                         AKUSA64266     (330)408-6966  (413)347-7306  866102152000000000004920216861965-11-280050520060Y133                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 30,
+      "expectedBytes": "000000031Lucious                  Otto                     O'Connell                919 Swift Valleys                                 Suite 548                                         Hermanborough                                     MSUSA56133-5636(259)414-9625  (118)946-9264  357462348000000000006183105391976-08-030092999757Y058                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 31,
+      "expectedBytes": "000000032Stephany                 Meda                     Fisher                   63452 Kenny Streets                               Apt. 116                                          Predovicburgh                                     AKUSA85943-7605(202)436-5156  (246)296-3533  146204208000000000002062003411980-11-190035970593Y221                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 32,
+      "expectedBytes": "000000033Bernice                  Norbert                  Herman                   877 Kassandra Ranch                               Suite 956                                         Haleyport                                         ARUSA19113-4329(836)743-5487  (640)208-1176  144195105000000000004006054291988-05-190065245171Y469                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 33,
+      "expectedBytes": "000000034Faustino                 Jess                     Schmidt                  44132 Michel Square                               Suite 007                                         South Margarettaburgh                             MEUSA49544-2869(179)036-5135  (986)905-0112  548088300000000000001598825331994-03-210067445089Y104                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 34,
+      "expectedBytes": "000000035Angelica                 Damaris                  Dach                     396 Pearl Loop                                    Suite 383                                         Pfefferhaven                                      LAUSA46142     (303)480-9098  (637)710-7367  220547115000000000009771448391987-06-230047435332Y793                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 35,
+      "expectedBytes": "000000036Toney                    Emerald                  Gerhold                  35943 Raleigh Harbor                              Apt. 116                                          Lake Derekburgh                                   ALUSA10932-0480(034)271-9180  (507)529-4523  420360688000000000009420292101991-03-310066461979Y266                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 36,
+      "expectedBytes": "000000037Shany                    Darby                    Walker                   91196 Heaney Turnpike                             Suite 814                                         Lubowitzberg                                      NVUSA11857-8177(052)759-5167  (706)896-1282  891897974000000000005243126321984-12-090066111704Y653                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 37,
+      "expectedBytes": "000000038Angela                   Ceasar                   Ankunding                65482 Zoila Skyway                                Apt. 054                                          East Malachi                                      VAUSA63928-0008(316)640-2650  (148)111-1148  764307306000000000003355621411990-05-280018048939Y446                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 38,
+      "expectedBytes": "000000039Aliyah                   Horace                   Berge                    5761 Pasquale Trail                               Apt. 616                                          New Sabryna                                       IAUSA74267     (089)096-3287  (768)959-4733  510793388000000000005532544031972-08-260061869530Y475                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 39,
+      "expectedBytes": "000000040Davon                    Demond                   Emmerich                 23499 Beer Views                                  Suite 816                                         Erniechester                                      TXUSA87156-8689(463)762-3017  (419)414-2177  054960660000000000003983532991992-01-260087069976Y284                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 40,
+      "expectedBytes": "000000041Lucinda                  Kiana                    Dach                     3220 Yolanda Corner                               Suite 649                                         East Harmonystad                                  VTUSA72971-7481(284)052-5831  (091)234-2144  643942675000000000009196534421967-02-200007315287Y725                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 41,
+      "expectedBytes": "000000042Heather                  Ericka                   Nienow                   5523 Archibald Club                               Apt. 358                                          Reillyland                                        FMUSA83589     (640)954-4538  (565)873-6897  800455633000000000009970299661964-11-030079262985Y044                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 42,
+      "expectedBytes": "000000043Britney                  Jermain                  Waters                   97765 Bernhard Fort                               Apt. 666                                          South Marisaview                                  OKUSA10050-7980(407)042-6952  (438)659-6397  262568593000000000002445558051966-10-160053043599Y558                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 43,
+      "expectedBytes": "000000044Irving                   Kiera                    Emard                    978 Fatima Stream                                 Apt. 110                                          Lake King                                         IDUSA05704-0501(703)484-5840  (537)392-5569  318104527000000000009344209741984-04-040032076778Y145                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 44,
+      "expectedBytes": "000000045Dixie                    Norris                   Beier                    441 Levi Prairie                                  Suite 749                                         Abbottshire                                       NVUSA09048     (697)143-3221  (499)287-7255  352819961000000000008857432862001-12-120027833000Y629                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 45,
+      "expectedBytes": "000000046Cindy                    Kira                     Cremin                   494 Lang Avenue                                   Apt. 937                                          Alexandroview                                     PWUSA63082-4520(358)349-2574  (077)525-9966  656405528000000000007626995771987-12-140017535749Y514                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 46,
+      "expectedBytes": "000000047Rigoberto                Savanna                  Hoeger                   00097 Gleichner Spur                              Apt. 932                                          Port Aidanborough                                 GUUSA31329-6973(946)322-6160  (973)443-8438  029222192000000000005676014721979-02-250022102472Y722                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 47,
+      "expectedBytes": "000000048Lyric                    Mackenzie                Pacocha                  453 Rosina Mountain                               Apt. 011                                          Albertville                                       ORUSA83985-4937(950)497-1005  (004)244-7955  635734407000000000002653928321986-08-170046317382Y746                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 48,
+      "expectedBytes": "000000049Immanuel                 Ellie                    Bednar                   5423 Esther Locks                                 Apt. 142                                          Langoshstad                                       GAUSA12288-3495(843)095-2553  (615)988-9038  813044111000000000004244959812000-01-050058726120Y148                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 49,
       "expectedBytes": "000000050Aniya                    Alba                     Von                      1588 Nienow Cape                                  Suite 187                                         New Aricchester                                   ORUSA04257     (325)301-0827  (493)985-9283  931248469000000000000303878241960-12-010074883577Y623                                                                                                                                                                        "
     }
   ],
@@ -223,19 +988,19 @@
     {
       "dataset": "CCXREF",
       "channel": "FINAL_STATE",
-      "rowCount": 3,
+      "rowCount": 50,
       "recordLength": 50
     },
     {
       "dataset": "ACCTDAT",
       "channel": "FINAL_STATE",
-      "rowCount": 1,
+      "rowCount": 49,
       "recordLength": 300
     },
     {
       "dataset": "CUSTDAT",
       "channel": "FINAL_STATE",
-      "rowCount": 1,
+      "rowCount": 50,
       "recordLength": 500
     }
   ]

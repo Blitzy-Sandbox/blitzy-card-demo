@@ -1,7 +1,7 @@
 {
   "program": "COACTVWC",
   "caseId": "case19",
-  "description": "The most subtle key case. CSSTRPFY's EVALUATE at app/cpy/CSSTRPFY.cpy:21-78 has 28 arms - ENTER, CLEAR, PA1, PA2 and PF1 through PF24 - and DFHPA3 is not among them, though DFHAID publishes it. There is no WHEN OTHER and no MOVE that clears CCARD-AID first, so PA3 leaves the field holding whatever was already there; INITIALIZE CC-WORK-AREA at :268 has just blanked it, so what is left is spaces. Spaces are neither ENTER nor PF3, so the gate at :306-314 marks the key invalid and rewrites it to ENTER. A translation that supplied a default in the resolver would reach this same screen for the wrong reason, which is why the case is written and documented rather than assumed.",
+  "description": "The unmatched-AID fall-through, driven with DFHPA3 - the one AID DFHAID publishes that CSSTRPFY has no arm for at all. app/cpy/CSSTRPFY.cpy:21-78 is a single EVALUATE TRUE whose 28 WHEN arms were counted from the copybook rather than assumed: DFHENTER at :22-23, DFHCLEAR at :24-25, DFHPA1 at :26-27, DFHPA2 at :28-29, DFHPF1 through DFHPF12 at :30-53, then DFHPF13 through DFHPF24 at :54-77 folded back onto PFK01 through PFK12. There is no 29th arm, there is no WHEN OTHER, and no statement in the paragraph clears or pre-seeds CCARD-AID first, so an EIBAID of DFHPA3 matches nothing, falls straight out at END-EVALUATE :78 and leaves the field exactly as it found it. What it found it holding is spaces: app/cpy/CVCRD01Y.cpy:2-3 puts CCARD-AID PIC X(5) inside CC-WORK-AREA, and COACTVWC's very first act at :268 is INITIALIZE CC-WORK-AREA WS-MISC-STORAGE WS-COMMAREA, which sets an alphanumeric item to SPACES - so the token is '     ', five spaces, and :268 precedes the PERFORM YYYY-STORE-PFKEY THRU YYYY-STORE-PFKEY-EXIT at :299-300 that reaches the paragraph through COPY 'CSSTRPFY' at :913. Five spaces is not a condition name. app/cpy/CVCRD01Y.cpy:4-19 declares exactly 16 88-levels on that field - 'ENTER', 'CLEAR', 'PA1  ' and 'PA2  ' with their two trailing spaces, and 'PFK01' through 'PFK12' - and none of the sixteen is five spaces, so at :306 every AID condition on the field is false at once. That is what this case exists to pin, and it is where a plausible translation diverges: a Java switch given a default arm that assigns an UNKNOWN or NONE sentinel would answer a token COBOL never wrote, and a resolver that cleared the field before dispatching would answer spaces for the wrong reason. common.PfKeyResolver.resolve reports no match as an absent result, substituting nothing, and storePfKey returns the incoming token unchanged, which is the paragraph's leave-it-alone semantics stated rather than implied. The gate at :306-314 is three statements and their order is the whole of it: :306 SET PFK-INVALID TO TRUE; :307-310 IF CCARD-AID-ENTER OR CCARD-AID-PFK03 SET PFK-VALID TO TRUE, and spaces satisfy neither disjunct so the flag stays PFK-INVALID; :312-314 IF PFK-INVALID SET CCARD-AID-ENTER TO TRUE, which overwrites the five spaces with ENTER. So the intermediate token is '     ' and the token from :315 onwards is ENTER, and no member of this contract carries either - the response has no AID field - which is why both are stated here and the remap is asserted where it is observable, in the bytes. Nothing else happens: no message is set, WS-RETURN-MSG stays as :278 left it, INPUT-ERROR is never set, and the user is not told the key was ignored - ERRMSGO is 78 spaces from :532 and expectedMessages is empty. app/cpy/CSMSG01Y.cpy:20-21 does define CCDA-MSG-INVALID-KEY PIC X(50) as 'Invalid key pressed. Please see below...', and twelve other online programs move it, but a search of app/cbl/COACTVWC.cbl finds zero occurrences of the name, so emitting it here would invent an acknowledgement this program does not give (practice B5). After the rewrite the main EVALUATE TRUE at :323-383 runs in source order with CCARD-AID-ENTER true, so its first arm WHEN CCARD-AID-PFK03 at :324 is false and no XCTL is taken, and the inbound CDEMO-PGM-CONTEXT of 1 selects the third arm WHEN CDEMO-PGM-REENTER at :361. CDEMO-FROM-PROGRAM is COCRDLIC rather than LIT-MENUPGM, so the fresh-start guard at :282-284 does not fire and the ELSE at :287-293 copies the inbound area. 2210-EDIT-ACCOUNT clears both its guards and takes the ELSE at :678-680, INPUT-ERROR is false at :364, and 9000-READ-ACCT at :687 issues its three reads in order with an early exit between each: the READ at :727 on DATASET(LIT-CARDXREFNAME-ACCT-PATH), which :192-193 fixes as 'CXACAIX ' - the alternate-index path over the CCXREF base, a second finder on one repository rather than a second table - for 50 bytes, moving XREF-CUST-ID and XREF-CARD-NUM into the commarea at :739-740; the READ at :776 on 'ACCTDAT ' for 300 bytes, setting FOUND-ACCT-IN-MASTER at :788; and the READ at :826 on 'CUSTDAT ' for 500 bytes on a nine-byte RIDFLD, setting FOUND-CUST-IN-MASTER at :838. Each of the three EVALUATE WS-RESP-CD blocks orders its arms NORMAL, NOTFND, WHEN OTHER and this case takes the first at :738, :787 and :837, so the '00' outcome is pinned at every call site. Both 1200 projections therefore run: ACCTSIDO from the ELSE at :468, the ten account fields at :471-491 including the misspelled ACCT-EXPIRAION-DATE at :488 and the five PIC +ZZZ,ZZZ,ZZZ.99 receivers declared at app/cpy-bms/COACTVW.CPY:302, :314, :326, :332 and :344, and the eighteen customer receivers at :493-523 - seventeen MOVEs plus the STRING at :496-504, whose twelfth byte stays a LOW-VALUE because :432 moved LOW-VALUES over CACTVWAO and the STRING transfers only eleven characters. Six header items, ACCTSIDO, ten, eighteen, INFOMSGO and ERRMSGO account for all 37 xxxO items exactly. INFOMSGO reads the prompt and not 'Displaying details of given Account', because WS-INFORM-OUTPUT at :115-116 is never SET while :689 SETs WS-NO-INFO-MESSAGE and no NORMAL arm replaces it, so the guard at :528-530 fires and :534 moves the X(40) literal of :113-114 into X(45); that is also why 1300 takes its ELSE at :569-570 and colours INFOMSGC DFHNEUTR. FLG-ACCTFILTER-BLANK is false, so the highlight at :561-565 does not fire even though CDEMO-PGM-REENTER holds - re-entry alone is not enough - and ACCTSIDC stays DFHDFCOL from :555 with no DFHRED and no asterisk anywhere. The cursor is ACCTSIDL either way, because the EVALUATE at :546-552 gives both arms and its WHEN OTHER the same body, and that duplication is preserved rather than collapsed. :579-581 then names COACTVW and CACTVWA and SETs CDEMO-PGM-REENTER, and COMMON-RETURN is reached by the GO TO at :373, bypassing the trailing IF INPUT-ERROR at :387-392, before EXEC CICS RETURN TRANSID at :402-406. This is one half of a two-case controlled experiment and case18 is the other: it presses DFHPF12, which :52-53 does match and which therefore resolves cleanly to PFK12 before the same gate rewrites it. The intermediate tokens differ - PFK12 there, five spaces here - and the final token is ENTER in both, so every other input is held identical and the AID is the only variable; diff the two files and only caseId, the aid and this text differ. case17 presses DFHPF15, which :58-59 folds onto PFK03 and which therefore transfers instead, and case03 is the plain DFHENTER case these expected bytes are equal to. Statically derived and never captured from a live COBOL execution (risk R-A): the values come from app/cbl/COACTVWC.cbl, the byte offsets of app/cpy/CVACT03Y.cpy, app/cpy/CVACT01Y.cpy and app/cpy/CVCUS01Y.cpy summing to 50, 300 and 500 with their FILLER spans space-filled, the xxxI and xxxO PICTURE clauses of app/cpy-bms/COACTVW.CPY, the PICOUT masks of app/bms/COACTVW.bms:120-195, the titles at app/cpy/COTTL01Y.cpy:19 and the active :22, and the real fixture rows - cardxref.txt 0-based rows 0, 1 and 2, acctdata.txt 0-based row 49 and custdata.txt 0-based row 49. The cross reference is keyed by card number and is not ordered by account, so its row is named rather than assumed.",
   "unitKind": "CONTROLLER_POJO",
   "inputs": {
     "CCXREF": {
@@ -20,6 +20,7 @@
       "rowCount": 1
     }
   },
+  "jobParameters": {},
   "screenRequest": {
     "eibcalen": 172,
     "aid": "DFHPA3",
@@ -188,26 +189,80 @@
     {
       "dataset": "CCXREF",
       "rowIndex": 0,
+      "fields": {
+        "XREF-CARD-NUM": "0500024453765740",
+        "XREF-CUST-ID": "000000050",
+        "XREF-ACCT-ID": "00000000050",
+        "FILLER": "              "
+      },
       "expectedBytes": "050002445376574000000005000000000050              "
     },
     {
       "dataset": "CCXREF",
       "rowIndex": 1,
+      "fields": {
+        "XREF-CARD-NUM": "0683586198171516",
+        "XREF-CUST-ID": "000000027",
+        "XREF-ACCT-ID": "00000000027",
+        "FILLER": "              "
+      },
       "expectedBytes": "068358619817151600000002700000000027              "
     },
     {
       "dataset": "CCXREF",
       "rowIndex": 2,
+      "fields": {
+        "XREF-CARD-NUM": "0923877193247330",
+        "XREF-CUST-ID": "000000002",
+        "XREF-ACCT-ID": "00000000002",
+        "FILLER": "              "
+      },
       "expectedBytes": "092387719324733000000000200000000002              "
     },
     {
       "dataset": "ACCTDAT",
       "rowIndex": 0,
+      "fields": {
+        "ACCT-ID": "00000000050",
+        "ACCT-ACTIVE-STATUS": "Y",
+        "ACCT-CURR-BAL": "00000004920{",
+        "ACCT-CREDIT-LIMIT": "00000061690{",
+        "ACCT-CASH-CREDIT-LIMIT": "00000045870{",
+        "ACCT-OPEN-DATE": "2011-04-22",
+        "ACCT-EXPIRAION-DATE": "2023-03-09",
+        "ACCT-REISSUE-DATE": "2023-03-09",
+        "ACCT-CURR-CYC-CREDIT": "00000000000{",
+        "ACCT-CURR-CYC-DEBIT": "00000000000{",
+        "ACCT-ADDR-ZIP": "A000000000",
+        "ACCT-GROUP-ID": "          ",
+        "FILLER": "                                                                                                                                                                                  "
+      },
       "expectedBytes": "00000000050Y00000004920{00000061690{00000045870{2011-04-222023-03-092023-03-0900000000000{00000000000{A000000000                                                                                                                                                                                            "
     },
     {
       "dataset": "CUSTDAT",
       "rowIndex": 0,
+      "fields": {
+        "CUST-ID": "000000050",
+        "CUST-FIRST-NAME": "Aniya                    ",
+        "CUST-MIDDLE-NAME": "Alba                     ",
+        "CUST-LAST-NAME": "Von                      ",
+        "CUST-ADDR-LINE-1": "1588 Nienow Cape                                  ",
+        "CUST-ADDR-LINE-2": "Suite 187                                         ",
+        "CUST-ADDR-LINE-3": "New Aricchester                                   ",
+        "CUST-ADDR-STATE-CD": "OR",
+        "CUST-ADDR-COUNTRY-CD": "USA",
+        "CUST-ADDR-ZIP": "04257     ",
+        "CUST-PHONE-NUM-1": "(325)301-0827  ",
+        "CUST-PHONE-NUM-2": "(493)985-9283  ",
+        "CUST-SSN": "931248469",
+        "CUST-GOVT-ISSUED-ID": "00000000000030387824",
+        "CUST-DOB-YYYY-MM-DD": "1960-12-01",
+        "CUST-EFT-ACCOUNT-ID": "0074883577",
+        "CUST-PRI-CARD-HOLDER-IND": "Y",
+        "CUST-FICO-CREDIT-SCORE": "623",
+        "FILLER": "                                                                                                                                                                        "
+      },
       "expectedBytes": "000000050Aniya                    Alba                     Von                      1588 Nienow Cape                                  Suite 187                                         New Aricchester                                   ORUSA04257     (325)301-0827  (493)985-9283  931248469000000000000303878241960-12-010074883577Y623                                                                                                                                                                        "
     }
   ],

@@ -1,7 +1,7 @@
 {
   "program": "COCRDLIC",
   "caseId": "case08",
-  "description": "The WHEN OTHER arm at :1246-1254, which no arrangement of seeded rows can reach - it needs a genuine I/O failure, so the outcome is forced. DFHRESP(INVREQ) ends the read loop at :1249 and composes WS-FILE-ERROR-MESSAGE from its five literals and four moved fields [:153-171, :1250-1253]. That group is exactly eighty characters, which is why :1254's MOVE into the seventy-five-character WS-ERROR-MSG truncates the trailing FILLER X(5), and :924's MOVE into the seventy-eight-character ERRMSGO then pads three back on. MOVE WS-RESP-CD TO ERROR-RESP moves a PIC S9(09) COMP item into a PIC X(10) one, so the nine digits go in left-justified and are padded on the right rather than aligned. No row is placed, but the empty-result branch at :1241 is never reached either - that lives on the ENDFILE arm, not this one.",
+  "description": "PF07 - the page-up key - with the backward browse FAILING: the WHEN OTHER arm at :1308-1317, taken on the discarded first READPREV of 9100-READ-BACKWARDS at :1294-1302. This is the only case of the twenty that drives a file error on a BACKWARD call site, and it is deliberately the error twin of case07: byte for byte the same request - the same page-three cursor, the same twenty-one returned map items, the same AID - with one member added, so every difference between the two screens is attributable to the forced outcome and to nothing else. WHY PAGE THREE AND NOT PAGE TWO. The brief for this case asked for the backward BOUNDARY - a page-up from page two onto page one - together with the seeded error, and authorised moving the error to a page-up that does not land on page one should the two prove incompatible. They are incompatible, twice over, and both reasons are in the source. First, 1000-SEND-MAP performs 1400-SETUP-MESSAGE at :633-634, AFTER 9100-READ-BACKWARDS has run at :509-510, and 1400's third arm - WHEN CCARD-AID-PFK07 AND CA-FIRST-PAGE at :901-902 - moves 'NO PREVIOUS PAGES TO DISPLAY' into WS-ERROR-MSG at :903-904 UNCONDITIONALLY. :508 SUBTRACT 1 FROM WS-CA-SCREEN-NUM turns an inbound 2 into 1, 88 CA-FIRST-PAGE VALUE 1 at :238 then holds, and the composed diagnostic is overwritten before :924 ever moves it to the map - so at the boundary the file-error text is not observable at all, and a case asserting it would be asserting the message the boundary produces rather than the message the failure produces. Second, a forced outcome carries no occurrence index, so EVERY read of the browse fails and the boundary walk cannot happen in the same run: the page-up dies on its first READPREV and never reaches the front of the file. Paging up from page three leaves WS-CA-SCREEN-NUM at 2, CA-FIRST-PAGE false, the third arm unmatched and the diagnostic intact. THE BOUNDARY, DERIVED AND RECORDED. Walking :1339-1353 for a page-up from page two: STARTBR ... GTEQ at :1273-1280 anchors on fixture row 8 (1561409106491600), the first READPREV returns that record and :1307 only decrements the counter 8 to 7 - the record is discarded because it is the one already at the top of the page being left - and the loop at :1320-1371 then places fixture rows 7, 6, 5, 4, 3, 2, 1 into screen rows 7 down to 1, each placed BEFORE :1346 decrements. As fixture row 1 (0500024453765740, the lowest key in the dataset) lands in screen row 1 the counter reaches 0, so the IF WS-SCRN-COUNTER = 0 terminator at :1347 fires FIRST and :1350-1353 makes that record the new page's first key. The eighth READPREV that would have returned DFHRESP(ENDFILE) - and, there being no ENDFILE arm, would have fallen into WHEN OTHER at :1361-1369 and composed a file-error message - is never issued. That is the whole boundary answer: the counter wins, not the end of file. It is asserted where it can be asserted - by case07 for the clean backward walk and by COCRDLICParityTest.pageUpComputesScrnCounterAsMaxScreenLinesPlusOne, which pins screenNum 1 and firstCardNum equal to fixture row 1's key, because WS-CA-SCREEN-NUM lives in WS-THIS-PROGCOMMAREA at :229-248 and travels in the response payload rather than in the compared CARDDEMO-COMMAREA image. THE PATH, ARM BY ARM. EIBCALEN is 160 and CDEMO-FROM-PROGRAM is 'COCRDLIC', so :327-331 restores both halves of the area and :357-362 performs 2000-RECEIVE-MAP; both filters arrive blank, so 2210-EDIT-ACCOUNT takes :1007-1013 and 2220-EDIT-CARD takes :1042-1048, each zeroing its CDEMO- id and leaving INPUT-OK and FLG-PROTECT-SELECT-ROWS-NO from :986-987 - which is why nothing on this screen is reddened (gate G38: the failure here is I/O, not input, and CSSETATY's DFHRED plus '*' highlight belongs to the other kind). PF07 is one of the four keys :371-376 accepts, so :378-380 does not fold it onto ENTER. :410-414 sets CA-LAST-PAGE-NOT-SHOWN because the key is not PF08. The dispatcher EVALUATE at :418-583 is ordered and is tested against the INBOUND page number: the PF07-and-CA-FIRST-PAGE arm written twice at :439-445 - a source quirk, preserved - does not match on page three, so :501-513 runs: MOVE WS-CA-FIRST-CARD-NUM TO WS-CARD-RID-CARDNUM at :504-505, SUBTRACT 1 FROM WS-CA-SCREEN-NUM at :508, PERFORM 9100-READ-BACKWARDS, PERFORM 1000-SEND-MAP, GO TO COMMON-RETURN at :513. 9100-READ-BACKWARDS, UP TO THE FAILURE (gate G28, every named arithmetic site on this path). :1266 MOVE LOW-VALUES TO WS-ALL-ROWS empties the 196-byte row table; :1268 MOVE WS-CA-FIRST-CARDKEY TO WS-CA-LAST-CARDKEY copies the key pair BEFORE the browse opens, unconditionally, so it survives the failure; :1273-1280 STARTBR ... GTEQ captures a RESP that this paragraph never tests - unlike 9000-READ-FORWARD at :1136-1148 - so a page-up cannot fail at positioning; :1284-1286 COMPUTE WS-SCRN-COUNTER = WS-MAX-SCREEN-LINES + 1 primes the counter to 8 from the VALUE 7 at :177-178; :1287 SET CA-NEXT-PAGE-EXISTS and :1288 SET MORE-RECORDS-TO-READ both run before the first read, so the outbound cursor still says a next page exists. Then :1294 READPREV reports DFHRESP(NOTOPEN), which is neither of the two named arms at :1305-1306, so :1308-1317 runs: SET READ-LOOP-EXIT, MOVE 'READ' TO ERROR-OPNAME, MOVE LIT-CARD-FILE TO ERROR-FILE, MOVE WS-RESP-CD TO ERROR-RESP, MOVE WS-REAS-CD TO ERROR-RESP2, MOVE WS-FILE-ERROR-MESSAGE TO WS-ERROR-MSG, GO TO 9100-READ-BACKWARDS-EXIT - which still reaches the ENDBR at :1375-1377 because the source puts it in the exit paragraph. The counter is never decremented, the loop at :1320 never runs, and :1346-1353 never execute, so all seven rows stay LOW-VALUES and WS-CA-FIRST-CARDKEY keeps its inbound value. That MOVE at :1316 is UNCONDITIONAL - it is not wrapped in an IF WS-ERROR-MSG-OFF the way 2220-EDIT-CARD's message is at :1056-1060 - which matters here only because both filters are blank, so WS-ERROR-MSG is still at its 88 WS-ERROR-MSG-OFF VALUE SPACES state from :311 when the composed text lands; had a filter failed edit, the guardless move would have replaced the filter's message. THE 80, THE 75 AND THE 78 (practice B11, summed by hand from :153-171 - the brief's :155-175 names the same group). WS-FILE-ERROR-MESSAGE is nine spans: FILLER X(12) VALUE 'File Error:' - eleven characters in a twelve, so one trailing space; ERROR-OPNAME X(8) holding 'READ' plus four pad spaces; FILLER X(4) VALUE ' on '; ERROR-FILE X(9) receiving LIT-CARD-FILE PIC X(8) VALUE 'CARDDAT ' from :213-214, whose literal already ends in a space and gains one more pad byte to reach nine; FILLER X(15) VALUE ' returned RESP '; ERROR-RESP X(10) receiving WS-RESP-CD, which is PIC S9(09) COMP at :47, so the MOVE renders nine zero-filled digits '000000019' left-justified in ten and pads one space - not right-aligned, and no sign; FILLER X(7) VALUE ',RESP2 '; ERROR-RESP2 X(10) receiving WS-REAS-CD the same way as '000000000 '; and a trailing FILLER X(5) with no VALUE clause. 12+8+4+9+15+10+7+10+5 = 80. WS-ERROR-MSG is PIC X(75) at :117, and a PIC X move truncates on the RIGHT, so exactly that trailing FILLER X(5) is dropped and the surviving 75 bytes are 12+8+4+9+15+10+7+10. :924 MOVE WS-ERROR-MSG TO ERRMSGO OF CCRDLIAO then moves those 75 into ERRMSGI/ERRMSGO PIC X(78) - app/cpy-bms/COCRDLI.CPY:288 - right-padding with exactly three spaces. The pinned ERRMSGO is those 78 bytes: the truncation is a real narrowing performed rather than worked around (practices B4 and B5), and it is why no case may pin an 80-character error line. WHY NOTOPEN AND WHY RESP2 IS ZERO. DFHRESP(NOTOPEN) is FileStatus.NOTOPEN, 19, which FileStatus.outcomeOfCicsResp classifies as Outcome.OTHER, and it is the plainest genuine backward-browse failure there is - the file was not open when the READPREV was issued - with no reason code reported alongside it, so WS-REAS-CD stays 0. 19 rather than the 16 the forward site is driven with also proves the ERROR-RESP span is rendered from the reported value and not from a constant: the two screens differ in exactly those two digits. WHAT THE SCREEN CARRIES. 1100-SCREEN-INIT at :642-672 runs first: MOVE LOW-VALUES TO CCRDLIAO, then CCDA-TITLE01 and CCDA-TITLE02 from app/cpy/COTTL01Y.cpy - the ACTIVE second title line, ' CardDemo ' centred in forty - then LIT-THISTRANID 'CCLI' and LIT-THISPGM 'COCRDLIC' from :181-184, the clock, and MOVE WS-CA-SCREEN-NUM TO PAGENOO, which is the post-SUBTRACT 2 moved from PIC 9(1) into PIC X(3) as '2  '. :669-671 sets WS-NO-INFO-MESSAGE and paints INFOMSGO with spaces and INFOMSGC with DFHBMDAR. 1200-SCREEN-ARRAY-INIT at :678-743 then finds WS-EACH-CARD(n) EQUAL LOW-VALUES for all seven rows and CONTINUEs seven times, so every row item is still the LOW-VALUES that :643 left - which is why all twenty-eight row items and the two filter items are pinned as \\u0000 at their declared widths, and why CRDSTP2O through CRDSTP7O are LOW-VALUES here as they are on every screen: 1200 never writes them (practice B5). 1300-SETUP-SCREEN-ATTRS at :837-889 takes its ELSE branch, and with both filters blank and CDEMO-ACCT-ID and CDEMO-CARD-NUM zeroed by the two edit paragraphs it reaches WHEN CDEMO-ACCT-ID = 0 at :849-850 and WHEN CDEMO-CARD-NUM = 0 at :861-862, moving LOW-VALUES into ACCTSIDO and CARDSIDO; INPUT-OK holds, so :884-886 MOVE -1 TO ACCTSIDL is the cursor request and ACCTSIDL is the pinned cursorField. 1400-SETUP-MESSAGE then takes its SIXTH arm at :917-919 - WHEN WS-NO-INFO-MESSAGE, satisfied because :669 left WS-INFO-MSG spaces, and WHEN CA-NEXT-PAGE-EXISTS would satisfy it too because :1287 ran before the failing read - and SET WS-INFORM-REC-ACTIONS TO TRUE touches WS-ERROR-MSG not at all, so :924 carries the diagnostic to the map intact. :926-930 then repaints INFOMSGO and INFOMSGC because NOT WS-NO-INFO-MESSAGE now holds and NOT WS-NO-RECORDS-FOUND holds as well - that guard tests one specific text, 'NO RECORDS FOUND FOR THIS SEARCH CONDITION.' at :121-122, and not 'any error at all' - so this screen shows the record-actions information line in DFHNEUTR AND the file-error line at once. That co-existence is the arm ordering made visible (gate G30), and it is exactly what separates this case from case04, whose empty browse leaves INFOMSGO blank in DFHBMDAR. ATTRIBUTES, AND THE ONE ASYMMETRY THAT CANNOT BE PINNED HERE. The only attribute item this screen writes a non-zero byte into is INFOMSGC, so exactly one attribute is pinned. 1250-SETUP-ARRAY-ATTRIBS at :748-832 does run, and every row takes its WS-EACH-CARD(n) EQUAL LOW-VALUES branch, but the bytes it moves go to CRDSELnA OF CCRDLIAI - the attribute view of the INPUT group's flag byte, app/cpy-bms/COCRDLI.CPY:76 and its siblings - which is not one of the output group's C, P, H or V items and therefore has no home in a ScreenSend. The source asymmetry is recorded here instead, because it is genuine and must not be tidied (practices B4 and B5): row one is protected with DFHBMPRF at :753 while rows two through seven are protected with DFHBMPRO at :766, :777, :789, :801, :812 and :824. Row one is also the row with no CRDSTP1 item at all - app/bms/COCRDLI.bms gives rows two onward a stopper field and row one none - which is why the projection is 45 items and not 46, and COCRDLI declares no FKEYS item, so none is pinned. Two further oddities are recorded rather than corrected: app/cpy/CVCRD01Y.cpy declares SIXTEEN AID conditions on CCARD-AID PIC X(5) - ENTER, CLEAR, PA1, PA2 and PFK01 through PFK12 - where the plan says fifteen; and the three EXEC CICS XCTL verbs stand at :402, :538 and :566 with their PROGRAM operands on the following lines, which is the plan's :403, :539 and :567. Neither affects a byte of this case. WHAT DID NOT HAPPEN. No XCTL, so termination is RETURN_TRANSID from COMMON-RETURN at :604-620, which restates the identity fields and returns the whole 254-byte area. Nothing was written: a browse is read-only, so expectedWrites is empty and all fifty CARDDAT rows are pinned unchanged at 150 bytes each (gates G19 and G21) - app/cpy/CVACT02Y.cpy gives CARD-NUM 1-16, CARD-ACCT-ID 17-27, CARD-CVV-CD 28-30, CARD-EMBOSSED-NAME 31-80, the misspelled CARD-EXPIRAION-DATE 81-90 preserved as the copybook spells it (implicit requirement I1), CARD-ACTIVE-STATUS 91 and FILLER X(59) at 92-150 space-filled. Three of the fifty are pinned field by field as well as byte by byte, and they are the three this case is about: row index 14 is the record the browse anchored on - WS-CA-FIRST-CARD-NUM, page three's first - and row indexes 7 and 13 are the first and last records of page two, the page the operator would have seen had the READPREV succeeded. Pinning those three by name proves the fields the failed page-up did not display are nonetheless intact and decode exactly as CVACT02Y declares them, FILLER included. And expectedReturnCode is 0, which is counter-intuitive for a file-error case and is stated deliberately: COCRDLIC contains no CALL 'CEE3ABD', no EXEC CICS ABEND and no reference to RETURN-CODE anywhere, so a failing browse paints a diagnostic and returns normally. Gates G32 and G35 do not apply to this case - READPREV is a backward BROWSE, not a backward GO TO, and this program has no loop-forming backward jump; the GO TO at :1317 and the GO TO COMMON-RETURN at :513 are a forward exit and a shared terminal, restructured as returns with the fall-through outcome unchanged (rule R7). GATE RULINGS. G15 and G18: one of twenty, and the module is not complete until the diff count is zero across all twenty. G47: this case carries the WHEN OTHER outcome on the backward call sites - :1308-1317 directly, and :1361-1369 by the same composition - completing a ladder whose other outcomes are driven by case01 and case07 (NORMAL), case02 and case05 (ENDFILE at the look-ahead), case04 (the empty browse), case03 (DUPREC at both forward reads) and COCRDLICParityTest.fileStatusLadderIsDrivenAtEveryCallSite (WHEN OTHER on the forward loop read, with RESP 16, which is where the forward site keeps its assertion). The outcome is named with the frozen FileStatus.Outcome token OTHER and forced through the readNext key, which is the only key the seven-member RepositoryOperation set offers for a browse read and which the adapter serves to readPrev as well - the direction is chosen by the path, not by the key. G37 and R6: the page position arrives entirely in the payload cursor and no server-side state exists. G39: the page size is the VALUE 7 at :177-178 and is not configurable, so no pageSize member appears. G45: one CARDDAT binding key only - CARDAIX at :215-217 stays declared and unopened. G51: CONTROLLER_POJO, so the assertion reaches the logic with no HTTP in the path. PROVENANCE (practice B12). Every value here is STATICALLY DERIVED from app/cbl/COCRDLIC.cbl [:47, :113-126, :153-171, :177-178, :181-184, :213-217, :229-248, :311, :327-331, :357-380, :410-414, :439-445, :501-513, :604-620, :642-672, :678-743, :748-832, :837-889, :895-932 and :924, :1266-1268, :1273-1280, :1284-1288, :1294-1307, :1308-1317, :1320-1371, :1339-1353, :1361-1369, :1375-1377], from app/cpy-bms/COCRDLI.CPY and app/bms/COCRDLI.bms for the 45 payload widths, from app/cpy/CVACT02Y.cpy for the 150-byte record, from app/cpy/CVCRD01Y.cpy, app/cpy/COCOM01Y.cpy, app/cpy/CSSTRPFY.cpy and app/cpy/COTTL01Y.cpy, from app/csd/CARDDEMO.CSD for the CARDDAT file definition, and from the real app/data/ASCII/carddata.txt - and it was NEVER captured from a live COBOL execution, which risk R-A of the plan records as impossible in this environment. The fixture is US-ASCII, named explicitly rather than defaulted (practice B8), and LOW-VALUES and SPACES are kept distinct throughout: the unfilled rows are \\u0000 while the three bytes that pad the error line are spaces. No user rules exist for this project - review_rules returns exactly 'No user rules provided.' - so AAP 0.10.2's practices govern and none was invented.",
   "unitKind": "CONTROLLER_POJO",
   "inputs": {
     "CARDDAT": {
@@ -10,19 +10,56 @@
     }
   },
   "screenRequest": {
-    "eibcalen": 0,
+    "eibcalen": 160,
+    "aid": "DFHPF7",
     "pinnedClock": "2022-07-19T23:12:34",
     "charset": "US-ASCII",
-    "commarea": {},
-    "mapFields": {},
+    "commarea": {
+      "CDEMO-FROM-TRANID": "CCLI",
+      "CDEMO-FROM-PROGRAM": "COCRDLIC",
+      "CDEMO-USER-TYPE": "U",
+      "CDEMO-PGM-CONTEXT": "0",
+      "CDEMO-LAST-MAP": "CCRDLIA",
+      "CDEMO-LAST-MAPSET": "COCRDLI",
+      "WS-CA-LAST-CARD-NUM": "5407099850479866",
+      "WS-CA-LAST-CARD-ACCT-ID": "00000000021",
+      "WS-CA-FIRST-CARD-NUM": "3766281984155154",
+      "WS-CA-FIRST-CARD-ACCT-ID": "00000000041",
+      "WS-CA-SCREEN-NUM": "3",
+      "WS-CA-LAST-PAGE-DISPLAYED": "9",
+      "WS-CA-NEXT-PAGE-IND": "Y",
+      "WS-RETURN-FLAG": " "
+    },
+    "mapFields": {
+      "ACCTNO1I": "00000000041",
+      "CRDNUM1I": "3766281984155154",
+      "CRDSTS1I": "Y",
+      "ACCTNO2I": "00000000019",
+      "CRDNUM2I": "3940246016141489",
+      "CRDSTS2I": "Y",
+      "ACCTNO3I": "00000000003",
+      "CRDNUM3I": "3999169246375885",
+      "CRDSTS3I": "Y",
+      "ACCTNO4I": "00000000013",
+      "CRDNUM4I": "4011500891777367",
+      "CRDSTS4I": "Y",
+      "ACCTNO5I": "00000000034",
+      "CRDNUM5I": "4385271476627819",
+      "CRDSTS5I": "Y",
+      "ACCTNO6I": "00000000036",
+      "CRDNUM6I": "4534784102713951",
+      "CRDSTS6I": "Y",
+      "ACCTNO7I": "00000000007",
+      "CRDNUM7I": "4859452612877065",
+      "CRDSTS7I": "Y"
+    },
     "forcedOutcomes": {
       "readNext": {
         "outcome": "OTHER",
-        "resp": 16,
+        "resp": 19,
         "resp2": 0
       }
-    },
-    "aid": "DFHENTER"
+    }
   },
   "expectedResponse": {
     "navigation": {
@@ -52,7 +89,7 @@
           "PGMNAMEO": "COCRDLIC",
           "TITLE02O": "              CardDemo                  ",
           "CURTIMEO": "23:12:34",
-          "PAGENOO": "1  ",
+          "PAGENOO": "2  ",
           "ACCTSIDO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
           "CARDSIDO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
           "CRDSEL1O": "\u0000",
@@ -90,7 +127,7 @@
           "CRDNUM7O": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
           "CRDSTS7O": "\u0000",
           "INFOMSGO": "TYPE S FOR DETAIL, U TO UPDATE ANY RECORD    ",
-          "ERRMSGO": "File Error: READ     on CARDDAT   returned RESP 000000016 ,RESP2 000000000    "
+          "ERRMSGO": "File Error: READ     on CARDDAT   returned RESP 000000019 ,RESP2 000000000    "
         },
         "attributes": {
           "INFOMSGC": "DFHNEUTR"
@@ -140,6 +177,15 @@
     {
       "dataset": "CARDDAT",
       "rowIndex": 7,
+      "fields": {
+        "CARD-NUM": "1561409106491600",
+        "CARD-ACCT-ID": "00000000035",
+        "CARD-CVV-CD": "031",
+        "CARD-EMBOSSED-NAME": "Angelica Dach                                     ",
+        "CARD-EXPIRAION-DATE": "2025-09-23",
+        "CARD-ACTIVE-STATUS": "Y",
+        "FILLER": "                                                           "
+      },
       "expectedBytes": "156140910649160000000000035031Angelica Dach                                     2025-09-23Y                                                           "
     },
     {
@@ -170,11 +216,29 @@
     {
       "dataset": "CARDDAT",
       "rowIndex": 13,
+      "fields": {
+        "CARD-NUM": "3260763612337560",
+        "CARD-ACCT-ID": "00000000010",
+        "CARD-CVV-CD": "342",
+        "CARD-EMBOSSED-NAME": "Maybell Mann                                      ",
+        "CARD-EXPIRAION-DATE": "2023-01-27",
+        "CARD-ACTIVE-STATUS": "Y",
+        "FILLER": "                                                           "
+      },
       "expectedBytes": "326076361233756000000000010342Maybell Mann                                      2023-01-27Y                                                           "
     },
     {
       "dataset": "CARDDAT",
       "rowIndex": 14,
+      "fields": {
+        "CARD-NUM": "3766281984155154",
+        "CARD-ACCT-ID": "00000000041",
+        "CARD-CVV-CD": "622",
+        "CARD-EMBOSSED-NAME": "Lucinda Dach                                      ",
+        "CARD-EXPIRAION-DATE": "2023-04-24",
+        "CARD-ACTIVE-STATUS": "Y",
+        "FILLER": "                                                           "
+      },
       "expectedBytes": "376628198415515400000000041622Lucinda Dach                                      2023-04-24Y                                                           "
     },
     {

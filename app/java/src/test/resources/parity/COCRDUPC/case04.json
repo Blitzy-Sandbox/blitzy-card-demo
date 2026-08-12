@@ -1,0 +1,116 @@
+{
+  "program": "COCRDUPC",
+  "caseId": "case04",
+  "description": "Statically derived by structured reading of app/cbl/COCRDUPC.cbl against the app/cpy-bms/COCRDUP.CPY xxxI widths, app/bms/COCRDUP.bms, app/cpy/CVCRD01Y.cpy, app/cpy/COCOM01Y.cpy, app/cpy/COTTL01Y.cpy and the real US-ASCII app/data/ASCII/carddata.txt; never captured from a run, recorded against one or replayed from one, because this environment cannot execute the legacy COBOL - no z/OS or CICS runtime, the available compiler reports its indexed file handler disabled, no Language Environment CEE* services exist, and DFHAID, DFHBMSCA and DFHATTR are absent from the repository. THE TWO DELIBERATE INPUTS, STATED BECAUSE NO FIXTURE ROW SUPPLIES THEM. ACCTSIDI arrives as '0000000O050' - the genuine fixture account id 00000000050 from row one of carddata.txt with the letter O typed in place of the digit zero in the eighth byte, which is the classic O-for-0 keying slip and the smallest edit that makes an otherwise real key non-numeric. It is chosen rather than an arbitrary alphabetic filler for a reason that decides the branch: the field must fail IF CC-ACCT-ID IS NOT NUMERIC at :740 while NOT satisfying CC-ACCT-ID-N EQUAL ZEROS at :727, and '0000000O050' carries both a non-digit and a genuine non-zero digit, so the zeros disjunct is false under a strict all-digits reading and under a lenient zoned-decimal reading alike - the outcome never rests on how a numeric redefine of non-numeric bytes is interpreted, which is the one place this path could otherwise have been argued either way. CARDSIDI arrives as '0500024453765740', row one's real card number, all sixteen digits and non-zero, so 1220-EDIT-CARD takes its success limb and the account error stands alone. GUARD. A commarea is present at 489 bytes - LENGTH OF CARDDEMO-COMMAREA 160 plus LENGTH OF WS-THIS-PROGCOMMAREA 329, which is CCUP-CHANGE-ACTION 1 plus CCUP-OLD-DETAILS 89 plus CCUP-NEW-DETAILS 89 plus CARD-UPDATE-RECORD 150 at :274-321 - so the :388-390 guard fails: EIBCALEN is not zero and, although CDEMO-FROM-PROGRAM does equal LIT-MENUPGM, the second conjunct NOT CDEMO-PGM-REENTER is false because CDEMO-PGM-CONTEXT is 1. The ELSE at :395-401 therefore keeps the passed area, slicing CARDDEMO-COMMAREA from DFHCOMMAREA(1:160) and WS-THIS-PROGCOMMAREA from DFHCOMMAREA(161:329). CCUP-CHANGE-ACTION arrives LOW-VALUES and so satisfies 88 CCUP-DETAILS-NOT-FETCHED at :278-280; it is described here rather than declared in the request because a ScreenRequest commarea key must be a CDEMO- or WS- prefixed name and CCUP- is neither. ENTER is pressed, so the coercion at :413-424 leaves the AID alone. DISPATCH. The ordered EVALUATE TRUE at :429 refutes four arms before the fifth. Arm one at :435-439 needs PF03, or CCUP-CHANGES-OKAYED-AND-DONE, or CCUP-CHANGES-FAILED paired with CDEMO-LAST-MAPSET equal to LIT-CCLISTMAPSET. Arm two at :482-485 needs CDEMO-FROM-PROGRAM equal to LIT-CCLISTPGM, which is 'COCRDLIC' at :227-228 and not the 'COMEN01C' this turn carries. Arm three at :502-505 needs CDEMO-PGM-ENTER on its first WHEN and NOT CDEMO-PGM-REENTER on its second, and re-entry refutes both. Arm four at :517-518 needs one of the two change-complete states. Control therefore reaches WHEN OTHER at :535 and performs 1000-PROCESS-INPUTS, 2000-DECIDE-ACTION and 3000-SEND-MAP before GO TO COMMON-RETURN at :542. Which arm is reached is a source-order fact, which is gate G30. RECEIVE. 1100-RECEIVE-MAP at :578-636 INITIALIZEs CCUP-NEW-DETAILS at :586, and because '0000000O050' is neither the single-character '*' nor SPACES the test at :589-590 fails and the ELSE limb at :593-595 moves ACCTSIDI into both CC-ACCT-ID and CCUP-NEW-ACCTID - eleven bytes into an eleven-byte receiver, so nothing is padded or truncated. The card number takes the same ELSE at :602-604 into CC-CARD-NUM and CCUP-NEW-CARDID. EDIT. 1200-EDIT-MAP-INPUTS at :641-665 sets INPUT-OK at :643 and, CCUP-DETAILS-NOT-FETCHED holding at :645, performs 1210-EDIT-ACCOUNT at :647-648 and then 1220-EDIT-CARD at :650-651. THE HEADLINE FINDING - THE MESSAGE IS A HARD-CODED LITERAL, NOT THE DECLARED 88-LEVEL. 1210-EDIT-ACCOUNT at :721-756 sets FLG-ACCTFILTER-NOT-OK at :722, value '0'. The not-supplied test at :725-727 fails on all three disjuncts - the field is neither LOW-VALUES nor SPACES, and read through CC-ACCT-ID-N it is not zeros - so execution falls through to :740, where IF CC-ACCT-ID IS NOT NUMERIC is true. That arm sets INPUT-ERROR at :741, re-affirms FLG-ACCTFILTER-NOT-OK at :742 - redundantly, since :722 already did, and the redundancy is reproduced rather than tidied - and then, guarded by IF WS-RETURN-MSG-OFF at :743 which is still true from the SET at :384, executes the MOVE at :744-746 of the direct literal 'ACCOUNT FILTER,IF SUPPLIED MUST BE A 11 DIGIT NUMBER'. Four properties of that literal are pinned here and each of them is a way a plausible translation goes wrong. It is UPPER-CASE throughout, unlike every 88-level message text in this program, which are mixed case. It has NO SPACE AFTER THE COMMA - 'FILTER,IF' - so a translator who tidied the punctuation would shift every byte from position sixteen onward. It is 52 bytes, which fits inside WS-RETURN-MSG PIC X(75) at :173 with no truncation, so the value reaching the screen is the literal padded to 75 and then to 80 once :1163 moves it into ERRMSGO PIC X(80), which is 52 characters followed by exactly 28 spaces. And, decisively, the two 88-levels declared for precisely this condition - SEARCHED-ACCT-ZEROES at :189-190 and SEARCHED-ACCT-NOT-NUMERIC at :191-192, which both carry the DIFFERENT, mixed-case text 'Account number must be a non zero 11 digit number' - are NEVER SET anywhere in the 1,560 lines. They are dead code. Practice B5 requires they stay dead: their text must not appear on this screen and the program must not be corrected to use them, and practice B4 requires the divergence be documented here rather than silently reconciled, which is what this paragraph does. The arm closes by moving ZERO to CDEMO-ACCT-ID at :748 and LOW-VALUES to CCUP-NEW-ACCTID at :749 before GO TO 1210-EDIT-ACCOUNT-EXIT at :750. Note carefully what :749 does NOT touch: CC-ACCT-ID is left holding the submitted text, and that omission is what makes the echo below possible. WHY 'No input received' IS ABSENT, AND WHY THAT NEEDED A VALID CARD. 1220-EDIT-CARD at :762-799 sets FLG-CARDFILTER-NOT-OK at :765, fails its not-supplied test at :768-770 and its not-numeric test at :784, and so reaches the ELSE at :795-798: MOVE CC-CARD-NUM-N TO CDEMO-CARD-NUM, MOVE CC-CARD-NUM TO CCUP-NEW-CARDID, SET FLG-CARDFILTER-ISVALID. Its own IF WS-RETURN-MSG-OFF at :787 is therefore never reached, so nothing competes for the single message slot the account edit has already claimed. The cross-field test at :656-659 then requires FLG-ACCTFILTER-BLANK AND FLG-CARDFILTER-BLANK, and neither flag is BLANK - the account is '0' and the card is '1' - so NO-SEARCH-CRITERIA-RECEIVED is NOT set and 'No input received' from :185-186 appears nowhere below. That matters because :656-659 carries no IF WS-RETURN-MSG-OFF guard at all and would otherwise have overwritten the account literal, exactly as it does in case03; supplying a valid card is what keeps this case pinning the message :744-746 actually produces. SKIP PROOF. 1200 moves LOW-VALUES over the whole of CCUP-NEW-CARDDATA at :653 and leaves through GO TO 1200-EDIT-MAP-INPUTS-EXIT at :661, so 1230-EDIT-NAME, 1240-EDIT-CARDSTATUS, 1250-EDIT-EXPIRY-MON and 1260-EDIT-EXPIRY-YEAR never run: no card-name, card-status, expiry-month or expiry-year message appears, no per-field asterisk from :1268-1307 is set, and none of their flags leaves its initial state. That :653 wipe is also why only the two key items are declared in mapFields - whatever the five data-bearing xxxI items carried is discarded before any paragraph could read it, and 3200's CCUP-DETAILS-NOT-FETCHED arm at :1100-1106 repaints CRDNAMEO, CRDSTCDO, EXPDAYO, EXPMONO and EXPYEARO with LOW-VALUES regardless. DECIDE, AND GATE G47. 2000-DECIDE-ACTION at :948-966 reaches WHEN CCUP-DETAILS-NOT-FETCHED at :954, which carries no statements of its own and is therefore grouped with WHEN CCARD-AID-PFK12 at :958 - a genuine multi-WHEN grouping in the source, not a fall-through defect - so the body executed is the IF FLG-ACCTFILTER-ISVALID AND FLG-CARDFILTER-ISVALID at :959-960. The card flag satisfies it but the account flag is '0', so the conjunction is false, 9000-READ-DATA at :961-962 is never performed and CCUP-SHOW-DETAILS is never set. No CARDDAT read of any kind is issued on this path - there is no repository call site on it at all, which is the form gate G47 takes here - so expectedWrites and expectedFinalState are empty as positive assertions rather than by omission, and the three seeded rows are left exactly as seeded. INFO LINE. 3000-SEND-MAP runs 3100, 3200, 3250, 3300 then 3400 in that order at :1036-1045, which matters because 3250 has already set both message fields by the time 3300 tests them. 3100 fills CCRDUPAO with LOW-VALUES at :1053 - which is why every field this program does not write reads back as X'00' and every colour it does not write reads back as the DFHDFCOL mnemonic, that byte being 0x00 - then moves the two active COTTL01Y titles, LIT-THISTRANID, LIT-THISPGM and the MM/DD/YY and HH:MM:SS renderings of the pinned clock. FKEYSO and FKEYSCO stay LOW-VALUES because the program never writes them: their text is a physical-map INITIAL at app/bms/COCRDUP.bms:162 and :167 that CICS merges at send time. 3250's ordered nine-arm EVALUATE at :1140-1159 fails arm one on CDEMO-PGM-ENTER and matches arm two, WHEN CCUP-DETAILS-NOT-FETCHED at :1143, setting 88 PROMPT-FOR-SEARCH-KEYS from :162-163 into WS-INFO-MSG PIC X(40) and thence INFOMSGO at :1161. GATE G38, THE NOT-OK HALF, AND WHY THIS CASE EXISTS ALONGSIDE case03. WS-EDIT-ACCT-FLAG PIC X(1) at :57-60 carries three mutually exclusive 88-levels on one byte - FLG-ACCTFILTER-NOT-OK '0', FLG-ACCTFILTER-ISVALID '1' and FLG-ACCTFILTER-BLANK ' ' - and COCRDUPC copies CSSTRPFY at :1528 but no CSSETATY, re-implementing the highlight inline through two guards that this flag decides. The first, IF FLG-ACCTFILTER-NOT-OK at :1243-1245, DOES fire, so DFHRED reaches ACCTSIDC. The second, IF FLG-ACCTFILTER-BLANK AND CDEMO-PGM-REENTER at :1247-1251, does NOT fire, because '0' is not ' ' - so no asterisk is moved into ACCTSIDO and the field keeps what 3200 painted. What 3200 painted is the submitted text: at :1087-1091 CDEMO-PGM-ENTER is false, so the ELSE runs, and because CC-ACCT-ID still holds '0000000O050' - :749 cleared CCUP-NEW-ACCTID and not CC-ACCT-ID - the numeric redefine CC-ACCT-ID-N is not zero and the ELSE limb at :1090 moves CC-ACCT-ID into ACCTSIDO. That is gate G34: CC-ACCT-ID-N is the PIC 9(11) REDEFINES of the PIC X(11) span declared in app/cpy/CVCRD01Y.cpy, one span read two ways, and here the two readings disagree about whether the bytes are a number while agreeing that they are not zero. The card side is the mirror image: FLG-CARDFILTER-ISVALID means :1253-1255 and :1257-1261 both fail, so CARDSIDC keeps DFHDFCOL and :1096 paints CARDSIDO with the real card number. The colour reset at :1238-1241 is skipped because CDEMO-LAST-MAPSET is spaces rather than LIT-CCLISTMAPSET, and every guard from :1263 to :1307 additionally requires CCUP-CHANGES-NOT-OK and so cannot fire from this state. Taken together, case03 pins the BLANK half - an asterisk and DFHRED on both key fields under the re-entry guard - and this case pins the NOT-OK half - DFHRED on the account field with no asterisk and the submitted value echoed back - and it is the pair that proves gate G38 for the two search-key fields. They must not be flattened into one case, and case01 is the same screen under CDEMO-PGM-ENTER with neither. CURSOR. The ordered EVALUATE at :1211-1235 passes over arm one, whose FOUND-CARDS-FOR-ACCOUNT at :160-161 and NO-CHANGES-DETECTED at :187-188 are both false given that WS-INFO-MSG holds the search-key prompt and WS-RETURN-MSG holds the account-filter literal, and matches arm two at :1215-1216 on its FLG-ACCTFILTER-NOT-OK limb - the first of the two limbs, where case03 matched the second. ACCTSIDL alone receives the -1 at :1217, and the card, name, status, month and year arms are never considered, so exactly one cursor position is set. ATTRIBUTES THIS CONTRACT CANNOT CARRY. 3300's protection matrix at :1172-1180 takes its CCUP-DETAILS-NOT-FETCHED arm and moves DFHBMFSE into ACCTSIDA and CARDSIDA and DFHBMPRF into CRDNAMEA, CRDSTCDA, EXPMONA and EXPYEARA, EXPDAYA being commented out at :1178, while :1309-1313 takes its ELSE and moves DFHBMBRY into INFOMSGA because an info message is present; :1315-1317 is skipped because PROMPT-FOR-CONFIRMATION is false, so FKEYSCA is untouched. Those are xxxA items of CCRDUPAI and a ScreenSend attribute key must end in C, P, H or V, so they are recorded here in prose rather than invented into a member the contract would refuse - the seventeen xxxC colours below are the attribute metadata this send does carry, and EXPDAYC is DFHBMDAR from the unconditional MOVE at :1285. GATE G37. All conversation state travels in the payload and none of it on the server: the sixteen COCOM01Y fields go in and come back. The turn arrives carrying account 50 and its card, so the zeroing at :748 is observable rather than invisible - CDEMO-ACCT-ID reads 00000000000 in navigation while CDEMO-CARD-NUM reads 0500024453765740, the value :796 moved through CC-CARD-NUM-N into the PIC 9(16) field. 1000-PROCESS-INPUTS also moves WS-RETURN-MSG into CCARD-ERROR-MSG at :569 and LIT-THISPGM into CCARD-NEXT-PROG at :570, and 3400 moves LIT-THISMAPSET into the X(7) CCARD-NEXT-MAPSET at :1326, truncating 'COCRDUP ' on the right, so the response names COCRDUPC, COCRDUP and CCRDUPA and ends at the EXEC CICS RETURN TRANSID at :554-557 rather than an XCTL. Gates G32, G35 and G39 have no site here and are deliberately not encoded: every GO TO in COCRDUPC is a forward early exit or the shared COMMON-RETURN, so there is no backward loop to restructure; there is no CALL 'CEE3ABD' anywhere in the program, so the return code is 0 and no AbendException arises; and COCRDUP declares no paging field. No CSMSG01Y literal appears either - the copybook is COPYd at :340, but CCDA-MSG-THANK-YOU and CCDA-MSG-INVALID-KEY are referenced nowhere in the program, so neither text can reach a message channel - and the program contains no DISPLAY verb at all, the single textual occurrence of the word being inside the comment at :1119, so nothing can reach the DISPLAY_LINE, WS_MESSAGE_80 or SCREEN_ERRMSG_78 channel and expectedMessages is empty. The clock is pinned to 2022-07-19T23:12:33, the same instant case01, case02, case03 and case06 pin, so CURDATEO and CURTIMEO are literals rather than today. THE THREE STRUCTURAL GATES. This is case 4 of the twenty this program owns under parity/COCRDUPC/, which is gate G15, and it carries no weaker an obligation than any of the other nineteen: gate G18 is per module rather than per build, so nineteen clean cases and one difference leaves this module incomplete rather than ninety-five per cent done. Gate G51 is satisfied by the unitKind above: CONTROLLER_POJO means CardUpdateController is constructed through its own constructor and its handler called directly, with no MockMvc, no servlet container, no web application context and no JobLauncher anywhere in the path, which is what makes the ordered EVALUATE arms and the 88-level truth states above reachable without an HTTP layer between the assertion and the code.",
+  "unitKind": "CONTROLLER_POJO",
+  "inputs": {
+    "CARDDAT": {
+      "fixture": "carddata.txt",
+      "fromRow": 0,
+      "rowCount": 3
+    }
+  },
+  "jobParameters": {},
+  "screenRequest": {
+    "eibcalen": 489,
+    "aid": "DFHENTER",
+    "pinnedClock": "2022-07-19T23:12:33",
+    "charset": "US-ASCII",
+    "commarea": {
+      "CDEMO-FROM-TRANID": "CM00",
+      "CDEMO-FROM-PROGRAM": "COMEN01C",
+      "CDEMO-TO-TRANID": "    ",
+      "CDEMO-TO-PROGRAM": "        ",
+      "CDEMO-USER-ID": "ADMIN001",
+      "CDEMO-USER-TYPE": "A",
+      "CDEMO-PGM-CONTEXT": "1",
+      "CDEMO-CUST-ID": "000000000",
+      "CDEMO-CUST-FNAME": "                         ",
+      "CDEMO-CUST-MNAME": "                         ",
+      "CDEMO-CUST-LNAME": "                         ",
+      "CDEMO-ACCT-ID": "00000000050",
+      "CDEMO-ACCT-STATUS": " ",
+      "CDEMO-CARD-NUM": "0500024453765740",
+      "CDEMO-LAST-MAP": "       ",
+      "CDEMO-LAST-MAPSET": "       "
+    },
+    "mapFields": {
+      "ACCTSIDI": "0000000O050",
+      "CARDSIDI": "0500024453765740"
+    },
+    "forcedOutcomes": {}
+  },
+  "expectedResponse": {
+    "nextProgram": "COCRDUPC",
+    "nextMapset": "COCRDUP",
+    "nextMap": "CCRDUPA",
+    "navigation": {
+      "CDEMO-FROM-TRANID": "CM00",
+      "CDEMO-FROM-PROGRAM": "COMEN01C",
+      "CDEMO-TO-TRANID": "    ",
+      "CDEMO-TO-PROGRAM": "        ",
+      "CDEMO-USER-ID": "ADMIN001",
+      "CDEMO-USER-TYPE": "A",
+      "CDEMO-PGM-CONTEXT": "1",
+      "CDEMO-CUST-ID": "000000000",
+      "CDEMO-CUST-FNAME": "                         ",
+      "CDEMO-CUST-MNAME": "                         ",
+      "CDEMO-CUST-LNAME": "                         ",
+      "CDEMO-ACCT-ID": "00000000000",
+      "CDEMO-ACCT-STATUS": " ",
+      "CDEMO-CARD-NUM": "0500024453765740",
+      "CDEMO-LAST-MAP": "       ",
+      "CDEMO-LAST-MAPSET": "       "
+    },
+    "sends": [
+      {
+        "fields": {
+          "TRNNAMEO": "CCUP",
+          "TITLE01O": "      AWS Mainframe Modernization       ",
+          "CURDATEO": "07/19/22",
+          "PGMNAMEO": "COCRDUPC",
+          "TITLE02O": "              CardDemo                  ",
+          "CURTIMEO": "23:12:33",
+          "ACCTSIDO": "0000000O050",
+          "CARDSIDO": "0500024453765740",
+          "CRDNAMEO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "CRDSTCDO": "\u0000",
+          "EXPMONO": "\u0000\u0000",
+          "EXPYEARO": "\u0000\u0000\u0000\u0000",
+          "EXPDAYO": "\u0000\u0000",
+          "INFOMSGO": "Please enter Account and Card Number    ",
+          "ERRMSGO": "ACCOUNT FILTER,IF SUPPLIED MUST BE A 11 DIGIT NUMBER                            ",
+          "FKEYSO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "FKEYSCO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000"
+        },
+        "attributes": {
+          "TRNNAMEC": "DFHDFCOL",
+          "TITLE01C": "DFHDFCOL",
+          "CURDATEC": "DFHDFCOL",
+          "PGMNAMEC": "DFHDFCOL",
+          "TITLE02C": "DFHDFCOL",
+          "CURTIMEC": "DFHDFCOL",
+          "ACCTSIDC": "DFHRED",
+          "CARDSIDC": "DFHDFCOL",
+          "CRDNAMEC": "DFHDFCOL",
+          "CRDSTCDC": "DFHDFCOL",
+          "EXPMONC": "DFHDFCOL",
+          "EXPYEARC": "DFHDFCOL",
+          "EXPDAYC": "DFHBMDAR",
+          "INFOMSGC": "DFHDFCOL",
+          "ERRMSGC": "DFHDFCOL",
+          "FKEYSC": "DFHDFCOL",
+          "FKEYSCC": "DFHDFCOL"
+        }
+      }
+    ],
+    "cursorField": "ACCTSIDL",
+    "termination": "RETURN_TRANSID"
+  },
+  "expectedWrites": [],
+  "expectedFinalState": [],
+  "expectedReturnCode": 0,
+  "expectedMessages": [],
+  "normalisations": [],
+  "expectedDatasets": []
+}

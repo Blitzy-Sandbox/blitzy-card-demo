@@ -1,7 +1,7 @@
 {
   "program": "COCRDLIC",
   "caseId": "case16",
-  "description": "2220-EDIT-CARD's rejection arm at :1052-1062, the account filter's mirror with one deliberate difference. The card paragraph moves its message only IF WS-ERROR-MSG-OFF [:1056-1060]; the account paragraph has no such guard. Here the account filter was left blank, so the message line is still off and the card message is moved. 1300-SETUP-SCREEN-ATTRS reaches WHEN FLG-CARDFILTER-NOT-OK at :858 and echoes the rejected sixteen characters back, and :877-879 reddens CARDSIDC and aims the cursor at CARDSIDL. The account field takes the WHEN CDEMO-ACCT-ID = 0 arm at :849 and comes back LOW-VALUES; the previous page's rows are repainted from the restored WS-SCREEN-DATA exactly as in case15, and they are protected rather than reddened because both filter rejections set FLG-PROTECT-SELECT-ROWS-YES.",
+  "description": "XCTL site one taken on a RE-ENTRY, which is what separates this case from case11: both reach the literal transfer at :402-405, but case11 arrives with EIBCALEN = 0, where :316 INITIALIZEs the communication area and :319 supplies CDEMO-FROM-PROGRAM itself, while this case arrives with EIBCALEN = 160 and the operator's own commarea, so :327-331 restores both halves of DFHCOMMAREA and the :357-358 guard - EIBCALEN > 0 AND CDEMO-FROM-PROGRAM EQUAL LIT-THISPGM - is satisfied by the carried value. 2000-RECEIVE-MAP therefore RUNS [:359-360], which case11 cannot show, and the whole point of this case is that its work still crosses the transfer even though the screen it edited is never sent again. PF3 resolves through app/cpy/CSSTRPFY.cpy:34-35 to CCARD-AID-PFK03 and is one of the four keys :371-374 accepts, so :378-380 does not force it to ENTER. The guard at :384-385 is a plain IF standing AHEAD of the :418 dispatcher EVALUATE, so it pre-empts that EVALUATE's own PF03 arm; the precedence is structural rather than incidental (gate G30, rule R7). :386-392 restates the identity - CDEMO-FROM-TRANID 'CCLI', CDEMO-FROM-PROGRAM 'COCRDLIC', CDEMO-LAST-MAPSET 'COCRDLI', CDEMO-LAST-MAP 'CCRDLIA' - and names LIT-MENUPGM as CDEMO-TO-PROGRAM. PF03 HAS TWO BEHAVIOURS AND THIS IS ONLY THE FIRST. Because :385 also requires CDEMO-FROM-PROGRAM to equal LIT-THISPGM, PF3 arriving from any OTHER program misses this IF entirely and lands instead on the dispatcher arm at :458-482, which is WHEN CCARD-AID-PFK03 OR-grouped with WHEN CDEMO-PGM-REENTER AND CDEMO-FROM-PROGRAM NOT EQUAL LIT-THISPGM: that arm INITIALIZEs both commareas [:462-463], resets to CA-FIRST-PAGE and CA-LAST-PAGE-NOT-SHOWN [:470-471], re-reads page one FORWARD and sends the map [:478-481], then GO TO COMMON-RETURN [:482]. It transfers nowhere. The two must not be conflated - one leaves the program and one repaints it. THE PRESERVED QUIRK. :394 moves LIT-MENUMAPSET into CCARD-NEXT-MAPSET, giving 'COMEN01', but :395 moves LIT-THISMAP - this screen's own 'CCRDLIA' - into CCARD-NEXT-MAP, so nextMap is 'CCRDLIA' and NOT 'COMEN1A'. LIT-MENUMAP PIC X(7) VALUE 'COMEN1A' is declared at :193-194 and moved nowhere in the program; LIT-MENUTRANID PIC X(4) VALUE 'CM00' is declared at :189-190 and likewise never reaches CDEMO-TO-TRANID, which is why that field still holds the four spaces it arrived with. Both are recorded and neither is corrected (practices B4 and B5). CCARD-NEXT-PROG is not set on this path either - the transfer names the literal directly at :403 - so the program the client must call next is the XCTL operand LIT-MENUPGM, which is also what :392 put into CDEMO-TO-PROGRAM. That makes this the LITERAL-shaped member of the trio gate G40 asks for: PROGRAM(LIT-MENUPGM) here, PROGRAM(CCARD-NEXT-PROG) at :539 and :567 in case14 and case15. WHAT 2000-RECEIVE-MAP LEAVES BEHIND, AND IT IS NOT THE SCREEN. 2100-RECEIVE-SCREEN reads only the two filters and the seven action codes [:969-978]; ACCTNOnI, CRDNUMnI and CRDSTSnI are transmitted and never copied, because the row table travels in the commarea instead. ACCTSIDI carries a valid eleven-digit filter, so 2210-EDIT-ACCOUNT takes its success path and :1027 MOVEs CC-ACCT-ID into CDEMO-ACCT-ID - overwriting the '00000000012' the operator's commarea arrived with, and the '00000000037' it wrote is what crosses the transfer. CARDSIDI is not supplied, so it reaches the program as LOW-VALUES and 2220-EDIT-CARD takes its not-supplied path, where :1046 MOVEs ZEROES into CDEMO-CARD-NUM - so the carried '0982496213629795' is zeroed. Both fields are rewritten unconditionally by the edits whenever the map is received, which is a real observable consequence of a keystroke whose only purpose was to leave. No action code is typed, so 2250-EDIT-ARRAY tallies zero and sets no error; nothing on this path fails edit, so there is no CSSETATY DFHRED and no '*' highlight anywhere (gate G38). :388 SETs CDEMO-USRTYP-USER TO TRUE unconditionally, so the inbound 'A' of ADMIN001 leaves as 'U'. COCRDLIC writes CDEMO-USER-TYPE at :320, :388, :466, :522 and :550 and never reads it, and performs no authorization check of any kind: the administrator is handed to COMEN01C as a regular user. That posture is reproduced, not repaired (practice B6). CDEMO-USER-ID is referenced nowhere in the program, so 'ADMIN001' survives the transfer untouched - which is precisely how the conversation state is carried in the payload rather than on the server (gate G37, rule R6): there is no server-side forward, no redirect chain and no session affinity. CDEMO-PGM-CONTEXT arrives as 1 - 88 CDEMO-PGM-REENTER - and leaves as 0, because SET CDEMO-PGM-ENTER TO TRUE is issued twice, at :389 and again at :400. The duplicate is kept. :396 SETs WS-EXIT-MESSAGE, whose 88 value at :119-120 is 'PF03 PRESSED.EXITING' - twenty characters, the period with no space before EXITING - held in WS-ERROR-MSG PIC X(75). The transfer then discards it: 1000-SEND-MAP is performed only from the six arms that GO TO COMMON-RETURN, so nothing ever MOVEs it into ERRMSGO PIC X(78) and no map is sent at all. That is why this case pins zero sends, no cursor field and no message on any channel - the message exists in working storage and reaches no observable surface. The eight WS-THIS-PROGCOMMAREA cursor items [:229-248] arrive holding what listing page one leaves: WS-CA-FIRST-CARDKEY is the first row read [:1174-1176] and WS-CA-LAST-CARDKEY is the EIGHTH row, because the look-ahead READNEXT at :1197 succeeded and :1210-1214 SET CA-NEXT-PAGE-EXISTS and then overwrote the seventh row's key [:1194-1195] with it. This path neither reads nor rewrites the cursor - :410-414 stands after the transfer and is never reached - so the 58-byte prefix crosses unchanged. CARDDAT is seeded because the transaction opens on it, but this keystroke never browses: 9000-READ-FORWARD and 9100-READ-BACKWARDS are performed only from dispatcher arms, so no STARTBR, READNEXT or READPREV happens, no FileStatus outcome is contributed and nothing is forced (gate G47). The card master is therefore expected back exactly as seeded - fifty 150-byte records, CARD-EXPIRAION-DATE spelt as app/cpy/CVACT02Y.cpy spells it at 81-90 and FILLER PIC X(59) space-filled at 92-150, which is a positive assertion that the transaction left the file alone (gates G19 and G21). CARDAIX [:215-217] stays declared and unused; it is a path over the same base cluster and never a second table (gate G45). Page size stays the seven of WS-MAX-SCREEN-LINES [:177-178] and is not configurable (gate G39). COCRDLIC contains no CALL 'CEE3ABD' and moves nothing into RETURN-CODE, so the return code is 0 even though control is handed away (gates G32 and G35 do not apply). PROVENANCE. Every value here is STATICALLY DERIVED from app/cbl/COCRDLIC.cbl, the copybooks app/cpy/COCOM01Y.cpy (160 bytes = 34 + 84 + 12 + 16 + 14), app/cpy/CVCRD01Y.cpy (213 bytes = 5 + 8 + 7 + 7 + 75 + 75 + 11 + 16 + 9, whose CCARD-NEXT-MAPSET and CCARD-NEXT-MAP are PIC X(7) and not X(8)) and app/cpy/CVACT02Y.cpy (150 bytes), the app/cpy-bms/COCRDLI.CPY xxxI PICTURE clauses, and the real app/data/ASCII/carddata.txt fixture. It was NEVER captured from a live COBOL run: no z/OS or CICS runtime is available and no mainframe baseline is claimed (risk R-A, practice B12). Two counts in the plan's summary are corrected against the source rather than copied: the plan places this guard at :388-389 and the dispatcher arm at :457-482, whereas the source has them at :384-385 and :458-482, and it cites :403, :539 and :567 for the transfers, which are the PROGRAM operand lines while the XCTL verbs stand at :402, :538 and :566 - the same three sites either way; and it counts 15 CCARD-AID conditions where app/cpy/CVCRD01Y.cpy declares 16 - ENTER, CLEAR, PA1, PA2 and PFK01 through PFK12, with no PA3 (practice B4).",
   "unitKind": "CONTROLLER_POJO",
   "inputs": {
     "CARDDAT": {
@@ -11,17 +11,29 @@
   },
   "screenRequest": {
     "eibcalen": 160,
+    "aid": "DFHPF3",
     "pinnedClock": "2022-07-19T23:12:34",
     "charset": "US-ASCII",
     "commarea": {
       "CDEMO-FROM-TRANID": "CCLI",
       "CDEMO-FROM-PROGRAM": "COCRDLIC",
-      "CDEMO-USER-TYPE": "U",
-      "CDEMO-PGM-CONTEXT": "0",
+      "CDEMO-USER-ID": "ADMIN001",
+      "CDEMO-USER-TYPE": "A",
+      "CDEMO-PGM-CONTEXT": "1",
+      "CDEMO-ACCT-ID": "00000000012",
+      "CDEMO-CARD-NUM": "0982496213629795",
       "CDEMO-LAST-MAP": "CCRDLIA",
-      "CDEMO-LAST-MAPSET": "COCRDLI"
+      "CDEMO-LAST-MAPSET": "COCRDLI",
+      "WS-CA-LAST-CARD-NUM": "1561409106491600",
+      "WS-CA-LAST-CARD-ACCT-ID": "00000000035",
+      "WS-CA-FIRST-CARD-NUM": "0500024453765740",
+      "WS-CA-FIRST-CARD-ACCT-ID": "00000000050",
+      "WS-CA-SCREEN-NUM": "1",
+      "WS-CA-LAST-PAGE-DISPLAYED": "9",
+      "WS-CA-NEXT-PAGE-IND": "Y"
     },
     "mapFields": {
+      "ACCTSIDI": "00000000037",
       "ACCTNO1I": "00000000050",
       "CRDNUM1I": "0500024453765740",
       "CRDSTS1I": "Y",
@@ -42,88 +54,33 @@
       "CRDSTS6I": "Y",
       "ACCTNO7I": "00000000037",
       "CRDNUM7I": "1142167692878931",
-      "CRDSTS7I": "Y",
-      "CARDSIDI": "4111-1111-ABCD"
-    },
-    "forcedOutcomes": {},
-    "aid": "DFHENTER"
+      "CRDSTS7I": "Y"
+    }
   },
   "expectedResponse": {
+    "nextProgram": "COMEN01C",
+    "nextMapset": "COMEN01",
+    "nextMap": "CCRDLIA",
     "navigation": {
       "CDEMO-FROM-TRANID": "CCLI",
       "CDEMO-FROM-PROGRAM": "COCRDLIC",
       "CDEMO-TO-TRANID": "    ",
-      "CDEMO-TO-PROGRAM": "        ",
-      "CDEMO-USER-ID": "        ",
+      "CDEMO-TO-PROGRAM": "COMEN01C",
+      "CDEMO-USER-ID": "ADMIN001",
       "CDEMO-USER-TYPE": "U",
       "CDEMO-PGM-CONTEXT": "0",
       "CDEMO-CUST-ID": "000000000",
       "CDEMO-CUST-FNAME": "                         ",
       "CDEMO-CUST-MNAME": "                         ",
       "CDEMO-CUST-LNAME": "                         ",
-      "CDEMO-ACCT-ID": "00000000000",
+      "CDEMO-ACCT-ID": "00000000037",
       "CDEMO-ACCT-STATUS": " ",
       "CDEMO-CARD-NUM": "0000000000000000",
       "CDEMO-LAST-MAP": "CCRDLIA",
       "CDEMO-LAST-MAPSET": "COCRDLI"
     },
-    "sends": [
-      {
-        "fields": {
-          "TRNNAMEO": "CCLI",
-          "TITLE01O": "      AWS Mainframe Modernization       ",
-          "CURDATEO": "07/19/22",
-          "PGMNAMEO": "COCRDLIC",
-          "TITLE02O": "              CardDemo                  ",
-          "CURTIMEO": "23:12:34",
-          "PAGENOO": "1  ",
-          "ACCTSIDO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
-          "CARDSIDO": "4111-1111-ABCD  ",
-          "CRDSEL1O": "\u0000",
-          "ACCTNO1O": "00000000050",
-          "CRDNUM1O": "0500024453765740",
-          "CRDSTS1O": "Y",
-          "CRDSEL2O": "\u0000",
-          "CRDSTP2O": "\u0000",
-          "ACCTNO2O": "00000000027",
-          "CRDNUM2O": "0683586198171516",
-          "CRDSTS2O": "Y",
-          "CRDSEL3O": "\u0000",
-          "CRDSTP3O": "\u0000",
-          "ACCTNO3O": "00000000002",
-          "CRDNUM3O": "0923877193247330",
-          "CRDSTS3O": "Y",
-          "CRDSEL4O": "\u0000",
-          "CRDSTP4O": "\u0000",
-          "ACCTNO4O": "00000000020",
-          "CRDNUM4O": "0927987108636232",
-          "CRDSTS4O": "Y",
-          "CRDSEL5O": "\u0000",
-          "CRDSTP5O": "\u0000",
-          "ACCTNO5O": "00000000012",
-          "CRDNUM5O": "0982496213629795",
-          "CRDSTS5O": "Y",
-          "CRDSEL6O": "\u0000",
-          "CRDSTP6O": "\u0000",
-          "ACCTNO6O": "00000000044",
-          "CRDNUM6O": "1014086565224350",
-          "CRDSTS6O": "Y",
-          "CRDSEL7O": "\u0000",
-          "CRDSTP7O": "\u0000",
-          "ACCTNO7O": "00000000037",
-          "CRDNUM7O": "1142167692878931",
-          "CRDSTS7O": "Y",
-          "INFOMSGO": "                                             ",
-          "ERRMSGO": "CARD ID FILTER,IF SUPPLIED MUST BE A 16 DIGIT NUMBER                          "
-        },
-        "attributes": {
-          "CARDSIDC": "DFHRED",
-          "INFOMSGC": "DFHBMDAR"
-        }
-      }
-    ],
-    "cursorField": "CARDSIDL",
-    "termination": "RETURN_TRANSID"
+    "sends": [],
+    "termination": "XCTL"
   },
   "expectedWrites": [],
   "expectedFinalState": [

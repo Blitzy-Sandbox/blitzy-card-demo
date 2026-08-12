@@ -1,0 +1,112 @@
+{
+  "program": "COCRDUPC",
+  "caseId": "case07",
+  "description": "Statically derived by structured reading of app/cbl/COCRDUPC.cbl, never captured from a run: the COBOL cannot be executed in this environment, so every byte below is read out of the source against the app/cpy-bms/COCRDUP.CPY xxxI widths, app/cpy/CVCRD01Y.cpy, app/cpy/COCOM01Y.cpy, app/cpy/COTTL01Y.cpy, app/cpy/CVACT02Y.cpy and the real US-ASCII fixture rather than recorded from an execution (practice B12, risk R-A). This case pins the DFHRESP(NOTFND) arm of 9100-GETCARD-BYACCTCARD at :1395-1401, the second of the three ordered arms of the EVALUATE WS-RESP-CD at :1392 (gate G47). It is deliberately case06.json with exactly one variable moved: the same route, the same account id, the same pinned clock and the same fixture, differing only in a card number that is not there. The first arm, DFHRESP(NORMAL) at :1393, belongs to case06.json and the third, WHEN OTHER at :1402, to case08.json. There is no '10' end-of-file arm and no '22' duplicate arm anywhere in COCRDUPC for any case to own, because the program performs no browse, no WRITE and no ADD - its only two file operations are the keyed READ at :1382-1390 and the READ UPDATE at :1427-1435 - so the only FileStatus outcome this path can express is the not-found one, which common.FileStatus spells NOTFND (CICS RESP 13), NOT_FOUND ('23') on the batch side and Outcome.NOT_FOUND as a forced outcome. The unit kind is CONTROLLER_POJO: card.CardUpdateController is constructed through its own constructor and its handler method called directly as a plain object, with no MockMvc, no servlet container and no web application context anywhere in the path, so what is asserted below is the program's own logic rather than a serialisation round trip (gate G51). THE KEY IS A DELIBERATE PROBE AND IS DECLARED AS ONE. Reaching this arm needs a key the fixture does not hold, and practice B1 forbids passing an invented value off as real data, so it is stated outright: 9999999999999999 is a synthetic sixteen-digit not-found probe. Verified against all fifty rows of fixtures/carddata.txt - byte-identical to app/data/ASCII/carddata.txt - it occurs neither as a CARD-NUM key nor anywhere else in the file, and it sorts strictly above the highest key present (9805583408996588), so the keyed read finds nothing at or beyond it and the arm is reached from genuine seeded data instead of a forced outcome; that is why forcedOutcomes is empty. It is numeric on purpose: a non-numeric card number would divert to 1220-EDIT-CARD's SEARCHED-CARD-NOT-NUMERIC branch, which is case05.json's subject, and would never reach 9100 at all. All-nines is chosen over an arbitrary sixteen digits for a second reason: it fails the Luhn checksum, so it cannot be mistaken for, or accidentally become, a real card number in a fixture that is read by people as well as by the harness - COCRDUPC performs no Luhn check of its own, so the property costs the case nothing and is purely a hygiene margin. All fifty rows are seeded rather than case06's three, so the absence claim spans every row the dataset holds. The account id, by contrast, is real - 00000000050 is row 1's CARD-ACCT-ID, the account whose actual card 0500024453765740 case06 reads successfully - because a valid account paired with a missing card is what makes the flag behaviour below visible. EIBCALEN is 489, the 160-byte CARDDEMO-COMMAREA plus the 329-byte WS-THIS-PROGCOMMAREA (1 + 89 CCUP-OLD-DETAILS + 89 CCUP-NEW-DETAILS + 150 CARD-UPDATE-RECORD, :276-321) that COMMON-RETURN concatenates at :549-557, and CDEMO-FROM-PROGRAM is LIT-CCLISTPGM 'COCRDLIC' (:227-228) rather than LIT-MENUPGM, so the guard at :388-401 fails both limbs of its IF and takes the ELSE at :396-400: CARDDEMO-COMMAREA is sliced from DFHCOMMAREA(1:160) and WS-THIS-PROGCOMMAREA from DFHCOMMAREA(161:329), and the inbound account and card keys SURVIVE. Bytes 161 onwards arrive as the spaces COCRDLIC's own 160-byte XCTL leaves behind, so CCUP-CHANGE-ACTION satisfies CCUP-DETAILS-NOT-FETCHED (:278-280) on arrival and arm one's two done/failed tests at :436-439 are false; CCUP-CHANGE-ACTION is not a CDEMO- or WS- prefixed item, so it is recorded here rather than in the commarea member, which admits only those two prefixes. ENTER is admitted unchanged by :413-424 because :414 lists CCARD-AID-ENTER, and the ordered EVALUATE TRUE at :429 passes over arm one (:435-439) and matches arm two's first WHEN at :482-483, CDEMO-PGM-ENTER AND CDEMO-FROM-PROGRAM EQUAL LIT-CCLISTPGM, which is the arm source order selects (gate G30). Its sibling WHEN at :484-485 shares the body verbatim and is indistinguishable by outcome, so no case pretends to tell them apart. The body sets CDEMO-PGM-REENTER at :486, INPUT-OK at :487 and both filter flags ISVALID at :488-489, moves CDEMO-ACCT-ID to CC-ACCT-ID-N at :490 and CDEMO-CARD-NUM to CC-CARD-NUM-N at :491 - the numeric REDEFINES views of CC-ACCT-ID PIC X(11) and CC-CARD-NUM PIC X(16) in app/cpy/CVCRD01Y.cpy, two typed accessors over one backing span (gate G34), whose round trip is asserted on the wire by ACCTSIDO reading '00000000050' and CARDSIDO reading '9999999999999999' - and performs 9000-READ-DATA at :492-493. THEN COMES THE ORDERING TRAP THIS CASE EXISTS TO PIN: SET CCUP-SHOW-DETAILS TO TRUE at :494 executes UNCONDITIONALLY, after the read, with no test of whether the read succeeded. So although nothing was found, CCUP-CHANGE-ACTION becomes 'S' (:281), and that single unguarded SET is what selects the 3200, 3250 and 3300 arms below. It looks wrong until it is traced, and it is genuine source behaviour: practice B5 requires reproducing it rather than repairing it, because guarding :494 on the read outcome would be a behaviour change dressed up as a fix. 9000-READ-DATA at :1343-1370 INITIALIZEs CCUP-OLD-DETAILS at :1345, then moves CC-ACCT-ID to CCUP-OLD-ACCTID at :1346 and CC-CARD-NUM to CCUP-OLD-CARDID at :1347, and performs 9100 at :1349-1350. IF FOUND-CARDS-FOR-ACCOUNT at :1352 is FALSE, so the entire enrichment block at :1354-1367 is SKIPPED: no MOVE of CARD-CVV-CD, no INSPECT CONVERTING fold of CARD-EMBOSSED-NAME, none of the three reference-modified (1:4), (6:2) and (9:2) slices of CARD-EXPIRAION-DATE, and no CARD-ACTIVE-STATUS. CCUP-OLD-CVV-CD, CCUP-OLD-CRDNAME, CCUP-OLD-EXPYEAR, CCUP-OLD-EXPMON, CCUP-OLD-EXPDAY and CCUP-OLD-CRDSTCD therefore keep what :1345 left them, and what INITIALIZE leaves in a PIC X item is SPACES - not the LOW-VALUES a reader might carry over from 3100's MOVE LOW-VALUES TO CCRDUPAO at :1053, which :1108-1112 overwrites. That distinction is asserted explicitly on the wire, because a snapshot that came back half-populated, or came back as 0x00 instead of 0x20, would be a silent parity break rather than a loud one. 9100-GETCARD-BYACCTCARD at :1376-1413 moves CC-CARD-NUM to WS-CARD-RID-CARDNUM at :1380 - the line above it, :1379, is a COMMENTED-OUT move to WS-CARD-RID-ACCT-ID - and issues EXEC CICS READ FILE(LIT-CARDFILENAME), the file literal 'CARDDAT ' of :251-252, with a 16-byte KEYLENGTH into the 150-byte CARD-RECORD, which is card.CardRepository.readByCardNumber. The NOTFND arm's body is four statements: SET INPUT-ERROR TO TRUE at :1396 ('1', :55), SET FLG-ACCTFILTER-NOT-OK TO TRUE at :1397 ('0', :58), SET FLG-CARDFILTER-NOT-OK TO TRUE at :1398 ('0', :62), and IF WS-RETURN-MSG-OFF SET DID-NOT-FIND-ACCTCARD-COMBO TO TRUE at :1399-1401, admitted because WS-RETURN-MSG is still SPACES from the SET WS-RETURN-MSG-OFF at :384 and nothing has written to it on this path. BOTH filter flags are flipped to '0' even though only the card key was used for the read, and that is not cosmetic: it is what drives the two DFHRED highlights and it is why the cursor arm order matters, so both are asserted. The message is the 88-level of :203-204, 'Did not find cards for this search condition', which is FORTY-FOUR characters; it lands in WS-RETURN-MSG PIC X(75) (:173) and :1163 moves that to ERRMSGO, giving the literal followed by exactly 36 spaces at the ERRMSGI PIC X(80) width. Its sibling 88-level DID-NOT-FIND-ACCT-IN-CARDXREF at :201-202 is DEAD: exhaustive search finds its declaration and no SET anywhere in the program, so its forty-three-character literal - one character shorter than the one above, and therefore trivially confusable with it - can never reach a screen. Practice B5 keeps it dead, and its text is deliberately NOT reproduced anywhere in this fixture, not even as prose, so that no reader and no search can lift the wrong string out of here; practice B4 records the fact by name rather than quietly tidying the declaration away. Gate G45 is satisfied by a negative fact rather than an alternate-index read: LIT-CARDFILENAME-ACCT-PATH PIC X(8) VALUE 'CARDAIX ' is declared at :253-254 and, verified by exhaustive search, never referenced again, while both moves to WS-CARD-RID-ACCT-ID (:1379 and :1424) are commented out. COCRDUPC therefore NEVER reads the alternate-index path, and no CARDAIX access is expected here; CARDAIX remains a finder method on the single CardRepository rather than a second repository or table, and the divergence from the two-dataset entry in the plan's dataset map is documented instead of being papered over with an invented read. 2000-DECIDE-ACTION is NOT reached: arm two ends at :494-497 with the SET, the 3000-SEND-MAP range perform and GO TO COMMON-RETURN, so the decision paragraph never runs on this path. 3000-SEND-MAP at :1035-1045 runs 3100, then 3200, then 3250, then 3300, then 3400, and that order is what resolves the cursor below. Because :486 flipped the context to REENTER, 3200-SETUP-SCREEN-VARS at :1082-1134 takes its ELSE limb: CC-ACCT-ID-N and CC-CARD-NUM-N are both non-zero, so :1090 and :1096 paint ACCTSIDO and CARDSIDO at their X(11) and X(16) widths, and the inner four-arm ordered EVALUATE at :1099 passes over arm one (:1100, CCUP-DETAILS-NOT-FETCHED, false now that the action is 'S') and matches arm two at :1107-1112, WHEN CCUP-SHOW-DETAILS. Its five MOVEs read the CCUP-OLD-* fields the skipped enrichment never filled, so CRDNAMEO is 50 spaces, CRDSTCDO one, EXPMONO two, EXPYEARO four and EXPDAYO two - the visible consequence of the unconditional :494, and the part of this case easiest to get wrong. 3250-SETUP-INFOMSG at :1138-1163 is ordered the same way: arm one :1141 CDEMO-PGM-ENTER is false, arm two :1143 CCUP-DETAILS-NOT-FETCHED is false, arm three :1145-1146 WHEN CCUP-SHOW-DETAILS matches, and SET FOUND-CARDS-FOR-ACCOUNT puts the 88-level literal of :160-161 into WS-INFO-MSG, so INFOMSGO is 'Details of selected card shown above' padded to its X(40) width. The result is a screen whose information line announces that details are shown while its error line says nothing was found, and the two data areas it points at are blank. That contradiction is real - two independent EVALUATEs keyed on the same 'S' that :494 set without asking - and practice B5 requires reproducing it exactly rather than resolving it; a translation that suppressed one of the two messages would look more sensible and would be wrong. 3300-SETUP-SCREEN-ATTRS matches the arm group at :1181-1190 (WHEN CCUP-SHOW-DETAILS / WHEN CCUP-CHANGES-NOT-OK), which moves DFHBMPRF to ACCTSIDA and CARDSIDA - the two search keys become protected now that they have been used - and DFHBMFSE to CRDNAMEA, CRDSTCDA, EXPMONA and EXPYEARA; EXPDAYA is commented out at :1185, and :1309-1313 moves DFHBMBRY to INFOMSGA because WS-INFO-MSG is not blank. Those six moves land on xxxA items, which are the attribute REDEFINES of the xxxF flag bytes, and the case contract admits only attribute items whose names end in C, P, H or V - so they are recorded in this description, which is the audit trail, while the attributes member carries the seventeen xxxC colour items the send actually paints. This is the highlighted half of gate G38, and COCRDUPC does not COPY CSSETATY: the logic is inline at :1243-1307, so it is asserted against the program's own statements. :1243-1245 fires, because FLG-ACCTFILTER-NOT-OK is now true, and moves DFHRED to ACCTSIDC; :1253-1255 fires for the same reason on the card key and moves DFHRED to CARDSIDC. Both overwrite the DFHDFCOL that :1238-1241 had just written, that arm being taken because CDEMO-LAST-MAPSET is the 'COCRDLI' COCRDLIC left behind. NOT ONE '*' IS WRITTEN ANYWHERE: the two starred paths at :1247-1251 and :1257-1261 require FLG-ACCTFILTER-BLANK or FLG-CARDFILTER-BLANK, which are the SPACE value at :60 and :64, and these flags carry '0', so the CDEMO-PGM-REENTER half of each guard is never even reached - the contrast with case03, where blank filters do produce '*'. The four data-field guards from :1263 to :1307 each additionally require CCUP-CHANGES-NOT-OK ('E', :285) and the action is 'S', so none of them fires and CRDNAMEC, CRDSTCDC, EXPMONC and EXPYEARC stay at DFHDFCOL; EXPDAYC carries DFHBMDAR from the unconditional MOVE at :1285, and :1315-1317 leaves FKEYSCA alone because PROMPT-FOR-CONFIRMATION is false. The cursor EVALUATE at :1211-1235 is ordered and sets exactly one -1, and the trace matters because the intuitive answer is wrong: FOUND-CARDS-FOR-ACCOUNT is an 88-level on WS-INFO-MSG, 3250 SET it at :1146, and 3250 runs BEFORE 3300 (:1040-1043), so the FIRST arm group at :1212-1214 matches and -1 goes to CRDNAMEL. The FLG-ACCTFILTER-NOT-OK arm at :1215-1217 is never reached even though that flag is set, and the WHEN OTHER default at :1233-1234 is never reached either. The cursor therefore rests on the blank card name rather than on either reddened key - a subtle interaction between two paragraphs whose only coupling is the order 3000-SEND-MAP performs them in. xxxL is metadata expressed as the cursor and never as a payload member. Every payload width is the xxxI item's own from app/cpy-bms/COCRDUP.CPY (4/40/8/8/40/8/11/16/50/1/2/4/2/40/80/21/18), all seventeen of them, and FKEYSO and FKEYSCO stay at LOW-VALUES because the program never writes them - their text is a physical-map INITIAL in app/bms/COCRDUP.bms that CICS merges at send time. No next program is named: CCARD-NEXT-PROG is assigned only at :570 inside 1000-PROCESS-INPUTS, which arm two never performs, while 3400-SEND-SCREEN at :1326-1327 does assign CCARD-NEXT-MAPSET and CCARD-NEXT-MAP, so the response carries the mapset and the map but no program and terminates on the EXEC CICS RETURN TRANSID(LIT-THISTRANID) of COMMON-RETURN at :554-558. Gate G37: the whole conversation state travels in the payload - the 160-byte CARDDEMO-COMMAREA plus the 329-byte WS-THIS-PROGCOMMAREA - and none of it is held server-side, so CDEMO-PGM-CONTEXT comes back as 1 from :486, CCUP-CHANGE-ACTION as 'S' from :494, and CCUP-OLD-DETAILS carries forward the two ids of :1346-1347 with its remaining 62 bytes still the spaces :1345 left. Nothing is written: the read failed, no REWRITE and no WRITE is reached on this path, so expectedWrites is empty as a positive assertion that no write occurred rather than as an omission, and expectedFinalState is empty for the same reason - the failed read mutated no row. No dataset-level expectation is declared either, and that is deliberate rather than an oversight: CARDDAT is an input this read missed, not an output the program opened, so asserting a row count on either channel would claim an open that never happened. expectedMessages is empty because this program emits no line outside the map, and the two CSMSG01Y literals are correctly absent - neither the thank-you text nor the invalid-key text has a single reference anywhere in COCRDUPC, and CCDA-THANK-YOU at app/cpy/COTTL01Y.cpy:23-24 has none either. The titles are byte-exact from that copybook: CCDA-TITLE01 at line 19, and for CCDA-TITLE02 the ACTIVE line 22 '              CardDemo                  ' rather than the commented-out line 21. The clock is pinned to this source's own version footer, 2022-07-19 23:12:33 CDT, so CURDATEO and CURTIMEO are assertable at all and the case is deterministic (practice B7, and the same value case01.json pins). The return code is 0 because COCRDUPC contains no CALL 'CEE3ABD' at all, so gate G35 has nothing to bind to here, just as G32 has nothing (all 21 GO TOs are forward) and G39 has nothing (this screen does not paginate). review_rules returns exactly 'No user rules provided.', so no user rule governs this fixture; it is held instead to the enterprise practices the plan substitutes - B1 on the declared probe, B3 on leaving every legacy source unmodified, B4 on documenting the dead sibling rather than correcting it, B5 on preserving the unconditional SET and the contradictory message pair, B7 on the pinned clock, B8 on explicit widths, charset and trailing spaces, B9 on being self-contained, and B12 on declaring the derivation honestly.",
+  "unitKind": "CONTROLLER_POJO",
+  "inputs": {
+    "CARDDAT": {
+      "fixture": "carddata.txt",
+      "fromRow": 0,
+      "rowCount": 50
+    }
+  },
+  "jobParameters": {},
+  "screenRequest": {
+    "eibcalen": 489,
+    "aid": "DFHENTER",
+    "pinnedClock": "2022-07-19T23:12:33",
+    "charset": "US-ASCII",
+    "commarea": {
+      "CDEMO-FROM-TRANID": "CCLI",
+      "CDEMO-FROM-PROGRAM": "COCRDLIC",
+      "CDEMO-TO-TRANID": "    ",
+      "CDEMO-TO-PROGRAM": "        ",
+      "CDEMO-USER-ID": "USER0001",
+      "CDEMO-USER-TYPE": "U",
+      "CDEMO-PGM-CONTEXT": "0",
+      "CDEMO-CUST-ID": "000000000",
+      "CDEMO-CUST-FNAME": "                         ",
+      "CDEMO-CUST-MNAME": "                         ",
+      "CDEMO-CUST-LNAME": "                         ",
+      "CDEMO-ACCT-ID": "00000000050",
+      "CDEMO-ACCT-STATUS": " ",
+      "CDEMO-CARD-NUM": "9999999999999999",
+      "CDEMO-LAST-MAP": "CCRDLIA",
+      "CDEMO-LAST-MAPSET": "COCRDLI"
+    },
+    "mapFields": {},
+    "forcedOutcomes": {}
+  },
+  "expectedResponse": {
+    "nextMapset": "COCRDUP",
+    "nextMap": "CCRDUPA",
+    "navigation": {
+      "CDEMO-FROM-TRANID": "CCLI",
+      "CDEMO-FROM-PROGRAM": "COCRDLIC",
+      "CDEMO-TO-TRANID": "    ",
+      "CDEMO-TO-PROGRAM": "        ",
+      "CDEMO-USER-ID": "USER0001",
+      "CDEMO-USER-TYPE": "U",
+      "CDEMO-PGM-CONTEXT": "1",
+      "CDEMO-CUST-ID": "000000000",
+      "CDEMO-CUST-FNAME": "                         ",
+      "CDEMO-CUST-MNAME": "                         ",
+      "CDEMO-CUST-LNAME": "                         ",
+      "CDEMO-ACCT-ID": "00000000050",
+      "CDEMO-ACCT-STATUS": " ",
+      "CDEMO-CARD-NUM": "9999999999999999",
+      "CDEMO-LAST-MAP": "CCRDLIA",
+      "CDEMO-LAST-MAPSET": "COCRDLI"
+    },
+    "sends": [
+      {
+        "fields": {
+          "TRNNAMEO": "CCUP",
+          "TITLE01O": "      AWS Mainframe Modernization       ",
+          "CURDATEO": "07/19/22",
+          "PGMNAMEO": "COCRDUPC",
+          "TITLE02O": "              CardDemo                  ",
+          "CURTIMEO": "23:12:33",
+          "ACCTSIDO": "00000000050",
+          "CARDSIDO": "9999999999999999",
+          "CRDNAMEO": "                                                  ",
+          "CRDSTCDO": " ",
+          "EXPMONO": "  ",
+          "EXPYEARO": "    ",
+          "EXPDAYO": "  ",
+          "INFOMSGO": "Details of selected card shown above    ",
+          "ERRMSGO": "Did not find cards for this search condition                                    ",
+          "FKEYSO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "FKEYSCO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000"
+        },
+        "attributes": {
+          "TRNNAMEC": "DFHDFCOL",
+          "TITLE01C": "DFHDFCOL",
+          "CURDATEC": "DFHDFCOL",
+          "PGMNAMEC": "DFHDFCOL",
+          "TITLE02C": "DFHDFCOL",
+          "CURTIMEC": "DFHDFCOL",
+          "ACCTSIDC": "DFHRED",
+          "CARDSIDC": "DFHRED",
+          "CRDNAMEC": "DFHDFCOL",
+          "CRDSTCDC": "DFHDFCOL",
+          "EXPMONC": "DFHDFCOL",
+          "EXPYEARC": "DFHDFCOL",
+          "EXPDAYC": "DFHBMDAR",
+          "INFOMSGC": "DFHDFCOL",
+          "ERRMSGC": "DFHDFCOL",
+          "FKEYSC": "DFHDFCOL",
+          "FKEYSCC": "DFHDFCOL"
+        }
+      }
+    ],
+    "cursorField": "CRDNAMEL",
+    "termination": "RETURN_TRANSID"
+  },
+  "expectedWrites": [],
+  "expectedFinalState": [],
+  "expectedReturnCode": 0,
+  "expectedMessages": [],
+  "normalisations": [],
+  "expectedDatasets": []
+}

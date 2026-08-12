@@ -10,6 +10,7 @@ import com.vsergeychik.carddemo.card.model.CardRecord;
 import com.vsergeychik.carddemo.common.AbendException;
 import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
+import com.vsergeychik.carddemo.common.FixedWidthRecord;
 import com.vsergeychik.carddemo.config.BatchConfig;
 import com.vsergeychik.carddemo.config.BatchConfig.JobContract;
 import com.vsergeychik.carddemo.config.BatchConfig.JobContracts;
@@ -124,10 +125,10 @@ import static org.mockito.Mockito.when;
  * anywhere in the path, so step sequencing and line ordering are observed exactly as written
  * (gate G51). {@code SYSOUT} - {@code app/jcl/READCARD.jcl:27} - is the seam: the sink handed to
  * {@code execute} writes each line straight into the harness recorder, which is what makes the line
- * sequence survive the abend that ends eight of the twenty cases.
+ * sequence survive the abend that ends nine of the twenty cases.
  *
  * <h2>Why the failure paths are driven by a stub</h2>
- * <p>Eight cases turn on a status the seeded data cannot produce: an {@code OPEN} that refuses, a
+ * <p>Nine cases turn on a status the seeded data cannot produce: an {@code OPEN} that refuses, a
  * {@code READ} that reports {@code '23'}, a {@code CLOSE} that fails. A controller case would
  * declare those through {@code screenRequest.forcedOutcomes}, but {@link ParityCase} refuses a
  * {@code screenRequest} on a batch case - a batch job has no screen - so the only place the shape of
@@ -246,10 +247,26 @@ final class CBACT02CParityTest {
     private static final BigDecimal NEGATIVE_OVERPUNCH_VALUE = new BigDecimal("-194.00");
 
     /**
-     * The value the positive overpunch image in {@code case19}'s second row denotes, from the same
-     * twelve digits closed by {@code '{'} instead of {@code '}'}.
+     * The value {@code case18}'s twelve digits denote when closed by {@code '{'} instead of
+     * {@code '}'} - the same magnitude with the other sign.
+     *
+     * <p>No case seeds that image, and none should: {@code CVACT02Y} declares no signed field and
+     * {@code CBACT02C} decodes none, so which half of the overpunch alphabet a {@code FILLER} byte
+     * belongs to is a {@code FixedWidthCodec} property rather than a behaviour of this program. One
+     * case seeding one such image is enough to prove the pass-through, and the sign is varied by
+     * replacing the byte rather than by spending a second case slot on it.
      */
     private static final BigDecimal POSITIVE_OVERPUNCH_VALUE = new BigDecimal("194.00");
+
+    /**
+     * The trailing byte that closes a positive zoned value whose low-order digit is zero.
+     *
+     * <p>Taken from {@link FixedWidthRecord.ZonedSign}'s own alphabet rather than written as a literal
+     * <code>'&#123;'</code>, so a guard asserting about the codec cannot disagree with the codec it is
+     * asserting about.
+     */
+    private static final char POSITIVE_OVERPUNCH_ZERO =
+            FixedWidthRecord.ZonedSign.overpunch(0, false);
 
     /**
      * Zero-based index of {@code case12} - the first-read {@code '22'} failure - in the case list.
@@ -262,13 +279,37 @@ final class CBACT02CParityTest {
      */
     private static final int CASE12_INDEX = 11;
 
-    /** Zero-based index of {@code case17} - the blank-{@code FILLER} geometry case. */
+    /**
+     * Zero-based index of {@code case17} - the mid-stream read failure, which seeds three rows,
+     * displays the first two at their full 150 characters and abends on the third read.
+     *
+     * <p>Two guards below read it. The perturbation guard needs a case that displays a record whose
+     * trailing byte is blank {@code FILLER}, because the byte it alters is the last one; and the
+     * geometry assertion in {@link TheRecordImage} needs a case whose rows are written inline, so it
+     * can read them without re-slicing a fixture. This case is both: its rows are
+     * {@code carddata.txt}'s own first three, stated verbatim.
+     */
     private static final int CASE17_INDEX = 16;
 
-    /** Zero-based index of {@code case18} - the negative-overpunch pass-through case. */
+    /**
+     * Zero-based index of {@code case18} - the negative-overpunch pass-through case, whose run then
+     * fails its {@code CLOSE}.
+     *
+     * <p>The two halves are one run on purpose. The row is displayed by {@code :78} before
+     * {@code 9000-CARDFILE-CLOSE} is ever performed, so the pass-through assertion below is unaffected
+     * by how the run ends - and pairing them is what lets a single case state that an emitted record
+     * line stands while the end banner at {@code :85} is lost.
+     */
     private static final int CASE18_INDEX = 17;
 
-    /** Zero-based index of {@code case19} - the boundary-field and positive-overpunch case. */
+    /**
+     * Zero-based index of {@code case19} - the wider of the folder's two close-failure cases, and one
+     * of the only two in it whose read pass completes in full and still abends.
+     *
+     * <p>{@code case18} states the same close-site arm over a single inline row; this one states it
+     * over three fixture rows, so the lost end banner at {@code :85} is asserted against a run that
+     * emitted several record lines before the {@code CLOSE} refused.
+     */
     private static final int CASE19_INDEX = 18;
 
     // =================================================================================================
@@ -445,8 +486,8 @@ final class CBACT02CParityTest {
                         .get(AccountBalanceReaderJob.DD_NAME).rows();
 
                 // CVACT02Y's seven spans sum to exactly 150, so every seeded row measures that -
-                // including the two geometry cases, whose rows are written inline rather than taken
-                // from carddata.txt.
+                // including the cases whose rows are written inline rather than taken from
+                // carddata.txt by name, and including a row that is seeded but never read.
                 assertThat(seeded).allSatisfy(row ->
                         assertThat(row)
                                 .as("a seeded %s row, which app/cpy/CVACT02Y.cpy declares as "
@@ -620,8 +661,8 @@ final class CBACT02CParityTest {
             // carry it.  This guard is about the arm at :110-113 and the abend at :154-158, not about a
             // case slot, and sourcing it from one meant that re-purposing that slot silently retargeted
             // the guard - which is how a test ends up proving something other than what it says.
-            // '23' on the first read is the shape: case14 and case20 still pin it through the gate,
-            // after three and forty-nine records respectively.
+            // '23' on the first read is the shape: case14, case17 and case20 still pin it through the
+            // gate, after three, two and forty-nine records respectively.
             final CardRepository cardRepository = stubbedCardMaster(
                     Scenario.readFailingAfter(0, Terminator.NOT_FOUND),
                     ParityHarness.SeededDataset.empty(AccountBalanceReaderJob.DD_NAME,
@@ -684,21 +725,37 @@ final class CBACT02CParityTest {
     class TheRecordImage {
 
         @Test
-        @DisplayName("the blank-FILLER case displays 150 characters whose last 59 are spaces")
+        @DisplayName("the blank-FILLER rows display 150 characters whose last 59 are spaces, and the"
+                + " unread row displays nothing")
         void theFillerSpanIsPresentAndSpaceFilled() {
             final ParityCase geometry = cases().get(CASE17_INDEX);
-            final String seeded = onlySeededRow(geometry);
+            final List<String> seeded = geometry.inputs()
+                    .get(AccountBalanceReaderJob.DD_NAME).rows();
 
-            assertThat(seeded).hasSize(CardRecord.RECORD_LENGTH);
-            assertThat(seeded.substring(CardRecord.FILLER_OFFSET))
-                    .as("CVACT02Y's trailing FILLER PIC X(59), which declares no VALUE and is "
-                            + "therefore space-filled")
-                    .hasSize(CardRecord.FILLER_LENGTH)
-                    .isBlank();
+            assertThat(seeded)
+                    .as("case17 seeds three rows and displays two, which is the asymmetry it exists "
+                            + "to state")
+                    .hasSize(3)
+                    .allSatisfy(row -> {
+                        assertThat(row).hasSize(CardRecord.RECORD_LENGTH);
+                        assertThat(row.substring(CardRecord.FILLER_OFFSET))
+                                .as("CVACT02Y's trailing FILLER PIC X(59), which declares no VALUE "
+                                        + "and is therefore space-filled")
+                                .hasSize(CardRecord.FILLER_LENGTH)
+                                .isBlank();
+                    });
 
-            // The expected line is the row itself, which is what makes the width assertion above an
-            // assertion about the program's output rather than about the fixture alone.
-            assertThat(recordLinesOf(geometry)).containsExactly(seeded);
+            // The expected lines are the rows themselves, which is what makes the width assertion
+            // above an assertion about the program's output rather than about the fixture alone. Two
+            // of the three, in order: :78 writes a record only after :93 has returned '00' for it, so
+            // the third row - the one the '23' read never delivered - contributes no line at all. A
+            // translation that pre-read or buffered its input would produce a third image here.
+            assertThat(recordLinesOf(geometry))
+                    .as("the leading two of case17's three seeded rows, and nothing else")
+                    .containsExactly(seeded.get(0), seeded.get(1));
+            assertThat(recordLinesOf(geometry))
+                    .as("the third row is seeded but never read, so it is never displayed")
+                    .doesNotContain(seeded.get(2));
         }
 
         @Test
@@ -737,43 +794,91 @@ final class CBACT02CParityTest {
         }
 
         @Test
-        @DisplayName("the boundary case carries the positive overpunch alphabet and full-width fields")
-        void theBoundaryFieldsAndPositiveOverpunchAreCarried() {
-            final ParityCase boundaries = cases().get(CASE19_INDEX);
-            final List<String> seeded = boundaries.inputs()
-                    .get(AccountBalanceReaderJob.DD_NAME).rows();
+        @DisplayName("the same twelve digits closed by '{' carry the positive overpunch alphabet")
+        void thePositiveOverpunchAlphabetIsTheSameImageWithItsSignByteReplaced() {
+            // Derived from case18's row rather than from a second fixture slot: the two alphabets
+            // differ in exactly one byte, so replacing that byte is the whole difference between them
+            // and states it more precisely than a separate row could.  No case seeds this image,
+            // because CVACT02Y declares no signed field and CBACT02C never decodes one - the sign
+            // alphabet belongs to FixedWidthCodec, and what is asserted here is that the codec reads
+            // both halves of it consistently.
+            final String negativeImage = onlySeededRow(cases().get(CASE18_INDEX))
+                    .substring(CardRecord.FILLER_OFFSET,
+                            CardRecord.FILLER_OFFSET + MONETARY_IMAGE_LENGTH);
+            final String positiveImage = negativeImage.substring(0, MONETARY_IMAGE_LENGTH - 1)
+                    + POSITIVE_OVERPUNCH_ZERO;
             final FixedWidthCodec codec = new FixedWidthCodec(ParityHarness.FIXTURE_CHARSET);
 
-            assertThat(seeded).hasSize(2).allSatisfy(row ->
-                    assertThat(row).hasSize(CardRecord.RECORD_LENGTH));
+            final FixedWidthCodec.SignedZoned decoded =
+                    codec.decodeSignedZoned(positiveImage, MONETARY_SCALE);
 
-            // The largest value PIC 9(11) can hold, zero-filled to its declared width rather than
-            // shortened, and the smallest.
-            assertThat(seeded.get(0).substring(CardRecord.CARD_ACCT_ID_OFFSET,
-                    CardRecord.CARD_ACCT_ID_OFFSET + CardRecord.CARD_ACCT_ID_LENGTH))
-                    .isEqualTo("9".repeat(CardRecord.CARD_ACCT_ID_LENGTH));
-            assertThat(seeded.get(1).substring(CardRecord.CARD_ACCT_ID_OFFSET,
-                    CardRecord.CARD_ACCT_ID_OFFSET + CardRecord.CARD_ACCT_ID_LENGTH))
-                    .isEqualTo("0".repeat(CardRecord.CARD_ACCT_ID_LENGTH));
-
-            // An all-blank PIC X(50) is 50 spaces, never an empty string.
-            assertThat(seeded.get(1).substring(CardRecord.CARD_EMBOSSED_NAME_OFFSET,
-                    CardRecord.CARD_EMBOSSED_NAME_OFFSET + CardRecord.CARD_EMBOSSED_NAME_LENGTH))
-                    .hasSize(CardRecord.CARD_EMBOSSED_NAME_LENGTH)
-                    .isBlank();
-
-            final FixedWidthCodec.SignedZoned decoded = codec.decodeSignedZoned(
-                    seeded.get(1).substring(CardRecord.FILLER_OFFSET,
-                            CardRecord.FILLER_OFFSET + MONETARY_IMAGE_LENGTH),
-                    MONETARY_SCALE);
-            assertThat(decoded.negative()).isFalse();
+            assertThat(decoded.negative())
+                    .as("'{' closes the positive overpunch alphabet and carries digit zero with it")
+                    .isFalse();
             assertThat(decoded.signedValue()).isEqualByComparingTo(POSITIVE_OVERPUNCH_VALUE);
+            assertThat(decoded.signedValue().scale())
+                    .as("a PIC S9(10)V99 field reports exactly its declared scale")
+                    .isEqualTo(MONETARY_SCALE);
+            assertThat(decoded.signedValue().negate())
+                    .as("the two alphabets differ in the sign and in nothing else")
+                    .isEqualByComparingTo(NEGATIVE_OVERPUNCH_VALUE);
+        }
 
-            assertThat(recordLinesOf(boundaries)).containsExactlyElementsOf(seeded);
+        @Test
+        @DisplayName("the close-failure case displays every seeded row and still loses the end banner")
+        void theCloseFailureCaseCompletesItsReadPassAndLosesTheEndBanner() {
+            final ParityCase closeFailure = cases().get(CASE19_INDEX);
+            final List<String> seeded = ParityHarness.usAscii().seed(closeFailure)
+                    .get(AccountBalanceReaderJob.DD_NAME).rows();
+            final List<String> lines = closeFailure.expectedMessages().stream()
+                    .map(ParityCase.EmittedMessage::text)
+                    .toList();
+
+            // The property no other abending case in this folder can state: the read pass completed.
+            // :83's PERFORM is reached only after :74-81 has run to end-of-file, so every seeded row
+            // is displayed before the CLOSE is even attempted.
+            assertThat(recordLinesOf(closeFailure))
+                    .as("case19's read pass completes in full, so :78 emits one line per seeded row")
+                    .containsExactlyElementsOf(seeded)
+                    .isNotEmpty();
+
+            // And yet :85 never runs, because :150's PERFORM 9999-ABEND-PROGRAM does not return.
+            assertThat(lines)
+                    .as(":85 sits after :83, so an abending CLOSE loses the end banner even though "
+                            + "nothing was wrong with the data")
+                    .doesNotContain(AccountBalanceReaderJob.END_BANNER)
+                    .containsSubsequence(AccountBalanceReaderJob.START_BANNER,
+                            AccountBalanceReaderJob.CLOSE_ERROR_TEXT,
+                            FileStatus.toDisplayLine(AccountBalanceReaderJob.PERMANENT_ERROR_STATUS),
+                            AbendException.ABEND_DISPLAY_TEXT)
+                    .as("the failure is unambiguously at the close site, not the open or the read")
+                    .doesNotContain(AccountBalanceReaderJob.OPEN_ERROR_TEXT,
+                            AccountBalanceReaderJob.READ_ERROR_TEXT);
+            assertThat(closeFailure.expectedReturnCode())
+                    .as(":142 ADD 12 TO ZERO GIVING APPL-RESULT, never the 8 :137 deposits")
+                    .isEqualTo(AbendException.RETURN_CODE_IO_ERROR);
+        }
+
+        @Test
+        @DisplayName("exactly case18 and case19 exercise the close site's error arm")
+        void theCloseErrorArmIsForcedByExactlyTheTwoDeclaredCases() {
+            // If a third case ever forced it, or if either of these two stopped forcing it, the claim
+            // that these are the sole source of that coverage would silently stop being true.
+            assertThat(cases()).filteredOn(parityCase -> parityCase.expectedMessages().stream()
+                            .anyMatch(message -> AccountBalanceReaderJob.CLOSE_ERROR_TEXT
+                                    .equals(message.text())))
+                    .as("the CLOSE cannot be made to fail by any input, so exactly the two declared "
+                            + "cases force it")
+                    .extracting(ParityCase::caseId)
+                    .containsExactly(cases().get(CASE18_INDEX).caseId(),
+                            cases().get(CASE19_INDEX).caseId());
         }
 
         /**
-         * The single inline row a geometry case seeds.
+         * The single inline row a one-row geometry case seeds, and an assertion that it really is
+         * one row. Its caller is {@code case18}, the negative-overpunch pass-through; a case that
+         * seeds more than one row - {@code case17} and {@code case19} both do - must read
+         * {@link ParityCase.DatasetInput#rows()} directly rather than through here.
          *
          * @param parityCase the case
          * @return its only seeded row
@@ -866,11 +971,15 @@ final class CBACT02CParityTest {
      *       is the tasklet's own body, so the pass runs with no launcher, no context and no HTTP
      *       (gate G51).</li>
      *   <li><strong>The abend is an observation.</strong> {@code PERFORM 9999-ABEND-PROGRAM} does not
-     *       return, so eight of the twenty cases end in an {@link AbendException}. It is caught here
+     *       return, so eleven of the twenty cases end in an {@link AbendException} - four from the
+     *       open, five from a read, and {@code case18} and {@code case19} from the close. It is caught
+     *       here
      *       only so the no-write proof runs on the failure paths too, and is then rethrown unchanged
      *       so the harness folds its {@code RETURN-CODE} into the fingerprint. Recording the lines
      *       into {@link ParityHarness.Invocation#recorder()} rather than returning them is what makes
-     *       the four lines an abending run emits survive the exception.</li>
+     *       the lines an abending run has already emitted survive the exception - four for a run that
+     *       fails before its first record, and fifty-three for {@code case20}, which fails after
+     *       forty-nine of them.</li>
      *   <li><strong>The return code is stated.</strong> {@code GOBACK} at
      *       {@code app/cbl/CBACT02C.cbl:87} leaves {@code RETURN-CODE} at zero on the normal path;
      *       that is recorded explicitly rather than left to a default, because a default is the one
@@ -1360,12 +1469,10 @@ final class CBACT02CParityTest {
                 // sequentially on RECORD KEY IS FD-CARD-NUM, so the READ walks the key sequence and
                 // not the load order; this run pins that the delivered order is the key order.  It is
                 // a wholeFile() run and not a closeFailing() one because this folder's twenty fixtures
-                // spend their four abending OPEN shapes and their four abending READ shapes elsewhere,
-                // and this is the one run that can carry the ordering assertion.
+                // spend their four abending OPEN shapes, their five abending READ shapes and their
+                // two abending CLOSE shapes elsewhere, and this is the one run that can carry the
+                // ordering assertion.
                 case "case15" -> wholeFile();          // inline rows, ascending CARD-NUM
-                case "case17" -> wholeFile();          // inline row, blank FILLER
-                case "case18" -> wholeFile();          // inline row, negative overpunch in FILLER
-                case "case19" -> wholeFile();          // inline rows at the field boundaries
 
                 // An inline row synthesized from carddata.txt row 1 with CARD-ACTIVE-STATUS set to
                 // 'N'.  It reads and displays exactly as an active card does, which is the claim:
@@ -1391,14 +1498,33 @@ final class CBACT02CParityTest {
                 case "case12" -> readFailingAfter(0, Terminator.DUPLICATE_KEY);
                 case "case13" -> readFailingAfter(0, Terminator.INVALID_REQUEST);
                 case "case14" -> readFailingAfter(3, Terminator.NOT_FOUND);
+                // Two of its three inline rows are delivered and the third READ reports '23', so the
+                // row still sitting in the dataset is never read - which is what proves the loop
+                // reads one record at a time rather than pre-reading or buffering its input.  case14
+                // fails after three of three and exhausts its input; case20 leaves its fiftieth row
+                // behind but does so at the end-of-file boundary.  This run fails strictly mid-stream,
+                // over an input small enough that the unread row is written out in the case file.
+                // The count is 2 and not EVERY_SEEDED_ROW for exactly that reason - readSequence
+                // would otherwise deliver all three and the third image would appear.
+                case "case17" -> readFailingAfter(2, Terminator.NOT_FOUND);
                 case "case20" -> readFailingAfter(49, Terminator.NOT_FOUND);
 
                 // --- 9000-CARDFILE-CLOSE failure: :139 takes its ELSE, and :85 is never reached.
-                //     No fixture in this folder forces it - every one of the twenty declares either a
-                //     normal completion or an abending OPEN or READ - so the shape stays available in
-                //     closeFailing() and the arm itself is pinned at unit level by
-                //     AccountBalanceReaderJobTest.Close and .CloseArithmeticLadder, which drive :139's
-                //     ELSE, the lost end banner and the 8 -> 12 ladder (gates G47 and G28). ---
+                //     case18 and case19 are the two fixtures in this folder that force it, and the
+                //     only two whose read pass completes in full and still abends: the open answers
+                //     '00', every seeded row is delivered and displayed, the loop ends on a clean
+                //     end-of-file, and only then does the CLOSE refuse.  Between them they are the
+                //     third and last call site of the 9910 paragraph the OPEN and READ cases leave
+                //     unreached - case08 to case16 reach 9910 from the OPEN, case12 to case20 from the
+                //     READ - so they are this directory's whole coverage of the close site's error arm
+                //     (gate G47) and of the end banner at :85 being lost while an emitted record line
+                //     stands: case18 states it over a single inline overpunch row, case19 over three
+                //     fixture rows.  The 8 -> 12 arithmetic ladder of :137, :140 and :142 stays pinned
+                //     at unit level by AccountBalanceReaderJobTest.Close and .CloseArithmeticLadder,
+                //     which drive :139's ELSE, the lost end banner and the ladder itself (gates G47
+                //     and G28). ---
+                case "case18" -> closeFailing();       // inline overpunch row, then the CLOSE refuses
+                case "case19" -> closeFailing();       // fixture rows 0..2, then the CLOSE refuses
 
                 default -> throw new IllegalStateException("No run shape is declared for "
                         + PROGRAM + '/' + caseId + ". Every one of the "
