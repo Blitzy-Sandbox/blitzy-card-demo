@@ -1,0 +1,160 @@
+{
+  "program": "COCRDUPC",
+  "caseId": "case15",
+  "description": "Statically derived by reading app/cbl/COCRDUPC.cbl, never captured from a run: the COBOL cannot be executed in this environment - there is no z/OS and no CICS emulator, the available compiler reports its indexed file handler disabled, it refuses a PROCEDURE ... USING program under -x, no Language Environment CEE* services exist, app/cpy/CUSTREC.cpy carries literal TAB characters that break parsing, and DFHAID, DFHBMSCA and DFHATTR are absent from the repository - so every value below is read out of the source, the copybooks, the symbolic map, the mapset and the fixture rather than recorded from an execution (practice B12, risk R-A). THIS IS THE BRIDGE from validation to the write path, and it carries the sharpest control-flow assertion in the program: THE DOUBLE TEST OF ONE 88-LEVEL in 2000-DECIDE-ACTION, where CCUP-CHANGES-OK-NOT-CONFIRMED is examined twice and the two examinations must not be merged. SEED AND SNAPSHOT. Row index 0 of fixtures/carddata.txt, byte-identical to app/data/ASCII/carddata.txt at the 150-byte CVACT02Y width of 16 + 11 + 3 + 50 + 10 + 1 + 59 (practice B11): CARD-NUM 0500024453765740, CARD-ACCT-ID 00000000050, CARD-CVV-CD 747, CARD-EMBOSSED-NAME 'Aniya Von' padded to X(50), CARD-EXPIRAION-DATE '2023-03-09' - misspelled in CVACT02Y:9 and preserved verbatim, requirement I1 - CARD-ACTIVE-STATUS Y and a 59-space FILLER. 9000-READ-DATA had already produced the snapshot the screen was painted from: the INSPECT ... CONVERTING LIT-LOWER TO LIT-UPPER at :1356-1358 upper-cases the embossed name to 'ANIYA VON', and :1361-1366 splits CARD-EXPIRAION-DATE(1:4), (6:2) and (9:2) into CCUP-OLD-EXPYEAR 2023, CCUP-OLD-EXPMON 03 and CCUP-OLD-EXPDAY 09. That snapshot rides back in on WS-THIS-PROGCOMMAREA with CCUP-CHANGE-ACTION 'S', so EIBCALEN is 160 + 329 = 489 over the layout at :275-321 - CCUP-CHANGE-ACTION X(1), CCUP-OLD-DETAILS 89, CCUP-NEW-DETAILS 89 and CARD-UPDATE-RECORD 150. The CARD-UPDATE-RECORD span still holds nothing but its INITIALIZE residue, which is SPACES in the PIC X items and ZEROS in CARD-UPDATE-ACCT-ID PIC 9(11) and CARD-UPDATE-CVV-CD PIC 9(03), because 9000-READ-DATA at :1345-1367 populates CCUP-OLD-DETAILS only and CARD-UPDATE-RECORD is touched nowhere but 9200-WRITE-PROCESSING, which this path never enters. CDEMO-PGM-CONTEXT is 1 and ENTER is pressed. WHAT IS SUBMITTED - ALL FOUR DATA FIELDS VALID, THREE OF THEM CHANGED. CRDNAMEI is 'MARIA DEL CARMEN VON' padded to X(50), letters and spaces only, so the INSPECT ... CONVERTING and FUNCTION TRIM test at :823-837 leaves length zero and 1230-EDIT-NAME reaches :839. CRDSTCDI is 'N' in upper case, which 88 FLG-YES-NO-VALID VALUES 'Y', 'N' at :91 accepts, so 1240-EDIT-CARDSTATUS reaches :864. EXPMONI is '11', inside 88 VALID-MONTH VALUES 1 THRU 12 at :95, so 1250-EDIT-EXPIRY-MON reaches :899. EXPYEARI is '2027', inside 88 VALID-YEAR VALUES 1950 THRU 2099 at :99, so 1260-EDIT-EXPIRY-YEAR reaches :935. EXPDAYI is '09', unchanged. Against the snapshot the name, the status and both expiry components differ, which is what makes the no-change test fail below. ENTER, NOT PF5, AND THAT IS THE WHOLE POINT: pressing PF5 would divert to arm (e) and the write path, which cases 16 to 19 own. THE AID SURVIVES COERCION, :413-424. SET PFK-INVALID TO TRUE runs first, then the validity test admits CCARD-AID-ENTER OR CCARD-AID-PFK03 OR (CCARD-AID-PFK05 AND CCUP-CHANGES-OK-NOT-CONFIRMED) OR (CCARD-AID-PFK12 AND NOT CCUP-DETAILS-NOT-FETCHED). ENTER matches the first limb, so PFK-VALID holds and the IF PFK-INVALID SET CCARD-AID-ENTER coercion at :422-424 does not fire - CCARD-AID-ENTER is what the program acts on because it is what the terminal sent, not because it was substituted. Note what the third limb couples: PF5 is valid only while CCUP-CHANGES-OK-NOT-CONFIRMED already holds, and that is the very state this invocation PRODUCES. PF5 could therefore not have been honoured on this invocation at all, only on the next one, and that coupling is what makes this a two-step confirm flow rather than a one-key save. DISPATCH. REENTER with state 'S' and ENTER passes over every earlier arm of the ordered EVALUATE TRUE at :429 - arm one at :435 needs PFK03, arm two at :482-485 needs CDEMO-PGM-ENTER or PFK12, arm three at :502-505 needs CCUP-DETAILS-NOT-FETCHED or a CDEMO-FROM-PROGRAM of COMEN01C where this one is COCRDLIC, and the :517-518 pair needs 'C', 'L' or 'F' - so it matches WHEN OTHER at :535 (gate G30), which performs 1000-PROCESS-INPUTS, 2000-DECIDE-ACTION and 3000-SEND-MAP and leaves through GO TO COMMON-RETURN at :542. nextProgram, nextMapset and nextMap are COCRDUPC, COCRDUP and CCRDUPA from :570-572, inside 1000-PROCESS-INPUTS, which this path runs. 1100-RECEIVE-MAP. All four data fields are populated and none is the '*' sentinel, so :607-612, :614-619, :623-628 and :630-635 each take their ELSE limb and move the submitted value into CCUP-NEW-CRDNAME, CCUP-NEW-CRDSTCD, CCUP-NEW-EXPMON and CCUP-NEW-EXPYEAR. MOVE EXPDAYI TO CCUP-NEW-EXPDAY at :621 is UNCONDITIONAL, with no '*' or SPACES guard of its own, and is preserved as written (practice B5). CCUP-NEW-CVV-CD is the program's second such quirk: declared at :306 and assigned NOWHERE, because the COCRDUP map has no CVV field, so it keeps the spaces INITIALIZE CCUP-NEW-DETAILS left at :586 - immaterial here only because no rewrite is attempted, and the fact that becomes case16's CVV-zeroing defect. 1200-EDIT-MAP-INPUTS. CCUP-DETAILS-NOT-FETCHED is false, so :645-665 takes ELSE CONTINUE and 1210-EDIT-ACCOUNT and 1220-EDIT-CARD are NOT performed; :668-670 sets FOUND-CARDS-FOR-ACCOUNT and both filter flags to ISVALID; the FUNCTION UPPER-CASE comparison at :680-683 over the 59-byte CCUP-OLD-CARDDATA / CCUP-NEW-CARDDATA groups defined at :295-301 and :307-313 FAILS because three of the four components changed, so NO-CHANGES-DETECTED is not set; the skip at :685-693 does not fire either, since NO-CHANGES-DETECTED is false and the state is still 'S' rather than 'N' or 'C'; and SET CCUP-CHANGES-NOT-OK TO TRUE at :696 makes the state 'E' before a single edit runs. Only then does :698-708 perform 1230, 1240, 1250 and 1260 in that exact order, and ALL FOUR SUCCEED - SET FLG-CARDNAME-ISVALID at :839, SET FLG-CARDSTATUS-ISVALID at :864, SET FLG-CARDEXPMON-ISVALID at :899 and SET FLG-CARDEXPYEAR-ISVALID at :935 - so all four flags hold '1', none writes a message, and WS-RETURN-MSG stays OFF at SPACES from :384. Then :710-714: IF INPUT-ERROR CONTINUE ELSE SET CCUP-CHANGES-OK-NOT-CONFIRMED TO TRUE. INPUT-ERROR was never set, so 'N' IS SET AT :713 and the state moves 'E' to 'N' at the very end of 1200, one statement before 2000 is entered. THE HEADLINE - THE DOUBLE TEST OF CCUP-CHANGES-OK-NOT-CONFIRMED IN 2000-DECIDE-ACTION, walked arm by arm over the ordered EVALUATE TRUE at :949. (a) WHEN CCUP-DETAILS-NOT-FETCHED at :954 is false, the state being 'N' rather than LOW-VALUES or SPACES; note this arm has NO BODY OF ITS OWN and shares (b)'s. (b) WHEN CCARD-AID-PFK12 at :958 is false, ENTER having been pressed, so the 9000-READ-DATA re-fetch at :961-965 does not run. (c) WHEN CCUP-SHOW-DETAILS at :971 is FALSE, and this is the subtlety that makes the case work: the user WAS on the show-details screen, but 1200 has already moved the state 'S' to 'E' at :696 and 'E' to 'N' at :713, so by the time 2000 tests it the state is no longer 'S'. (d) WHEN CCUP-CHANGES-NOT-OK at :982 is false, 'N' not being 'E'. (e) WHEN CCUP-CHANGES-OK-NOT-CONFIRMED AND CCARD-AID-PFK05 at :988-989 is THE CONDITION'S FIRST APPEARANCE and it FAILS: CCUP-CHANGES-OK-NOT-CONFIRMED is TRUE, but CCARD-AID-PFK05 is FALSE, so the compound is false, 9200-WRITE-PROCESSING at :990-991 is NOT performed and the inner EVALUATE at :992-1001 is never entered. (f) WHEN CCUP-CHANGES-OK-NOT-CONFIRMED at :1006-1007 is THE BARE, SECOND TEST OF THE SAME 88-LEVEL and it MATCHES, so control CONTINUEs at :1007. ARM (f) IS REACHED AND ARM (e) IS NOT, and that outcome is correct only because the arms are evaluated in source order and (e) carries the extra AND. A translator that deduplicated the two tests of one condition, or reordered them, or converted the EVALUATE into a hash dispatch on the state character, would take the write path on a plain ENTER and save unconfirmed changes - which is precisely what gate G30 protects. Arms (g) WHEN CCUP-CHANGES-OKAYED-AND-DONE at :1011 and the WHEN OTHER abend at :1019-1026 are NOT REACHED, which is why expectedReturnCode is 0. NO REPOSITORY CALL AND NO WRITE OCCURRED on this invocation: 1200 took the ELSE at :663 rather than the 1210/1220 path, arm (b) of 2000 did not re-read, and arm (e) did not write, so the card file is not touched at all. 3200-SETUP-SCREEN-VARS, :1082-1133. The context is REENTER so :1086 takes the ELSE, and CC-ACCT-ID-N and CC-CARD-NUM-N are both non-zero, so :1090 and :1096 echo CC-ACCT-ID and CC-CARD-NUM into ACCTSIDO and CARDSIDO. In the EVALUATE at :1099 arm 1 WHEN CCUP-DETAILS-NOT-FETCHED and arm 2 WHEN CCUP-SHOW-DETAILS both fail, and ARM 3 WHEN CCUP-CHANGES-MADE at :1113 MATCHES, because the grouping 88 at :282-284 covers 'E', 'N', 'C', 'L' and 'F' and 'N' is a member: :1114-1117 echo the CCUP-NEW-* values, so CRDNAMEO, CRDSTCDO, EXPMONO and EXPYEARO carry exactly what was submitted. EXPDAYO comes from CCUP-OLD-EXPDAY at :1123; the CCUP-NEW-EXPDAY move at :1122 is COMMENTED OUT and stays that way (practice B5), which is why the day reads 09 from the snapshot rather than from the screen even though :621 did populate CCUP-NEW-EXPDAY. 3250-SETUP-INFOMSG. The ordered EVALUATE at :1140 passes arm 1 CDEMO-PGM-ENTER, arm 2 CCUP-DETAILS-NOT-FETCHED, arm 3 CCUP-SHOW-DETAILS and arm 4 CCUP-CHANGES-NOT-OK, and ARM 5 WHEN CCUP-CHANGES-OK-NOT-CONFIRMED at :1149-1150 MATCHES, setting PROMPT-FOR-CONFIRMATION. So INFOMSGO is 'Changes validated.Press F5 to save' from the 88-level literal at :166-167 - note there is NO SPACE AFTER THE FULL STOP, the text reading 'validated.Press' - padded to the INFOMSGI X(40) width at COCRDUP.CPY:102, which is 34 characters and six trailing spaces. Then :1163 moves WS-RETURN-MSG into ERRMSGO, and because no edit wrote a message ERRMSGO IS EXACTLY 80 SPACES at its declared X(80) width: the confirmation prompt is an informational line, not an error, and the error line is positively asserted empty. FKEYSC BECOMES BRIGHT, :1315-1317, AND THIS IS THE ONLY CASE IN THE FOLDER WHERE IT DOES. IF PROMPT-FOR-CONFIRMATION MOVE DFHBMBRY TO FKEYSCA OF CCRDUPAI fires, because PROMPT-FOR-CONFIRMATION is an 88-level on WS-INFO-MSG and 3250 has just set it. The field's mapset definition is FKEYSC DFHMDF ATTRB=(ASKIP,DRK) COLOR=YELLOW LENGTH=18 POS=(24,23) INITIAL='F5=Save F12=Cancel' at app/bms/COCRDUP.bms:163-167 - eighteen bytes, matching FKEYSCI PIC X(18) at COCRDUP.CPY:115-120, and NORMALLY DARK - so what this one statement does is un-darken the save-key legend precisely when a save has become possible. It is real, visible and easy to miss. Its sibling FKEYS at :158-162 is ATTRB=(ASKIP,NORM) LENGTH=21 INITIAL='ENTER=Process F3=Exit', twenty-one bytes. Both legends are physical-map INITIAL text: :1316 is THE ONLY FKEYS-related statement in the entire program, so nothing is ever moved into FKEYSO or FKEYSCO and both payload members carry the LOW-VALUES that MOVE LOW-VALUES TO CCRDUPAO left at :1053. FKEYSCA is an xxxA attribute item rather than a payload field, so the brightening is asserted here in prose while the attributes map below carries the colour plane only. 3300's PROTECTION MATRIX - THE THIRD ARM, :1191-1199, AND THIS CASE IS ITS SOLE WITNESS IN THE FOLDER. The state 'N' matches the group WHEN CCUP-CHANGES-OK-NOT-CONFIRMED / WHEN CCUP-CHANGES-OKAYED-AND-DONE, so MOVE DFHBMPRF protects ALL SIX of ACCTSIDA, CARDSIDA, CRDNAMEA, CRDSTCDA, EXPMONA and EXPYEARA - including the four data fields that were unprotected by DFHBMFSE under the 'S' and 'E' states at :1186-1190. That is the screen saying 'nothing more to type, press F5 or F12': every field is locked while confirmation is outstanding. EXPDAYA is COMMENTED OUT at :1197 and is therefore left unset (practice B5). These six land on xxxA items, which are attribute metadata and not payload, so they are asserted in this description by their BmsAttributes mnemonic rather than in the attributes map. GATE G38 - THE CLEAN SCREEN, the deliberate counterpart to case14's four-way highlight. COCRDUPC does not COPY CSSETATY; the highlight is inline at :1243-1307. All four data-field guards require CCUP-CHANGES-NOT-OK, which is 'E', and the state is 'N', so not one of :1263-1266, :1268-1272, :1274-1277, :1279-1283, :1287-1290, :1292-1296, :1298-1301 or :1303-1307 fires; the two search-key guards at :1243/:1247 and :1253/:1257 require FLG-*-NOT-OK or FLG-*-BLANK and both flags were set ISVALID at :669-670. So there is NO '*' ANYWHERE AND NO DFHRED ANYWHERE on this screen. ACCTSIDC and CARDSIDC read DFHDFCOL, which :1239-1240 also moves explicitly because CDEMO-LAST-MAPSET equals LIT-CCLISTMAPSET, and which is the same X'00' the LOW-VALUES of :1053 already left there. MOVE DFHBMDAR TO EXPDAYC at :1285 fires UNCONDITIONALLY, so the expiry day is dark on every screen this program paints. INFOMSGA takes DFHBMBRY at :1312 rather than DFHBMDAR at :1310, the informational line being present - another xxxA item, asserted here. Every attribute is named by its BmsAttributes mnemonic, never by a raw byte. THE CURSOR FALLS THROUGH TO WHEN OTHER, :1211-1235, AND THIS IS THE ONLY CASE IN THE FOLDER THAT REACHES THAT DEFAULT. The ordered EVALUATE runs AFTER 3250, and that is decisive: arm 1 at :1212-1213 tests FOUND-CARDS-FOR-ACCOUNT, an 88-level on WS-INFO-MSG which :1150 has just overwritten with 'Changes validated.Press F5 to save', and NO-CHANGES-DETECTED, an 88-level on WS-RETURN-MSG which holds spaces, so neither matches even though :668 did set FOUND-CARDS-FOR-ACCOUNT earlier in this same invocation. The account and card arms at :1215-1220 fail on ISVALID, and the four data-field arms at :1221-1232 fail because every one of those flags is ISVALID too. So the chain reaches WHEN OTHER at :1233-1234 and MOVE -1 TO ACCTSIDL positions the cursor on the account field. EXACTLY ONE xxxL carries the cursor. xxxL is a length item and therefore metadata, so it is declared as cursorField and never as a payload member; the same holds for the xxxF and xxxA items and for the output-side xxxP, xxxH and xxxV planes, which this program never writes. GATE G37. The whole conversation state travels in the payload - the 160-byte CARDDEMO-COMMAREA of COCOM01Y, the 329-byte WS-THIS-PROGCOMMAREA, the AID and the received map fields - and NO server-side session state exists. COMMON-RETURN reassembles both halves into WS-COMMAREA at :549-552 and returns TRANSID (LIT-THISTRANID), which is RETURN_TRANSID rather than an XCTL. Post-call CCUP-CHANGE-ACTION is 'N' and CCUP-NEW-DETAILS is fully populated with the submitted values, CCUP-NEW-CVV-CD excepted. THAT OUTGOING PAYLOAD IS EXACTLY THE INPUT case16.json CONSUMES, which is why it is stated byte-exactly here: this case ends one step of the confirm flow and hands the next one a commarea in state 'N' with PF5 now admissible under the third limb of :416. navigation pins the shared 160-byte area only, so the program's own 329-byte extension is deliberately absent from it, and nothing in it changed: :671-672 moved CCUP-OLD-ACCTID and CCUP-OLD-CARDID into CDEMO-ACCT-ID and CDEMO-CARD-NUM, and both already held those values. expectedWrites IS EMPTY BY POSITIVE ASSERTION rather than by omission - arm (e) was not taken, 9200-WRITE-PROCESSING never ran and nothing was written - and expectedFinalState is the pre-state unchanged: all three seeded rows, byte for byte, at 150 bytes each, with expectedDatasets pinning the write channel at zero rows and the final-state channel at three. expectedMessages is empty, and that is a measurement rather than an omission: WS-RETURN-MSG is PIC X(75) at :173, which is neither of the fixed widths a MessageChannel offers - WS_MESSAGE_80 is 80 and SCREEN_ERRMSG_78 is 78 - and this map's ERRMSGO is X(80) at COCRDUP.CPY:108, so the error line is asserted on the wire as ERRMSGO at 80 characters exactly as every sibling in this folder does it, and here it is 80 spaces. COCRDUPC emits no COBOL DISPLAY on this path. Neither CSMSG01Y literal appears: the thank-you and invalid-key texts have zero references in this program. TITLE01O is ' AWS Mainframe Modernization ' and TITLE02O is ' CardDemo ', both X(40) and byte-exact from CCDA-TITLE01 and CCDA-TITLE02, the latter being COTTL01Y's ACTIVE line 22 because line 21 is commented out (practice B5). Gates asserted: G15 as case 15 of 20, G18 by diffing to zero, G30 five times over - the WHEN OTHER dispatch, the double test of one 88-level with (e) failing and (f) matching, the AID coercion that does not fire, arm 3 of 3200 and arm 5 of 3250 and the third arm of 3300, and the cursor WHEN OTHER default - G37, G38 as the clean screen in the 'N' state with no '*' and no DFHRED, and G51 because CONTROLLER_POJO reaches CardUpdateController as a plain object with no MockMvc, no servlet container and no HTTP layer in the path. G32, G35 and G39 are deliberately not encoded: this program has no backward GO TO loop, no CALL 'CEE3ABD' at all - which is why expectedReturnCode is 0 - and no pagination. review_rules returns exactly 'No user rules provided.', so no project rule governs this fixture and none is invented; it is held instead to practices B1, B3, B5, B7, B8, B9, B11 and B12, with the reference inputs under app/cbl, app/cpy, app/cpy-bms, app/bms and app/data read and not one byte written.",
+  "unitKind": "CONTROLLER_POJO",
+  "inputs": {
+    "CARDDAT": {
+      "fixture": "carddata.txt",
+      "fromRow": 0,
+      "rowCount": 3
+    }
+  },
+  "jobParameters": {},
+  "screenRequest": {
+    "eibcalen": 489,
+    "aid": "DFHENTER",
+    "pinnedClock": "2022-07-19T23:12:33",
+    "charset": "US-ASCII",
+    "commarea": {
+      "CDEMO-FROM-TRANID": "CCLI",
+      "CDEMO-FROM-PROGRAM": "COCRDLIC",
+      "CDEMO-TO-TRANID": "    ",
+      "CDEMO-TO-PROGRAM": "        ",
+      "CDEMO-USER-ID": "USER0001",
+      "CDEMO-USER-TYPE": "U",
+      "CDEMO-PGM-CONTEXT": "1",
+      "CDEMO-CUST-ID": "000000000",
+      "CDEMO-CUST-FNAME": "                         ",
+      "CDEMO-CUST-MNAME": "                         ",
+      "CDEMO-CUST-LNAME": "                         ",
+      "CDEMO-ACCT-ID": "00000000050",
+      "CDEMO-ACCT-STATUS": " ",
+      "CDEMO-CARD-NUM": "0500024453765740",
+      "CDEMO-LAST-MAP": "CCRDLIA",
+      "CDEMO-LAST-MAPSET": "COCRDLI",
+      "WS-THIS-PROGCOMMAREA": "S000000000500500024453765740747ANIYA VON                                         20230309Y                                                                                                         00000000000000                                                                                                                        "
+    },
+    "mapFields": {
+      "ACCTSIDI": "00000000050",
+      "CARDSIDI": "0500024453765740",
+      "CRDNAMEI": "MARIA DEL CARMEN VON                              ",
+      "CRDSTCDI": "N",
+      "EXPMONI": "11",
+      "EXPYEARI": "2027",
+      "EXPDAYI": "09"
+    },
+    "forcedOutcomes": {}
+  },
+  "expectedResponse": {
+    "nextProgram": "COCRDUPC",
+    "nextMapset": "COCRDUP",
+    "nextMap": "CCRDUPA",
+    "navigation": {
+      "CDEMO-FROM-TRANID": "CCLI",
+      "CDEMO-FROM-PROGRAM": "COCRDLIC",
+      "CDEMO-TO-TRANID": "    ",
+      "CDEMO-TO-PROGRAM": "        ",
+      "CDEMO-USER-ID": "USER0001",
+      "CDEMO-USER-TYPE": "U",
+      "CDEMO-PGM-CONTEXT": "1",
+      "CDEMO-CUST-ID": "000000000",
+      "CDEMO-CUST-FNAME": "                         ",
+      "CDEMO-CUST-MNAME": "                         ",
+      "CDEMO-CUST-LNAME": "                         ",
+      "CDEMO-ACCT-ID": "00000000050",
+      "CDEMO-ACCT-STATUS": " ",
+      "CDEMO-CARD-NUM": "0500024453765740",
+      "CDEMO-LAST-MAP": "CCRDLIA",
+      "CDEMO-LAST-MAPSET": "COCRDLI"
+    },
+    "sends": [
+      {
+        "fields": {
+          "TRNNAMEO": "CCUP",
+          "TITLE01O": "      AWS Mainframe Modernization       ",
+          "CURDATEO": "07/19/22",
+          "PGMNAMEO": "COCRDUPC",
+          "TITLE02O": "              CardDemo                  ",
+          "CURTIMEO": "23:12:33",
+          "ACCTSIDO": "00000000050",
+          "CARDSIDO": "0500024453765740",
+          "CRDNAMEO": "MARIA DEL CARMEN VON                              ",
+          "CRDSTCDO": "N",
+          "EXPMONO": "11",
+          "EXPYEARO": "2027",
+          "EXPDAYO": "09",
+          "INFOMSGO": "Changes validated.Press F5 to save      ",
+          "ERRMSGO": "                                                                                ",
+          "FKEYSO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "FKEYSCO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000"
+        },
+        "attributes": {
+          "TRNNAMEC": "DFHDFCOL",
+          "TITLE01C": "DFHDFCOL",
+          "CURDATEC": "DFHDFCOL",
+          "PGMNAMEC": "DFHDFCOL",
+          "TITLE02C": "DFHDFCOL",
+          "CURTIMEC": "DFHDFCOL",
+          "ACCTSIDC": "DFHDFCOL",
+          "CARDSIDC": "DFHDFCOL",
+          "CRDNAMEC": "DFHDFCOL",
+          "CRDSTCDC": "DFHDFCOL",
+          "EXPMONC": "DFHDFCOL",
+          "EXPYEARC": "DFHDFCOL",
+          "EXPDAYC": "DFHBMDAR",
+          "INFOMSGC": "DFHDFCOL",
+          "ERRMSGC": "DFHDFCOL",
+          "FKEYSC": "DFHDFCOL",
+          "FKEYSCC": "DFHDFCOL"
+        }
+      }
+    ],
+    "cursorField": "ACCTSIDL",
+    "termination": "RETURN_TRANSID"
+  },
+  "expectedWrites": [],
+  "expectedFinalState": [
+    {
+      "dataset": "CARDDAT",
+      "rowIndex": 0,
+      "fields": {
+        "CARD-NUM": "0500024453765740",
+        "CARD-ACCT-ID": "00000000050",
+        "CARD-CVV-CD": "747",
+        "CARD-EMBOSSED-NAME": "Aniya Von                                         ",
+        "CARD-EXPIRAION-DATE": "2023-03-09",
+        "CARD-ACTIVE-STATUS": "Y",
+        "FILLER": "                                                           "
+      },
+      "expectedBytes": "050002445376574000000000050747Aniya Von                                         2023-03-09Y                                                           "
+    },
+    {
+      "dataset": "CARDDAT",
+      "rowIndex": 1,
+      "expectedBytes": "068358619817151600000000027567Ward Jones                                        2025-07-13Y                                                           "
+    },
+    {
+      "dataset": "CARDDAT",
+      "rowIndex": 2,
+      "expectedBytes": "092387719324733000000000002028Enrico Rosenbaum                                  2024-08-11Y                                                           "
+    }
+  ],
+  "expectedReturnCode": 0,
+  "expectedMessages": [],
+  "normalisations": [],
+  "expectedDatasets": [
+    {
+      "dataset": "CARDDAT",
+      "channel": "WRITES",
+      "rowCount": 0,
+      "recordLength": 150
+    },
+    {
+      "dataset": "CARDDAT",
+      "channel": "FINAL_STATE",
+      "rowCount": 3,
+      "recordLength": 150
+    }
+  ]
+}

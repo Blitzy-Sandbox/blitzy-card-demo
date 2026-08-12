@@ -1,154 +1,96 @@
 {
   "program": "CBACT04C",
   "caseId": "case20",
-  "description": "VOLUME AND ORDER, entirely from the fixtures. The first four rows of tcatbal.txt and the first four of acctdata.txt are seeded as contiguous slices, with the four matching cardxref.txt rows verbatim, and the only inline row is DEFAULT type 01 category 0001 taken verbatim from discgrp.txt row 17. Because every acctdata.txt row carries ACCT-GROUP-ID as ten spaces, all four records take the '23' fallback, so the displayed sequence is the record image followed by the two disclosure-group lines FOUR TIMES, in that order and interleaved rather than grouped - fourteen lines in total, and a run that batched its lookups would produce the same set in the wrong order and fail here. Four transactions are written with ascending identifiers and three accounts are rewritten, the fourth being the final group. Every balance in that fixture is a positive zero, so each rewrite adds 0.00 and clears two spans that already hold 00000000000{: the account images come back byte-identical to their seeds, and that is the correct answer rather than a missing assertion - what this case proves is the SEQUENCE.",
+  "description": "THE OPEN-SEQUENCE CASE, AND THE FOLDER'S RECORD OF A PRESERVED SOURCE DEFECT. This case owns 0200-DISCGRP-OPEN (:270-286) and the EMPTY disclosure-group dataset - the scenario case19 explicitly declines and hands on, in its own words, as 'not an empty dataset and not an open failure; those are different scenarios and belong in different cases'. It is the only case in this folder in which a dataset the program opens holds NO ROW AT ALL and the run is nevertheless fatal, and it is the only one that carries the five open-error texts and the open-failure derivation in writing. THE DEFECT, VERBATIM (practice B5). 0200-DISCGRP-OPEN opens the DISCLOSURE GROUP dataset, yet its failure arm at :281 displays 'ERROR OPENING DALY REJECTS FILE' - note DALY with four letters and no I, REJECTS plural, single spaces, and no trailing punctuation. It names a rejects file CBACT04C DOES NOT HAVE and never opens: the reject dataset belongs to CBTRN02C, which writes it at 430 bytes under the DALYREJS DD. The text is a copy/paste defect in the source and it is reproduced byte for byte, here and in AccountInterestCalcJob's ERROR_OPENING_DISCGRP constant. Rewording it to something sensible such as ERROR OPENING DISCLOSURE GROUP FILE would be a behaviour change and a parity violation, so it is preserved rather than repaired. WHY THE OPEN FAILURE IS RECORDED HERE RATHER THAN ASSERTED, SAID PLAINLY (practices B1 and B12). ParityCase offers NO FAULT-INJECTION MECHANISM for a BATCH_JOB case, and none was invented. DatasetInput has exactly three mutually exclusive shapes - inline rows, fixture-backed, and declared-empty - and not one of them can mark a dataset unopenable or attach a FILE STATUS to an OPEN. ForcedOutcome and RepositoryOperation exist only on ScreenRequest, which requireOnlineMember REFUSES on a BATCH_JOB case, and their seven operations - read, readForUpdate, readNext, startBrowse, write, rewrite, delete - contain no open in any event. Each case's dataset relations are created before any case datum is read, so every OPEN this program issues resolves and reports '00'. An OPEN-time non-'00' status is therefore unreachable from a case file, and the four-line stream below is DERIVED AND RECORDED rather than declared in expectedMessages: it is precisely what the harness must produce once such a mechanism exists, and stating that is better than either inventing a schema member or leaving the gap unmentioned. THE DERIVATION, FOR WHOEVER ADDS THAT MECHANISM (practice B8). :181-186 performs the five opens UNCONDITIONALLY AND IN A FIXED ORDER: 0000-TCATBALF-OPEN (OPEN INPUT, :236), 0100-XREFFILE-OPEN (OPEN INPUT, :254), 0200-DISCGRP-OPEN (OPEN INPUT, :272), 0300-ACCTFILE-OPEN (OPEN I-O, :291) and 0400-TRANFILE-OPEN (OPEN OUTPUT, :309). :271 moves a PESSIMISTIC 8 into APPL-RESULT; :273-274 overwrite it with 0 on '00'; the ELSE at :275 and the MOVE at :276 make it 12 on anything else. The abend therefore carries 12 AND NOT THE 8 that :271 might tempt - this is the one abend site in the program where an initial value could produce a plausible wrong answer. With an injected FILE STATUS of '35', the conventional file-not-found outcome for an OPEN INPUT, the run would emit EXACTLY FOUR LINES and nothing else, in this order: 'START OF EXECUTION OF PROGRAM CBACT04C' (:181), 'ERROR OPENING DALY REJECTS FILE' (:281), 'FILE STATUS IS: NNNN0035' (:646) and 'ABENDING PROGRAM' (:629), with a RETURN-CODE of 12 from :275-276. The third line is derived through 9910-DISPLAY-IO-STATUS (:635-648): '35' IS NUMERIC and IO-STAT1 is '3' rather than '9', so the ELSE arm at :643-646 runs - MOVE '0000' TO IO-STATUS-04, then MOVE IO-STATUS TO IO-STATUS-04(3:2), yielding '0035' - and THE FOUR Ns ARE LITERAL TEXT inside the :646 display literal, not a placeholder the digits replace. A status whose first character is '9', or a non-numeric status, would instead take the IF arm at :636-642, which moves IO-STAT1 into IO-STATUS-04(1:1) and packs IO-STAT2 through a PIC 9(4) BINARY redefinition, producing a different digit string; '35' is chosen so that the numeric arm applies and the result can be derived rather than guessed. Because :184 precedes :185 and :186, a DISCGRP open failure means ACCOUNT-FILE and TRANSACT-FILE ARE NEVER OPENED AT ALL, the loop at :188 is never entered, and no CLOSE is ever attempted - which is what makes that stream so short, and why the output dataset would not merely be empty but would never have been created. WHAT THIS CASE DOES ASSERT: THE CLOSEST SUPPORTED FORM, AND IT IS NOT A CONSOLATION. DISCGRP is declared EMPTY - a dataset that EXISTS and holds NO ROW, carrying CVTRA02Y's width of 50 and naming the copybook it is empty of - which is as close as this schema comes to 'the disclosure-group dataset is not there'. The status the harness surfaces is therefore '23' AT THE READ and never at the open, and that is the substance of the assertion: OPEN INPUT reads nothing, so an empty KSDS opens at '00', :278 takes the APPL-AOK arm, and :281 IS NOT REACHED. Asserting the absence of that line against an empty dataset is what proves the mislabelled diagnostic is unreachable from data alone - which is exactly why the four-line stream above has to be recorded instead of declared. Read together, case19 proves the retry fails when the dataset holds rows but no 'DEFAULT   ' row, and this case proves it fails IDENTICALLY when the dataset holds no row at all: emptiness is a read-time miss in this program, never an open-time failure. SEVEN LINES, IN THIS ORDER. The five opens all report '00', so none of the five open-error texts appears. :190 reads the single category-balance row at '00', :192 counts it and :193 DISPLAYs the raw 50-byte TRAN-CAT-BAL-RECORD image. :194 finds TRANCAT-ACCT-ID 00000000020 different from WS-LAST-ACCT-NUM, which is still its :168 VALUE of spaces, so this is the FIRST account break: :195 finds WS-FIRST-TIME at its :170 VALUE 'Y' and :198 merely flips the flag, so 1050-UPDATE-ACCOUNT at :196 is NOT performed. :200-202 zero WS-TOTAL-INT and load the account key; :203's 1100-GET-ACCT-DATA reads account 00000000020 at '00', so neither 'ACCOUNT NOT FOUND: ' (:375) nor 'ERROR READING ACCOUNT FILE' (:386) appears; :204-205's 1110-GET-XREF-DATA reads the alternate key at '00', so neither :397's 'ACCOUNT NOT FOUND: ' nor :408's 'ERROR READING XREF FILE' appears either. :210-212 then build the rate key, and because ACCT-GROUP-ID is TEN SPACES the key is '          ' + '01' + '0001'. :213's 1200-GET-INTEREST-RATE reads an EMPTY dataset, misses, and because :416-420 carries an INVALID KEY phrase it DISPLAYs both fallback lines at :418 and :419; :422's IF DISCGRP-STATUS = '00' OR '23' TOLERATES the '23', so APPL-RESULT becomes 0, :428 takes the APPL-AOK arm and :431's 'ERROR READING DISCLOSURE GROUP FILE' is NEVER REACHED - a different text from :455's, and asserting its absence is what proves the tolerance is real. :436-438 then retries with MOVE 'DEFAULT' into the X(10) receiver at :79, so the group portion becomes 'DEFAULT   ' - the seven-character literal plus THREE TRAILING SPACES - while the type and category portions moved at :211-212 are RETAINED. 1200-A-GET-DEFAULT-INT-RATE (:443-460) has NO INVALID KEY PHRASE AT ALL - :444 is a bare READ - so its miss is SILENT and emits no third 'DISCLOSURE GROUP RECORD MISSING' line; :446 accepts ONLY '00', :449 moves 12 into APPL-RESULT, :452 finds APPL-AOK false, :455 displays 'ERROR READING DEFAULT DISCLOSURE GROUP' - no trailing 'FILE' - :456-457 render the status and :458 abends. '23' is numeric and IO-STAT1 is '2', so 9910's ELSE arm emits 'FILE STATUS IS: NNNN0023'. :629 displays 'ABENDING PROGRAM', :630 moves 0 to TIMING, :631 moves 999 to ABCODE and :632 CALLs 'CEE3ABD', which is common.AbendException carrying abend code 999 and timing 0. The seven lines are therefore the START banner (:181), the raw record image (:193), the two fallback lines (:418, :419), the default-group error (:455), the rendered file status (:646) and 'ABENDING PROGRAM' (:629). THE RETURN CODE, AND A CONVERGENCE WORTH NAMING. expectedReturnCode is 12, reached here from :449 inside 1200-A-GET-DEFAULT-INT-RATE. RETURN-CODE is never explicitly moved anywhere in CBACT04C; the step's exit status derives from APPL-RESULT, which the harness observes as the AbendException's return code. All four abend cases in this folder carry 12 and reach it from FOUR DIFFERENT LINES - case17 from :381, case18 from :403, case19 and this case from :449 - while the open-failure path derived above would reach the same 12 from :276. The value is the same; the site never is, which is why each case names its own. Execution stops at :632, so no CLOSE runs, none of :533, :552, :570, :588 or :606 can appear, and there is no closing banner from :230 - a case carrying it has not modelled the abend. THE FIVE OPEN-ERROR TEXTS, RECORDED IN FULL (documentation duty; each ParityCase models one run, so one case can pin at most one of them, and the folder must not lose the rest). 0000-TCATBALF-OPEN at :245 displays 'ERROR OPENING TRANSACTION CATEGORY BALANCE' - it ends at BALANCE and does NOT say 'BALANCE FILE'. 0100-XREFFILE-OPEN at :263 is DISPLAY 'ERROR OPENING CROSS REF FILE'   XREFFILE-STATUS - THE ONLY ONE OF THE FIVE THAT APPENDS THE TWO-BYTE FILE STATUS TO ITS MESSAGE, because COBOL concatenates the operands of a DISPLAY, so the emitted line is the literal immediately followed by the status: a '35' there would read 'ERROR OPENING CROSS REF FILE35', with no separator. That is a SECOND source oddity alongside the DALY REJECTS defect and it must not be normalised away either. 0200-DISCGRP-OPEN at :281 displays 'ERROR OPENING DALY REJECTS FILE', the defect this case records. 0300-ACCTFILE-OPEN at :300 displays 'ERROR OPENING ACCOUNT MASTER FILE'. 0400-TRANFILE-OPEN at :318 displays 'ERROR OPENING TRANSACTION FILE'. For completeness the five close texts are 'ERROR CLOSING TRANSACTION BALANCE FILE' (:533), 'ERROR CLOSING CROSS REF FILE' (:552), 'ERROR CLOSING DISCLOSURE GROUP FILE' (:570) - note that the CLOSE names the disclosure group correctly where the OPEN does not, which is what marks :281 as a slip rather than a convention - 'ERROR CLOSING ACCOUNT FILE' (:588) and 'ERROR CLOSING TRANSACTION FILE' (:606). THE TWO WRITE-SIDE TEXTS, DOCUMENTED RATHER THAN ASSERTED, SO THE OMISSION IS KNOWN AND DELIBERATE. 1050-UPDATE-ACCOUNT at :365 displays 'ERROR RE-WRITING ACCOUNT FILE' - hyphenated RE-WRITING - and 1300-B-WRITE-TX at :510 displays 'ERROR WRITING TRANSACTION RECORD'. No case in this folder injects either, because neither a REWRITE failure at :356 nor a WRITE failure at :500 is reachable from seeded data any more than an open failure is: both would need the same fault-injection mechanism. They are written out here so a reviewer can see the gap is recognised, not overlooked. The same applies to :342's 'ERROR READING TRANSACTION CATEGORY FILE', which guards the browse read at :331 and accepts '00' or '10', and to :431's 'ERROR READING DISCLOSURE GROUP FILE'. THE INPUTS, AND WHAT IS CONSTRUCTED IN THEM. The ONLY construction is DISCGRP's emptiness, declared inside this JSON. The other four inputs are UNMODIFIED FIXTURE SLICES, each byte-identical to a real row: TCATBALF is zero-based row 19 of tcatbal.txt, account 00000000020 / type 01 / category 0001 with TRAN-CAT-BAL '0000000000{' - a zoned POSITIVE ZERO - at bytes 18-28 behind the genuine 17-byte TRAN-CAT-KEY, then FILLER X(22); ACCTFILE is zero-based row 19 of acctdata.txt, the matching account 00000000020; and XREFFILE and XREFFIL1 are both zero-based row 3 of cardxref.txt, the ONE row whose XREF-ACCT-ID is 00000000020, which is what makes the alternate-key read at :394-395 return '00'. Narrow slices are chosen deliberately: the abend happens on the first record, so seeding fifty rows would add forty-nine final-state expectations that assert nothing this case is about. No reference input is touched to build any of this - discgrp.txt is neither renamed, truncated nor deleted to simulate an empty dataset, and cardxref.txt is not pre-padded (practice B3). BOTH RECORD CHANNELS ARE EMPTY, AND BOTH ARE POSITIVE ASSERTIONS. SYSTRAN holds ZERO rows on the WRITES channel. The abend precedes :214's guard, so 1300-COMPUTE-INTEREST (:462), 1300-B-WRITE-TX (:473), ADD 1 TO WS-TRANID-SUFFIX (:474) and WRITE FD-TRANFILE-REC (:500) never execute: NO TRAN-ID IS GENERATED AT ALL, not even the first, whose suffix would have been 000001, and no transaction identifier is pinned anywhere in this file. INTCALC.jcl:37's DISP=(NEW,CATLG,DELETE) then discards the generation the abending step allocated. Note the contrast the derivation above draws: here the output dataset WAS opened at :186 and left empty, whereas an open failure at :184 would mean :186 was never reached and the dataset never created - and the contrast with case16, where the run opened SYSTRAN, closed it and reached the closing banner with a RETURN-CODE of 0. Three different reasons for zero rows, three different runs. ACCTFILE shows ZERO REWRITES, its one row byte-identical to its seed, for three independent reasons: this is the first account break, so :195 flips the flag instead of performing 1050-UPDATE-ACCOUNT; the abend precedes any second record, so no later break can occur; and 1050's only other call site, the ELSE at :219-220, is UNREACHABLE DEAD CODE, because the enclosing PERFORM UNTIL END-OF-FILE = 'Y' at :188 makes the IF END-OF-FILE = 'N' at :189 always true - a defect preserved verbatim and never repaired (practice B5). ACCOUNT-RECORD WAS successfully populated by the read at :373, so a stray rewrite would have had real data to write: the absence is a meaningful assertion, not a vacuous one. DIS-INT-RATE was never populated, so :214 was never evaluated against a meaningful rate and 1400-COMPUTE-FEES at :216 - the '* To be implemented' stub at :518-520, which must remain a no-op - is not reached either. THE PARM. jobParameters carries parmDate '2022071800' from app/jcl/INTCALC.jcl:22, EXEC PGM=CBACT04C,PARM='2022071800'. It is CHARACTER DATA - PARM-DATE PIC X(10) - which :476-480 STRINGs verbatim into TRAN-ID and NEVER PARSES AS A DATE. It is declared because the harness requires it and never defaults it, and it is ENTIRELY UNUSED on this path: the abend reached from :213 through :438 to :458 precedes :214's guard and therefore 1300-B-WRITE-TX. GATE NOTES. XREFFILE and XREFFIL1 name the SAME fixture row because XREFFIL1 is an alternate-index PATH over the same base cluster (INTCALC.jcl:29-32) and not a second dataset (G45). Those rows stay 36 bytes and the pad to CVACT03Y's 50 is the declared CARDXREF_FILLER_PAD_36_TO_50 normalisation, applied once at seed time by the harness, so the fixture is never pre-padded (G16); the padded FILLER X(14) is pinned as fourteen spaces on both paths, which is how the supplied span becomes an assertion rather than an assumption. No normalisation is declared for DISCGRP: the model refuses one on a declared-empty dataset, and correctly, since there is no row to pad and the empty declaration already carries the width. Every dataset is addressed by its binding key and not one production dataset name is spelled anywhere in this file (G46). The unit is a BATCH_JOB reached at step level through calculateInterest, with no JobLauncher, no job repository and no HTTP in the path (G51). The abend is compared as expectedReturnCode 12 plus the 'ABENDING PROGRAM' line, which is the entire observable signature of CALL 'CEE3ABD' (G35). Two '23' outcomes at two call sites with opposite consequences - tolerated at :422, fatal at :446 - against a dataset holding no row at all is the sharpest FileStatus assertion this program allows without a fault-injection mechanism (G47), and the '35'-on-OPEN outcome that no case in this folder can reach is derived above so that the missing arm is documented rather than silently absent. Record widths are read mechanically from the copybooks and not from prose (practice B11): TRAN-CAT-BAL-RECORD 50 from CVTRA01Y, ACCOUNT-RECORD 300 from CVACT01Y with the misspelled ACCT-EXPIRAION-DATE preserved and FILLER X(178) emitted as spaces, CARD-XREF-RECORD 50 from CVACT03Y, DIS-GROUP-RECORD 50 from CVTRA02Y whose DIS-GROUP-KEY is SIXTEEN bytes - X(10) + X(02) + 9(04) - with DIS-INT-RATE S9(04)V99 at bytes 17-22, not the seventeen-byte key CVTRA01Y declares for a record of the same total width, and TRAN-RECORD 350 from CVTRA05Y as INTCALC.jcl:39's DCB=(RECFM=F,LRECL=350) confirms. DETERMINISM AND ENCODING. No timestamp appears in any of these expectations, because Z-GET-DB2-FORMAT-TIMESTAMP (:613-626) is performed only from :496 inside 1300-B-WRITE-TX, which the abend prevents; nothing here is clock-dependent (practice B7). Bytes are US-ASCII throughout, matching the app/data/ASCII fixtures, never a platform default (practice B8). PROVENANCE. Every expected value - the seven lines and their order, the rendered file status, the return code, both empty channels and the six dataset-level counts - is STATICALLY DERIVED by structured reading of the CBACT04C paragraphs, cross-checked against the CVTRA01Y, CVTRA02Y, CVACT01Y and CVACT03Y byte layouts and the INTCALC.jcl DD and PARM contracts, and seeded from genuine fixture rows. It was never captured from, recorded against or replayed from any execution of the legacy COBOL, which is empirically impossible in this environment (AAP 0.7.6, risk R-A). The four-line open-failure stream is derived on the same basis and is recorded rather than asserted for the reason given above.",
   "unitKind": "BATCH_JOB",
   "inputs": {
     "TCATBALF": {
       "fixture": "tcatbal.txt",
-      "fromRow": 0,
-      "rowCount": 4
+      "fromRow": 19,
+      "rowCount": 1
     },
     "ACCTFILE": {
       "fixture": "acctdata.txt",
-      "fromRow": 0,
-      "rowCount": 4
+      "fromRow": 19,
+      "rowCount": 1
     },
     "XREFFILE": {
-      "rows": [
-        "968029415460369700000000100000000001",
-        "092387719324733000000000200000000002",
-        "399916924637588500000000300000000003",
-        "298809135309431200000000400000000004"
-      ]
+      "fixture": "cardxref.txt",
+      "fromRow": 3,
+      "rowCount": 1
     },
     "XREFFIL1": {
-      "rows": [
-        "968029415460369700000000100000000001",
-        "092387719324733000000000200000000002",
-        "399916924637588500000000300000000003",
-        "298809135309431200000000400000000004"
-      ]
+      "fixture": "cardxref.txt",
+      "fromRow": 3,
+      "rowCount": 1
     },
     "DISCGRP": {
-      "fixture": "discgrp.txt",
-      "fromRow": 17,
-      "rowCount": 1
+      "empty": true,
+      "recordLength": 50,
+      "copybook": "CVTRA02Y"
     }
   },
   "jobParameters": {
     "parmDate": "2022071800"
   },
-  "expectedWrites": [
-    {
-      "dataset": "SYSTRAN",
-      "rowIndex": 0,
-      "expectedBytes": "2022071800000001010005System    Int. for a/c 00000000001                                                                            0000000000{000000000                                                                                                              96802941546036972022-07-19-23.12.34.0000002022-07-19-23.12.34.000000                    "
-    },
-    {
-      "dataset": "SYSTRAN",
-      "rowIndex": 1,
-      "expectedBytes": "2022071800000002010005System    Int. for a/c 00000000002                                                                            0000000000{000000000                                                                                                              09238771932473302022-07-19-23.12.34.0000002022-07-19-23.12.34.000000                    "
-    },
-    {
-      "dataset": "SYSTRAN",
-      "rowIndex": 2,
-      "expectedBytes": "2022071800000003010005System    Int. for a/c 00000000003                                                                            0000000000{000000000                                                                                                              39991692463758852022-07-19-23.12.34.0000002022-07-19-23.12.34.000000                    "
-    },
-    {
-      "dataset": "SYSTRAN",
-      "rowIndex": 3,
-      "expectedBytes": "2022071800000004010005System    Int. for a/c 00000000004                                                                            0000000000{000000000                                                                                                              29880913530943122022-07-19-23.12.34.0000002022-07-19-23.12.34.000000                    "
-    }
-  ],
+  "expectedWrites": [],
   "expectedFinalState": [
     {
       "dataset": "TCATBALF",
       "rowIndex": 0,
-      "expectedBytes": "000000000010100010000000000{0000000000000000000000"
-    },
-    {
-      "dataset": "TCATBALF",
-      "rowIndex": 1,
-      "expectedBytes": "000000000020100010000000000{0000000000000000000000"
-    },
-    {
-      "dataset": "TCATBALF",
-      "rowIndex": 2,
-      "expectedBytes": "000000000030100010000000000{0000000000000000000000"
-    },
-    {
-      "dataset": "TCATBALF",
-      "rowIndex": 3,
-      "expectedBytes": "000000000040100010000000000{0000000000000000000000"
+      "fields": {
+        "TRANCAT-ACCT-ID": "00000000020",
+        "TRANCAT-TYPE-CD": "01",
+        "TRANCAT-CD": "0001",
+        "TRAN-CAT-BAL": "0000000000{",
+        "FILLER": "0000000000000000000000"
+      },
+      "expectedBytes": "000000000200100010000000000{0000000000000000000000"
     },
     {
       "dataset": "ACCTFILE",
       "rowIndex": 0,
-      "expectedBytes": "00000000001Y00000001940{00000020200{00000010200{2014-11-202025-05-202025-05-2000000000000{00000000000{A000000000                                                                                                                                                                                            "
-    },
-    {
-      "dataset": "ACCTFILE",
-      "rowIndex": 1,
-      "expectedBytes": "00000000002Y00000001580{00000061300{00000054480{2013-06-192024-08-112024-08-1100000000000{00000000000{A000000000                                                                                                                                                                                            "
-    },
-    {
-      "dataset": "ACCTFILE",
-      "rowIndex": 2,
-      "expectedBytes": "00000000003Y00000001470{00000049090{00000005380{2013-08-232024-01-102024-01-1000000000000{00000000000{A000000000                                                                                                                                                                                            "
-    },
-    {
-      "dataset": "ACCTFILE",
-      "rowIndex": 3,
-      "expectedBytes": "00000000004Y00000000400{00000035030{00000027890{2012-11-172023-12-162023-12-1600000000000{00000000000{A000000000                                                                                                                                                                                            "
+      "fields": {
+        "ACCT-ID": "00000000020",
+        "ACCT-ACTIVE-STATUS": "Y",
+        "ACCT-CURR-BAL": "00000003690{",
+        "ACCT-CREDIT-LIMIT": "00000037670{",
+        "ACCT-CASH-CREDIT-LIMIT": "00000010400{",
+        "ACCT-OPEN-DATE": "2014-02-27",
+        "ACCT-EXPIRAION-DATE": "2024-03-13",
+        "ACCT-REISSUE-DATE": "2024-03-13",
+        "ACCT-CURR-CYC-CREDIT": "00000000000{",
+        "ACCT-CURR-CYC-DEBIT": "00000000000{",
+        "ACCT-ADDR-ZIP": "A000000000",
+        "ACCT-GROUP-ID": "          ",
+        "FILLER": "                                                                                                                                                                                  "
+      },
+      "expectedBytes": "00000000020Y00000003690{00000037670{00000010400{2014-02-272024-03-132024-03-1300000000000{00000000000{A000000000                                                                                                                                                                                            "
     },
     {
       "dataset": "XREFFILE",
       "rowIndex": 0,
-      "expectedBytes": "092387719324733000000000200000000002              "
-    },
-    {
-      "dataset": "XREFFILE",
-      "rowIndex": 1,
-      "expectedBytes": "298809135309431200000000400000000004              "
-    },
-    {
-      "dataset": "XREFFILE",
-      "rowIndex": 2,
-      "expectedBytes": "399916924637588500000000300000000003              "
-    },
-    {
-      "dataset": "XREFFILE",
-      "rowIndex": 3,
-      "expectedBytes": "968029415460369700000000100000000001              "
+      "fields": {
+        "XREF-CARD-NUM": "0927987108636232",
+        "XREF-CUST-ID": "000000020",
+        "XREF-ACCT-ID": "00000000020",
+        "FILLER": "              "
+      },
+      "expectedBytes": "092798710863623200000002000000000020              "
     },
     {
       "dataset": "XREFFIL1",
       "rowIndex": 0,
-      "expectedBytes": "092387719324733000000000200000000002              "
-    },
-    {
-      "dataset": "XREFFIL1",
-      "rowIndex": 1,
-      "expectedBytes": "298809135309431200000000400000000004              "
-    },
-    {
-      "dataset": "XREFFIL1",
-      "rowIndex": 2,
-      "expectedBytes": "399916924637588500000000300000000003              "
-    },
-    {
-      "dataset": "XREFFIL1",
-      "rowIndex": 3,
-      "expectedBytes": "968029415460369700000000100000000001              "
-    },
-    {
-      "dataset": "DISCGRP",
-      "rowIndex": 0,
-      "expectedBytes": "DEFAULT   01000100150{0000000000000000000000000000"
+      "fields": {
+        "XREF-CARD-NUM": "0927987108636232",
+        "XREF-CUST-ID": "000000020",
+        "XREF-ACCT-ID": "00000000020",
+        "FILLER": "              "
+      },
+      "expectedBytes": "092798710863623200000002000000000020              "
     }
   ],
-  "expectedReturnCode": 0,
+  "expectedReturnCode": 12,
   "expectedMessages": [
     {
       "channel": "DISPLAY_LINE",
@@ -156,7 +98,7 @@
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "000000000010100010000000000{0000000000000000000000"
+      "text": "000000000200100010000000000{0000000000000000000000"
     },
     {
       "channel": "DISPLAY_LINE",
@@ -168,43 +110,15 @@
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "000000000020100010000000000{0000000000000000000000"
+      "text": "ERROR READING DEFAULT DISCLOSURE GROUP"
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "DISCLOSURE GROUP RECORD MISSING"
+      "text": "FILE STATUS IS: NNNN0023"
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "TRY WITH DEFAULT GROUP CODE"
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "000000000030100010000000000{0000000000000000000000"
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "DISCLOSURE GROUP RECORD MISSING"
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "TRY WITH DEFAULT GROUP CODE"
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "000000000040100010000000000{0000000000000000000000"
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "DISCLOSURE GROUP RECORD MISSING"
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "TRY WITH DEFAULT GROUP CODE"
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "END OF EXECUTION OF PROGRAM CBACT04C"
+      "text": "ABENDING PROGRAM"
     }
   ],
   "normalisations": [
@@ -221,37 +135,37 @@
     {
       "dataset": "SYSTRAN",
       "channel": "WRITES",
-      "rowCount": 4,
+      "rowCount": 0,
       "recordLength": 350
     },
     {
       "dataset": "TCATBALF",
       "channel": "FINAL_STATE",
-      "rowCount": 4,
+      "rowCount": 1,
       "recordLength": 50
     },
     {
       "dataset": "ACCTFILE",
       "channel": "FINAL_STATE",
-      "rowCount": 4,
+      "rowCount": 1,
       "recordLength": 300
     },
     {
       "dataset": "XREFFILE",
       "channel": "FINAL_STATE",
-      "rowCount": 4,
+      "rowCount": 1,
       "recordLength": 50
     },
     {
       "dataset": "XREFFIL1",
       "channel": "FINAL_STATE",
-      "rowCount": 4,
+      "rowCount": 1,
       "recordLength": 50
     },
     {
       "dataset": "DISCGRP",
       "channel": "FINAL_STATE",
-      "rowCount": 1,
+      "rowCount": 0,
       "recordLength": 50
     }
   ]

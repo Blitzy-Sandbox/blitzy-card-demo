@@ -1,0 +1,231 @@
+{
+  "program": "COACTUPC",
+  "caseId": "case20",
+  "description": "PROVENANCE (practice B12, plan risk R-A). Statically derived by structured reading of app/cbl/COACTUPC.cbl:3888-4107 (9600-WRITE-PROCESSING in full, all four of its failure legs), :2602-2641 (2000-DECIDE-ACTION's inner EVALUATE and its WHEN OTHER abend), :2955-2985 (3250-SETUP-INFOMSG), :905-916 (the PF-key validity gate), :927-959 (the WHEN CCARD-AID-PFK03 exit arm ending in the XCTL at :956-957), :4203-4228 (ABEND-ROUTINE), the 88-level literals at :463-477 and :517-524, the LIT-* constants at :533-582, together with app/cpy/CSSTRPFY.cpy in full, app/cpy/CSMSG02Y.cpy for ABEND-DATA, app/cpy/COCOM01Y.cpy for the 160-byte commarea, app/cpy/CVCRD01Y.cpy for the fifteen CCARD-AID conditions, the symbolic map app/cpy-bms/COACTUP.CPY, app/csd/CARDDEMO.CSD for the file and transaction definitions, the copybooks app/cpy/CVACT01Y.cpy, app/cpy/CVACT02Y.cpy, app/cpy/CVACT03Y.cpy and app/cpy/CVCUS01Y.cpy, and the decoded rows of the shipped fixtures app/data/ASCII/acctdata.txt, custdata.txt, cardxref.txt and carddata.txt. It was NOT captured from, recorded against, or replayed from any execution of the legacy COBOL: executing these programs is empirically impossible in this environment (no z/OS and no CICS runtime, the available compiler reports its indexed file handler disabled, no Language Environment CEE* services, and DFHAID, DFHBMSCA and DFHATTR are absent from the repository). That substitutes the PROVENANCE of the expected values and nothing else - the twenty cases, the field-for-field diffing, the diff-count-equals-zero gate and the branch-coverage bar are unchanged - and because it modifies a stated success criterion it is escalated for explicit user confirmation rather than silently absorbed (AAP 0.7.6, 0.9.11). Every width and offset below is mechanical from the copybooks rather than taken from prose (practice B11). review_rules returns exactly one line, \"No user rules provided\", so NO user-specified Rule governs this file; none is cited and none is invented, and the absence is not treated as licence to lower the bar (practices B1-B12 bind in their place).  WHAT THIS CASE OWNS. The twentieth and last case of this folder - which is what completes the mandated set of twenty for this program (gate G15), and the set is not a gate until every one of its cases diffs to zero, per module rather than per build (gate G18) - and it closes the write path's failure side. The encoded invocation is the ACCOUNT REWRITE non-NORMAL leg at :4076-4081 - the third of 9600-WRITE-PROCESSING's four failure outcomes and the deepest one any fixture in this folder can reach, because steps 1 to 6 all succeed and only step 7's DFHRESP guard diverges. case18 owns the clean leg where both rewrites succeed and case19 owns the change-detected leg where 9700 abandons the rewrite before either is issued; this case is the leg where the rewrite is ISSUED and REFUSED. The three together are the whole of the optimistic-concurrency and write-failure surface that gate G43 names: case18 the rewrite that proceeds because 9700-CHECK-CHANGE-IN-REC found nothing changed, case19 the rewrite abandoned because it did, and this case the rewrite refused by the file itself after the check had passed - and none of the three introduces a version column or any other schema artefact to carry the check, which is the other half of what G43 asks (gate G44). It is a single-variable perturbation of case18: the four seeded datasets, the 1033-byte commarea and all forty-three returned map fields are byte-identical to case18's, and the ONE difference is the forced repository outcome on the rewrite. That is what makes the verdict attributable - every difference between this case's expectation and case18's is caused by the refused rewrite and by nothing else.  THE FOUR FAILURE OUTCOMES OF 9600-WRITE-PROCESSING, WITH THEIR BYTE-EXACT LITERALS. All four are enumerated here because the state this case lands in is only meaningful against the three it does not. (1) ACCTDAT read-for-update non-NORMAL at :3907-3915: SET INPUT-ERROR TO TRUE, then - and ONLY inside IF WS-RETURN-MSG-OFF at :3911-3913 - SET COULD-NOT-LOCK-ACCT-FOR-UPDATE TO TRUE, whose 88-level literal at :517-518 is 'Could not lock account record for update'; GO TO 9600-WRITE-PROCESSING-EXIT. Neither the CUSTDAT read-for-update nor 9700 nor either REWRITE runs. (2) CUSTDAT read-for-update non-NORMAL at :3934-3942, the account lock having succeeded: the identical shape with COULD-NOT-LOCK-CUST-FOR-UPDATE, literal 'Could not lock customer record for update' at :519-520. (3) THE LEG THIS CASE ENCODES - account REWRITE non-NORMAL at :4076-4081: SET LOCKED-BUT-UPDATE-FAILED TO TRUE, literal 'Update of record failed' at :523-524, then GO TO 9600-WRITE-PROCESSING-EXIT. Two details distinguish it from legs 1 and 2 and both are asserted rather than described: this arm is NOT wrapped in IF WS-RETURN-MSG-OFF, so the message is set unconditionally, and it does NOT SET INPUT-ERROR. The customer REWRITE at :4085-4091 never runs. (4) Customer REWRITE non-NORMAL at :4095-4103, the account rewrite having already succeeded: SET LOCKED-BUT-UPDATE-FAILED TO TRUE, then EXEC CICS SYNCPOINT ROLLBACK at :4099-4101 - the only rollback in the whole program - then GO TO the exit. Its consequence is the subtlest expectation in this folder: the account REWRITE succeeded and is then BACKED OUT, so ACCTDAT shows no persisted change either. Legs 3 and 4 therefore produce the SAME net dataset state and the SAME return message from two different routes, and the discriminator between them is the rollback: :4076-4080 issues none because nothing had yet been written, while :4099-4101 must issue one or the two datasets are left disagreeing.  WHY ONLY TWO OF THE FOUR CAN BE ENCODED IN A FIXTURE AT ALL, AND WHERE THE OTHER TWO ARE ASSERTED (practices B1 and B4). ParityCase models exactly ONE invocation - one inputs map, one screenRequest, one expectedWrites list - so at most one of the four legs can be the encoded one. That much is a modelling limit. The sharper limit is that only TWO of them are reachable from a fixture even in principle, and the reason is structural rather than incidental: ScreenRequest.forcedOutcomes is a Map keyed by RepositoryOperation and carries NO dataset dimension, so a forced readForUpdate necessarily fails the FIRST read-for-update the paragraph issues - the account's, at :3894-3903 - and a forced rewrite necessarily fails the FIRST rewrite - the account's, at :4065-4071. Leg 1 is therefore expressible and leg 3 is expressible, while legs 2 and 4, which need the account operation to SUCCEED and the customer operation that follows it to FAIL, cannot be expressed by any combination of the vocabulary this model provides. Encoding them anyway would produce a fixture whose stated subject is a path it does not reach - an expectation that looks like an assertion and asserts nothing, which is the one thing a parity fixture must never be. So they are named with their owner instead. Both are driven in code by COACTUPCParityTest.everyFileStatusArmOfWriteProcessingIsReached, which stubs each repository at its own call site and requires, for leg 2, WriteOutcome.COULD_NOT_LOCK_CUST_FOR_UPDATE with the 'Could not lock customer record for update' literal at the 75-byte WS-RETURN-MSG width, FileStatus.NOT_FOUND, the failing file name CUSTDAT, isRewritten false and syncpointRollbackRequested FALSE; and for leg 4, WriteOutcome.LOCKED_BUT_UPDATE_FAILED with syncpointRollbackRequested TRUE - described there in the source's own terms, that the account rewrite already succeeded so :4099-4101 rolls it back. That same test also drives leg 3 from the other side, asserting syncpointRollbackRequested FALSE because nothing has been written, which is precisely the property THIS case's dataset expectations make visible byte for byte. Between the fixture and the property test all four legs are covered, and nothing about them is claimed in a place it cannot be checked.  THE INNER EVALUATE, ITS ARM ORDER, AND THE ARM THAT IS MISSING (gate G30, practice B5). Back in 2000-DECIDE-ACTION, the arm at :2602-2605 performs 9600-WRITE-PROCESSING and the EVALUATE TRUE at :2606-2615 then runs in SOURCE ORDER with WHEN OTHER last: WHEN COULD-NOT-LOCK-ACCT-FOR-UPDATE sets ACUP-CHANGES-OKAYED-LOCK-ERROR, which is 'L'; WHEN LOCKED-BUT-UPDATE-FAILED sets ACUP-CHANGES-OKAYED-BUT-FAILED, which is 'F'; WHEN DATA-WAS-CHANGED-BEFORE-UPDATE sets ACUP-SHOW-DETAILS, which is 'S'; WHEN OTHER sets ACUP-CHANGES-OKAYED-AND-DONE, which is 'C'. This case lands on the SECOND arm and ACUP-CHANGE-ACTION becomes 'F'. Now the defect, verified directly against :2606-2615 rather than assumed: COULD-NOT-LOCK-CUST-FOR-UPDATE HAS NO ARM OF ITS OWN. There are four arms and the flag is named in none of them, so leg 2 - the customer lock failure - falls through to WHEN OTHER and yields 'C', ACUP-CHANGES-OKAYED-AND-DONE, REPORTING SUCCESS THOUGH NOTHING WAS WRITTEN. The operator is told 'Changes committed to database' and the search keys are reset on the next interaction by the arm at :979-989 as though the update had landed. That is a genuine defect of the legacy program. It is recorded here and preserved in the translation, not corrected: repairing it would change observable behaviour, which this migration forbids (practice B5). The order also explains a second thing this case depends on. Because the first arm is the account lock failure and the second is the update failure, a run that set BOTH flags would report 'L'; this case sets only LOCKED-BUT-UPDATE-FAILED, because leg 3 is reached only when the account lock at :3907-3915 has already succeeded, so the 'F' verdict is unambiguous.  WHAT 3250-SETUP-INFOMSG DOES WITH 'L' AND 'F', AND WHY THE INFO LINE CANNOT TELL THEM APART. The EVALUATE at :2957-2977 has separate arms for the two states - WHEN ACUP-CHANGES-OKAYED-LOCK-ERROR at :2971-2972 and WHEN ACUP-CHANGES-OKAYED-BUT-FAILED at :2973-2974 - and BOTH do the same thing: SET INFORM-FAILURE TO TRUE, whose 88-level literal at :476-477 is 'Changes unsuccessful. Please try again' on WS-INFO-MSG PIC X(40) at :463. Thirty-seven characters right-space-padded to 40, then :2979 MOVEs those forty bytes into INFOMSGO PIC X(45), where they are right-space-padded again to 45. So the information line is IDENTICAL for a lock failure and an update failure and discriminates neither; what discriminates them is WS-RETURN-MSG, which holds 'Could not lock account record for update' for 'L' and 'Update of record failed' for 'F'. This case declares the second, at WS-RETURN-MSG's declared PIC X(75) width from :479, and that single line is therefore a discriminating assertion that the state really is 'F' and not 'L', not 'S' - whose literal is 'Record changed by some one else. Please review' at :521-522 - and not 'C', on which the line would be seventy-five spaces because SET WS-RETURN-MSG-OFF at :876 left it so and nothing turned it on.  THE PF-KEY VALIDITY GATE AND ITS SILENT COERCION (:905-916, practice B5). Before the top-level EVALUATE runs, 0000-MAIN does SET PFK-INVALID TO TRUE, then sets PFK-VALID only IF CCARD-AID-ENTER OR CCARD-AID-PFK03 OR (CCARD-AID-PFK05 AND ACUP-CHANGES-OK-NOT-CONFIRMED) OR (CCARD-AID-PFK12 AND NOT ACUP-DETAILS-NOT-FETCHED), and then - this is the part that matters - IF PFK-INVALID it does SET CCARD-AID-ENTER TO TRUE. An unrecognised or out-of-context key is therefore SILENTLY REWRITTEN TO ENTER and produces NO 'Invalid key pressed' message, unlike several sibling programs which say so on the screen. Two consequences are load-bearing for this folder. PF05 is valid ONLY in state 'N': every one of case15 through case20 arrives with an inbound ACUP-CHANGE-ACTION of 'N' - 88 ACUP-CHANGES-OK-NOT-CONFIRMED at :664 - which is exactly why DFHPF5 reaches 9600-WRITE-PROCESSING at all; the same key in any other state would be remapped to ENTER at :914-916 and the write path would never be entered. And PF12 is valid ONLY once details have been fetched, by NOT ACUP-DETAILS-NOT-FETCHED. The coercion itself is not encodable here for the same reason legs 2 and 4 are not: a coerced key produces the ENTER path, and the ENTER path does not reach 9600, so one invocation cannot both be coerced and be this case. It is driven in code by COACTUPCParityTest, whose scenario set presses PF12 in a state where the gate admits it and whose pfKeysResolveExactlyAsCsstrpfyMapsThem drives all twenty-eight named identifiers plus one the copybook does not name; and the gate's own valid branch is exercised by this very case, since DFHPF5 in state 'N' is one of the four disjuncts.  CSSTRPFY'S ARM ORDER, THE PF13-PF24 ALIASING, AND THE ABSENT WHEN OTHER (gate G30). COPY 'CSSTRPFY' at :4199 brings in YYYY-STORE-PFKEY, performed at :898-899 BEFORE the validity gate, and its EVALUATE TRUE resolves EIBAID in this order: DFHENTER, DFHCLEAR, DFHPA1, DFHPA2, then DFHPF1 through DFHPF12 onto CCARD-AID-PFK01 through PFK12, and then DFHPF13 through DFHPF24 ALIASED ONTO THE SAME CCARD-AID-PFK01 through PFK12. Twenty-eight arms, and the aliasing is behaviour rather than an accident: DFHPF15 is indistinguishable from DFHPF3 and would take the XCTL exit arm, and DFHPF17 is indistinguishable from DFHPF5 and would reach this very write path. There is NO WHEN OTHER arm, so an attention identifier the copybook does not name - DFHPA3 among them, which the copybook simply does not handle - leaves CCARD-AID UNCHANGED rather than defaulting to anything; the PFK-INVALID gate at :905-916 is then what catches it. No WHEN OTHER behaviour is invented here. DFHAID is IBM-supplied and ABSENT from this repository (plan risk R-D), so the AID constants come from common.CicsAid, which reproduces the thirty-six mnemonics from IBM CICS documentation; this case names DFHPF5 through that vocabulary, and the aliasing and the no-default are asserted by pfKeysResolveExactlyAsCsstrpfyMapsThem, which pins the constant values themselves rather than trusting them.  THE XCTL EXIT AND ITS nextProgram PROJECTION (gate G40). The first arm of the top-level EVALUATE, WHEN CCARD-AID-PFK03 at :927-959, is the one path through this program that sends no map at all, and it ends in EXEC CICS XCTL PROGRAM(CDEMO-TO-PROGRAM) COMMAREA(CARDDEMO-COMMAREA) at :956-957. In order: SET CCARD-AID-PFK03 TO TRUE; IF CDEMO-FROM-TRANID EQUAL LOW-VALUES OR EQUAL SPACES then MOVE LIT-MENUTRANID TO CDEMO-TO-TRANID ELSE MOVE CDEMO-FROM-TRANID TO CDEMO-TO-TRANID; IF CDEMO-FROM-PROGRAM EQUAL LOW-VALUES OR EQUAL SPACES then MOVE LIT-MENUPGM TO CDEMO-TO-PROGRAM ELSE MOVE CDEMO-FROM-PROGRAM TO CDEMO-TO-PROGRAM; MOVE LIT-THISTRANID TO CDEMO-FROM-TRANID; MOVE LIT-THISPGM TO CDEMO-FROM-PROGRAM; SET CDEMO-USRTYP-USER TO TRUE; SET CDEMO-PGM-ENTER TO TRUE; MOVE LIT-THISMAPSET TO CDEMO-LAST-MAPSET; MOVE LIT-THISMAP TO CDEMO-LAST-MAP; EXEC CICS SYNCPOINT; then the XCTL. The literals, verified at :533-560: LIT-MENUTRANID is 'CM00', LIT-MENUPGM is 'COMEN01C', LIT-THISTRANID is 'CAUP', LIT-THISPGM is 'COACTUPC', LIT-THISMAPSET is PIC X(8) VALUE 'COACTUP ' with a TRAILING SPACE, and LIT-THISMAP is 'CACTUPA'. One mechanical consequence of that eighth byte: CDEMO-LAST-MAPSET is PIC X(7) in app/cpy/COCOM01Y.cpy, so the X(8) MOVE truncates on the right and the seven bytes 'COACTUP' arrive - the trailing space is discarded by the receiver's width, not by anything the program does. Per gate G40 and rule R6 the transfer becomes a nextProgram RESPONSE FIELD echoed from the navigation context, resolved client-side, with no server-side forward and no session state (gate G37); and because XCTL never returns, COMMON-RETURN at :1007 and 3000-SEND-MAP are both unreached, so the observable is a nextProgram with ZERO sends and Termination.XCTL. TWO ODDITIES ARE PRESERVED (practice B5): SET CDEMO-USRTYP-USER at :947 forces the user type to 'U' UNCONDITIONALLY, so an administrator leaves this screen recorded as a regular user; and both branches of both guards yield the same COMEN01C when the origin happens to be the menu, so the target alone cannot distinguish the fallback from the echo and only the navigation image can. This case cannot encode either branch - its unit is the service, which never runs 0000-MAIN's EVALUATE and never performs an XCTL, and claiming a response a service cannot produce is exactly the fabrication practice B1 forbids - so BOTH branches are driven in code by COACTUPCParityTest's PF03 scenarios: one with CM00 and COMEN01C carried in the commarea, taking the ELSE arms at :933 and :941 and echoing the origin, and one with a blank origin, taking :929-932 and :937-940 and substituting LIT-MENUTRANID and LIT-MENUPGM. Both assert nextProgram COMEN01C, zero sends, Termination.XCTL, and a navigation image carrying CDEMO-FROM-TRANID 'CAUP', CDEMO-FROM-PROGRAM 'COACTUPC', the user type 'U', CDEMO-PGM-CONTEXT at ENTER, CDEMO-LAST-MAPSET 'COACTUP' and CDEMO-LAST-MAP 'CACTUPA'.  THE WHEN OTHER ABEND AT :2633-2640, AND WHY THE RETURN CODE IS STILL 0. The last arm of 2000-DECIDE-ACTION's outer EVALUATE is an abend rather than a screen: MOVE LIT-THISPGM TO ABEND-CULPRIT, MOVE '0001' TO ABEND-CODE, MOVE SPACES TO ABEND-REASON, MOVE 'UNEXPECTED DATA SCENARIO' TO ABEND-MSG, then PERFORM ABEND-ROUTINE THRU ABEND-ROUTINE-EXIT. ABEND-ROUTINE at :4203-4228 does IF ABEND-MSG EQUAL LOW-VALUES MOVE 'UNEXPECTED ABEND OCCURRED.' TO ABEND-MSG - not taken here, because :2637-2638 has already moved a message - then MOVE LIT-THISPGM TO ABEND-CULPRIT a second time, then EXEC CICS SEND FROM(ABEND-DATA) LENGTH(LENGTH OF ABEND-DATA) NOHANDLE ERASE, EXEC CICS HANDLE ABEND CANCEL, and EXEC CICS ABEND ABCODE('9999'). ABEND-DATA is declared in app/cpy/CSMSG02Y.cpy as ABEND-CODE PIC X(4) + ABEND-CULPRIT PIC X(8) + ABEND-REASON PIC X(50) + ABEND-MSG PIC X(72), so LENGTH OF ABEND-DATA is 4 + 8 + 50 + 72 = 134 BYTES EXACTLY, and the sent image is '0001' then 'COACTUPC' then fifty spaces then 'UNEXPECTED DATA SCENARIO' right-space-padded to seventy-two. That arm is unreachable from this case for a structural reason worth stating: it is the WHEN OTHER of an EVALUATE whose eight preceding arms between :2515 and :2632 partition every ACUP-CHANGE-ACTION state the program can hold, so reaching it requires a commarea carrying a state no paragraph sets - and a state the model would have to invent. It belongs to the account package's own unit tests, which construct that state directly. THE RETURN CODE IS 0 ANYWAY, ON EVERY ONE OF THESE PATHS INCLUDING THAT ONE. COACTUPC contains ZERO occurrences of CALL 'CEE3ABD' and ZERO references to RETURN-CODE, both verified by search of the whole 4,236-line source. The abnormal exit is a CICS EXEC CICS ABEND ABCODE('9999'), which is a transaction abend code and not a COBOL return code, so gate G35 - the nine CEE3ABD sites raising AbendException with a process exit of 0, 4, 8 or 12 - DOES NOT APPLY TO THIS PROGRAM AT ALL. expectedReturnCode is 0 here because the transaction ends through EXEC CICS RETURN, not because a failure was rounded down to success: leg 3 is a refused rewrite reported to the operator on the screen, which is the whole point of ACUP-CHANGE-ACTION 'F'.  THE SEED, AND THE ONE VARIABLE. Account 00000000034 is row 33 of acctdata.txt and customer 000000034 is row 33 of custdata.txt; row 18 of cardxref.txt binds card 4385271476627819 to them and row 18 of carddata.txt is that card. All four are seeded from the shipped fixtures UNALTERED - no inline row anywhere - which is what makes this case a perturbation of case18 in exactly one dimension. The commarea and the forty-three returned map fields are byte-identical to case18's too, including the two overrides that make an inbound state of 'N' reachable at all: ACSPH1AI carries '303' rather than the stored area code '179', which is not among the 410 literals of VALID-GENERAL-PURP-CODE and would have failed EDIT-AREA-CODE at :2296-2312; and ACSTFCOI carries '300' rather than the stored FICO of 104, which fails 88 FICO-RANGE-IS-VALID VALUES 300 THROUGH 850 at :848-849 and would have failed 1275-EDIT-FICO-SCORE at :2514-2529. Customer 000000034 is also the only one of the fifty whose state and zip pass the cross-field edit at 1280-EDIT-US-STATE-ZIP-CD, 'ME' being among the 56 VALID-US-STATE-CODE literals and the probe 'ME49' among the 240 VALID-US-STATE-ZIP-CD2-COMBO literals. The cross-reference row is seeded RAW at the fixture's 36 bytes and padded to CVACT03Y's declared 50 once, at seed time, by the CARDXREF_FILLER_PAD_36_TO_50 normalisation bound to CXACAIX - never at comparison time (gate G16). The fixture files themselves are never edited; app/cbl, app/cpy, app/cpy-bms, app/bms, app/jcl, app/proc, app/csd, app/ctl, app/catlg and app/data are read-only throughout (practice B3).  HOW THE STATE IS REACHED, AND THE SIX STEPS THIS LEG COMPLETES. EIBCALEN is 1033 - CARDDEMO-COMMAREA's 160 bytes followed by WS-THIS-PROGCOMMAREA's 873 - so the ELSE at :887-892 restores both halves and the inbound ACUP-CHANGE-ACTION of 'N' survives. YYYY-STORE-PFKEY resolves EIBAID to CCARD-AID-PFK05 and the gate at :905-916 admits PF05 because the state is 'N'. The top-level EVALUATE falls to WHEN OTHER at :996-1003, which performs 1000-PROCESS-INPUTS, 2000-DECIDE-ACTION and 3000-SEND-MAP in that order; 1200-EDIT-MAP-INPUTS short-circuits at :1463-1468 because ACUP-CHANGES-OK-NOT-CONFIRMED is the second disjunct of IF NO-CHANGES-FOUND OR ACUP-CHANGES-OK-NOT-CONFIRMED OR ACUP-CHANGES-OKAYED-AND-DONE, so no field edit runs on this interaction; and 2000-DECIDE-ACTION's arm at :2602-2605 performs 9600-WRITE-PROCESSING. Inside it: step 1 at :3892-3903 MOVEs CC-ACCT-ID to WS-CARD-RID-ACCT-ID and issues EXEC CICS READ FILE(LIT-ACCTFILENAME) UPDATE, and :3907-3915 takes DFHRESP(NORMAL). Step 2 at :3919-3930 does the same on FILE(LIT-CUSTFILENAME) keyed by CDEMO-CUST-ID, and :3934-3942 takes NORMAL. Step 3 at :3947-3952 performs 9700-CHECK-CHANGE-IN-REC, whose thirty-five comparisons - sixteen account items at :4115-4140 and nineteen customer items at :4152-4186 - ALL AGREE, exactly as in case18, so DATA-WAS-CHANGED-BEFORE-UPDATE stays off and the guard at :3950-3952 does not fire. Steps 4 and 5 at :3956-4002 INITIALIZE ACCT-UPDATE-RECORD and perform its eleven moves; steps 6 at :4007-4059 INITIALIZE CUST-UPDATE-RECORD and perform its eighteen. BOTH RECORDS ARE THEREFORE FULLY STAGED - the 300-byte account image and the 500-byte customer image are built in working storage - and step 7 at :4065-4071 issues EXEC CICS REWRITE FILE(LIT-ACCTFILENAME) FROM(ACCT-UPDATE-RECORD) LENGTH(LENGTH OF ACCT-UPDATE-RECORD), the whole declared width with its FILLER included. It is REFUSED. That is a stronger statement than case19's abandonment: there the record was never staged, here it was staged in full and still nothing reached the dataset. Step 8, the customer REWRITE at :4085-4091, is never issued, so LOCKED-BUT-UPDATE-FAILED cannot be set a second time at :4098 and the EXEC CICS SYNCPOINT ROLLBACK at :4099-4101 is NOT reached - which is the observable that distinguishes this leg from leg 4.  THE FORCED OUTCOME, AND WHY IT IS THE ONLY WAY IN. A REWRITE of a record the same task has just read for update cannot be made to fail by any arrangement of seeded rows: the record exists, the lock is held, and the concurrency check has already passed. The non-NORMAL arm at :4076-4081 is therefore reachable only by forcing the repository's outcome, which is exactly what ScreenRequest.forcedOutcomes exists for (gate G47). The declaration names the rewrite operation with outcome NOT_FOUND and resp 13 - FileStatus.NOTFND, whose value comes from IBM CICS documentation. NOT_FOUND rather than OTHER, and 13 rather than 19, for one deliberate reason: COACTUPCParityTest.everyFileStatusArmOfWriteProcessingIsReached already drives this same arm through AccountRepository.WriteResult.notFound, so the fixture and the module's own code-declared expectation agree on what a refused rewrite reports instead of asserting two different responses for one arm. The COBOL only tests NOT DFHRESP(NORMAL), so the specific value is reported rather than branched on - which is why agreement matters more than the choice - and resp2 is 0.  WHAT IS ASSERTED. expectedWrites is EMPTY and expectedDatasets declares BOTH ACCTDAT and CUSTDAT on the WRITES channel with rowCount 0 at their declared widths of 300 and 500. Those two statements are different and both are needed: an empty write list says nothing was written anywhere, while a rowCount of 0 on a NAMED dataset says that dataset was opened for update and produced nothing, which is the positive form of 'the REWRITE was refused'. expectedFinalState carries all four seeded rows BYTE-IDENTICAL to their seeds, which is the other half of the same assertion - a write that landed and was then reverted would satisfy the second half but not the first. The byte-level witnesses are the four spans that case18's successful rewrite changes and this refused one does not: ACCT-ADDR-ZIP is still 'A000000000' rather than the ten LOW-VALUES bytes case18's layout defect writes over it, and the customer row still holds '49544-2869' rather than '49544     ', '(179)036-5135  ' rather than '(303)036-5135  ', and '104' rather than '300'. Each is a span the staged image differs from the stored one in, so each is independent evidence that the staged image never reached the dataset. Every FILLER span is addressed and space-filled and each expectedBytes is pinned at its copybook width - 300 for CVACT01Y with FILLER X(178), 500 for CVCUS01Y with FILLER X(168), 50 for CVACT03Y with FILLER X(14) and 150 for CVACT02Y with FILLER X(59) - so a record short by one span fails on its total width rather than silently shifting every offset after it (gates G19 and G21). EVERY FIELD NAME IS THE COPYBOOK'S OWN, VERBATIM, INCLUDING THE MISSPELLED ONES (practice B5): app/cpy/CVACT01Y.cpy declares ACCT-EXPIRAION-DATE and app/cpy/CVACT02Y.cpy declares CARD-EXPIRAION-DATE, and both are spelt that way here rather than corrected to EXPIRATION - a correction would leave the diff looking for a field the decoder never produces, which is a silent parity break rather than a loud one. For the same reason CVCUS01Y's CUST-DOB-YYYY-MM-DD is kept distinct from the CUST-DOB-YYYYMMDD that app/cpy/CUSTREC.cpy spells for a near-identical layout. The single emitted line is WS-RETURN-MSG at its declared PIC X(75): 'Update of record failed', twenty-three characters right-space-padded to seventy-five. The channel is the width-free DISPLAY_LINE one for a reason that is a property of the model rather than a preference - neither width-bearing channel is 75, one being the 80-byte WORKING-STORAGE message and the other the 78-byte screen field - and the width is instead pinned by the value itself and asserted directly by COACTUPCParityTest.theReturnMessageIsSeventyFiveBytesWide. expectedReturnCode is 0.  WHAT IS NOT ASSERTED, AND WHY. The unit is account.AccountUpdateService, driven directly as a plain object: no HTTP layer, no MockMvc, no TestRestTemplate and no JobLauncher stands between the assertion and the arithmetic (gate G51). That is why expectedResponse is ABSENT and why no fifty-four-field screen projection appears here - a service paints no screen, and claiming one would assert a response the unit cannot produce. The two screen spans this state does reach are named rather than claimed: :2979 MOVEs WS-INFO-MSG PIC X(40), holding 'Changes unsuccessful. Please try again', into INFOMSGO PIC X(45) by five trailing spaces, and :2981 MOVEs WS-RETURN-MSG PIC X(75), holding 'Update of record failed', into ERRMSGO PIC X(78) by three. Both are painted by 3000-SEND-MAP, which a service never runs, and the fifty-four-field projection belongs to the CONTROLLER_POJO cases case01 through case14 - case01 fixes the field table and case04 and case14 pin the 45-byte INFOMSGO and the 78-byte ERRMSGO between them. Conversation state travels entirely in the payload, in commarea and mapFields, with nothing held server-side (gate G37). The code page is named explicitly as US-ASCII rather than left to the platform default (practice B8): it is the code page of the nine shipped ASCII fixtures, and IBM037 would be the choice for app/data/EBCDIC, which this case does not read. The clock is pinned to a fixed instant so the run is deterministic and no expectation depends on the system clock (practice B7), and every collection is declared in a fixed order for the same reason. No version column, no DDL, no entity annotation and no schema artefact of any kind appears in this file or is needed by it: the concurrency check is reproduced field for field from :4109-4194 and nothing is added to the datasets to carry it (gate G44).  NOT APPLICABLE TO THIS CASE, STATED RATHER THAN LEFT SILENT. Gate G35 does not apply to COACTUPC at all: the program contains zero CALL 'CEE3ABD' and zero RETURN-CODE references, and its abnormal exit is EXEC CICS ABEND ABCODE('9999') at :4222-4224, which is a transaction abend code rather than a step return code. Gate G32 does not apply either: COACTUPC has no backward loop-forming GO TO - CBSTM03A is the only program in the estate that does - and its fifty-one GO TOs partition exhaustively as forty-one targeting an -EXIT label, three targeting the shared COMMON-RETURN, and seven strictly FORWARD stage jumps, four to EDIT-US-PHONE-PREFIX from :2259, :2277, :2291 and :2311 and three to EDIT-US-PHONE-LINENUM from :2330, :2348 and :2362. Exactly TWO of the fifty-one target a label that precedes them in the file - GO TO 9600-WRITE-PROCESSING-EXIT at :4144 and :4190, both inside 9700-CHECK-CHANGE-IN-REC, whose target label sits at :4105 - and neither forms a loop: they leave a performed range through its caller's exit label, which TERMINATES the PERFORM ... THRU rather than resuming anything, so control never re-enters a paragraph it has already left. That distinction is stated rather than glossed, because 'no backward GO TO' would be the wrong claim and 'no loop-forming GO TO' is the right one.  DIVERGENCES FROM THE BRIEF THAT AUTHORISED THIS FILE, DOCUMENTED RATHER THAN SILENTLY RESOLVED (practice B4). FIRST, the brief names an expectedRecords member; ParityCase has none and refuses it as an unknown property, so the two concepts it describes are carried by expectedWrites, whose rowIndex is a position in the write sequence, and expectedFinalState, whose rowIndex is a row of the dataset afterwards - and the distinction matters precisely here, where the first is empty and the second is not. SECOND, the brief asks for four failure variants, a PF-key coercion, two XCTL branches and an abend in one case; ParityCase models exactly ONE invocation, and the brief's own instruction for that situation is followed - unitKind is SERVICE and the encoded variant is a write-path failure - with every other subject derived above and attributed to the unit test or code-declared scenario that drives it, rather than encoded as an expectation this invocation cannot meet. THIRD, the brief asks for the fifty-four-field screen projection and for ACUP-CHANGE-ACTION to be asserted as a field, neither of which a SERVICE case can carry; the state is instead asserted through the one WS-RETURN-MSG literal that only this arm of the inner EVALUATE produces, and the projection is attributed to its owners. FOURTH, the brief expects COULD-NOT-LOCK-CUST-FOR-UPDATE to be verified against the source and encoded as whatever the source shows: it was, the flag has no EVALUATE arm, it yields 'C', and that finding is recorded above and preserved rather than corrected. FIFTH, COACTUPCParityTest's own prose describes case15 through case20 as CONTROLLER_POJO cases while the shipped fixtures use the opposite assignment - case01 through case14 are CONTROLLER_POJO and case15 through case19 are SERVICE - and this file follows the fixtures, as case18 and case19 also record; that class declares its twenty scenarios in code and numbers them independently of this folder's twenty files, which is why its scenarios are cited above by what they do rather than by number.",
+  "unitKind": "SERVICE",
+  "inputs": {
+    "ACCTDAT": {
+      "fixture": "acctdata.txt",
+      "fromRow": 33,
+      "rowCount": 1
+    },
+    "CUSTDAT": {
+      "fixture": "custdata.txt",
+      "fromRow": 33,
+      "rowCount": 1
+    },
+    "CXACAIX": {
+      "fixture": "cardxref.txt",
+      "fromRow": 18,
+      "rowCount": 1
+    },
+    "CARDDAT": {
+      "fixture": "carddata.txt",
+      "fromRow": 18,
+      "rowCount": 1
+    }
+  },
+  "jobParameters": {},
+  "screenRequest": {
+    "eibcalen": 1033,
+    "aid": "DFHPF5",
+    "pinnedClock": "2022-07-19T23:15:59",
+    "charset": "US-ASCII",
+    "commarea": {
+      "CDEMO-FROM-TRANID": "    ",
+      "CDEMO-FROM-PROGRAM": "        ",
+      "CDEMO-TO-TRANID": "    ",
+      "CDEMO-TO-PROGRAM": "        ",
+      "CDEMO-USER-ID": "        ",
+      "CDEMO-USER-TYPE": " ",
+      "CDEMO-PGM-CONTEXT": "1",
+      "CDEMO-CUST-ID": "000000034",
+      "CDEMO-CUST-FNAME": "Faustino                 ",
+      "CDEMO-CUST-MNAME": "Jess                     ",
+      "CDEMO-CUST-LNAME": "Schmidt                  ",
+      "CDEMO-ACCT-ID": "00000000034",
+      "CDEMO-ACCT-STATUS": "Y",
+      "CDEMO-CARD-NUM": "4385271476627819",
+      "CDEMO-LAST-MAP": "       ",
+      "CDEMO-LAST-MAPSET": "       ",
+      "WS-THIS-PROGCOMMAREA": "N00000000034Y00000002530{00000036420{00000027700{20090510202510062025100600000000000{00000000000{          000000034Faustino                 Jess                     Schmidt                  44132 Michel Square                               Suite 007                                         South Margarettaburgh                             MEUSA49544-2869(179)036-5135  (986)905-0112  54808830000000000000159882533199403210067445089Y10400000000034Y00000002530{00000036420{00000027700{20090510202510062025100600000000000{00000000000{\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000000000034Faustino                 Jess                     Schmidt                  44132 Michel Square                               Suite 007                                         South Margarettaburgh                             MEUSA49544     (303)036-5135  (986)905-0112  54808830000000000000159882533199403210067445089Y300"
+    },
+    "mapFields": {
+      "ACCTSIDI": "00000000034",
+      "ACSTTUSI": "Y",
+      "OPNYEARI": "2009",
+      "OPNMONI": "05",
+      "OPNDAYI": "10",
+      "ACRDLIMI": "+      3,642.00",
+      "EXPYEARI": "2025",
+      "EXPMONI": "10",
+      "EXPDAYI": "06",
+      "ACSHLIMI": "+      2,770.00",
+      "RISYEARI": "2025",
+      "RISMONI": "10",
+      "RISDAYI": "06",
+      "ACURBALI": "+        253.00",
+      "ACRCYCRI": "+           .00",
+      "AADDGRPI": "          ",
+      "ACRCYDBI": "+           .00",
+      "ACSTNUMI": "000000034",
+      "ACTSSN1I": "548",
+      "ACTSSN2I": "08",
+      "ACTSSN3I": "8300",
+      "DOBYEARI": "1994",
+      "DOBMONI": "03",
+      "DOBDAYI": "21",
+      "ACSTFCOI": "300",
+      "ACSFNAMI": "Faustino                 ",
+      "ACSMNAMI": "Jess                     ",
+      "ACSLNAMI": "Schmidt                  ",
+      "ACSADL1I": "44132 Michel Square                               ",
+      "ACSSTTEI": "ME",
+      "ACSADL2I": "Suite 007                                         ",
+      "ACSZIPCI": "49544",
+      "ACSCITYI": "South Margarettaburgh                             ",
+      "ACSCTRYI": "USA",
+      "ACSPH1AI": "303",
+      "ACSPH1BI": "036",
+      "ACSPH1CI": "5135",
+      "ACSGOVTI": "00000000000159882533",
+      "ACSPH2AI": "986",
+      "ACSPH2BI": "905",
+      "ACSPH2CI": "0112",
+      "ACSEFTCI": "0067445089",
+      "ACSPFLGI": "Y"
+    },
+    "forcedOutcomes": {
+      "rewrite": {
+        "outcome": "NOT_FOUND",
+        "resp": 13,
+        "resp2": 0
+      }
+    }
+  },
+  "expectedWrites": [],
+  "expectedFinalState": [
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 0,
+      "fields": {
+        "ACCT-ID": "00000000034",
+        "ACCT-ACTIVE-STATUS": "Y",
+        "ACCT-CURR-BAL": "00000002530{",
+        "ACCT-CREDIT-LIMIT": "00000036420{",
+        "ACCT-CASH-CREDIT-LIMIT": "00000027700{",
+        "ACCT-OPEN-DATE": "2009-05-10",
+        "ACCT-EXPIRAION-DATE": "2025-10-06",
+        "ACCT-REISSUE-DATE": "2025-10-06",
+        "ACCT-CURR-CYC-CREDIT": "00000000000{",
+        "ACCT-CURR-CYC-DEBIT": "00000000000{",
+        "ACCT-ADDR-ZIP": "A000000000",
+        "ACCT-GROUP-ID": "          ",
+        "FILLER": "                                                                                                                                                                                  "
+      },
+      "expectedBytes": "00000000034Y00000002530{00000036420{00000027700{2009-05-102025-10-062025-10-0600000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 0,
+      "fields": {
+        "CUST-ID": "000000034",
+        "CUST-FIRST-NAME": "Faustino                 ",
+        "CUST-MIDDLE-NAME": "Jess                     ",
+        "CUST-LAST-NAME": "Schmidt                  ",
+        "CUST-ADDR-LINE-1": "44132 Michel Square                               ",
+        "CUST-ADDR-LINE-2": "Suite 007                                         ",
+        "CUST-ADDR-LINE-3": "South Margarettaburgh                             ",
+        "CUST-ADDR-STATE-CD": "ME",
+        "CUST-ADDR-COUNTRY-CD": "USA",
+        "CUST-ADDR-ZIP": "49544-2869",
+        "CUST-PHONE-NUM-1": "(179)036-5135  ",
+        "CUST-PHONE-NUM-2": "(986)905-0112  ",
+        "CUST-SSN": "548088300",
+        "CUST-GOVT-ISSUED-ID": "00000000000159882533",
+        "CUST-DOB-YYYY-MM-DD": "1994-03-21",
+        "CUST-EFT-ACCOUNT-ID": "0067445089",
+        "CUST-PRI-CARD-HOLDER-IND": "Y",
+        "CUST-FICO-CREDIT-SCORE": "104",
+        "FILLER": "                                                                                                                                                                        "
+      },
+      "expectedBytes": "000000034Faustino                 Jess                     Schmidt                  44132 Michel Square                               Suite 007                                         South Margarettaburgh                             MEUSA49544-2869(179)036-5135  (986)905-0112  548088300000000000001598825331994-03-210067445089Y104                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CXACAIX",
+      "rowIndex": 0,
+      "fields": {
+        "XREF-CARD-NUM": "4385271476627819",
+        "XREF-CUST-ID": "000000034",
+        "XREF-ACCT-ID": "00000000034",
+        "FILLER": "              "
+      },
+      "expectedBytes": "438527147662781900000003400000000034              "
+    },
+    {
+      "dataset": "CARDDAT",
+      "rowIndex": 0,
+      "fields": {
+        "CARD-NUM": "4385271476627819",
+        "CARD-ACCT-ID": "00000000034",
+        "CARD-CVV-CD": "709",
+        "CARD-EMBOSSED-NAME": "Faustino Schmidt                                  ",
+        "CARD-EXPIRAION-DATE": "2025-10-06",
+        "CARD-ACTIVE-STATUS": "Y",
+        "FILLER": "                                                           "
+      },
+      "expectedBytes": "438527147662781900000000034709Faustino Schmidt                                  2025-10-06Y                                                           "
+    }
+  ],
+  "expectedReturnCode": 0,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "Update of record failed                                                    "
+    }
+  ],
+  "normalisations": [
+    {
+      "dataset": "CXACAIX",
+      "kind": "CARDXREF_FILLER_PAD_36_TO_50"
+    }
+  ],
+  "expectedDatasets": [
+    {
+      "dataset": "ACCTDAT",
+      "channel": "WRITES",
+      "rowCount": 0,
+      "recordLength": 300
+    },
+    {
+      "dataset": "CUSTDAT",
+      "channel": "WRITES",
+      "rowCount": 0,
+      "recordLength": 500
+    },
+    {
+      "dataset": "ACCTDAT",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 300
+    },
+    {
+      "dataset": "CUSTDAT",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 500
+    },
+    {
+      "dataset": "CXACAIX",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 50
+    },
+    {
+      "dataset": "CARDDAT",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 150
+    }
+  ]
+}
