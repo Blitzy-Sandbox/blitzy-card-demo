@@ -1,0 +1,191 @@
+{
+  "program": "COACTUPC",
+  "caseId": "case16",
+  "description": "PROVENANCE. Statically derived by structured reading of app/cbl/COACTUPC.cbl, its copybooks, its BMS symbolic map and the shipped ASCII fixtures, and then cross-checked against exactly two mechanical facts: the scale the receivers' PICTURE clauses declare, and the verified absence of the keyword ROUNDED. It was NOT captured from, recorded against, or replayed from any execution of the legacy COBOL: executing these programs is empirically impossible in this environment (no z/OS or CICS runtime, the available compiler reports its indexed file handler disabled, no Language Environment CEE* services, and DFHAID/DFHBMSCA/DFHATTR are absent from the repository). That substitutes the PROVENANCE of the expected values and nothing else - see AAP 0.7.6 and risk R-A, where the substitution is escalated for explicit user confirmation rather than silently absorbed. review_rules returns exactly one line, \"No user rules provided\", so no user-specified Rule governs this file; enterprise best practice governs instead and the absence is not treated as licence to lower the bar.\n\nWHAT THIS CASE OWNS, AND WHY IT HAD TO EXIST SEPARATELY FROM case15. Gate G24: every store into a monetary receiver truncates through RoundingMode.DOWN at scale exactly 2. This is the case that makes that choice OBSERVABLE. case15 drives these same five sites with values whose third decimal digit is zero or absent, so its expectations are satisfied by every rounding mode there is - it proves the SCALE, and it says so about itself. Here every one of the five inputs carries a NON-ZERO third decimal digit, so the stored value differs from what any mode that carried that digit somewhere would produce, and the diff count can only reach zero under DOWN. This case is the truncation-visible extension of case15, not a replacement for it: the five-site table, the declaration references and the dual-view assertion form are all carried over unchanged, and only the five values move.\n\nWHY DOWN, AND NOTHING ELSE. The keyword ROUNDED appears ZERO times in COACTUPC and zero times across all twenty-eight programs in app/cbl - verified by exhaustive search of the whole tree, the twenty-six lower-case .cbl files and the two upper-case .CBL files alike. Absent ROUNDED, a COBOL store DISCARDS the excess fractional digits rather than rounding them. The receivers here are PIC S9(10)V99, so the faithful Java equivalent is BigDecimal.setScale(2, RoundingMode.DOWN) - scale exactly 2, mode exactly DOWN - routed through the module's single scale-and-rounding seam in common/CobolDecimal, whose COBOL_ROUNDING constant is that mode and none of whose methods accepts a rounding mode as a parameter, so no caller can introduce a different one even by accident.\n\nDOWN IS TRUNCATION TOWARD ZERO, WHICH IS NOT THE SAME AS TRUNCATION TOWARD NEGATIVE INFINITY. The two agree on every positive value and disagree on a negative one whose discarded digits are non-zero: toward zero, -99.995 becomes -99.99; toward negative infinity it becomes -100.00. COBOL truncation is toward zero. A negative input with a non-zero third decimal is therefore the only assertion that separates the two, and this case carries one at :1107-1108. Four rejected modes are described in this file in prose rather than by their Java identifiers, deliberately: the only mode name written here is DOWN, so a search of the parity tree for a mode that must never appear in a monetary path cannot be answered by a false positive from a comment.\n\nTHE FIVE SITES, AS WRITTEN, WITH THEIR OPERANDS. :1079-1080 COMPUTE ACUP-NEW-CREDIT-LIMIT-N = FUNCTION NUMVAL-C(ACRDLIMI OF CACTUPAI). :1093-1094 COMPUTE ACUP-NEW-CASH-CREDIT-LIMIT-N = FUNCTION NUMVAL-C(ACSHLIMI OF CACTUPAI). :1107-1108 COMPUTE ACUP-NEW-CURR-BAL-N = FUNCTION NUMVAL-C(ACUP-NEW-CURR-BAL-X). :1121-1122 COMPUTE ACUP-NEW-CURR-CYC-CREDIT-N = FUNCTION NUMVAL-C(ACRCYCRI OF CACTUPAI). :1135-1136 COMPUTE ACUP-NEW-CURR-CYC-DEBIT-N = FUNCTION NUMVAL-C(ACRCYDBI OF CACTUPAI). These five are the only COMPUTE statements the program contains, and THEY ARE NOT BUSINESS CALCULATIONS: each is a PARSE of fifteen bytes of screen text into a twelve-byte signed span, so no rate is applied, no balance is accumulated and no amount is derived from another amount. FOUR of the five convert the MAP FIELD and exactly one - the current balance at :1107-1108 - converts the STAGING COPY, while the TEST-NUMVAL-C guard at :1078, :1092, :1106, :1120 and :1134 always reads the staging copy. That asymmetry is transcribed as the source writes it rather than normalised into a single form.\n\nTHE GUARDED SHAPE. Each site sits inside IF <map field> = '*' OR = SPACES MOVE LOW-VALUES TO ACUP-NEW-...-X ELSE MOVE <map field> TO ACUP-NEW-...-X, IF FUNCTION TEST-NUMVAL-C(ACUP-NEW-...-X) = 0 COMPUTE ... ELSE CONTINUE - the five blocks at :1073-1085, :1087-1099, :1101-1113, :1115-1127 and :1129-1141. Here all five values conform, FUNCTION TEST-NUMVAL-C returns 0 at every site, and all five COMPUTEs therefore execute. The ELSE is CONTINUE and not an assignment, so a non-conforming value would leave the -N span holding whatever it already held; that arm, and the blank arm above it, belong to the validation case and not to this one. An input that failed the guard would prove nothing about rounding, because the store would never happen.\n\nWIDTHS AND SCALE, TAKEN MECHANICALLY FROM PICTURE CLAUSES AND NEVER GUESSED. The five staging items ACUP-NEW-CREDIT-LIMIT-X, ACUP-NEW-CASH-CREDIT-LIMIT-X, ACUP-NEW-CURR-BAL-X, ACUP-NEW-CURR-CYC-CREDIT-X and ACUP-NEW-CURR-CYC-DEBIT-X are each PIC X(15) at :412-416, which is also the width app/cpy-bms/COACTUP.CPY declares for ACRDLIMI (:90), ACSHLIMI (:114), ACURBALI (:138), ACRCYCRI (:144) and ACRCYDBI (:156). Each receiver is a PIC X(12) item carrying a numeric REDEFINES view at PIC S9(10)V99: ACUP-NEW-CURR-BAL / -N at :763-765, ACUP-NEW-CREDIT-LIMIT / -N at :766-768, ACUP-NEW-CASH-CREDIT-LIMIT / -N at :769-771, ACUP-NEW-CURR-CYC-CREDIT / -N at :790-792 and ACUP-NEW-CURR-CYC-DEBIT / -N at :793-795. Ten integer digits plus two fractional digits is twelve bytes with no separate sign byte, because the sign rides as a zoned overpunch in the trailing character - { A B C D E F G H I for +0 through +9 and } J K L M N O P Q R for -0 through -9. The scale is therefore EXACTLY 2 at all five, which is gate G23, and that is not a local choice: an exhaustive scan of this codebase's signed decimal PICTURE clauses returns only V99 forms.\n\nTHE FIVE INPUTS, AND WHAT EACH ONE DISCRIMINATES. Five different shapes, so that no two of the five assertions can be satisfied by one code path and each shape earns its place rather than repeating another.\n(1) ACRDLIMI \"$1,234,567.899\" - CURRENCY-FORMATTED WITH A FRACTIONAL TAIL. It carries a currency sign and TWO grouping commas, forms that FUNCTION NUMVAL-C accepts and FUNCTION NUMVAL does not, so this site pins the parser as well as the store. 1234567.899 truncates to 1234567.89 and stores as 00012345678I. A mode that carried the discarded 9 upward would have produced 1234567.90 and the image 00012345679{, so both the value and the byte image discriminate.\n(2) ACSHLIMI \"1234.567\" - PLAIN POSITIVE, THIRD DECIMAL 7. No sign, no currency sign, no comma: the parser contributes nothing and the assertion is about the store alone. 1234.567 truncates to 1234.56 and stores as 00000012345F. A mode that rounded the discarded 7 upward would have produced 1234.57 and the image 00000012345G. This is the plainest possible statement of the discriminating assertion.\n(3) ACURBALI \"-99.995\" - NEGATIVE, THIRD DECIMAL 5, and the one site whose FUNCTION NUMVAL-C operand is the staging copy rather than the map field. -99.995 truncates TOWARD ZERO to -99.99 and stores as 00000000999R, whose R is a negative 9 in the overpunch table. Truncation toward negative infinity would have produced -100.00, and so would rounding the discarded 5 away from zero; both give the image 00000001000}. This is the assertion that separates DOWN from truncation toward negative infinity as well as from a nearest-value mode, and the surviving } J K L M N O P Q R family byte is itself a check that the sign survived the truncation.\n(4) ACRCYCRI \"9999999999.999\" - THE LARGEST VALUE THE RECEIVER CAN HOLD, plus one digit of fraction beyond it. 9999999999.999 truncates to 9999999999.99 and stores as 99999999999I, which fills all ten integer digits without overflowing them, so the case also proves the ten-digit integer part is intact. The discrimination here is the sharpest of the five: a mode that carried the discarded 9 upward would have produced 10000000000.00, which does NOT fit ten integer digits, and a COBOL store with no ON SIZE ERROR clause keeps the low-order digits - so such an implementation would write 00000000000{ and be wrong by the entire value rather than by one cent.\n(5) ACRCYDBI \"4321.234\" - PLAIN POSITIVE, THIRD DECIMAL 4, deliberately the CONTROL. 4321.234 truncates to 4321.23 and stores as 00000043212C, and a nearest-value mode would have produced the same 4321.23 - which is exactly what makes it the control. On this site truncation and a nearest-value mode agree, so it cannot be the evidence for the mode and is deliberately not offered as such; the other four carry that burden. What it does isolate is the separate fact that the third decimal digit is DISCARDED rather than carried anywhere, which is what would fail if a translation widened the receiver's scale instead of truncating into it, and it still catches a mode that rounded away from zero unconditionally, because that would have produced 4321.24 and the image 00000043212D. Its stored fraction is non-zero, so the assertion cannot be satisfied by an implementation that simply lost the whole fraction.\nEvery one of the five arrives at its declared PIC X(15) width, right-space-padded, as the map delivers it; every one satisfies FUNCTION TEST-NUMVAL-C(...) = 0 against the accepted argument format, which is what makes this the conforming case rather than a validation case; and every resulting -N value fits PIC S9(10)V99 with no integer overflow.\n\nNO PACKED DECIMAL REACHES A RECORD, WHICH IS A MATERIAL DE-RISKING. Not one of the twenty-eight copybooks in app/cpy declares COMP-3 or PACKED-DECIMAL - verified zero - so every persisted numeric field in this system, the five spans included, is zoned DISPLAY and the fixed-width codec needs no nibble unpacking at all. COACTUPC's only packed items live in WORKING-STORAGE and are never written: WS-EDIT-ALPHANUM-LENGTH PIC S9(4) COMP-3 at :62, and WS-DIV-BY, WS-DIVIDEND and WS-REMAINDER PIC S9(4) COMP-3 at :152, :154 and :157. No binary floating-point value appears anywhere in this file or in the path it drives, which is gate G22: every expected amount is written as an exact decimal literal or as its zoned byte image, never as a value a double could have produced.\n\nREACHABILITY: THE FIVE SITES ARE POST-FETCH ONLY. 1100-RECEIVE-MAP performs INITIALIZE ACUP-NEW-DETAILS at :1047, handles the account filter at :1051-1058, and then leaves at :1060-1062 - IF ACUP-DETAILS-NOT-FETCHED GO TO 1100-RECEIVE-MAP-EXIT - BEFORE reaching any of the five. A case in the not-fetched state could never execute them, so this one carries fetched details.\n\nTHE TURN THIS CASE MODELS, AND WHY THE PARSED VALUES BECOME OBSERVABLE BYTES. Identical in shape to case15's, because the shape is what makes the parsed values observable at all and only the values are under test here. The five receivers are items of this program's own commarea extension, so nothing about them is visible until 9600-WRITE-PROCESSING stages them into a record. The turn is therefore the CONFIRMING one: the edits passed on the previous pass, so ACUP-CHANGES-OK-NOT-CONFIRMED - the 88 valued 'N' at :664 - arrives in the extension, and PF05 is pressed. :876 clears WS-RETURN-MSG. :905-912 admits PF05 as a valid AID only because (CCARD-AID-PFK05 AND ACUP-CHANGES-OK-NOT-CONFIRMED) holds at :908. The ordered EVALUATE at :921 therefore reaches WHEN OTHER at :996, which performs 1000-PROCESS-INPUTS, 2000-DECIDE-ACTION and 3000-SEND-MAP in that order. 1100-RECEIVE-MAP runs, so all five COMPUTEs execute; 1200-EDIT-MAP-INPUTS then RETURNS EARLY at :1463-1467, because ACUP-CHANGES-OK-NOT-CONFIRMED is one of that condition's three disjuncts. That early return is exactly why nothing is edited again on this turn, no message is composed and no field is highlighted. 2000-DECIDE-ACTION takes its :2602-2605 arm and performs 9600-WRITE-PROCESSING, and its :2613-2614 WHEN OTHER then sets ACUP-CHANGES-OKAYED-AND-DONE. The transaction ends at the EXEC CICS RETURN with TRANSID at :1015-1016, and the return code is 0 because COACTUPC never sets one.\n\nWHAT 9600-WRITE-PROCESSING DOES HERE, IN ORDER, FROM :3888. :3894-3903 reads ACCTDAT with UPDATE and :3907-3916 would abandon the paragraph on anything but DFHRESP(NORMAL), never touching the customer file; :3921-3930 does the same against CUSTDAT under the key CDEMO-CUST-ID supplies at :3920, guarded identically at :3934-3943. Both reads are normal here. :3947-3951 performs 9700-CHECK-CHANGE-IN-REC, which compares the two records just read under the lock against ACUP-OLD-DETAILS - the snapshot 9500-STORE-FETCHED-DATA took at :3801-3813 when the screen was painted. The two seeded rows ARE that snapshot, so nothing changed underneath and the paragraph continues; the five monetary differences this case carries are between ACUP-OLD and ACUP-NEW, which 9700 does not compare. :3956 stages ACCT-UPDATE-RECORD and :4007 stages CUST-UPDATE-RECORD; :4065-4071 rewrites the account row at its full declared length and :4086 rewrites the customer row. Two writes, in that order, and this case pins both.\n\nTHE STAGED ACCOUNT IMAGE IS ACCT-UPDATE-RECORD'S LAYOUT, NOT CVACT01Y'S. The record declared at :418-433 is PIC 9(11), PIC X(01), three PIC S9(10)V99 amounts, three PIC X(10) dates, two more PIC S9(10)V99 amounts, PIC X(10) and FILLER PIC X(188) - 300 bytes, with the group identifier at offset 102 where app/cpy/CVACT01Y.cpy keeps ACCT-ADDR-ZIP, so CVACT01Y's own ACCT-GROUP-ID span at offset 112 falls inside the reserved area and goes out blank. That divergence is real behaviour and is reproduced here rather than repaired. AADDGRPI is not editable on this screen and arrives as ten spaces, so :1213-1215 moves LOW-VALUES into ACUP-NEW-GROUP-ID and the ten bytes at offset 102 are NUL rather than space. The FILLER is 188 spaces, ten wider than CVACT01Y's X(178), and it is emitted rather than dropped (gates G19 and G21): the pinned 300-character image is what proves both the total width and the FILLER. Because ACCT-UPDATE-RECORD's first ten items are byte-for-byte aligned with CVACT01Y's first ten across the leading 102 bytes, the five monetary spans are addressable by their CVACT01Y names, which is how they are pinned below. The three dates are the STRING ... DELIMITED BY SIZE compositions at :3976-3999, which join the PIC X(4) year and the two PIC X(2) parts with hyphens into a PIC X(10) receiver.\n\nTHE STAGED CUSTOMER IMAGE IS AN ECHO, AND THAT IS ALSO AN ASSERTION. CUST-UPDATE-RECORD at :434-456 carries the same layout as app/cpy/CVCUS01Y.cpy - 500 bytes ending in FILLER PIC X(168) - so no offset divergence applies on this side. 9600 rewrites the customer record on every successful path whether or not any customer item changed; there is no \"only write what changed\" guard anywhere in the paragraph, so the 500-byte write is behaviour in its own right and is pinned. Not one customer value differs from case15's, because this case moves only the five monetary screen fields, and asserting the customer row byte for byte is precisely what proves the five truncating stores did not leak into it. The two telephone numbers are the STRING compositions '(' area ')' prefix '-' line, and the date of birth is year '-' month '-' day, each landing in a PIC X(15) or PIC X(10) receiver and space-padded on the right.\n\nWHY EVERY SCREEN VALUE HERE IS EDIT-VALID, INCLUDING THREE DEPARTURES FROM THE SHIPPED ROW. ACUP-CHANGES-OK-NOT-CONFIRMED can only have been set by :1671-1675 on the previous turn, and only when no edit had set INPUT-ERROR, so a case that carried an edit-failing screen into a PF05 confirmation would be positing a state the program cannot reach. Three items of custdata.txt row 0 do fail their edits, and this case supplies valid ones in their place. FICO 274 fails the 88 FICO-RANGE-IS-VALID VALUES 300 THROUGH 850 at :848-849 that 1275-EDIT-FICO-SCORE tests at :2514, so ACSTFCOI carries 742. State NC with zip 12546 fails 1280-EDIT-US-STATE-ZIP-CD at :2536-2556, which STRINGs the two-character state onto the first two zip digits and looks the pair up in app/cpy/CSLKPCDY.cpy - a copybook that lists NC27 and NC28 and no other North Carolina prefix - so ACSZIPCI carries 27601. The second telephone's area code 373 does not occur in that copybook at all, so ACSPH2AI carries 919, which does; the first telephone's 908 is present and is kept unchanged. Everything else - status Y, the three dates, the names, both address lines, the city, USA, the three SSN parts, the government-issued id, the date of birth, the EFT account id and the primary-holder flag - is the shipped row echoed at its declared width.\n\nTHE FOUR SEEDS, AND WHY ONLY TWO OF THEM CARRY AN EXPECTATION. The pre-state is the turn-entry state of account 00000000001, seeded from the same four fixtures at the same rows case04 declares: ACCTDAT row 0 and CUSTDAT row 0 are the two rows 9600-WRITE-PROCESSING reads under the lock and rewrites, and CXACAIX row 48 and CARDDAT row 48 are the cross-reference and card rows the fetch turn's 9000-READ-ACCT had established - row 48 of cardxref.txt is card 9680294154603697 for customer 000000001 and account 00000000001, which is the identity the commarea carries. CXACAIX is seeded from cardxref.txt at its RAW 36 bytes, exactly as the fixture ships it, and the declared CARDXREF_FILLER_PAD_36_TO_50 normalisation right-pads it once, at seed time, to the 50 bytes app/cpy/CVACT03Y.cpy declares with its trailing FILLER X(14): that pad is gate G16, and declaring it here means it fires on a real row rather than being declared for a dataset nobody seeds. Only ACCTDAT and CUSTDAT carry a channel expectation, because the unit under test reads and rewrites exactly those two; an expectation naming a dataset this unit never opens would assert something about the harness rather than about the program, and would be reported as a missing dataset rather than as a parity finding.\n\nHOW EACH SITE IS ASSERTED, OVER THE SAME TWELVE BYTES, IN THREE INDEPENDENT VIEWS. First, the -N NUMERIC view: on the WRITES channel each span is a decimal literal at scale exactly 2 carrying the TRUNCATED value, encoded into its canonical stored image through the same codec the implementation writes with before the bytes are compared. Second, the raw PIC X(12) CHARACTER view: on the FINAL_STATE channel each span is the twelve-character zoned image including its overpunched sign byte, so the sign and the low-order digit are audited as bytes rather than as a quantity - a BigDecimal cannot hold the difference between 00000000000{ and 00000000000}, which is exactly why the byte image is pinned alongside the value, and it is what makes the negative site's R byte an assertion in its own right. Third, the raw PIC X(15) SCREEN TEXT: each ACUP-NEW-...-X staging item is pinned as the map field it was copied from, right-space-padded to fifteen, in screenRequest.mapFields. The MOVE immediately above each site is a width-for-width PIC X(15) to PIC X(15) copy, so the map field and the staging copy hold identical characters, and the received text is therefore stated where a received value belongs rather than in a record expectation - a record expectation naming ACUP-NEW-CREDIT-LIMIT-X would name a span the account layout does not declare and would be reported as absent from the fingerprint. Both channels additionally pin the complete record image, which is what makes the expectation cover every byte of the record rather than only the bytes it names: a span no expectation covers is a span that can be wrong while the diff count stays zero. ACCT-ID and CUST-ID are pinned on both channels as well, so no assertion is anchored to a row nobody identified.\n\nTHE MESSAGE THAT IS NOT THERE. :876 SET WS-RETURN-MSG-OFF establishes the entry state; 1200-EDIT-MAP-INPUTS returns before composing anything and both rewrites succeed, so WS-RETURN-MSG PIC X(75) at :479 still holds seventy-five spaces when COMMON-RETURN moves it into CCARD-ERROR-MSG at :1008. No error message is expected because every input passes FUNCTION TEST-NUMVAL-C and 1250-EDIT-SIGNED-9V2 raises nothing. It is asserted as a present, blank, seventy-five-character line rather than as an absent message, because a cleared field and a field nobody wrote are different observations. The channel is DISPLAY_LINE because that field is neither the 80-byte WS-MESSAGE nor the 78-byte ERRMSGO the map carries, and only the variable-width channel can carry its 75.\n\nGATES. G24 is OWNED here and is the reason this case exists: every store truncates with RoundingMode.DOWN at scale exactly 2, and the five expectations are chosen so that a nearest-value mode, a mode that rounds away from zero, a mode that truncates toward negative infinity and a mode that rounds toward positive infinity would each produce a diff at one or more of the five sites - and none of those four Java mode identifiers appears anywhere in this file. Also OWNED: G23, scale exactly 2 at all five receivers as PIC S9(10)V99 declares; and G28, each of the five COMPUTE sites carrying at least one targeted assertion, with five distinct input shapes so the five assertions are independent of one another. Also satisfied: G15, one of the twenty declarative cases this program owns; G16, cardxref seeded raw at 36 bytes and padded to 50 by the declared normalisation; G17 and G18, the comparison is field by field and the diff count must be zero for this module to be complete; G19 and G21, the account row is 300 bytes and the customer row 500, FILLER included and space-filled; G22, no binary floating-point value anywhere; G37, no server-side state - the AID, the commarea and every screen value travel in the payload; and G51, the unit kind is SERVICE, so account.AccountUpdateService is constructed with its collaborators and called as a plain object with no HTTP, no MockMvc and no JobLauncher in the path. NOT APPLICABLE, stated rather than left silent: G32, which covers CBSTM03A's backward loop-forming GO TOs and has no counterpart in COACTUPC, a program whose GO TOs are all forward early exits; and G35, since COACTUPC contains no CALL 'CEE3ABD' at all and this path reaches no abend.\n\nEXPLICIT AT EVERY BOUNDARY. The code page is named US-ASCII rather than inherited from a platform default, the clock is pinned so nothing depends on the day the suite runs, every field map is ordered, and every width in this file traces to a PICTURE clause: PIC X(15) for the screen text, PIC X(12) for the span, PIC S9(10)V99 for the numeric view, PIC 9(11) for the account key, PIC 9(09) for the customer key and PIC X(75) for the return message. EIBCALEN is 1033 - 160 bytes of CARDDEMO-COMMAREA plus the 873-byte WS-THIS-PROGCOMMAREA that COMMON-RETURN returns at :1010-1018 - so the left disjunct of the commarea gate at :880 is false, and CDEMO-FROM-PROGRAM is spaces rather than COMEN01C so the right disjunct at :881-882 is false too: the ELSE at :887-892 restores both areas from DFHCOMMAREA and nothing is re-initialised.",
+  "unitKind": "SERVICE",
+  "inputs": {
+    "CXACAIX": {
+      "fixture": "cardxref.txt",
+      "fromRow": 48,
+      "rowCount": 1
+    },
+    "ACCTDAT": {
+      "fixture": "acctdata.txt",
+      "fromRow": 0,
+      "rowCount": 1
+    },
+    "CUSTDAT": {
+      "fixture": "custdata.txt",
+      "fromRow": 0,
+      "rowCount": 1
+    },
+    "CARDDAT": {
+      "fixture": "carddata.txt",
+      "fromRow": 48,
+      "rowCount": 1
+    }
+  },
+  "jobParameters": {},
+  "screenRequest": {
+    "eibcalen": 1033,
+    "aid": "DFHPF5",
+    "pinnedClock": "2022-07-19T23:15:59",
+    "charset": "US-ASCII",
+    "commarea": {
+      "CDEMO-FROM-TRANID": "    ",
+      "CDEMO-FROM-PROGRAM": "        ",
+      "CDEMO-TO-TRANID": "    ",
+      "CDEMO-TO-PROGRAM": "        ",
+      "CDEMO-USER-ID": "        ",
+      "CDEMO-USER-TYPE": " ",
+      "CDEMO-PGM-CONTEXT": "1",
+      "CDEMO-CUST-ID": "000000001",
+      "CDEMO-CUST-FNAME": "Immanuel                 ",
+      "CDEMO-CUST-MNAME": "Madeline                 ",
+      "CDEMO-CUST-LNAME": "Kessler                  ",
+      "CDEMO-ACCT-ID": "00000000001",
+      "CDEMO-ACCT-STATUS": "Y",
+      "CDEMO-CARD-NUM": "9680294154603697",
+      "CDEMO-LAST-MAP": "       ",
+      "CDEMO-LAST-MAPSET": "       "
+    },
+    "mapFields": {
+      "ACCTSIDI": "00000000001",
+      "ACSTTUSI": "Y",
+      "OPNYEARI": "2014",
+      "OPNMONI": "11",
+      "OPNDAYI": "20",
+      "ACRDLIMI": "$1,234,567.899 ",
+      "EXPYEARI": "2025",
+      "EXPMONI": "05",
+      "EXPDAYI": "20",
+      "ACSHLIMI": "1234.567       ",
+      "RISYEARI": "2025",
+      "RISMONI": "05",
+      "RISDAYI": "20",
+      "ACURBALI": "-99.995        ",
+      "ACRCYCRI": "9999999999.999 ",
+      "AADDGRPI": "          ",
+      "ACRCYDBI": "4321.234       ",
+      "ACSTNUMI": "000000001",
+      "ACTSSN1I": "020",
+      "ACTSSN2I": "97",
+      "ACTSSN3I": "3888",
+      "DOBYEARI": "1961",
+      "DOBMONI": "06",
+      "DOBDAYI": "08",
+      "ACSTFCOI": "742",
+      "ACSFNAMI": "Immanuel                 ",
+      "ACSMNAMI": "Madeline                 ",
+      "ACSLNAMI": "Kessler                  ",
+      "ACSADL1I": "618 Deshaun Route                                 ",
+      "ACSSTTEI": "NC",
+      "ACSADL2I": "Apt. 802                                          ",
+      "ACSZIPCI": "27601",
+      "ACSCITYI": "Altenwerthshire                                   ",
+      "ACSCTRYI": "USA",
+      "ACSPH1AI": "908",
+      "ACSPH1BI": "119",
+      "ACSPH1CI": "8310",
+      "ACSGOVTI": "00000000000049368437",
+      "ACSPH2AI": "919",
+      "ACSPH2BI": "693",
+      "ACSPH2CI": "8684",
+      "ACSEFTCI": "0053581756",
+      "ACSPFLGI": "Y"
+    },
+    "forcedOutcomes": {}
+  },
+  "expectedResponse": null,
+  "expectedWrites": [
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 0,
+      "fields": {
+        "ACCT-ID": "00000000001",
+        "ACCT-CURR-BAL": "-99.99",
+        "ACCT-CREDIT-LIMIT": "1234567.89",
+        "ACCT-CASH-CREDIT-LIMIT": "1234.56",
+        "ACCT-CURR-CYC-CREDIT": "9999999999.99",
+        "ACCT-CURR-CYC-DEBIT": "4321.23"
+      },
+      "expectedBytes": "00000000001Y00000000999R00012345678I00000012345F2014-11-202025-05-202025-05-2099999999999I00000043212C\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 0,
+      "fields": {
+        "CUST-ID": "000000001",
+        "CUST-ADDR-ZIP": "27601     ",
+        "CUST-PHONE-NUM-2": "(919)693-8684  ",
+        "CUST-FICO-CREDIT-SCORE": "742"
+      },
+      "expectedBytes": "000000001Immanuel                 Madeline                 Kessler                  618 Deshaun Route                                 Apt. 802                                          Altenwerthshire                                   NCUSA27601     (908)119-8310  (919)693-8684  020973888000000000000493684371961-06-080053581756Y742                                                                                                                                                                        "
+    }
+  ],
+  "expectedFinalState": [
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 0,
+      "fields": {
+        "ACCT-ID": "00000000001",
+        "ACCT-CURR-BAL": "00000000999R",
+        "ACCT-CREDIT-LIMIT": "00012345678I",
+        "ACCT-CASH-CREDIT-LIMIT": "00000012345F",
+        "ACCT-CURR-CYC-CREDIT": "99999999999I",
+        "ACCT-CURR-CYC-DEBIT": "00000043212C"
+      },
+      "expectedBytes": "00000000001Y00000000999R00012345678I00000012345F2014-11-202025-05-202025-05-2099999999999I00000043212C\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 0,
+      "fields": {
+        "CUST-ID": "000000001",
+        "CUST-ADDR-ZIP": "27601     ",
+        "CUST-PHONE-NUM-2": "(919)693-8684  ",
+        "CUST-FICO-CREDIT-SCORE": "742"
+      },
+      "expectedBytes": "000000001Immanuel                 Madeline                 Kessler                  618 Deshaun Route                                 Apt. 802                                          Altenwerthshire                                   NCUSA27601     (908)119-8310  (919)693-8684  020973888000000000000493684371961-06-080053581756Y742                                                                                                                                                                        "
+    }
+  ],
+  "expectedReturnCode": 0,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "                                                                           "
+    }
+  ],
+  "normalisations": [
+    {
+      "dataset": "CXACAIX",
+      "kind": "CARDXREF_FILLER_PAD_36_TO_50"
+    }
+  ],
+  "expectedDatasets": [
+    {
+      "dataset": "ACCTDAT",
+      "channel": "WRITES",
+      "rowCount": 1,
+      "recordLength": 300
+    },
+    {
+      "dataset": "CUSTDAT",
+      "channel": "WRITES",
+      "rowCount": 1,
+      "recordLength": 500
+    },
+    {
+      "dataset": "ACCTDAT",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 300
+    },
+    {
+      "dataset": "CUSTDAT",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 500
+    }
+  ]
+}

@@ -10,6 +10,7 @@ import static org.mockito.Mockito.when;
 
 import com.vsergeychik.carddemo.common.BmsAttributes;
 import com.vsergeychik.carddemo.common.CicsAid;
+import com.vsergeychik.carddemo.common.CicsResponse;
 import com.vsergeychik.carddemo.common.FieldAttributeSetter.FieldHighlight;
 import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
@@ -38,6 +39,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.function.Function;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -335,18 +337,22 @@ final class COTRN01CParityTest {
     private static TransactionRepository repositoryFor(ParityHarness.Invocation invocation) {
         TransactionRepository repository = mock(TransactionRepository.class);
 
-        if (invocation.hasForcedOutcome(ParityCase.RepositoryOperation.READ_FOR_UPDATE)) {
-            ParityCase.ForcedOutcome forced =
-                    invocation.forcedOutcome(ParityCase.RepositoryOperation.READ_FOR_UPDATE);
-            when(repository.readForUpdateByTranId(anyString()))
-                    .thenReturn(forcedReadResult(forced));
-            return repository;
-        }
-
         List<String> rows = invocation.hasDataset(TRANSACT_DATASET)
                 ? invocation.dataset(TRANSACT_DATASET).rows()
                 : List.of();
         Charset charset = invocation.charset();
+
+        if (invocation.hasForcedOutcome(ParityCase.RepositoryOperation.READ_FOR_UPDATE)) {
+            ParityCase.ForcedOutcome forced =
+                    invocation.forcedOutcome(ParityCase.RepositoryOperation.READ_FOR_UPDATE);
+            // The key is needed as well as the outcome, because the duplicate arm carries a record and
+            // that record is resolved from the case's own seeded rows rather than invented.
+            when(repository.readForUpdateByTranId(anyString()))
+                    .thenAnswer(answer -> forcedReadResult(
+                            forced, answer.getArgument(0, String.class), rows, charset));
+            return repository;
+        }
+
         when(repository.readForUpdateByTranId(anyString()))
                 .thenAnswer(answer -> keyedRead(answer.getArgument(0, String.class), rows, charset));
         return repository;
@@ -381,20 +387,33 @@ final class COTRN01CParityTest {
      * Translates a case's declared {@link ParityCase.ForcedOutcome} into the outcome the repository
      * reports.
      *
-     * <p>{@code OK} and {@code DUPLICATE} are refused rather than mapped. Both are outcomes that carry
-     * a record, and a forced one would have to invent that record's 350 bytes - which is a record no
-     * copybook, no fixture and no case declared, and every field of it would then be compared against
-     * an expectation derived from nothing. A case that wants a record present seeds one.
+     * <p>{@code OK} is refused rather than mapped. It is the outcome the fixture-backed read already
+     * produces for a key a seeded row carries, so forcing it would either duplicate that path or
+     * require inventing the record's 350 bytes - a record no copybook, no fixture and no case declared,
+     * every field of which would then be compared against an expectation derived from nothing. A case
+     * that wants a record read normally seeds one and lets the keyed read find it.
      *
-     * @param forced what the case declared
+     * <p>{@code DUPLICATE} <strong>is</strong> mapped, and is the one forced outcome that still needs
+     * the key. {@code DFHRESP(DUPKEY)} is a condition CICS reports <em>alongside</em> the record rather
+     * than instead of it, which is why {@link ReadResult} permits a record on that arm and requires one;
+     * so the arm is reached without inventing anything by taking the record from the row the case itself
+     * seeded, exactly as the refusal above prescribes. A case forcing a duplicate against data that does
+     * not carry the key is rejected rather than served a fabricated record.
+     *
+     * @param forced     what the case declared
+     * @param key        the key the program moved into {@code TRAN-ID}
+     * @param seededRows the rows the case seeded, each a full 350-byte image
+     * @param charset    the case's code page
      * @return the corresponding read outcome
      */
-    private static ReadResult forcedReadResult(ParityCase.ForcedOutcome forced) {
+    private static ReadResult forcedReadResult(ParityCase.ForcedOutcome forced, String key,
+                                               List<String> seededRows, Charset charset) {
         return switch (forced.outcome()) {
             case NOT_FOUND -> ReadResult.notFound(TransactionRepository.INPUT_DD_NAME);
             case END_OF_FILE -> ReadResult.endOfFile(TransactionRepository.INPUT_DD_NAME);
             case OTHER -> ReadResult.other(TransactionRepository.INPUT_DD_NAME, UNEXPECTED_STATUS);
-            case OK, DUPLICATE -> throw new IllegalArgumentException("A COTRN01C case forced the "
+            case DUPLICATE -> forcedDuplicate(forced, key, seededRows, charset);
+            case OK -> throw new IllegalArgumentException("A COTRN01C case forced the "
                     + forced.outcome() + " outcome for the keyed read. That outcome carries a record, "
                     + "and forcing it would require inventing 350 bytes no copybook, fixture or case "
                     + "declared - so every field of the resulting screen would be compared against an "
@@ -402,6 +421,57 @@ final class COTRN01CParityTest {
                     + "fixture-backed read then reports " + FileStatus.Outcome.OK + " for a key that "
                     + "matches and " + FileStatus.Outcome.NOT_FOUND + " for one that does not.");
         };
+    }
+
+    /**
+     * The duplicate-key arm of the keyed read, carrying the seeded record and the case's own
+     * {@code RESP}/{@code RESP2} pair.
+     *
+     * <h4>Why the response pair comes from the case</h4>
+     *
+     * <p>Both {@link FileStatus#DUPREC} and {@link FileStatus#DUPKEY} map forward onto the batch status
+     * {@code '22'}, and {@code FileStatus} deliberately leaves the reverse direction ambiguous for that
+     * reason - so the status alone cannot say which condition a case meant. The case names it, and it is
+     * reported through {@link CicsResponse#reported(int, int)}, whose contract is the pair an adapter
+     * actually reported rather than one derived from something else. For a keyed {@code READ} the apt
+     * condition is {@link FileStatus#DUPKEY}: {@link FileStatus#DUPREC} is documented as the duplicate a
+     * {@code WRITE} reports, and this program issues no {@code WRITE} anywhere. That is the default when
+     * a case declares no response, and any response a case does declare must still classify as
+     * {@link FileStatus.Outcome#DUPLICATE} - otherwise the fixture and the outcome it names would
+     * disagree, which is the contradiction {@link ReadResult}'s own invariants exist to prevent.
+     *
+     * @param forced     what the case declared
+     * @param key        the key the program moved into {@code TRAN-ID}
+     * @param seededRows the rows the case seeded
+     * @param charset    the case's code page
+     * @return the duplicate outcome, status {@code '22'}, carrying the first matching seeded record
+     * @throws IllegalArgumentException if no seeded row carries the key, or if the declared response is
+     *                                  not a duplicate condition
+     */
+    private static ReadResult forcedDuplicate(ParityCase.ForcedOutcome forced, String key,
+                                              List<String> seededRows, Charset charset) {
+        TranRecord record = keyedRead(key, seededRows, charset).record()
+                .orElseThrow(() -> new IllegalArgumentException("A COTRN01C case forced the "
+                        + FileStatus.Outcome.DUPLICATE + " outcome for the keyed read of '" + key
+                        + "', but no seeded TRANSACT row carries that key. A duplicate is reported "
+                        + "alongside a record, so the record has to come from somewhere; taking it from "
+                        + "the case's own seeded data is what keeps it from being invented. Seed a row "
+                        + "whose TRAN-ID is the key the case asks for."));
+
+        int resp = forced.resp() == null ? FileStatus.DUPKEY : forced.resp();
+        int resp2 = forced.resp2() == null ? FileStatus.NO_REASON_CODE : forced.resp2();
+        if (FileStatus.outcomeOfCicsResp(resp) != FileStatus.Outcome.DUPLICATE) {
+            throw new IllegalArgumentException("A COTRN01C case forced the "
+                    + FileStatus.Outcome.DUPLICATE + " outcome but declared RESP " + resp
+                    + ", which common.FileStatus classifies as "
+                    + FileStatus.outcomeOfCicsResp(resp) + ". The two must agree, or the DISPLAY at "
+                    + ":290 would render a response code that contradicts the arm the case says it "
+                    + "pins. The duplicate conditions are DFHRESP(DUPREC) = " + FileStatus.DUPREC
+                    + " and DFHRESP(DUPKEY) = " + FileStatus.DUPKEY + ".");
+        }
+        return new ReadResult(TransactionRepository.INPUT_DD_NAME, FileStatus.DUPLICATE,
+                FileStatus.Outcome.DUPLICATE, Optional.of(record),
+                CicsResponse.reported(resp, resp2), Optional.empty(), Optional.empty());
     }
 
     /**

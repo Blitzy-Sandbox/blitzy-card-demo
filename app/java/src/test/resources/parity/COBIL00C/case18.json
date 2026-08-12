@@ -1,0 +1,229 @@
+{
+  "program": "COBIL00C",
+  "caseId": "case18",
+  "description": "WHEN DFHRESP(NOTFND) of the ordered EVALUATE WS-RESP-CD in READ-CXACAIX-FILE at app/cbl/COBIL00C.cbl:420-436 - the arm at :423-428 - and, reached through it, THE ONE DEFECT THIS PROGRAM IS MOST OFTEN TRANSLATED WRONGLY: the block the arm fails inside carries no guard, so the payment happens anyway. SERVICE, driving billing.BillPaymentService.processEnterKey directly through its own constructor: no MockMvc, no TestRestTemplate, no WebTestClient, no servlet container, no JobLauncher and no ApplicationContext anywhere in the path, because that is where the decision logic lives and a parity case must reach it with nothing in between (gate G51). THE HEADLINE FINDING - THE PAYMENT BLOCK IS UNGUARDED, AND THAT IS THE WHOLE POINT OF THIS FILE. :208 IF NOT ERR-FLG-ON is the ONLY guard, and it is evaluated BEFORE the block is entered. Once inside, :210 IF CONF-PAY-YES opens a run of statements - :211 PERFORM READ-CXACAIX-FILE, :212 MOVE HIGH-VALUES TO TRAN-ID, :213 PERFORM STARTBR-TRANSACT-FILE, :214 PERFORM READPREV-TRANSACT-FILE, :215 PERFORM ENDBR-TRANSACT-FILE, :216 MOVE TRAN-ID TO WS-TRAN-ID-NUM, :217 ADD 1 TO WS-TRAN-ID-NUM, :218 INITIALIZE TRAN-RECORD, :219-229 the eleven moves, :230 PERFORM GET-CURRENT-TIMESTAMP, :231-232 the one MOVE with two timestamp receivers, :233 PERFORM WRITE-TRANSACT-FILE, :234 COMPUTE ACCT-CURR-BAL = ACCT-CURR-BAL - TRAN-AMT and :235 PERFORM UPDATE-ACCTDAT-FILE - and THERE IS NO SECOND IF NOT ERR-FLG-ON ANYWHERE BETWEEN :211 AND :235. So the cross-reference read at :211 raises WS-ERR-FLG at :424, moves its message at :425-426, positions the cursor at :427 and TRANSMITS A SCREEN at :428 - and then every remaining statement runs regardless. A transaction referencing no card is written at :233, the balance is debited at :234 and the account is rewritten at :235. This is genuine legacy behaviour and it is preserved exactly (practice B5): no early return is added, the write is not suppressed, and none of it is treated as a bug to be corrected. A plausible-looking Java translation would NATURALLY insert a return after the failed lookup and would then be wrong, which is why expectedWrites here asserts the two records POSITIVELY rather than asserting that nothing happened. If this file's expectedWrites were ever emptied, the guard that does not exist would have been modelled. CONTRAST WITH SIBLING case17, WHICH FAILS BEFORE THE GUARD AND THEREFORE ABORTS CLEANLY. That case's refusal is the account read at :177, which sits inside the :169 block, so by the time control reaches :197 and :208 the flag is already on and BOTH guards close: the payment sequence is never entered, expectedWrites is empty and both dataset channels report zero rows. The refusal encoded HERE is one statement later in the flow and one guard past the last place a guard exists, and the observable difference is total - one transaction row and one rewritten account row instead of none. Same program, same shape of failure, opposite dataset outcome, and the only thing that distinguishes them is where the :208 test sits relative to the failing paragraph. GATE G30 - THE ARM ORDER, WHICH IS PART OF WHAT THIS CASE ASSERTS. EVALUATE is ordered and the first matching WHEN wins, so :423 is reached only because :421 DFHRESP(NORMAL) did not match. The source order is NORMAL at :421, NOTFND at :423, WHEN OTHER at :429, and WHEN OTHER IS LAST both in the source and in the translation. A restructuring that hoisted WHEN OTHER above NOTFND would take the wrong arm for a response that has a name and would report 'Unable to lookup XREF AIX file...' where the program reports 'Account ID NOT found...'; one that tested NOTFND after WHEN OTHER would never reach it at all. The preceding NORMAL test is therefore asserted here, not merely traversed. THE OTHER ARM OF THIS SAME CALL SITE, AND WHY IT IS NOT IN THIS FILE. A ParityCase carries one screenRequest, which is one invocation, and :410-418 issues its EXEC CICS READ exactly once per invocation, so the model has no member in which a second arm of the same EVALUATE could be stated and no ordered multi-step shape to state it in. One arm per file is forced by the model rather than chosen, and this file says which one it holds rather than leaving a reader to infer it. DFHRESP(NORMAL) at :421-422 is already covered twice over, by case15 and by case16, where the cross-reference is found and its card number reaches TRAN-CARD-NUM intact. WHEN OTHER at :429-435 IS NOT COVERED BY THIS FILE AND IS NOT COVERED BY ANY OF case01 THROUGH case17, so gate G47 for this call site is not satisfied until a sibling adopts it. That is stated plainly rather than glossed, and its shape is fully determined so whichever sibling takes it has an exact contract. Seed ACCTDAT and TRANSACT exactly as this file does, declare forcedOutcomes read with outcome OTHER - no arrangement of seeded rows can produce a non-NORMAL, non-NOTFND response from a keyed read, because a row is either there or it is not - and then :430 DISPLAY 'RESP:' WS-RESP-CD 'REAS:' WS-REAS-CD emits one line, :431 raises the flag, :432-433 moves 'Unable to lookup XREF AIX file...' - thirty-three characters, capital XREF, capital AIX, lower-case file, exactly three trailing dots - into WS-MESSAGE, :434 positions the cursor and :435 sends. The line renders as 'RESP:000000019REAS:000000000' and not as nine fill characters, because CardXrefRepository.ReadResult.other carries FileStatus.NOTOPEN, which is 19, where the account paths' '04' has no CICS counterpart at all. Everything after that send is identical to this file, because the block is just as unguarded on that arm: one transaction row, one rewritten account row, and a final screen reporting success. THE DISPLAY RENDERING CONVENTION IS SIBLING case17's AND IS NOT RE-INVENTED HERE. That file fixed it: the four operands of DISPLAY 'RESP:' WS-RESP-CD 'REAS:' WS-REAS-CD concatenate with no separator, WS-RESP-CD and WS-REAS-CD are both PIC S9(09) COMP at :46-47 and render UNSIGNED and ZERO-FILLED at exactly nine digit positions, so the line is always 5 + 9 + 5 + 9 = 28 characters, and a code with no CICS value to report is nine asterisks rather than nine zeros because zero IS DFHRESP(NORMAL). That convention is restated here so the two files cannot drift, and it is applied by NOT applying it: this arm has no DISPLAY. WHY expectedMessages IS EMPTY, AND WHY THAT IS AN ASSERTION RATHER THAN AN OMISSION. Of the six DISPLAY sites in this program - :366, :397, :430, :461, :490 and :541 - not one is on this path. The NOTFND arm at :423-428 has four statements and none of them is a DISPLAY, and every other paragraph this invocation reaches takes its DFHRESP(NORMAL) arm. So the unit emits no line at all, and an empty expectedMessages positively states that: emission count is compared before emission content, so a translation that added a diagnostic here would fail on the count. The WS-MESSAGE text is not restated as a WS_MESSAGE_80 entry, because the screen is where this program's message becomes observable and ERRMSGO is pinned in the sends below; stating it in both places would create two opinions about one value, and the two channels have different widths - WS-MESSAGE is PIC X(80) at :39 and ERRMSGI is PIC X(78) in app/cpy-bms/COBIL00.CPY - so they are not interchangeable. GATE G45 - THE ALTERNATE INDEX IS A FINDER, NEVER A SECOND TABLE, AND THIS IS THE PRIMARY CASE FOR IT. app/csd/CARDDEMO.CSD:63-65 defines CXACAIX with DESCRIPTION(ALTERNATE INDEX TO CCXREF VIA ACCOUNT KEY) and DSNAME(AWS.M2.CARDDEMO.CARDXREF.VSAM.AIX.PATH) - a PATH over the CCXREF base cluster, which :37-39 defines at DSNAME(AWS.M2.CARDDEMO.CARDXREF.VSAM.KSDS). One dataset, two access paths. In Java that is CardXrefRepository.readByAccountIdViaAltIndex, a second finder method on the base repository keyed on the eleven-byte XREF-ACCT-ID, and no second repository, table, entity or index is created for it - which is also why no DDL exists anywhere in the module (gate G44). The read at :410-418 carries NO UPDATE option, so it takes no lock: the cross-reference is consulted for a card number and is never written by this program. HOW THE ARM IS REACHED - THE INDUCTION, CONCRETELY, AND WHY IT IS NOT WHAT A FIRST READING WOULD SUGGEST. The obvious plan is to name an account the cross-reference does not cover. It does not work, for two independently verified reasons, and both are recorded here rather than worked around silently. FIRST, fixtures/cardxref.txt is byte-identical to app/data/ASCII/cardxref.txt and covers ALL FIFTY account identifiers 00000000001 through 00000000050, one row each - account 00000000022, the one this case pays, has its row at fixture index 11, and the card number it carries is left in the fixture rather than restated here because Redaction classifies a card identifier as IDENTIFIER and never renders one verbatim - so NO slice of the real fixture can miss, and editing the fixture to remove a row is forbidden outright (practice B3: app/cbl, app/cpy, app/csd and app/data are read and never written). SECOND, DatasetInput's three shapes - inline rows, fixture-backed, and declared-empty - are MUTUALLY EXCLUSIVE by construction, so one dataset cannot be seeded inline and from a fixture at the same time; an inline out-of-range account row 'alongside the fixture rows' is not a shape this model has. What this case declares instead is the cross-reference itself as an EMPTY dataset: empty true, recordLength 50, copybook CVACT03Y. That is the model's own shape for a dataset that EXISTS AND HOLDS NO ROW, and it is a positive statement rather than an omission - an omitted dataset is one the case says nothing about, while an empty one asserts that the alternate-index path was opened and had nothing to return. It is also the fail-safe form and the robust one: an empty cross-reference misses for EVERY key under any implementation, keyed or positional, so this case cannot quietly degrade into asserting the NORMAL arm, and it would still reach :423 unchanged if the repository stub were ever made to match on the alternate key. The recordLength of 50 is itself the assertion R-F is about: app/cpy/CVACT03Y.cpy declares XREF-CARD-NUM PIC X(16) + XREF-CUST-ID PIC 9(09) + XREF-ACCT-ID PIC 9(11) + FILLER PIC X(14), which is fifty, while the fixture's rows measure thirty-six with that trailing FILLER absent. This case pins the fifty WITHOUT PRE-PADDING ANYTHING, and normalisations is empty for the one correct reason: no thirty-six-byte cross-reference ROW is seeded, so there is nothing to pad. FieldDiffer remains the sole owner of the 36-to-50 right pad (gate G16); it is simply not invoked here, and that is stated so a reader never reads the empty list as the pad having been skipped. THE ACCOUNT READ SUCCEEDS, WHICH IS WHAT PUTS CONTROL AT :211 IN THE FIRST PLACE. ACCTDAT is seeded from the real fixture - one row, fixtures/acctdata.txt row 21, byte-identical to app/data/ASCII/acctdata.txt at exactly three hundred bytes (gate G16) - and ACTIDINI is '00000000022', the ACCT-ID that row carries, so the keyed read at :345-354 takes its DFHRESP(NORMAL) arm at :357-358 and ACCOUNT-RECORD is genuinely filled. The row is chosen for its independence as well: no sibling case seeds fixture row 21, so the arithmetic below is a fresh instance of the :224 move and the :234 COMPUTE rather than a restatement of case15's. CONFIRMI is 'Y' by deliberate choice: it puts the invocation on the confirmed-payment branch at :174-177, which is the only branch that sets CONF-PAY-YES and therefore the only one from which :210 can open the payment block at all. A blank or absent confirmation reaches the account read but never the cross-reference. The read is issued WITH UPDATE at :351, so its Java counterpart is readForUpdate and not a plain read, and it runs inside the unit of work the service opens; that distinction is preserved rather than tidied away. THE WRITTEN RECORD CARRIES AN UNPOPULATED CARD NUMBER, AND THIS IS A DOCUMENTED READING RATHER THAN A CAPTURED FACT. :225 MOVE XREF-CARD-NUM TO TRAN-CARD-NUM is X(16) into X(16), so neither padded nor truncated - it copies whatever the SENDER holds. The sender is CARD-XREF-RECORD, brought in by COPY CVACT03Y at :80 as a WORKING-STORAGE record area WITH NO VALUE CLAUSE, and the failed read at :410-418 filled nothing, so it still holds its initial content. :218 INITIALIZE TRAN-RECORD is not the answer to this question: it initialises the RECEIVER, and :225 then overwrites the receiver from the untouched sender, so the sixteen spaces INITIALIZE left in TRAN-CARD-NUM are gone before the record is written. The value pinned here is therefore SIXTEEN LOW-VALUES, U+0000 repeated, which is what an unset WORKING-STORAGE area holds and what PaymentState.xrefCardNum reports for a cross-reference record it never received. It is flagged honestly as A DOCUMENTED READING of an under-specified legacy construct and NOT as a captured fact (practice B12): the initial content of a record area with no VALUE clause is not defined by the COBOL standard, LOW-VALUES is the reading this migration takes throughout for exactly this situation - the same reading case12 and case17 take for the unpopulated ACCOUNT-RECORD - and it is recorded as a reading rather than presented as a measurement. Sixteen spaces would be the other defensible answer and it is NOT what is asserted; if the reading is ever revised, this is the field to revise and this sentence is the place that says so. What is not in doubt is that the field is sixteen characters wide and that the record is written: those are the parts this case exists to pin. EVERY OTHER SPAN OF THE 350-BYTE RECORD, IN COPYBOOK ORDER AND WITH ITS SOURCE LINE. The offsets are summed mechanically from app/cpy/CVTRA05Y.cpy and never counted by eye (practice B11): TRAN-ID X(16) + TRAN-TYPE-CD X(02) + TRAN-CAT-CD 9(04) + TRAN-SOURCE X(10) + TRAN-DESC X(100) + TRAN-AMT S9(09)V99 + TRAN-MERCHANT-ID 9(09) + TRAN-MERCHANT-NAME X(50) + TRAN-MERCHANT-CITY X(50) + TRAN-MERCHANT-ZIP X(10) + TRAN-CARD-NUM X(16) + TRAN-ORIG-TS X(26) + TRAN-PROC-TS X(26) + FILLER X(20) = 350 (gate G19). TRAN-ID is '0000000000000100', the computed identifier described below. TRAN-TYPE-CD is '02' from :220. TRAN-CAT-CD is '0002' - :221 MOVE 2 TO TRAN-CAT-CD moves an integer literal into PIC 9(04), which zero-fills on the LEFT. TRAN-SOURCE is 'POS TERM' plus two spaces from :222, an eight-character literal into X(10), which space-fills on the RIGHT. TRAN-DESC is 'BILL PAYMENT - ONLINE' plus seventy-nine spaces from :223. TRAN-MERCHANT-ID is '999999999' from :226. TRAN-MERCHANT-NAME is 'BILL PAYMENT' plus thirty-eight spaces from :227. TRAN-MERCHANT-CITY is 'N/A' plus forty-seven spaces from :228 and TRAN-MERCHANT-ZIP is 'N/A' plus seven from :229 - one literal, two receivers of different widths, and the padding differs accordingly. TRAN-ORIG-TS and TRAN-PROC-TS carry the IDENTICAL twenty-six bytes from the single MOVE with two receivers at :231-232, because this program has no separate processing instant. FILLER X(20) is TWENTY SPACES, emitted rather than omitted (gate G21): a record missing it is 330 bytes, and expectedBytes pins the full 350 precisely so that omission fails on width rather than passing unnoticed. THE COMPUTED IDENTIFIER, AND THE CARRY IT EXERCISES. :212 moves HIGH-VALUES into TRAN-ID, which is how CICS is told to position past the last record, so the backward browse at :213-215 returns the HIGHEST existing identifier. TRANSACT is seeded with one row whose TRAN-ID is '0000000000000099', so :214 takes its DFHRESP(NORMAL) arm at :485-486, :216 moves that X(16) image into WS-TRAN-ID-NUM PIC 9(16) at equal width, and :217 ADD 1 TO WS-TRAN-ID-NUM yields '0000000000000100'. That is chosen over an arbitrary value because it CARRIES ACROSS TWO DIGIT COLUMNS, which case15 - seven to eight - and case16 - an empty master to one - do not. :217 is this program's only non-monetary arithmetic and it has no ON SIZE ERROR clause, so a receiver already at sixteen nines would discard the high-order digit and wrap; that is not this case, and the value here is well inside the picture. :215 PERFORM ENDBR-TRANSACT-FILE is a BARE EXEC CICS ENDBR at :503-505 with NO RESP and NO RESP2 option and therefore no EVALUATE after it, so it can report nothing and is asserted as reporting nothing; that too is preserved as found rather than hardened (practice B5). THE ARITHMETIC - TRUNCATION, NOT ROUNDING, AND STATED EXPLICITLY. The seeded account carries ACCT-CURR-BAL PIC S9(10)V99 as the twelve-byte zoned image '00000000550{', where the trailing '{' is the standard positive sign overpunch for a low-order digit zero: ten integer digits, two fraction digits, value 55.00. :224 MOVE ACCT-CURR-BAL TO TRAN-AMT is a CROSS-WIDTH NUMERIC MOVE into PIC S9(09)V99, and a numeric receiver aligns on its IMPLIED DECIMAL POINT, so the digit that does not fit is the HIGH-ORDER one and not a fraction digit. Here the high-order digit is zero, so the move is lossless and TRAN-AMT is the eleven-byte image '0000000550{'. :234 COMPUTE ACCT-CURR-BAL = ACCT-CURR-BAL - TRAN-AMT then subtracts exactly, and the two operands are equal, so the residual is exactly 0.00 and the receiver holds '00000000000{' - the ONLY field of the three-hundred-byte record that changes (gate G28). Every value is held as BigDecimal at the SCALE ITS PICTURE DECLARES - scale 2 for both spans (gate G23) - and never as double or float, which cannot represent a COBOL PIC S9(n)V99 exactly (rule R4, gate G22). Every store TRUNCATES with RoundingMode.DOWN, because the keyword ROUNDED appears ZERO TIMES across all twenty-eight programs and :234 carries none: HALF_UP, HALF_EVEN, CEILING and FLOOR are all wrong here and none appears (rule R2, gate G24). No COMP-3 exists in ANY of the twenty-eight copybooks - verified zero - so no persisted field needs packed-decimal unpacking, and this program's one COMP-3 item, WS-ABS-TIME PIC S9(15) COMP-3 at :59, never leaves memory. All record images are read and compared as US-ASCII, named explicitly in screenRequest and never left to a platform default (practice B8). THE REWRITTEN ACCOUNT, FIELD BY FIELD. The thirteen spans are summed from app/cpy/CVACT01Y.cpy: ACCT-ID 9(11) + ACCT-ACTIVE-STATUS X(01) + ACCT-CURR-BAL S9(10)V99 + ACCT-CREDIT-LIMIT S9(10)V99 + ACCT-CASH-CREDIT-LIMIT S9(10)V99 + ACCT-OPEN-DATE X(10) + ACCT-EXPIRAION-DATE X(10) + ACCT-REISSUE-DATE X(10) + ACCT-CURR-CYC-CREDIT S9(10)V99 + ACCT-CURR-CYC-DEBIT S9(10)V99 + ACCT-ADDR-ZIP X(10) + ACCT-GROUP-ID X(10) + FILLER X(178) = 300 (gate G19). ACCT-EXPIRAION-DATE is MISSPELLED IN THE COPYBOOK and is misspelled here too (requirement I1): correcting it to ACCT-EXPIRATION-DATE would leave the diff looking for a field the decoder never produces, which is a silent parity break rather than a loud one. FILLER X(178) is one hundred and seventy-eight SPACES and is emitted (gate G21). Everything except ACCT-CURR-BAL is byte-identical to the seeded row, which is what makes 'the payment debited the balance and touched nothing else' an assertion rather than an assumption. Note what the program does NOT do here: unlike CBACT04C's account break, :234-235 does not zero the two cycle amounts, so ACCT-CURR-CYC-CREDIT and ACCT-CURR-CYC-DEBIT keep their seeded '00000000000{' images because that is what they already held, not because anything cleared them. THREE SENDS, AND THE LAST WRITER WINS. The send count is itself behaviour, and on this path it is three where a clean payment sends twice and a clean rejection sends once. FIRST, :428 PERFORM SEND-BILLPAY-SCREEN from the NOTFND arm, carrying 'Account ID NOT found...' - twenty-three characters - left-justified in ERRMSGO's seventy-eight. This send is the ONLY one in this directory that carries a POPULATED CURBALO, and the reason is a sequencing detail worth being exact about: :193-194 sit inside the :169 block and run BEFORE :208, so by the time the cross-reference fails CURBALI already holds the edited balance '+0000000055.00' - one sign, ten integer digits, the decimal point and two fraction digits, the fourteen positions WS-CURR-BAL PIC +9999999999.99 declares. ACTIDINO is the identifier exactly as received and CONFIRMO is the flag exactly as received, both unchanged, because nothing on this path has cleared them yet. SECOND, :233 WRITE-TRANSACT-FILE reports DFHRESP(NORMAL), so :524 PERFORM INITIALIZE-ALL-FIELDS blanks ACTIDINI, CURBALI, CONFIRMI and WS-MESSAGE and re-positions the cursor at :562, :525 moves SPACES to WS-MESSAGE again, :526 moves DFHGREEN to ERRMSGC, :527-531 STRINGs the confirmation, and :532 sends a SECOND time - so ACTIDINO is eleven spaces, CURBALO fourteen, CONFIRMO one, and ERRMSGO carries 'Payment successful.  Your Transaction ID is 0000000000000100.' with TWO SPACES after 'successful.' because :527 ends its literal with one and :528 begins its literal with another. TRAN-ID contains no space, so DELIMITED BY SPACE at :529 emits all sixteen digits rather than stopping short. THIRD, :235 UPDATE-ACCTDAT-FILE reports DFHRESP(NORMAL) and its arm at :387-388 emits nothing at all, and then :242 PERFORM SEND-BILLPAY-SCREEN - unconditional within the :208 block - sends a THIRD time, still carrying the success string and still green. SO THE FINAL SCREEN THE OPERATOR SEES REPORTS SUCCESS EVEN THOUGH THE CROSS-REFERENCE LOOKUP FAILED. The last assignment to WS-MESSAGE before the last send wins, and the rejection survives only in the first of the three transmissions - which is exactly why the sends are modelled as an ORDERED LIST and not as one final state. A model carrying a single screen would have to discard two of these and could never assert the quirk at all. ATTRIBUTES, AND WHAT IS NOT THERE. DFHGREEN on ERRMSGC is the ONLY attribute assignment in all 572 lines - :526, on the write's success arm - so it appears on the second and third sends and is absent from the first (gate G38). DFHBMSCA is IBM-supplied and is ABSENT FROM THIS REPOSITORY (risk R-D), so the constant is reproduced in common.BmsAttributes from IBM CICS documentation; it is highlight METADATA and not a payload field, which is why it sits in attributes rather than in fields. There is NO CSSETATY error highlight and NO DFHRED on this path or on any other in this program: COBIL00C copies neither CSSETATY nor CSSTRPFY, and the literal DFHRED does not appear in its 572 lines, so the MOVE -1 into ACTIDINL at :427 is the only emphasis the rejecting arm applies and the mapset's own COLOR=RED on the ERRMSG field stands unaltered. cursorField is ACTIDINL: :427 places it there and :562 places it there again, so the rejection and the success agree. The header items POPULATE-HEADER-INFO writes at :319-338 - TRNNAMEO, PGMNAMEO, TITLE01O, TITLE02O, CURDATEO and CURTIMEO - are the controller's projection and a SERVICE case does not claim them; nextProgram, nextMapset and nextMap are absent for the same reason, since the two XCTL sites at :281-284 are performed only from MAIN-PARA and naming a target from a service invocation would claim a transfer that did not happen. termination is RETURN_TRANSID because :146-149 EXEC CICS RETURN TRANSID(WS-TRANID) COMMAREA(CARDDEMO-COMMAREA) is where this path ends: the pseudo-conversation continues and the communication area travels in the payload, which is where statelessness is asserted rather than asserted about - the sixteen navigation spans are comparable precisely because no server-side session holds them (rule R6, gate G37). PROVENANCE OF 'Account ID NOT found...' - THREE CALL SITES, ONE TEXT, AND THIS FILE OWNS THE MIDDLE ONE. That sentence is moved into WS-MESSAGE from three distinct places: :361 in READ-ACCTDAT-FILE, :392 in UPDATE-ACCTDAT-FILE and :425 in READ-CXACAIX-FILE. The text is byte-identical at all three, so the message alone cannot tell them apart and only the surrounding side effects can. Note in passing that :425 uses the GENERIC ACCOUNT sentence rather than a cross-reference-specific one even though the very next arm at :432-433 does name the file - a deliberate source quirk, preserved exactly and not improved upon. THIS FILE ENCODES THE :425 SITE, and it is distinguishable from its two siblings by its dataset outcome and by nothing else. The :361 site fires BEFORE the :208 guard, so nothing is written anywhere and both channels report zero rows; sibling case17 documents that shape and that arm still awaits a sibling of its own. The :425 site - here - fires INSIDE the unguarded block, so ONE TRANSACTION ROW IS WRITTEN AND ONE ACCOUNT ROW IS REWRITTEN after the rejection and the final screen reports success. The :392 site is the rewrite's OWN failure at the very end of the sequence, so the transaction has already landed and only the account rewrite is refused - one row on the transaction channel and none on the account channel. Same sentence, three completely different outcomes, and all three are stated here so that no future reader mistakes one for another on the strength of the message. DETERMINISM. The clock is pinned to 2022-07-19T23:12:32 - the same instant as every other case in this directory, and the instant in the source's own version footer at :571 - and it is INJECTED into the service, never read from the host. :251-253 EXEC CICS ASKTIME and :255-261 EXEC CICS FORMATTIME YYYYMMDD DATESEP('-') TIME TIMESEP(':') produce ten characters and eight; :263 INITIALIZE WS-TIMESTAMP zeroes the group's numeric items and LEAVES ITS SEPARATOR FILLERS AT THEIR DECLARED VALUES, so byte 11 stays a space and BYTE 20 STAYS A FULL STOP; :264 moves the date into bytes 1-10, :265 the time into bytes 12-19, and :266 MOVE ZEROS TO WS-TIMESTAMP-TM-MS6 fills bytes 21-26 with six zeros. The result is '2022-07-19 23:12:32.000000', twenty-six bytes, written IDENTICALLY into TRAN-ORIG-TS and TRAN-PROC-TS and taken entirely from the fixed injected value - never from a captured now (practice B7). Nothing else here is environment-dependent: there is no DISPLAY to render, the seeded rows are fixture bytes and inline bytes, and the identifier arithmetic is integer. NOT APPLICABLE ON THIS PATH - DO NOT INVENT. There is no CALL 'CEE3ABD' anywhere in COBIL00C and the identifier RETURN-CODE does not appear in its 572 lines either, so expectedReturnCode is 0 as a POSITIVE STATEMENT about a path that both fails and succeeds and not as a defaulted value - the member is boxed in the model precisely so that an omitted key cannot bind to zero by accident (gate G35 does not apply). G32 does not apply because the program contains no GO TO. G39 does not apply because it paginates nothing. G40 does not apply because no XCTL is reached from the service. G44 holds trivially: no DDL, no entity annotation and no migration script exists anywhere in the module. PROVENANCE - STATICALLY DERIVED, NOT CAPTURED. Every expected value in this file was derived by reading app/cbl/COBIL00C.cbl:208-244, :249-267, :289-301, :343-372, :379-403, :408-436, :441-467, :472-496, :501-505 and :510-547 against app/cpy/CVTRA05Y.cpy, app/cpy/CVACT01Y.cpy, app/cpy/CVACT03Y.cpy, app/cpy-bms/COBIL00.CPY, app/csd/CARDDEMO.CSD:37-49 and :63-72, and the real fixture rows of app/data/ASCII/acctdata.txt and app/data/ASCII/cardxref.txt - and NONE OF IT WAS CAPTURED FROM A LIVE COBOL EXECUTION. Executing the legacy programs is empirically impossible in this environment: no z/OS runtime and no CICS emulator is available, the available compiler reports its indexed file handler as disabled and provides no Language Environment CEE services, and the IBM-supplied copybooks DFHAID, DFHBMSCA and DFHATTR that these programs include are absent from the repository - eight independently verified blockers in total. That substitution is recorded as risk R-A and it changes THE PROVENANCE OF THE EXPECTED VALUES AND NOTHING ELSE: the twenty cases per program, the field-by-field diffing and the diff-count-must-be-zero-per-module gate all stand unchanged. Read this expectation as a careful reading of the source, which is what it is, and not as a recording of a run. Two of its statements are interpretations rather than transcriptions and both are flagged where they occur: the sixteen LOW-VALUES in TRAN-CARD-NUM, and the finding that the WHEN OTHER arm of this same call site cannot be induced from seeded data at all and needs a forced outcome. GATES: G15, G16 with the real unpadded acctdata.txt and cardxref.txt both left untouched, G18, G19 at 350 and 300 with the cross-reference's 50 declared, G21 for both FILLER spans, G22, G23, G24, G28, G30, G37, G38 with the DFHGREEN override and no CSSETATY highlight, G44, G45 as the PRIMARY gate for the alternate-index finder over the CCXREF base, G47 as the PRIMARY gate for the DFHRESP(NOTFND) arm of the READ-CXACAIX-FILE call site, and G51. Rules R1, R2, R4, R5, R6 and R7 and requirement I1 all govern this file; review_rules returns exactly one line, 'No user rules provided.', so no user rule does - and per the plan's own reading that is not licence to lower the bar, so practices B1, B3, B5, B7, B8, B11 and B12 are held in its place.",
+  "unitKind": "SERVICE",
+  "inputs": {
+    "ACCTDAT": {
+      "fixture": "acctdata.txt",
+      "fromRow": 21,
+      "rowCount": 1
+    },
+    "CXACAIX": {
+      "empty": true,
+      "recordLength": 50,
+      "copybook": "CVACT03Y"
+    },
+    "TRANSACT": {
+      "rows": [
+        "0000000000000099  0000                                                                                                              0000000000{000000000                                                                                                                                                                                                      "
+      ]
+    }
+  },
+  "jobParameters": {},
+  "screenRequest": {
+    "eibcalen": 218,
+    "aid": "DFHENTER",
+    "pinnedClock": "2022-07-19T23:12:32",
+    "charset": "US-ASCII",
+    "commarea": {
+      "CDEMO-PGM-CONTEXT": "1"
+    },
+    "mapFields": {
+      "ACTIDINI": "00000000022",
+      "CONFIRMI": "Y"
+    },
+    "forcedOutcomes": {}
+  },
+  "expectedResponse": {
+    "navigation": {
+      "CDEMO-FROM-TRANID": "    ",
+      "CDEMO-FROM-PROGRAM": "        ",
+      "CDEMO-TO-TRANID": "    ",
+      "CDEMO-TO-PROGRAM": "        ",
+      "CDEMO-USER-ID": "        ",
+      "CDEMO-USER-TYPE": " ",
+      "CDEMO-PGM-CONTEXT": "1",
+      "CDEMO-CUST-ID": "000000000",
+      "CDEMO-CUST-FNAME": "                         ",
+      "CDEMO-CUST-MNAME": "                         ",
+      "CDEMO-CUST-LNAME": "                         ",
+      "CDEMO-ACCT-ID": "00000000000",
+      "CDEMO-ACCT-STATUS": " ",
+      "CDEMO-CARD-NUM": "0000000000000000",
+      "CDEMO-LAST-MAP": "       ",
+      "CDEMO-LAST-MAPSET": "       "
+    },
+    "sends": [
+      {
+        "fields": {
+          "ACTIDINO": "00000000022",
+          "CURBALO": "+0000000055.00",
+          "CONFIRMO": "Y",
+          "ERRMSGO": "Account ID NOT found...                                                       "
+        },
+        "attributes": {}
+      },
+      {
+        "fields": {
+          "ACTIDINO": "           ",
+          "CURBALO": "              ",
+          "CONFIRMO": " ",
+          "ERRMSGO": "Payment successful.  Your Transaction ID is 0000000000000100.                 "
+        },
+        "attributes": {
+          "ERRMSGC": "DFHGREEN"
+        }
+      },
+      {
+        "fields": {
+          "ACTIDINO": "           ",
+          "CURBALO": "              ",
+          "CONFIRMO": " ",
+          "ERRMSGO": "Payment successful.  Your Transaction ID is 0000000000000100.                 "
+        },
+        "attributes": {
+          "ERRMSGC": "DFHGREEN"
+        }
+      }
+    ],
+    "cursorField": "ACTIDINL",
+    "termination": "RETURN_TRANSID"
+  },
+  "expectedWrites": [
+    {
+      "dataset": "TRANSACT",
+      "rowIndex": 0,
+      "fields": {
+        "TRAN-ID": "0000000000000100",
+        "TRAN-TYPE-CD": "02",
+        "TRAN-CAT-CD": "0002",
+        "TRAN-SOURCE": "POS TERM  ",
+        "TRAN-DESC": "BILL PAYMENT - ONLINE                                                                               ",
+        "TRAN-AMT": "0000000550{",
+        "TRAN-MERCHANT-ID": "999999999",
+        "TRAN-MERCHANT-NAME": "BILL PAYMENT                                      ",
+        "TRAN-MERCHANT-CITY": "N/A                                               ",
+        "TRAN-MERCHANT-ZIP": "N/A       ",
+        "TRAN-CARD-NUM": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+        "TRAN-ORIG-TS": "2022-07-19 23:12:32.000000",
+        "TRAN-PROC-TS": "2022-07-19 23:12:32.000000",
+        "FILLER": "                    "
+      },
+      "expectedBytes": "0000000000000100020002POS TERM  BILL PAYMENT - ONLINE                                                                               0000000550{999999999BILL PAYMENT                                      N/A                                               N/A       \u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u00002022-07-19 23:12:32.0000002022-07-19 23:12:32.000000                    "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 0,
+      "fields": {
+        "ACCT-ID": "00000000022",
+        "ACCT-ACTIVE-STATUS": "Y",
+        "ACCT-CURR-BAL": "00000000000{",
+        "ACCT-CREDIT-LIMIT": "00000085990{",
+        "ACCT-CASH-CREDIT-LIMIT": "00000047120{",
+        "ACCT-OPEN-DATE": "2016-11-21",
+        "ACCT-EXPIRAION-DATE": "2025-12-28",
+        "ACCT-REISSUE-DATE": "2025-12-28",
+        "ACCT-CURR-CYC-CREDIT": "00000000000{",
+        "ACCT-CURR-CYC-DEBIT": "00000000000{",
+        "ACCT-ADDR-ZIP": "A000000000",
+        "ACCT-GROUP-ID": "          ",
+        "FILLER": "                                                                                                                                                                                  "
+      },
+      "expectedBytes": "00000000022Y00000000000{00000085990{00000047120{2016-11-212025-12-282025-12-2800000000000{00000000000{A000000000                                                                                                                                                                                            "
+    }
+  ],
+  "expectedFinalState": [
+    {
+      "dataset": "TRANSACT",
+      "rowIndex": 0,
+      "fields": {
+        "TRAN-ID": "0000000000000099",
+        "TRAN-TYPE-CD": "  ",
+        "TRAN-CAT-CD": "0000",
+        "TRAN-SOURCE": "          ",
+        "TRAN-DESC": "                                                                                                    ",
+        "TRAN-AMT": "0000000000{",
+        "TRAN-MERCHANT-ID": "000000000",
+        "TRAN-MERCHANT-NAME": "                                                  ",
+        "TRAN-MERCHANT-CITY": "                                                  ",
+        "TRAN-MERCHANT-ZIP": "          ",
+        "TRAN-CARD-NUM": "                ",
+        "TRAN-ORIG-TS": "                          ",
+        "TRAN-PROC-TS": "                          ",
+        "FILLER": "                    "
+      },
+      "expectedBytes": "0000000000000099  0000                                                                                                              0000000000{000000000                                                                                                                                                                                                      "
+    },
+    {
+      "dataset": "TRANSACT",
+      "rowIndex": 1,
+      "fields": {
+        "TRAN-ID": "0000000000000100",
+        "TRAN-TYPE-CD": "02",
+        "TRAN-CAT-CD": "0002",
+        "TRAN-SOURCE": "POS TERM  ",
+        "TRAN-DESC": "BILL PAYMENT - ONLINE                                                                               ",
+        "TRAN-AMT": "0000000550{",
+        "TRAN-MERCHANT-ID": "999999999",
+        "TRAN-MERCHANT-NAME": "BILL PAYMENT                                      ",
+        "TRAN-MERCHANT-CITY": "N/A                                               ",
+        "TRAN-MERCHANT-ZIP": "N/A       ",
+        "TRAN-CARD-NUM": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+        "TRAN-ORIG-TS": "2022-07-19 23:12:32.000000",
+        "TRAN-PROC-TS": "2022-07-19 23:12:32.000000",
+        "FILLER": "                    "
+      },
+      "expectedBytes": "0000000000000100020002POS TERM  BILL PAYMENT - ONLINE                                                                               0000000550{999999999BILL PAYMENT                                      N/A                                               N/A       \u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u00002022-07-19 23:12:32.0000002022-07-19 23:12:32.000000                    "
+    },
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 0,
+      "fields": {
+        "ACCT-ID": "00000000022",
+        "ACCT-ACTIVE-STATUS": "Y",
+        "ACCT-CURR-BAL": "00000000000{",
+        "ACCT-CREDIT-LIMIT": "00000085990{",
+        "ACCT-CASH-CREDIT-LIMIT": "00000047120{",
+        "ACCT-OPEN-DATE": "2016-11-21",
+        "ACCT-EXPIRAION-DATE": "2025-12-28",
+        "ACCT-REISSUE-DATE": "2025-12-28",
+        "ACCT-CURR-CYC-CREDIT": "00000000000{",
+        "ACCT-CURR-CYC-DEBIT": "00000000000{",
+        "ACCT-ADDR-ZIP": "A000000000",
+        "ACCT-GROUP-ID": "          ",
+        "FILLER": "                                                                                                                                                                                  "
+      },
+      "expectedBytes": "00000000022Y00000000000{00000085990{00000047120{2016-11-212025-12-282025-12-2800000000000{00000000000{A000000000                                                                                                                                                                                            "
+    }
+  ],
+  "expectedReturnCode": 0,
+  "expectedMessages": [],
+  "normalisations": [],
+  "expectedDatasets": [
+    {
+      "dataset": "TRANSACT",
+      "channel": "WRITES",
+      "rowCount": 1,
+      "recordLength": 350
+    },
+    {
+      "dataset": "TRANSACT",
+      "channel": "FINAL_STATE",
+      "rowCount": 2,
+      "recordLength": 350
+    },
+    {
+      "dataset": "ACCTDAT",
+      "channel": "WRITES",
+      "rowCount": 1,
+      "recordLength": 300
+    },
+    {
+      "dataset": "ACCTDAT",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 300
+    }
+  ]
+}

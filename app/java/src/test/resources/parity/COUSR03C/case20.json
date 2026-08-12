@@ -1,0 +1,268 @@
+{
+  "program": "COUSR03C",
+  "caseId": "case20",
+  "description": "The WHEN OTHER arm of EVALUATE EIBAID at app/cbl/COUSR03C.cbl:126-129, reached on RE-ENTRY by CLEAR - and this is the LAST of the twenty cases, so it is also where the arm ordering of the whole EVALUATE is pinned. :108-130 declares six arms in source order - DFHENTER at :109, DFHPF3 at :111, DFHPF4 at :119, DFHPF5 at :121, DFHPF12 at :123, WHEN OTHER at :126 - a COBOL EVALUATE takes the FIRST matching arm, and WHEN OTHER is LAST. DFHCLEAR matches none of the five keyed arms, so the default arm runs and every arm above it is proved not to have run: nothing is looked up (DFHENTER), no target is resolved and no transfer happens (DFHPF3, DFHPF12), the screen is NOT emptied (DFHPF4) and no delete is attempted (DFHPF5). WHY CLEAR: the key is genuinely recognised - app/cpy/CSSTRPFY.cpy tests DFHCLEAR, so a resolver reports it - and COUSR03C simply gives it no arm. Many CICS programs do give CLEAR its own arm; this one does not, and that OMISSION is the behaviour under test. Adding a CLEAR arm 'for completeness', or moving the default above the keyed arms, changes observable behaviour and must fail here. case19 receives the IDENTICAL screen - USER0001 / LAWRENCE / THOMAS / U - under DFHPF4, so the pair isolates the arm and nothing else: there, INITIALIZE-ALL-FIELDS blanks the four items and moves -1 to USRIDINL; here, the four items are echoed back untouched and NO cursor is repositioned, because :127-129 is the only arm of this EVALUATE that moves -1 to no length item at all. The arm is three statements: MOVE 'Y' TO WS-ERR-FLG at :127, MOVE CCDA-MSG-INVALID-KEY TO WS-MESSAGE at :128, and ONE PERFORM SEND-USRDEL-SCREEN at :129. THE WIDTH CHAIN, counted rather than estimated: app/cpy/CSMSG01Y.cpy:20-21 declares CCDA-MSG-INVALID-KEY PIC X(50) VALUE 'Invalid key pressed. Please see below...', whose significant text is FORTY characters - capital I, capital P, exactly three dots, no space before them - so the item is that text plus ten spaces. :128 moves those fifty bytes into WS-MESSAGE PIC X(80) [:38], which pads on the right to forty text plus forty spaces; SEND-USRDEL-SCREEN then moves WS-MESSAGE into ERRMSGO PIC X(78) at :217, an 80-to-78 truncation on the RIGHT that removes two trailing spaces and leaves forty text plus thirty-eight. Both images are pinned on their own channels at their own declared widths, which is what makes the direction of that truncation assertable: a move that truncated on the left would lose the first two characters and the 78-byte expectation would fail while the 80-byte one still passed. SEND-USRDEL-SCREEN at :213-225 performs POPULATE-HEADER-INFO, moves the message into ERRMSGO and sends MAP('COUSR3A') MAPSET('COUSR03') FROM(COUSR3AO) ERASE CURSOR - so the single send carries the six header items :243-262 paints under the pinned clock and the five variable items, which are the received values because COUSR3AO REDEFINES COUSR3AI. ERRMSGC is NOT written on this arm: COUSR03C moves that byte at exactly two places, DFHNEUTR at :285 and DFHGREEN at :317, and neither is on this path, so the colour is the unwritten default and the message line keeps the COLOR=RED of ERRMSG DFHMDF ATTRB=(ASKIP,BRT,FSET) at app/bms/COUSR03.bms:140-143. No field highlight is asserted, and that is a source fact rather than an omission: COUSR03C's eight COPY statements at :49-68 are COCOM01Y, COUSR03, COTTL01Y, CSDAT01Y, CSMSG01Y, CSUSR01Y, DFHAID and DFHBMSCA - it copies neither CSSETATY nor DFHATTR - so ERRMSGC is the only attribute item it can move, and painting a DFHRED-plus-asterisk highlight onto a field to match its sibling screens would be an invention. RECEIVE-USRDEL-SCREEN at :230-238 captures RESP and RESP2 and NEVER evaluates them; that is preserved rather than tidied into a check the source does not make. USRSEC is seeded and then NOT touched: the arm issues no read, no read-for-update, no write, no rewrite and no delete, so no repository call site exists on this path and no file-status or RESP outcome is forced - fabricating one would assert an operation that never happens. That 'nothing happened' is stated positively: expectedWrites is empty and all TEN rows are pinned unchanged at zero-based indices 0-9, each as its six CSUSR01Y spans and as its full 80-byte image, so a stray write would be a difference rather than a silence. Execution ends at EXEC CICS RETURN TRANSID('CU03') COMMAREA at :134-137 - no XCTL, so the response names this program, its own mapset and its own map, and CDEMO-PGM-CONTEXT stays 1 because nothing on this arm writes the commarea. Every one of the twenty-two commarea items is therefore pinned identically on the way in and on the way out, and all conversation state - the area, the attention identifier and the screen values - travels in the payload with no server-side session anywhere. PROVENANCE: every value here is STATICALLY DERIVED by structured reading of the sources named below and is NOT captured from, recorded against or replayed from any execution of the legacy COBOL - running it is empirically impossible in this environment (no z/OS or CICS runtime, the available compiler's indexed-file handler is disabled, no Language Environment CEE* services, and DFHAID, DFHBMSCA and DFHATTR are absent from the repository), which is the documented eight-blocker deviation escalated as risk R-A; it changes the provenance of the expected values and nothing else. Derived from app/cbl/COUSR03C.cbl:126-129 and :213-225 with the arm order at :108-130 and the RETURN at :134-137, the literal from app/cpy/CSMSG01Y.cpy:20-21, the eleven xxxI items and their widths from app/cpy-bms/COUSR03.CPY (there is no password item, which is the one field COUSR02 has and this screen does not), the message line's declared attributes from app/bms/COUSR03.bms:140-143, the twenty-two commarea items from app/cpy/COCOM01Y.cpy:19-44 with app/cbl/COUSR03C.cbl:50-58, the two headings from app/cpy/COTTL01Y.cpy:18-22, the mm/dd/yy and hh:mm:ss assembly from app/cpy/CSDAT01Y.cpy with the clock pinned to the version footer at app/cbl/COUSR03C.cbl:358, app/cpy/CSUSR01Y.cpy:17-23 (8+20+20+8+1 = 57, plus SEC-USR-FILLER's 23 = 80), and the ten in-stream rows of app/jcl/DUSRSECJ.jcl:35-44, whose 57-character width against the LRECL=80 RECFM=FB of :48 and the RECORDSIZE(80,80) KEYS(8,0) of :65-66 is exactly what the declared normalisation supplies. The literal PASSWORD in SEC-USR-PWD is legacy sample data carried byte for byte because the copybook places it inside the eighty bytes; plaintext credentials are an inherited property of the legacy design rather than a choice made here, this screen has no password field and never reads or paints the span, and no hashing, encoding or token is introduced. The dataset is addressed only by its binding key USRSEC, never by a dataset name. This case closes parity/COUSR03C at twenty: it reuses case01's ten-row seed block, its pinned 2022-07-19T23:12:35 clock, its six record field names and its 57-to-80 normalisation unchanged.",
+  "unitKind": "CONTROLLER_POJO",
+  "inputs": {
+    "USRSEC": {
+      "rows": [
+        "ADMIN001MARGARET            GOLD                PASSWORDA",
+        "ADMIN002RUSSELL             RUSSELL             PASSWORDA",
+        "ADMIN003RAYMOND             WHITMORE            PASSWORDA",
+        "ADMIN004EMMANUEL            CASGRAIN            PASSWORDA",
+        "ADMIN005GRANVILLE           LACHAPELLE          PASSWORDA",
+        "USER0001LAWRENCE            THOMAS              PASSWORDU",
+        "USER0002AJITH               KUMAR               PASSWORDU",
+        "USER0003LAURITZ             ALME                PASSWORDU",
+        "USER0004AVERARDO            MAZZI               PASSWORDU",
+        "USER0005LEE                 TING                PASSWORDU"
+      ]
+    }
+  },
+  "jobParameters": {},
+  "screenRequest": {
+    "eibcalen": 194,
+    "aid": "DFHCLEAR",
+    "pinnedClock": "2022-07-19T23:12:35",
+    "charset": "US-ASCII",
+    "commarea": {
+      "CDEMO-FROM-TRANID": "CU00",
+      "CDEMO-FROM-PROGRAM": "COUSR00C",
+      "CDEMO-TO-TRANID": "CU03",
+      "CDEMO-TO-PROGRAM": "COUSR03C",
+      "CDEMO-USER-ID": "ADMIN001",
+      "CDEMO-USER-TYPE": "A",
+      "CDEMO-PGM-CONTEXT": "1",
+      "CDEMO-CUST-ID": "000000000",
+      "CDEMO-CUST-FNAME": "                         ",
+      "CDEMO-CUST-MNAME": "                         ",
+      "CDEMO-CUST-LNAME": "                         ",
+      "CDEMO-ACCT-ID": "00000000000",
+      "CDEMO-ACCT-STATUS": " ",
+      "CDEMO-CARD-NUM": "0000000000000000",
+      "CDEMO-LAST-MAP": "COUSR3A",
+      "CDEMO-LAST-MAPSET": "COUSR03",
+      "CDEMO-CU03-USRID-FIRST": "ADMIN001",
+      "CDEMO-CU03-USRID-LAST": "USER0005",
+      "CDEMO-CU03-PAGE-NUM": "00000001",
+      "CDEMO-CU03-NEXT-PAGE-FLG": "N",
+      "CDEMO-CU03-USR-SEL-FLG": " ",
+      "CDEMO-CU03-USR-SELECTED": "        "
+    },
+    "mapFields": {
+      "USRIDINI": "USER0001",
+      "FNAMEI": "LAWRENCE            ",
+      "LNAMEI": "THOMAS              ",
+      "USRTYPEI": "U"
+    },
+    "forcedOutcomes": {}
+  },
+  "expectedResponse": {
+    "nextProgram": "COUSR03C",
+    "nextMapset": "COUSR03",
+    "nextMap": "COUSR3A",
+    "navigation": {
+      "CDEMO-FROM-TRANID": "CU00",
+      "CDEMO-FROM-PROGRAM": "COUSR00C",
+      "CDEMO-TO-TRANID": "CU03",
+      "CDEMO-TO-PROGRAM": "COUSR03C",
+      "CDEMO-USER-ID": "ADMIN001",
+      "CDEMO-USER-TYPE": "A",
+      "CDEMO-PGM-CONTEXT": "1",
+      "CDEMO-CUST-ID": "000000000",
+      "CDEMO-CUST-FNAME": "                         ",
+      "CDEMO-CUST-MNAME": "                         ",
+      "CDEMO-CUST-LNAME": "                         ",
+      "CDEMO-ACCT-ID": "00000000000",
+      "CDEMO-ACCT-STATUS": " ",
+      "CDEMO-CARD-NUM": "0000000000000000",
+      "CDEMO-LAST-MAP": "COUSR3A",
+      "CDEMO-LAST-MAPSET": "COUSR03",
+      "CDEMO-CU03-USRID-FIRST": "ADMIN001",
+      "CDEMO-CU03-USRID-LAST": "USER0005",
+      "CDEMO-CU03-PAGE-NUM": "00000001",
+      "CDEMO-CU03-NEXT-PAGE-FLG": "N",
+      "CDEMO-CU03-USR-SEL-FLG": " ",
+      "CDEMO-CU03-USR-SELECTED": "        "
+    },
+    "sends": [
+      {
+        "fields": {
+          "TRNNAMEO": "CU03",
+          "TITLE01O": "      AWS Mainframe Modernization       ",
+          "CURDATEO": "07/19/22",
+          "PGMNAMEO": "COUSR03C",
+          "TITLE02O": "              CardDemo                  ",
+          "CURTIMEO": "23:12:35",
+          "USRIDINO": "USER0001",
+          "FNAMEO": "LAWRENCE            ",
+          "LNAMEO": "THOMAS              ",
+          "USRTYPEO": "U",
+          "ERRMSGO": "Invalid key pressed. Please see below...                                      "
+        },
+        "attributes": {
+          "ERRMSGC": "DFHDFCOL"
+        }
+      }
+    ],
+    "termination": "RETURN_TRANSID"
+  },
+  "expectedWrites": [],
+  "expectedFinalState": [
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 0,
+      "fields": {
+        "SEC-USR-ID": "ADMIN001",
+        "SEC-USR-FNAME": "MARGARET            ",
+        "SEC-USR-LNAME": "GOLD                ",
+        "SEC-USR-PWD": "PASSWORD",
+        "SEC-USR-TYPE": "A",
+        "SEC-USR-FILLER": "                       "
+      },
+      "expectedBytes": "ADMIN001MARGARET            GOLD                PASSWORDA                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 1,
+      "fields": {
+        "SEC-USR-ID": "ADMIN002",
+        "SEC-USR-FNAME": "RUSSELL             ",
+        "SEC-USR-LNAME": "RUSSELL             ",
+        "SEC-USR-PWD": "PASSWORD",
+        "SEC-USR-TYPE": "A",
+        "SEC-USR-FILLER": "                       "
+      },
+      "expectedBytes": "ADMIN002RUSSELL             RUSSELL             PASSWORDA                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 2,
+      "fields": {
+        "SEC-USR-ID": "ADMIN003",
+        "SEC-USR-FNAME": "RAYMOND             ",
+        "SEC-USR-LNAME": "WHITMORE            ",
+        "SEC-USR-PWD": "PASSWORD",
+        "SEC-USR-TYPE": "A",
+        "SEC-USR-FILLER": "                       "
+      },
+      "expectedBytes": "ADMIN003RAYMOND             WHITMORE            PASSWORDA                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 3,
+      "fields": {
+        "SEC-USR-ID": "ADMIN004",
+        "SEC-USR-FNAME": "EMMANUEL            ",
+        "SEC-USR-LNAME": "CASGRAIN            ",
+        "SEC-USR-PWD": "PASSWORD",
+        "SEC-USR-TYPE": "A",
+        "SEC-USR-FILLER": "                       "
+      },
+      "expectedBytes": "ADMIN004EMMANUEL            CASGRAIN            PASSWORDA                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 4,
+      "fields": {
+        "SEC-USR-ID": "ADMIN005",
+        "SEC-USR-FNAME": "GRANVILLE           ",
+        "SEC-USR-LNAME": "LACHAPELLE          ",
+        "SEC-USR-PWD": "PASSWORD",
+        "SEC-USR-TYPE": "A",
+        "SEC-USR-FILLER": "                       "
+      },
+      "expectedBytes": "ADMIN005GRANVILLE           LACHAPELLE          PASSWORDA                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 5,
+      "fields": {
+        "SEC-USR-ID": "USER0001",
+        "SEC-USR-FNAME": "LAWRENCE            ",
+        "SEC-USR-LNAME": "THOMAS              ",
+        "SEC-USR-PWD": "PASSWORD",
+        "SEC-USR-TYPE": "U",
+        "SEC-USR-FILLER": "                       "
+      },
+      "expectedBytes": "USER0001LAWRENCE            THOMAS              PASSWORDU                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 6,
+      "fields": {
+        "SEC-USR-ID": "USER0002",
+        "SEC-USR-FNAME": "AJITH               ",
+        "SEC-USR-LNAME": "KUMAR               ",
+        "SEC-USR-PWD": "PASSWORD",
+        "SEC-USR-TYPE": "U",
+        "SEC-USR-FILLER": "                       "
+      },
+      "expectedBytes": "USER0002AJITH               KUMAR               PASSWORDU                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 7,
+      "fields": {
+        "SEC-USR-ID": "USER0003",
+        "SEC-USR-FNAME": "LAURITZ             ",
+        "SEC-USR-LNAME": "ALME                ",
+        "SEC-USR-PWD": "PASSWORD",
+        "SEC-USR-TYPE": "U",
+        "SEC-USR-FILLER": "                       "
+      },
+      "expectedBytes": "USER0003LAURITZ             ALME                PASSWORDU                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 8,
+      "fields": {
+        "SEC-USR-ID": "USER0004",
+        "SEC-USR-FNAME": "AVERARDO            ",
+        "SEC-USR-LNAME": "MAZZI               ",
+        "SEC-USR-PWD": "PASSWORD",
+        "SEC-USR-TYPE": "U",
+        "SEC-USR-FILLER": "                       "
+      },
+      "expectedBytes": "USER0004AVERARDO            MAZZI               PASSWORDU                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 9,
+      "fields": {
+        "SEC-USR-ID": "USER0005",
+        "SEC-USR-FNAME": "LEE                 ",
+        "SEC-USR-LNAME": "TING                ",
+        "SEC-USR-PWD": "PASSWORD",
+        "SEC-USR-TYPE": "U",
+        "SEC-USR-FILLER": "                       "
+      },
+      "expectedBytes": "USER0005LEE                 TING                PASSWORDU                       "
+    }
+  ],
+  "expectedReturnCode": 0,
+  "expectedMessages": [
+    {
+      "channel": "WS_MESSAGE_80",
+      "text": "Invalid key pressed. Please see below...                                        "
+    },
+    {
+      "channel": "SCREEN_ERRMSG_78",
+      "text": "Invalid key pressed. Please see below...                                      "
+    }
+  ],
+  "normalisations": [
+    {
+      "dataset": "USRSEC",
+      "kind": "USRSEC_FILLER_PAD_57_TO_80"
+    }
+  ],
+  "expectedDatasets": [
+    {
+      "dataset": "USRSEC",
+      "channel": "FINAL_STATE",
+      "rowCount": 10,
+      "recordLength": 80
+    }
+  ]
+}
