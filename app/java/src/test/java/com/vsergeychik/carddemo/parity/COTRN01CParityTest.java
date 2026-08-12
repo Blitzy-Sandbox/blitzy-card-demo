@@ -400,6 +400,11 @@ final class COTRN01CParityTest {
      * seeded, exactly as the refusal above prescribes. A case forcing a duplicate against data that does
      * not carry the key is rejected rather than served a fabricated record.
      *
+     * <p>{@code OTHER} is mapped through {@link #forcedUnexpectedCondition(ParityCase.ForcedOutcome)}
+     * rather than inline, because it is the one arm whose {@code RESP} the program puts on the console:
+     * {@code :290} displays {@code WS-RESP-CD} and {@code WS-REAS-CD} before anything else happens, so
+     * the pair the repository reports is observable output and has to be the pair the case declares.
+     *
      * @param forced     what the case declared
      * @param key        the key the program moved into {@code TRAN-ID}
      * @param seededRows the rows the case seeded, each a full 350-byte image
@@ -411,7 +416,7 @@ final class COTRN01CParityTest {
         return switch (forced.outcome()) {
             case NOT_FOUND -> ReadResult.notFound(TransactionRepository.INPUT_DD_NAME);
             case END_OF_FILE -> ReadResult.endOfFile(TransactionRepository.INPUT_DD_NAME);
-            case OTHER -> ReadResult.other(TransactionRepository.INPUT_DD_NAME, UNEXPECTED_STATUS);
+            case OTHER -> forcedUnexpectedCondition(forced);
             case DUPLICATE -> forcedDuplicate(forced, key, seededRows, charset);
             case OK -> throw new IllegalArgumentException("A COTRN01C case forced the "
                     + forced.outcome() + " outcome for the keyed read. That outcome carries a record, "
@@ -472,6 +477,71 @@ final class COTRN01CParityTest {
         return new ReadResult(TransactionRepository.INPUT_DD_NAME, FileStatus.DUPLICATE,
                 FileStatus.Outcome.DUPLICATE, Optional.of(record),
                 CicsResponse.reported(resp, resp2), Optional.empty(), Optional.empty());
+    }
+
+    /**
+     * The residual arm of the keyed read, carrying the case's own {@code RESP}/{@code RESP2} pair.
+     *
+     * <h4>Why the response pair comes from the case</h4>
+     *
+     * <p>{@code WHEN OTHER} at {@code :289} is the only arm of {@code EVALUATE WS-RESP-CD} that puts a
+     * response code on the console. {@code :290} displays {@code WS-RESP-CD} and {@code WS-REAS-CD} as
+     * nine-digit images, so on this arm the pair a repository reports is not an implementation detail -
+     * it is observable output, compared byte-for-byte on the
+     * {@link ParityCase.MessageChannel#DISPLAY_LINE} channel. The status alone cannot supply it:
+     * {@link #UNEXPECTED_STATUS} is deliberately none of the statuses
+     * {@link FileStatus#cicsRespOfBatchStatus(String)} translates, so deriving a response from it would
+     * report "not reported" - {@link FileStatus#respNotReportedImage(int)}, nine asterisks - for every
+     * residual condition alike, and the residual cases would be indistinguishable on the one channel
+     * that exists to tell them apart. The case names the condition instead, and it is reported through
+     * {@link CicsResponse#reported(int, int)}, whose contract is the pair an adapter actually reported
+     * rather than one derived from something else.
+     *
+     * <h4>Why {@code DFHRESP(NOTOPEN)} is the default</h4>
+     *
+     * <p>{@link FileStatus#NOTOPEN} is the condition a keyed {@code READ} raises against a dataset that
+     * is not open, and {@code app/csd/CARDDEMO.CSD:76-87} defines {@code TRANSACT} with
+     * {@code OPENTIME(FIRSTREF)} - the file opens on first reference, so not-open is a state this file
+     * can genuinely be found in and the condition is environmental rather than a program error. It is
+     * also the response the module's sibling repositories already report on their own residual arms, so
+     * defaulting to it keeps one convention across the suite instead of two.
+     * {@link FileStatus#NO_REASON_CODE} is the reason code for a condition a case does not qualify.
+     *
+     * <h4>Why a named outcome is refused here</h4>
+     *
+     * <p>A response the case declares must still classify as {@link FileStatus.Outcome#OTHER}. Two
+     * separate reasons: {@link FileStatus#NORMAL} and {@link FileStatus#NOTFND} are the two responses
+     * {@code :281} and {@code :283} name, so neither can reach {@code :289} at all; and the outcomes
+     * {@code FileStatus} does classify - end-of-file and duplicate - have their own arms in this model,
+     * which sibling cases already use, so accepting one of their responses under {@code OTHER} would
+     * give a single condition two spellings. That is the same agreement {@link #forcedDuplicate} keeps
+     * for the duplicate arm, in the same direction.
+     *
+     * @param forced what the case declared
+     * @return the residual outcome, carrying {@link #UNEXPECTED_STATUS}, no record, and the declared
+     *         response pair
+     * @throws IllegalArgumentException if the declared {@code RESP} is a condition
+     *                                  {@code common.FileStatus} classifies as something other than
+     *                                  {@link FileStatus.Outcome#OTHER}
+     */
+    private static ReadResult forcedUnexpectedCondition(ParityCase.ForcedOutcome forced) {
+        int resp = forced.resp() == null ? FileStatus.NOTOPEN : forced.resp();
+        int resp2 = forced.resp2() == null ? FileStatus.NO_REASON_CODE : forced.resp2();
+        if (FileStatus.outcomeOfCicsResp(resp) != FileStatus.Outcome.OTHER) {
+            throw new IllegalArgumentException("A COTRN01C case forced the "
+                    + FileStatus.Outcome.OTHER + " outcome for the keyed read but declared RESP " + resp
+                    + ", which common.FileStatus classifies as "
+                    + FileStatus.outcomeOfCicsResp(resp) + ". The two must agree, or the DISPLAY at "
+                    + ":290 would render a response code that contradicts the arm the case says it "
+                    + "pins. EVALUATE WS-RESP-CD (:280) names DFHRESP(NORMAL) = " + FileStatus.NORMAL
+                    + " at :281 and DFHRESP(NOTFND) = " + FileStatus.NOTFND + " at :283, so neither "
+                    + "reaches WHEN OTHER at :289; end-of-file and duplicate have their own forced "
+                    + "outcomes. Declare a residual condition instead - DFHRESP(NOTOPEN) = "
+                    + FileStatus.NOTOPEN + " is the default, and DFHRESP(INVREQ) = " + FileStatus.INVREQ
+                    + " is another.");
+        }
+        return ReadResult.other(TransactionRepository.INPUT_DD_NAME, UNEXPECTED_STATUS,
+                CicsResponse.reported(resp, resp2));
     }
 
     /**

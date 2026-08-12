@@ -1,0 +1,225 @@
+{
+  "program": "COACTUPC",
+  "caseId": "case19",
+  "description": "PROVENANCE (practice B12, plan risk R-A). Statically derived by structured reading of app/cbl/COACTUPC.cbl:4109-4193 (9700-CHECK-CHANGE-IN-REC in full), :3888-4105 (9600-WRITE-PROCESSING, whose first three steps are the only ones this leg reaches), :669-756 (the ACUP-OLD-DETAILS declarations), :3801-3885 (9500-STORE-FETCHED-DATA, where the snapshot this paragraph compares against is built), :2606-2615 (2000-DECIDE-ACTION's inner EVALUATE) and :2955-2983 (3250-SETUP-INFOMSG), together with the 88-level literals at :517-524, the copybooks app/cpy/CVACT01Y.cpy and app/cpy/CVCUS01Y.cpy, the symbolic map app/cpy-bms/COACTUP.CPY, and the decoded rows of the shipped fixtures app/data/ASCII/acctdata.txt, custdata.txt, cardxref.txt and carddata.txt. It was NOT captured from, recorded against, or replayed from any execution of the legacy COBOL: executing these programs is empirically impossible in this environment (no z/OS and no CICS runtime, the available compiler reports its indexed file handler disabled, no Language Environment CEE* services, and DFHAID, DFHBMSCA and DFHATTR are absent from the repository). That substitutes the PROVENANCE of the expected values and nothing else - the twenty cases, the field-for-field diffing, the diff-count-equals-zero gate and the branch-coverage bar are unchanged - and because it modifies a stated success criterion it is escalated for explicit user confirmation rather than silently absorbed (AAP 0.7.6). Every width and offset below is mechanical from the copybooks rather than taken from prose (practice B11). review_rules returns exactly one line, \"No user rules provided\", so NO user-specified Rule governs this file; none is cited and none is invented, and the absence is not treated as licence to lower the bar (practices B1-B12 bind in their place).  THE PARAGRAPH IS 9700-CHECK-CHANGE-IN-REC AT :4109-4193, AND IT IS NOT 9300. In COACTUPC the 9300 label is 9300-GETACCTDATA-BYACCT at :3701-3748, which reads the account master by key and has nothing to do with concurrency; 9300-CHECK-CHANGE-IN-REC is COCRDUPC's label for the same idea at app/cbl/COCRDUPC.cbl:1498-1521, where it compares six items rather than thirty-five and INSPECT CONVERTs the embossed name in place first. Citing 9300 here would send a reader to the wrong paragraph of the wrong program, so the correct label is used throughout.  WHAT THIS CASE OWNS (gate G43, the core). The change-detected leg of the optimistic-concurrency check that is already present in the COBOL: 9700 compares the record freshly re-read for update in 9600's first two steps against the ACUP-OLD-DETAILS copy the screen was painted from in 9500-STORE-FETCHED-DATA, finds a difference, and abandons the rewrite. case18 owns the clean leg that proceeds; case20 owns the SYNCPOINT ROLLBACK. NO version column, no DDL and no schema artefact of any kind appears in this file or is needed by it - the check is reproduced field for field from the source, and adding a version column to carry it would be exactly the schema change the plan forbids.  THE THIRTY-FIVE COMPARISONS, AND THE THREE FORMS THEY TAKE. Two AND-chained IF blocks, each ending ELSE SET DATA-WAS-CHANGED-BEFORE-UPDATE TO TRUE and GO TO 9600-WRITE-PROCESSING-EXIT. BLOCK 1, sixteen account items at :4115-4140: exact equality on ACCT-ACTIVE-STATUS against ACUP-OLD-ACTIVE-STATUS; numeric equality on ACCT-CURR-BAL, ACCT-CREDIT-LIMIT, ACCT-CASH-CREDIT-LIMIT, ACCT-CURR-CYC-CREDIT and ACCT-CURR-CYC-DEBIT against the ACUP-OLD-...-N views - the S9(10)V99 REDEFINES of the X(12) spans, NOT the X(12) spans themselves; nine date-component comparisons; and finally FUNCTION LOWER-CASE(ACCT-GROUP-ID) against FUNCTION LOWER-CASE(ACUP-OLD-GROUP-ID), folded on both operands. BLOCK 2, nineteen customer items at :4152-4186: FUNCTION UPPER-CASE folded on BOTH sides of CUST-FIRST-NAME, CUST-MIDDLE-NAME, CUST-LAST-NAME, CUST-ADDR-LINE-1, CUST-ADDR-LINE-2, CUST-ADDR-LINE-3, CUST-ADDR-STATE-CD, CUST-ADDR-COUNTRY-CD and CUST-GOVT-ISSUED-ID; raw equality on CUST-ADDR-ZIP, CUST-PHONE-NUM-1, CUST-PHONE-NUM-2, CUST-SSN, CUST-EFT-ACCOUNT-ID, CUST-PRI-CARD-HOLDER-IND and CUST-FICO-CREDIT-SCORE; and three date-of-birth components. Neither key is compared: ACCT-ID and CUST-ID are the keys the two READ UPDATEs were issued on, so comparing them could only ever succeed.  THE ASYMMETRIC OFFSET PAIRING, WHICH THIS CASE PINS IN BOTH WIDTHS (practice B5). The stored dates are TEN-byte hyphenated CCYY-MM-DD - ACCT-OPEN-DATE, ACCT-EXPIRAION-DATE and ACCT-REISSUE-DATE are each PIC X(10) in CVACT01Y, and CUST-DOB-YYYY-MM-DD is PIC X(10) in CVCUS01Y - and they are sliced (1:4), (6:2) and (9:2), which steps over the hyphens at positions 5 and 8. The snapshot copies are EIGHT-byte compact PIC X(08) items - ACUP-OLD-OPEN-DATE, ACUP-OLD-EXPIRAION-DATE, ACUP-OLD-REISSUE-DATE and ACUP-OLD-CUST-DOB-YYYY-MM-DD at :669-756 - whose ...-PARTS REDEFINES expose ...-YEAR PIC X(4) at (1:4), ...-MON PIC X(2) at (5:2) and ...-DAY PIC X(2) at (7:2). So the account dates pair (1:4) with ACUP-OLD-OPEN-YEAR, (6:2) with ACUP-OLD-OPEN-MON and (9:2) with ACUP-OLD-OPEN-DAY, and the source writes the date of birth out with the same skew explicitly: CUST-DOB-YYYY-MM-DD(1:4) EQUAL ACUP-OLD-CUST-DOB-YYYY-MM-DD(1:4), then (6:2) EQUAL (5:2), then (9:2) EQUAL (7:2). That eight-byte field is NAMED ...-YYYY-MM-DD yet holds an unhyphenated value; the name is not corrected and the field is not widened. 9500-STORE-FETCHED-DATA is where the compact form originates, and the whole-field alternative is COMMENTED OUT at the same site for all four - MOVE ACCT-OPEN-DATE TO ACUP-OLD-OPEN-DATE at :3831, the expiry at :3836, the reissue at :3842 and MOVE CUST-DOB-YYYY-MM-DD TO ACUP-OLD-CUST-DOB-YYYY-MM-DD at :3856 - which is the evidence that the skew is deliberate rather than accidental. Both widths appear in this file and neither is normalised: the eight-byte forms 20090510, 20251006, 20251006 and 19940321 sit in \"WS-THIS-PROGCOMMAREA\" at offsets 50, 58, 66 and 416 of that 873-byte area, while \"expectedFinalState\" pins the ten-byte forms 2009-05-10, 2025-10-06, 2025-10-06 and 1994-03-21 on the stored rows. The pairing is DISCRIMINATING on case18's clean leg, where a whole-field comparison of ten hyphenated bytes against eight compact ones would report a difference that is not there and suppress a rewrite that must happen; on this change-detected leg it is RECORDED rather than discriminating, and saying so is more useful than claiming an assertion this leg cannot make.  THIS IS NOT 1205-COMPARE-OLD-NEW, WHICH case14 OWNS. The two comparisons look alike and are not the same. 1205 asks whether the OPERATOR changed anything on the screen, runs before the edits are accepted, and compares the raw X(12) alphanumeric views of the monetary spans. 9700 asks whether SOMEONE ELSE changed the stored record while the operator was thinking, runs inside the update after both READ UPDATEs have succeeded, and compares the S9(10)V99 numeric -N views. Conflating them would put the wrong verdict on the wrong interaction.  THE THREE VARIANTS, AND WHY ONLY ONE OF THEM CAN BE ONE CASE. Three behaviours matter here: (1) block 1 detects a genuine change; (2) block 2 detects a genuine change independently; and (3) a difference of letter case alone is NOT a change, because the group identifier and nine of the customer items are folded. ParityCase models exactly ONE invocation - one \"inputs\" map, one \"screenRequest\", one \"expectedWrites\" list - so at most one of the three can be the encoded invocation, and the choice is not arbitrary. It is FORCED by the shape of the AND chain. The only folded item in block 1 is ACCT-GROUP-ID and it is the LAST of the sixteen conjuncts, so the fold is evaluated only when all fifteen preceding conjuncts have already agreed - that is, only on a path where block 1 PASSES. A case that detects a change in block 1 therefore cannot exercise the fold at all, and because a failing block 1 short-circuits to the exit it cannot reach block 2 either. Variant 1 is encoded here, as the leg case18 names case19 as the owner of. The module asserts the other two elsewhere, and naming where is the honest alternative to encoding them here as unreachable expectations that would look like assertions and assert nothing (practices B1 and B4). VARIANT 2 is driven by COACTUPCParityTest's own code-declared change-detected scenarios, one of which perturbs only CUST-FICO-CREDIT-SCORE - the last of block two's nineteen items - so every account item agrees and the verdict is block 2's alone; the register those scenarios rest on is asserted by theConcurrencyCheckComparesThirtyFiveItemsAndNeitherKey: thirty-five items, sixteen then nineteen with every account item preceding every customer item, exactly one lower-case fold, exactly nine upper-case folds, five numeric comparisons and twenty byte-exact ones, and neither key nor ACCT-ADDR-ZIP among them. VARIANT 3 is asserted by theFoldedComparisonsFoldBothOperands, which sets the stored group to 'ZeroPct' and its snapshot to 'zEROpCT', folds the first name the other way, and requires dataWasChanged() to be false - with 'PREMIUM' as the control that must still be true. That test's own reasoning reaches this same conclusion independently and states it plainly: the group half CANNOT be driven through a parity case, because the fixture's stored group is ten spaces and ten spaces fold to themselves. Note that COACTUPCParityTest numbers its twenty code-declared scenarios independently of this folder's twenty files and assigns them different subjects, a divergence case18 records; the scenarios are therefore cited here by what they do rather than by number.  HOW THE STATE IS REACHED - THE case18 SETUP, ALTERED IN ONE BYTE. EIBCALEN is 1033: CARDDEMO-COMMAREA's 160 bytes followed by WS-THIS-PROGCOMMAREA's 873, so :888-892 restores both halves and the inbound ACUP-CHANGE-ACTION of 'N' (88 ACUP-CHANGES-OK-NOT-CONFIRMED, :664) survives. YYYY-STORE-PFKEY resolves EIBAID to CCARD-AID-PFK05, and the PF-key gate at :905-916 admits PF05 ONLY in that state. The top-level EVALUATE falls to WHEN OTHER at :996-1003, which performs 1000-PROCESS-INPUTS, 2000-DECIDE-ACTION and 3000-SEND-MAP; 1200-EDIT-MAP-INPUTS short-circuits at :1463-1468 because ACUP-CHANGES-OK-NOT-CONFIRMED is the second disjunct of IF NO-CHANGES-FOUND OR ACUP-CHANGES-OK-NOT-CONFIRMED OR ACUP-CHANGES-OKAYED-AND-DONE, so no field edit runs on this interaction. 2000-DECIDE-ACTION's WHEN ACUP-CHANGES-OK-NOT-CONFIRMED AND CCARD-AID-PFK05 arm at :2602-2605 then performs 9600-WRITE-PROCESSING THRU its exit. The screen values and the snapshot are byte-identical to case18's, INCLUDING the two overrides that made the state 'N' reachable there - ACSPH1AI '303' in place of the stored area code '179', which is not among the 410 literals of VALID-GENERAL-PURP-CODE, and ACSTFCOI '300' in place of the stored FICO of 104, which fails 88 FICO-RANGE-IS-VALID VALUES 300 THROUGH 850 at :848-849. Reusing that state unchanged is what makes this case a single-variable perturbation of case18.  THE THREE STEPS OF 9600-WRITE-PROCESSING THIS LEG REACHES, AND THE FOUR IT DOES NOT. (1) :3892-3903 MOVE CC-ACCT-ID TO WS-CARD-RID-ACCT-ID then EXEC CICS READ FILE(LIT-ACCTFILENAME) UPDATE; :3907-3915 takes the DFHRESP(NORMAL) arm, so neither INPUT-ERROR nor COULD-NOT-LOCK-ACCT-FOR-UPDATE is set. (2) :3919-3930 the same shape on FILE(LIT-CUSTFILENAME) keyed by CDEMO-CUST-ID; :3934-3942 NORMAL again, so COULD-NOT-LOCK-CUST-FOR-UPDATE is not set. Both read-for-update sites are therefore exercised on their NORMAL arm from genuinely seeded rows rather than from a forced repository outcome, which is why \"forcedOutcomes\" is empty (gate G47). (3) :3947-3948 PERFORM 9700-CHECK-CHANGE-IN-REC THRU 9700-CHECK-CHANGE-IN-REC-EXIT. Block 1's second conjunct fails, so control leaves through that block's own ELSE at :4142-4145 - SET DATA-WAS-CHANGED-BEFORE-UPDATE TO TRUE then GO TO 9600-WRITE-PROCESSING-EXIT - and block 2's ELSE at :4188-4191, which is the identical pair of statements, is never reached. The guard at :3950-3952, IF DATA-WAS-CHANGED-BEFORE-UPDATE GO TO 9600-WRITE-PROCESSING-EXIT, is the belt-and-braces second exit for the same condition. Steps 4 to 7 are consequently NOT reached: no INITIALIZE ACCT-UPDATE-RECORD at :3956 and none of its eleven moves at :3960-4002, no INITIALIZE CUST-UPDATE-RECORD at :4007 and none of its eighteen moves at :4009-4059, no EXEC CICS REWRITE FILE(LIT-ACCTFILENAME) at :4065-4071 with its DFHRESP guard at :4076-4081, and no REWRITE FILE(LIT-CUSTFILENAME) at :4085-4091 with its guard at :4095-4103. Nothing is written, so LOCKED-BUT-UPDATE-FAILED cannot be set at either :4079 or :4098 and the EXEC CICS SYNCPOINT ROLLBACK at :4099-4101 is not reached.  THE OUTCOME, AND WHY IT IS 'S' RATHER THAN A FAILURE STATE. Back in 2000-DECIDE-ACTION the inner EVALUATE TRUE at :2606-2615 runs in source order (gate G30): WHEN COULD-NOT-LOCK-ACCT-FOR-UPDATE would give 'L', WHEN LOCKED-BUT-UPDATE-FAILED would give 'F', WHEN DATA-WAS-CHANGED-BEFORE-UPDATE SETs ACUP-SHOW-DETAILS, and WHEN OTHER would give 'C'. The first two flags are unset and the third is set, so the third arm wins and ACUP-CHANGE-ACTION becomes 'S' (:659) - the operator is sent back to review the details, not told the update failed. 3250-SETUP-INFOMSG at :2957-2977 then reaches WHEN ACUP-SHOW-DETAILS and SETs PROMPT-FOR-CHANGES, whose literal is 'Update account details presented above.' on WS-INFO-MSG PIC X(40) (:463, :470-471) - the only one of the seven info literals that ends in a full stop. The state 'S' is not directly addressable by a service-shaped case, and it does not need to be: of the eight WS-RETURN-MSG 88-levels only ONE carries this literal and no other arm sets it, so the single emitted line is a discriminating assertion that ACUP-CHANGE-ACTION is 'S' and neither 'C' - on which nothing would have been written either - nor 'L', whose literal is 'Could not lock account record for update' at :517-518, nor 'F', whose literal is 'Update of record failed' at :523-524.  THE ONE EMITTED LINE, AND THE THREE WIDTHS THE SAME TEXT OCCUPIES. What the SERVICE emits is WS-RETURN-MSG, and nothing else. It is declared PIC X(75) at :479, SET to SPACES at that width by SET WS-RETURN-MSG-OFF at :876, and the 88-level at :521-522 puts the forty-six-character literal 'Record changed by some one else. Please review' into it right-space-padded to exactly 75. 'some one' IS TWO WORDS in the source: it is reproduced verbatim and the spacing is not corrected (practice B5). The channel is the WIDTH-FREE one for a reason that is a property of the model rather than a preference - neither width-bearing channel is 75, one being the 80-byte WORKING-STORAGE message of the batch programs and the other the 78-byte screen field - so a width-bearing channel would compare a 75-byte value against a declared width it does not have. The width is instead pinned by the value itself, and asserted directly by COACTUPCParityTest.theReturnMessageIsSeventyFiveBytesWide. The same text occupies two further widths downstream, and both are named here so a reader can convert between them and neither is silently absent. :2981 MOVE WS-RETURN-MSG TO ERRMSGO OF CACTUPAO widens the 75 bytes into ERRMSGO PIC X(78) by three trailing spaces, and :2979 MOVE WS-INFO-MSG TO INFOMSGO OF CACTUPAO widens WS-INFO-MSG PIC X(40) - holding 'Update account details presented above.' - into INFOMSGO PIC X(45) by five. Both of those are SCREEN spans, painted by 3000-SEND-MAP, which a service does not run; they belong to a screen send and therefore to the CONTROLLER_POJO cases, where case04 and case14 pin the 45-byte INFOMSGO value byte for byte and case14 pins an ERRMSGO value on the 78-byte channel. Claiming either of them as a line THIS unit emitted would be an expectation the unit cannot meet, which is the one thing a parity fixture must never be.  THE SEED, AND THE SINGLE ALTERED BYTE. Account 00000000034 and customer 000000034 are row 33 of acctdata.txt and custdata.txt; row 18 of cardxref.txt binds card 4385271476627819 to them and row 18 of carddata.txt is that card. Only ACCTDAT is seeded inline, and it is the shipped row with exactly ONE byte changed: offset 24, the trailing character of ACCT-CURR-BAL. That span is PIC S9(10)V99, twelve zoned DISPLAY characters whose last one carries the low-order digit and the sign as an overpunch from '{ABCDEFGHI' for a positive digit 0 to 9, so '00000002530{' is 253.00 and '00000002530A' is 253.01. The difference is ONE CENT - deliberately the smallest value representable at the receiver's declared scale of exactly 2 (gate G23) - which is what makes this a real test of the comparison rather than of a coarser one that happens to agree. The snapshot in \"WS-THIS-PROGCOMMAREA\" still holds the pre-change '00000002530{' at ACUP-OLD-CURR-BAL, so the second of block 1's sixteen conjuncts fails and the chain short-circuits there. CUSTDAT, CXACAIX and CARDDAT are seeded from the shipped fixtures UNALTERED, which makes the verdict ATTRIBUTABLE: block 2 would have agreed on all nineteen of its items had it been reached, so the abandoned rewrite is attributable to block 1 alone and to one cent of current balance. The fixture files themselves are never edited - the alteration lives in \"inputs\", where a case is entitled to state the data it needs (practice B3) - and the cross-reference row is seeded RAW at the fixture's 36 bytes and padded to CVACT03Y's 50 once at seed time by the CARDXREF_FILLER_PAD_36_TO_50 normalisation, never at comparison time (gate G16).  WHAT IS ASSERTED. \"expectedWrites\" is EMPTY and \"expectedDatasets\" declares both ACCTDAT and CUSTDAT on the WRITES channel with rowCount 0 at their declared widths of 300 and 500. Those two statements are not the same and both are needed: an empty write list says nothing was written anywhere, while a rowCount of 0 on a named dataset says THAT dataset was opened for update and produced nothing, which is the positive form of \"the REWRITE was abandoned\". \"expectedFinalState\" carries all four seeded rows byte-identical to their seeds, which is the other half of the same assertion - a write that was made and then reverted would satisfy the second half but not the first. The sharpest byte-level evidence is the contrast with case18, where the rewrite lands: there ACCT-UPDATE-RECORD's own layout defect writes ACUP-NEW-GROUP-ID over the stored ACCT-ADDR-ZIP and the ten bytes become LOW-VALUES, and the customer row's zip, first telephone number and FICO score become '49544     ', '(303)036-5135  ' and '300'. Here NOTHING is written, so ACCT-ADDR-ZIP is still 'A000000000' and the customer row still holds '49544-2869', '(179)036-5135  ' and '104'. Those FOUR spans - ACCT-ADDR-ZIP, CUST-ADDR-ZIP, CUST-PHONE-NUM-1 and CUST-FICO-CREDIT-SCORE - are precisely and exhaustively the ones whose value differs between case18's post-rewrite images and the untouched images here, and each is a byte-level witness that the rewrite was abandoned rather than merely reverted. The fifth difference between the two cases, ACCT-CURR-BAL's trailing 'A' against case18's '{', is not one of them: it is the deliberate one-byte alteration this case seeds, and it is the cause of the abandonment rather than a consequence of it. Every FILLER span is addressed and space-filled, and each \"expectedBytes\" is pinned at its copybook width - 300, 500, 50 and 150 - so a record short by one span fails on its total width rather than silently shifting every offset after it (gates G19 and G21). \"expectedReturnCode\" is 0: EXEC CICS RETURN, never an ABEND, and no path through this leg sets a non-zero code.  WHAT IS NOT ASSERTED, AND WHY. The unit is account.AccountUpdateService, driven directly as a plain object: no HTTP layer, no MockMvc and no JobLauncher stands between the assertion and the comparison (gate G51). That is also why \"expectedResponse\" is absent and why no 54-field screen projection appears - a service paints no screen, and claiming one would assert a response the unit cannot produce. For the same reason the 45-byte INFOMSGO and 78-byte ERRMSGO projections are named in prose above but are NOT declared as emitted lines: 3250-SETUP-INFOMSG runs inside 3000-SEND-MAP, a service never reaches it, and the CONTROLLER_POJO cases own those spans - case04 and case14 pin the whole 54-field send between them. Conversation state travels entirely in the payload, in \"commarea\" and \"mapFields\", with nothing held server-side (gate G37). The code page is named explicitly as US-ASCII rather than left to the platform default (practice B8): it is the code page of the nine shipped ASCII fixtures, and IBM037 would be the choice for app/data/EBCDIC, which this case does not read. NOT APPLICABLE to this case and stated so rather than left silent: gate G32, because COACTUPC contains no backward loop-forming GO TO - CBSTM03A is the only program that does, and of COACTUPC's fifty-one GO TOs forty-one target an -EXIT label, three target the shared COMMON-RETURN and the remaining seven are strictly FORWARD stage jumps - four to EDIT-US-PHONE-PREFIX at :2316 from :2259, :2277, :2291 and :2311, and three to EDIT-US-PHONE-LINENUM at :2370 from :2330, :2348 and :2362 - so not one of the fifty-one jumps backwards and there is no implicit loop to restructure; and gate G35, because this program contains no CALL 'CEE3ABD', so there is no AbendException to raise and the return code is 0.  THREE DIVERGENCES FROM THE BRIEF THAT AUTHORISED THIS FILE, DOCUMENTED RATHER THAN SILENTLY RESOLVED (practice B4). FIRST, the brief names an \"expectedRecords\" member; ParityCase has no such member and refuses it as an unknown property. The two concepts it describes are carried by \"expectedWrites\", whose rowIndex is a position in the write sequence, and \"expectedFinalState\", whose rowIndex is a row of the dataset afterwards - and the distinction matters precisely here, where the first is empty and the second is not. SECOND, the brief asks for the 54-field screen projection and for ACUP-CHANGE-ACTION to be asserted as a field, neither of which a SERVICE case can carry; the same brief mandates unitKind SERVICE and gate G51 requires the service to be reached without a controller, so the unit kind is honoured and the two screen values are named in prose with their owners rather than claimed here, while the state is asserted through the one literal only this arm of the EVALUATE can produce. THIRD, the brief asks for two emitted lines, an information line at 45 bytes and an error line at 78. ONE line is declared instead, and it is the 75-byte WS-RETURN-MSG, because that is the only line the unit under test actually produces: WS-INFO-MSG, INFOMSGO and ERRMSGO are all set on the screen-painting path a service never runs, and the model reserves this list for lines a program emits while screen text belongs to a screen send. All three widths and the MOVEs that relate them are stated above, so nothing the brief asked to see is missing from the file - only its place has changed, from an expectation the unit could not meet to a derivation it does.",
+  "unitKind": "SERVICE",
+  "inputs": {
+    "ACCTDAT": {
+      "rows": [
+        "00000000034Y00000002530A00000036420{00000027700{2009-05-102025-10-062025-10-0600000000000{00000000000{A000000000                                                                                                                                                                                            "
+      ]
+    },
+    "CUSTDAT": {
+      "fixture": "custdata.txt",
+      "fromRow": 33,
+      "rowCount": 1
+    },
+    "CXACAIX": {
+      "fixture": "cardxref.txt",
+      "fromRow": 18,
+      "rowCount": 1
+    },
+    "CARDDAT": {
+      "fixture": "carddata.txt",
+      "fromRow": 18,
+      "rowCount": 1
+    }
+  },
+  "jobParameters": {},
+  "screenRequest": {
+    "eibcalen": 1033,
+    "aid": "DFHPF5",
+    "pinnedClock": "2022-07-19T23:15:59",
+    "charset": "US-ASCII",
+    "commarea": {
+      "CDEMO-FROM-TRANID": "    ",
+      "CDEMO-FROM-PROGRAM": "        ",
+      "CDEMO-TO-TRANID": "    ",
+      "CDEMO-TO-PROGRAM": "        ",
+      "CDEMO-USER-ID": "        ",
+      "CDEMO-USER-TYPE": " ",
+      "CDEMO-PGM-CONTEXT": "1",
+      "CDEMO-CUST-ID": "000000034",
+      "CDEMO-CUST-FNAME": "Faustino                 ",
+      "CDEMO-CUST-MNAME": "Jess                     ",
+      "CDEMO-CUST-LNAME": "Schmidt                  ",
+      "CDEMO-ACCT-ID": "00000000034",
+      "CDEMO-ACCT-STATUS": "Y",
+      "CDEMO-CARD-NUM": "4385271476627819",
+      "CDEMO-LAST-MAP": "       ",
+      "CDEMO-LAST-MAPSET": "       ",
+      "WS-THIS-PROGCOMMAREA": "N00000000034Y00000002530{00000036420{00000027700{20090510202510062025100600000000000{00000000000{          000000034Faustino                 Jess                     Schmidt                  44132 Michel Square                               Suite 007                                         South Margarettaburgh                             MEUSA49544-2869(179)036-5135  (986)905-0112  54808830000000000000159882533199403210067445089Y10400000000034Y00000002530{00000036420{00000027700{20090510202510062025100600000000000{00000000000{\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000000000034Faustino                 Jess                     Schmidt                  44132 Michel Square                               Suite 007                                         South Margarettaburgh                             MEUSA49544     (303)036-5135  (986)905-0112  54808830000000000000159882533199403210067445089Y300"
+    },
+    "mapFields": {
+      "ACCTSIDI": "00000000034",
+      "ACSTTUSI": "Y",
+      "OPNYEARI": "2009",
+      "OPNMONI": "05",
+      "OPNDAYI": "10",
+      "ACRDLIMI": "+      3,642.00",
+      "EXPYEARI": "2025",
+      "EXPMONI": "10",
+      "EXPDAYI": "06",
+      "ACSHLIMI": "+      2,770.00",
+      "RISYEARI": "2025",
+      "RISMONI": "10",
+      "RISDAYI": "06",
+      "ACURBALI": "+        253.00",
+      "ACRCYCRI": "+           .00",
+      "AADDGRPI": "          ",
+      "ACRCYDBI": "+           .00",
+      "ACSTNUMI": "000000034",
+      "ACTSSN1I": "548",
+      "ACTSSN2I": "08",
+      "ACTSSN3I": "8300",
+      "DOBYEARI": "1994",
+      "DOBMONI": "03",
+      "DOBDAYI": "21",
+      "ACSTFCOI": "300",
+      "ACSFNAMI": "Faustino                 ",
+      "ACSMNAMI": "Jess                     ",
+      "ACSLNAMI": "Schmidt                  ",
+      "ACSADL1I": "44132 Michel Square                               ",
+      "ACSSTTEI": "ME",
+      "ACSADL2I": "Suite 007                                         ",
+      "ACSZIPCI": "49544",
+      "ACSCITYI": "South Margarettaburgh                             ",
+      "ACSCTRYI": "USA",
+      "ACSPH1AI": "303",
+      "ACSPH1BI": "036",
+      "ACSPH1CI": "5135",
+      "ACSGOVTI": "00000000000159882533",
+      "ACSPH2AI": "986",
+      "ACSPH2BI": "905",
+      "ACSPH2CI": "0112",
+      "ACSEFTCI": "0067445089",
+      "ACSPFLGI": "Y"
+    },
+    "forcedOutcomes": {}
+  },
+  "expectedWrites": [],
+  "expectedFinalState": [
+    {
+      "dataset": "ACCTDAT",
+      "rowIndex": 0,
+      "fields": {
+        "ACCT-ID": "00000000034",
+        "ACCT-ACTIVE-STATUS": "Y",
+        "ACCT-CURR-BAL": "00000002530A",
+        "ACCT-CREDIT-LIMIT": "00000036420{",
+        "ACCT-CASH-CREDIT-LIMIT": "00000027700{",
+        "ACCT-OPEN-DATE": "2009-05-10",
+        "ACCT-EXPIRAION-DATE": "2025-10-06",
+        "ACCT-REISSUE-DATE": "2025-10-06",
+        "ACCT-CURR-CYC-CREDIT": "00000000000{",
+        "ACCT-CURR-CYC-DEBIT": "00000000000{",
+        "ACCT-ADDR-ZIP": "A000000000",
+        "ACCT-GROUP-ID": "          ",
+        "FILLER": "                                                                                                                                                                                  "
+      },
+      "expectedBytes": "00000000034Y00000002530A00000036420{00000027700{2009-05-102025-10-062025-10-0600000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "CUSTDAT",
+      "rowIndex": 0,
+      "fields": {
+        "CUST-ID": "000000034",
+        "CUST-FIRST-NAME": "Faustino                 ",
+        "CUST-MIDDLE-NAME": "Jess                     ",
+        "CUST-LAST-NAME": "Schmidt                  ",
+        "CUST-ADDR-LINE-1": "44132 Michel Square                               ",
+        "CUST-ADDR-LINE-2": "Suite 007                                         ",
+        "CUST-ADDR-LINE-3": "South Margarettaburgh                             ",
+        "CUST-ADDR-STATE-CD": "ME",
+        "CUST-ADDR-COUNTRY-CD": "USA",
+        "CUST-ADDR-ZIP": "49544-2869",
+        "CUST-PHONE-NUM-1": "(179)036-5135  ",
+        "CUST-PHONE-NUM-2": "(986)905-0112  ",
+        "CUST-SSN": "548088300",
+        "CUST-GOVT-ISSUED-ID": "00000000000159882533",
+        "CUST-DOB-YYYY-MM-DD": "1994-03-21",
+        "CUST-EFT-ACCOUNT-ID": "0067445089",
+        "CUST-PRI-CARD-HOLDER-IND": "Y",
+        "CUST-FICO-CREDIT-SCORE": "104",
+        "FILLER": "                                                                                                                                                                        "
+      },
+      "expectedBytes": "000000034Faustino                 Jess                     Schmidt                  44132 Michel Square                               Suite 007                                         South Margarettaburgh                             MEUSA49544-2869(179)036-5135  (986)905-0112  548088300000000000001598825331994-03-210067445089Y104                                                                                                                                                                        "
+    },
+    {
+      "dataset": "CXACAIX",
+      "rowIndex": 0,
+      "fields": {
+        "XREF-CARD-NUM": "4385271476627819",
+        "XREF-CUST-ID": "000000034",
+        "XREF-ACCT-ID": "00000000034",
+        "FILLER": "              "
+      },
+      "expectedBytes": "438527147662781900000003400000000034              "
+    },
+    {
+      "dataset": "CARDDAT",
+      "rowIndex": 0,
+      "fields": {
+        "CARD-NUM": "4385271476627819",
+        "CARD-ACCT-ID": "00000000034",
+        "CARD-CVV-CD": "709",
+        "CARD-EMBOSSED-NAME": "Faustino Schmidt                                  ",
+        "CARD-EXPIRAION-DATE": "2025-10-06",
+        "CARD-ACTIVE-STATUS": "Y",
+        "FILLER": "                                                           "
+      },
+      "expectedBytes": "438527147662781900000000034709Faustino Schmidt                                  2025-10-06Y                                                           "
+    }
+  ],
+  "expectedReturnCode": 0,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "Record changed by some one else. Please review                             "
+    }
+  ],
+  "normalisations": [
+    {
+      "dataset": "CXACAIX",
+      "kind": "CARDXREF_FILLER_PAD_36_TO_50"
+    }
+  ],
+  "expectedDatasets": [
+    {
+      "dataset": "ACCTDAT",
+      "channel": "WRITES",
+      "rowCount": 0,
+      "recordLength": 300
+    },
+    {
+      "dataset": "CUSTDAT",
+      "channel": "WRITES",
+      "rowCount": 0,
+      "recordLength": 500
+    },
+    {
+      "dataset": "ACCTDAT",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 300
+    },
+    {
+      "dataset": "CUSTDAT",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 500
+    },
+    {
+      "dataset": "CXACAIX",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 50
+    },
+    {
+      "dataset": "CARDDAT",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 150
+    }
+  ]
+}
