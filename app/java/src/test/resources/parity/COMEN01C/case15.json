@@ -1,12 +1,12 @@
 {
   "program": "COMEN01C",
   "caseId": "case15",
-  "description": "The WHEN OTHER arm of the ordered EVALUATE EIBAID, app/cbl/COMEN01C.cbl:99-102, driven with DFHPF12 - an attention identifier PfKeyResolver can name but that COMEN01C gives no arm of its own, because this program does not COPY CSSTRPFY and tests EIBAID inline. Line 100 moves 'Y' to WS-ERR-FLG and line 101 moves CCDA-MSG-INVALID-KEY, a PIC X(50) sender from app/cpy/CSMSG01Y.cpy, into the PIC X(80) WS-MESSAGE: left-justified, space-padded to eighty, and deliberately NOT the PIC X(40) CCDA-THANK-YOU of app/cpy/COTTL01Y.cpy. PROCESS-ENTER-KEY does not run, so OPTIONO keeps the re-supplied '7 ' unnormalised - had the ENTER arm run it would read '07' - and the menu is painted from the copybook table.",
+  "description": "ENTRY EIGHT IS OPEN TO A REGULAR USER, AND THIS CASE IS THE FOLDER'S GUARD AGAINST 'RESTORING' THE ADMIN-ONLY INTENT THAT app/cpy/COMEN02Y.cpy:69 ONLY EVER COMMENTED OUT. PROCESS-ENTER-KEY dispatching option 08 for a regular user: CDEMO-USER-TYPE 'U' arrives in the communication area with CDEMO-PGM-CONTEXT already 1, so app/cbl/COMEN01C.cbl:87 takes the ELSE, line 92 receives the map, and the ordered EVALUATE EIBAID at 93-103 takes its FIRST arm, WHEN DFHENTER at line 94 - gate G30. Lines 117-121 scan OPTIONI PIC X(2) (app/cpy-bms/COMEN01.CPY:132) from the right and stop at WS-IDX 2 because byte two is '8'; line 122 moves both bytes into WS-OPTION-X PIC X(02) JUST RIGHT (line 45), line 123 finds no space to INSPECT away, line 124 leaves WS-OPTION at 08 and line 125 echoes '08' into OPTIONO PIC X(2) (app/cpy-bms/COMEN01.CPY:254), the field app/bms/COMEN01.bms:145-149 declares JUSTIFY=(RIGHT,ZERO) LENGTH=2. The three-term guard at 127-129 is false on every term - 08 is numeric, 08 is not greater than the CDEMO-MENU-OPT-COUNT of 10 at app/cpy/COMEN02Y.cpy:21, and 08 is not zero - so no 'Please enter a valid option number...' is composed and WS-ERR-FLG stays OFF as line 77 set it. THE FILTER AT 136-137 IS DECIDED BY ITS SECOND TERM, WHICH IS THE WHOLE POINT OF THIS CASE: 88 CDEMO-USRTYP-USER (app/cpy/COCOM01Y.cpy:28) is TRUE for 'U', so the conjunction is not settled by its first term the way an 'A' caller or an unrecognised caller settles it, and evaluation proceeds to CDEMO-MENU-OPT-USRTYPE(8), which app/cpy/COMEN02Y.cpy:72 declares 'U'. = 'A' is therefore FALSE, the conjunction is FALSE, the refusal body at 138-142 is SKIPPED, and a regular user reaches the transaction-add program in the shipped configuration. ENTRY EIGHT VERBATIM, app/cpy/COMEN02Y.cpy:67-72: PIC 9(02) VALUE 8 at :67; PIC X(35) VALUE at :68; :69 IS A COMMENT LINE carrying 'Transaction Add (Admin Only)       '; :70 IS THE ACTIVE VALUE 'Transaction Add                    '; PIC X(08) VALUE 'COTRN02C' at :71; PIC X(01) VALUE 'U' at :72. The redefinition is CDEMO-MENU-OPT OCCURS 12 TIMES at :88 with CDEMO-MENU-OPT-NAME PIC X(35) at :90, CDEMO-MENU-OPT-PGMNAME PIC X(08) at :91 and CDEMO-MENU-OPT-USRTYPE PIC X(01) at :92, so a reviewer can confirm the one-byte authorisation column by eye, with no third-party copybook parser in the way. ALL TEN VALUED ENTRIES CARRY 'U' - at :29, :35, :41, :47, :53, :59, :65, :72, :78 and :84 - and NOT ONE CARRIES 'A', so the filter's second term can never be true for an in-range populated subscript and the No access outcome is unreachable from the shipped table. What this case asserts is therefore not merely that option 08 works for a user; it is that the shipped authorisation table grants every option to every user type, and that this must not be quietly tightened. Line 145 finds the flag still OFF, line 146 finds COTRN02C's leading five bytes to be 'COTRN' and not 'DUMMY', and lines 147, 148 and 151 set CDEMO-FROM-TRANID to 'CM00' - DEFINE TRANSACTION(CM00) PROGRAM(COMEN01C) at app/csd/CARDDEMO.CSD:399-400 - CDEMO-FROM-PROGRAM to 'COMEN01C' and CDEMO-PGM-CONTEXT back to 0 before the XCTL at 152-155 transfers WITH the communication area to CDEMO-MENU-OPT-PGMNAME(8), the COTRN02C of :71 - gate G40. Lines 149 and 150 are COMMENTED OUT, so CDEMO-USER-ID and CDEMO-USER-TYPE cross unchanged and the 'U' that arrived is still 'U' on the way out; nothing here writes CDEMO-TO-PROGRAM, which only the PF3 arm at 97 and the signon default at 173 do, so it leaves holding the COMEN01C it arrived with. THE THIRTY-THREE-CHARACTER LITERAL THIS CASE ASSERTS ABSENT: were 138-142 reached, line 140 would move 'No access - Admin Only option... ' - thirty-three characters INCLUDING the trailing space inside the literal - into WS-MESSAGE PIC X(80) at line 38, left-justified and right-padded with forty-seven spaces to eighty. expectedMessages carries eighty spaces instead, exactly as the MOVE SPACES at line 79 left the field, so that image is absent by construction and an admin gate bolted onto entry eight fails here on the message as well as on the successor. THE FALL-THROUGH TRAP is the second decisive assertion: an EXEC CICS XCTL never returns, so 157-164 do not execute - neither the MOVE DFHGREEN TO ERRMSGC at 158 nor the STRING at 159-163. Were they reached, that STRING would send 'This option ' DELIMITED BY SIZE, then CDEMO-MENU-OPT-NAME(8) DELIMITED BY SPACE - which stops at the first space of the thirty-five-byte name at :70 and yields the single token Transaction - then 'is coming soon ...' DELIMITED BY SIZE, composing the byte-exact This option Transactionis coming soon ... with NO space before is. That image is asserted absent too, as are the invalid-key text of line 101 and the validation text of line 131; there is no thank-you text anywhere in this program to assert, because it composes none. ALSO PINNED, and consistent with the other transfer cases in this folder - case03, case04, case05 and case06: sends is empty, no mapset and no map is named, and none of the twelve OPTN00nO option lines is composed. MAP('COMEN1A') and MAPSET('COMEN01') at 190-191, the MOVE WS-MESSAGE TO ERRMSGO at 187 and the PERFORM BUILD-MENU-OPTIONS at 185 all sit inside SEND-MENU-SCREEN (182-194), which a transfer never performs, and BUILD-MENU-OPTIONS at 236-277 is reached only from there. Naming this screen on a transfer would tell the client to paint the screen the program is leaving, which is the one answer that is certainly wrong; the successor travels as a response field with the whole conversation in the payload, so there is no server-side forward and no session state - gates G40 and G37. THE SECOND, INDEPENDENT GUARD ON THE SAME REGRESSION therefore lives on the paint paths rather than here: BUILD-MENU-OPTIONS composes OPTN008O as '08. Transaction Add                     ' from CDEMO-MENU-OPT-NAME(8) DELIMITED BY SIZE at line 245 - by SIZE, not by SPACE - out of the ACTIVE :70 name and not the commented-out :69 variant, so swapping :70 for the :69 variant moves that line to '08. Transaction Add (Admin Only)        ' and fails there. It would NOT fail HERE, and that division of labour is deliberate rather than a gap: a transfer sends no map, so this case cannot observe the NAME at all - what it guards is the authorisation COLUMN at :72, and the two halves of the same tempting change are caught in two different places. Verified by exercising the option table with entry eight's column set to 'A' - which breaks this case on the successor, on the message, on the error flag and on the send count at once, the shared observable consequence of altering the column, inverting the = 'A' test or hard-coding an admin check - and separately with entry eight's name replaced by the :69 variant, which leaves this transfer untouched and moves OPTN008O. ERRMSGC keeps the mapset's declared COLOR=RED because 158 is unreached, and no DFHRED-plus-asterisk highlight appears in this folder at all, because COMEN01C copies no CSSETATY - its sole consumer is app/cbl/COACTUPC.cbl - so gate G38 is honoured here through the ENTER/REENTER split rather than through a highlight: this is a REENTER-side case that nonetheless emits no error output. WHAT MUST NEVER BE DONE TO MAKE THIS CASE ANSWER DIFFERENTLY: do not change a USRTYPE column, do not uncomment :69, do not special-case option 08, COTRN02C or transaction CT02, and do not add an admin check anywhere. The commented-out variant is a documented conflict between historical intent and shipped data, and it is recorded rather than resolved; the unreachable refusal body, the unreachable coming-soon block and the commented-out name are all preserved dead code, neither wired up nor removed. Making transaction-add admin-only would look like a security improvement, and that is precisely why it is out of scope: authorisation here is one PIC X(01) column comparison against the shipped table, on the plaintext USRSEC model, with no hashing and no Spring Security, and CDEMO-USER-TYPE is inbound-only because :150 is commented out - the posture is neither weakened nor unrequestedly strengthened. WHAT MAKES THIS DISTINCT from the folder's other regular-user transfers: case05 dispatches option 05 and case19 dispatches option 06 three times over to prove statelessness, so neither touches entry eight; case10 and case11 reach the refusal itself only against a stub table whose sole variation is the authorisation column, because the shipped table cannot produce it; case03, case04 and case12 arrive as 'A' and settle the conjunction on its first term; and case17 arrives with an unrecognised user type, for which the 88 is false and the second term is never consulted. Only a 'U' caller on entry eight puts the first conjunct in the TRUE state and leaves the commented-out admin-only variant as the sole standing invitation to change the answer. The unit is admin.MainMenuService driven directly, with no MockMvc, no HTTP and no JobLauncher - gate G51; inputs, expectedWrites and expectedFinalState are empty because COMEN01C declares no SELECT and no FD and issues no file verb, so gates G19, G21 and G47 have no subject; expectedReturnCode is 0 because an online transaction sets none, and the program contains no CALL 'CEE3ABD' and no GO TO, so G35 and G32 have none either, and no arithmetic at all, so G22 to G29 have none. The clock is pinned to the 2022-07-19T23:12:33 of the version footer at app/cbl/COMEN01C.cbl:281 - the same instant every case in this folder pins - so FUNCTION CURRENT-DATE at line 214 can never make a run depend on the wall clock, and on this path POPULATE-HEADER-INFO is not reached at all. Every value here is STATICALLY DERIVED from the COBOL source, the copybooks and the BMS definitions and was NEVER captured from a live COBOL execution - no such runtime exists in this environment, per the eight verified blockers recorded in 0.7.6 of the plan (risk R-A).",
   "unitKind": "SERVICE",
   "inputs": {},
   "screenRequest": {
     "eibcalen": 160,
-    "aid": "DFHPF12",
+    "aid": "DFHENTER",
     "pinnedClock": "2022-07-19T23:12:33",
     "charset": "US-ASCII",
     "commarea": {
@@ -18,21 +18,20 @@
       "CDEMO-PGM-CONTEXT": "1"
     },
     "mapFields": {
-      "OPTIONI": "7 "
+      "OPTIONI": "08"
     },
     "forcedOutcomes": {}
   },
   "expectedResponse": {
-    "nextMapset": "COMEN01",
-    "nextMap": "COMEN1A",
+    "nextProgram": "COTRN02C",
     "navigation": {
-      "CDEMO-FROM-TRANID": "CC00",
-      "CDEMO-FROM-PROGRAM": "COSGN00C",
+      "CDEMO-FROM-TRANID": "CM00",
+      "CDEMO-FROM-PROGRAM": "COMEN01C",
       "CDEMO-TO-TRANID": "    ",
       "CDEMO-TO-PROGRAM": "COMEN01C",
       "CDEMO-USER-ID": "USER0001",
       "CDEMO-USER-TYPE": "U",
-      "CDEMO-PGM-CONTEXT": "1",
+      "CDEMO-PGM-CONTEXT": "0",
       "CDEMO-CUST-ID": "000000000",
       "CDEMO-CUST-FNAME": "                         ",
       "CDEMO-CUST-MNAME": "                         ",
@@ -43,29 +42,8 @@
       "CDEMO-LAST-MAP": "       ",
       "CDEMO-LAST-MAPSET": "       "
     },
-    "sends": [
-      {
-        "fields": {
-          "OPTN001O": "01. Account View                        ",
-          "OPTN002O": "02. Account Update                      ",
-          "OPTN003O": "03. Credit Card List                    ",
-          "OPTN004O": "04. Credit Card View                    ",
-          "OPTN005O": "05. Credit Card Update                  ",
-          "OPTN006O": "06. Transaction List                    ",
-          "OPTN007O": "07. Transaction View                    ",
-          "OPTN008O": "08. Transaction Add                     ",
-          "OPTN009O": "09. Transaction Reports                 ",
-          "OPTN010O": "10. Bill Payment                        ",
-          "OPTN011O": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
-          "OPTN012O": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
-          "OPTIONO": "7 "
-        },
-        "attributes": {
-          "ERRMSGC": "DFHRED"
-        }
-      }
-    ],
-    "termination": "RETURN_TRANSID"
+    "sends": [],
+    "termination": "XCTL"
   },
   "expectedWrites": [],
   "expectedFinalState": [],
@@ -73,7 +51,7 @@
   "expectedMessages": [
     {
       "channel": "WS_MESSAGE_80",
-      "text": "Invalid key pressed. Please see below...                                        "
+      "text": "                                                                                "
     }
   ],
   "normalisations": []

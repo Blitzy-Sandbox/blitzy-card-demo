@@ -1,7 +1,7 @@
 {
   "program": "COADM01C",
   "caseId": "case06",
-  "description": "A re-entry with OPTIONI '05', which reaches the second term of the guard at app/cbl/COADM01C.cbl:128, WS-OPTION > CDEMO-ADMIN-OPT-COUNT. app/cpy/COADM02Y.cpy:20 declares that count as 4, so 5 is one past the last valued entry - and it is rejected even though CDEMO-ADMIN-OPT is declared OCCURS 9, which is exactly the point: the count and not the table size bounds the subscript, so line 143 can never address slot 5, whose bytes lie past the group COADM02Y actually gives values to. The option is numeric and non-zero, so this is the one guard term the other two rejections cannot reach.",
+  "description": "The five inactive slots of the OCCURS 9 admin menu table, subscripts 5 to 9, together with the three trailing screen slots that follow them - gate G33 approached from the unwritten side. This is a preservation case and not a behaviour case: the slots exist, nothing ever writes them, and nothing about them may be tidied. The arithmetic that makes them unwritable is in the copybook, not in the program. app/cpy/COADM02Y.cpy:22-42 gives VALUE clauses to four entries of PIC 9(02) + PIC X(35) + PIC X(08), which is 4 x 45 = 180 bytes, and :44-45 then declares CDEMO-ADMIN-OPTIONS REDEFINES CDEMO-ADMIN-OPTIONS-DATA with CDEMO-ADMIN-OPT OCCURS 9 TIMES, which is 9 x 45 = 405 bytes. The redefining item is therefore LARGER than the item it redefines, and subscripts 5 to 9 are 225 bytes of table with no initialised backing data at all. app/cpy/COADM02Y.cpy:20 values CDEMO-ADMIN-OPT-COUNT at 4, and app/cbl/COADM01C.cbl:228-229 is PERFORM VARYING WS-IDX FROM 1 BY 1 UNTIL WS-IDX > CDEMO-ADMIN-OPT-COUNT - so the bound is the ACTIVE COUNT and never the TABLE SIZE. That distinction is the whole assertion: a translation that iterated to the table size rather than to the active count would compose five further lines out of the 225-byte span the copybook never valued, and this case must fail if it does. OPTN001O through OPTN004O are pinned beside the empty ones so the boundary between the last active subscript and the first inactive one is stated rather than implied, and each is derived mechanically from the copybook rather than transcribed from a screen: CDEMO-ADMIN-OPT-NUM is PIC 9(02), so entry 4 renders '04' WITH its leading zero and not '4'; CDEMO-ADMIN-OPT-NAME is PIC X(35), so 'User Delete (Security)' keeps the thirteen trailing spaces of its literal and is NOT trimmed; and :231 blanks WS-ADMIN-OPT-TXT PIC X(40) before the STRING at :233-236 writes 2 + 2 + 35 = 39 characters, so character 40 stays the space :231 put there and the line reads with fourteen spaces after the closing parenthesis - STRING overwrites only what it writes. Note what :231 is NOT. It targets a WORKING-STORAGE composition buffer and not a map field, so it can never be the reason an OPTN00nO field comes back empty; the reason is :89. OPTN005O through OPTN012O are expected as X'00' at all forty of their declared bytes, and X'00' rather than spaces is precisely why this assertion is made on the ENTER first paint: :87's IF NOT CDEMO-PGM-REENTER is true, :88 SETs the context to 1, :89 MOVE LOW-VALUES TO COADM1AO wipes the entire output view, and :90 performs SEND-MENU-SCREEN. On that path the low-values image is derivable from the source itself rather than from an initialisation the translation chose, which is why the eight unwritten slots are pinned here and not on a re-entry path where no statement clears the view. Two of the eight differ from the other six in kind, and the difference is worth recording because it is invisible in the expected values, which are identical. The EVALUATE WS-IDX at :238-261 has arms WHEN 1 through WHEN 10 and then WHEN OTHER CONTINUE. Subscripts 5 to 9 have arms at :247-256 that cannot fire while the count is 4; OPTN010O has a matching WHEN 10 arm at :257-258 that is equally unreachable for the same reason; and OPTN011O and OPTN012O have NO arm at all, even though app/cpy-bms/COADM01.CPY declares both at :120 and :126 - the screen's eleventh and twelfth lines are unreachable by construction, and raising the count would still never reach them. The WHEN OTHER CONTINUE at :259-260 is a genuine no-op default. None of this is repaired: no arm is added, no slot is removed, and the unreachable arm is not deleted, because dead and unreachable code is behaviour in a like-for-like migration and tidying it would be a new feature. OPTIONO comes back as the two-byte X'00' image for the same reason the menu lines do. The client typed two spaces, which is what OPTIONI carries, but the only statement that writes OPTIONO is :125 inside PROCESS-ENTER-KEY, and that paragraph does not run on a first entry - :89 discards what was typed and nothing replaces it. The plan's phrasing of that field as 'two spaces' is the value the client sent, not the value the field returns; the returned image is taken from the source. The arrival is the one COUSR03C composes on its way back, which is the LAST ACTIVE option returning to the menu: app/cbl/COUSR03C.cbl:124 moves 'COADM01C' into CDEMO-TO-PROGRAM on its DFHPF12 arm, and :202-207 then moves its own WS-TRANID 'CU03' (:37) into CDEMO-FROM-TRANID, 'COUSR03C' (:36) into CDEMO-FROM-PROGRAM and ZEROS into CDEMO-PGM-CONTEXT before the XCTL, with app/csd/CARDDEMO.CSD:479-480 confirming CU03 is COUSR03C's transaction. Coming back from subscript 4 and finding subscript 5 still empty is the boundary this case exists to hold, and the option table is a copybook constant, so where the administrator came from cannot change one byte of it. Nothing in the communication area is mutated except the context flag going 0 to 1 - every value the program knows travelled in the payload and none of it in a session, which is what a stateless translation has to be able to show (G37) - and the unit is called directly with no HTTP layer and no launcher in the path (G51). This is the ENTER half of gate G38, and nothing is highlighted because nothing on this path can be: COADM01C does not copy CSSETATY - its COPY list at :50-61 is COCOM01Y, COADM02Y, COADM01, COTTL01Y, CSDAT01Y, CSMSG01Y, CSUSR01Y, DFHAID and DFHBMSCA - and DFHRED appears nowhere in its 268 lines. ERRMSGC is the mapset's declared COLOR=RED at app/bms/COADM01.bms:154-157, a map default rather than an error attribute, and the one statement that ever overrides it is the DFHGREEN of :148 on the coming-soon path case08 drives. WS-ERR-FLG is off, :77 having SET it so and no statement on this path writing it, which is why the eighty-byte image is the eighty spaces :79 moved into WS-MESSAGE. Only the thirteen COADM1AO items a service run observably produces are pinned, the twelve menu lines and the echoed option. The six header items POPULATE-HEADER-INFO fills at app/cbl/COADM01C.cbl:202-221 and the seventy-eight-byte ERRMSGO that :177 narrows WS-MESSAGE into belong to the controller projection and are pinned by case02 and case15; manufacturing them here would be this fixture doing the controller's work, which is also why the message is reported as the eighty-byte WS-MESSAGE of :38 rather than the narrower screen field. Every width comes from the xxxI PICTURE clauses of app/cpy-bms/COADM01.CPY - OPTN00nI PIC X(40) at :60 through :126 and OPTIONI PIC X(2) at :132 - and never from the LENGTH= operand of the mapset. One pointer for a reader arriving here from a sibling fixture: the second term of the invalid-option guard at :128, WS-OPTION > CDEMO-ADMIN-OPT-COUNT, is NOT exercised by this case, because a first entry reads no option at all and :117-134 never runs. That term is driven by AdminMenuServiceTest, which hands the service an option of '05' against the count of 4, and the boundary it rejects is the same table boundary this case pins from the unwritten side - the count bounds the subscript, so :143 can never address slot 5 and BUILD-MENU-OPTIONS can never paint it. The complementary shapes for the table itself are case04 for the first element on the rejection path, case05 for the last active element on this same first paint, and case12, case13 and case14 for the first iteration, the last iteration and the never-written lines. The clock is pinned to 2022-07-19T23:12:32, the instant COADM01C's own version footer at :267 carries, so one clock governs all twenty cases in this directory even where, as here, the header it would reach is not part of the projection; US-ASCII is named explicitly rather than left to a platform default. Every expected value above is STATICALLY DERIVED - read out of the COBOL paragraph that produces it and cross-checked against the copybook byte layout of app/cpy/COADM02Y.cpy, the xxxI PICTURE clauses of app/cpy-bms/COADM01.CPY and the DFHMDF definitions of app/bms/COADM01.bms - and NOT captured from an execution of the legacy program, which is empirically impossible in this environment: no z/OS or CICS runtime, an indexed file handler the available compiler reports as disabled, no Language Environment CEE services, and DFHAID, DFHBMSCA and DFHATTR absent from the repository. ParityHarness's class documentation is the authoritative statement of that provenance, and the substitution is escalated rather than absorbed - risk R-A.",
   "unitKind": "SERVICE",
   "inputs": {},
   "screenRequest": {
@@ -10,15 +10,15 @@
     "pinnedClock": "2022-07-19T23:12:32",
     "charset": "US-ASCII",
     "commarea": {
-      "CDEMO-FROM-TRANID": "CC00",
-      "CDEMO-FROM-PROGRAM": "COSGN00C",
+      "CDEMO-FROM-TRANID": "CU03",
+      "CDEMO-FROM-PROGRAM": "COUSR03C",
       "CDEMO-TO-PROGRAM": "COADM01C",
       "CDEMO-USER-ID": "ADMIN001",
       "CDEMO-USER-TYPE": "A",
-      "CDEMO-PGM-CONTEXT": "1"
+      "CDEMO-PGM-CONTEXT": "0"
     },
     "mapFields": {
-      "OPTIONI": "05"
+      "OPTIONI": "  "
     },
     "forcedOutcomes": {}
   },
@@ -26,8 +26,8 @@
     "nextMapset": "COADM01",
     "nextMap": "COADM1A",
     "navigation": {
-      "CDEMO-FROM-TRANID": "CC00",
-      "CDEMO-FROM-PROGRAM": "COSGN00C",
+      "CDEMO-FROM-TRANID": "CU03",
+      "CDEMO-FROM-PROGRAM": "COUSR03C",
       "CDEMO-TO-TRANID": "    ",
       "CDEMO-TO-PROGRAM": "COADM01C",
       "CDEMO-USER-ID": "ADMIN001",
@@ -58,7 +58,7 @@
           "OPTN010O": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
           "OPTN011O": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
           "OPTN012O": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
-          "OPTIONO": "05"
+          "OPTIONO": "\u0000\u0000"
         },
         "attributes": {
           "ERRMSGC": "DFHRED"
@@ -73,7 +73,7 @@
   "expectedMessages": [
     {
       "channel": "WS_MESSAGE_80",
-      "text": "Please enter a valid option number...                                           "
+      "text": "                                                                                "
     }
   ],
   "normalisations": []

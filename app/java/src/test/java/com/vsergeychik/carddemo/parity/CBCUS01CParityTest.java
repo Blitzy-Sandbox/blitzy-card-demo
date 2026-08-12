@@ -93,7 +93,7 @@ import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException
  * reads {@code Type : BATCH COBOL Program} and {@code Function : Read and print customer data file},
  * and {@code app/jcl/READCUST.jcl} runs it as {@code EXEC PGM=CBCUS01C}. It is a standalone, runnable
  * batch program, not a data-access helper that something else drives.
- * {@link CustomerFileReaderJob} exists precisely to preserve that runnable behaviour, and fourteen of
+ * {@link CustomerFileReaderJob} exists precisely to preserve that runnable behaviour, and fifteen of
  * the twenty cases below reach the program through it, as a Spring Batch tasklet. The divergence is
  * documented rather than resolved by reshaping the program: the names come from the plan and the
  * behaviour comes from the source (rule <strong>R1</strong>, register 0.8.4, practice
@@ -137,14 +137,14 @@ import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException
  * <h2>How the units are reached: no launcher, no HTTP, no context</h2>
  * <p>Two of the four unit kinds are used, and each case states which one it is:
  * <ul>
- *   <li><strong>{@code "unitKind": "BATCH_JOB"}</strong> - fourteen cases. The adapter drives
+ *   <li><strong>{@code "unitKind": "BATCH_JOB"}</strong> - fifteen cases. The adapter drives
  *       {@link CustomerFileReaderJob#customerFileDisplayTasklet()} directly, calling
  *       {@link Tasklet#execute} with a plain {@link StepContribution} and {@link ChunkContext}. There
  *       is no {@code JobLauncher}, no {@code JobLauncherTestUtils}, no job repository write, no
  *       asynchronous executor, no application context and nothing resembling an HTTP layer between
  *       the assertion and the code, so the read order and the display order observed here are the ones
  *       the translated statements produce (gate <strong>G51</strong>).</li>
- *   <li><strong>{@code "unitKind": "SERVICE"}</strong> - six cases. The adapter constructs
+ *   <li><strong>{@code "unitKind": "SERVICE"}</strong> - five cases. The adapter constructs
  *       {@link CustomerService} and calls
  *       {@link CustomerService#readAndPrintCustomerFileTo(SysoutSink)}, which is the production
  *       streaming entry point and the shortest path there is to the decision logic. Both kinds are
@@ -173,15 +173,17 @@ import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException
  *   <tr><td>arranges nothing, and declares a {@code CUSTFILE}</td>
  *       <td>a private in-memory relation holding the declared rows, read through the real
  *           {@link CustomerRepository}</td>
- *       <td>the ordinary path: {@code '00'} per record, then {@code '10'}. Eleven cases</td></tr>
+ *       <td>the ordinary path: {@code '00'} per record, then {@code '10'}. Thirteen cases</td></tr>
  *   <tr><td>arranges nothing, and declares no {@code CUSTFILE} at all</td>
  *       <td>a database with no such relation</td>
- *       <td>{@code 0000-CUSTFILE-OPEN}'s fatal arm, from a dataset that is genuinely not
- *           there - {@code case08}</td></tr>
+ *       <td>{@code 0000-CUSTFILE-OPEN}'s fatal arm, from a dataset that is genuinely not there. No
+ *           case currently declares itself this way - every one of the twenty names its
+ *           {@code CUSTFILE}, two of them as a dataset that exists and holds no row - so this row
+ *           records a shape the adapter supports rather than one a case takes today</td></tr>
  *   <tr><td>arranges an open, read or close outcome</td>
  *       <td>a stubbed repository reporting exactly that status, with the reads assembled from the
  *           case's own declared rows through the real {@link CustomerRecord#decode(String, Charset)}</td>
- *       <td>the {@code WHEN OTHER} arms and both branches of {@code Z-DISPLAY-IO-STATUS}. Eight
+ *       <td>the {@code WHEN OTHER} arms and both branches of {@code Z-DISPLAY-IO-STATUS}. Seven
  *           cases</td></tr>
  * </table>
  * The real relation is used wherever it can be, because it is the only backend against which "the
@@ -348,9 +350,10 @@ class CBCUS01CParityTest {
         /**
          * Nothing is arranged: the case's declared inputs alone decide what happens.
          *
-         * <p>Used by the eleven ordinary cases, and also by {@code case08} - whose {@code OPEN} fails
-         * because it declares no {@code CUSTFILE} at all, which is a property of its inputs and not
-         * something this table has to say.
+         * <p>Used by the thirteen ordinary cases. A case that reaches a fatal arm through its inputs
+         * alone - by declaring no {@code CUSTFILE} at all, so the {@code OPEN}'s metadata probe finds
+         * no such relation - would also be declared this way, because that is a property of its
+         * inputs and not something this table has to say.
          *
          * @return the scenario
          */
@@ -429,21 +432,33 @@ class CBCUS01CParityTest {
     /**
      * One scenario per case, in case order - the arranged input side of all twenty cases.
      *
-     * <p>Twelve cases arrange nothing and differ only in what they seed; eight arrange a failure, and
-     * between them they reach all three abend sites and both arms of {@code Z-DISPLAY-IO-STATUS}:
+     * <p>Thirteen cases arrange nothing and differ only in what they seed; seven arrange a failure,
+     * and between them they reach all three abend sites and both arms of
+     * {@code Z-DISPLAY-IO-STATUS}:
      * <ul>
-     *   <li>{@code case09} and {@code case10} fail the {@code OPEN} at {@code L120}, the first with
-     *       the numeric status {@code '35'} and the second with the extended status {@code '92'} that
-     *       drives the {@code IO-STAT1 = '9'} arm at {@code L162-L168}. {@code case08} fails the same
-     *       {@code OPEN} without arranging anything, because it declares no dataset;</li>
-     *   <li>{@code case12} fails the fourth {@code READ} with {@code '04'}; {@code case13} fails the
-     *       third with {@code '23'} and {@code case14} the fifth with {@code '22'} - two statuses that
-     *       are ordinary branches in the online programs and fatal here, because {@code L94} tests
-     *       only {@code '00'} and {@code L98} only {@code '10'}; and {@code case17} fails the second
-     *       with the permanent-error convention, whose second byte is not a digit at all;</li>
-     *   <li>{@code case15} and {@code case16} fail the {@code CLOSE} at {@code L138}, the first with
-     *       {@code '42'} after three records and the second with the extended status {@code '96'} on a
-     *       run that read nothing.</li>
+     *   <li>{@code case10} and {@code case13} fail the {@code OPEN} at {@code L120}: {@code case10}
+     *       with the extended status {@code '92'}, which drives the {@code IO-STAT1 = '9'} arm at
+     *       {@code L162-L168}, and {@code case13} with {@code '37'}, the attribute-conflict status
+     *       that {@code app/jcl/CUSTFILE.jcl}'s {@code INDEXED} / {@code KEYS(9 0)} /
+     *       {@code RECORDSIZE(500 500)} cluster and the {@code FILE-CONTROL} entry at
+     *       {@code L29-L33} are the two sides of. One open failure therefore renders through each
+     *       arm of {@code Z-DISPLAY-IO-STATUS}. {@code case09} arranges no open failure of its own:
+     *       it pins the {@code PIC 9(03)} upper bound of {@code CUST-FICO-CREDIT-SCORE} instead,
+     *       which is an assertion about a displayed record image and so needs the ordinary path,
+     *       exactly as {@code case08} needs it for the matching lower bound. Nothing is lost by
+     *       that, because the numeric arm its status used to render through is the same arm
+     *       {@code case12}, {@code case13}, {@code case14} and {@code case15} drive;</li>
+     *   <li>{@code case12} fails the fourth {@code READ} with {@code '04'} and {@code case14} the
+     *       fifth with {@code '22'} - a status that is an ordinary branch in the online programs and
+     *       fatal here, because {@code L94} tests only {@code '00'} and {@code L98} only
+     *       {@code '10'}; and {@code case17} fails the second with the permanent-error convention,
+     *       whose second byte is not a digit at all;</li>
+     *   <li>{@code case15} fails the third {@code READ} with {@code '23'}, at the position end of
+     *       file would otherwise have been reported - it seeds two rows and fails the read after
+     *       them, which is the one arrangement no other entry makes and the only way to state that a
+     *       forced status is not quietly re-read as {@code '10'};</li>
+     *   <li>{@code case16} fails the {@code CLOSE} at {@code L138} with the extended status
+     *       {@code '96'} on a run that read nothing.</li>
      * </ul>
      *
      * <p>Deeply immutable: an unmodifiable view over a map of records built once by
@@ -468,10 +483,18 @@ class CBCUS01CParityTest {
         declared.put("case06", Scenario.asDeclared());
         declared.put("case07", Scenario.asDeclared());
 
-        // The dataset is simply not declared, so the OPEN's metadata probe finds no such relation.
+        // case08 seeds one real fixture row and runs the ordinary path, because what it pins is the
+        // zero-filled lower end of CUST-FICO-CREDIT-SCORE PIC 9(03) in a displayed record image.
         declared.put("case08", Scenario.asDeclared());
 
-        declared.put("case09", Scenario.openFails("35"));
+        // case09 arranges nothing for the same reason case08 does not: the two are one pair, pinning
+        // the two ends of CUST-FICO-CREDIT-SCORE PIC 9(03) - case08 the zero-filled minimum 001 at
+        // fixture row 26 and case09 the fully-populated maximum 793 at row 35. Both assert a displayed
+        // 500-character record image, which only the ordinary path produces; an arranged open failure
+        // would abend before the first image reached SYSOUT and neither end of the range would be
+        // asserted at all.
+        declared.put("case09", Scenario.asDeclared());
+
         declared.put("case10", Scenario.openFails("92"));
 
         // case11 arranges nothing on purpose. It is this program's dedicated record-width and FILLER
@@ -479,15 +502,37 @@ class CBCUS01CParityTest {
         // 500-character lines to exist, which only the ordinary path produces. An arranged read failure
         // would abend before the first image was displayed and the case would assert nothing about
         // either gate. Nothing is lost by arranging nothing here, because the fatal read arm is reached
-        // four more times - case12, case13, case14 and case17 - and the numeric branch of
-        // Z-DISPLAY-IO-STATUS that a status of '30' renders through is the same branch case09's '35',
-        // case12's '04', case13's '23', case14's '22' and case15's '42' already drive.
+        // four more times - case12, case14, case15 and case17 - and the numeric branch of
+        // Z-DISPLAY-IO-STATUS that a status of '30' renders through is the same branch case12's '04',
+        // case13's '37', case14's '22' and case15's '23' already drive.
         declared.put("case11", Scenario.asDeclared());
 
         declared.put("case12", Scenario.readFailsAfter(3, FileStatus.RECORD_LENGTH_CONFLICT));
-        declared.put("case13", Scenario.readFailsAfter(2, FileStatus.NOT_FOUND));
+
+        // case13 fails the OPEN with '37' rather than a read: the attribute-conflict status is a
+        // property of the dataset the program is about to open, not of a record it went on to read.
+        // It renders through the ELSE arm of Z-DISPLAY-IO-STATUS, the same arm case12's '04',
+        // case14's '22' and case15's '23' reach from the read site, and differs from each of them in
+        // exactly the two status characters, so between them the arm is pinned as value-driven -
+        // a renderer that hard-coded one image, or that overlaid IO-STATUS anywhere other than
+        // IO-STATUS-04(3:2), passes one of them and fails the others. '37' has no named constant
+        // in FileStatus because no CBCUS01C paragraph tests for it, so it is written here as the
+        // literal the OPEN reports, exactly as case10's '92' is.
+        declared.put("case13", Scenario.openFails("37"));
+
         declared.put("case14", Scenario.readFailsAfter(4, FileStatus.DUPLICATE));
-        declared.put("case15", Scenario.closeFails("42"));
+
+        // case15 arranges '23' at the row count rather than inside the rows, and is not a duplicate of
+        // any other read failure: case12 and case14 fail a read that pre-empts a record that was
+        // there, while case15 seeds exactly two rows so the failing read is the one that would have
+        // reported end of file. That is the boundary Scenario.failingRead documents and the only entry
+        // that reaches it - a repository that answered "no more rows" with '10' regardless of the
+        // arranged status would send this run down the L107 APPL-EOF arm, end the loop, close, and
+        // display the L85 banner, and only a case whose failing read sits at the row count can tell
+        // the two apart. It runs as a BATCH_JOB, so the two record lines already displayed are also
+        // asserted to survive the abend through the tasklet rather than only through the service.
+        declared.put("case15", Scenario.readFailsAfter(2, FileStatus.NOT_FOUND));
+
         declared.put("case16", Scenario.closeFails("96"));
         declared.put("case17", Scenario.readFailsAfter(1, CustomerRepository.PERMANENT_ERROR_STATUS));
         declared.put("case18", Scenario.asDeclared());
@@ -701,8 +746,9 @@ class CBCUS01CParityTest {
         // other: the status the SCENARIOS table arranges must be the status the case file expects to
         // see rendered. A case whose table entry and whose fixture disagreed would otherwise fail with
         // a message about a line, and the line would be the symptom rather than the cause. A fatal case
-        // that arranges nothing can only be case08's absent dataset, whose OPEN probe is refused and
-        // therefore reports the permanent-error convention.
+        // that arranges nothing could only be one whose dataset is absent, whose OPEN probe is refused
+        // and which therefore reports the permanent-error convention; no case declares itself that way
+        // today, and the arm stays because the alternative is a null the reader has to reason about.
         String arranged = scenarioFor(declaredCase.caseId()).failingStatus();
         assertThat(texts.get(texts.size() - 2))
                 .as("%s: the rendered status must be the one this case arranges - %s", where,

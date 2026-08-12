@@ -1,7 +1,7 @@
 {
   "program": "CBTRN02C",
   "caseId": "case10",
-  "description": "The credit-limit boundary, exactly on it. ACCT-CREDIT-LIMIT is substituted for 504.77, which is precisely WS-TEMP-BAL, and the test at :407 is IF ACCT-CREDIT-LIMIT >= WS-TEMP-BAL - greater than OR EQUAL - so equality CONTINUEs and the transaction posts. Both operands are PIC S9(10)V99 and PIC S9(09)V99 respectively, so both are compared at scale 2 with no rounding anywhere: the keyword ROUNDED appears zero times in all twenty-eight programs, which is why every store in this migration truncates. This case, case11 and case12 are one cent apart and together they pin the comparison's direction, its inclusiveness and its scale; a mode that carried the excess into the last retained digit would move the boundary and one of the three would fail.",
+  "description": "CBTRN02C's credit-limit boundary one cent past it - the exclusive side, where the comparison turns false and the transaction is rejected. THE ASSERTION. :407 reads IF ACCT-CREDIT-LIMIT >= WS-TEMP-BAL, and this case puts the left operand exactly one cent below the right: 504.76 against 504.77. The test is therefore false, the ELSE at :409 is taken, :410-412 store 102 into WS-VALIDATION-FAIL-REASON and 'OVERLIMIT TRANSACTION' into WS-VALIDATION-FAIL-REASON-DESC, and :211 sends the record to 2500-WRITE-REJECT-REC instead of 2000-POST-TRANSACTION. It is the exact mirror of case09, which holds the same daily transaction against the same account with ACCT-CREDIT-LIMIT one cent higher, where equality passes and all three posting paragraphs run: THE TWO SEEDS DIFFER IN EXACTLY ONE CHARACTER - byte 36 of the inline account row, the low-order overpunch digit of ACCT-CREDIT-LIMIT, G there and F here - and they must produce opposite outcomes. case09 proves the comparison is inclusive; this one proves it is bounded. An implementation that compared at scale 0 or 1, or that carried the excess into the last retained digit instead of truncating, would find 504 >= 504 or 504.8 >= 504.8 and post this transaction, and catching that is why this file exists. SIBLINGS, so a failure localises. case03 states the same 102 arm from wholly unmodified fixtures and is this folder's canonical statement of the 430-byte record shape; case04 reaches the arm from a limit of 100.00, far below the amount rather than a cent below it; case05 rejects with 103 alone, the limit having passed; case06 is the asymmetry case where BOTH guards fail and 103 overwrites 102; and case12 states this same one-cent shortfall in the folder's earlier, record-image-only form. THE CASCADE, STAGE BY STAGE. 1500-A-LOOKUP-XREF at :380-392 finds card 4859452612877065 in the cross-reference, so reason 100 is not stored. The reason still being 0, the guard at :372-376 - the only genuine short-circuit in this cascade - performs 1500-B-LOOKUP-ACCT, which finds account 00000000007, so reason 101 is not stored either. Stage three is the one this case is about, and it fails. STAGE FOUR STILL RUNS, and that is the trap this case is arranged to avoid rather than to spring. :414 is NOT inside the ELSE of :409 and there is no early exit between them, so the expiration test executes whether or not 102 was just stored: '2024-12-13' >= '2022-06-10' - ACCT-EXPIRAION-DATE PIC X(10), the copybook's own misspelling kept verbatim, against DALYTRAN-ORIG-TS (1:10), a ten-byte reference modification of the twenty-six-byte timestamp - is TRUE, so :415 CONTINUEs and the 102 survives to be written. Holding the expiration date at the fixture's own 2024-12-13 is deliberate: an expired account would overwrite 102 with 103 and this file would stop being about the limit at all, which is exactly what case06 shows. SCENARIO. dailytran row 0, unmodified: DALYTRAN-ID 0000000000683580 on card 4859452612877065, type 01, category 0001, DALYTRAN-AMT 0000005047G - that is +504.77 - DALYTRAN-ORIG-TS 2022-06-10 19:27:53.000000 and DALYTRAN-PROC-TS 26 spaces. cardxref row 20 resolves that card to XREF-CUST-ID 000000007 and XREF-ACCT-ID 00000000007. tcatbal row 6 is key 00000000007010001 at 0.00 with its 22 reserved bytes holding zeros, seeded so that leaving it untouched becomes an assertion rather than an omission. WHY THE ACCOUNT ROW IS INLINE AND SYNTHETIC. No account in acctdata.txt sits exactly one cent below the WS-TEMP-BAL of a transaction whose card resolves to it - all 300 dailytran rows were re-derived against all 50 accounts, and the count of such pairs is zero, just as it is zero for the equality case09 needs - so this boundary is unreachable from unmodified fixture data and no choice of fromRow can produce it. The single 300-byte ACCTFILE row is therefore acctdata row 6, account 00000000007, with exactly one span rewritten: ACCT-CREDIT-LIMIT, bytes 25 to 36, from the fixture's 00000020650{ (2065.00) to 00000005047F (504.76). THE OVERPUNCH DERIVATION, so no reviewer has to take that byte on trust. The convention in these fixtures is a positive low-order digit 0-9 written as { A B C D E F G H I and a negative one as } J K L M N O P Q R, and the fixtures confirm it twice over from data this very case seeds: 0000005047G is +504.77, so G is a positive 7, and 00000001930{ is +193.00, so { is a positive 0. 504.76 at PIC S9(10)V99 is the twelve digits 000000050476; its low-order digit 6 with a positive sign is F; hence 00000005047F. Every other span is the fixture's own - ACCT-ACTIVE-STATUS Y, ACCT-CURR-BAL 00000001930{ (193.00), ACCT-CASH-CREDIT-LIMIT 00000002640{ (264.00), ACCT-OPEN-DATE 2012-10-12, ACCT-EXPIRAION-DATE 2024-12-13, ACCT-REISSUE-DATE 2024-12-13, both cycle amounts 00000000000{ (0.00), ACCT-ADDR-ZIP A000000000, ACCT-GROUP-ID ten spaces and FILLER 178 spaces: a complete record with no placeholder span (practice B1). ARITHMETIC, re-derivable by hand from the raw zoned bytes without running anything. COMPUTE WS-TEMP-BAL at :403-405 is ACCT-CURR-CYC-CREDIT - ACCT-CURR-CYC-DEBIT + DALYTRAN-AMT, that is 00000000000{ minus 00000000000{ plus 0000005047G, so 0.00 - 0.00 + 504.77 = 504.77. All fifty fixture accounts carry both cycle amounts at 0.00, which is what collapses the three-term formula to the transaction amount and makes this boundary constructible by moving one field; case11 exercises the same formula with all three terms non-zero. The receiver is WS-TEMP-BAL PIC S9(09)V99 at :187 and the keyword ROUNDED appears ZERO times in this program - and zero times across all twenty-eight - so the store truncates: scale exactly 2 with RoundingMode.DOWN, never HALF_UP and never HALF_EVEN (gates G23 and G24). ACCT-CREDIT-LIMIT is PIC S9(10)V99, a wider integer part at the very same scale, so neither operand is rescaled to make the two comparable and the shortfall is exactly 504.77 - 504.76 = 0.01. WHAT IS AND IS NOT WRITTEN. :211 sends a record carrying a non-zero reason to 2500, so 2000-POST-TRANSACTION is never entered and none of its three effects happens: no TCATBALF read, create or rewrite, no ACCTFILE rewrite and no TRANFILE write. That is asserted rather than assumed. TCATBALF comes back as the fixture's own 0000000000{ with its 22 zero bytes intact; ACCTFILE comes back byte-identical to its seed, ACCT-CURR-BAL still 193.00 and ACCT-CREDIT-LIMIT still the seeded 00000005047F, so the boundary value is pinned on the way out as well as on the way in; TRANFILE was seeded empty and is pinned at zero rows on the final-state channel; and DALYTRAN and XREFFILE are pinned too, because the program must leave its inputs undisturbed. 2500-WRITE-REJECT-REC then does exactly two MOVEs and one WRITE. :447 moves the whole DALYTRAN-RECORD group into REJECT-TRAN-DATA, so FD-REJECT-RECORD is the 350 bytes of dailytran row 0 verbatim, DALYTRAN-PROC-TS included as its 26 spaces and the trailing FILLER as its 20. :448 moves WS-VALIDATION-TRAILER, whose two items are declared at :180-182: WS-VALIDATION-FAIL-REASON PIC 9(04), numeric and therefore zero-filled on the LEFT, so 102 is written as 0102; and WS-VALIDATION-FAIL-REASON-DESC PIC X(76), alphanumeric and therefore space-padded on the RIGHT, so the 21 characters of 'OVERLIMIT TRANSACTION' are followed by 55 spaces. WIDTHS. 350 + 4 + 76 = 430, which is exactly the LRECL app/jcl/POSTTRAN.jcl:36 declares for DALYREJS with RECFM=F and BLKSIZE=0 (gates G19 and G20). DALYTRAN-RECORD is 16 + 2 + 4 + 10 + 100 + 11 + 9 + 50 + 50 + 10 + 16 + 26 + 26 + 20 = 350. ACCOUNT-RECORD is 11 + 1 + 12 + 12 + 12 + 10 + 10 + 10 + 12 + 12 + 10 + 10 + 178 = 300. TRAN-CAT-BAL-RECORD is 11 + 2 + 4 + 11 + 22 = 50. CARD-XREF-RECORD is 16 + 9 + 11 + 14 = 50, of which cardxref.txt holds only the first 36: the row is seeded at its true on-disk width and widened once, at seed time, by CARDXREF_FILLER_PAD_36_TO_50, and nothing is padded at comparison time (gate G16). Every pinned record is asserted twice over - field by field, and as a whole image whose length proves the total and therefore proves that each FILLER span was emitted rather than skipped (gate G21). NO CLOCK IS CONSUMED. TRAN-PROC-TS is the only wall-clock-derived value in this program and nothing here reaches it: Z-GET-DB2-FORMAT-TIMESTAMP is performed at :437, inside 2000-POST-TRANSACTION, which this run never enters, so a rejected record carries no processing timestamp at all. The harness still pins the instant at 2022-07-19T23:12:34 - the analysed revision's own stamp, Ver CardDemo_v1.0-15-g27d6c6f-68 Date 2022-07-19 - so the run is deterministic (practice B7), but no expected byte here depends on it. Every byte is read and written as US-ASCII, named explicitly rather than left to a platform default. RETURN CODE, MESSAGES AND CHANNELS. WS-TRANSACTION-COUNT is incremented at :206 for every record read, rejected or not, so the first count line reads 000000001; WS-REJECT-COUNT is incremented at :214, so the second reads 000000001 as well; and because :229-231 tests the reject count, MOVE 4 TO RETURN-CODE fires and the step ends with 4. The four DISPLAY lines are byte-exact, including the single space before the colon at :227 and the TWO spaces before it at :228. DALYREJS is opened unconditionally at :198 and holds exactly one 430-byte record on the writes channel - the generation POSTTRAN.jcl:34 catalogues with DISP=(NEW,CATLG,DELETE). POSTTRAN.jcl:23 is EXEC PGM=CBTRN02C with no PARM=, so there are no job parameters. PROVENANCE. Every expected value here is STATICALLY DERIVED - by structured reading of the COBOL paragraphs cited above, cross-checked against the copybook byte layouts in app/cpy, the DD contract in app/jcl/POSTTRAN.jcl and the real ASCII fixtures. It is NOT captured from, recorded against or replayed from any execution of the legacy COBOL: running these programs is empirically impossible in this environment - no z/OS or CICS runtime exists, the available compiler reports its indexed file handler disabled, no Language Environment CEE* services are present, and the IBM-supplied DFHAID, DFHBMSCA and DFHATTR copybooks are absent from the repository. Only the provenance of the expected values is substituted; the 20 cases per program, the field-for-field diffing and the diff-count-equals-zero gate all stand, and the substitution is escalated for explicit user confirmation as risk R-A rather than quietly absorbed. No user-specified rules govern this project - review_rules returns 'No user rules provided' - so this fixture is held instead to the enterprise best-practice substitutes: B1 a complete 300-byte account row with no placeholder span, B3 the reference inputs under app/cbl, app/cpy, app/jcl and app/data left untouched, B5 behaviour preserved exactly - a one-cent shortfall rejects, and that is correct rather than something to soften, B7 the clock pinned rather than read, B8 explicit field-name-to-value pairs beside every record image, an explicitly named code page and money at scale 2 with RoundingMode.DOWN, B11 this derivation and these width sums written out so a reviewer can re-check them against the copybooks by hand, and B12 this provenance stated plainly.",
   "unitKind": "BATCH_JOB",
   "inputs": {
     "DALYTRAN": {
@@ -16,7 +16,7 @@
     },
     "ACCTFILE": {
       "rows": [
-        "00000000007Y00000001930{00000005047G00000002640{2012-10-122024-12-132024-12-1300000000000{00000000000{A000000000                                                                                                                                                                                            "
+        "00000000007Y00000001930{00000005047F00000002640{2012-10-122024-12-132024-12-1300000000000{00000000000{A000000000                                                                                                                                                                                            "
       ]
     },
     "TCATBALF": {
@@ -30,35 +30,86 @@
       "copybook": "CVTRA05Y"
     }
   },
-  "expectedWrites": [],
+  "jobParameters": {},
+  "expectedWrites": [
+    {
+      "dataset": "DALYREJS",
+      "rowIndex": 0,
+      "fields": {
+        "FD-REJECT-RECORD": "0000000000683580010001POS TERM  Purchase at Abshire-Lowe                                                                            0000005047G800000000Abshire-Lowe                                      North Enoshaven                                   72112     48594526128770652022-06-10 19:27:53.000000                                              ",
+        "WS-VALIDATION-FAIL-REASON": "0102",
+        "WS-VALIDATION-FAIL-REASON-DESC": "OVERLIMIT TRANSACTION                                                       "
+      },
+      "expectedBytes": "0000000000683580010001POS TERM  Purchase at Abshire-Lowe                                                                            0000005047G800000000Abshire-Lowe                                      North Enoshaven                                   72112     48594526128770652022-06-10 19:27:53.000000                                              0102OVERLIMIT TRANSACTION                                                       "
+    }
+  ],
   "expectedFinalState": [
     {
       "dataset": "DALYTRAN",
       "rowIndex": 0,
+      "fields": {
+        "DALYTRAN-ID": "0000000000683580",
+        "DALYTRAN-TYPE-CD": "01",
+        "DALYTRAN-CAT-CD": "0001",
+        "DALYTRAN-SOURCE": "POS TERM  ",
+        "DALYTRAN-DESC": "Purchase at Abshire-Lowe                                                                            ",
+        "DALYTRAN-AMT": "504.77",
+        "DALYTRAN-MERCHANT-ID": "800000000",
+        "DALYTRAN-MERCHANT-NAME": "Abshire-Lowe                                      ",
+        "DALYTRAN-MERCHANT-CITY": "North Enoshaven                                   ",
+        "DALYTRAN-MERCHANT-ZIP": "72112     ",
+        "DALYTRAN-CARD-NUM": "4859452612877065",
+        "DALYTRAN-ORIG-TS": "2022-06-10 19:27:53.000000",
+        "DALYTRAN-PROC-TS": "                          ",
+        "FILLER": "                    "
+      },
       "expectedBytes": "0000000000683580010001POS TERM  Purchase at Abshire-Lowe                                                                            0000005047G800000000Abshire-Lowe                                      North Enoshaven                                   72112     48594526128770652022-06-10 19:27:53.000000                                              "
     },
     {
       "dataset": "XREFFILE",
       "rowIndex": 0,
+      "fields": {
+        "XREF-CARD-NUM": "4859452612877065",
+        "XREF-CUST-ID": "000000007",
+        "XREF-ACCT-ID": "00000000007",
+        "FILLER": "              "
+      },
       "expectedBytes": "485945261287706500000000700000000007              "
     },
     {
       "dataset": "ACCTFILE",
       "rowIndex": 0,
-      "expectedBytes": "00000000007Y00000006977G00000005047G00000002640{2012-10-122024-12-132024-12-1300000005047G00000000000{A000000000                                                                                                                                                                                            "
+      "fields": {
+        "ACCT-ID": "00000000007",
+        "ACCT-ACTIVE-STATUS": "Y",
+        "ACCT-CURR-BAL": "193.00",
+        "ACCT-CREDIT-LIMIT": "504.76",
+        "ACCT-CASH-CREDIT-LIMIT": "264.00",
+        "ACCT-OPEN-DATE": "2012-10-12",
+        "ACCT-EXPIRAION-DATE": "2024-12-13",
+        "ACCT-REISSUE-DATE": "2024-12-13",
+        "ACCT-CURR-CYC-CREDIT": "0.00",
+        "ACCT-CURR-CYC-DEBIT": "0.00",
+        "ACCT-ADDR-ZIP": "A000000000",
+        "ACCT-GROUP-ID": "          ",
+        "FILLER": "                                                                                                                                                                                  "
+      },
+      "expectedBytes": "00000000007Y00000001930{00000005047F00000002640{2012-10-122024-12-132024-12-1300000000000{00000000000{A000000000                                                                                                                                                                                            "
     },
     {
       "dataset": "TCATBALF",
       "rowIndex": 0,
-      "expectedBytes": "000000000070100010000005047G0000000000000000000000"
-    },
-    {
-      "dataset": "TRANFILE",
-      "rowIndex": 0,
-      "expectedBytes": "0000000000683580010001POS TERM  Purchase at Abshire-Lowe                                                                            0000005047G800000000Abshire-Lowe                                      North Enoshaven                                   72112     48594526128770652022-06-10 19:27:53.0000002022-07-19-23.12.34.000000                    "
+      "fields": {
+        "TRANCAT-ACCT-ID": "00000000007",
+        "TRANCAT-TYPE-CD": "01",
+        "TRANCAT-CD": "0001",
+        "TRAN-CAT-BAL": "0.00",
+        "FILLER": "0000000000000000000000"
+      },
+      "expectedBytes": "000000000070100010000000000{0000000000000000000000"
     }
   ],
-  "expectedReturnCode": 0,
+  "expectedReturnCode": 4,
   "expectedMessages": [
     {
       "channel": "DISPLAY_LINE",
@@ -70,7 +121,7 @@
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "TRANSACTIONS REJECTED  :000000000"
+      "text": "TRANSACTIONS REJECTED  :000000001"
     },
     {
       "channel": "DISPLAY_LINE",
@@ -87,7 +138,7 @@
     {
       "dataset": "DALYREJS",
       "channel": "WRITES",
-      "rowCount": 0,
+      "rowCount": 1,
       "recordLength": 430
     },
     {
@@ -117,7 +168,7 @@
     {
       "dataset": "TRANFILE",
       "channel": "FINAL_STATE",
-      "rowCount": 1,
+      "rowCount": 0,
       "recordLength": 350
     }
   ]

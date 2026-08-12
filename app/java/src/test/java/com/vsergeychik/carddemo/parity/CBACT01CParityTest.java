@@ -459,8 +459,9 @@ class CBACT01CParityTest {
      * <p>The rows are ordered by the record image ascending, which is the order the browse itself
      * reads them in: {@code app/cbl/CBACT01C.cbl:L29-L33} declares {@code ACCTFILE} as
      * {@code ORGANIZATION INDEXED}, {@code ACCESS MODE SEQUENTIAL}, {@code RECORD KEY FD-ACCT-ID}, so
-     * key order and not insertion order is what a sequential pass sees. {@code case20} seeds three
-     * records in descending key order to pin exactly that.
+     * key order and not insertion order is what a sequential pass sees. {@code case09} seeds five
+     * records in strictly descending key order and expects them read back ascending, to pin exactly
+     * that.
      *
      * <p>Nothing is reported for a dataset whose stored rows are not {@code CVACT01Y} records. A
      * 122-byte or 301-byte row has no 300-byte layout to be described by, and describing it under one
@@ -531,7 +532,7 @@ class CBACT01CParityTest {
      * Stores the case's rows, verbatim and in the order the case declared them.
      *
      * <p>Declaration order is preserved and deliberately not sorted here. A KSDS browse reads in key
-     * order whatever order the records were loaded in, and {@code case20} exists to prove the
+     * order whatever order the records were loaded in, and {@code case09} exists to prove the
      * translation does the same - so the seed must be free to disagree with the read order.
      *
      * @param template the template over this case's relation

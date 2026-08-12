@@ -1,12 +1,12 @@
 {
   "program": "COACTVWC",
   "caseId": "case08",
-  "description": "WHEN DFHRESP(NOTFND) of 9200-GETCARDXREF-BYACCT at :741-758, produced by seeded rows rather than by a forced outcome: the CXACAIX window holds accounts 27, 2 and 20 and the filter names 50. The STRING at :747-757 composes 81 characters into WS-RETURN-MSG PIC X(75), so the last six are lost - the truncation is the assertion. FLG-ACCTFILTER-NOT-OK then makes the guard at :697 fire, which is the ONE guard in 9000-READ-ACCT that really does stop the sequence, so neither ACCTDAT nor CUSTDAT is read.",
+  "description": "The SECOND disjunct of the ordered OR at :666-667 - OR CC-ACCT-ID EQUAL ZEROES - and the pair to case07, which takes the FIRST. An OR is two branches, and until both sides have driven the arm on their own only one of them has been proved to be there. ACCTSIDI arrives as 00000000000, eleven zero characters and nothing else, chosen because it is the one value that is REJECTED WHILE BEING PERFECTLY WELL FORMED: it is exactly eleven characters, so it fills ACCTSIDI PIC 99999999999 at app/cpy-bms/COACTVW.CPY:60 completely and no PIC X right-pad by the MOVE at :632 contributes to the outcome, and every one of those characters is a digit, so IS NOT NUMERIC - a whole-field class condition - is FALSE. THE FIRST DISJUNCT DOES NOT FIRE HERE, AND THAT IS THE ENTIRE POINT. The rejection can only come from the right-hand side of the OR, so this case is what proves that side is evaluated and load-bearing: a translation that implemented the class test alone would accept eleven zeros, fall through to :678-679, set FLG-ACCTFILTER-ISVALID and go on to read three files for account zero, and case07 would pass while it did so. FIRST OF THREE THINGS THIS CASE STATES OUTRIGHT: AN ALL-ZEROES FIELD DOES NOT TAKE THE BLANK BRANCH. Zero and blank are different rejections in this paragraph, with different flags, different messages and different screen treatment, and collapsing them is the easy mistake. The trace is mechanical. In 2200-EDIT-MAP-INPUTS the test at :628-629 finds ACCTSIDI to be neither the asterisk of case06 nor the SPACES of case05, so the ELSE at :631-632 runs and MOVE ACCTSIDI TO CC-ACCT-ID carries the eleven zeros over unchanged. 2210-EDIT-ACCOUNT then SETs FLG-ACCTFILTER-NOT-OK at :650 before testing anything, and its not-supplied guard at :653-654 asks whether CC-ACCT-ID EQUAL LOW-VALUES OR EQUAL SPACES: both disjuncts are FALSE, because a field of eleven zero digits is neither x'00' nor a space in any of its bytes. So the blank arm at :655-662 is skipped entirely, CC-ACCT-ID is never overwritten with LOW-VALUES, WS-PROMPT-FOR-ACCT is never set, and control reaches the numeric test - which is the only route by which the second disjunct can be reached at all. The ordering of the two guards is itself part of the contract (gate G30): the not-supplied test runs first, so a blank field is reported as blank rather than as zero. SECOND: THE EMITTED TEXT IS THE LITERAL THE ARM MOVES, AND ITS ODDITIES ARE BEHAVIOUR RATHER THAN TYPOGRAPHY (practice B5). WS-RETURN-MSG PIC X(75) at :117 declares SEARCHED-ACCT-ZEROES at :125-126 with the VALUE 'Account number must be a non zero 11 digit number', forty-nine characters, and this arm SETS IT NOT. What it does at :671-673 is MOVE a different, fifty-character literal held on :672: 'Account Filter must  be a non-zero 11 digit number'. Every divergence from the condition name is deliberate: the word is Filter and not number, there are TWO SPACES between must and be, and non-zero is hyphenated where the 88-level reads non zero. The value was copied character for character out of app/cbl/COACTVWC.cbl by tool and byte-diffed against it rather than retyped, so a reviewer who 'corrects' the double space or the hyphen breaks the parity gate instead of tidying it. case07 emits this same literal from this same MOVE, which is the point of the pair: two different conditions, one indistinguishable message, and no way for an operator to tell which half of the OR rejected the entry. THIRD, AND IT IS THE IRONY WORTH PINNING: THE 88-LEVEL LITERALLY NAMED SEARCHED-ACCT-ZEROES EXISTS FOR PRECISELY THIS CONDITION AND IS NEVER USED. It is declared at :125-126, it is spelt for the branch this very case drives, and no statement in the program ever SETs it - nor SEARCHED-ACCT-NOT-NUMERIC at :127-128, whose VALUE is character-identical to it, so the two conditions could not be told apart even from each other were they set. Both are preserved as declared and neither is wired up: implementing the condition the name promises would change the emitted bytes and would be a new feature, not a translation (practice B5). The widths are mechanical (practice B11). The fifty characters are right-padded with spaces to the seventy-five of WS-RETURN-MSG at :117 and then to the seventy-eight of ERRMSGO PIC X(78) at COACTVW.CPY:464 by the MOVE at :532, so ERRMSGO is the literal followed by twenty-eight spaces. INFOMSGO carries 'Enter or update id of account to display' from the WS-PROMPT-FOR-INPUT 88-level at :113-114, which measures FORTY characters and therefore fills WS-INFO-MSG PIC X(40) at :110 exactly with no pad of its own, before the MOVE at :534 extends it with five spaces to the forty-five of INFOMSGO PIC X(45) at COACTVW.CPY:458. THE MESSAGE SURVIVES TO THE RESPONSE. 2210 leaves FLG-ACCTFILTER-NOT-OK - VALUE '0' at :59 - set at :669 rather than FLG-ACCTFILTER-BLANK, VALUE ' ' at :61, so when control returns to 2200-EDIT-MAP-INPUTS the cross-field edit at :639-642 finds its condition false and does not perform SET NO-SEARCH-CRITERIA-RECEIVED TO TRUE. ERRMSGO therefore still reads the literal that :671-673 moved, where case05 and case06 have theirs overwritten by 'No input received' from :123-124 on the blank arm. CDEMO-PGM-CONTEXT arrives 1 and CDEMO-FROM-PROGRAM is COCRDLIC rather than LIT-MENUPGM, so the guard at :282-284 does not fire and :288-292 splits the 172-byte DFHCOMMAREA into the 160 bytes of app/cpy/COCOM01Y.cpy:21-44 and the twelve of :213-216. EIBAID is DFHENTER, so YYYY-STORE-PFKEY takes its first arm (COPY 'CSSTRPFY' at :913) and the PF-key gate at :306-314 leaves it alone. The main EVALUATE TRUE at :323-383 is order-sensitive (gate G30) - PFK03 :324, PGM-ENTER :353, PGM-REENTER :361, WHEN OTHER :375 - and this case takes the third arm, where 2000-PROCESS-INPUTS runs, IF INPUT-ERROR at :364 is true, 1000-SEND-MAP runs at :365-366 and :367 leaves through GO TO COMMON-RETURN. That forward-only GO TO is restructured to a plain return (rule R7) and is why the trailing IF INPUT-ERROR guard at :387-392 is bypassed and the map is sent once rather than twice; the two forward GO TOs of 2210 at :661 and :676 are the same idiom. 9000-READ-ACCT at :369 never runs, so NO DATASET IS READ ON THIS PATH - an assertion in its own right rather than an omission. Gates G45 and G47 are consequently NOT exercised here, and no read is invented to reach them: case03 drives all three read sites at NORMAL, case10 and case12 drive NOTFND, and case09, case11 and case13 drive WHEN OTHER. 1100-SCREEN-INIT at :431-455 group-moves LOW-VALUES over the whole CACTVWAO area at :432 and then sets only the six header items, so every field this path does not touch stays x'00' - including the five PIC +ZZZ,ZZZ,ZZZ.99 money receivers at COACTVW.CPY:302, :314, :326, :332 and :344, which are LOW-VALUES rather than an edited '+           .00' precisely because no read populated them. 1200-SETUP-SCREEN-VARS at :460-535 takes its ELSE at :464 because EIBCALEN is 172, and inside it FLG-ACCTFILTER-BLANK is FALSE, so it takes the ELSE at :467-468 and MOVE CC-ACCT-ID TO ACCTSIDO ECHOES THE REJECTED VALUE THE OPERATOR TYPED back to the screen - 00000000000 in ACCTSIDO PIC X(11) at COACTVW.CPY:284, neither the LOW-VALUES of case05 nor the asterisk of case06. Neither FOUND-ACCT-IN-MASTER nor FOUND-CUST-IN-MASTER is set, so the ten account items at :471-491 and the seventeen customer items at :493-523 are never projected. WS-INFO-MSG was never set on this path, so the guard at :528-530 fires and the prompt text reaches INFOMSGO. 1300-SETUP-SCREEN-ATTRS at :541-572 IS THE OTHER HALF OF GATE G38. It moves DFHBMFSE into ACCTSIDA of the INPUT map at :543, which is metadata and never payload; it positions the cursor through the EVALUATE at :546-552 whose two named arms at :547-548 have bodies identical to its WHEN OTHER at :550-551, all three moving -1 into ACCTSIDL, and that duplication is preserved rather than collapsed (practice B5); it sets ACCTSIDC to DFHDFCOL at :555; IT THEN TAKES :557-559 and moves DFHRED into ACCTSIDC, because the flag is NOT-OK; and it DOES NOT take :561-565, whose test requires FLG-ACCTFILTER-BLANK. SO THIS CASE IS DFHRED WITH NO ASTERISK, which is exactly the contract of common/FieldAttributeSetter - DFHRED when the flag is NOT-OK or BLANK and the context is REENTER, the asterisk only when the flag is BLANK - and note that the asterisk would have overwritten ACCTSIDO at :563 had the blank arm been taken, so the echo of the eleven zeros and the absence of the marker are the same fact seen twice. The highlight is inline at :555-565; COACTVWC does not COPY CSSETATY. :567-571 takes its ELSE and colours INFOMSGC DFHNEUTR rather than DFHBMDAR. DFHRED, DFHDFCOL, DFHNEUTR and DFHDFHI are reproduced in common/BmsAttributes from IBM CICS documentation because DFHBMSCA and DFHATTR are IBM-supplied and absent from this repository (risk R-D), and an attribute value is metadata rather than a payload member. 1400-SEND-SCREEN at :577-591 names COACTVW at :579 and CACTVWA at :580 and sets CDEMO-PGM-REENTER at :581, so the returned context is 1; :602 names COACTVWC as the next program, and because a map was sent the turn ends at COMMON-RETURN as a RETURN_TRANSID rather than an XCTL. CDEMO-ACCT-ID comes back eleven zeros from MOVE ZERO TO CDEMO-ACCT-ID at :675 - which here is indistinguishable from the value the operator typed, so the assertion that matters is that the commarea field was WRITTEN by :675 and not carried in from the request; the source writes ZERO here and ZEROES at :660 on the blank arm, a wording difference with no effect that is recorded rather than harmonised (practice B5). CDEMO-CUST-ID, CDEMO-CARD-NUM and the three name fields keep what INITIALIZE left at :268-270 because no read ran. All sixteen commarea fields travel in the payload and none on the server (gate G37, rule R6); CDEMO-LAST-MAP and CDEMO-LAST-MAPSET are the X(7) items of COCOM01Y:43-44 and come back as the caller set them. The unit is account.AccountViewController constructed as a plain Java object, handed its three fixture-backed repositories and a fixed clock, with its handler called directly: no MockMvc, no test REST template, no servlet container and no JobLauncher anywhere in the path (gate G51). No reachable path here calls CEE3ABD - the WHEN OTHER at :375-382 leaves through SEND-PLAIN-TEXT at :877-887, which is a bare EXEC CICS RETURN - so RETURN-CODE is 0 and gates G35 and G32 are not applicable. COACTVWC issues no WRITE, no REWRITE and no DELETE, so the write channel is empty as a positive assertion, and all five seeded rows are pinned unchanged on the final-state channel, each one field by field and again as a whole record image so that the 50-, 300- and 500-byte widths and their space-filled FILLER spans are both asserted (gates G19 and G21). The cross-reference rows are seeded at their unpadded 36 bytes and normalised once, at seed time, to the 50 that app/cpy/CVACT03Y.cpy declares (gate G16, risk R-F). This is one of exactly twenty cases in this directory (gate G15) and it must diff to zero (gate G18). Two things this case states rather than assumes, because the frozen contract in parity/ParityCase.java outranks any other description of it. First, THE 78-BYTE ERRMSGO AND THE 45-BYTE INFOMSGO ARE PINNED AS SCREEN SEND FIELDS AND NOT AS expectedMessages: that member carries lines a program EMITS, the harness records one only on the SEND-PLAIN-TEXT path where no map is sent, and this path sends a map - so a message declared there would be compared against an empty observed list and reported as a difference rather than as the expectation it was meant to be. Second, THREE DATASETS ARE SEEDED AND NOT FIVE: CARDDAT and CARDAIX are declared as PIC X(8) literals at :184-193 and never appear in an EXEC CICS READ, which is the program's own inconsistency and is recorded rather than tidied (practices B4 and B5), and it is why AccountViewController takes three repositories and why the case set's own contract requires exactly CCXREF, ACCTDAT and CUSTDAT. This file is the structural twin of case07 by construction: it was DERIVED from it and differs in exactly three places - this description, the caseId, and the eleven bytes of the account filter, which appear twice because ACCTSIDO at :468 echoes the ACCTSIDI the request supplied. Anything else differing between the two would mean one of them is wrong. Statically derived, never captured from a live COBOL execution (practice B12, risk R-A): every expected value comes from app/cbl/COACTVWC.cbl, the xxxI and xxxO PICTURE clauses of app/cpy-bms/COACTVW.CPY, the byte offsets of app/cpy/CVACT03Y.cpy, app/cpy/CVACT01Y.cpy and app/cpy/CVCUS01Y.cpy - including the misspelled ACCT-EXPIRAION-DATE and the hyphenated CUST-DOB-YYYY-MM-DD, both preserved verbatim - the titles at app/cpy/COTTL01Y.cpy:19 and the ACTIVE :22, :21 being commented out, and the real fixture rows cardxref.txt 0-based rows 0 to 2, acctdata.txt 0-based row 49 and custdata.txt 0-based row 49. The clock is pinned at 2022-07-19T23:15:58, so the two FUNCTION CURRENT-DATE reads at :434 and :441 yield 07/19/22 and 23:15:58 reproducibly (practice B7), every image is US-ASCII with its trailing spaces and its LOW-VALUES written out explicitly (practice B8), and review_rules reports no user rules for this project - so no user rule governs this fixture and the plan's practices B1, B3, B4, B5, B7, B8, B11 and B12 bind in their place, cited above where they apply.",
   "unitKind": "CONTROLLER_POJO",
   "inputs": {
     "CCXREF": {
       "fixture": "cardxref.txt",
-      "fromRow": 1,
+      "fromRow": 0,
       "rowCount": 3
     },
     "ACCTDAT": {
@@ -20,10 +20,11 @@
       "rowCount": 1
     }
   },
+  "jobParameters": {},
   "screenRequest": {
     "eibcalen": 172,
     "aid": "DFHENTER",
-    "pinnedClock": "2022-07-19T23:12:32",
+    "pinnedClock": "2022-07-19T23:15:58",
     "charset": "US-ASCII",
     "commarea": {
       "CDEMO-FROM-TRANID": "CCLI",
@@ -35,7 +36,7 @@
       "CDEMO-LAST-MAPSET": "COCRDLI"
     },
     "mapFields": {
-      "ACCTSIDI": "00000000050"
+      "ACCTSIDI": "00000000000"
     },
     "forcedOutcomes": {}
   },
@@ -55,7 +56,7 @@
       "CDEMO-CUST-FNAME": "                         ",
       "CDEMO-CUST-MNAME": "                         ",
       "CDEMO-CUST-LNAME": "                         ",
-      "CDEMO-ACCT-ID": "00000000050",
+      "CDEMO-ACCT-ID": "00000000000",
       "CDEMO-ACCT-STATUS": " ",
       "CDEMO-CARD-NUM": "0000000000000000",
       "CDEMO-LAST-MAP": "CCRDLIA",
@@ -69,8 +70,8 @@
           "CURDATEO": "07/19/22",
           "PGMNAMEO": "COACTVWC",
           "TITLE02O": "              CardDemo                  ",
-          "CURTIMEO": "23:12:32",
-          "ACCTSIDO": "00000000050",
+          "CURTIMEO": "23:15:58",
+          "ACCTSIDO": "00000000000",
           "ACSTTUSO": "\u0000",
           "ADTOPENO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
           "ACRDLIMO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
@@ -100,7 +101,7 @@
           "ACSEFTCO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
           "ACSPFLGO": "\u0000",
           "INFOMSGO": "Enter or update id of account to display     ",
-          "ERRMSGO": "Account:00000000050 not found in Cross ref file.  Resp:000000013  Reas:0000   "
+          "ERRMSGO": "Account Filter must  be a non-zero 11 digit number                            "
         },
         "attributes": {
           "TRNNAMEC": "DFHDFCOL",
@@ -188,26 +189,80 @@
     {
       "dataset": "CCXREF",
       "rowIndex": 0,
-      "expectedBytes": "068358619817151600000002700000000027              "
+      "fields": {
+        "XREF-CARD-NUM": "0500024453765740",
+        "XREF-CUST-ID": "000000050",
+        "XREF-ACCT-ID": "00000000050",
+        "FILLER": "              "
+      },
+      "expectedBytes": "050002445376574000000005000000000050              "
     },
     {
       "dataset": "CCXREF",
       "rowIndex": 1,
-      "expectedBytes": "092387719324733000000000200000000002              "
+      "fields": {
+        "XREF-CARD-NUM": "0683586198171516",
+        "XREF-CUST-ID": "000000027",
+        "XREF-ACCT-ID": "00000000027",
+        "FILLER": "              "
+      },
+      "expectedBytes": "068358619817151600000002700000000027              "
     },
     {
       "dataset": "CCXREF",
       "rowIndex": 2,
-      "expectedBytes": "092798710863623200000002000000000020              "
+      "fields": {
+        "XREF-CARD-NUM": "0923877193247330",
+        "XREF-CUST-ID": "000000002",
+        "XREF-ACCT-ID": "00000000002",
+        "FILLER": "              "
+      },
+      "expectedBytes": "092387719324733000000000200000000002              "
     },
     {
       "dataset": "ACCTDAT",
       "rowIndex": 0,
+      "fields": {
+        "ACCT-ID": "00000000050",
+        "ACCT-ACTIVE-STATUS": "Y",
+        "ACCT-CURR-BAL": "00000004920{",
+        "ACCT-CREDIT-LIMIT": "00000061690{",
+        "ACCT-CASH-CREDIT-LIMIT": "00000045870{",
+        "ACCT-OPEN-DATE": "2011-04-22",
+        "ACCT-EXPIRAION-DATE": "2023-03-09",
+        "ACCT-REISSUE-DATE": "2023-03-09",
+        "ACCT-CURR-CYC-CREDIT": "00000000000{",
+        "ACCT-CURR-CYC-DEBIT": "00000000000{",
+        "ACCT-ADDR-ZIP": "A000000000",
+        "ACCT-GROUP-ID": "          ",
+        "FILLER": "                                                                                                                                                                                  "
+      },
       "expectedBytes": "00000000050Y00000004920{00000061690{00000045870{2011-04-222023-03-092023-03-0900000000000{00000000000{A000000000                                                                                                                                                                                            "
     },
     {
       "dataset": "CUSTDAT",
       "rowIndex": 0,
+      "fields": {
+        "CUST-ID": "000000050",
+        "CUST-FIRST-NAME": "Aniya                    ",
+        "CUST-MIDDLE-NAME": "Alba                     ",
+        "CUST-LAST-NAME": "Von                      ",
+        "CUST-ADDR-LINE-1": "1588 Nienow Cape                                  ",
+        "CUST-ADDR-LINE-2": "Suite 187                                         ",
+        "CUST-ADDR-LINE-3": "New Aricchester                                   ",
+        "CUST-ADDR-STATE-CD": "OR",
+        "CUST-ADDR-COUNTRY-CD": "USA",
+        "CUST-ADDR-ZIP": "04257     ",
+        "CUST-PHONE-NUM-1": "(325)301-0827  ",
+        "CUST-PHONE-NUM-2": "(493)985-9283  ",
+        "CUST-SSN": "931248469",
+        "CUST-GOVT-ISSUED-ID": "00000000000030387824",
+        "CUST-DOB-YYYY-MM-DD": "1960-12-01",
+        "CUST-EFT-ACCOUNT-ID": "0074883577",
+        "CUST-PRI-CARD-HOLDER-IND": "Y",
+        "CUST-FICO-CREDIT-SCORE": "623",
+        "FILLER": "                                                                                                                                                                        "
+      },
       "expectedBytes": "000000050Aniya                    Alba                     Von                      1588 Nienow Cape                                  Suite 187                                         New Aricchester                                   ORUSA04257     (325)301-0827  (493)985-9283  931248469000000000000303878241960-12-010074883577Y623                                                                                                                                                                        "
     }
   ],

@@ -1,0 +1,290 @@
+{
+  "program": "CBTRN01C",
+  "caseId": "case17",
+  "description": "The EMPTY ACCOUNT FILE case, and the exact mirror of case02: the same three daily-transaction rows and the same three cross-reference rows, but ACCTFILE holds no row at all, so all three cross references RESOLVE and all three account reads then FAIL. Twenty-nine lines, the longest failure-path fingerprint in this folder, asserting the account-miss pair four times over. WHAT ONLY THIS CASE CAN PROVE IS THAT THE ACCOUNT ID IS NOT LATCHED. case08 reaches the same FileStatus '23' at the same call site, but it does so once and with one id, so an implementation that resolved the id once and reused it would pass there and be wrong. Here the misses carry THREE DIFFERENT ids - 00000000007, 00000000020 and 00000000005 - because app/cbl/CBTRN01C.cbl:175 moves XREF-ACCT-ID into ACCT-ID afresh on every iteration, from that record's OWN cross reference; a cached, hoisted or latched id repeats one value and fails at entry 15 or entry 22. WHY ACCT-ID IS STILL POPULATED AT :178: the statement at :243 is READ ACCOUNT-FILE RECORD INTO ACCOUNT-RECORD KEY IS FD-ACCT-ID, and it does not disturb its receiving area when the INVALID KEY phrase runs, so ACCT-ID - bytes 1-11 of ACCOUNT-RECORD, PIC 9(11) per app/cpy/CVACT01Y.cpy - still holds the eleven zero-padded digits the cross reference supplied. The line is one DISPLAY of two literals around one operand and COBOL adds no separator of its own, so it renders exactly as ACCOUNT 00000000007 NOT FOUND; the eleven-digit and nine-digit renderings follow from the PICTURE clauses - XREF-ACCT-ID PIC 9(11) at bytes 26-36 and XREF-CUST-ID PIC 9(09) at bytes 17-25 of app/cpy/CVACT03Y.cpy - and not from a formatting choice (practice B11). THE ORDER OF THE PAIR IS THE OTHER THING THIS CASE PINS, and getting it backwards is the likeliest way to break it. 3000-READ-ACCOUNT at :241-250 takes its INVALID KEY phrase and displays :246 FIRST, from inside the paragraph, then moves 4 into WS-ACCT-READ-STATUS at :247; only after the PERFORM at :176 has returned does the mainline test that flag at :177 and display :178 SECOND. That holds at every one of the four occurrences - entries 7 and 8, 14 and 15, 21 and 22, 27 and 28 - and is stated explicitly rather than left to intuition (practice B8). HOW THE MISS IS MANUFACTURED, and the distinction this case must not blur: ACCTFILE is declared with \"empty\": true plus its recordLength 300 and its copybook CVACT01Y, which is a POSITIVE statement that the job opened a real dataset that holds no row. A seeded-but-empty dataset opens with '00' at :328 and then answers every keyed read at :243 with '23'; an UNBOUND dataset never opens at all and is the open-failure scenario that belongs to case19. Conflating the two would silently turn this case into that one, so the empty declaration is explicit and is neither an absent member nor a null (practice B8). app/data/ASCII/acctdata.txt is NOT emptied, truncated or edited on disk - the emptiness is expressed in \"inputs\" and nowhere else, because that fixture is the only oracle this migration has (practice B3). CUSTFILE, CARDFILE and TRANFILE are declared empty the same way: :158-160 open them and :189-191 close them, and no READ in this program ever touches them, the only reads being DALYTRAN at :203, XREF-FILE at :229 and ACCOUNT-FILE at :243. THREE LINES ARE THEREFORE ABSENT FROM THIS FIXTURE and their absence is deliberate: the success line of 3000-READ-ACCOUNT at :249, whose NOT INVALID KEY arm no record here takes; the INVALID KEY line of 2000-LOOKUP-XREF at :232; and the two-literal skip line the ELSE arm displays at :181-183, both of which belong to a cross reference that did NOT resolve. None of the three appears anywhere in this file - not as an expectation and not as a quoted phrase - so a reviewer's plain search for any of them over this fixture returns nothing, and each is cited by its source line instead (practice B11). THE POST-END-OF-FILE REPEAT, entries 23-28: the loop at :164-186 iterates once more, the READ at :203 reports '10' so :217 sets END-OF-DAILY-TRANS-FILE to 'Y', and the inner guard at :167 - which closes at :169 and covers ONLY the DISPLAY at :168 - suppresses the record echo while the statements at :170-172 and the account read at :173-179 sit outside it and run anyway, against the DALYTRAN-CARD-NUM the third record left in WORKING-STORAGE. Entries 23-28 therefore mirror entries 17-22 element for element, on the third card and the third account id, with NO record echo between entry 22 and entry 23. The repeat is asserted rather than trimmed, and hoisting those statements inside the guard makes this case fail, which is the point (practice B5). RETURN CODE 0, stated explicitly and never defaulted, even though not one account was ever found: :247 moves 4 into WS-ACCT-READ-STATUS, which is a LOCAL flag the mainline reads at :177 and nothing else - CBTRN01C contains no MOVE statement targeting RETURN-CODE anywhere, and the CALL 'CEE3ABD' at :473 is unreached - so a run in which every read misses still ends normally. Do not escalate a total failure to 4, 8 or 12, do not add a summary count the COBOL does not keep, and do not short-circuit the loop after the first miss (practice B5). expectedWrites is EMPTY as a positive assertion rather than an absence of interest: the program declares zero WRITE and zero REWRITE statements and opens all six of its files OPEN INPUT, and the six writes-channel dataset expectations below say the same thing per dataset at its exact copybook width. The two seeded datasets are pinned unchanged on the final-state channel at their copybook widths - DALYTRAN 350 from CVTRA06Y, whose FILLER X(20) occupies bytes 331-350, and XREFFILE 50 from CVACT03Y - which is what proves every FILLER span was emitted (gates G19 and G21); ACCTFILE is pinned at zero rows and width 300, which is the only way to assert that a dataset was opened and stayed empty. The cross-reference rows are seeded at the 36 bytes the fixture actually holds and are NOT pre-padded; the declared CARDXREF_FILLER_PAD_36_TO_50 normalisation supplies CVACT03Y's absent FILLER X(14) once, at seed time, and the final state pins all four spans by name - 16 + 9 + 11 + 14 = the whole 50 bytes, so no byte goes unasserted (gate G16, risk R-F). R1 and practice B4, documented and not 'fixed': the mandated class name TransactionPostingJob and the source header 'Post the records from daily transaction file' both promise posting, and the verified source posts nothing at all; CBTRN01C is also this migration's orphan, invoked by no EXEC PGM= in app/jcl or app/proc, so jobParameters is empty because there is no PARM for one to come from and the job carries no trigger (gate G13, requirement I4). BASELINE PROVENANCE, practice B12: these expected values are STATICALLY DERIVED from app/cbl/CBTRN01C.cbl :164-186 and :227-250 read statement by statement, cross-checked against the copybook byte layouts in app/cpy (CVTRA06Y 350, CVACT03Y 50, CVACT01Y 300, every offset mechanically diffable by eye) and against the real ASCII fixtures - dailytran.txt rows 1, 2 and 3, whose DALYTRAN-IDs are 0000000000683580, 0000000001774260 and 0000000006292564 and whose DALYTRAN-CARD-NUMs at bytes 263-278 are 4859452612877065, 0927987108636232 and 6009619150674526, and cardxref.txt rows 21, 4 and 27, which resolve those three cards to customers 000000007, 000000020 and 000000005 and to accounts 00000000007, 00000000020 and 00000000005. They were NEVER captured from, recorded against or replayed from any execution of the legacy COBOL, because executing it is empirically impossible in this environment - no z/OS or CICS runtime, an indexed-file handler the available compiler reports as disabled, and no Language Environment CEE* services. AAP section 0.7.6 records eight independently verified blockers; the substitution changes the PROVENANCE of the expected values and nothing else, and is escalated for explicit user confirmation as risk R-A rather than silently absorbed. Bytes are US-ASCII, stated and never taken from the platform default, and nothing here reads a clock, draws an unpredictable value or consults the environment - CBTRN01C reads no clock, so the fingerprint is identical on every run (practices B7 and B8). review_rules returns exactly one line, \"No user rules provided.\", so no user rule governs this fixture; the binding standard is the enterprise-practice set, and its absence is not licence to assert less. Gates carried: G13, G15, G16, G18, G19, G21, G30 (the IF at :177 taken on every iteration, and the INVALID KEY / NOT INVALID KEY arms of both :229-239 and :243-250 in source order), G47 ('00' at the cross-reference site on every call, '23' at the account site on every call, and '00' then '10' at the sequential read) and G51 (the tasklet body is driven directly, with no JobLauncher and no HTTP layer in the path). G32 does not apply: CBTRN01C contains zero GO TO statements.",
+  "unitKind": "BATCH_JOB",
+  "inputs": {
+    "DALYTRAN": {
+      "rows": [
+        "0000000000683580010001POS TERM  Purchase at Abshire-Lowe                                                                            0000005047G800000000Abshire-Lowe                                      North Enoshaven                                   72112     48594526128770652022-06-10 19:27:53.000000                                              ",
+        "0000000001774260030001OPERATOR  Return item at Nitzsche, Nicolas and Lowe                                                           0000009190}800000000Nitzsche, Nicolas and Lowe                        Fidelshire                                        53378     09279871086362322022-06-10 19:27:53.000000                                              ",
+        "0000000006292564010001POS TERM  Purchase at Ernser, Roob and Gleason                                                                0000000678H800000000Ernser, Roob and Gleason                          North Makenziemouth                               78487-796560096191506745262022-06-10 19:27:53.000000                                              "
+      ]
+    },
+    "CUSTFILE": {
+      "empty": true,
+      "recordLength": 500,
+      "copybook": "CVCUS01Y"
+    },
+    "XREFFILE": {
+      "rows": [
+        "485945261287706500000000700000000007",
+        "092798710863623200000002000000000020",
+        "600961915067452600000000500000000005"
+      ]
+    },
+    "CARDFILE": {
+      "empty": true,
+      "recordLength": 150,
+      "copybook": "CVACT02Y"
+    },
+    "ACCTFILE": {
+      "empty": true,
+      "recordLength": 300,
+      "copybook": "CVACT01Y"
+    },
+    "TRANFILE": {
+      "empty": true,
+      "recordLength": 350,
+      "copybook": "CVTRA05Y"
+    }
+  },
+  "jobParameters": {},
+  "expectedWrites": [],
+  "expectedFinalState": [
+    {
+      "dataset": "DALYTRAN",
+      "rowIndex": 0,
+      "expectedBytes": "0000000000683580010001POS TERM  Purchase at Abshire-Lowe                                                                            0000005047G800000000Abshire-Lowe                                      North Enoshaven                                   72112     48594526128770652022-06-10 19:27:53.000000                                              "
+    },
+    {
+      "dataset": "DALYTRAN",
+      "rowIndex": 1,
+      "expectedBytes": "0000000001774260030001OPERATOR  Return item at Nitzsche, Nicolas and Lowe                                                           0000009190}800000000Nitzsche, Nicolas and Lowe                        Fidelshire                                        53378     09279871086362322022-06-10 19:27:53.000000                                              "
+    },
+    {
+      "dataset": "DALYTRAN",
+      "rowIndex": 2,
+      "expectedBytes": "0000000006292564010001POS TERM  Purchase at Ernser, Roob and Gleason                                                                0000000678H800000000Ernser, Roob and Gleason                          North Makenziemouth                               78487-796560096191506745262022-06-10 19:27:53.000000                                              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 0,
+      "fields": {
+        "XREF-CARD-NUM": "4859452612877065",
+        "XREF-CUST-ID": "000000007",
+        "XREF-ACCT-ID": "00000000007",
+        "FILLER": "              "
+      }
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 1,
+      "fields": {
+        "XREF-CARD-NUM": "0927987108636232",
+        "XREF-CUST-ID": "000000020",
+        "XREF-ACCT-ID": "00000000020",
+        "FILLER": "              "
+      }
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 2,
+      "fields": {
+        "XREF-CARD-NUM": "6009619150674526",
+        "XREF-CUST-ID": "000000005",
+        "XREF-ACCT-ID": "00000000005",
+        "FILLER": "              "
+      }
+    }
+  ],
+  "expectedReturnCode": 0,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "START OF EXECUTION OF PROGRAM CBTRN01C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "0000000000683580010001POS TERM  Purchase at Abshire-Lowe                                                                            0000005047G800000000Abshire-Lowe                                      North Enoshaven                                   72112     48594526128770652022-06-10 19:27:53.000000                                              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "SUCCESSFUL READ OF XREF"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "CARD NUMBER: 4859452612877065"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCOUNT ID : 00000000007"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "CUSTOMER ID: 000000007"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "INVALID ACCOUNT NUMBER FOUND"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCOUNT 00000000007 NOT FOUND"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "0000000001774260030001OPERATOR  Return item at Nitzsche, Nicolas and Lowe                                                           0000009190}800000000Nitzsche, Nicolas and Lowe                        Fidelshire                                        53378     09279871086362322022-06-10 19:27:53.000000                                              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "SUCCESSFUL READ OF XREF"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "CARD NUMBER: 0927987108636232"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCOUNT ID : 00000000020"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "CUSTOMER ID: 000000020"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "INVALID ACCOUNT NUMBER FOUND"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCOUNT 00000000020 NOT FOUND"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "0000000006292564010001POS TERM  Purchase at Ernser, Roob and Gleason                                                                0000000678H800000000Ernser, Roob and Gleason                          North Makenziemouth                               78487-796560096191506745262022-06-10 19:27:53.000000                                              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "SUCCESSFUL READ OF XREF"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "CARD NUMBER: 6009619150674526"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCOUNT ID : 00000000005"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "CUSTOMER ID: 000000005"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "INVALID ACCOUNT NUMBER FOUND"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCOUNT 00000000005 NOT FOUND"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "SUCCESSFUL READ OF XREF"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "CARD NUMBER: 6009619150674526"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCOUNT ID : 00000000005"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "CUSTOMER ID: 000000005"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "INVALID ACCOUNT NUMBER FOUND"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCOUNT 00000000005 NOT FOUND"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "END OF EXECUTION OF PROGRAM CBTRN01C"
+    }
+  ],
+  "normalisations": [
+    {
+      "dataset": "XREFFILE",
+      "kind": "CARDXREF_FILLER_PAD_36_TO_50"
+    }
+  ],
+  "expectedDatasets": [
+    {
+      "dataset": "DALYTRAN",
+      "channel": "WRITES",
+      "rowCount": 0,
+      "recordLength": 350
+    },
+    {
+      "dataset": "CUSTFILE",
+      "channel": "WRITES",
+      "rowCount": 0,
+      "recordLength": 500
+    },
+    {
+      "dataset": "XREFFILE",
+      "channel": "WRITES",
+      "rowCount": 0,
+      "recordLength": 50
+    },
+    {
+      "dataset": "CARDFILE",
+      "channel": "WRITES",
+      "rowCount": 0,
+      "recordLength": 150
+    },
+    {
+      "dataset": "ACCTFILE",
+      "channel": "WRITES",
+      "rowCount": 0,
+      "recordLength": 300
+    },
+    {
+      "dataset": "TRANFILE",
+      "channel": "WRITES",
+      "rowCount": 0,
+      "recordLength": 350
+    },
+    {
+      "dataset": "DALYTRAN",
+      "channel": "FINAL_STATE",
+      "rowCount": 3,
+      "recordLength": 350
+    },
+    {
+      "dataset": "CUSTFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 0,
+      "recordLength": 500
+    },
+    {
+      "dataset": "XREFFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 3,
+      "recordLength": 50
+    },
+    {
+      "dataset": "CARDFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 0,
+      "recordLength": 150
+    },
+    {
+      "dataset": "ACCTFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 0,
+      "recordLength": 300
+    },
+    {
+      "dataset": "TRANFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 0,
+      "recordLength": 350
+    }
+  ]
+}

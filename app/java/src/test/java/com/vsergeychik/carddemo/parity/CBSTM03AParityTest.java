@@ -508,9 +508,9 @@ class CBSTM03AParityTest {
     /**
      * The scenario each case runs under, kept beside the twenty case files it belongs to.
      *
-     * <p>The thirteen cases that name {@link CallSite#NONE} with no bypass and no null UCB are not
+     * <p>The fourteen cases that name {@link CallSite#NONE} with no bypass and no null UCB are not
      * uninteresting - they are the ones whose whole assertion is the record sequence, and they differ
-     * from each other only in their seed, which is where a case file belongs. The seven that do name
+     * from each other only in their seed, which is where a case file belongs. The six that do name
      * something are the guard-arm and gating cases, and each states its one deviation and nothing else.
      *
      * @param caseId the case whose scenario to resolve
@@ -534,10 +534,22 @@ class CBSTM03AParityTest {
             // bad status at each of the four opens in turn (gates G47, G35).
             case "case12" -> Scenario.normal();
 
-            // The four WHEN OTHER / ELSE arms, one per remaining guarded call site (gate G47).
+            // The STRING and MOVE truncation case needs a run that COMPLETES, for the same reason
+            // case12 does: its subject is the pair of ONE-space STRING builds at L462-L481 and the
+            // MOVE TRNX-DESC TO ST-TRANDT at L677, so it asserts three whole transactions inside one
+            // whole statement and declares no environmental deviation at all. The '10' it used to
+            // force at the CUSTFILE keyed read - fatal there, because the EVALUATE at L379-L386 has
+            // only a WHEN '00' and a WHEN OTHER - stays covered by
+            // StatementGenerationJobATest.TheStatusMatrix, whose
+            // theCustFileKeyedReadHasNoEndOfFileArm forces exactly that status at exactly that call
+            // site and asserts the ERROR READING CUSTFILE, RETURN CODE and ABENDING PROGRAM lines,
+            // alongside the parameterized rows of the same class that drive CUSTFILE '10', '22',
+            // '23' and '34' through the same guard (gates G47, G35).
+            case "case14" -> Scenario.normal();
+
+            // The three remaining WHEN OTHER / ELSE arms, one per remaining guarded call site
+            // (gate G47).
             case "case13" -> Scenario.reporting(CallSite.READ_XREFFILE, "37");
-            // '10' at the CUSTFILE keyed read is FATAL: L379-L386 has no WHEN '10' arm.
-            case "case14" -> Scenario.reporting(CallSite.READ_CUSTFILE, FileStatus.END_OF_FILE);
             case "case15" -> Scenario.reporting(CallSite.READ_ACCTFILE, "23");
             case "case16" -> Scenario.reporting(CallSite.CLOSE_TRNXFILE, "38");
 
@@ -564,10 +576,11 @@ class CBSTM03AParityTest {
      * Builds the job over a per-case in-memory relation and runs it once.
      *
      * <p><strong>Everything is recorded eagerly, as it is emitted.</strong> That is not a style choice:
-     * five of the twenty cases end in an {@link AbendException}, and the harness builds the fingerprint
-     * from whatever the recorder holds at the moment the exception arrives. A displayed line collected
-     * into a list and handed over afterwards would simply not exist on those five, and neither would a
-     * written record. So the {@code SYSOUT} sink records straight into the recorder, and so does each
+     * three of the twenty cases end in an {@link AbendException} - case13, case15 and case16, the three
+     * that force a status a guard refuses - and the harness builds the fingerprint from whatever the
+     * recorder holds at the moment the exception arrives. A displayed line collected into a list and
+     * handed over afterwards would simply not exist on those three, and neither would a written
+     * record. So the {@code SYSOUT} sink records straight into the recorder, and so does each
      * of the two output sinks - and the sinks' {@code open()} registers the dataset before the first
      * record, which is what makes "the program opened both files and wrote nothing to either" an
      * assertion rather than a silence.
@@ -602,7 +615,7 @@ class CBSTM03AParityTest {
             .anyMatch(expected -> expected.channel() == ParityCase.DatasetChannel.FINAL_STATE);
         try {
             // Every DISPLAY goes straight into the fingerprint rather than into a list drained
-            // afterwards: five of the twenty cases end in an abend, and the harness builds from
+            // afterwards: three of the twenty cases end in an abend, and the harness builds from
             // whatever the recorder holds at that moment.
             assembled.job().printAccountStatements(recorder::display);
         } finally {
@@ -1226,7 +1239,7 @@ class CBSTM03AParityTest {
     /**
      * A real unit of work over the case's own relation.
      *
-     * <p>Real rather than mocked because the abnormal disposition depends on it: five of the twenty
+     * <p>Real rather than mocked because the abnormal disposition depends on it: three of the twenty
      * cases end in an abend, {@code app/jcl/CREASTMT.JCL:L87-L96} declares both outputs
      * {@code DISP=(NEW,CATLG,DELETE)}, and a mocked transaction manager would let a disposition that
      * never opens a boundary look correct. The discard itself reaches the two collecting sinks rather

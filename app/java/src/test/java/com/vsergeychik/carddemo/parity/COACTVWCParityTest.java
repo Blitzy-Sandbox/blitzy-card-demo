@@ -1798,7 +1798,28 @@ class COACTVWCParityTest {
                     .describedAs("three successful reads compose no message")
                     .isBlank();
 
-            assertThat(paintFrom(caseNumbered(8)).getErrmsg())
+            // 9200 WHEN DFHRESP(NOTFND) is driven here rather than from a case file, because case08
+            // drives the SECOND disjunct of the numeric edit at :666-667 - OR CC-ACCT-ID EQUAL
+            // ZEROES - and rejects its input before 9000-READ-ACCT is ever performed, so it reaches
+            // no read site at all. The arm, the message composition and the assertion below are
+            // unchanged; only where the seed comes from has moved. The window deliberately HOLDS
+            // rows and merely omits the one being asked for - the same shape the case file used -
+            // because an empty file would also satisfy a translation that never searched.
+            Map<String, SeededDataset> withoutTheAccount =
+                    new LinkedHashMap<>(seededFor(SUCCESS_PATH_CASE));
+            List<String> remaining = withoutTheAccount.get(CCXREF).rows().stream()
+                    .filter(row -> !CROSS_REFERENCED_ACCOUNT.equals(row.substring(
+                            CardXrefRecord.XREF_ACCT_ID_OFFSET,
+                            CardXrefRecord.XREF_ACCT_ID_OFFSET + CardXrefRecord.XREF_ACCT_ID_LENGTH)))
+                    .toList();
+            assertThat(remaining)
+                    .describedAs("the cross reference must still hold rows, just not this account")
+                    .isNotEmpty()
+                    .hasSizeLessThan(withoutTheAccount.get(CCXREF).rowCount());
+            withoutTheAccount.put(CCXREF, SeededDataset.of(CCXREF, CardXrefRecord.RECORD_LENGTH,
+                    remaining, FIXTURE_CHARSET));
+            assertThat(interact(withoutTheAccount, null, reenteringFromCardList(),
+                    CROSS_REFERENCED_ACCOUNT, CicsAid.DFHENTER).getErrmsg())
                     .describedAs("9200 WHEN DFHRESP(NOTFND) at :741-758")
                     .startsWith("Account:" + CROSS_REFERENCED_ACCOUNT + " not found in Cross ref file.");
             assertThat(paintFrom(caseNumbered(10)).getErrmsg())

@@ -1,13 +1,13 @@
 {
   "program": "CBCUS01C",
   "caseId": "case15",
-  "description": "The fatal close - the third and last abend site, and the only one that is reached after the loop has run to completion. All three records are read and displayed twice each, the browse reaches '10' and sets END-OF-FILE, and then CLOSE at app/cbl/CBCUS01C.cbl:L138 reports '42'. 9000-CUSTFILE-CLOSE expresses its guard arithmetically - ADD 8 TO ZERO GIVING APPL-RESULT before the close, SUBTRACT APPL-RESULT FROM APPL-RESULT on success, ADD 12 TO ZERO GIVING APPL-RESULT otherwise - and reaches the same three values the open reaches by MOVE. The ELSE arm at L147-L150 displays 'ERROR CLOSING CUSTOMER FILE', the status through the numeric branch as FILE STATUS IS: NNNN0042, and 'ABENDING PROGRAM'. The L85 banner is never emitted, which is the difference between this and a clean run: the records are all there and the closing banner is not.",
+  "description": "The third READ reports '23', record not found, at the position end of file would otherwise have been reported: rows 1 and 2 of app/data/ASCII/custdata.txt are the only rows seeded, both are read and displayed, and the read that would have returned '10' returns '23' instead. app/cbl/CBCUS01C.cbl:L94 tests only '00' and L98 only '10', so L101 moves 12 into APPL-RESULT, the 88 APPL-AOK test at L104 fails and the 88 APPL-EOF test at L107 fails too - both false at once, which is exactly what routes control to the fatal arm at L110-L113 instead of the L108 MOVE 'Y' TO END-OF-FILE that would have ended the loop quietly. A forced status is not quietly re-read as end of file, and this is the case that says so. The four record lines standing ahead of the failure are the substance of the case rather than scenery: rows 1 and 2 each keep their full adjacent pair - L96 inside 1000-CUSTFILE-GET-NEXT and then L78 back in the mainline, within one iteration - because a mainframe spool holds what a job displayed before it abended. An implementation that buffered its lines and dropped the buffer when the exception left the tasklet would emit four lines where eight are expected, and would be caught here and nowhere else in this folder at this read ordinal. The read paragraph's message is the long-form 'ERROR READING CUSTOMER FILE' at L110, where the open paragraph at L129 names the DD instead and the close paragraph at L147 is long-form again; the three wordings disagree in the source and practice B5 keeps them disagreeing. The return code is 12 from MOVE 12 TO APPL-RESULT at L101, a different statement from the L124 the open-failure cases take the same value from. Nothing follows the abend: CALL 'CEE3ABD' at L158 ends the enclave inside Z-ABEND-PROGRAM, so PERFORM 9000-CUSTFILE-CLOSE at L83 never runs, no close-failure line is reachable, and the L85 banner is never emitted. The unit is the tasklet of customer.CustomerFileReaderJob - unitKind BATCH_JOB - so the retained lines and the non-zero exit are observed together at step level with no JobLauncher and no HTTP in the path (gate G51), and a tasklet rather than a chunk step means no commit boundary can disturb that ordering. Statically derived: every expected value here comes from the COBOL source, the CVCUS01Y byte layout, the app/jcl/READCUST.jcl STEP05 contract - a bare EXEC PGM with no PARM, hence no job parameter - and the real app/data/ASCII/custdata.txt rows, and none of it was captured from a live COBOL execution, which the eight blockers in AAP 0.7.6 make impossible in this environment; the deviation is recorded there as risk R-A (practice B12).",
   "unitKind": "BATCH_JOB",
   "inputs": {
     "CUSTFILE": {
       "fixture": "custdata.txt",
       "fromRow": 0,
-      "rowCount": 3
+      "rowCount": 2
     }
   },
   "jobParameters": {},
@@ -37,19 +37,11 @@
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "000000003Larry                    Cody                     Homenick                 362 Esta Parks                                    Apt. 390                                          New Gladys                                        GAUSA19852-6716(950)396-9024  (685)168-8826  317460867000000000000524193031987-11-300006465789Y616                                                                                                                                                                        "
+      "text": "ERROR READING CUSTOMER FILE"
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "000000003Larry                    Cody                     Homenick                 362 Esta Parks                                    Apt. 390                                          New Gladys                                        GAUSA19852-6716(950)396-9024  (685)168-8826  317460867000000000000524193031987-11-300006465789Y616                                                                                                                                                                        "
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "ERROR CLOSING CUSTOMER FILE"
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "FILE STATUS IS: NNNN0042"
+      "text": "FILE STATUS IS: NNNN0023"
     },
     {
       "channel": "DISPLAY_LINE",

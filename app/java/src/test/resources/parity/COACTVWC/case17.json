@@ -1,7 +1,7 @@
 {
   "program": "COACTVWC",
   "caseId": "case17",
-  "description": "The most surprising key behaviour reachable from this screen, and it is the copybook's rather than the screen's. CSSTRPFY has 28 arms, not sixteen, and its second twelve FOLD onto the first twelve at app/cpy/CSSTRPFY.cpy:54-77: WHEN DFHPF15 sets CCARD-AID-PFK03. So PF15 satisfies the gate at :307-308 and takes the XCTL arm at :324 - pressing PF15 leaves this screen exactly as pressing PF3 does. A resolver that stopped at PF12 would rewrite PF15 to ENTER and display the account instead, which is why this case transfers where case18's does not.",
+  "description": "WHEN CCARD-AID-PFK03 at :324 - the FIRST arm of the main EVALUATE TRUE at :323-383 - pressed by an ADMINISTRATOR, and the one case in this folder whose subject is a preserved oddity in the commarea rather than a control path. The path is case15's exactly. EIBAID is DFHPF3, which app/cpy/CSSTRPFY.cpy:34-35 - the seventh of that copybook's twenty-eight ordered arms - stores as CCARD-AID-PFK03; PFK03 is one of only two AIDs the gate at :306-314 accepts, so it is not rewritten to ENTER, and because its arm is tested before both context arms it wins even though CDEMO-PGM-CONTEXT arrives as 1 (gate G30). What differs from case15 is one inbound byte: CDEMO-USER-TYPE arrives as 'A'. app/cpy/COCOM01Y.cpy:26-28 declares that field PIC X(01) with exactly two condition names - 88 CDEMO-USRTYP-ADMIN VALUE 'A' at :27 and 88 CDEMO-USRTYP-USER VALUE 'U' at :28 - and those two values are what drives role routing everywhere else in this application: COSGN00C chooses between COADM01C and COMEN01C on them, and COMEN01C filters its ten menu options on them. :344 SET CDEMO-USRTYP-USER TO TRUE sits in this arm UNCONDITIONALLY - there is no enclosing IF, and between it and the XCTL at :349-352 nothing restores the incoming value, the next EVALUATE arm beginning at :353. So an administrator who presses PF3 on this screen leaves it recorded as 'U', and the program the transfer reaches sees a regular user rather than an admin. That is the assertion of this case: the inbound 'A' is expected back as 'U', so CDEMO-USRTYP-ADMIN is false on the way out and CDEMO-USRTYP-USER is true. Nothing in the source suggests the downgrade is intended and it reads as an oversight, but it is the program's behaviour and it is preserved deliberately and exactly (practice B5) - adding a condition here, or carrying the 'A' through, would be a changed business rule. It is NOT a defect in this fixture and must not be corrected: a case17 whose expectation read 'A' would be asserting a program this repository does not contain. The contrast is sharpened by what the arm leaves alone. CDEMO-USER-ID is ADMIN001, the type-A row of app/jcl/DUSRSECJ.jcl:35, and no statement in the arm touches it - so the identity returns intact while the type describing it does not. The seven other identity-bearing fields come from the seeded rows themselves - card 0500024453765740 keys customer 000000050 and account 00000000050 in cardxref row 1, whose account is acctdata row 50 and whose customer, names included, is custdata row 50 - and every one of them is expected back byte-identical, which is statelessness asserted on real data rather than on an initialised area (gate G37). The commarea survives the turn because :282-284 initialises only when EIBCALEN is zero or the from-program is COMEN01C on a non-reenter, and neither holds here: EIBCALEN is 172, which is CARDDEMO-COMMAREA's 160 bytes followed by WS-THIS-PROGCOMMAREA's 12, and COCRDLIC is not LIT-MENUPGM. That matters twice over for this case - it is why the 'A' supplied here genuinely reaches :344 rather than being blanked at :285-286 first. Both fallbacks at :328-339 take their ELSE, so the caller's CCLI and COCRDLIC become CDEMO-TO-TRANID and CDEMO-TO-PROGRAM, overwriting the CAVW and COACTVWC the card list handed in, and :341-342 then records this screen as the from-pair. :345 SET CDEMO-PGM-ENTER rewinds the target's context to 0. :346 moves LIT-THISMAPSET, declared PIC X(8) VALUE 'COACTVW ' at :147-148, into CDEMO-LAST-MAPSET, which COCOM01Y:43-44 declares PIC X(7) alongside CDEMO-LAST-MAP - so the alphanumeric MOVE truncates on the right and the literal's trailing space is deliberately discarded, giving COACTVW - while :347 moves the already-seven-character CACTVWA unchanged. The image compared here is that copybook's 160 bytes and no more: 4+8+4+8+8+1+1 = 34, then 9+25+25+25 = 84, then 11+1 = 12, then 16, then 7+7 = 14. EXEC CICS XCTL PROGRAM(CDEMO-TO-PROGRAM) COMMAREA(CARDDEMO-COMMAREA) at :349-352 becomes nextProgram COCRDLIC on the response, resolved by the client, never a server-side forward (gate G40, rule R6). What this arm does NOT do is the rest of the expectation. XCTL transfers control and does not return, so :394 COMMON-RETURN is never reached, and 1000-SEND-MAP at :416 - with 1100-SCREEN-INIT at :431, 1200-SETUP-SCREEN-VARS at :460, 1300-SETUP-SCREEN-ATTRS at :541 and 1400-SEND-SCREEN at :577 - never runs, and the :387-392 INPUT-ERROR guard is unreachable. Therefore: no map is painted, so sends is EMPTY and no title, TRNNAME, PGMNAME, date, time or 37-field projection appears anywhere in this expectation; expectedMessages is EMPTY rather than a list holding a blank line, because WS-RETURN-MSG was switched off at :278 and both the move into CCARD-ERROR-MSG at :395 and SEND-PLAIN-TEXT at :877 sit on paths not taken; nextMapset and nextMap are UNSET, because CCARD-NEXT-MAPSET and CCARD-NEXT-MAP are assigned only at :579-580 and at :603-604 and neither paragraph is performed; no cursor is positioned; 9000-READ-ACCT at :687 is never performed, so none of the three EXEC CICS READs at :727, :776 and :826 runs and all five seeded rows are pinned exactly as seeded, cardxref padded from its 36 fixture bytes to the 50 CVACT03Y declares (gate G16, risk R-F); and COACTVWC issues no WRITE, REWRITE or DELETE on any path, so expectedWrites is empty and RETURN-CODE is 0, there being no CALL 'CEE3ABD' anywhere in this program (G35 not applicable, as are G32, G38 - no screen means no CSSETATY highlight - and G45/G47, since no read occurs). The three datasets seeded are the three this program reads: CARDDAT and CARDAIX are named for it in app/csd/CARDDEMO.CSD and declared by the program but reached on no path, which this class asserts through its five-named-files test rather than through a seeding this case would never read. The two copybook spellings this migration must never tidy are pinned by name on the rows that carry them (I1): ACCT-EXPIRAION-DATE, misspelled in app/cpy/CVACT01Y.cpy and reproduced verbatim, on the account row, and the hyphenated CUST-DOB-YYYY-MM-DD of app/cpy/CVCUS01Y.cpy:19 - PIC X(10) at offset 308, holding 1960-12-01 - on the customer row, which is the one field pin this case adds to case15's otherwise identical expectation. The clock is pinned at 2022-07-19T23:15:58 for determinism (practice B7) even though this path reads no clock at all. Every expected value here is STATICALLY DERIVED by reading app/cbl/COACTVWC.cbl:278-352 with its WS-LITERALS at :143-171, app/cpy/COCOM01Y.cpy:19-44 for both 88-levels and the 160-byte layout, app/cpy/CSSTRPFY.cpy:21-78, and app/cpy/CVACT03Y.cpy, CVACT01Y.cpy and CVCUS01Y.cpy against the app/data/ASCII fixtures, and was NEVER captured from a live COBOL execution - the environment cannot run these programs (risk R-A), which is why the derivation is cited statement by statement here.",
   "unitKind": "CONTROLLER_POJO",
   "inputs": {
     "CCXREF": {
@@ -20,17 +20,27 @@
       "rowCount": 1
     }
   },
+  "jobParameters": {},
   "screenRequest": {
     "eibcalen": 172,
-    "aid": "DFHPF15",
-    "pinnedClock": "2022-07-19T23:12:32",
+    "aid": "DFHPF3",
+    "pinnedClock": "2022-07-19T23:15:58",
     "charset": "US-ASCII",
     "commarea": {
       "CDEMO-FROM-TRANID": "CCLI",
       "CDEMO-FROM-PROGRAM": "COCRDLIC",
+      "CDEMO-TO-TRANID": "CAVW",
+      "CDEMO-TO-PROGRAM": "COACTVWC",
       "CDEMO-USER-ID": "ADMIN001",
       "CDEMO-USER-TYPE": "A",
       "CDEMO-PGM-CONTEXT": "1",
+      "CDEMO-CUST-ID": "000000050",
+      "CDEMO-CUST-FNAME": "Aniya                    ",
+      "CDEMO-CUST-MNAME": "Alba                     ",
+      "CDEMO-CUST-LNAME": "Von                      ",
+      "CDEMO-ACCT-ID": "00000000050",
+      "CDEMO-ACCT-STATUS": "Y",
+      "CDEMO-CARD-NUM": "0500024453765740",
       "CDEMO-LAST-MAP": "CCRDLIA",
       "CDEMO-LAST-MAPSET": "COCRDLI"
     },
@@ -49,13 +59,13 @@
       "CDEMO-USER-ID": "ADMIN001",
       "CDEMO-USER-TYPE": "U",
       "CDEMO-PGM-CONTEXT": "0",
-      "CDEMO-CUST-ID": "000000000",
-      "CDEMO-CUST-FNAME": "                         ",
-      "CDEMO-CUST-MNAME": "                         ",
-      "CDEMO-CUST-LNAME": "                         ",
-      "CDEMO-ACCT-ID": "00000000000",
-      "CDEMO-ACCT-STATUS": " ",
-      "CDEMO-CARD-NUM": "0000000000000000",
+      "CDEMO-CUST-ID": "000000050",
+      "CDEMO-CUST-FNAME": "Aniya                    ",
+      "CDEMO-CUST-MNAME": "Alba                     ",
+      "CDEMO-CUST-LNAME": "Von                      ",
+      "CDEMO-ACCT-ID": "00000000050",
+      "CDEMO-ACCT-STATUS": "Y",
+      "CDEMO-CARD-NUM": "0500024453765740",
       "CDEMO-LAST-MAP": "CACTVWA",
       "CDEMO-LAST-MAPSET": "COACTVW"
     },
@@ -67,6 +77,12 @@
     {
       "dataset": "CCXREF",
       "rowIndex": 0,
+      "fields": {
+        "XREF-CARD-NUM": "0500024453765740",
+        "XREF-CUST-ID": "000000050",
+        "XREF-ACCT-ID": "00000000050",
+        "FILLER": "              "
+      },
       "expectedBytes": "050002445376574000000005000000000050              "
     },
     {
@@ -82,11 +98,23 @@
     {
       "dataset": "ACCTDAT",
       "rowIndex": 0,
+      "fields": {
+        "ACCT-ID": "00000000050",
+        "ACCT-ACTIVE-STATUS": "Y",
+        "ACCT-EXPIRAION-DATE": "2023-03-09"
+      },
       "expectedBytes": "00000000050Y00000004920{00000061690{00000045870{2011-04-222023-03-092023-03-0900000000000{00000000000{A000000000                                                                                                                                                                                            "
     },
     {
       "dataset": "CUSTDAT",
       "rowIndex": 0,
+      "fields": {
+        "CUST-ID": "000000050",
+        "CUST-FIRST-NAME": "Aniya                    ",
+        "CUST-MIDDLE-NAME": "Alba                     ",
+        "CUST-LAST-NAME": "Von                      ",
+        "CUST-DOB-YYYY-MM-DD": "1960-12-01"
+      },
       "expectedBytes": "000000050Aniya                    Alba                     Von                      1588 Nienow Cape                                  Suite 187                                         New Aricchester                                   ORUSA04257     (325)301-0827  (493)985-9283  931248469000000000000303878241960-12-010074883577Y623                                                                                                                                                                        "
     }
   ],

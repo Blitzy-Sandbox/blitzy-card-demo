@@ -1,69 +1,67 @@
 {
   "program": "COADM01C",
   "caseId": "case17",
-  "description": "Two of COADM01C's declarations are never referenced again anywhere in the program and both survive the translation, because a declaration is part of what the program is. COPY CSUSR01Y at app/cbl/COADM01C.cbl:58 brings 01 SEC-USER-DATA into working storage and not one of its six fields is read or written; WS-USRSEC-FILE at line 39 holds the eight-byte logical file name 'USRSEC  ' - note the two trailing spaces of the source literal - and is likewise never referenced. This case runs an ordinary first-entry paint and asserts at the unit that the unused record is still blank afterwards, that the logical name is still its declared image, and that no SEC-USR value reaches the response. No dataset is seeded here, and deliberately so: the distinction from case16 is that this is working storage, not a file.",
+  "description": "The second of the three ordered arms of EVALUATE EIBAID at app/cbl/COADM01C.cbl:93-103 - WHEN DFHPF3 at :96, the explicit exit key the map advertises to the operator as 'ENTER=Continue  F3=Exit' at app/bms/COADM01.bms:158-162 - and the one arm of the three no other case in this directory drives: of the other nineteen, sixteen declare DFHENTER, case15 declares DFHPF5 and case18 DFHPF12 which both land on WHEN OTHER, and case01 declares none because its path never reads the AID. Ordering is the assertion (G30): an EVALUATE is ordered, so the first matching WHEN wins and WHEN OTHER is last, which means :94's DFHENTER must not match this byte and :99's WHEN OTHER must not be reached. The arm is selected by comparing the raw EIBAID byte against CicsAid.DFHPF3, X'F3', the EBCDIC digit three - not by resolving a PF token, because COADM01C does not copy CSSTRPFY and resolving would make PF15 behave as PF3 in a program that has no such behaviour. The EVALUATE is reached at all because CDEMO-PGM-CONTEXT arrives as 1, so :87's IF NOT CDEMO-PGM-REENTER is false and the ELSE at :91 runs: RECEIVE-MENU-SCREEN, then the dispatch. Line 97 then moves 'COSGN00C' into CDEMO-TO-PROGRAM - TO, not FROM - and :98 performs RETURN-TO-SIGNON-SCREEN, where the combined relation at :162 is now FALSE because the field was written one statement earlier. That false side is this case's second reason to exist: case03 drives the relation's LOW-VALUES term and case01 its SPACES term, both from the EIBCALEN = 0 path, and between the three every outcome of :162 is driven. Reaching the same sign-on target by a different route is the point, and the two routes are NOT interchangeable. On the EIBCALEN = 0 path :83 writes CDEMO-FROM-PROGRAM and :163 writes CDEMO-TO-PROGRAM; here only :97 writes CDEMO-TO-PROGRAM and CDEMO-FROM-PROGRAM is never written at all. That asymmetry is in the source and is reproduced rather than normalised, and the inbound area is chosen to give it teeth: CDEMO-FROM-PROGRAM arrives as 'COUSR00C' and deliberately not as 'COSGN00C', so a translation performing :83's move instead of :97's would be caught in the navigation context as well as in the transfer target, where a fixture carrying 'COSGN00C' in both fields would have hidden it. That inbound image is a real one rather than an invented one: app/cbl/COUSR00C.cbl:125-127 is the user list's own DFHPF3 arm, which moves 'COADM01C' into CDEMO-TO-PROGRAM and performs RETURN-TO-PREV-SCREEN, and that paragraph moves WS-TRANID 'CU00' into CDEMO-FROM-TRANID, WS-PGMNAME 'COUSR00C' into CDEMO-FROM-PROGRAM and ZEROS into CDEMO-PGM-CONTEXT before transferring with the commarea. So this is the area a terminal really re-supplies after User List, PF3 back to the admin menu, the first-entry paint that :88 leaves at context 1, and then the operator pressing PF3 again to leave. Three things are observable and all three are pinned. The transfer target is COSGN00C, eight characters, from EXEC CICS XCTL PROGRAM(CDEMO-TO-PROGRAM) at :165-167 (G40). That XCTL specifies NO COMMAREA, unlike the option transfer at :142-145 which specifies one, so nothing is handed on and the target starts with EIBCALEN = 0 - exactly the condition COSGN00C's own guard looks for - and this case asserts the same no-handoff outcome as case01 and case03. And the single emitted line is the eighty-byte WS-MESSAGE that :79 blanked, declared on the WS_MESSAGE_80 channel because a service produces WS-MESSAGE itself and only a controller produces the seventy-eight-byte ERRMSGO that :177 narrows it into; a comparison across the two channels is refused by the differ. CDEMO-PGM-CONTEXT comes back 1, unmutated: :88 sets it on the branch this path did not take and :141 sets it on the option-transfer path, and neither runs here. CDEMO-FROM-TRANID is likewise untouched, :139 being on that same option-transfer path. Every one of the other fourteen COMMAREA fields is echoed byte for byte, which is where statelessness is asserted (G37): the conversation travels in the payload, so it is comparable at all, and a translation holding it in a session would have nothing here to return. The identifiers it carries are real fixture rows, mutually consistent, and read by nothing: app/data/ASCII/cardxref.txt pairs card 6832676047698087 with customer 000000033 and account 00000000033, app/data/ASCII/custdata.txt gives that customer Bernice, Norbert and Herman at PIC X(25) each, app/data/ASCII/acctdata.txt gives that account status Y, and ADMIN001 is the seeded administrator of app/jcl/DUSRSECJ.jcl:35. COADM01C reads none of them, which is why they are carried - an echo of default values would not be an echo. The supplied OPTIONI of '1 ' is deliberately ignored, and deliberately a value that WOULD be valid on the DFHENTER arm: the DFHPF3 arm never performs PROCESS-ENTER-KEY, so the trailing-space scan at :117-121, the reference-modified move into the JUST RIGHT WS-OPTION-X at :122, the INSPECT REPLACING at :123, the cross-category move into PIC 9(02) at :124 and the echo into OPTIONO at :125 none of them happen. No normalised '01' is expected anywhere, and no echo is expected at all, because :165's XCTL sends no map for an echo to travel on. A translation that normalised the option before dispatching would still satisfy this outcome; one that acted on it would not. OPTN005I to OPTN012I are declared at their PIC X(40) width for the same reason: :89's MOVE LOW-VALUES TO COADM1AO does not run on a re-entry, so the client re-supplies the whole map, and the program reads OPTIONI and nothing else even on the arm that reads anything. There is no message and no repaint. SEND-MENU-SCREEN at :172-184 is not performed, so sends is empty, no option line and no header field is produced, the message image stays eighty spaces and the error flag stays off - :100 and :101 belong to WHEN OTHER, which is not this arm. With no send there is no attribute item either, so the COLOR=RED that app/bms/COADM01.bms:154-157 declares for ERRMSG remains the outcome's map default and is not pinned as behaviour, and none may be invented: the only attribute byte COADM01C ever writes is the DFHGREEN of :148, on the coming-soon path this case never reaches, and nothing is highlighted because the program does not copy CSSETATY at all. nextMapset and nextMap are deliberately absent, and the point is worth stating plainly because it is the one place a reader may expect the mapset and map this program owns. Neither EXEC CICS XCTL names a map - :143 names a program and :166 names a program - so which map the successor paints is the successor's decision, and telling a client to paint the screen the program is leaving would be the one answer that is certainly wrong; the projection accordingly reports the field as spaces on a transfer, which the differ compares as absent, and the absence is required rather than tolerated. That is a different thing from CDEMO-LAST-MAP and CDEMO-LAST-MAPSET, which travel in the communication area and are echoed here as COADM1A and COADM01 because COADM01C never writes them. The EXEC CICS RETURN at :107-110 is never reached, an XCTL having transferred control, so the termination is XCTL and not RETURN_TRANSID. The unit is AdminMenuService, called as a plain object with no HTTP layer and no JobLauncher in the path (G51), and the invocation is declared in screenRequest because that is where ParityCase requires an online request to live: jobParameters models a JCL PARM and is refused for any unit kind other than BATCH_JOB. No dataset is touched - COADM01C declares no SELECT and no FD and issues no file control command - so inputs, expectedWrites and expectedFinalState are all empty and the return code is 0, and gates G19, G21 and G47 have nothing to bind to, as G32 and G35 likewise do not: this program has no backward GO TO and no CALL 'CEE3ABD'. The adapter this case runs through adds one observation the differ cannot make, and it is preserved here rather than dropped: the two declarations COADM01C never references - COPY CSUSR01Y at :58 and WS-USRSEC-FILE VALUE 'USRSEC  ' at :39, trailing spaces included - are checked blank and unchanged across the whole invocation and required to leak into no field of the response, which is what makes 'never read' an assertion rather than an assumption. The clock is pinned to 2022-07-19T23:12:32, the timestamp COADM01C's own version footer at :267 carries, so the instant is anchored in the source rather than chosen, and all twenty cases in this directory pin that same instant and name US-ASCII explicitly rather than leaving a code page to a platform default; this path performs no POPULATE-HEADER-INFO, so the instant changes nothing it asserts and is declared all the same, so that one clock governs the whole directory. No user-specified rules govern this fixture - review_rules returns exactly one line, 'No user rules provided.' - so the migration's own enterprise-practice substitutes bind instead. Every expected value above is statically derived - read out of the COBOL paragraph that produces it and cross-checked against the 160-byte layout of app/cpy/COCOM01Y.cpy, the xxxI PICTURE clauses of app/cpy-bms/COADM01.CPY and the DFHMDF definitions of app/bms/COADM01.bms - and none of it was captured from an execution of the legacy program, which is empirically impossible here: no z/OS or CICS runtime, an indexed file handler the available compiler reports as disabled, no Language Environment CEE services, and DFHAID, DFHBMSCA and DFHATTR absent from the repository, which is why common.CicsAid is the single reproduction of the DFHPF3 byte this case turns on. ParityHarness's own class documentation is the authoritative statement of that provenance, and the substitution is escalated rather than absorbed (risk R-A).",
   "unitKind": "SERVICE",
   "inputs": {},
   "screenRequest": {
     "eibcalen": 160,
-    "aid": "DFHENTER",
+    "aid": "DFHPF3",
     "pinnedClock": "2022-07-19T23:12:32",
     "charset": "US-ASCII",
     "commarea": {
-      "CDEMO-FROM-TRANID": "CC00",
-      "CDEMO-FROM-PROGRAM": "COSGN00C",
-      "CDEMO-TO-PROGRAM": "COADM01C",
-      "CDEMO-USER-ID": "ADMIN001",
-      "CDEMO-USER-TYPE": "A",
-      "CDEMO-PGM-CONTEXT": "0"
-    },
-    "mapFields": {},
-    "forcedOutcomes": {}
-  },
-  "expectedResponse": {
-    "nextMapset": "COADM01",
-    "nextMap": "COADM1A",
-    "navigation": {
-      "CDEMO-FROM-TRANID": "CC00",
-      "CDEMO-FROM-PROGRAM": "COSGN00C",
+      "CDEMO-FROM-TRANID": "CU00",
+      "CDEMO-FROM-PROGRAM": "COUSR00C",
       "CDEMO-TO-TRANID": "    ",
       "CDEMO-TO-PROGRAM": "COADM01C",
       "CDEMO-USER-ID": "ADMIN001",
       "CDEMO-USER-TYPE": "A",
       "CDEMO-PGM-CONTEXT": "1",
-      "CDEMO-CUST-ID": "000000000",
-      "CDEMO-CUST-FNAME": "                         ",
-      "CDEMO-CUST-MNAME": "                         ",
-      "CDEMO-CUST-LNAME": "                         ",
-      "CDEMO-ACCT-ID": "00000000000",
-      "CDEMO-ACCT-STATUS": " ",
-      "CDEMO-CARD-NUM": "0000000000000000",
-      "CDEMO-LAST-MAP": "       ",
-      "CDEMO-LAST-MAPSET": "       "
+      "CDEMO-CUST-ID": "000000033",
+      "CDEMO-CUST-FNAME": "Bernice                  ",
+      "CDEMO-CUST-MNAME": "Norbert                  ",
+      "CDEMO-CUST-LNAME": "Herman                   ",
+      "CDEMO-ACCT-ID": "00000000033",
+      "CDEMO-ACCT-STATUS": "Y",
+      "CDEMO-CARD-NUM": "6832676047698087",
+      "CDEMO-LAST-MAP": "COADM1A",
+      "CDEMO-LAST-MAPSET": "COADM01"
     },
-    "sends": [
-      {
-        "fields": {
-          "OPTN001O": "01. User List (Security)                ",
-          "OPTN002O": "02. User Add (Security)                 ",
-          "OPTN003O": "03. User Update (Security)              ",
-          "OPTN004O": "04. User Delete (Security)              ",
-          "OPTN005O": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
-          "OPTN006O": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
-          "OPTN007O": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
-          "OPTN008O": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
-          "OPTN009O": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
-          "OPTN010O": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
-          "OPTN011O": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
-          "OPTN012O": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
-          "OPTIONO": "\u0000\u0000"
-        },
-        "attributes": {
-          "ERRMSGC": "DFHRED"
-        }
-      }
-    ],
-    "termination": "RETURN_TRANSID"
+    "mapFields": {
+      "OPTIONI": "1 ",
+      "OPTN005I": "                                        ",
+      "OPTN006I": "                                        ",
+      "OPTN007I": "                                        ",
+      "OPTN008I": "                                        ",
+      "OPTN009I": "                                        ",
+      "OPTN010I": "                                        ",
+      "OPTN011I": "                                        ",
+      "OPTN012I": "                                        "
+    },
+    "forcedOutcomes": {}
+  },
+  "expectedResponse": {
+    "nextProgram": "COSGN00C",
+    "navigation": {
+      "CDEMO-FROM-TRANID": "CU00",
+      "CDEMO-FROM-PROGRAM": "COUSR00C",
+      "CDEMO-TO-TRANID": "    ",
+      "CDEMO-TO-PROGRAM": "COSGN00C",
+      "CDEMO-USER-ID": "ADMIN001",
+      "CDEMO-USER-TYPE": "A",
+      "CDEMO-PGM-CONTEXT": "1",
+      "CDEMO-CUST-ID": "000000033",
+      "CDEMO-CUST-FNAME": "Bernice                  ",
+      "CDEMO-CUST-MNAME": "Norbert                  ",
+      "CDEMO-CUST-LNAME": "Herman                   ",
+      "CDEMO-ACCT-ID": "00000000033",
+      "CDEMO-ACCT-STATUS": "Y",
+      "CDEMO-CARD-NUM": "6832676047698087",
+      "CDEMO-LAST-MAP": "COADM1A",
+      "CDEMO-LAST-MAPSET": "COADM01"
+    },
+    "sends": [],
+    "termination": "XCTL"
   },
   "expectedWrites": [],
   "expectedFinalState": [],

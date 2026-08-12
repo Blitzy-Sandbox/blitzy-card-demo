@@ -1,23 +1,19 @@
 {
   "program" : "COTRN01C",
   "caseId" : "case17",
-  "description" : "A successful read of a record whose TRAN-AMT does not fit the receiver. :177 moves PIC S9(09)V99 into PIC +99999999.99, which has eight integer digits, so the two are aligned on the decimal point and the high-order digit that does not fit is discarded: 123456789.12 renders as +23456789.12. There is no ON SIZE ERROR phrase anywhere in the program, so nothing is raised and nothing is rounded - COBOL truncates on a store, and the keyword ROUNDED appears zero times in all 28 programs.",
+  "description" : "The WHEN OTHER arm of the EVALUATE EIBAID at :128-131, driven by PF12, pinned here as this folder's dedicated end-to-end measurement of the X(50) -> X(80) -> X(78) message-width chain. Risk R-B, stated rather than reconciled: the mandated class is TransactionAddController and the program VIEWS. Four independent confirmations - app/cbl/COTRN01C.cbl:5 reads 'View a Transaction from TRANSACT file', README.md:221 documents CT01 as Transaction View, app/bms/COTRN01.bms:2 names the view mapset, and that mapset carries INITIAL='View Transaction' at POS=(4,30). Rule R1 keeps the mandated name and takes every expectation below from the source; practice B4 documents the inversion and never corrects it. No insert expectation is authored here, because an unrecognised key produces a message and nothing else - the add half of the pair is parity/COTRN02C. Provenance, practice B12: every value below is STATICALLY DERIVED by structured reading of the COBOL cross-checked against app/cpy/CSMSG01Y.cpy, app/cpy/COTTL01Y.cpy, app/cpy/COCOM01Y.cpy and app/cpy-bms/COTRN01.CPY. Nothing here was captured from an execution of the legacy program, which is empirically impossible in this environment. The width arithmetic, counted mechanically rather than eyeballed, practice B11: CCDA-MSG-INVALID-KEY is declared PIC X(50) at app/cpy/CSMSG01Y.cpy:20-21, but its QUOTED literal is only 49 characters, so COBOL pads the item by one - 40 characters of visible text ending in three dots, plus 10 spaces, is 50. :130 moves that X(50) item into WS-MESSAGE PIC X(80) (:38), left-aligned and space-filled, so 50 + 30 = 80. :217 then moves the X(80) field into ERRMSGO PIC X(78), which right-truncates by two bytes; both lost bytes are spaces, so no visible text is lost and the field is exactly 78. Stated the way a reviewer checks it: 50 + 28 = 78. Both stages are pinned as separate message channels, because comparing an 80-byte expectation against a 78-byte one is exactly how a two-byte truncation defect goes unnoticed. This is the only one of the twenty cases whose message comes from a COPYBOOK rather than from one of the program's own three inline literals - 'Tran ID can NOT be empty...' (:149), 'Transaction ID NOT found...' (:285) and 'Unable to lookup Transaction...' (:292) - and therefore the only one in which the X(50) stage exists at all; the other three move straight into WS-MESSAGE X(80). Do not conflate any of them with either thank-you literal, and do not conflate those two with each other: app/cpy/COTTL01Y.cpy declares CCDA-THANK-YOU PIC X(40) naming 'CCDA application' while app/cpy/CSMSG01Y.cpy declares CCDA-MSG-THANK-YOU PIC X(50) naming 'CardDemo application' - different copybooks, different widths, different wording, and COTRN01C emits neither. On the same footing, TITLE02O carries the value from the ACTIVE COTTL01Y line 22; line 21 is commented out and is not the screen's second title. Ordering is the substance of this arm, gate G30: DFHENTER at :113, DFHPF3 at :115, DFHPF4 at :123 and DFHPF5 at :125 are each tested and each fail before WHEN OTHER at :128 matches as the fifth and last arm. Two negative assertions carry as much weight here as the message does. First, NO cursor is requested: not one of the six MOVE -1 sites (:102, :151, :154, :287, :294 and :311) lies on this path, so cursorField is absent - a real, checkable difference from case02 and case06, which both carry TRNIDINL. Second, the error flag is on AND the state is REENTER, yet no attribute byte is written anywhere: COTRN01C copies no CSSETATY and moves neither DFHRED nor an asterisk, so attributes is empty and gate G38 is satisfied by this screen highlighting in NEITHER state rather than by highlighting in one. Both facts hold simultaneously and both are asserted. Distinct from case13, case14 and case15, which reach this same arm from seeded data, from an absent AID and from CLEAR respectively: this case seeds NO dataset at all, so it asserts that the arm runs to completion without the TRANSACT repository being touched once, and expectedFinalState and expectedDatasets are empty for that reason rather than by omission. TRNIDINI carries a well-formed 16-byte key that no row holds, which is what gives the case teeth: a translation that wrongly fell through to PROCESS-ENTER-KEY would report 'Transaction ID NOT found...' here instead of the invalid-key text, and the typed key is echoed back into TRNIDINO because COTRN1AO REDEFINES COTRN1AI. Statelessness, rule R6 and gate G37: the 218-byte commarea is the 160-byte CARDDEMO-COMMAREA (34+84+12+16+14) plus the 58-byte CDEMO-CT01-INFO extension (16+16+8+1+1+16) declared at :53-61 and carried as its own member rather than folded into the shared navigation context that all seventeen controllers depend on. The AID itself travels in the payload, which is the whole point of a case keyed on an unrecognised key, and CDEMO-PGM-CONTEXT is still 1 on the way out because only :100 sets it and only :204 resets it and neither statement is reached. The clock is pinned, practice B7, and the code page is stated as US-ASCII rather than defaulted, practice B8.",
   "unitKind" : "CONTROLLER_POJO",
-  "inputs" : {
-    "TRANSACT" : {
-      "rows" : [ "0000000000000001010005POS TERM  GROCERY PURCHASE AT PARITY MARKET WITH A DESCRIPTION THAT OVERFLOWS THE SCREEN FIELD                0000005047G800000001PARITY MARKET NUMBER ONE OF SEVERAL LONG NAMES    SPRINGFIELD MASSACHUSETTS USA                     01103-123441111111111111112022-07-19 23:12:34.1234562022-07-20 01:02:03.654321                    ", "0000000000000002020010ONLINE    REFUND ISSUED BY MERCHANT                                                                           0000000500}800000002PARITY REFUNDS LIMITED                            PORTLAND OREGON                                   97201-000242222222222222222022-07-18 08:00:00.0000012022-07-18 09:30:00.000002                    ", "0000000000000003034444BATCH     LARGE SETTLEMENT                                                                                    1234567891B800000003PARITY SETTLEMENT HOUSE                           NEW YORK NEW YORK                                 10001-000343333333333333332022-07-17 12:00:00.0000032022-07-17 12:00:01.000004                    " ]
-    }
-  },
+  "inputs" : { },
   "screenRequest" : {
     "eibcalen" : 218,
-    "aid" : "DFHENTER",
+    "aid" : "DFHPF12",
     "pinnedClock" : "2022-07-19T23:12:34",
     "charset" : "US-ASCII",
     "commarea" : {
       "CDEMO-PGM-CONTEXT" : "1"
     },
     "mapFields" : {
-      "TRNIDINI" : "0000000000000003"
+      "TRNIDINI" : "0000000000000017"
     },
     "forcedOutcomes" : { }
   },
@@ -57,54 +53,36 @@
         "PGMNAMEO" : "COTRN01C",
         "TITLE02O" : "              CardDemo                  ",
         "CURTIMEO" : "23:12:34",
-        "TRNIDINO" : "0000000000000003",
-        "TRNIDO" : "0000000000000003",
-        "CARDNUMO" : "4333333333333333",
-        "TTYPCDO" : "03",
-        "TCATCDO" : "4444",
-        "TRNSRCO" : "BATCH     ",
-        "TDESCO" : "LARGE SETTLEMENT                                            ",
-        "TRNAMTO" : "+23456789.12",
-        "TORIGDTO" : "2022-07-17",
-        "TPROCDTO" : "2022-07-17",
-        "MIDO" : "800000003",
-        "MNAMEO" : "PARITY SETTLEMENT HOUSE       ",
-        "MCITYO" : "NEW YORK NEW YORK        ",
-        "MZIPO" : "10001-0003",
-        "ERRMSGO" : "                                                                              "
+        "TRNIDINO" : "0000000000000017",
+        "TRNIDO" : "                ",
+        "CARDNUMO" : "                ",
+        "TTYPCDO" : "  ",
+        "TCATCDO" : "    ",
+        "TRNSRCO" : "          ",
+        "TDESCO" : "                                                            ",
+        "TRNAMTO" : "            ",
+        "TORIGDTO" : "          ",
+        "TPROCDTO" : "          ",
+        "MIDO" : "         ",
+        "MNAMEO" : "                              ",
+        "MCITYO" : "                         ",
+        "MZIPO" : "          ",
+        "ERRMSGO" : "Invalid key pressed. Please see below...                                      "
       },
       "attributes" : { }
     } ],
-    "cursorField" : "TRNIDINL",
     "termination" : "RETURN_TRANSID"
   },
   "expectedWrites" : [ ],
-  "expectedFinalState" : [ {
-    "dataset" : "TRANSACT",
-    "rowIndex" : 0,
-    "expectedBytes" : "0000000000000001010005POS TERM  GROCERY PURCHASE AT PARITY MARKET WITH A DESCRIPTION THAT OVERFLOWS THE SCREEN FIELD                0000005047G800000001PARITY MARKET NUMBER ONE OF SEVERAL LONG NAMES    SPRINGFIELD MASSACHUSETTS USA                     01103-123441111111111111112022-07-19 23:12:34.1234562022-07-20 01:02:03.654321                    "
-  }, {
-    "dataset" : "TRANSACT",
-    "rowIndex" : 1,
-    "expectedBytes" : "0000000000000002020010ONLINE    REFUND ISSUED BY MERCHANT                                                                           0000000500}800000002PARITY REFUNDS LIMITED                            PORTLAND OREGON                                   97201-000242222222222222222022-07-18 08:00:00.0000012022-07-18 09:30:00.000002                    "
-  }, {
-    "dataset" : "TRANSACT",
-    "rowIndex" : 2,
-    "expectedBytes" : "0000000000000003034444BATCH     LARGE SETTLEMENT                                                                                    1234567891B800000003PARITY SETTLEMENT HOUSE                           NEW YORK NEW YORK                                 10001-000343333333333333332022-07-17 12:00:00.0000032022-07-17 12:00:01.000004                    "
-  } ],
+  "expectedFinalState" : [ ],
   "expectedReturnCode" : 0,
   "expectedMessages" : [ {
     "channel" : "WS_MESSAGE_80",
-    "text" : "                                                                                "
+    "text" : "Invalid key pressed. Please see below...                                        "
   }, {
     "channel" : "SCREEN_ERRMSG_78",
-    "text" : "                                                                              "
+    "text" : "Invalid key pressed. Please see below...                                      "
   } ],
   "normalisations" : [ ],
-  "expectedDatasets" : [ {
-    "dataset" : "TRANSACT",
-    "channel" : "FINAL_STATE",
-    "rowCount" : 3,
-    "recordLength" : 350
-  } ]
+  "expectedDatasets" : [ ]
 }

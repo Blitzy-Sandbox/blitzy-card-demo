@@ -1,11 +1,13 @@
 {
   "program": "CBACT02C",
   "caseId": "case20",
-  "description": "The read error lands on the very last record of the file: 49 records are displayed and the 50th READ reports '23'. This is the boundary the other error cases cannot reach. case11 fails on the first read and case14 on the fourth, but a translation that walks a browse and only then tests its status, or that treats the end of its seeded row list as end-of-file regardless of what the read reported, produces a clean 52-line run here and a correct-looking RETURN-CODE 0. The COBOL does not: app/cbl/CBACT02C.cbl:94 and :98 test the status the READ at :93 reported, '23' is neither '00' nor '10', so :101 moves 12 into APPL-RESULT and the arm at :110-113 emits 'ERROR READING CARDFILE', the image '0023' and 'ABENDING PROGRAM'. Fifty-three lines out - one banner, 49 records, three error lines - with no end banner and RETURN-CODE 12.",
+  "description": "WHAT THIS CASE PINS: the FIRST operand of the compound condition at app/cbl/CBACT02C.cbl:162-163 - IF IO-STATUS NOT NUMERIC OR IO-STAT1 = '9' - reached from the READ at :93-113 AFTER a record line has already been emitted. That combination exists nowhere else in this folder. case13 reaches the same extended arm from the READ but its very first read fails, so it displays no record at all; case18 and case19 reach it with records already emitted but from 9000-CARDFILE-CLOSE at :138-150, a different paragraph with a different diagnostic; case12, case14 and case17 fail on the READ but on statuses that are numeric and take the ELSE arm at :170-172 instead. This case is therefore the one that proves the extended arm and the mid-stream record line coexist on the READ path: the image emitted before the failure stands, and the closing banner after it is lost (gate G47). THE RUN, STATEMENT BY STATEMENT. :71 DISPLAY 'START OF EXECUTION OF PROGRAM CBACT02C'. :72 PERFORM 0000-CARDFILE-OPEN, where :119 MOVE 8 TO APPL-RESULT deposits the assumed-failure value, the OPEN at :120 answers '00', :122 moves 0 and 88 APPL-AOK at :126 is true, so :129-132 are skipped. The loop at :74-81 then runs once cleanly: PERFORM 1000-CARDFILE-GET-NEXT at :76, whose READ at :93 reports '00', :95 moves 0 into APPL-RESULT, 88 APPL-AOK at :104 is true and :105 CONTINUEs; control returns to the mainline, :77 finds END-OF-FILE still 'N' and :78 DISPLAY CARD-RECORD writes row 1's 150-byte image. The loop iterates and the SECOND READ at :93 reports a status that is neither '00' nor '10', so the inner ELSE at :100-102 moves 12 into APPL-RESULT; 88 APPL-AOK at :104 is false and 88 APPL-EOF at :107 is false too, because APPL-EOF is the 88-level for 16 and this is 12; so the ELSE at :109-114 runs in source order - :110 DISPLAY 'ERROR READING CARDFILE', :111 MOVE CARDFILE-STATUS TO IO-STATUS, :112 PERFORM 9910-DISPLAY-IO-STATUS, :113 PERFORM 9999-ABEND-PROGRAM - and 9999 at :155 writes 'ABENDING PROGRAM', :156 MOVEs 0 TO TIMING, :157 MOVEs 999 TO ABCODE and :158 CALLs 'CEE3ABD', which does not return. Five lines out, in that order, and RETURN-CODE 12. WHAT IS ABSENT, AND BOTH ABSENCES ARE ASSERTIONS. There is no SECOND 150-character image even though row 2 is sitting in the seeded dataset: the DISPLAY is at :78 in the MAINLINE, past the PERFORM at :76, and the abend at :113 is inside the performed paragraph, so control never reaches :78 a second time. A translation that pre-read, buffered or flushed what it had already fetched would emit a sixth line the COBOL does not. And there is no 'END OF EXECUTION OF PROGRAM CBACT02C' line, because :83 PERFORM 9000-CARDFILE-CLOSE and :85 DISPLAY both sit past the abend - the browse is left open, the CLOSE never runs, and its own :139 status test is never evaluated on this path. A translation that released the browse in a finally-style block and then carried on to the banner would emit a sixth line here and fail. THE OPERAND THAT DECIDES, AND WHY. The reachable extended status is '9' followed by BINARY ZERO - AccountBalanceReaderJob.PERMANENT_ERROR_STATUS, which is '9' concatenated with X'00'. X'00' is not one of the ten decimal digits, so IO-STATUS - a group of two PIC X items, and therefore alphanumeric - is NOT NUMERIC, the class condition at :162 holds, and the extended arm is entered before IO-STAT1 is examined at :163 at all. The first operand is what decides this run, which is precisely what this case is here to pin. common/FileStatus.toStatusImage was read line by line and evaluates the same two halves as separately named locals - statusIsNumeric over both bytes, and a '9' test over the first - so both halves of the OR are separately visible and separately reachable there. A CORRECTION TO THE INTENDED PAIRING, RECORDED RATHER THAN ABSORBED (practice B4). The complement this case was planned as - a status of 'A1', non-numeric with a first byte that is not '9', firing ONLY the first operand, against a case18 of '90', numeric with a first byte of '9', firing ONLY the second - cannot be asserted at parity level for this program, and three independent readings say so. (1) The job cannot produce it: AccountBalanceReaderJob:1112 sets its status from result.batchStatus().orElse(PERMANENT_ERROR_STATUS), CardReadResult.batchStatus delegates to FileStatus.batchStatusOfCicsResp, and that method translates only NORMAL to '00', ENDFILE to '10', NOTFND to '23' and DUPREC or DUPKEY to '22', returning an empty Optional for everything else - so the only statuses this job can ever hand the renderer are those four and '9' followed by X'00'. (2) The folder's own guard refuses it: CBACT02CParityTest.everyExpectedLineTracesToAConstant derives the permitted diagnostic lines from the production constants and admits exactly FILE STATUS IS: NNNN0010, NNNN0022, NNNN0023 and NNNN9000, so a line reading NNNNA049 would fail there even if the differ let it past. (3) Writing it would fabricate a feedback byte no backend reported, which is the one thing PERMANENT_ERROR_STATUS exists not to do, and would break the zero-diff gate G18 by asserting output no production constant emits. case18 reaches the identical conclusion independently for the '90' half and records where that half IS pinned honestly: FileStatusTest drives the renderer directly with '90' expecting 9048 and walks the raw second byte to 0x0A giving 9010 and 0xFF giving 9255, FileStatusSemanticsTest repeats the '90' assertion, and CBACT03C/case16 pins it at parity level because the cross-reference repository does carry a two-character status. So the operand-splitting pair lives at unit level, where a renderer can be driven with any two bytes; at parity level this folder has exactly one reachable extended status, and this case pins it on the one call site and record geometry no other case covers. THE REDEFINES, AND THIS ARM IS ITS ONLY USER (gate G34). :53-56 declare 01 TWO-BYTES-BINARY PIC 9(4) BINARY and 01 TWO-BYTES-ALPHA REDEFINES TWO-BYTES-BINARY with 05 TWO-BYTES-LEFT PIC X and 05 TWO-BYTES-RIGHT PIC X. It is CBACT02C's only REDEFINES and :164-167 is the only place it is used - two typed accessors over one backing span, written through the alphanumeric view and read back through the numeric one, which is how the paragraph turns a character into an integer. Step by step: :164 MOVE IO-STAT1 TO IO-STATUS-04(1:1) passes the first status byte through verbatim by reference-modifying the GROUP, so a non-numeric byte lands on a position IO-STATUS-0401 declares as PIC 9 - an alphanumeric byte move into a numeric picture, preserved exactly as written (practice B5); :165 MOVE 0 TO TWO-BYTES-BINARY zeroes the halfword; :166 MOVE IO-STAT2 TO TWO-BYTES-RIGHT deposits the second status byte into its low-order byte through the redefinition, leaving the field holding that byte's UNSIGNED value; :167 MOVE TWO-BYTES-BINARY TO IO-STATUS-0403 renders it into a PIC 999 as three zero-filled digits, which never truncates because the maximum is 255. Here the deposited byte is X'00', so the three digits are 000 and the image is 9000. THE CODE PAGE, NAMED, BECAUSE THIS ARM CONVERTS A CHARACTER INTO DIGITS (practice B8). Whenever the feedback byte is printable the three digits move with the encoding, so the encoding must be named rather than assumed. ParityHarness.FIXTURE_CHARSET names US-ASCII explicitly; application-test.yml sets carddemo.charset.dataset to US-ASCII and config/CobolCharsetConfig resolves only the two named keys IBM037 and US-ASCII, never a platform default. US-ASCII therefore governs, and the arithmetic is mechanical: the character '1' occupies 0x31, which is 49, so :167 would render 049 and the image would be A049 for a status of 'A1'; the same character occupies 0xF1 under IBM037, which is 241, so a mainframe reading EBCDIC would render 241 and display A241 instead. common/FileStatus.toStatusImage was cross-checked and agrees with the US-ASCII reading - it masks each operand to its low-order eight bits and its own worked example renders 'AB' as A066, because 'B' is 0x42 = 66 - so the derivation is sound and it is the STATUS that is unproducible here, not the arithmetic. Binary zero is X'00' in both code pages, which is exactly why THIS case's 000 is the one value of this arm that does not move with the encoding; that is stated rather than left looking like a coincidence. THE STATUS LINE, AND THE NNNN THAT REALLY IS THERE. :168 DISPLAYs the literal 'FILE STATUS IS: NNNN' immediately followed by IO-STATUS-04, with no separator. The literal is twenty characters and its last four genuinely are the letters NNNN - an unsubstituted editing template left in the source, not a placeholder the image replaces - and IO-STATUS-04 is four, being IO-STATUS-0401 PIC 9 plus IO-STATUS-0403 PIC 999 at :57-59, so the emitted line is twenty-four characters: FILE STATUS IS: NNNN9000. It is reproduced verbatim and must never be tidied to 'FILE STATUS IS: 9000' or to a space-separated form; reproducing an inherited oddity is the point of a parity gate (practice B5). Every width was counted from source (practice B11): 38 for the start banner at :71, 150 for the record area, 22 for 'ERROR READING CARDFILE' at :110, 24 for the status line, 16 for 'ABENDING PROGRAM' at :155. THE RETURN CODE. APPL-RESULT holds 12 at the moment of the abend, moved at :101, so expectedReturnCode is 12 - carried out as the step's exit status, which is what makes a JCL COND test on a following step behave as it does today (gate G35). The 8 that :119 moves before the OPEN is transient and never observable, and the 16 of :99 is the APPL-EOF marker rather than a return code, so the only two values this program can end with are 0 and 12. 999 is the ABCODE from :157 and 0 is the TIMING from :156 - the two arguments CEE3ABD reads. Both are named here and in neither expectation member, because putting either in expectedReturnCode would assert the wrong number; AbendException carries all three and AccountBalanceReaderJobTest pins them against it. THE ROWS, AND WHY A FIXTURE WINDOW RATHER THAN INLINE TEXT. inputs names carddata.txt with fromRow 0 and rowCount 2, so rows 1 and 2 of app/data/ASCII/carddata.txt are seeded verbatim - byte-identical to the classpath copy at src/test/resources/fixtures/carddata.txt, which was compared and matches. The window form is deliberate: the expected image below is then checkable against the real fixture INDEPENDENTLY of how it was seeded, so a transcription slip in the expectation is caught by CBACT02CParityTest.everyRecordLineIsASeededRowInFileOrder rather than hidden by an identical slip in an inline row. case17 makes the complementary choice for the complementary reason - it writes three rows inline so the row it never reads is visible in the case file - and between them the folder holds both idioms for a mid-stream read failure. Row 1 is CARD-NUM 0500024453765740, CARD-ACCT-ID 00000000050, CARD-CVV-CD 747, CARD-EMBOSSED-NAME 'Aniya Von' left-justified in fifty, CARD-EXPIRAION-DATE 2023-03-09 and CARD-ACTIVE-STATUS Y. Row 2 - CARD-NUM 0683586198171516, Ward Jones, 2025-07-13 - is seeded and NEVER read, and that asymmetry is the case's second claim: two rows in, one image out. THE PAIRING WITH case05, WHICH ISOLATES THE INJECTED CONDITION. case05 seeds the IDENTICAL window - carddata.txt, fromRow 0, rowCount 2 - and completes normally: two 150-character images, the end banner at :85, and RETURN-CODE 0. This case seeds the same two rows and ends with one image, no banner and 12. The inputs are byte-for-byte the same, so nothing about the DATA explains the difference and the difference is attributable solely to the second read's reported status. That is a cleaner statement than any single case can make alone, and it is why the window was chosen to match case05's exactly rather than picked arbitrarily. THE RECORD GEOMETRY (gates G19 and G21). app/cpy/CVACT02Y.cpy declares RECLN 150 as seven spans: CARD-NUM X(16) at 1-16, CARD-ACCT-ID 9(11) at 17-27, CARD-CVV-CD 9(03) at 28-30, CARD-EMBOSSED-NAME X(50) at 31-80, CARD-EXPIRAION-DATE X(10) at 81-90 - misspelled in the copybook, EXPIRAION without its T, and carried through unchanged because a renamed field cannot be diffed field for field (implicit requirement I1) - CARD-ACTIVE-STATUS X(01) at 91 and FILLER X(59) at 92-150. :78 DISPLAY CARD-RECORD names the 01 GROUP item, so the emitted line is the whole area including that FILLER, and the image below therefore ends in fifty-nine spaces. A codec that dropped the FILLER would emit 91 characters and one that mis-sized any span would shift every byte after it. :96 is a commented-out second DISPLAY and contributes nothing - one image per record, never two. HOW THE FAILURE IS INDUCED, AND HOW IT IS NOT. ParityCase.ForcedOutcome is the model's affordance for a per-call-site I/O outcome, but it hangs off ParityCase.ScreenRequest and ParityCase refuses a screenRequest on a BATCH_JOB case - a batch job has no screen - so this file cannot declare the failing read as data, and inventing a member for it would break all 560 fixtures against a model annotated ignoreUnknown = false. The complete expected fingerprint is therefore declared here and the run shape is wired by parity/CBACT02CParityTest, whose Scenario.forCase maps case20 to a read that delivers one row and then reports a response with no two-character batch equivalent, exactly as case08 through case19 have their shapes arranged there. Named precisely, for gate G47: openBrowse reported '00', the FIRST readNext reported '00', the SECOND readNext reports the untranslatable response that becomes '9' followed by X'00', and endBrowse is never reached. What must NOT be attempted is inducing the failure with a short or malformed row: common/FixedWidthCodec widens a short row on the right with spaces and rejects only an over-long one, so a truncated row would be silently repaired to 150 bytes and produce a SUCCESSFUL read - the case would then assert the opposite of what it says. That is a verified property of the codec, recorded here so nobody retries the approach; the reference fixture is read-only either way (practice B3). THE NAME DIVERGES FROM THE BEHAVIOUR (rule R1, divergence register 0.8.4). The unit is account.AccountBalanceReaderJob, an 'Account'-named class in the account package, but CBACT02C reads the CARD file: :29 SELECTs CARDFILE-FILE ASSIGN TO CARDFILE with ORGANIZATION IS INDEXED, ACCESS MODE IS SEQUENTIAL and RECORD KEY FD-CARD-NUM, the FD at :37-40 is 150 bytes, COPY CVACT02Y at :45 brings in the card record, and app/jcl/READCARD.jcl:25-26 binds the DD to the card master. It computes no balance and never touches the account file. The name comes from the prompt and the behaviour comes from the source; the divergence is preserved and documented, never corrected. expectedWrites and expectedFinalState are empty and that is an assertion rather than an omission - :120 opens CARDFILE INPUT and the program contains no WRITE, REWRITE or DELETE at all - and CBACT02CParityTest asserts it behaviourally on every path by verifying that no mutating or keyed repository method was called. THE REST OF THE FINGERPRINT. unitKind is BATCH_JOB and the unit is driven at tasklet level, so there is no JobLauncher, no application context and no HTTP in the path (gate G51). jobParameters is an empty map because app/jcl/READCARD.jcl:22 is a bare EXEC PGM=CBACT02C with no PARM and CBACT02C has no LINKAGE SECTION to receive one into - verified, grep -c PARM over that file returns 0. normalisations is empty because carddata.txt is already at its copybook width; neither recorded fixture-to-copybook deviation touches it. The dataset is addressed only through its binding key CARDFILE, the DD at app/jcl/READCARD.jcl:25; the fully-qualified name that DD resolves to at :26 stays in configuration and appears neither here nor in Java, and ParityCase's dataset-key pattern is narrow enough that a dotted name could not pass validation even if one were written (gate G46). FOLDER-LEVEL INVARIANTS, RECORDED HERE BECAUSE THIS IS THE CLOSING CASE. (a) parity/CBACT02C/ holds EXACTLY TWENTY files, case01.json through case20.json, lower-case name, zero-padded two-digit ordinal, lower-case extension, and nothing else - no README, no schema, no template, no sub-folder; ParityHarness.casesOf enumerates exactly that range and refuses any additional file, and CASES_PER_PROGRAM is 20 (gate G15). (b) jobParameters is an EMPTY MAP in all twenty, for the reason given above. (c) expectedWrites and expectedFinalState are EMPTY in all twenty, because SYSOUT is this program's only output. (d) the only expectedReturnCode values anywhere in the folder are 0 and 12 - never 3, 4, 8 or 16 - and the split was counted rather than assumed: NINE cases return 0 (case01 to case07, case11 and case15) and ELEVEN return 12 (case08, case09, case10, case12, case13, case14, case16, case17, case18, case19 and this one), of which four fail at the OPEN, five at the READ and two at the CLOSE. (e) gates G30 and G32 do not apply anywhere in this folder because CBACT02C contains ZERO GO TO statements - its control flow is already structured, with PERFORM and EXIT only - and G33 does not apply because it declares no OCCURS. G16 and both fixture right-pad normalisations are likewise inapplicable: the 36-versus-50 deviation is cardxref.txt's, and this program never reads it. PROVENANCE (practice B12). Every expected value above was STATICALLY DERIVED by structured reading of app/cbl/CBACT02C.cbl paragraph by paragraph, cross-checked against app/cpy/CVACT02Y.cpy for the byte layout, app/jcl/READCARD.jcl for the step and the absence of a PARM, the real app/data/ASCII/carddata.txt for the two rows, and common/FileStatus plus account.AccountBalanceReaderJob for the renderer and the reachable status set. NOTHING was captured from a live COBOL run, because none can be run in this environment: Agent Action Plan section 0.7.6 lists eight independently verified blockers - no z/OS runtime, an indexed file handler the only available compiler reports as disabled, which alone rules out :30 ORGANIZATION IS INDEXED, no Language Environment CEE* service for the CALL at :158, and five more - and 0.9.11 escalates the substitution as risk R-A. Only the provenance of the expected values changes; the twenty cases, the field-by-field diffing and the diff-count-of-zero gate all stand. review_rules reports NO USER RULES for this project, which is not licence to lower the bar: the binding standard is the plan's enterprise practice set, and the practices this case answers to are B1, B3, B4, B5, B7, B8, B11 and B12. The gates it pins are G15, G18, G19, G21, G34, G35, G46, G47 and G51.",
   "unitKind": "BATCH_JOB",
   "inputs": {
     "CARDFILE": {
-      "fixture": "carddata.txt"
+      "fixture": "carddata.txt",
+      "fromRow": 0,
+      "rowCount": 2
     }
   },
   "jobParameters": {},
@@ -23,203 +25,11 @@
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "068358619817151600000000027567Ward Jones                                        2025-07-13Y                                                           "
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "092387719324733000000000002028Enrico Rosenbaum                                  2024-08-11Y                                                           "
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "092798710863623200000000020003Carter Veum                                       2024-03-13Y                                                           "
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "098249621362979500000000012075Maci Robel                                        2023-07-07Y                                                           "
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "101408656522435000000000044640Irving Emard                                      2024-01-17Y                                                           "
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "114216769287893100000000037625Shany Walker                                      2023-10-24Y                                                           "
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "156140910649160000000000035031Angelica Dach                                     2025-09-23Y                                                           "
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "274530372000209000000000039033Aliyah Berge                                      2025-09-08Y                                                           "
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "276083679710756500000000024859Stefanie Dickinson                                2025-02-11Y                                                           "
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "287196825281249000000000006775Ignacio Douglas                                   2025-10-08Y                                                           "
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "294013936230044900000000022876Allene Brown                                      2025-12-28Y                                                           "
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "298809135309431200000000004795Delbert Parisian                                  2023-12-16Y                                                           "
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "326076361233756000000000010342Maybell Mann                                      2023-01-27Y                                                           "
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "376628198415515400000000041622Lucinda Dach                                      2023-04-24Y                                                           "
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "394024601614148900000000019375Hadley Hamill                                     2025-07-23Y                                                           "
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "399916924637588500000000003317Larry Homenick                                    2024-01-10Y                                                           "
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "401150089177736700000000013390Mariane Fadel                                     2024-08-04Y                                                           "
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "438527147662781900000000034709Faustino Schmidt                                  2025-10-06Y                                                           "
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "453478410271395100000000036644Toney Gerhold                                     2024-12-23Y                                                           "
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "485945261287706500000000007321Cooper Mayert                                     2024-12-13Y                                                           "
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "540709985047986600000000021524Jerrold Maggio                                    2023-01-06Y                                                           "
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "565683054498121600000000046196Cindy Cremin                                      2025-06-20Y                                                           "
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "567118447850584400000000018137Emile White                                       2023-09-10Y                                                           "
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "578735122887933900000000047067Rigoberto Hoeger                                  2025-08-23Y                                                           "
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "597511751661607700000000042426Heather Nienow                                    2025-09-19Y                                                           "
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "600961915067452600000000005021Treva Schowalter                                  2025-03-09Y                                                           "
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "634925033164850900000000015735Aubree Hermann                                    2025-06-09Y                                                           "
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "650353518179599200000000048413Lyric Pacocha                                     2025-02-06Y                                                           "
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "650923036255381600000000030236Layla Ullrich                                     2024-06-27Y                                                           "
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "672300046320776400000000028486Hester Hane                                       2024-05-09Y                                                           "
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "672705519061601400000000016641Carroll Bergstrom                                 2024-01-25Y                                                           "
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "683267604769808700000000033983Bernice Herman                                    2025-10-07Y                                                           "
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "702663761503227700000000031920Lucious O'Connell                                 2025-06-08Y                                                           "
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "705826726183775200000000043401Britney Waters                                    2025-08-29Y                                                           "
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "709414275105555100000000032659Stephany Fisher                                   2025-05-19Y                                                           "
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "725150814918888300000000029717Rickie Daugherty                                  2024-06-04Y                                                           "
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "737933563466114200000000045134Dixie Beier                                       2025-07-09Y                                                           "
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "742768486342320900000000011892Hayden Pfannerstill                               2025-03-12Y                                                           "
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "744387098889753000000000038708Angela Ankunding                                  2023-07-23Y                                                           "
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "804058041034868000000000026971Marjory Stracke                                   2024-12-19Y                                                           "
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "811254583423973500000000023440Johnson Ruecker                                   2025-03-18Y                                                           "
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "826259360247307600000000049457Immanuel Bednar                                   2023-09-17Y                                                           "
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "851786695820600800000000014955Chelsea Marks                                     2025-12-11Y                                                           "
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "893136935189478300000000008230Kelsie Dicki                                      2024-05-20Y                                                           "
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "905629793166401100000000025931Elliott Howell                                    2025-07-10Y                                                           "
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "934910747586921400000000017218Sigrid Mann                                       2025-03-01Y                                                           "
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "950173372142989300000000009725Melvin Ondricka                                   2024-12-27Y                                                           "
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "968029415460369700000000001045Immanuel Kessler                                  2025-05-20Y                                                           "
-    },
-    {
-      "channel": "DISPLAY_LINE",
       "text": "ERROR READING CARDFILE"
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "FILE STATUS IS: NNNN0023"
+      "text": "FILE STATUS IS: NNNN9000"
     },
     {
       "channel": "DISPLAY_LINE",

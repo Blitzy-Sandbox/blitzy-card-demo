@@ -1,19 +1,46 @@
 {
   "program": "CBCUS01C",
   "caseId": "case09",
-  "description": "The fatal open again, with the numeric branch of Z-DISPLAY-IO-STATUS this time. OPEN INPUT at app/cbl/CBCUS01C.cbl:L120 reports '35' - the classic 'the file was not available' status - and because both of its bytes are digits and the first is not '9', L162's class condition is false and the paragraph takes its ELSE arm at L170-L172: '0000' with the two status characters overlaid at one-based positions three and four, giving FILE STATUS IS: NNNN0035. That is a different branch of the same paragraph case08 drives, and only a case whose status is numeric can reach it. The dataset is declared holding two records deliberately: the run must abend in the open without reading either of them, so a translation that opened lazily and read first would emit two extra pairs of lines.",
+  "description": "The PIC 9 upper bound, and the companion case08 needs to mean anything. One clean record is seeded - row 35 of app/data/ASCII/custdata.txt, addressed as the zero-based fromRow 34 - and it is chosen for one reason: its CUST-FICO-CREDIT-SCORE PIC 9(03) at offsets 330-332 carries 793, the highest score in the shipped fixture, so all three characters of the span are significant and the field needs no fill at all. That is a different condition from case08's 001 minimum, which is two leading zeros and one digit, and it is the condition case08 alone cannot test. An implementation could satisfy case08 by special-casing 'pad a small number with zeros' and still mishandle a value that already occupies its whole width - a formatter given a width of two would truncate 793 to 79 or 93 and leave a 499-character record; one given a width of four would emit 0793 and shift every later byte one place right, so the first character of the trailing FILLER is eaten and the record still measures 500 while carrying the wrong bytes from offset 330 onwards. Asserting both ends of the range is what proves the renderer width-correct across it rather than correct only where the padding is visible. The plan's COBOL-to-Java type mapping is the reference on both sides - a PIC 9(n) span is zero-filled to width n on write while a PIC X(n) span is space-padded - and here the zero-fill is a no-op, which is precisely the case worth pinning because a no-op is what a wrong width hides behind. The span is scale-free: it has no V position, and CVCUS01Y declares no scaled picture anywhere, so this program models no fixed-point type at all, issues no COMPUTE, MULTIPLY or DIVIDE, and nothing here scales a value or discards a fractional digit - CVCUS01Y declares no monetary span for such a rule to apply to. The blast radius is pinned on both sides: the field map names all 19 spans of CVCUS01Y including FILLER, whose 168 trailing spaces are what a mis-widened numeric field corrupts first (gate G21), and expectedBytes pins the whole 500-character image so the total width is asserted too (gate G19). SYSOUT is the two banners from L71 and L85 with the one record displayed twice between them - the display inside the READ's '00' arm at L96 and the mainline's own at L78, both of the same record area within one iteration, which is inherited behaviour kept exactly as it is (practice B5). The next READ reports '10', takes the APPL-EOF arm and emits nothing. CBCUS01C opens CUSTFILE INPUT and issues no WRITE and no REWRITE, so expectedWrites is empty as a positive assertion and the final state is the seeded row unchanged; GOBACK at L87 never touches RETURN-CODE, so the run ends at 0; and READCUST.jcl:L6 is a bare EXEC PGM with no PARM, so there is no job parameter. Provenance, practice B12: every expected value here is statically derived from the COBOL source, the CVCUS01Y byte layout, the READCUST.jcl DD contract and the real app/data/ASCII/custdata.txt fixture. None of it was captured from, recorded against or replayed from any execution of the legacy COBOL, which is empirically impossible in this environment - the documented baseline-provenance deviation, risk R-A.",
   "unitKind": "BATCH_JOB",
   "inputs": {
     "CUSTFILE": {
       "fixture": "custdata.txt",
-      "fromRow": 0,
-      "rowCount": 2
+      "fromRow": 34,
+      "rowCount": 1
     }
   },
   "jobParameters": {},
   "expectedWrites": [],
-  "expectedFinalState": [],
-  "expectedReturnCode": 12,
+  "expectedFinalState": [
+    {
+      "dataset": "CUSTFILE",
+      "rowIndex": 0,
+      "fields": {
+        "CUST-ID": "000000035",
+        "CUST-FIRST-NAME": "Angelica                 ",
+        "CUST-MIDDLE-NAME": "Damaris                  ",
+        "CUST-LAST-NAME": "Dach                     ",
+        "CUST-ADDR-LINE-1": "396 Pearl Loop                                    ",
+        "CUST-ADDR-LINE-2": "Suite 383                                         ",
+        "CUST-ADDR-LINE-3": "Pfefferhaven                                      ",
+        "CUST-ADDR-STATE-CD": "LA",
+        "CUST-ADDR-COUNTRY-CD": "USA",
+        "CUST-ADDR-ZIP": "46142     ",
+        "CUST-PHONE-NUM-1": "(303)480-9098  ",
+        "CUST-PHONE-NUM-2": "(637)710-7367  ",
+        "CUST-SSN": "220547115",
+        "CUST-GOVT-ISSUED-ID": "00000000000977144839",
+        "CUST-DOB-YYYY-MM-DD": "1987-06-23",
+        "CUST-EFT-ACCOUNT-ID": "0047435332",
+        "CUST-PRI-CARD-HOLDER-IND": "Y",
+        "CUST-FICO-CREDIT-SCORE": "793",
+        "FILLER": "                                                                                                                                                                        "
+      },
+      "expectedBytes": "000000035Angelica                 Damaris                  Dach                     396 Pearl Loop                                    Suite 383                                         Pfefferhaven                                      LAUSA46142     (303)480-9098  (637)710-7367  220547115000000000009771448391987-06-230047435332Y793                                                                                                                                                                        "
+    }
+  ],
+  "expectedReturnCode": 0,
   "expectedMessages": [
     {
       "channel": "DISPLAY_LINE",
@@ -21,16 +48,24 @@
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "ERROR OPENING CUSTFILE"
+      "text": "000000035Angelica                 Damaris                  Dach                     396 Pearl Loop                                    Suite 383                                         Pfefferhaven                                      LAUSA46142     (303)480-9098  (637)710-7367  220547115000000000009771448391987-06-230047435332Y793                                                                                                                                                                        "
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "FILE STATUS IS: NNNN0035"
+      "text": "000000035Angelica                 Damaris                  Dach                     396 Pearl Loop                                    Suite 383                                         Pfefferhaven                                      LAUSA46142     (303)480-9098  (637)710-7367  220547115000000000009771448391987-06-230047435332Y793                                                                                                                                                                        "
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "ABENDING PROGRAM"
+      "text": "END OF EXECUTION OF PROGRAM CBCUS01C"
     }
   ],
-  "normalisations": []
+  "normalisations": [],
+  "expectedDatasets": [
+    {
+      "dataset": "CUSTFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 500
+    }
+  ]
 }

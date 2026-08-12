@@ -1,0 +1,187 @@
+{
+  "program": "CBTRN01C",
+  "caseId": "case20",
+  "description": "The folder's final case, and the one that exists purely to PRESERVE A SOURCE DEFECT: 9000-DALYTRAN-CLOSE tests the DAILY TRANSACTION file's status and then reports the CUSTOMER file's literal and the CUSTOMER file's status. It is the sharpest test of practice B5 in the folder, and entries 13 and 14 below are a KNOWN, VERIFIED DEFECT OF THE LEGACY SOURCE that this case asserts deliberately - they are not a mistake in the fixture, and CORRECTING EITHER OF THEM IS A PARITY VIOLATION that must fail this case. THE DEFECT, TRANSCRIBED FROM app/cbl/CBTRN01C.cbl:361-377. ADD 8 TO ZERO GIVING APPL-RESULT at :362; CLOSE DALYTRAN-FILE at :363; IF DALYTRAN-STATUS = '00' at :364 - the DAILY TRANSACTION file's own status, correctly tested - MOVE 0 at :365 ELSE MOVE 12 TO APPL-RESULT at :367; then the second, separately nested guard at :369-376 tests APPL-AOK and falls to its ELSE, which is where the two defects sit. DEFECT 1, :372: DISPLAY 'ERROR CLOSING CUSTOMER FILE' - the wrong file is named, because the paragraph closing here is the DAILY TRANSACTION file. 9100-CUSTFILE-CLOSE at :390 legitimately displays that same literal, which is how the copy-paste happened, and entry 13 is therefore EXACTLY 'ERROR CLOSING CUSTOMER FILE' and never 'ERROR CLOSING DAILY TRANSACTION FILE'. DEFECT 2, :373: MOVE CUSTFILE-STATUS TO IO-STATUS - the wrong status is reported, because DALYTRAN-STATUS is the status that just failed and CUSTFILE-STATUS is the one displayed. WHY THE REPORTED IMAGE IS '0000', STATED EXPLICITLY SO NO REVIEWER HAS TO GUESS (practice B8). CUSTFILE-STATUS is written in exactly one place, 0100-CUSTFILE-OPEN at :271-287, where OPEN INPUT CUSTOMER-FILE at :273 succeeds and :274 finds '00'. Nothing touches it afterwards: MAIN-PARA at :155-197 reads only DALYTRAN at :203, XREF-FILE at :229 and ACCOUNT-FILE at :243, and no READ of the customer file exists anywhere in the program. So CUSTFILE-STATUS still holds '00' when :373 moves it, and Z-DISPLAY-IO-STATUS at :476-489 takes its NUMERIC ELSE ARM at :484-487 - '00' is numeric and its first byte is not '9', so the extended arm at :477-483 is not taken - which does MOVE '0000' TO IO-STATUS-04 then MOVE IO-STATUS TO IO-STATUS-04(3:2), leaving the four-character image as '0000'. THE PROGRAM THEREFORE REPORTS 'no error' IN THE VERY ACT OF ABENDING ON AN ERROR. That paradox is the observable behaviour and is preserved: rendering the daily file's real status, or dressing '0000' up as a plausible error code, would be reporting something this program has never reported. THE 'NNNN' IS A SOURCE LITERAL, NOT A PLACEHOLDER OF MINE (practice B1). :487 displays two operands, the literal 'FILE STATUS IS: NNNN' and the field IO-STATUS-04, and COBOL concatenates them without a separator; the program never substitutes anything into those four characters. Entry 14 is therefore the 20-character FileStatus.DISPLAY_PREFIX followed immediately by the four-character image - 'FILE STATUS IS: NNNN0000', exactly 24 characters. Trimming the placeholder or substituting the digits into it changes observable output and is refused. RETURN CODE 12, AND NEVER 8. ADD 8 TO ZERO GIVING APPL-RESULT at :362 is unconditionally overwritten by the MOVE 0 at :365 or the MOVE 12 at :367 before any guard reads it, so 8 is never the live value at the abend site. Z-ABEND-PROGRAM at :469-473 displays 'ABENDING PROGRAM' at :470, sets TIMING 0 at :471 and ABCODE 999 at :472 and issues CALL 'CEE3ABD' at :473, which becomes an AbendException carrying return code 12 with those two Language Environment parameters, and the batch listeners carry it onto the step and job exit status and thence the process exit code (gate G35). THE RUN SUCCEEDS COMPLETELY FIRST, WHICH IS THE POINT OF THE SEEDS. Entries 1-12 are ELEMENT-WISE IDENTICAL to case01's entries 1-12 and were lifted from that file rather than retyped, so the fingerprint proves the failure is at CLOSE TIME AND NOWHERE EARLIER. dailytran row 1 (zero-based 0) carries DALYTRAN-CARD-NUM 4859452612877065 at bytes 263-278; cardxref row 21 (zero-based 20) resolves it to customer 000000007 and account 00000000007; acctdata row 7 (zero-based 6) is that account. So :168 echoes the 350-byte record, 2000-LOOKUP-XREF at :227-239 takes NOT INVALID KEY and displays its four lines in source order (:235 the banner, :236 the card, :237 the account with the source literal's space before its colon, :238 the customer), and 3000-READ-ACCOUNT at :241-250 displays its one line at :249. Entries 8-12 are the POST-END-OF-FILE REPEAT: the loop at :164-186 iterates again, the READ reports '10' so :217 sets END-OF-DAILY-TRANS-FILE, and the inner guard at :167-169 covers ONLY the record echo, so the three statements at :170-172 and the account read run anyway on the card number the previous record left in WORKING-STORAGE - all five lookup lines repeat with no echo between them. THEN the closes begin at :188 and the first one fails. ABSENT BY DESIGN, AND ASSERTED AS ABSENT (practice B5). CALL 'CEE3ABD' ends the task inside 9000-DALYTRAN-CLOSE, so the five closes after it - 9100-CUSTFILE-CLOSE through 9500-TRANFILE-CLOSE at :379-467 - NEVER RUN, and no 'ERROR CLOSING CROSS REF FILE', 'ERROR CLOSING CARD FILE', 'ERROR CLOSING ACCOUNT FILE' or 'ERROR CLOSING TRANSACTION FILE' line appears below. Nor does 'END OF EXECUTION OF PROGRAM CBTRN01C' at :195, which is exactly why case01's thirteenth entry is REPLACED here rather than kept: the abend prevents it. Six files are left open, which is what an abend does, and tidying that away would be a behaviour change. HOW THE FAULT IS INDUCED, AND THE LIMIT THAT FORCED THE CHOICE (practice B12, stated rather than absorbed): this case takes ROUTE 3 - the close status is declared here and supplied adapter-side - and route 1 was rejected on evidence rather than preference. ROUTE 1, a schema member forcing a per-dataset close status, DOES NOT EXIST for a batch case and none was invented: the model's only forced-outcome member is ScreenRequest.forcedOutcomes, ParityCase refuses a screenRequest on a BATCH_JOB outright because a batch job has no screen, and ParityCase.RepositoryOperation enumerates read, readForUpdate, readNext, startBrowse, write, rewrite and delete - THERE IS NO close operation to force. ROUTE 2, expressing the fault through inputs alone, is impossible because an ordinary in-memory close cannot be made to fail by seeding data. So the close status is the adapter's to supply, and THE SUPPORT ALREADY EXISTS rather than being requested: CBTRN01CParityTest.Injection.closeFailure(dataset, status) is what its own Java-declared close cases use, and closeFailure(DALYTRAN, ...) with the customer file's status left at '00' is this case. The gap is named here so that whoever reconciles the two case sets wires this fixture to that injection rather than discovering the need by watching it fail. ONE NUMBERING DIVERGENCE IS RECORDED RATHER THAN CORRECTED (practice B4): CBTRN01CParityTest declares its twenty cases in Java, and its Java-declared case17 is this same 9000-DALYTRAN-CLOSE defect rendering NNNN0000, whereas the shipped fixture set numbers its failure paths differently and assigns this scenario to case20. The two sets must be reconciled at the single adoption seam - that class's cases() method, where ParityHarness.casesOf('CBTRN01C') substitutes - and the divergence is written down so nobody is surprised by it. EVERY DATASET THE PROGRAM OPENS IS BOUND, AND CUSTFILE MANDATORILY SO. CARDFILE, CUSTFILE and TRANFILE are declared EMPTY rather than omitted, each carrying the width and copybook of the rows it would hold - 150 and CVACT02Y, 500 and CVCUS01Y, 350 and CVTRA05Y - because :158, :160 and :162 do open them and an omitted dataset would say nothing about them at all. The CUSTFILE binding is load-bearing rather than decorative: it is what makes the open at :273 genuinely succeed and leave '00' in CUSTFILE-STATUS, which is what makes the reported image '0000'. Omitting it would fail that open instead and produce an entirely different case. ROW-LEVEL EXPECTATIONS. expectedWrites is EMPTY as a positive assertion, not an absence of interest: a scan of the source finds zero WRITE and zero REWRITE statements and all six files are OPEN INPUT, so THE PROGRAM POSTS NOTHING AT ALL, and the six writes-channel dataset expectations say the same thing per dataset at its exact copybook width. The three seeded rows are pinned UNCHANGED on the final-state channel at their copybook widths - DALYTRAN 350 from CVTRA06Y, XREFFILE 50 from CVACT03Y and ACCTFILE 300 from CVACT01Y, whose FILLER X(178) is space-filled across bytes 123-300 and whose ACCT-EXPIRAION-DATE keeps the copybook's own misspelling (I1) - which is what proves the close failure altered no data and that every FILLER span was emitted (gates G19 and G21). Every row of every dataset named on that channel is pinned deliberately: a dataset-level count is never a substitute for reading the bytes, and a row left unpinned inside a dataset the case names is reported as unaccounted for. The cross-reference row is seeded at the 36 bytes the fixture actually holds and is NOT pre-padded; the declared CARDXREF_FILLER_PAD_36_TO_50 normalisation supplies CVACT03Y's absent FILLER X(14) once, at seed time, through its single owner, and the final state pins all four spans by name so that 16 + 9 + 11 + 14 = the whole 50 bytes goes asserted (gate G16, risk R-F). R1 AND PRACTICE B4, DOCUMENTED AND NOT 'FIXED': the mandated class name TransactionPostingJob and the source header 'Post the records from daily transaction file' both promise posting, and the verified source posts nothing whatever; CBTRN01C is also the migration's orphan, invoked by no EXEC PGM= in app/jcl or app/proc, so jobParameters is empty because there is no PARM for one to come from and the job carries no trigger (gate G13, requirement I4). BASELINE PROVENANCE, PRACTICE B12: every expected value above is STATICALLY DERIVED from app/cbl/CBTRN01C.cbl read paragraph by paragraph - 0100-CUSTFILE-OPEN at :271-287, 9000-DALYTRAN-CLOSE at :361-377, Z-ABEND-PROGRAM at :469-473 and Z-DISPLAY-IO-STATUS at :476-489 - cross-checked against the copybook byte layouts in app/cpy (CVTRA06Y 350, CVACT03Y 50, CVACT01Y 300, every offset mechanically diffable by eye - practice B11) and against the real ASCII fixtures, which are byte-identical to app/data/ASCII. Those reference trees were READ AND NEVER WRITTEN (practice B3). The values were NEVER captured from, recorded against or replayed from any execution of the legacy COBOL, because executing it is empirically impossible in this environment: there is no z/OS or CICS runtime, the available compiler reports its indexed file handler as disabled, and no Language Environment CEE* services exist at all, so CALL 'CEE3ABD' - the very statement this case ends on - cannot be reached. AAP section 0.7.6 records eight independently verified blockers; the substitution changes the PROVENANCE of the expected values and nothing else, and is escalated as risk R-A for explicit user confirmation rather than silently absorbed. Bytes are US-ASCII, stated and never taken from the platform default, and the failure is induced deterministically by a declared close status rather than by timing, environment or randomness - CBTRN01C reads no clock, so the fingerprint is identical on every run (practices B7 and B8). review_rules returns exactly one line, \"No user rules provided.\", so no user rule governs this fixture; the binding standard is the enterprise-practice set, and its absence is not licence to assert less. Gates carried: G13, G15, G16, G18, G19, G21, G30 (the :364-368 and :369-376 guards taking their ELSE arms and the renderer taking its numeric ELSE arm, all in source order), G35, G47 (the OTHER outcome at a CLOSE call site, completing the read, open and close trio across this folder's failure cases) and G51 (the tasklet body is driven directly, with no JobLauncher and no HTTP layer in the path). G32 does not apply: CBTRN01C contains zero GO TO statements.",
+  "unitKind": "BATCH_JOB",
+  "inputs": {
+    "DALYTRAN": {
+      "rows": [
+        "0000000000683580010001POS TERM  Purchase at Abshire-Lowe                                                                            0000005047G800000000Abshire-Lowe                                      North Enoshaven                                   72112     48594526128770652022-06-10 19:27:53.000000                                              "
+      ]
+    },
+    "CUSTFILE": {
+      "empty": true,
+      "recordLength": 500,
+      "copybook": "CVCUS01Y"
+    },
+    "XREFFILE": {
+      "rows": [
+        "485945261287706500000000700000000007"
+      ]
+    },
+    "CARDFILE": {
+      "empty": true,
+      "recordLength": 150,
+      "copybook": "CVACT02Y"
+    },
+    "ACCTFILE": {
+      "rows": [
+        "00000000007Y00000001930{00000020650{00000002640{2012-10-122024-12-132024-12-1300000000000{00000000000{A000000000                                                                                                                                                                                            "
+      ]
+    },
+    "TRANFILE": {
+      "empty": true,
+      "recordLength": 350,
+      "copybook": "CVTRA05Y"
+    }
+  },
+  "jobParameters": {},
+  "expectedWrites": [],
+  "expectedFinalState": [
+    {
+      "dataset": "DALYTRAN",
+      "rowIndex": 0,
+      "expectedBytes": "0000000000683580010001POS TERM  Purchase at Abshire-Lowe                                                                            0000005047G800000000Abshire-Lowe                                      North Enoshaven                                   72112     48594526128770652022-06-10 19:27:53.000000                                              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 0,
+      "fields": {
+        "XREF-CARD-NUM": "4859452612877065",
+        "XREF-CUST-ID": "000000007",
+        "XREF-ACCT-ID": "00000000007",
+        "FILLER": "              "
+      }
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 0,
+      "expectedBytes": "00000000007Y00000001930{00000020650{00000002640{2012-10-122024-12-132024-12-1300000000000{00000000000{A000000000                                                                                                                                                                                            "
+    }
+  ],
+  "expectedReturnCode": 12,
+  "expectedMessages": [
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "START OF EXECUTION OF PROGRAM CBTRN01C"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "0000000000683580010001POS TERM  Purchase at Abshire-Lowe                                                                            0000005047G800000000Abshire-Lowe                                      North Enoshaven                                   72112     48594526128770652022-06-10 19:27:53.000000                                              "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "SUCCESSFUL READ OF XREF"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "CARD NUMBER: 4859452612877065"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCOUNT ID : 00000000007"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "CUSTOMER ID: 000000007"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "SUCCESSFUL READ OF ACCOUNT FILE"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "SUCCESSFUL READ OF XREF"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "CARD NUMBER: 4859452612877065"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ACCOUNT ID : 00000000007"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "CUSTOMER ID: 000000007"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "SUCCESSFUL READ OF ACCOUNT FILE"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ERROR CLOSING CUSTOMER FILE"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "FILE STATUS IS: NNNN0000"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ABENDING PROGRAM"
+    }
+  ],
+  "normalisations": [
+    {
+      "dataset": "XREFFILE",
+      "kind": "CARDXREF_FILLER_PAD_36_TO_50"
+    }
+  ],
+  "expectedDatasets": [
+    {
+      "dataset": "DALYTRAN",
+      "channel": "WRITES",
+      "rowCount": 0,
+      "recordLength": 350
+    },
+    {
+      "dataset": "CUSTFILE",
+      "channel": "WRITES",
+      "rowCount": 0,
+      "recordLength": 500
+    },
+    {
+      "dataset": "XREFFILE",
+      "channel": "WRITES",
+      "rowCount": 0,
+      "recordLength": 50
+    },
+    {
+      "dataset": "CARDFILE",
+      "channel": "WRITES",
+      "rowCount": 0,
+      "recordLength": 150
+    },
+    {
+      "dataset": "ACCTFILE",
+      "channel": "WRITES",
+      "rowCount": 0,
+      "recordLength": 300
+    },
+    {
+      "dataset": "TRANFILE",
+      "channel": "WRITES",
+      "rowCount": 0,
+      "recordLength": 350
+    },
+    {
+      "dataset": "DALYTRAN",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 350
+    },
+    {
+      "dataset": "XREFFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 50
+    },
+    {
+      "dataset": "ACCTFILE",
+      "channel": "FINAL_STATE",
+      "rowCount": 1,
+      "recordLength": 300
+    }
+  ]
+}

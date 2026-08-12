@@ -1,33 +1,34 @@
 {
   "program": "CBACT04C",
   "caseId": "case09",
-  "description": "A direct disclosure-group hit, with a terminating quotient. The account's ACCT-GROUP-ID is A000000000 and discgrp.txt row 2 - verbatim, A000000000 type 01 category 0003 at twenty-five percent - is present, so the READ at :416 reports '00', the '23' window at :436-439 is never entered, and NEITHER of the :418-419 lines is displayed. That absence is the assertion: case10 seeds the same shape without the matching group and gets two extra lines, so the pair isolates the fallback from everything else. 1200.00 at twenty-five percent is 25.00 exactly - a terminating quotient, chosen so this case proves the store keeps a result it should keep rather than truncating something it should not.",
+  "description": "THE REPEATING-DECIMAL AND EXACT-QUOTIENT CASE, AND THE OWNER OF GATE G23. Two TCATBALF rows for two DIFFERENT accounts run through COMPUTE WS-MONTHLY-INT = ( TRAN-CAT-BAL * DIS-INT-RATE) / 1200 at app/cbl/CBACT04C.cbl:464-465, and they are chosen so that one quotient CANNOT be represented at any finite scale while the other is exact at scale 2. Row 1 is 100.00 at 25.00: the product is 2500.0000 and the quotient is the rational 25/12, whose denominator still holds a factor of 3 once every factor of 2 and 5 is removed, so the decimal expansion 2.083333... NEVER TERMINATES - verified by that reduction rather than asserted. Row 2 is 1000.00 at 15.00: the product is 15000.0000 and the quotient is 25/2 = 12.5 EXACTLY. Both are stored into WS-MONTHLY-INT PIC S9(09)V99 [:168] and then moved to TRAN-AMT PIC S9(09)V99 [:490], which is scale 2 in app/cpy/CVTRA05Y.cpy, so both are stored through setScale(2, RoundingMode.DOWN) - the scale is EXACTLY 2 and the mode is truncation towards zero, decided in one place, common.CobolDecimal, whose MONETARY_SCALE and COBOL_ROUNDING every monetary path in this migration inherits. The stored values are 2.08 and 12.50, written as the zoned images 0000000020H and 0000000125{ (gates G23, G24, G25). WHAT ROW 1 IS NOT, STATED OUTRIGHT SO NOBODY MISREADS IT: row 1 is NOT a rounding-DIRECTION discriminator. At scale 2 the exact quotient 25/12 gives 2.08 under DOWN, 2.08 under HALF_UP, 2.08 under HALF_EVEN and 2.08 under FLOOR; only CEILING differs, at 2.09. Three of the four modes anyone would plausibly reach for therefore agree, and a run that reported 2.08 has proved nothing about direction. DIRECTION IS OWNED BY case06 (158.00 at 15.00, exactly on the halfway boundary, where DOWN gives 1.97 and HALF_UP, HALF_EVEN and CEILING all give 1.98), and by case07 and case08. WHAT ROW 1 DOES ASSERT IS PRECISION DISCIPLINE: that the division is carried at a working precision wide enough to hold a non-terminating expansion and truncated ONCE, at the end, into the receiver - not materialised at scale 2 part-way through the expression, and not routed through a binary floating-point type on the way. An implementation that quantised an intermediate, or that held the quotient in a double, could still land on 2.08 HERE and drift elsewhere; this case exists so that the discipline is asserted where the arithmetic cannot be represented, which is where the shortcut is cheapest to take. NO VALUE DERIVED FROM A PIC 9...V... OR COMP-3 FIELD MAY EVER BE HELD IN A double OR A float ANYWHERE IN THIS MIGRATION - every one is a BigDecimal at the copybook-declared scale (gate G22, practice B4). WHAT ROW 2 ADDS THAT ROW 1 STRUCTURALLY CANNOT: 12.5 is exact at scale 2, so all five rounding modes agree on 12.50 and NO truncation occurs at all. Its job is to prove that the DOWN policy does not DAMAGE a value that needs no truncating. A naive implementation that always floored to the cent would still pass here, but one that subtracted a cent defensively - or that computed a floor over a binary approximation of 12.5 that fell a fraction short - would report 12.49 and fail. Carrying the two rows in ONE run is the point: a single execution shows the same policy discarding digits it must discard and keeping digits it must keep. THE 25.00 RATE, AND THE KEY-WIDTH TRAP CHECKED RATHER THAN ASSUMED. This is the only case in the folder that exercises the 25.00 rate, which lives on different disclosure keys from 15.00. app/cpy/CVTRA02Y.cpy declares DIS-GROUP-KEY as SIXTEEN bytes - DIS-ACCT-GROUP-ID X(10) + DIS-TRAN-TYPE-CD X(02) + DIS-TRAN-CAT-CD 9(04) - so DIS-INT-RATE S9(04)V99 occupies 1-based bytes 17-22. The genuinely SEVENTEEN-byte key is CVTRA01Y's TRAN-CAT-KEY, 9(11) + X(02) + 9(04), and because BOTH records total 50 bytes the slip is invisible by width alone: a seventeen-byte disclosure key would read the rate from bytes 18-23 and corrupt every rate in the file. Read at 17-22 against the copybook before any arithmetic was done: discgrp.txt row 18, key [DEFAULT   010002], is 00250{ = 25.00, and row 17, key [DEFAULT   010001], is 00150{ = 15.00. A DOCUMENTED CORRECTION TO THE FOLDER BRIEF (practice B4, no silent scope creep). The brief states that the A000000000 and DEFAULT blocks of discgrp.txt carry IDENTICAL rate tables. They do not. They agree on sixteen of seventeen keys and differ at exactly one: A000000000/07/0001 is 00150{ = 15.00 (row 16) while DEFAULT/07/0001 is 00000{ = 0.00 (row 33). The difference is immaterial to THIS case, which uses 01/0001 and 01/0002 - identical across both blocks - but it is recorded rather than passed over, because a later case built on the assumed identity at type 07 would be wrong. The ZEROAPR block is 0.00 across all seventeen of its keys (rows 34-50) and belongs to case13. THE FALLBACK PATH, AND A SECOND CORRECTION THE BRIEF GOT RIGHT. Both accounts carry ACCT-GROUP-ID = TEN SPACES. The literal A000000000 that a reader expects to find there sits at 1-based bytes 103-112 in ACCT-ADDR-ZIP; ACCT-GROUP-ID is bytes 113-122 and is blank in the unmodified fixture for both account 00000000005 (row index 4) and account 00000000006 (row index 5). Confirmed by decoding both rows field by field against app/cpy/CVACT01Y.cpy. No row of discgrp.txt carries a ten-space group id - only A000000000, 'DEFAULT   ' and 'ZEROAPR   ' - so MOVE ACCT-GROUP-ID TO FD-DIS-ACCT-GROUP-ID [:210] builds a key that misses, the READ at :416 reports '23' and takes its INVALID KEY arm, and BOTH lines at :418-419 are displayed. The '23' window at :436-439 then moves 'DEFAULT' into the group id - X(10), so 'DEFAULT   ' with three trailing spaces, exactly as the fixture spells it - and 1200-A-GET-DEFAULT-INT-RATE at :443 re-reads and finds the rate. That happens for BOTH rows, which is why the eight expected lines carry the pair twice. TRAN-CAT-CD IS 0005 ON BOTH RECORDS AND IS NEVER ECHOED FROM THE INPUT. Row 1's input category is 0002 and row 2's is 0001, but MOVE '05' TO TRAN-CAT-CD at :483 is an UNCONDITIONAL literal move into a numeric-display PIC 9(04) receiver, giving the four bytes 0005 on every generated transaction. The input category drives the disclosure-group lookup at :211 and NOTHING else. This is the field most likely to be wrongly echoed, so it is called out here rather than left to be inferred: 0002 and 05 with two trailing spaces are both wrong, and 0005 is right on both records. TRAN-ID SUFFIXES ARE CONTIGUOUS FROM 1, NEVER FROM 0. ADD 1 TO WS-TRANID-SUFFIX at :474 PRECEDES the STRING at :476-480, and WS-TRANID-SUFFIX is PIC 9(06) VALUE 0 [:173], so the first generated identifier carries 000001 and the second 000002. PARM-DATE is prefixed verbatim by STRING ... DELIMITED BY SIZE, giving 2022071800000001 and 2022071800000002 in the sixteen bytes TRAN-ID declares. A suffix of 000000 would mean the increment had been read as following the STRING rather than preceding it. TRAN-DESC CARRIES A 24-BYTE PREFIX AND A 76-SPACE TAIL, AND THE TAIL IS NOT AN ACCIDENT. STRING 'Int. for a/c ', ACCT-ID DELIMITED BY SIZE INTO TRAN-DESC at :485-489 writes 13 bytes of literal - the trailing space inside the literal is part of it - plus the 11 digits of ACCT-ID, and STRING DOES NOT BLANK THE RECEIVER TAIL. The remaining 76 of the 100 bytes TRAN-DESC declares are therefore whatever the receiver already held, which in the Java TranRecord is spaces because common.FixedWidthCodec space-initialises every PIC X span. Measured numerically at exactly 76 rather than eyeballed. EXACTLY ONE ACCTFILE REWRITE, AND THE ACCOUNT THAT IS REWRITTEN IS NOT THE ONE THAT BROKE (gate G27). Row 1 is the FIRST break, so WS-FIRST-TIME is still 'Y' at :195 and control goes to :198, which only clears the flag - there is no rewrite. Row 2 breaks with the flag now 'N', so 1050-UPDATE-ACCOUNT fires at :196; and because :196 runs BEFORE :202 repoints FD-ACCT-ID to the new account, the record it rewrites is ACCOUNT 00000000005, carrying account 5's accumulated WS-TOTAL-INT of 2.08. The order inside 1050-UPDATE-ACCOUNT is asserted as written: ADD WS-TOTAL-INT TO ACCT-CURR-BAL [:352], MOVE 0 TO ACCT-CURR-CYC-CREDIT [:353], MOVE 0 TO ACCT-CURR-CYC-DEBIT [:354], THEN REWRITE [:356]. Account 5's fixture balance is 00000003450{ = 345.00, so the rewritten balance is 347.08, re-encoded as the twelve-byte zoned S9(10)V99 image 00000003470H. Decoded from the fixture and recomputed here rather than assumed; the resulting 300-byte image differs from the fixture row at exactly two byte positions, both inside ACCT-CURR-BAL, and nowhere else. Both cycle amounts were ALREADY 00000000000{ in this fixture row, so :353-354 are unobservable in this case - case11.json owns the observable proof of the zeroing order and should be read for it. ACCOUNT 00000000006 IS NEVER REWRITTEN, AND THAT IS PRESERVED DEAD CODE RATHER THAN A GAP (practice B5). Account 6's 12.50 IS accumulated into WS-TOTAL-INT at :467, but nothing ever flushes it. PERFORM UNTIL END-OF-FILE = 'Y' at :188 tests before each iteration, so the body runs only while END-OF-FILE is 'N', which makes IF END-OF-FILE = 'N' at :189 ALWAYS TRUE and the ELSE PERFORM 1050-UPDATE-ACCOUNT at :219-220 UNREACHABLE. On the iteration that hits end of file, 1000-TCATBALF-GET-NEXT sets the flag, the inner IF at :191 is false, the loop test then exits, and no final update is performed. This case therefore expects ONE ACCTFILE record and no expectation at all for account 6 - the trailing account's interest is written as a transaction and lost from the balance. Implementing the flush would be a behaviour change and a parity violation. AND THAT ABSENCE IS PROVED HERE RATHER THAN MERELY LEFT UNASSERTED: account 6 is pinned at row index 5 with its ORIGINAL bytes, balance 00000002180{ = 218.00 and both cycle amounts untouched, so a run that flushed the trailing 12.50 would report a difference on that row instead of passing unnoticed. EXACTLY ONE OF THE FIFTY PINNED ACCTFILE ROWS DIFFERS FROM ITS SEED - row index 4 - and the other forty-nine are byte-identical to acctdata.txt. WHY EVERY FINAL-STATE ROW IS PINNED, AND HOW THAT MEETS THE ONE-REWRITE REQUIREMENT (practice B4). parity.FieldDiffer treats the final state of a SEEDED dataset as EXHAUSTIVE: a row the case does not address is reported as EXTRA_RECORD, wherever it sits, on the stated ground that an extra row inserted among the expected ones is exactly as wrong as one appended past them and considerably easier to miss. Seeding a dataset and pinning only part of it is therefore not expressible, and this case seeds all fifty rows of acctdata.txt, all fifty of cardxref.txt on both cross-reference paths and all fifty-one of discgrp.txt, exactly as its brief requires. The one-rewrite requirement is met as ONE CHANGED RECORD - account 00000000005 at row index 4, which is where account k sits at index k-1 - rather than as one solitary entry, because the alternative readings are both worse: pinning nothing for the other rows is impossible, and seeding only account 5 would make 1100-GET-ACCT-DATA fail on account 6 and fabricate an ACCOUNT NOT FOUND line the real job never emits. The rows that carry this case's meaning - the two generated transactions, the rewritten account, the untouched account 6, the two category balances, the two cross-reference rows the card numbers came from and the two disclosure rows the rates came from - carry the FULL ordered field map so the diff is field by field (gate G17); the remaining read-only fixture rows are pinned as whole record images, which asserts every byte of them and their exact count. Row order on the final-state channel is the record image ascending, and for all four datasets that coincides with fixture order: ACCTFILE and TCATBALF lead with a zero-padded account id, cardxref.txt is already sorted by card number, and discgrp.txt blocks sort A000000000 then DEFAULT then ZEROAPR. The rewrite does not move account 5, because only its balance bytes change. THE FEES STUB IS INVOKED TWICE AND PRODUCES NOTHING (gate G26). :214's guard IF DIS-INT-RATE NOT = 0 is satisfied on both rows - 25.00 and 15.00 - so PERFORM 1400-COMPUTE-FEES at :216 runs twice. Its body is the comment '* To be implemented' followed by EXIT [:518-520], so it contributes no record, no field and no message. Its Java counterpart must remain a no-op. PROVENANCE, STATED PLAINLY (practice B12). BOTH TCATBALF ROWS ARE MODIFIED, NOT FIXTURE ROWS. All fifty real rows of app/data/ASCII/tcatbal.txt carry the balance 0000000000{ = 0.00 and every one of them uses type 01 category 0001, so neither the non-zero balances nor the 0002 category could have come from the fixture. THE BALANCES 100.00 AND 1000.00 ARE ROUND VALUES CHOSEN FOR ARITHMETIC LEGIBILITY - THEY ARE NOT FIXTURE VALUES AND ARE NOT DRESSED UP AS ANY. Each was chosen for a stated reason: at 25.00, 100.00 is the smallest round balance whose quotient repeats infinitely; at 15.00, 1000.00 is the smallest round balance whose quotient is exact at scale 2. The pair therefore isolates the two behaviours in one run with no incidental arithmetic in the way. CATEGORY 0002 IS, HOWEVER, A REAL KEY - it is present in all three blocks of discgrp.txt (rows 1, 18 and 35), so the rate lookup is genuine and not invented. The 22-byte trailing span of each seeded row is zero-filled because that is how the real fixture spells CVTRA01Y's FILLER X(22). Everything else is unmodified fixture data: ACCTFILE is all fifty rows of acctdata.txt, DISCGRP all fifty-one rows of discgrp.txt, and XREFFILE and XREFFIL1 all fifty rows of cardxref.txt. EVERY EXPECTED VALUE IN THIS FILE IS STATICALLY DERIVED from app/cbl/CBACT04C.cbl, the copybook byte layouts, the app/jcl/INTCALC.jcl contract and those fixtures. NONE WAS CAPTURED FROM A COBOL EXECUTION: no COBOL runtime exists in this environment, for the eight independently verified reasons recorded as risk R-A. CARD NUMBERS WERE LOOKED UP, NOT GUESSED. cardxref.txt is ordered by CARD NUMBER, not by account, so positional correspondence is invalid; each TRAN-CARD-NUM comes from the row whose XREF-ACCT-ID at 1-based bytes 26-36 matches. Account 00000000005 resolves to 6009619150674526 at zero-based ROW INDEX 26, and account 00000000006 to 2871968252812490 at ROW INDEX 10. The method was validated first against five known anchors, all reproduced exactly: account 1 to 9680294154603697 (row 48), 2 to 0923877193247330 (row 2), 3 to 3999169246375885 (row 16), 49 to 8262593602473076 (row 42) and 50 to 0500024453765740 (row 0). TWO MEMBER-NAME AND CLOCK CORRECTIONS, DOCUMENTED RATHER THAN APPLIED SILENTLY (practice B4). FIRST, the record expectations are carried in expectedWrites and expectedFinalState. There is no expectedRecords member on parity.ParityCase, which is annotated @JsonIgnoreProperties(ignoreUnknown = false), so an invented name would not bind at all; the two members are the wire realisation of the one concept, and every sibling case uses them. SECOND, both timestamps are 2022-07-19-23.12.34.000000 and not 2022-07-18-00.00.00.000000. Z-GET-DB2-FORMAT-TIMESTAMP at :613-626 composes DB2-FORMAT-TS X(26) from FUNCTION CURRENT-DATE, and :497-498 move that one value into both TRAN-ORIG-TS and TRAN-PROC-TS - the only wall-clock values the program produces. A parity run pins them, never captures a 'now'; but the instant is pinned by ParityHarness.DEFAULT_PINNED_CLOCK, which is 2022-07-19T23:12:34 UTC, the revision date this migration was derived from. A case can override it only through screenRequest.pinnedClock, and screenRequest is REJECTED outright on a BATCH_JOB case, so a batch case cannot pin its own. The harness value is therefore the correct literal, it is what case01, case03 and case06 carry, and the twenty-six-byte width was measured (practice B7). SHAPE AND ADDRESSING. unitKind is BATCH_JOB: account.AccountInterestCalcJob is reached at step level through calculateInterest, with no JobLauncher, no JobRepository and no HTTP between the assertion and the arithmetic (gate G51). parmDate is the STRING 2022071800 from app/jcl/INTCALC.jcl:22 - character data that :476-480 concatenates into TRAN-ID, NEVER parsed as a date. Every dataset is addressed by its carddemo.datasets.* binding key, and not one of the fully-qualified mainframe dataset names catalogued in app/csd/CARDDEMO.CSD appears anywhere in this file - the ParityCase dataset-key pattern is one to eight upper-case alphanumerics with no dot, so a dotted name could not even bind (gate G46). XREFFILE and XREFFIL1 both reference the SAME cardxref.txt because INTCALC.jcl:29-32 opens the base KSDS and an alternate-index PATH OVER THAT SAME BASE - one dataset reached two ways, never two datasets (gate G45). cardxref.txt is 36 bytes per record where CVACT03Y declares 50, because the fixture omits the trailing FILLER X(14); the rows are declared UNPADDED and the CARDXREF_FILLER_PAD_36_TO_50 normalisation supplies the span, because parity.FieldDiffer owns that pad and a pre-padded row would hide it (gate G16). SYSTRAN is output only and is not seeded. Row indices are ZERO-BASED throughout: in expectedWrites they are positions in write order, and in expectedFinalState they are row positions in the finished dataset. Every expectation is an ORDERED field-name-to-value map in copybook declaration order, alongside the whole-record image, so FieldDiffer compares field by field AND the total width is pinned (gates G17, G19, G20). Both FILLER spans are present and space-filled - TRAN-RECORD's FILLER X(20) and ACCOUNT-RECORD's FILLER X(178) - which is what makes the 350-byte and 300-byte totals provable rather than asserted (gate G21). The charset is US-ASCII, named explicitly and never the platform default. Field names are the copybook's own, including the MISSPELLED ACCT-EXPIRAION-DATE of app/cpy/CVACT01Y.cpy: the misspelling IS the contract. Repairing the spelling to the ordinary English form would leave the diff hunting a field name the decoder never emits - a silent parity break rather than a loud one.",
   "unitKind": "BATCH_JOB",
   "inputs": {
     "TCATBALF": {
       "rows": [
-        "000000000010100030000012000{0000000000000000000000"
+        "000000000050100020000001000{0000000000000000000000",
+        "000000000060100010000010000{0000000000000000000000"
       ]
     },
     "ACCTFILE": {
-      "rows": [
-        "00000000001Y00000001940{00000020200{00000010200{2014-11-202025-05-202025-05-2000000000000{00000000000{A000000000A000000000                                                                                                                                                                                  "
-      ]
+      "fixture": "acctdata.txt",
+      "fromRow": 0,
+      "rowCount": 50
     },
     "XREFFILE": {
-      "rows": [
-        "968029415460369700000000100000000001"
-      ]
+      "fixture": "cardxref.txt",
+      "fromRow": 0,
+      "rowCount": 50
     },
     "XREFFIL1": {
-      "rows": [
-        "968029415460369700000000100000000001"
-      ]
+      "fixture": "cardxref.txt",
+      "fromRow": 0,
+      "rowCount": 50
     },
     "DISCGRP": {
       "fixture": "discgrp.txt",
-      "fromRow": 2,
-      "rowCount": 1
+      "fromRow": 0,
+      "rowCount": 51
     }
   },
   "jobParameters": {
@@ -37,34 +38,1143 @@
     {
       "dataset": "SYSTRAN",
       "rowIndex": 0,
-      "expectedBytes": "2022071800000001010005System    Int. for a/c 00000000001                                                                            0000000250{000000000                                                                                                              96802941546036972022-07-19-23.12.34.0000002022-07-19-23.12.34.000000                    "
+      "fields": {
+        "TRAN-ID": "2022071800000001",
+        "TRAN-TYPE-CD": "01",
+        "TRAN-CAT-CD": "0005",
+        "TRAN-SOURCE": "System    ",
+        "TRAN-DESC": "Int. for a/c 00000000005                                                                            ",
+        "TRAN-AMT": "0000000020H",
+        "TRAN-MERCHANT-ID": "000000000",
+        "TRAN-MERCHANT-NAME": "                                                  ",
+        "TRAN-MERCHANT-CITY": "                                                  ",
+        "TRAN-MERCHANT-ZIP": "          ",
+        "TRAN-CARD-NUM": "6009619150674526",
+        "TRAN-ORIG-TS": "2022-07-19-23.12.34.000000",
+        "TRAN-PROC-TS": "2022-07-19-23.12.34.000000",
+        "FILLER": "                    "
+      },
+      "expectedBytes": "2022071800000001010005System    Int. for a/c 00000000005                                                                            0000000020H000000000                                                                                                              60096191506745262022-07-19-23.12.34.0000002022-07-19-23.12.34.000000                    "
+    },
+    {
+      "dataset": "SYSTRAN",
+      "rowIndex": 1,
+      "fields": {
+        "TRAN-ID": "2022071800000002",
+        "TRAN-TYPE-CD": "01",
+        "TRAN-CAT-CD": "0005",
+        "TRAN-SOURCE": "System    ",
+        "TRAN-DESC": "Int. for a/c 00000000006                                                                            ",
+        "TRAN-AMT": "0000000125{",
+        "TRAN-MERCHANT-ID": "000000000",
+        "TRAN-MERCHANT-NAME": "                                                  ",
+        "TRAN-MERCHANT-CITY": "                                                  ",
+        "TRAN-MERCHANT-ZIP": "          ",
+        "TRAN-CARD-NUM": "2871968252812490",
+        "TRAN-ORIG-TS": "2022-07-19-23.12.34.000000",
+        "TRAN-PROC-TS": "2022-07-19-23.12.34.000000",
+        "FILLER": "                    "
+      },
+      "expectedBytes": "2022071800000002010005System    Int. for a/c 00000000006                                                                            0000000125{000000000                                                                                                              28719682528124902022-07-19-23.12.34.0000002022-07-19-23.12.34.000000                    "
     }
   ],
   "expectedFinalState": [
     {
       "dataset": "TCATBALF",
       "rowIndex": 0,
-      "expectedBytes": "000000000010100030000012000{0000000000000000000000"
+      "fields": {
+        "TRANCAT-ACCT-ID": "00000000005",
+        "TRANCAT-TYPE-CD": "01",
+        "TRANCAT-CD": "0002",
+        "TRAN-CAT-BAL": "0000001000{",
+        "FILLER": "0000000000000000000000"
+      },
+      "expectedBytes": "000000000050100020000001000{0000000000000000000000"
+    },
+    {
+      "dataset": "TCATBALF",
+      "rowIndex": 1,
+      "fields": {
+        "TRANCAT-ACCT-ID": "00000000006",
+        "TRANCAT-TYPE-CD": "01",
+        "TRANCAT-CD": "0001",
+        "TRAN-CAT-BAL": "0000010000{",
+        "FILLER": "0000000000000000000000"
+      },
+      "expectedBytes": "000000000060100010000010000{0000000000000000000000"
     },
     {
       "dataset": "ACCTFILE",
       "rowIndex": 0,
-      "expectedBytes": "00000000001Y00000001940{00000020200{00000010200{2014-11-202025-05-202025-05-2000000000000{00000000000{A000000000A000000000                                                                                                                                                                                  "
+      "expectedBytes": "00000000001Y00000001940{00000020200{00000010200{2014-11-202025-05-202025-05-2000000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 1,
+      "expectedBytes": "00000000002Y00000001580{00000061300{00000054480{2013-06-192024-08-112024-08-1100000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 2,
+      "expectedBytes": "00000000003Y00000001470{00000049090{00000005380{2013-08-232024-01-102024-01-1000000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 3,
+      "expectedBytes": "00000000004Y00000000400{00000035030{00000027890{2012-11-172023-12-162023-12-1600000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 4,
+      "fields": {
+        "ACCT-ID": "00000000005",
+        "ACCT-ACTIVE-STATUS": "Y",
+        "ACCT-CURR-BAL": "00000003470H",
+        "ACCT-CREDIT-LIMIT": "00000038190{",
+        "ACCT-CASH-CREDIT-LIMIT": "00000024300{",
+        "ACCT-OPEN-DATE": "2012-10-03",
+        "ACCT-EXPIRAION-DATE": "2025-03-09",
+        "ACCT-REISSUE-DATE": "2025-03-09",
+        "ACCT-CURR-CYC-CREDIT": "00000000000{",
+        "ACCT-CURR-CYC-DEBIT": "00000000000{",
+        "ACCT-ADDR-ZIP": "A000000000",
+        "ACCT-GROUP-ID": "          ",
+        "FILLER": "                                                                                                                                                                                  "
+      },
+      "expectedBytes": "00000000005Y00000003470H00000038190{00000024300{2012-10-032025-03-092025-03-0900000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 5,
+      "fields": {
+        "ACCT-ID": "00000000006",
+        "ACCT-ACTIVE-STATUS": "Y",
+        "ACCT-CURR-BAL": "00000002180{",
+        "ACCT-CREDIT-LIMIT": "00000035840{",
+        "ACCT-CASH-CREDIT-LIMIT": "00000029480{",
+        "ACCT-OPEN-DATE": "2017-12-23",
+        "ACCT-EXPIRAION-DATE": "2025-10-08",
+        "ACCT-REISSUE-DATE": "2025-10-08",
+        "ACCT-CURR-CYC-CREDIT": "00000000000{",
+        "ACCT-CURR-CYC-DEBIT": "00000000000{",
+        "ACCT-ADDR-ZIP": "A000000000",
+        "ACCT-GROUP-ID": "          ",
+        "FILLER": "                                                                                                                                                                                  "
+      },
+      "expectedBytes": "00000000006Y00000002180{00000035840{00000029480{2017-12-232025-10-082025-10-0800000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 6,
+      "expectedBytes": "00000000007Y00000001930{00000020650{00000002640{2012-10-122024-12-132024-12-1300000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 7,
+      "expectedBytes": "00000000008Y00000006050{00000061040{00000013180{2012-01-042024-05-202024-05-2000000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 8,
+      "expectedBytes": "00000000009Y00000005600{00000082010{00000020650{2016-08-272024-12-272024-12-2700000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 9,
+      "expectedBytes": "00000000010Y00000001590{00000054010{00000044420{2015-09-132023-01-272023-01-2700000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 10,
+      "expectedBytes": "00000000011Y00000002120{00000049980{00000031750{2014-09-122025-03-122025-03-1200000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 11,
+      "expectedBytes": "00000000012Y00000001760{00000046360{00000003880{2009-06-172023-07-072023-07-0700000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 12,
+      "expectedBytes": "00000000013Y00000000410{00000075420{00000049220{2017-10-012024-08-042024-08-0400000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 13,
+      "expectedBytes": "00000000014Y00000000150{00000022540{00000002120{2010-12-042025-12-112025-12-1100000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 14,
+      "expectedBytes": "00000000015Y00000004890{00000084410{00000038330{2009-10-062025-06-092025-06-0900000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 15,
+      "expectedBytes": "00000000016Y00000007330{00000089220{00000026320{2014-09-112024-01-252024-01-2500000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 16,
+      "expectedBytes": "00000000017Y00000000330{00000005680{00000005100{2014-05-172025-03-012025-03-0100000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 17,
+      "expectedBytes": "00000000018Y00000001440{00000029030{00000014960{2018-11-152023-09-102023-09-1000000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 18,
+      "expectedBytes": "00000000019Y00000004800{00000069860{00000037230{2011-12-142025-07-232025-07-2300000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 19,
+      "expectedBytes": "00000000020Y00000003690{00000037670{00000010400{2014-02-272024-03-132024-03-1300000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 20,
+      "expectedBytes": "00000000021Y00000001120{00000012640{00000001800{2011-10-192023-01-062023-01-0600000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 21,
+      "expectedBytes": "00000000022Y00000000550{00000085990{00000047120{2016-11-212025-12-282025-12-2800000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 22,
+      "expectedBytes": "00000000023Y00000001040{00000033770{00000029040{2012-03-152025-03-182025-03-1800000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 23,
+      "expectedBytes": "00000000024Y00000004000{00000051740{00000041290{2015-08-082025-02-112025-02-1100000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 24,
+      "expectedBytes": "00000000025Y00000000610{00000081940{00000065820{2012-10-262025-07-102025-07-1000000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 25,
+      "expectedBytes": "00000000026Y00000000460{00000021810{00000013750{2009-04-202024-12-192024-12-1900000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 26,
+      "expectedBytes": "00000000027Y00000002840{00000055720{00000020750{2012-09-302025-07-132025-07-1300000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 27,
+      "expectedBytes": "00000000028Y00000000680{00000008680{00000005470{2015-05-202024-05-092024-05-0900000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 28,
+      "expectedBytes": "00000000029Y00000003390{00000055110{00000043610{2015-11-032024-06-042024-06-0400000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 29,
+      "expectedBytes": "00000000030Y00000000020{00000001200{00000000930{2011-08-262024-06-272024-06-2700000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 30,
+      "expectedBytes": "00000000031Y00000000310{00000011400{00000010770{2017-02-252025-06-082025-06-0800000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 31,
+      "expectedBytes": "00000000032Y00000000300{00000011750{00000008460{2013-11-102025-05-192025-05-1900000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 32,
+      "expectedBytes": "00000000033Y00000004100{00000064040{00000009510{2012-10-112025-10-072025-10-0700000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 33,
+      "expectedBytes": "00000000034Y00000002530{00000036420{00000027700{2009-05-102025-10-062025-10-0600000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 34,
+      "expectedBytes": "00000000035Y00000001660{00000019470{00000015250{2018-02-022025-09-232025-09-2300000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 35,
+      "expectedBytes": "00000000036Y00000001100{00000033280{00000008390{2018-07-182024-12-232024-12-2300000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 36,
+      "expectedBytes": "00000000037Y00000000070{00000004460{00000001660{2016-09-102023-10-242023-10-2400000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 37,
+      "expectedBytes": "00000000038Y00000006120{00000065050{00000034760{2010-08-122023-07-232023-07-2300000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 38,
+      "expectedBytes": "00000000039Y00000008430{00000097500{00000062120{2018-08-262025-09-082025-09-0800000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 39,
+      "expectedBytes": "00000000040Y00000000430{00000058230{00000016740{2010-02-132023-10-272023-10-2700000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 40,
+      "expectedBytes": "00000000041Y00000003750{00000067210{00000034290{2015-02-072023-04-242023-04-2400000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 41,
+      "expectedBytes": "00000000042Y00000003020{00000065630{00000051030{2016-09-192025-09-192025-09-1900000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 42,
+      "expectedBytes": "00000000043Y00000006100{00000061680{00000012060{2012-04-092025-08-292025-08-2900000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 43,
+      "expectedBytes": "00000000044Y00000002630{00000068990{00000044320{2018-12-012024-01-172024-01-1700000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 44,
+      "expectedBytes": "00000000045Y00000001860{00000027190{00000006880{2010-12-312025-07-092025-07-0900000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 45,
+      "expectedBytes": "00000000046Y00000003960{00000070070{00000054380{2013-09-062025-06-202025-06-2000000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 46,
+      "expectedBytes": "00000000047Y00000000320{00000023380{00000001590{2014-04-032025-08-232025-08-2300000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 47,
+      "expectedBytes": "00000000048Y00000002260{00000023060{00000006120{2017-03-182025-02-062025-02-0600000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 48,
+      "expectedBytes": "00000000049Y00000001000{00000090480{00000048070{2019-04-062023-09-172023-09-1700000000000{00000000000{A000000000                                                                                                                                                                                            "
+    },
+    {
+      "dataset": "ACCTFILE",
+      "rowIndex": 49,
+      "expectedBytes": "00000000050Y00000004920{00000061690{00000045870{2011-04-222023-03-092023-03-0900000000000{00000000000{A000000000                                                                                                                                                                                            "
     },
     {
       "dataset": "XREFFILE",
       "rowIndex": 0,
+      "expectedBytes": "050002445376574000000005000000000050              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 1,
+      "expectedBytes": "068358619817151600000002700000000027              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 2,
+      "expectedBytes": "092387719324733000000000200000000002              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 3,
+      "expectedBytes": "092798710863623200000002000000000020              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 4,
+      "expectedBytes": "098249621362979500000001200000000012              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 5,
+      "expectedBytes": "101408656522435000000004400000000044              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 6,
+      "expectedBytes": "114216769287893100000003700000000037              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 7,
+      "expectedBytes": "156140910649160000000003500000000035              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 8,
+      "expectedBytes": "274530372000209000000003900000000039              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 9,
+      "expectedBytes": "276083679710756500000002400000000024              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 10,
+      "fields": {
+        "XREF-CARD-NUM": "2871968252812490",
+        "XREF-CUST-ID": "000000006",
+        "XREF-ACCT-ID": "00000000006",
+        "FILLER": "              "
+      },
+      "expectedBytes": "287196825281249000000000600000000006              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 11,
+      "expectedBytes": "294013936230044900000002200000000022              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 12,
+      "expectedBytes": "298809135309431200000000400000000004              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 13,
+      "expectedBytes": "326076361233756000000001000000000010              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 14,
+      "expectedBytes": "376628198415515400000004100000000041              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 15,
+      "expectedBytes": "394024601614148900000001900000000019              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 16,
+      "expectedBytes": "399916924637588500000000300000000003              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 17,
+      "expectedBytes": "401150089177736700000001300000000013              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 18,
+      "expectedBytes": "438527147662781900000003400000000034              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 19,
+      "expectedBytes": "453478410271395100000003600000000036              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 20,
+      "expectedBytes": "485945261287706500000000700000000007              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 21,
+      "expectedBytes": "540709985047986600000002100000000021              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 22,
+      "expectedBytes": "565683054498121600000004600000000046              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 23,
+      "expectedBytes": "567118447850584400000001800000000018              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 24,
+      "expectedBytes": "578735122887933900000004700000000047              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 25,
+      "expectedBytes": "597511751661607700000004200000000042              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 26,
+      "fields": {
+        "XREF-CARD-NUM": "6009619150674526",
+        "XREF-CUST-ID": "000000005",
+        "XREF-ACCT-ID": "00000000005",
+        "FILLER": "              "
+      },
+      "expectedBytes": "600961915067452600000000500000000005              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 27,
+      "expectedBytes": "634925033164850900000001500000000015              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 28,
+      "expectedBytes": "650353518179599200000004800000000048              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 29,
+      "expectedBytes": "650923036255381600000003000000000030              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 30,
+      "expectedBytes": "672300046320776400000002800000000028              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 31,
+      "expectedBytes": "672705519061601400000001600000000016              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 32,
+      "expectedBytes": "683267604769808700000003300000000033              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 33,
+      "expectedBytes": "702663761503227700000003100000000031              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 34,
+      "expectedBytes": "705826726183775200000004300000000043              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 35,
+      "expectedBytes": "709414275105555100000003200000000032              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 36,
+      "expectedBytes": "725150814918888300000002900000000029              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 37,
+      "expectedBytes": "737933563466114200000004500000000045              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 38,
+      "expectedBytes": "742768486342320900000001100000000011              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 39,
+      "expectedBytes": "744387098889753000000003800000000038              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 40,
+      "expectedBytes": "804058041034868000000002600000000026              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 41,
+      "expectedBytes": "811254583423973500000002300000000023              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 42,
+      "expectedBytes": "826259360247307600000004900000000049              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 43,
+      "expectedBytes": "851786695820600800000001400000000014              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 44,
+      "expectedBytes": "893136935189478300000000800000000008              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 45,
+      "expectedBytes": "905629793166401100000002500000000025              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 46,
+      "expectedBytes": "934910747586921400000001700000000017              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 47,
+      "expectedBytes": "950173372142989300000000900000000009              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 48,
       "expectedBytes": "968029415460369700000000100000000001              "
+    },
+    {
+      "dataset": "XREFFILE",
+      "rowIndex": 49,
+      "expectedBytes": "980558340899658800000004000000000040              "
     },
     {
       "dataset": "XREFFIL1",
       "rowIndex": 0,
+      "expectedBytes": "050002445376574000000005000000000050              "
+    },
+    {
+      "dataset": "XREFFIL1",
+      "rowIndex": 1,
+      "expectedBytes": "068358619817151600000002700000000027              "
+    },
+    {
+      "dataset": "XREFFIL1",
+      "rowIndex": 2,
+      "expectedBytes": "092387719324733000000000200000000002              "
+    },
+    {
+      "dataset": "XREFFIL1",
+      "rowIndex": 3,
+      "expectedBytes": "092798710863623200000002000000000020              "
+    },
+    {
+      "dataset": "XREFFIL1",
+      "rowIndex": 4,
+      "expectedBytes": "098249621362979500000001200000000012              "
+    },
+    {
+      "dataset": "XREFFIL1",
+      "rowIndex": 5,
+      "expectedBytes": "101408656522435000000004400000000044              "
+    },
+    {
+      "dataset": "XREFFIL1",
+      "rowIndex": 6,
+      "expectedBytes": "114216769287893100000003700000000037              "
+    },
+    {
+      "dataset": "XREFFIL1",
+      "rowIndex": 7,
+      "expectedBytes": "156140910649160000000003500000000035              "
+    },
+    {
+      "dataset": "XREFFIL1",
+      "rowIndex": 8,
+      "expectedBytes": "274530372000209000000003900000000039              "
+    },
+    {
+      "dataset": "XREFFIL1",
+      "rowIndex": 9,
+      "expectedBytes": "276083679710756500000002400000000024              "
+    },
+    {
+      "dataset": "XREFFIL1",
+      "rowIndex": 10,
+      "fields": {
+        "XREF-CARD-NUM": "2871968252812490",
+        "XREF-CUST-ID": "000000006",
+        "XREF-ACCT-ID": "00000000006",
+        "FILLER": "              "
+      },
+      "expectedBytes": "287196825281249000000000600000000006              "
+    },
+    {
+      "dataset": "XREFFIL1",
+      "rowIndex": 11,
+      "expectedBytes": "294013936230044900000002200000000022              "
+    },
+    {
+      "dataset": "XREFFIL1",
+      "rowIndex": 12,
+      "expectedBytes": "298809135309431200000000400000000004              "
+    },
+    {
+      "dataset": "XREFFIL1",
+      "rowIndex": 13,
+      "expectedBytes": "326076361233756000000001000000000010              "
+    },
+    {
+      "dataset": "XREFFIL1",
+      "rowIndex": 14,
+      "expectedBytes": "376628198415515400000004100000000041              "
+    },
+    {
+      "dataset": "XREFFIL1",
+      "rowIndex": 15,
+      "expectedBytes": "394024601614148900000001900000000019              "
+    },
+    {
+      "dataset": "XREFFIL1",
+      "rowIndex": 16,
+      "expectedBytes": "399916924637588500000000300000000003              "
+    },
+    {
+      "dataset": "XREFFIL1",
+      "rowIndex": 17,
+      "expectedBytes": "401150089177736700000001300000000013              "
+    },
+    {
+      "dataset": "XREFFIL1",
+      "rowIndex": 18,
+      "expectedBytes": "438527147662781900000003400000000034              "
+    },
+    {
+      "dataset": "XREFFIL1",
+      "rowIndex": 19,
+      "expectedBytes": "453478410271395100000003600000000036              "
+    },
+    {
+      "dataset": "XREFFIL1",
+      "rowIndex": 20,
+      "expectedBytes": "485945261287706500000000700000000007              "
+    },
+    {
+      "dataset": "XREFFIL1",
+      "rowIndex": 21,
+      "expectedBytes": "540709985047986600000002100000000021              "
+    },
+    {
+      "dataset": "XREFFIL1",
+      "rowIndex": 22,
+      "expectedBytes": "565683054498121600000004600000000046              "
+    },
+    {
+      "dataset": "XREFFIL1",
+      "rowIndex": 23,
+      "expectedBytes": "567118447850584400000001800000000018              "
+    },
+    {
+      "dataset": "XREFFIL1",
+      "rowIndex": 24,
+      "expectedBytes": "578735122887933900000004700000000047              "
+    },
+    {
+      "dataset": "XREFFIL1",
+      "rowIndex": 25,
+      "expectedBytes": "597511751661607700000004200000000042              "
+    },
+    {
+      "dataset": "XREFFIL1",
+      "rowIndex": 26,
+      "fields": {
+        "XREF-CARD-NUM": "6009619150674526",
+        "XREF-CUST-ID": "000000005",
+        "XREF-ACCT-ID": "00000000005",
+        "FILLER": "              "
+      },
+      "expectedBytes": "600961915067452600000000500000000005              "
+    },
+    {
+      "dataset": "XREFFIL1",
+      "rowIndex": 27,
+      "expectedBytes": "634925033164850900000001500000000015              "
+    },
+    {
+      "dataset": "XREFFIL1",
+      "rowIndex": 28,
+      "expectedBytes": "650353518179599200000004800000000048              "
+    },
+    {
+      "dataset": "XREFFIL1",
+      "rowIndex": 29,
+      "expectedBytes": "650923036255381600000003000000000030              "
+    },
+    {
+      "dataset": "XREFFIL1",
+      "rowIndex": 30,
+      "expectedBytes": "672300046320776400000002800000000028              "
+    },
+    {
+      "dataset": "XREFFIL1",
+      "rowIndex": 31,
+      "expectedBytes": "672705519061601400000001600000000016              "
+    },
+    {
+      "dataset": "XREFFIL1",
+      "rowIndex": 32,
+      "expectedBytes": "683267604769808700000003300000000033              "
+    },
+    {
+      "dataset": "XREFFIL1",
+      "rowIndex": 33,
+      "expectedBytes": "702663761503227700000003100000000031              "
+    },
+    {
+      "dataset": "XREFFIL1",
+      "rowIndex": 34,
+      "expectedBytes": "705826726183775200000004300000000043              "
+    },
+    {
+      "dataset": "XREFFIL1",
+      "rowIndex": 35,
+      "expectedBytes": "709414275105555100000003200000000032              "
+    },
+    {
+      "dataset": "XREFFIL1",
+      "rowIndex": 36,
+      "expectedBytes": "725150814918888300000002900000000029              "
+    },
+    {
+      "dataset": "XREFFIL1",
+      "rowIndex": 37,
+      "expectedBytes": "737933563466114200000004500000000045              "
+    },
+    {
+      "dataset": "XREFFIL1",
+      "rowIndex": 38,
+      "expectedBytes": "742768486342320900000001100000000011              "
+    },
+    {
+      "dataset": "XREFFIL1",
+      "rowIndex": 39,
+      "expectedBytes": "744387098889753000000003800000000038              "
+    },
+    {
+      "dataset": "XREFFIL1",
+      "rowIndex": 40,
+      "expectedBytes": "804058041034868000000002600000000026              "
+    },
+    {
+      "dataset": "XREFFIL1",
+      "rowIndex": 41,
+      "expectedBytes": "811254583423973500000002300000000023              "
+    },
+    {
+      "dataset": "XREFFIL1",
+      "rowIndex": 42,
+      "expectedBytes": "826259360247307600000004900000000049              "
+    },
+    {
+      "dataset": "XREFFIL1",
+      "rowIndex": 43,
+      "expectedBytes": "851786695820600800000001400000000014              "
+    },
+    {
+      "dataset": "XREFFIL1",
+      "rowIndex": 44,
+      "expectedBytes": "893136935189478300000000800000000008              "
+    },
+    {
+      "dataset": "XREFFIL1",
+      "rowIndex": 45,
+      "expectedBytes": "905629793166401100000002500000000025              "
+    },
+    {
+      "dataset": "XREFFIL1",
+      "rowIndex": 46,
+      "expectedBytes": "934910747586921400000001700000000017              "
+    },
+    {
+      "dataset": "XREFFIL1",
+      "rowIndex": 47,
+      "expectedBytes": "950173372142989300000000900000000009              "
+    },
+    {
+      "dataset": "XREFFIL1",
+      "rowIndex": 48,
       "expectedBytes": "968029415460369700000000100000000001              "
+    },
+    {
+      "dataset": "XREFFIL1",
+      "rowIndex": 49,
+      "expectedBytes": "980558340899658800000004000000000040              "
     },
     {
       "dataset": "DISCGRP",
       "rowIndex": 0,
+      "expectedBytes": "A00000000001000100150{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 1,
+      "expectedBytes": "A00000000001000200250{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 2,
       "expectedBytes": "A00000000001000300250{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 3,
+      "expectedBytes": "A00000000001000400250{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 4,
+      "expectedBytes": "A00000000002000100000{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 5,
+      "expectedBytes": "A00000000002000200000{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 6,
+      "expectedBytes": "A00000000002000300000{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 7,
+      "expectedBytes": "A00000000003000100000{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 8,
+      "expectedBytes": "A00000000003000200000{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 9,
+      "expectedBytes": "A00000000003000300000{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 10,
+      "expectedBytes": "A00000000004000100150{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 11,
+      "expectedBytes": "A00000000004000200150{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 12,
+      "expectedBytes": "A00000000004000300150{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 13,
+      "expectedBytes": "A00000000005000100150{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 14,
+      "expectedBytes": "A00000000006000100150{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 15,
+      "expectedBytes": "A00000000006000200150{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 16,
+      "expectedBytes": "A00000000007000100150{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 17,
+      "fields": {
+        "DIS-ACCT-GROUP-ID": "DEFAULT   ",
+        "DIS-TRAN-TYPE-CD": "01",
+        "DIS-TRAN-CAT-CD": "0001",
+        "DIS-INT-RATE": "00150{",
+        "FILLER": "0000000000000000000000000000"
+      },
+      "expectedBytes": "DEFAULT   01000100150{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 18,
+      "fields": {
+        "DIS-ACCT-GROUP-ID": "DEFAULT   ",
+        "DIS-TRAN-TYPE-CD": "01",
+        "DIS-TRAN-CAT-CD": "0002",
+        "DIS-INT-RATE": "00250{",
+        "FILLER": "0000000000000000000000000000"
+      },
+      "expectedBytes": "DEFAULT   01000200250{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 19,
+      "expectedBytes": "DEFAULT   01000300250{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 20,
+      "expectedBytes": "DEFAULT   01000400250{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 21,
+      "expectedBytes": "DEFAULT   02000100000{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 22,
+      "expectedBytes": "DEFAULT   02000200000{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 23,
+      "expectedBytes": "DEFAULT   02000300000{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 24,
+      "expectedBytes": "DEFAULT   03000100000{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 25,
+      "expectedBytes": "DEFAULT   03000200000{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 26,
+      "expectedBytes": "DEFAULT   03000300000{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 27,
+      "expectedBytes": "DEFAULT   04000100150{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 28,
+      "expectedBytes": "DEFAULT   04000200150{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 29,
+      "expectedBytes": "DEFAULT   04000300150{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 30,
+      "expectedBytes": "DEFAULT   05000100150{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 31,
+      "expectedBytes": "DEFAULT   06000100150{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 32,
+      "expectedBytes": "DEFAULT   06000200150{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 33,
+      "expectedBytes": "DEFAULT   07000100000{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 34,
+      "expectedBytes": "ZEROAPR   01000100000{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 35,
+      "expectedBytes": "ZEROAPR   01000200000{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 36,
+      "expectedBytes": "ZEROAPR   01000300000{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 37,
+      "expectedBytes": "ZEROAPR   01000400000{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 38,
+      "expectedBytes": "ZEROAPR   02000100000{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 39,
+      "expectedBytes": "ZEROAPR   02000200000{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 40,
+      "expectedBytes": "ZEROAPR   02000300000{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 41,
+      "expectedBytes": "ZEROAPR   03000100000{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 42,
+      "expectedBytes": "ZEROAPR   03000200000{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 43,
+      "expectedBytes": "ZEROAPR   03000300000{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 44,
+      "expectedBytes": "ZEROAPR   04000100000{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 45,
+      "expectedBytes": "ZEROAPR   04000200000{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 46,
+      "expectedBytes": "ZEROAPR   04000300000{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 47,
+      "expectedBytes": "ZEROAPR   05000100000{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 48,
+      "expectedBytes": "ZEROAPR   06000100000{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 49,
+      "expectedBytes": "ZEROAPR   06000200000{0000000000000000000000000000"
+    },
+    {
+      "dataset": "DISCGRP",
+      "rowIndex": 50,
+      "expectedBytes": "ZEROAPR   07000100000{0000000000000000000000000000"
     }
   ],
   "expectedReturnCode": 0,
@@ -75,7 +1185,27 @@
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "000000000010100030000012000{0000000000000000000000"
+      "text": "000000000050100020000001000{0000000000000000000000"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "DISCLOSURE GROUP RECORD MISSING"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "TRY WITH DEFAULT GROUP CODE"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "000000000060100010000010000{0000000000000000000000"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "DISCLOSURE GROUP RECORD MISSING"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "TRY WITH DEFAULT GROUP CODE"
     },
     {
       "channel": "DISPLAY_LINE",
@@ -96,37 +1226,37 @@
     {
       "dataset": "SYSTRAN",
       "channel": "WRITES",
-      "rowCount": 1,
+      "rowCount": 2,
       "recordLength": 350
     },
     {
       "dataset": "TCATBALF",
       "channel": "FINAL_STATE",
-      "rowCount": 1,
+      "rowCount": 2,
       "recordLength": 50
     },
     {
       "dataset": "ACCTFILE",
       "channel": "FINAL_STATE",
-      "rowCount": 1,
+      "rowCount": 50,
       "recordLength": 300
     },
     {
       "dataset": "XREFFILE",
       "channel": "FINAL_STATE",
-      "rowCount": 1,
+      "rowCount": 50,
       "recordLength": 50
     },
     {
       "dataset": "XREFFIL1",
       "channel": "FINAL_STATE",
-      "rowCount": 1,
+      "rowCount": 50,
       "recordLength": 50
     },
     {
       "dataset": "DISCGRP",
       "channel": "FINAL_STATE",
-      "rowCount": 1,
+      "rowCount": 51,
       "recordLength": 50
     }
   ]

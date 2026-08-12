@@ -1,13 +1,13 @@
 {
   "program": "CBCUS01C",
   "caseId": "case13",
-  "description": "The third READ reports '23', record not found. In the online programs that status is an ordinary branch - DFHRESP(NOTFND) drives a 'not found in customer master' message - and here it is fatal, because L94 tests only '00' and L98 only '10' and everything else falls to L101. A sequential browse of an input file cannot actually report '23', and routing it through the arm anyway is exactly what the arm is for: it is the WHEN OTHER of the read's guard chain, and gate G47 requires it be exercised at this call site. Four records are seeded and two are displayed before the abend.",
-  "unitKind": "SERVICE",
+  "description": "The second fatal open, and the case that proves the status line is rendered from a value rather than written from a template. OPEN INPUT at app/cbl/CBCUS01C.cbl:L120 reports '37' - the status a COBOL open gives when the declared organisation or record attributes conflict with the physical dataset - and both sides of that contract are in this repository, which is why '37' is a real status for this dataset and not an arbitrary pick: app/jcl/CUSTFILE.jcl defines the cluster INDEXED at L54 with KEYS(9 0) at L50 and RECORDSIZE(500 500) at L51, while app/cbl/CBCUS01C.cbl:L29-L33 declares ORGANIZATION IS INDEXED, ACCESS MODE IS SEQUENTIAL and RECORD KEY IS FD-CUST-ID over the FD at L37-L40 that splits the record FD-CUST-ID PIC 9(09) plus FD-CUST-DATA PIC X(491). Let those two disagree at run time and the open reports '37'. Both status bytes are digits and IO-STAT1 is '3' rather than '9', so L162's class condition is false and Z-DISPLAY-IO-STATUS takes its ELSE arm at L169-L173: MOVE '0000' TO IO-STATUS-04, then MOVE IO-STATUS TO IO-STATUS-04(3:2) lands the two characters on one-based positions three and four of the four-character field IO-STATUS-04 declares at L57-L59, giving FILE STATUS IS: NNNN0037. That is the same arm case09 drives with '35', and the only difference between the two files' expected lines is confined to those two status characters - which is the whole point of having both. Because '35' and '37' share their leading '3', the difference lands on the second of the two, and that pins the position of the overlay as tightly as it pins the value: a renderer that hard-coded one status line, or that moved only IO-STAT1 and left the second character at its '0', would emit the same image for both statuses and could not tell them apart, while one that overlaid IO-STATUS at (1:2) or (2:2) instead of (3:2) would emit 3700 or 0370 for this case. case10 drives the IO-STAT1 = '9' arm instead, so between the three both arms and two distinct ELSE-arm values are pinned. The literal NNNN in the third line is genuine un-substituted output and must not be corrected: L168 and L172 both display the literal 'FILE STATUS IS: NNNN' and then append IO-STATUS-04 as a separate operand, so COBOL emits those four N characters verbatim and the rendered image follows them. Nothing substitutes them, and a translation that dropped them or replaced them with the status would be changing observable output. The second line names the DD - ERROR OPENING CUSTFILE at L129 - and not 'CUSTOMER FILE'; only the read arm at L110 and the close arm at L147 use the longer phrasing, and that inconsistency belongs to the source. Return code 12 is MOVE 12 TO APPL-RESULT at L124: L119 pre-sets 8 pessimistically, the '00' test at L121 fails, L124 overwrites it with 12, APPL-AOK (VALUE 0) is then false at L126 and the error arm runs L129 through L132, so 8 never escapes and 16 (APPL-EOF) is unreachable because no read happens. Neither a record line nor the closing banner appears: CALL 'CEE3ABD' at L158 terminates the enclave, so 9000-CUSTFILE-CLOSE is never performed and L85 is never reached. CUSTFILE is nevertheless declared holding all fifty rows of the shipped master deliberately. The failure precedes every read, so no row is needed for the case to work - but a fully populated dataset is what makes that a strong assertion rather than a vacuous one: a translation that opened lazily, or that read before testing the status, would emit one hundred extra record lines here. Provenance: every expected value is statically derived by structured reading of app/cbl/CBCUS01C.cbl against the app/jcl/READCUST.jcl and app/jcl/CUSTFILE.jcl contracts and the US-ASCII fixture app/data/ASCII/custdata.txt, which src/test/resources/fixtures/custdata.txt reproduces byte for byte. Such values are never captured from a live COBOL execution - not this case's and none in this harness - because executing the legacy programs is empirically impossible in this environment: no z/OS runtime, an indexed file handler reported as disabled, and no Language Environment CEE services to call CEE3ABD with (technical specification section 0.7.6, risk R-A).",
+  "unitKind": "BATCH_JOB",
   "inputs": {
     "CUSTFILE": {
       "fixture": "custdata.txt",
       "fromRow": 0,
-      "rowCount": 4
+      "rowCount": 50
     }
   },
   "jobParameters": {},
@@ -21,27 +21,11 @@
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "000000001Immanuel                 Madeline                 Kessler                  618 Deshaun Route                                 Apt. 802                                          Altenwerthshire                                   NCUSA12546     (908)119-8310  (373)693-8684  020973888000000000000493684371961-06-080053581756Y274                                                                                                                                                                        "
+      "text": "ERROR OPENING CUSTFILE"
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "000000001Immanuel                 Madeline                 Kessler                  618 Deshaun Route                                 Apt. 802                                          Altenwerthshire                                   NCUSA12546     (908)119-8310  (373)693-8684  020973888000000000000493684371961-06-080053581756Y274                                                                                                                                                                        "
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "000000002Enrico                   April                    Rosenbaum                4917 Myrna Flats                                  Apt. 453                                          West Bernita                                      INUSA22770     (429)706-9510  (744)950-5272  587518382000000000005062103711961-10-080069194009Y268                                                                                                                                                                        "
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "000000002Enrico                   April                    Rosenbaum                4917 Myrna Flats                                  Apt. 453                                          West Bernita                                      INUSA22770     (429)706-9510  (744)950-5272  587518382000000000005062103711961-10-080069194009Y268                                                                                                                                                                        "
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "ERROR READING CUSTOMER FILE"
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "FILE STATUS IS: NNNN0023"
+      "text": "FILE STATUS IS: NNNN0037"
     },
     {
       "channel": "DISPLAY_LINE",

@@ -1,14 +1,13 @@
 {
   "program": "CBTRN03C",
   "caseId": "case18",
-  "description": "Three accounts, unequal amounts and a negative in the middle, so no two totals in the report can be confused with one another. Each account break writes the account total accumulated since the previous break and zeroes it at :310, while the page total keeps accumulating across all three accounts and is rolled into the grand total once, at end of file. The middle account's total is therefore negative and prints with '-' through the + mask, the third account's total is never written, and the grand total equals the arithmetic sum of every amount plus the last one counted twice - which is the only value consistent with both defect 2 and the single roll-up site at :297.",
+  "description": "THE TRANSACTION-CATEGORY NOT-FOUND ABEND, and the strongest ordering proof in this set: 1500-C-LOOKUP-TRANCATG (app/cbl/CBTRN03C.cbl:504-512) is the third of the three keyed lookups, so it cannot fail at all until both of the lookups ahead of it have succeeded. Record 1 carries a card that resolves, a transaction type that resolves, and a composite category key that does not, so the run ends inside the third lookup having written nothing. THE KEY IS A SIX-BYTE GROUP, and that is derived rather than assumed. FD-TRAN-CAT-KEY is declared at :79-81 as FD-TRAN-TYPE-CD PIC X(02) followed by FD-TRAN-CAT-CD PIC 9(04) inside the FD-TRAN-CAT-RECORD of :77-82, so it is 2 + 4 = 6 bytes and the DISPLAY at :507 echoes the whole group rather than either half. It is filled by two separate MOVEs immediately before the read - MOVE TRAN-TYPE-CD OF TRAN-RECORD TO FD-TRAN-TYPE-CD OF FD-TRAN-CAT-KEY at :191-192 and MOVE TRAN-CAT-CD OF TRAN-RECORD TO FD-TRAN-CAT-CD OF FD-TRAN-CAT-KEY at :193-194 - which is why the type code appears in the key a second time having already been moved to FD-TRAN-TYPE at :189 for the previous lookup. Record 1's TRAN-TYPE-CD 05 at bytes 17-18 and TRAN-CAT-CD 0002 at bytes 19-22 therefore compose the key 050002, six characters with no separator. THE ABSENCE IS VERIFIED AGAINST THE FIXTURE, not inferred. app/data/ASCII/trancatg.txt holds exactly eighteen rows of sixty bytes, and their keys are exactly 010001, 010002, 010003, 010004, 010005, 020001, 020002, 020003, 030001, 030002, 030003, 040001, 040002, 040003, 050001, 060001, 060002 and 070001. Type family 05 contributes a single key, 050001 'Refund credit', so 050002 is absent from the file and the keyed READ cannot succeed - it takes its INVALID KEY arm. Had it succeeded it would have filled TRAN-CAT-RECORD as app/cpy/CVTRA04Y.cpy declares it: TRAN-CAT-KEY as TRAN-TYPE-CD PIC X(02) at 1-2 and TRAN-CAT-CD PIC 9(04) at 3-6, then TRAN-CAT-TYPE-DESC PIC X(50) at 7-56 and FILLER PIC X(04) at 57-60, which every row of the fixture fills with 0000. TRAN-CAT-TYPE-DESC is the span :368 moves into TRAN-REPORT-CAT-DESC, so an unresolved category is precisely a detail line that could not be composed. A VALID TYPE CODE IS MANDATORY HERE, and choosing one is the case's central design decision. 1500-B-LOOKUP-TRANTYPE runs at :190, five statements before 1500-C-LOOKUP-TRANCATG runs at :195, and it abends on an unresolvable type. So a record whose type code were absent from the type file would never reach the category lookup at all: the category lookup could not be isolated, and the case would silently duplicate case17 while claiming to exercise a different call site. Type 05 is chosen because app/data/ASCII/trantype.txt holds the seven codes 01 through 07 and 05 resolves to TRAN-TYPE-DESC 'Refund' padded to its PIC X(50), so :190 succeeds - while the composite key that same type code helps build does not exist. Isolating the third lookup requires a type that resolves and a category that does not, and 050002 is the only shape that gives both. THE ORDERING PROOF runs through the whole expectation. The card-break block at :181-188 performs 1500-A-LOOKUP-XREF at :187 and record 1 is seeded on card 0500024453765740, which is row 1 of app/data/ASCII/cardxref.txt and resolves to XREF-ACCT-ID 00000000050, so the first lookup succeeds. :189-190 resolve the type, so the second succeeds. :195 fails. :196, the PERFORM of 1100-WRITE-TRANSACTION-REPORT, is therefore never reached - and 1120-WRITE-HEADERS is performed only from inside 1100, at :279 and :284, so there is not one TRANREPT record in existence when the task ends, not even a header block. Record 2, the six close paragraphs at :208-213 and the closing banner at :215 are all equally unreached. THE SIBLING-NAME TRAP is worth stating because it is a real ambiguity in the source rather than a notional one. The group name TRAN-CAT-KEY denotes two different keys in two different copybooks: the six-byte type-plus-category key of app/cpy/CVTRA04Y.cpy that this case exercises, and the seventeen-byte TRANCAT-ACCT-ID PIC 9(11) plus TRANCAT-TYPE-CD PIC X(02) plus TRANCAT-CD PIC 9(04) key of app/cpy/CVTRA01Y.cpy, which belongs to the transaction category balance file and has nothing to do with this program. transaction.TranCategoryRepository owns the six-byte form and transaction.TranCatBalRepository owns the seventeen-byte one; only the six-byte form appears here, and the echoed key in the diagnostic is six characters for exactly that reason. THE DIAGNOSTIC TRAIL is six DISPLAY lines and no seventh. :160 the start banner. :232-233 'Reporting from ' with WS-START-DATE and WS-END-DATE, both taken from the 80-byte DATEPARM row that the READ DATE-PARMS-FILE INTO WS-DATEPARM-RECORD at :221 right-truncates into the 21-byte receiver declared at :122-125 - the whole of the PARM-versus-dataset distinction, since app/jcl/TRANREPT.jcl:59 gives STEP10R no PARM at all and jobParameters is consequently empty. The seeded row reproduces FILLER-3 of app/cbl/CORPT00C.cbl:117-121 exactly: PARM-START-DATE-2 PIC X(10), one FILLER PIC X space, PARM-END-DATE-2 PIC X(10) and FILLER PIC X(59) of spaces, 80 bytes in total. :180 DISPLAY TRAN-RECORD, which fires before any lookup and emits the whole 350-byte group item untrimmed: TRAN-AMT as its stored zoned image 0000009876E, which is +987.65 because the sign is overpunched into the trailing byte ({ABCDEFGHI for +0 through +9 and }JKLMNOPQR for -0 through -9, as app/data/ASCII/dailytran.txt confirms with 0000005047G = +504.77, 0000000140{ = +14.00 and 0000000259R = -25.99), and FILLER as its twenty spaces. :507 'INVALID TRAN CATG KEY : ' concatenated with the six-byte FD-TRAN-CAT-KEY, which is 24 + 6 = 30 characters. Then :508-509 MOVE 23 TO IO-STATUS and PERFORM 9910-DISPLAY-IO-STATUS. THE STATUS LINE IS DERIVED, not copied. 9910-DISPLAY-IO-STATUS (:633-646) tests IF IO-STATUS NOT NUMERIC OR IO-STAT1 = '9' at :634-635; IO-STATUS holds '23', which is numeric, and IO-STAT1 is '2' rather than '9', so both halves are false and the ELSE arm at :641-644 runs. It moves '0000' into IO-STATUS-04 and then overwrites positions 3 and 4 with IO-STATUS through the reference modification IO-STATUS-04(3:2), giving '0023', and DISPLAY 'FILE STATUS IS: NNNN' IO-STATUS-04 emits the literal followed by those four digits: FILE STATUS IS: NNNN0023, 20 + 4 = 24 characters. The doubled NNNN is not a transcription slip - the literal in the source really is 'FILE STATUS IS: NNNN' and the four-character image follows it - so it is reproduced verbatim. THE ABEND is 9999-ABEND-PROGRAM (:626-630): DISPLAY 'ABENDING PROGRAM' at :627, MOVE 0 TO TIMING at :628, MOVE 999 TO ABCODE at :629, then CALL 'CEE3ABD'. at :630 - a bare call with no USING clause, the same form as app/cbl/CBACT01C.cbl:173. It does not return, which is why nothing after :195 runs. THE RETURN CODE is derived rather than guessed. CBTRN03C contains zero references to RETURN-CODE, verified by exhaustive search, so the severity travels in APPL-RESULT and in ABCODE 999 alone; the migration's common.AbendException carries 12, which is AbendException.RETURN_CODE_IO_ERROR and the MOVE 12 TO APPL-RESULT value every WHEN OTHER arm of this program uses, and the three keyed lookups never touch APPL-RESULT at all so the same fatal value serves them. 12 is also what the sibling abend cases case16, case17 and case20 state, and that consistency is deliberate: four cases disagreeing about the exit code of one CALL 'CEE3ABD' would fail gate G18 for this module (gate G35). WHAT DOES NOT HAPPEN is half the assertion, and here it is unusually informative. There is no INVALID CARD NUMBER line, because :187 succeeded. There is no INVALID TRANSACTION TYPE line, because :190 succeeded. Both success paths emit nothing at all, so those two absences are the only positive evidence that the first two lookups passed - an implementation that reordered the three reads would fail on a different key, emit a different literal and echo a different key width, and this case would catch it rather than passing for the wrong reason. There are no TRAN-AMT or WS-PAGE-TOTAL lines, because those belong to the end-of-file arm at :198-199, which is reached only after the loop has drained the file. And there is no END OF EXECUTION OF PROGRAM CBTRN03C line, which is the clearest signature separating an abend from a normal termination - the message list asserts that absence by having no seventh entry. THE RECORD CHANNELS both hold nothing, for two different reasons. TRANREPT is opened by 0100-REPTFILE-OPEN and never written, so the writes channel is empty; and app/jcl/TRANREPT.jcl:76-80 declares it DISP=(NEW,CATLG,DELETE), whose third positional deletes the generation on an abnormal end, so the final state is empty too. Both are declared at the 133 bytes DCB=(LRECL=133,RECFM=FB,BLKSIZE=0) fixes, which is how a case pins the identity of a dataset that has no row whose width could be checked. Gates G20 and G21 are therefore satisfied VACUOUSLY here - no record length is proved and no FILLER span is exercised, because no record exists - and this case says so rather than appearing to prove a width it never wrote. THE INPUTS are the five this step's DD statements name. TRANTYPE and TRANCATG are the real seven-row and eighteen-row sixty-byte fixtures, and CARDXREF is the real fifty-row fixture at its actual 36 bytes per row, seeded UNPADDED: app/cpy/CVACT03Y.cpy declares XREF-CARD-NUM PIC X(16) at 1-16, XREF-CUST-ID PIC 9(09) at 17-25, XREF-ACCT-ID PIC 9(11) at 26-36 and FILLER PIC X(14) at 37-50, of which the fixture supplies only the first 36 bytes, so the case declares CARDXREF_FILLER_PAD_36_TO_50 and the fourteen absent bytes are supplied once, at seed time, before anything decodes a row (gate G16, risk R-F). No tenth fixture is requested - the nine under src/test/resources/fixtures are the whole permitted set - so TRANFILE and DATEPARM are inline rows, which is also what lets record 1 carry a key no fixture contains. Every row is US-ASCII, named explicitly rather than left to a platform default. Record 1's TRAN-PROC-TS begins 2022-05-09, inside the 2022-01-01 to 2022-07-06 range the :173-174 test applies to TRAN-PROC-TS (1:10), so the detail path is entered rather than skipped. Record 2 is a fully valid record - type 01, category 0001 composing the key 010001 which the fixture does hold as 'Regular Sales Draft', on the same resolvable card - present only so that its non-processing is observable rather than merely assumed. GATE G47 is the other half of this case: the '23' not-found outcome of the transaction-category call site, whose '00' found outcome case06, case08 and case09 cover. With case16 pinning the cross-reference arm at :484-492 and case17 pinning the transaction-type arm at :494-502, the found-and-not-found pair is now complete for all three of this program's keyed lookups, and TRANCATG is read by CBTRN03C alone among the twenty-eight programs, so this folder is the only place its not-found path is ever exercised. The three INVALID KEY arms are identical in shape - display, MOVE 23 TO IO-STATUS, 9910, 9999 - and differ only in the message literal and the echoed key width: sixteen bytes for the cross-reference, two for the type and six here, so the four cases are kept mutually consistent. Gate G30 holds throughout: both EVALUATE statements keep WHEN OTHER last, and this run takes '00' on the DATEPARM read at :222-229 and on the TRANFILE read at :251-258, reaching neither '10' nor WHEN OTHER. Gates G23 and G24: the seeded amount carries scale exactly 2, as every signed decimal in this program does, and ROUNDED appears zero times in CBTRN03C so every store truncates toward zero and nothing rounds - though no arithmetic completes in this case at all, because :287-288, the one ADD on the detail path, sits inside the 1100 that never runs. Gate G51: the unit is the tasklet, invoked with no JobLauncher and no HTTP layer in the path. transaction.TranCategoryRepository surfaces the not-found outcome rather than abending on its caller's behalf, so the display-then-abend sequence belongs to transaction.TransactionReportJob and the expectation is attributed there. CBTRN03C has zero GO TO, so this path is reached by ordinary PERFORM nesting rather than by a jump. PRACTICE B5: nothing here is handled more gracefully than the COBOL handles it. The program abends on an unresolvable category key - it does not default TRAN-CAT-TYPE-DESC to spaces, skip the record, or fall back to the type description it had already resolved - and the expectation says so, with an empty report, a deleted generation and a non-zero exit code, rather than recording a warning the legacy program never produces. PRACTICE B12: every value above is STATICALLY DERIVED from the COBOL, cross-checked against app/cpy/CVTRA05Y.cpy's 350-byte layout, app/cpy/CVTRA04Y.cpy's 60-byte layout, app/cpy/CVACT03Y.cpy's 50-byte layout, the DCB and DISP contracts of app/jcl/TRANREPT.jcl and the real US-ASCII fixtures under app/data/ASCII - never captured from a live COBOL run, which section 0.7.6 of the plan proves impossible in this environment with eight independently verified blockers (risk R-A).",
   "unitKind": "BATCH_JOB",
   "inputs": {
     "TRANFILE": {
       "rows": [
-        "TRN0000000000001010001POS TERM  A statically derived fixture transaction                                                            0000015007E999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-03-15-11.22.33.4444442022-03-15-11.22.33.444444                    ",
-        "TRN0000000000002030001POS TERM  A statically derived fixture transaction                                                            0000002502N999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000006835861981715162022-03-15-11.22.33.4444442022-03-15-11.22.33.444444                    ",
-        "TRN0000000000003020002POS TERM  A statically derived fixture transaction                                                            0000000420{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000009238771932473302022-03-15-11.22.33.4444442022-03-15-11.22.33.444444                    "
+        "TRN0000000000001050002POS TERM  A statically derived fixture transaction                                                            0000009876E999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-05-09-14.07.52.3182042022-05-09-14.07.52.318204                    ",
+        "TRN0000000000002010001POS TERM  A statically derived fixture transaction                                                            0000002500{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-05-09-14.07.52.3182042022-05-09-14.07.52.318204                    "
       ]
     },
     "CARDXREF": {
@@ -27,151 +26,9 @@
     }
   },
   "jobParameters": {},
-  "expectedWrites": [
-    {
-      "dataset": "TRANREPT",
-      "rowIndex": 0,
-      "expectedBytes": "DALYREPT                              Daily Transaction Report                 Date Range: 2022-01-01 to 2022-07-06                  "
-    },
-    {
-      "dataset": "TRANREPT",
-      "rowIndex": 1,
-      "expectedBytes": "                                                                                                                                     "
-    },
-    {
-      "dataset": "TRANREPT",
-      "rowIndex": 2,
-      "expectedBytes": "Transaction ID   Account ID  Transaction Type   Tran Category                      Tran Source            Amount                     "
-    },
-    {
-      "dataset": "TRANREPT",
-      "rowIndex": 3,
-      "expectedBytes": "-------------------------------------------------------------------------------------------------------------------------------------"
-    },
-    {
-      "dataset": "TRANREPT",
-      "rowIndex": 4,
-      "expectedBytes": "TRN0000000000001 00000000050 01-Purchase        0001-Regular Sales Draft           POS TERM             1,500.75                     "
-    },
-    {
-      "dataset": "TRANREPT",
-      "rowIndex": 5,
-      "expectedBytes": "Account Total....................................................................................+      1,500.75                     "
-    },
-    {
-      "dataset": "TRANREPT",
-      "rowIndex": 6,
-      "expectedBytes": "-------------------------------------------------------------------------------------------------------------------------------------"
-    },
-    {
-      "dataset": "TRANREPT",
-      "rowIndex": 7,
-      "expectedBytes": "TRN0000000000002 00000000027 03-Credit          0001-Credit to Account             POS TERM      -        250.25                     "
-    },
-    {
-      "dataset": "TRANREPT",
-      "rowIndex": 8,
-      "expectedBytes": "Account Total....................................................................................-        250.25                     "
-    },
-    {
-      "dataset": "TRANREPT",
-      "rowIndex": 9,
-      "expectedBytes": "-------------------------------------------------------------------------------------------------------------------------------------"
-    },
-    {
-      "dataset": "TRANREPT",
-      "rowIndex": 10,
-      "expectedBytes": "TRN0000000000003 00000000002 02-Payment         0002-Electronic payment            POS TERM                42.00                     "
-    },
-    {
-      "dataset": "TRANREPT",
-      "rowIndex": 11,
-      "expectedBytes": "Page Total ......................................................................................+      1,334.50                     "
-    },
-    {
-      "dataset": "TRANREPT",
-      "rowIndex": 12,
-      "expectedBytes": "-------------------------------------------------------------------------------------------------------------------------------------"
-    },
-    {
-      "dataset": "TRANREPT",
-      "rowIndex": 13,
-      "expectedBytes": "Grand Total......................................................................................+      1,334.50                     "
-    }
-  ],
-  "expectedFinalState": [
-    {
-      "dataset": "TRANREPT",
-      "rowIndex": 0,
-      "expectedBytes": "DALYREPT                              Daily Transaction Report                 Date Range: 2022-01-01 to 2022-07-06                  "
-    },
-    {
-      "dataset": "TRANREPT",
-      "rowIndex": 1,
-      "expectedBytes": "                                                                                                                                     "
-    },
-    {
-      "dataset": "TRANREPT",
-      "rowIndex": 2,
-      "expectedBytes": "Transaction ID   Account ID  Transaction Type   Tran Category                      Tran Source            Amount                     "
-    },
-    {
-      "dataset": "TRANREPT",
-      "rowIndex": 3,
-      "expectedBytes": "-------------------------------------------------------------------------------------------------------------------------------------"
-    },
-    {
-      "dataset": "TRANREPT",
-      "rowIndex": 4,
-      "expectedBytes": "TRN0000000000001 00000000050 01-Purchase        0001-Regular Sales Draft           POS TERM             1,500.75                     "
-    },
-    {
-      "dataset": "TRANREPT",
-      "rowIndex": 5,
-      "expectedBytes": "Account Total....................................................................................+      1,500.75                     "
-    },
-    {
-      "dataset": "TRANREPT",
-      "rowIndex": 6,
-      "expectedBytes": "-------------------------------------------------------------------------------------------------------------------------------------"
-    },
-    {
-      "dataset": "TRANREPT",
-      "rowIndex": 7,
-      "expectedBytes": "TRN0000000000002 00000000027 03-Credit          0001-Credit to Account             POS TERM      -        250.25                     "
-    },
-    {
-      "dataset": "TRANREPT",
-      "rowIndex": 8,
-      "expectedBytes": "Account Total....................................................................................-        250.25                     "
-    },
-    {
-      "dataset": "TRANREPT",
-      "rowIndex": 9,
-      "expectedBytes": "-------------------------------------------------------------------------------------------------------------------------------------"
-    },
-    {
-      "dataset": "TRANREPT",
-      "rowIndex": 10,
-      "expectedBytes": "TRN0000000000003 00000000002 02-Payment         0002-Electronic payment            POS TERM                42.00                     "
-    },
-    {
-      "dataset": "TRANREPT",
-      "rowIndex": 11,
-      "expectedBytes": "Page Total ......................................................................................+      1,334.50                     "
-    },
-    {
-      "dataset": "TRANREPT",
-      "rowIndex": 12,
-      "expectedBytes": "-------------------------------------------------------------------------------------------------------------------------------------"
-    },
-    {
-      "dataset": "TRANREPT",
-      "rowIndex": 13,
-      "expectedBytes": "Grand Total......................................................................................+      1,334.50                     "
-    }
-  ],
-  "expectedReturnCode": 0,
+  "expectedWrites": [],
+  "expectedFinalState": [],
+  "expectedReturnCode": 12,
   "expectedMessages": [
     {
       "channel": "DISPLAY_LINE",
@@ -183,27 +40,19 @@
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "TRN0000000000001010001POS TERM  A statically derived fixture transaction                                                            0000015007E999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-03-15-11.22.33.4444442022-03-15-11.22.33.444444                    "
+      "text": "TRN0000000000001050002POS TERM  A statically derived fixture transaction                                                            0000009876E999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000005000244537657402022-05-09-14.07.52.3182042022-05-09-14.07.52.318204                    "
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "TRN0000000000002030001POS TERM  A statically derived fixture transaction                                                            0000002502N999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000006835861981715162022-03-15-11.22.33.4444442022-03-15-11.22.33.444444                    "
+      "text": "INVALID TRAN CATG KEY : 050002"
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "TRN0000000000003020002POS TERM  A statically derived fixture transaction                                                            0000000420{999999999FIXTURE MERCHANT                                  FIXTURE CITY                                      000000000009238771932473302022-03-15-11.22.33.4444442022-03-15-11.22.33.444444                    "
+      "text": "FILE STATUS IS: NNNN0023"
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "TRAN-AMT 0000000420{"
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "WS-PAGE-TOTAL0000012925{"
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "END OF EXECUTION OF PROGRAM CBTRN03C"
+      "text": "ABENDING PROGRAM"
     }
   ],
   "normalisations": [
@@ -216,13 +65,13 @@
     {
       "dataset": "TRANREPT",
       "channel": "WRITES",
-      "rowCount": 14,
+      "rowCount": 0,
       "recordLength": 133
     },
     {
       "dataset": "TRANREPT",
       "channel": "FINAL_STATE",
-      "rowCount": 14,
+      "rowCount": 0,
       "recordLength": 133
     }
   ]

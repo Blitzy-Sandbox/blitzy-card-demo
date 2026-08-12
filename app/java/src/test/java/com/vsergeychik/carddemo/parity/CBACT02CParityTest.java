@@ -661,8 +661,8 @@ final class CBACT02CParityTest {
             // carry it.  This guard is about the arm at :110-113 and the abend at :154-158, not about a
             // case slot, and sourcing it from one meant that re-purposing that slot silently retargeted
             // the guard - which is how a test ends up proving something other than what it says.
-            // '23' on the first read is the shape: case14, case17 and case20 still pin it through the
-            // gate, after three, two and forty-nine records respectively.
+            // '23' on the first read is the shape: case14 and case17 still pin it through the gate,
+            // after three and two records respectively.
             final CardRepository cardRepository = stubbedCardMaster(
                     Scenario.readFailingAfter(0, Terminator.NOT_FOUND),
                     ParityHarness.SeededDataset.empty(AccountBalanceReaderJob.DD_NAME,
@@ -978,8 +978,8 @@ final class CBACT02CParityTest {
      *       so the harness folds its {@code RETURN-CODE} into the fingerprint. Recording the lines
      *       into {@link ParityHarness.Invocation#recorder()} rather than returning them is what makes
      *       the lines an abending run has already emitted survive the exception - four for a run that
-     *       fails before its first record, and fifty-three for {@code case20}, which fails after
-     *       forty-nine of them.</li>
+     *       fails before its first record, and seven for {@code case14}, which fails after three of
+     *       them.</li>
      *   <li><strong>The return code is stated.</strong> {@code GOBACK} at
      *       {@code app/cbl/CBACT02C.cbl:87} leaves {@code RETURN-CODE} at zero on the normal path;
      *       that is recorded explicitly rather than left to a default, because a default is the one
@@ -1501,13 +1501,22 @@ final class CBACT02CParityTest {
                 // Two of its three inline rows are delivered and the third READ reports '23', so the
                 // row still sitting in the dataset is never read - which is what proves the loop
                 // reads one record at a time rather than pre-reading or buffering its input.  case14
-                // fails after three of three and exhausts its input; case20 leaves its fiftieth row
-                // behind but does so at the end-of-file boundary.  This run fails strictly mid-stream,
-                // over an input small enough that the unread row is written out in the case file.
-                // The count is 2 and not EVERY_SEEDED_ROW for exactly that reason - readSequence
-                // would otherwise deliver all three and the third image would appear.
+                // fails after three of three and exhausts its input; case20 also leaves a row behind
+                // but on the extended '9' arm rather than on '23'.  This run fails strictly
+                // mid-stream, over an input small enough that the unread row is written out in the
+                // case file.  The count is 2 and not EVERY_SEEDED_ROW for exactly that reason -
+                // readSequence would otherwise deliver all three and the third image would appear.
                 case "case17" -> readFailingAfter(2, Terminator.NOT_FOUND);
-                case "case20" -> readFailingAfter(49, Terminator.NOT_FOUND);
+                // One of its two seeded rows is delivered and displayed, and the second READ reports a
+                // response with no two-character batch equivalent, so the status becomes
+                // PERMANENT_ERROR_STATUS and 9910 renders it on the extended arm at :162-168.  That
+                // pairing - the extended arm reached from the READ with a record line already emitted -
+                // is this folder's only instance: case13 reaches the same arm from the READ but fails
+                // before its first record, and case18 and case19 reach it with records emitted but from
+                // the CLOSE.  INVALID_REQUEST rather than NOT_FOUND for that reason, and 1 rather than
+                // EVERY_SEEDED_ROW so the second row stays unread - the same seeded window case05
+                // completes cleanly over, which is what isolates the injected condition from the data.
+                case "case20" -> readFailingAfter(1, Terminator.INVALID_REQUEST);
 
                 // --- 9000-CARDFILE-CLOSE failure: :139 takes its ELSE, and :85 is never reached.
                 //     case18 and case19 are the two fixtures in this folder that force it, and the

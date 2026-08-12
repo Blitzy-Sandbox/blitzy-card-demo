@@ -1824,10 +1824,22 @@ final class COSGN00CParityTest {
      *
      * <p>{@code IF SEC-USR-PWD = WS-USER-PWD} is an alphanumeric comparison of two
      * {@code PIC X(08)} fields. There is no encoder in the path, and there is no tolerance in it
-     * either: {@code case17} types a password differing from the seeded one in a single character and
-     * is refused, while {@code case02} types the seeded one and signs on. Those two together are the
-     * assertion - the first alone could be satisfied by a comparison that always failed, and the
-     * second alone by one that always succeeded.
+     * either. Three cases make that falsifiable from both directions and from both sides of the
+     * width. {@code case02} types the seeded password exactly and signs on, which refuses a
+     * comparison that always fails. {@code case14} types a password of the same eight-character
+     * width that differs from the seeded one and is rejected, which refuses a comparison that always
+     * succeeds - and refuses one that looks at a suffix only, since the two images agree on their
+     * last character. {@code case15} keys fewer characters than the seeded password holds, which CICS
+     * delivers space-padded to the same eight, and whose keyed part is the leading part of the seeded
+     * value; it is rejected too, which refuses a comparison that strips the padding and then
+     * compares a prefix - the failure mode two full-width images cannot see at all.
+     *
+     * <p>The one-differing-character variant this gate used to draw from {@code case17} left that
+     * slot when the build prompt reassigned {@code case17} to the {@code FUNCTION UPPER-CASE}
+     * normalisation applied to the key of a <em>missed</em> read. The property is not restated on a
+     * case that no longer holds it: what is asserted below is the difference the case set actually
+     * carries, and the rejecting cases are required to differ from the seeded value in a way each
+     * names precisely, so a fixture edited into agreement fails here.
      *
      * <p>Recorded once more because it matters: <strong>the plaintext credential is an inherited
      * property of the legacy design and an explicit non-goal of this migration.</strong> Hashing it
@@ -1839,7 +1851,8 @@ final class COSGN00CParityTest {
     void thePasswordComparisonIsPlaintextAndByteForByte() {
         Map<String, ParityCase> byId = casesById();
         ParityCase signsOn = byId.get(ParityHarness.caseId(2));
-        ParityCase refused = byId.get(ParityHarness.caseId(17));
+        ParityCase differsAtWidth = byId.get(ParityHarness.caseId(14));
+        ParityCase strictPrefix = byId.get(ParityHarness.caseId(15));
 
         String seeded = seededPasswordOf(signsOn);
         assertThat(SignOnService.upperCase(
@@ -1851,25 +1864,66 @@ final class COSGN00CParityTest {
                 .as("case02 therefore reaches the XCTL at :231-239")
                 .isNotNull();
 
-        String rejectedPassword = SignOnService.upperCase(
-                refused.screenRequest().mapFields().get(PASSWD_INPUT_ITEM));
-        assertThat(rejectedPassword)
-                .as("case17 must type a password of the same length as the seeded one, differing in "
-                        + "exactly one character, or it is not testing the comparison")
+        String sameWidth = SignOnService.upperCase(
+                differsAtWidth.screenRequest().mapFields().get(PASSWD_INPUT_ITEM));
+        assertThat(sameWidth)
+                .as("case14 must type a password of the seeded width, so the mismatch it drives is "
+                        + "unambiguously a value mismatch and not an artefact of length")
                 .hasSize(seeded.length())
                 .isNotEqualTo(seeded);
-        assertThat(differingCharacters(rejectedPassword, seeded))
-                .as("case17: one byte apart, which is the smallest difference the comparison has to "
-                        + "notice")
-                .isOne();
-        assertThat(refused.expectedResponse().nextProgram())
-                .as("case17 therefore takes the ELSE at :241 and never transfers control")
+        assertThat(differingCharacters(sameWidth, seeded))
+                .as("case14: and it must actually differ somewhere, which is what an "
+                        + "always-succeeding comparison cannot survive")
+                .isPositive();
+        assertThat(sameWidth.charAt(sameWidth.length() - 1))
+                .as("case14: the two images agree on their last character, so a comparison reduced "
+                        + "to a suffix would sign this request on")
+                .isEqualTo(seeded.charAt(seeded.length() - 1));
+        assertRejectedAtThePasswordArm(differsAtWidth, "case14");
+
+        String padded = SignOnService.upperCase(
+                strictPrefix.screenRequest().mapFields().get(PASSWD_INPUT_ITEM));
+        String keyed = padded.strip();
+        assertThat(padded)
+                .as("case15 types into the same PIC X(08) item, so CICS delivers what was keyed "
+                        + "space-padded to eight - the width is never the difference here")
+                .hasSize(seeded.length())
+                .isNotEqualTo(seeded);
+        assertThat(keyed)
+                .as("case15 must key fewer characters than the seeded password holds, or the "
+                        + "trimming and prefix failure modes are untested")
+                .isNotEmpty()
+                .hasSizeLessThan(seeded.length());
+        assertThat(seeded)
+                .as("case15: the %s that was keyed is the leading part of the seeded value, so a "
+                        + "comparison that stripped the trailing spaces and then compared a prefix "
+                        + "would sign this request on - :223 compares all eight characters and "
+                        + "refuses it", keyed)
+                .startsWith(keyed);
+        assertRejectedAtThePasswordArm(strictPrefix, "case15");
+    }
+
+    /**
+     * The three observable consequences of {@code :241-246}, asserted for one case.
+     *
+     * <p>Factored out because two cases drive that arm from opposite sides of the field width and the
+     * arm's behaviour is one thing: the {@code ELSE} at {@code :241} transfers no control,
+     * {@code :242-243} moves {@code 'Wrong Password. Try again ...'} into {@code WS-MESSAGE} and
+     * {@code :244} moves {@code -1} into {@code PASSWDL} so the cursor returns to the password rather
+     * than to the user id.
+     *
+     * @param parityCase the case that must reach the wrong-password arm
+     * @param label      the case identifier, for the failure message
+     */
+    private static void assertRejectedAtThePasswordArm(ParityCase parityCase, String label) {
+        assertThat(parityCase.expectedResponse().nextProgram())
+                .as("%s takes the ELSE at :241 and never transfers control", label)
                 .isNull();
-        assertThat(errMsgOf(refused))
-                .as("case17: :242-243 moves 'Wrong Password. Try again ...' into WS-MESSAGE")
+        assertThat(errMsgOf(parityCase))
+                .as("%s: :242-243 moves 'Wrong Password. Try again ...' into WS-MESSAGE", label)
                 .isEqualTo(truncated(SignOnService.MSG_WRONG_PASSWORD));
-        assertThat(refused.expectedResponse().cursorField())
-                .as("case17: :244 moves -1 into PASSWDL, so the cursor returns to the password")
+        assertThat(parityCase.expectedResponse().cursorField())
+                .as("%s: :244 moves -1 into PASSWDL, so the cursor returns to the password", label)
                 .isEqualTo(CursorField.PASSWORD.lengthItemName().orElseThrow());
     }
 

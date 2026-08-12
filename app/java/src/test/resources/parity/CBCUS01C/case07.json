@@ -1,13 +1,13 @@
 {
   "program": "CBCUS01C",
   "caseId": "case07",
-  "description": "A row whose FILLER is not blank, which is the sharpest test of what DISPLAY CUSTOMER-RECORD writes. The verb names the 01 group item, so it emits the record area as READ ... INTO left it - and the trailing 168 bytes of that area hold whatever the row held, because CVCUS01Y declares no field over them and this program never writes the file. A translation that rendered the decoded record instead of the stored bytes would allocate a fresh area, emit that span as 168 spaces, and differ from this expectation on both of the record's two display lines and on its final-state row. The other 332 bytes are the first row of the shipped fixture unchanged, so only the property under test varies.",
-  "unitKind": "SERVICE",
+  "description": "The high-boundary half of this folder's field-vocabulary contract (requirement I1), and the companion to case06. case06 names all 19 spans of app/cpy/CVCUS01Y.cpy against the first three rows of the fixture; this case names the same 19 spans against the last row, row 50, key 000000050. The pairing is the assertion. A translation could satisfy a single low-boundary case by hard-coding row 1's values, or by decoding the first record correctly and nothing else, and the diff count would still reach zero. Asserting the identical field vocabulary at the opposite end of the key range - same names, same PICTURE clauses, same offsets, entirely different values - closes that gap: the two cases can only both pass if the decoder is driven by the copybook layout rather than by the row in front of it. Seeded with row 50 alone, so the run reads exactly one record: OPEN reports '00', the first READ reports '00', the second reports '10' and ends the loop, and CLOSE reports '00' (gate G47). \n\nThe spans, 1-based and inclusive, with row 50's values - CUST-ID 9(09) 1-9 = 000000050; CUST-FIRST-NAME X(25) 10-34 = Aniya then 20 spaces; CUST-MIDDLE-NAME X(25) 35-59 = Alba then 21 spaces; CUST-LAST-NAME X(25) 60-84 = Von then 22 spaces; CUST-ADDR-LINE-1 X(50) 85-134 = 1588 Nienow Cape then 34 spaces; CUST-ADDR-LINE-2 X(50) 135-184 = Suite 187 then 41 spaces; CUST-ADDR-LINE-3 X(50) 185-234 = New Aricchester then 35 spaces; CUST-ADDR-STATE-CD X(02) 235-236 = OR; CUST-ADDR-COUNTRY-CD X(03) 237-239 = USA; CUST-ADDR-ZIP X(10) 240-249 = 04257 then 5 spaces; CUST-PHONE-NUM-1 X(15) 250-264 = (325)301-0827 then 2 spaces; CUST-PHONE-NUM-2 X(15) 265-279 = (493)985-9283 then 2 spaces; CUST-SSN 9(09) 280-288 = 931248469; CUST-GOVT-ISSUED-ID X(20) 289-308 = 00000000000030387824; CUST-DOB-YYYY-MM-DD X(10) 309-318 = 1960-12-01; CUST-EFT-ACCOUNT-ID X(10) 319-328 = 0074883577; CUST-PRI-CARD-HOLDER-IND X(01) 329 = Y; CUST-FICO-CREDIT-SCORE 9(03) 330-332 = 623; FILLER X(168) 333-500 = 168 spaces. They sum to exactly 500, so naming all 19 asserts the total record width by construction (gate G19), and the trailing FILLER is pinned as 168 spaces rather than omitted, which is what proves it was emitted rather than trimmed away (gate G21). expectedBytes carries the same 500-character image whole, so the width is pinned at the record level as well as span by span. \n\nThe span carrying the point of the case is CUST-DOB-YYYY-MM-DD at 309-318, held as 1960-12-01 by row 50 where case06's row 1 holds 1961-06-08. app/cpy/CUSTREC.cpy line 19 declares the same 10-byte span at the same offset of a near-identical 500-byte layout, but spells its name without the two interior hyphens, and the statement package models that copybook separately as statement.model.Stm03CustomerRecord. Expectations written against that spelling belong to parity/CBSTM03A and parity/CBSTM03B, never to this folder; the hyphenated CVCUS01Y spelling is the only one that may appear here, because collapsing the two would discard a name that field-for-field diffing depends on. \n\nTwo padding rules run in opposite directions on this row, and both are pinned. CUST-ADDR-ZIP is PIC X(10) - alphanumeric - so it is space-padded on the right: row 50 holds 04257 followed by five spaces, and its leading zero is literal stored data, not a numeric fill. CUST-SSN is PIC 9(09) - numeric - so it is zero-filled to nine digits and holds 931248469 with no padding at all. Transposing the two rules is the live risk: rendering the zip as a number would drop its leading zero and lose its five trailing spaces, and space-padding the SSN would corrupt a zoned field. CUST-GOVT-ISSUED-ID X(20) = 00000000000030387824 and CUST-EFT-ACCOUNT-ID X(10) = 0074883577 make the same point from the other side: both are alphanumeric spans whose leading zeros are stored characters, and neither may be re-rendered as an integer. \n\nCBCUS01C reads and prints; it computes nothing and writes no dataset record, so expectedWrites is empty as a positive assertion that nothing was written, and expectedReturnCode is 0 because no abend site is reached (gate G35 is not exercised here). Under rule R1 the mandated class name CustomerFileReaderJob is a name only - the unit is that job's tasklet, invoked at step level with customer.CustomerService holding the decisions, with no HTTP and no JobLauncher in the path (gate G51). The one record is displayed twice: app/cbl/CBCUS01C.cbl:L96 displays CUSTOMER-RECORD inside 1000-CUSTFILE-GET-NEXT once the status tests '00', and L78 displays the same group item again in the caller's PERFORM UNTIL while END-OF-FILE is still 'N'. That duplication is inherited behaviour and is preserved, not de-duplicated (practice B5), giving exactly four emitted lines: the L71 banner, the record twice, and the L85 banner. The read that returns '10' emits nothing. \n\nBaseline provenance (practice B12): these expected values are statically derived - from the COBOL source app/cbl/CBCUS01C.cbl, the byte layout of app/cpy/CVCUS01Y.cpy, the single-step no-PARM DD contract of app/jcl/READCUST.jcl, and the real row 50 of the app/data/ASCII/custdata.txt fixture, read verbatim in US-ASCII. They were never captured from, recorded against or replayed from a live COBOL execution, which is empirically impossible in this environment (AAP section 0.7.6, risk R-A).",
+  "unitKind": "BATCH_JOB",
   "inputs": {
     "CUSTFILE": {
-      "rows": [
-        "000000001Immanuel                 Madeline                 Kessler                  618 Deshaun Route                                 Apt. 802                                          Altenwerthshire                                   NCUSA12546     (908)119-8310  (373)693-8684  020973888000000000000493684371961-06-080053581756Y274CVCUS01Y-FILLER-CVCUS01Y-FILLER-CVCUS01Y-FILLER-CVCUS01Y-FILLER-CVCUS01Y-FILLER-CVCUS01Y-FILLER-CVCUS01Y-FILLER-CVCUS01Y-FILLER-CVCUS01Y-FILLER-CVCUS01Y-FILLER-CVCUS01Y"
-      ]
+      "fixture": "custdata.txt",
+      "fromRow": 49,
+      "rowCount": 1
     }
   },
   "jobParameters": {},
@@ -16,7 +16,28 @@
     {
       "dataset": "CUSTFILE",
       "rowIndex": 0,
-      "expectedBytes": "000000001Immanuel                 Madeline                 Kessler                  618 Deshaun Route                                 Apt. 802                                          Altenwerthshire                                   NCUSA12546     (908)119-8310  (373)693-8684  020973888000000000000493684371961-06-080053581756Y274CVCUS01Y-FILLER-CVCUS01Y-FILLER-CVCUS01Y-FILLER-CVCUS01Y-FILLER-CVCUS01Y-FILLER-CVCUS01Y-FILLER-CVCUS01Y-FILLER-CVCUS01Y-FILLER-CVCUS01Y-FILLER-CVCUS01Y-FILLER-CVCUS01Y"
+      "fields": {
+        "CUST-ID": "000000050",
+        "CUST-FIRST-NAME": "Aniya                    ",
+        "CUST-MIDDLE-NAME": "Alba                     ",
+        "CUST-LAST-NAME": "Von                      ",
+        "CUST-ADDR-LINE-1": "1588 Nienow Cape                                  ",
+        "CUST-ADDR-LINE-2": "Suite 187                                         ",
+        "CUST-ADDR-LINE-3": "New Aricchester                                   ",
+        "CUST-ADDR-STATE-CD": "OR",
+        "CUST-ADDR-COUNTRY-CD": "USA",
+        "CUST-ADDR-ZIP": "04257     ",
+        "CUST-PHONE-NUM-1": "(325)301-0827  ",
+        "CUST-PHONE-NUM-2": "(493)985-9283  ",
+        "CUST-SSN": "931248469",
+        "CUST-GOVT-ISSUED-ID": "00000000000030387824",
+        "CUST-DOB-YYYY-MM-DD": "1960-12-01",
+        "CUST-EFT-ACCOUNT-ID": "0074883577",
+        "CUST-PRI-CARD-HOLDER-IND": "Y",
+        "CUST-FICO-CREDIT-SCORE": "623",
+        "FILLER": "                                                                                                                                                                        "
+      },
+      "expectedBytes": "000000050Aniya                    Alba                     Von                      1588 Nienow Cape                                  Suite 187                                         New Aricchester                                   ORUSA04257     (325)301-0827  (493)985-9283  931248469000000000000303878241960-12-010074883577Y623                                                                                                                                                                        "
     }
   ],
   "expectedReturnCode": 0,
@@ -27,11 +48,11 @@
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "000000001Immanuel                 Madeline                 Kessler                  618 Deshaun Route                                 Apt. 802                                          Altenwerthshire                                   NCUSA12546     (908)119-8310  (373)693-8684  020973888000000000000493684371961-06-080053581756Y274CVCUS01Y-FILLER-CVCUS01Y-FILLER-CVCUS01Y-FILLER-CVCUS01Y-FILLER-CVCUS01Y-FILLER-CVCUS01Y-FILLER-CVCUS01Y-FILLER-CVCUS01Y-FILLER-CVCUS01Y-FILLER-CVCUS01Y-FILLER-CVCUS01Y"
+      "text": "000000050Aniya                    Alba                     Von                      1588 Nienow Cape                                  Suite 187                                         New Aricchester                                   ORUSA04257     (325)301-0827  (493)985-9283  931248469000000000000303878241960-12-010074883577Y623                                                                                                                                                                        "
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "000000001Immanuel                 Madeline                 Kessler                  618 Deshaun Route                                 Apt. 802                                          Altenwerthshire                                   NCUSA12546     (908)119-8310  (373)693-8684  020973888000000000000493684371961-06-080053581756Y274CVCUS01Y-FILLER-CVCUS01Y-FILLER-CVCUS01Y-FILLER-CVCUS01Y-FILLER-CVCUS01Y-FILLER-CVCUS01Y-FILLER-CVCUS01Y-FILLER-CVCUS01Y-FILLER-CVCUS01Y-FILLER-CVCUS01Y-FILLER-CVCUS01Y"
+      "text": "000000050Aniya                    Alba                     Von                      1588 Nienow Cape                                  Suite 187                                         New Aricchester                                   ORUSA04257     (325)301-0827  (493)985-9283  931248469000000000000303878241960-12-010074883577Y623                                                                                                                                                                        "
     },
     {
       "channel": "DISPLAY_LINE",

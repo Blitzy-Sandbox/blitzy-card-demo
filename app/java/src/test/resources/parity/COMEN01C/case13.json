@@ -1,7 +1,7 @@
 {
   "program": "COMEN01C",
   "caseId": "case13",
-  "description": "THE MISSING SPACE. app/cbl/COMEN01C.cbl:159-163 STRINGs 'This option ' DELIMITED BY SIZE, then CDEMO-MENU-OPT-NAME(WS-OPTION) DELIMITED BY SPACE, then 'is coming soon ...' DELIMITED BY SIZE. The middle operand stops at the first space of the 35-byte name, so only 'Account' survives, and the suffix has no leading space - the composed text is therefore 'This option Accountis coming soon ...' with the two words run together. That is what the program does and it is not this migration's to repair. The statements are reachable only when line 146 finds the 'DUMMY' five-byte prefix and skips the XCTL, which no copybook entry can produce, so the table is a stub differing from the copybook's first entry in nothing but the program name. Line 158 also overrides the mapset's COLOR=RED with DFHGREEN here, and nowhere else in the program.",
+  "description": "THE CLASS TEST ON TWO ALPHABETIC BYTES - the FIRST of the three ordered terms of the validation guard at app/cbl/COMEN01C.cbl:127-129, reached with OPTIONI 'AB'. The three terms are one OR chain evaluated in source order, which is gate G30: term one is WS-OPTION IS NOT NUMERIC (:127), term two WS-OPTION > CDEMO-MENU-OPT-COUNT (:128), term three WS-OPTION = ZEROS (:129). Here term one is TRUE and it fires alone; the count comparison and the zero comparison are never the cause. This is the companion of case07, which drives the same term with '1x' and a 'U' caller: that case mixes a digit with a letter, this one is two upper-case letters and an ADMIN caller, so the term is isolated from both the table subscript and the authorisation column. The four-step normalisation, with every PICTURE quoted so the reader can see why non-digit bytes reach a numeric-declared field. Step one, the descending test-before scan at :117-121, starts at LENGTH OF OPTIONI - OPTIONI is PIC X(2) at app/cpy-bms/COMEN01.CPY:132 - and finds OPTIONI(2:1) is 'B', which is not spaces, so it exits immediately with WS-IDX = 2 and never decrements. Step two, :122, MOVEs OPTIONI(1:2) - the full width - into WS-OPTION-X, declared PIC X(02) JUST RIGHT at :45; at equal widths right-justification has nothing to shift, so the receiver holds 'AB'. Step three, :123, INSPECT WS-OPTION-X REPLACING ALL ' ' BY '0', is a NO-OP because the field carries no space - the deliberate contrast with case06, whose blank byte is precisely what that INSPECT turns into a zero. Step four, :124, MOVEs WS-OPTION-X to WS-OPTION, declared PIC 9(02) at :46, and this is the crux of the case: a COBOL MOVE from an alphanumeric PIC X(02) to a numeric-display PIC 9(02) at equal widths transfers the bytes AS THEY ARE. It does not parse, it does not validate, it does not raise, and it does not zero-fill. WS-OPTION is therefore DECLARED numeric while CONTAINING the two non-digit bytes 'A' and 'B' - which is the precise state the class test at :127 exists to detect, and a state that only survives because the MOVE is a byte copy. A translation that parsed the field into an integer would have deleted the branch rather than translated it. THE DECISIVE ASSERTION IS THE ECHO. Line 125 MOVEs WS-OPTION to OPTIONO, again PIC 9(02) to a two-byte alphanumeric at equal widths, so the screen echoes back exactly what was typed and OPTIONO is 'AB'. It is neither '00' nor '0' nor spaces nor empty, and that is what catches the two wrong implementations. One that called Integer.parseInt and let a NumberFormatException escape cannot reach expectedReturnCode 0, because COMEN01C has no RETURN-CODE, no CALL 'CEE3ABD' and no ABEND anywhere in its 282 lines and a faithful run of this path completes normally. One that swallowed the parse failure and coerced the field to zero would echo '00' instead of 'AB' - and worse, it would satisfy term THREE, WS-OPTION = ZEROS, rather than term ONE, silently crediting the wrong branch while still painting the same message. The echo is the only observation that separates those two, which is why it is pinned to the byte. What follows the rejection. Line 130 MOVEs 'Y' into WS-ERR-FLG - the 88 ERR-FLG-ON condition at :41 - lines 131-132 MOVE the thirty-seven-character literal into WS-MESSAGE, declared PIC X(80) at :38, and line 133 PERFORMs SEND-MENU-SCREEN, which is the one and only screen painted here. PERFORM returns, so control reaches the filter at :136-137, which is NOT guarded by the error flag. It is false twice over on this path and so adds no second image: the first conjunct CDEMO-USRTYP-USER is false because the commarea carries CDEMO-USER-TYPE 'A', which short-circuits the conjunction before the subscript is touched at all; and WS-OPTION holds no digits, so there is no COBOL subscript for the second conjunct to form even had it been evaluated. Choosing an admin caller is what keeps this case about the class test and nothing else - the out-of-range and stray-byte subscript readings belong to case08, case09 and case10, which all use a 'U' caller. Line 145's IF NOT ERR-FLG-ON is then false, so the entire dispatch block at :146-164 is skipped: no XCTL and therefore no successor is named, no coming-soon text is composed, CDEMO-PGM-CONTEXT stays 1 because :151 never runs, and CDEMO-FROM-TRANID and CDEMO-FROM-PROGRAM keep their inbound values because :147-148 never run. The transaction ends at the EXEC CICS RETURN TRANSID of :107-110, so the termination is RETURN_TRANSID and the commarea travels back in the payload - gate G37, no server-side session state. The ten forty-character option lines ARE built, because SEND-MENU-SCREEN at :182 performs BUILD-MENU-OPTIONS at :185 before the SEND, and the loop at :238-239 runs only while WS-IDX is not greater than the count of 10 that app/cpy/COMEN02Y.cpy:21 declares as PIC 9(02) VALUE 10. So OPTN011O and OPTN012O, whose EVALUATE arms exist at :269-272, are never written and remain the forty X'00' bytes that the MOVE LOW-VALUES of :89 left them. NO COLOUR HIGHLIGHT IS EXPECTED AND NONE MAY BE, and the reason is worth stating exactly because it reads like a contradiction otherwise. COMEN01C does not copy CSSETATY - its COPY list at :50-61 is COCOM01Y, COMEN02Y, COMEN01, COTTL01Y, CSDAT01Y, CSMSG01Y, CSUSR01Y, DFHAID and DFHBMSCA - so the DFHRED-plus-asterisk error highlight that copybook applies belongs to COACTUPC, its only consumer, and DFHRED appears nowhere in this program's source. The DFHRED recorded against ERRMSGC here is NOT that highlight: it is the mnemonic of the COLOR=RED the mapset itself declares for the ERRMSG field at app/bms/COMEN01.bms:154-157, reported unchanged precisely BECAUSE the program never touches the attribute on this path - the only statement that ever does is the MOVE DFHGREEN of :158, which sits inside the block line 145 skips. So the error is signalled by the message text and the error flag alone, exactly as the prohibition on a program-applied highlight requires. Gate G38's pair is honoured through the ENTER and REENTER split rather than through any colour: this is a REENTER-side case, arriving with CDEMO-PGM-CONTEXT 1 so that :87 sends it down the RECEIVE-and-validate path, and the message and the flag become non-default only there. A defect is preserved rather than repaired. The BMS field carries the NUM attribute - OPTION DFHMDF ATTRB=(FSET,IC,NORM,NUM,UNPROT) at app/bms/COMEN01.bms:145 - which is a terminal-level numeric-only hint, and yet the program still performs its own class test at :127 and still echoes the raw bytes back when it fails. That the terminal attribute does not make the class test redundant, and that the rejected value is echoed unsanitised, is inherited behaviour: no terminal-level rejection is added and the echo is not cleaned up. No thank-you line is expected; COTTL01Y's CCDA-THANK-YOU and CSMSG01Y's CCDA-MSG-THANK-YOU are both copied in and neither is ever referenced. No No access text is expected, because the filter did not fire. inputs, expectedWrites and expectedFinalState are all empty, and that is a positive assertion rather than an omission: COMEN01C performs no dataset access at all - it declares WS-USRSEC-FILE at :39 and copies CSUSR01Y at :58, but there is no SELECT, no FD and no file operand among its five EXEC CICS commands. User type is inbound only and is never re-verified: :150's MOVE SEC-USR-TYPE TO CDEMO-USER-TYPE is commented out, so the 'A' that arrives is never looked up in USRSEC, never re-derived and never hashed, and this single PIC X(01) byte is the entire authorisation mechanism, exactly as the legacy program leaves it. The clock is pinned to 2022-07-19T23:12:33, the instant COMEN01C's own version footer at :281 carries, and all twenty cases in this directory pin that same instant so no two can differ by their clock; POPULATE-HEADER-INFO at :212-231 does run on this path because SEND-MENU-SCREEN is performed, so CURDATE and CURTIME are genuinely produced in the MM/DD/YY and HH:MM:SS shapes of app/cpy/CSDAT01Y.cpy:30-41. US-ASCII is named explicitly rather than left to a platform default, which matters more here than elsewhere: the class test is a byte-level digit test, and 'is this byte a digit' is only a well-defined question once the code page is stated. Every expected value here is statically derived - read out of the COBOL paragraph that produces it and cross-checked against the option table and 46-byte entry layout of app/cpy/COMEN02Y.cpy, the sixteen-field 160-byte commarea of app/cpy/COCOM01Y.cpy, the xxxI PICTURE clauses of app/cpy-bms/COMEN01.CPY, the DFHMDF definitions of app/bms/COMEN01.bms and the CM00-to-COMEN01C binding of app/csd/CARDDEMO.CSD - and none of it was captured from an execution of the legacy program, which is empirically impossible here: no z/OS or CICS runtime, an indexed file handler the available compiler reports as disabled, no Language Environment CEE services, and DFHAID, DFHBMSCA and DFHATTR absent from the repository altogether. That substitution of provenance is escalated rather than absorbed (risk R-A). This case pins gates G15, G18, G30, G37, G38 and G51.",
   "unitKind": "SERVICE",
   "inputs": {},
   "screenRequest": {
@@ -13,12 +13,12 @@
       "CDEMO-FROM-TRANID": "CC00",
       "CDEMO-FROM-PROGRAM": "COSGN00C",
       "CDEMO-TO-PROGRAM": "COMEN01C",
-      "CDEMO-USER-ID": "USER0001",
-      "CDEMO-USER-TYPE": "U",
+      "CDEMO-USER-ID": "ADMIN001",
+      "CDEMO-USER-TYPE": "A",
       "CDEMO-PGM-CONTEXT": "1"
     },
     "mapFields": {
-      "OPTIONI": "01"
+      "OPTIONI": "AB"
     },
     "forcedOutcomes": {}
   },
@@ -30,8 +30,8 @@
       "CDEMO-FROM-PROGRAM": "COSGN00C",
       "CDEMO-TO-TRANID": "    ",
       "CDEMO-TO-PROGRAM": "COMEN01C",
-      "CDEMO-USER-ID": "USER0001",
-      "CDEMO-USER-TYPE": "U",
+      "CDEMO-USER-ID": "ADMIN001",
+      "CDEMO-USER-TYPE": "A",
       "CDEMO-PGM-CONTEXT": "1",
       "CDEMO-CUST-ID": "000000000",
       "CDEMO-CUST-FNAME": "                         ",
@@ -47,21 +47,21 @@
       {
         "fields": {
           "OPTN001O": "01. Account View                        ",
-          "OPTN002O": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
-          "OPTN003O": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
-          "OPTN004O": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
-          "OPTN005O": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
-          "OPTN006O": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
-          "OPTN007O": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
-          "OPTN008O": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
-          "OPTN009O": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
-          "OPTN010O": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "OPTN002O": "02. Account Update                      ",
+          "OPTN003O": "03. Credit Card List                    ",
+          "OPTN004O": "04. Credit Card View                    ",
+          "OPTN005O": "05. Credit Card Update                  ",
+          "OPTN006O": "06. Transaction List                    ",
+          "OPTN007O": "07. Transaction View                    ",
+          "OPTN008O": "08. Transaction Add                     ",
+          "OPTN009O": "09. Transaction Reports                 ",
+          "OPTN010O": "10. Bill Payment                        ",
           "OPTN011O": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
           "OPTN012O": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
-          "OPTIONO": "01"
+          "OPTIONO": "AB"
         },
         "attributes": {
-          "ERRMSGC": "DFHGREEN"
+          "ERRMSGC": "DFHRED"
         }
       }
     ],
@@ -73,7 +73,7 @@
   "expectedMessages": [
     {
       "channel": "WS_MESSAGE_80",
-      "text": "This option Accountis coming soon ...                                           "
+      "text": "Please enter a valid option number...                                           "
     }
   ],
   "normalisations": []

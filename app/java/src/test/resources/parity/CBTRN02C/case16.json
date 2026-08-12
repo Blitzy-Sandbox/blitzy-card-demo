@@ -1,27 +1,27 @@
 {
   "program": "CBTRN02C",
   "caseId": "case16",
-  "description": "An empty daily-transaction file, which is the boundary of the loop at :202-219 rather than an error. The very first READ at :346 reports '10', so :352 moves 16 into APPL-RESULT, 88 APPL-EOF is true at :360 and :361 moves 'Y' into END-OF-FILE - and the PERFORM UNTIL exits without the body ever running, so no transaction is counted, validated, posted or rejected. All six files are still opened and all six still closed, both count lines are still displayed reading 000000000, and :229 leaves RETURN-CODE 0. DALYREJS is opened and closed holding no record, which app/jcl/POSTTRAN.jcl:34's DISP=(NEW,CATLG,DELETE) then catalogues as an empty generation rather than as no generation at all - so a zero-row rejects file is a positive observation here, not an absence of one.",
+  "description": "THE 430-BYTE REJECT GEOMETRY CASE. Case 16 of 20 for CBTRN02C exists for one purpose: to pin the byte geometry of the DALYREJS record end to end, so that its total width, its two-part split and every FILLER span inside it are asserted rather than assumed (gates G19, G20, G21). It reaches that record through reason 102 'OVERLIMIT TRANSACTION', which is not a second helping of case03 but the only reject reason the shipped fixtures can reach at all: re-derived across all 300 dailytran rows, exactly thirteen reject - one-based lines 16, 32, 35, 43, 66, 79, 190, 224, 227, 234, 235, 292 and 299 - and NONE rejects with 100, 101 or 103, because every card resolves, every account exists and no account has expired. Line 43 is the row used here, and this case deepens its sibling in two ways neither case03 nor the five expectedBytes-only 102 cases do: it pins the FD's own 80-byte REDEFINES view of the trailer, and it states all three width sums in prose so the geometry can be re-checked against the copybooks by hand. THE GEOMETRY, DERIVED MECHANICALLY (practice B11). app/cbl/CBTRN02C.cbl:81-84 declares the file record as FD-REJS-RECORD = FD-REJECT-RECORD PIC X(350) then FD-VALIDATION-TRAILER PIC X(80). :177-178 declare the working-storage image written into it, REJECT-RECORD = REJECT-TRAN-DATA PIC X(350) then VALIDATION-TRAILER PIC X(80). :181-182 decompose that trailer as WS-VALIDATION-TRAILER = WS-VALIDATION-FAIL-REASON PIC 9(04) then WS-VALIDATION-FAIL-REASON-DESC PIC X(76). THE THREE SUMS ARE THEREFORE 4 + 76 = 80, 350 + 80 = 430, and equivalently 350 + 4 + 76 = 430 - exactly the DCB=(RECFM=F,LRECL=430,BLKSIZE=0) that app/jcl/POSTTRAN.jcl:36 declares on the DALYREJS DD. One-based inclusive offsets: REJECT-TRAN-DATA 1-350, WS-VALIDATION-FAIL-REASON 351-354, WS-VALIDATION-FAIL-REASON-DESC 355-430. THE 350 BYTES, FIELD BY FIELD. 2500-WRITE-REJECT-REC at :447 is MOVE DALYTRAN-RECORD TO REJECT-TRAN-DATA, a group move between two items of identical 350-byte width, so it pads nothing and truncates nothing and the rejected row crosses over VERBATIM - trailing FILLER, blank DALYTRAN-PROC-TS and sign overpunch included. The internal structure of those 350 bytes is CVTRA06Y's, and its fourteen items (app/cpy/CVTRA06Y.cpy:5-18) sum as follows: DALYTRAN-ID PIC X(16) is 16 bytes at 1-16; DALYTRAN-TYPE-CD PIC X(02) is 2 at 17-18; DALYTRAN-CAT-CD PIC 9(04) is 4 at 19-22; DALYTRAN-SOURCE PIC X(10) is 10 at 23-32; DALYTRAN-DESC PIC X(100) is 100 at 33-132; DALYTRAN-AMT PIC S9(09)V99 is 11 at 133-143; DALYTRAN-MERCHANT-ID PIC 9(09) is 9 at 144-152; DALYTRAN-MERCHANT-NAME PIC X(50) is 50 at 153-202; DALYTRAN-MERCHANT-CITY PIC X(50) is 50 at 203-252; DALYTRAN-MERCHANT-ZIP PIC X(10) is 10 at 253-262; DALYTRAN-CARD-NUM PIC X(16) is 16 at 263-278; DALYTRAN-ORIG-TS PIC X(26) is 26 at 279-304; DALYTRAN-PROC-TS PIC X(26) is 26 at 305-330; and FILLER PIC X(20) is 20 at 331-350. That is 16+2+4+10+100+11+9+50+50+10+16+26+26+20 = 350. OMIT THAT TRAILING FILLER AND THE SUM IS 330: the record is twenty bytes short, WS-VALIDATION-FAIL-REASON slides from 351 to 331 and every trailer offset behind it is wrong - which is precisely the failure gate G21 exists to catch, and why FILLER is pinned here as twenty spaces rather than elided. Two properties make those fourteen numbers literal byte counts. The sign occupies no byte of its own: DALYTRAN-AMT's eleven bytes are nine digits and two decimal places with the sign overpunched into the trailing one. And not one persisted field in any of the 28 copybooks is COMP-3 or PACKED-DECIMAL - every stored numeric is zoned DISPLAY - so there is no nibble packing anywhere in this sum. SCENARIO, SEEDED FROM UNMODIFIED FIXTURES WITH NOT ONE SUBSTITUTED BYTE (practices B1, B3). DALYTRAN holds exactly one record: dailytran one-based line 43, which is zero-based fixture row 42 and is the value fromRow carries. It was chosen because its short description and five-digit zip put a padding boundary in the middle of four different spans, so eliding any of them shows up immediately. Measured at the offsets above: DALYTRAN-ID 0000000148803688; DALYTRAN-TYPE-CD 01; DALYTRAN-CAT-CD 0001; DALYTRAN-SOURCE 'POS TERM' at 8 characters plus 2 trailing spaces = 10; DALYTRAN-DESC 'Purchase at Crist Inc' at 21 plus 79 = 100; DALYTRAN-AMT stored as the zoned image 0000002034D, that is +203.44; DALYTRAN-MERCHANT-ID 800000000; DALYTRAN-MERCHANT-NAME 'Crist Inc' at 9 plus 41 = 50; DALYTRAN-MERCHANT-CITY 'Spencerchester' at 14 plus 36 = 50; DALYTRAN-MERCHANT-ZIP '18577' at 5 plus 5 = 10; DALYTRAN-CARD-NUM 6509230362553816; DALYTRAN-ORIG-TS '2022-06-10 19:27:53.000000' at a full 26; DALYTRAN-PROC-TS 26 spaces, because a daily transaction has not been processed yet; and FILLER 20 spaces. XREFFILE holds cardxref zero-based row 29, which resolves that card to XREF-ACCT-ID 00000000030 with XREF-CUST-ID 000000030. ACCTFILE holds acctdata zero-based row 29, which is that account: ACCT-CURR-BAL 00000000020{ = 2.00, ACCT-CREDIT-LIMIT 00000001200{ = 120.00, ACCT-CASH-CREDIT-LIMIT 00000000930{ = 93.00, ACCT-EXPIRAION-DATE 2024-06-27 - the copybook's own misspelling at app/cpy/CVACT01Y.cpy:11, kept verbatim - and both cycle amounts at 00000000000{ = 0.00. That credit limit is the LOWEST in acctdata and it is unique there (the next two are 446.00 and 568.00), which is why three of the thirteen naturally rejecting rows - lines 43, 66 and 190 - all route through this one account. TCATBALF holds tcatbal zero-based row 29, key 00000000030010001 at 0.00 with its 22-character FILLER of zeros, seeded so that leaving it alone becomes an assertion rather than an omission. TRANFILE is declared empty at its CVTRA05Y width of 350, which is a different statement from omitting it. THE CASCADE AND THE ARITHMETIC, RE-DERIVABLE BY HAND FROM THE RAW BYTES. The overpunch convention in these fixtures writes a positive final digit 0-9 as { A B C D E F G H I and a negative one as } J K L M N O P Q R, so 0000002034D is +203.44 and 00000000020{ is 2.00. 1500-A-LOOKUP-XREF at :380-392 finds the card, so reason 100 is not set; the reason still being 0, :372-376 performs 1500-B-LOOKUP-ACCT, which is the only real short-circuit in this cascade; the account is found, so reason 101 is not set. COMPUTE WS-TEMP-BAL at :403-405 is ACCT-CURR-CYC-CREDIT - ACCT-CURR-CYC-DEBIT + DALYTRAN-AMT, that is 00000000000{ minus 00000000000{ plus 0000002034D, so 0.00 - 0.00 + 203.44 = 203.44. The receiver is WS-TEMP-BAL PIC S9(09)V99 at :187 and the keyword ROUNDED appears ZERO times in this program, so the store truncates: scale exactly 2 with RoundingMode.DOWN, never HALF_UP and never HALF_EVEN (gates G23, G24, practice B8). :407 then tests ACCT-CREDIT-LIMIT >= WS-TEMP-BAL, that is 120.00 >= 203.44, which is FALSE because 120.00 < 203.44, so :410-412 store 102 and the 21-character text 'OVERLIMIT TRANSACTION'. :414 runs ANYWAY - it is a sibling statement of the credit-limit IF rather than anything inside its ELSE, and this program contains no GO TO at all - and tests ACCT-EXPIRAION-DATE >= DALYTRAN-ORIG-TS (1:10), that is '2024-06-27' >= '2022-06-10', a 10-byte reference modification of the 26-byte timestamp compared as characters. That is TRUE, so :415 CONTINUEs and the 102 survives untouched rather than being overwritten by 103. Nothing may be implemented as a short-circuit between those two tests (gate G31, practice B5). This program has no EVALUATE and no GO TO; its verb census is EVALUATE 0, GO TO 0, ROUNDED 0 and COMPUTE 1, so gate G30's ordering obligation falls on the nested IF ladders rather than on any WHEN arm. HOW THE 430 BYTES ARE ADDRESSED, AND WHY THE FOURTEEN NAMES SIT WHERE THEY DO. The sixteen field-to-value pairs this case owes - CVTRA06Y's fourteen plus the two trailer items - are all present, each as its own pair so FieldDiffer compares them individually and never as one concatenated string (gate G17). They are split across two relations because a field name is only addressable where a layout declares it. On DALYREJS the record written is FD-REJS-RECORD, and the FD at :83 declares its first 350 bytes as ONE PIC X(350) item named for what reaches the file rather than for the CVTRA06Y items the sender happens to hold; DalyRejectWriter.FD_REJS_RECORD_LAYOUT declares exactly that - FD-REJECT-RECORD, WS-VALIDATION-FAIL-REASON and WS-VALIDATION-FAIL-REASON-DESC as storage, plus FD-VALIDATION-TRAILER as a REDEFINES overlay of the last 80. Pinning the fourteen DALYTRAN-* names there would name spans that layout does not declare, which FieldDiffer reports as FIELD_ABSENT_IN_FINGERPRINT and which would assert nothing about the bytes. So the fourteen are pinned field by field on the DALYTRAN relation, where DalyTranRecord.LAYOUT does declare them and where the very bytes copied into the reject live, while the reject's own copy is pinned as the FD-REJECT-RECORD span. Between the two, every byte of the rejected image is checked at field granularity. The trailer is pinned three ways over: WS-VALIDATION-FAIL-REASON as the four characters 0102 - the numeric item is zero-filled ON THE LEFT, so it is never '102 ' and never the integer 102; WS-VALIDATION-FAIL-REASON-DESC as 'OVERLIMIT TRANSACTION' plus 55 trailing spaces, since the alphanumeric item pads ON THE RIGHT and 21 + 55 = 76 exactly; and FD-VALIDATION-TRAILER, the FD's own 80-byte view of those two, which asserts the 4 + 76 = 80 decomposition directly against the overlay and which no sibling case pins. expectedBytes then pins the whole 430-byte image on top, proving the total width and therefore that no FILLER was dropped anywhere; FieldDiffer walks it span by span in copybook order rather than comparing it as an opaque string, so even that record-level expectation localises a difference to the field that carries it. MAINLINE CONSEQUENCES. WS-VALIDATION-FAIL-REASON is non-zero when :211 tests it, so 2000-POST-TRANSACTION is NOT performed and :214-215 add 1 to WS-REJECT-COUNT and write the reject instead. Therefore: no TCATBALF read, write or rewrite; no ACCTFILE rewrite; no TRANFILE write. All four seeded relations come back exactly as seeded - ACCT-CURR-BAL IS STILL 2.00, both cycle amounts still 0.00, TRAN-CAT-BAL still 0.00 and the cross-reference untouched - and the transaction master is still empty, asserted at zero rows rather than left unmentioned. Expecting the balance to move on a reject is the obvious mistake here, and it is asserted against directly. Because the TCATBALF read never happens, the 'TCATBAL record not found for key : ' line at :475-477 is not emitted, and there are no error or IO-status lines. NO CLOCK IS READ: TRAN-PROC-TS is the one wall-clock-derived value in this program and it is composed inside 2000-POST-TRANSACTION, which never runs, while the rejected row's own DALYTRAN-PROC-TS arrives as 26 spaces and is copied across as 26 spaces - so this expectation is deterministic without pinning a clock at all (practice B7). RETURN CODE AND MESSAGES. WS-REJECT-COUNT is 1, which is greater than zero, so :229-231 move 4 into RETURN-CODE. The four DISPLAY lines are byte-exact and in emission order, including the ONE space before the colon at :227 and the TWO spaces before it at :228, with both counters rendered as PIC 9(09) nine zero-filled digits. CHANNELS. DALYREJS is opened unconditionally at :198 and holds exactly one 430-byte record on the writes channel. All five relations are pinned on the final-state channel, DALYTRAN and XREFFILE included, because reporting only the three the program can mutate could not tell a run that left its inputs alone from one that quietly wrote to them. The cross-reference row is seeded at its true on-disk width of 36 bytes and widened to CVACT03Y's declared 50 exactly once, at SEED time, by ParityCase.Normalisation.CARDXREF_FILLER_PAD_36_TO_50 - never at comparison time, which is why the final-state expectation is stated at the copybook's 50 (gate G16). POSTTRAN.jcl:23 is a bare EXEC PGM=CBTRN02C with no PARM=, so there are no job parameters. Every value in this file is US-ASCII, one character to one byte, which is what makes the width sums above meaningful and is named explicitly rather than left to a platform default (practice B8). PROVENANCE. Every expected value here is STATICALLY DERIVED - by structured reading of the COBOL paragraphs cited above, cross-checked against the copybook byte layouts in app/cpy, the DD and PARM contract in app/jcl/POSTTRAN.jcl, and the real ASCII fixtures. It is NOT captured from, recorded against or replayed from any execution of the legacy COBOL: running these programs is empirically impossible in this environment - no z/OS or CICS runtime exists, the available compiler reports its indexed file handler disabled while this program declares four ORGANIZATION INDEXED files, no Language Environment CEE* services are present, and the IBM-supplied DFHAID, DFHBMSCA and DFHATTR copybooks are absent from the repository. Only the PROVENANCE of the expected values is substituted; the 20 cases per program, the field-for-field diffing and the diff-count-equals-zero gate per module all stand, and the substitution is escalated for explicit user confirmation as risk R-A rather than quietly absorbed (practice B12). No user-specified rules govern this project - review_rules returns 'No user rules provided' - so this fixture is held instead to the enterprise best-practice substitutes: B1 every width and padding count an exact integer measured against the shipped fixture rather than estimated, B3 the reference trees under app/cbl, app/cpy, app/jcl and app/data read and never written, B5 the reject preserved as the expectation with nothing adjusted to protect the account and the 102 left unoverwritten exactly as the source leaves it, B7 determinism with no clock read, B8 explicit field-name-to-value pairs, US-ASCII throughout and money at scale 2 with RoundingMode.DOWN, B11 the three sums 350, 80 and 430 written out with the fourteen widths that produce the first of them so a reviewer can re-check all of it against the copybooks by hand, and B12 this provenance stated plainly.",
   "unitKind": "BATCH_JOB",
   "inputs": {
     "DALYTRAN": {
-      "empty": true,
-      "recordLength": 350,
-      "copybook": "CVTRA06Y"
+      "fixture": "dailytran.txt",
+      "fromRow": 42,
+      "rowCount": 1
     },
     "XREFFILE": {
       "fixture": "cardxref.txt",
-      "fromRow": 20,
+      "fromRow": 29,
       "rowCount": 1
     },
     "ACCTFILE": {
       "fixture": "acctdata.txt",
-      "fromRow": 6,
+      "fromRow": 29,
       "rowCount": 1
     },
     "TCATBALF": {
       "fixture": "tcatbal.txt",
-      "fromRow": 6,
+      "fromRow": 29,
       "rowCount": 1
     },
     "TRANFILE": {
@@ -30,25 +30,87 @@
       "copybook": "CVTRA05Y"
     }
   },
-  "expectedWrites": [],
+  "jobParameters": {},
+  "expectedWrites": [
+    {
+      "dataset": "DALYREJS",
+      "rowIndex": 0,
+      "fields": {
+        "FD-REJECT-RECORD": "0000000148803688010001POS TERM  Purchase at Crist Inc                                                                               0000002034D800000000Crist Inc                                         Spencerchester                                    18577     65092303625538162022-06-10 19:27:53.000000                                              ",
+        "WS-VALIDATION-FAIL-REASON": "0102",
+        "WS-VALIDATION-FAIL-REASON-DESC": "OVERLIMIT TRANSACTION                                                       ",
+        "FD-VALIDATION-TRAILER": "0102OVERLIMIT TRANSACTION                                                       "
+      },
+      "expectedBytes": "0000000148803688010001POS TERM  Purchase at Crist Inc                                                                               0000002034D800000000Crist Inc                                         Spencerchester                                    18577     65092303625538162022-06-10 19:27:53.000000                                              0102OVERLIMIT TRANSACTION                                                       "
+    }
+  ],
   "expectedFinalState": [
+    {
+      "dataset": "DALYTRAN",
+      "rowIndex": 0,
+      "fields": {
+        "DALYTRAN-ID": "0000000148803688",
+        "DALYTRAN-TYPE-CD": "01",
+        "DALYTRAN-CAT-CD": "0001",
+        "DALYTRAN-SOURCE": "POS TERM  ",
+        "DALYTRAN-DESC": "Purchase at Crist Inc                                                                               ",
+        "DALYTRAN-AMT": "203.44",
+        "DALYTRAN-MERCHANT-ID": "800000000",
+        "DALYTRAN-MERCHANT-NAME": "Crist Inc                                         ",
+        "DALYTRAN-MERCHANT-CITY": "Spencerchester                                    ",
+        "DALYTRAN-MERCHANT-ZIP": "18577     ",
+        "DALYTRAN-CARD-NUM": "6509230362553816",
+        "DALYTRAN-ORIG-TS": "2022-06-10 19:27:53.000000",
+        "DALYTRAN-PROC-TS": "                          ",
+        "FILLER": "                    "
+      },
+      "expectedBytes": "0000000148803688010001POS TERM  Purchase at Crist Inc                                                                               0000002034D800000000Crist Inc                                         Spencerchester                                    18577     65092303625538162022-06-10 19:27:53.000000                                              "
+    },
     {
       "dataset": "XREFFILE",
       "rowIndex": 0,
-      "expectedBytes": "485945261287706500000000700000000007              "
+      "fields": {
+        "XREF-CARD-NUM": "6509230362553816",
+        "XREF-CUST-ID": "000000030",
+        "XREF-ACCT-ID": "00000000030",
+        "FILLER": "              "
+      },
+      "expectedBytes": "650923036255381600000003000000000030              "
     },
     {
       "dataset": "ACCTFILE",
       "rowIndex": 0,
-      "expectedBytes": "00000000007Y00000001930{00000020650{00000002640{2012-10-122024-12-132024-12-1300000000000{00000000000{A000000000                                                                                                                                                                                            "
+      "fields": {
+        "ACCT-ID": "00000000030",
+        "ACCT-ACTIVE-STATUS": "Y",
+        "ACCT-CURR-BAL": "2.00",
+        "ACCT-CREDIT-LIMIT": "120.00",
+        "ACCT-CASH-CREDIT-LIMIT": "93.00",
+        "ACCT-OPEN-DATE": "2011-08-26",
+        "ACCT-EXPIRAION-DATE": "2024-06-27",
+        "ACCT-REISSUE-DATE": "2024-06-27",
+        "ACCT-CURR-CYC-CREDIT": "0.00",
+        "ACCT-CURR-CYC-DEBIT": "0.00",
+        "ACCT-ADDR-ZIP": "A000000000",
+        "ACCT-GROUP-ID": "          ",
+        "FILLER": "                                                                                                                                                                                  "
+      },
+      "expectedBytes": "00000000030Y00000000020{00000001200{00000000930{2011-08-262024-06-272024-06-2700000000000{00000000000{A000000000                                                                                                                                                                                            "
     },
     {
       "dataset": "TCATBALF",
       "rowIndex": 0,
-      "expectedBytes": "000000000070100010000000000{0000000000000000000000"
+      "fields": {
+        "TRANCAT-ACCT-ID": "00000000030",
+        "TRANCAT-TYPE-CD": "01",
+        "TRANCAT-CD": "0001",
+        "TRAN-CAT-BAL": "0.00",
+        "FILLER": "0000000000000000000000"
+      },
+      "expectedBytes": "000000000300100010000000000{0000000000000000000000"
     }
   ],
-  "expectedReturnCode": 0,
+  "expectedReturnCode": 4,
   "expectedMessages": [
     {
       "channel": "DISPLAY_LINE",
@@ -56,11 +118,11 @@
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "TRANSACTIONS PROCESSED :000000000"
+      "text": "TRANSACTIONS PROCESSED :000000001"
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "TRANSACTIONS REJECTED  :000000000"
+      "text": "TRANSACTIONS REJECTED  :000000001"
     },
     {
       "channel": "DISPLAY_LINE",
@@ -77,13 +139,13 @@
     {
       "dataset": "DALYREJS",
       "channel": "WRITES",
-      "rowCount": 0,
+      "rowCount": 1,
       "recordLength": 430
     },
     {
       "dataset": "DALYTRAN",
       "channel": "FINAL_STATE",
-      "rowCount": 0,
+      "rowCount": 1,
       "recordLength": 350
     },
     {

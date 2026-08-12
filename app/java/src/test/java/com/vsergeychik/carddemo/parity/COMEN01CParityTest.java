@@ -126,10 +126,12 @@ import org.junit.jupiter.params.provider.MethodSource;
  * {@code STRING 'This option ' DELIMITED BY SIZE, CDEMO-MENU-OPT-NAME(WS-OPTION) DELIMITED BY SPACE,
  * 'is coming soon ...' DELIMITED BY SIZE}. The middle operand stops at the first space of the
  * thirty-five-byte name and the suffix has no leading space, so option 1 emits
- * {@code This option Accountis coming soon ...} with the two words run together. {@code case13}
- * dedicates itself to that image. Inserting the "missing" space would be a behaviour change, and the
- * message proof in {@link #theComingSoonCompositionHasNoSeparatorBeforeIs()} exists so that anyone
- * who inserts it sees a named failure rather than a passing build.
+ * {@code This option Accountis coming soon ...} with the two words run together. Inserting the
+ * "missing" space would be a behaviour change, and the message proof in
+ * {@link #theComingSoonCompositionHasNoSeparatorBeforeIs()} exists so that anyone who inserts it sees
+ * a named failure rather than a passing build. That proof owns the whole of the coming-soon path -
+ * the {@code 'DUMMY'} prefix branch, the composed image and the {@code DFHGREEN} override - across
+ * four separate options, which is why no single declarative case is spent on it.
  *
  * <h2>This program touches no dataset at all, and that is asserted rather than assumed</h2>
  *
@@ -398,8 +400,9 @@ class COMEN01CParityTest {
      * <p>No entry in {@code app/cpy/COMEN02Y.cpy} begins with {@value #DUMMY_PROGRAM_PREFIX}, so line
      * 146's comparison is always true in production and the {@code XCTL} always fires. The branch
      * nevertheless exists in the source and is the <em>only</em> way to reach the coming-soon message
-     * at all, so {@code case13} supplies this name and the remaining three bytes are ordinary name
-     * characters, which is what makes the five-byte reference modification the thing under test.
+     * at all, so {@link #theComingSoonCompositionHasNoSeparatorBeforeIs()} supplies this name and the
+     * remaining three bytes are ordinary name characters, which is what makes the five-byte reference
+     * modification the thing under test.
      */
     private static final String DUMMY_PROGRAM_NAME = "DUMMY001";
 
@@ -546,8 +549,8 @@ class COMEN01CParityTest {
 
     /** Case identifiers driven through {@link MainMenuService} with the copybook option table. */
     private static final List<String> SERVICE_CASES =
-            List.of("case02", "case03", "case04", "case05", "case06", "case07", "case08", "case14",
-                    "case15");
+            List.of("case02", "case03", "case04", "case05", "case06", "case07", "case08", "case13",
+                    "case14", "case15");
 
     // =================================================================================================
     // Section 6 - the gate itself.
@@ -998,11 +1001,19 @@ class COMEN01CParityTest {
      * {@code 'is coming soon ...'} begins with a letter. So the image is
      * {@code This option Accountis coming soon ...} at thirty-seven characters. The literal with the
      * "missing" space inserted is built here and required to <strong>differ</strong>, which is what
-     * makes {@code case13} a real assertion rather than a restatement of whatever the code does: anyone
-     * who repairs the apparent typo sees this test name in the failure.
+     * makes this a real assertion rather than a restatement of whatever the code does: anyone who
+     * repairs the apparent typo sees this test name in the failure.
      *
      * <p>The same composition is checked for three more entries, because the surviving word differs per
      * option and a translation that hard-coded the first one would agree here and nowhere else.
+     *
+     * <p>This test owns the coming-soon path outright, so it also pins what reaching that path implies
+     * and not merely the text it composes: the injected entry really does carry the {@code 'DUMMY'}
+     * five-byte prefix at the full {@code PIC X(08)} width while keeping the copybook's own name, the
+     * {@code XCTL} at 152 to 155 really is skipped, a map really is sent, {@code WS-ERR-FLG} is left
+     * {@code 'N'} because a skipped transfer is a success rather than a rejection, and the composed
+     * option line stays byte-identical to the painted one. Each of those is checked at all four
+     * subscripts rather than at one, which is stronger than the single-subscript check it replaces.
      */
     @Test
     @DisplayName("composes the coming-soon message with no space before 'is', for every option")
@@ -1030,10 +1041,11 @@ class COMEN01CParityTest {
         for (Worked row : worked) {
             String expected = MainMenuService.COMING_SOON_PREFIX + row.surviving()
                     + MainMenuService.COMING_SOON_SUFFIX;
+            MainMenuOptionTable dummyTable = dummyPrefixTableFor(row.subscript());
             MainMenuOutcome outcome = service.handle(
                     new MainMenuInput(userReentered(), CicsAid.DFHENTER,
                             String.format(Locale.ROOT, "%02d", row.subscript())),
-                    dummyPrefixTableFor(row.subscript()));
+                    dummyTable);
 
             assertThat(outcome.message())
                     .describedAs("option %d composes '%s'", row.subscript(), expected)
@@ -1047,6 +1059,31 @@ class COMEN01CParityTest {
             assertThat(outcome.messageColourOverridden())
                     .describedAs("line 158 MOVE DFHGREEN TO ERRMSGC applies on this path and no other")
                     .isTrue();
+
+            MenuOption stubbed = dummyTable.optionBySubscript(row.subscript()).orElseThrow();
+            assertThat(stubbed.menuOptPgmName())
+                    .describedAs("line 146 reference-modifies the first five characters, so the prefix "
+                            + "is what matters and the remaining three bytes are ordinary name "
+                            + "characters")
+                    .startsWith(DUMMY_PROGRAM_PREFIX)
+                    .hasSize(OPTION_PROGRAMS.get(row.subscript() - 1).length());
+            assertThat(stubbed.menuOptName())
+                    .describedAs("the name is the copybook's own, so the composed line is unchanged")
+                    .isEqualTo(OPTION_NAMES.get(row.subscript() - 1));
+            assertThat(outcome.hasNextProgram())
+                    .describedAs("line 146 found 'DUMMY', so the XCTL at 152-155 is skipped entirely")
+                    .isFalse();
+            assertThat(outcome.screenPainted())
+                    .describedAs("lines 157-164 are reachable only here, and line 164 sends the map")
+                    .isTrue();
+            assertThat(outcome.errFlgImage())
+                    .describedAs("WS-ERR-FLG is untouched on this path: a skipped transfer is a "
+                            + "successful outcome, not a rejection")
+                    .isEqualTo(MainMenuService.ERR_FLG_OFF);
+            assertThat(outcome.optionLine(row.subscript()))
+                    .describedAs("the injected entry differs from the copybook's only in its program "
+                            + "name, so the composed line must be byte-identical to the real one")
+                    .isEqualTo(PAINTED_MENU_LINES.get(row.subscript() - 1));
         }
     }
 
@@ -1074,12 +1111,11 @@ class COMEN01CParityTest {
             case "case10" -> COMEN01CParityTest::runUngatedFilterAfterFailedValidation;
             case "case11" -> COMEN01CParityTest::runRegularUserRefused;
             case "case12" -> COMEN01CParityTest::runAdministratorNeverRefused;
-            case "case13" -> COMEN01CParityTest::runDummyPrefixBranch;
             case "case17" -> COMEN01CParityTest::runUserTypePassThrough;
             case "case18" -> COMEN01CParityTest::runWithSecurityFileSeeded;
             case "case19" -> COMEN01CParityTest::runThreeTimesForStatelessness;
-            case "case02", "case03", "case04", "case05", "case06", "case07", "case08", "case14",
-                    "case15" -> COMEN01CParityTest::runService;
+            case "case02", "case03", "case04", "case05", "case06", "case07", "case08", "case13",
+                    "case14", "case15" -> COMEN01CParityTest::runService;
             default -> throw new IllegalArgumentException("Case " + parityCase.caseId()
                     + " of " + PROGRAM + " has no adapter. Every case is dispatched by name and there "
                     + "is no fallback, because a case running through some default adapter would "
@@ -1308,66 +1344,6 @@ class COMEN01CParityTest {
     }
 
     /**
-     * {@code case13}: the {@code 'DUMMY'} five-byte-prefix branch, and the only way to the coming-soon
-     * message.
-     *
-     * <p>{@code app/cpy/COMEN02Y.cpy} names no program beginning {@code DUMMY}, so the branch cannot be
-     * reached from the copybook table at all - and it must still be exercised, because dead and
-     * unreachable code is preserved rather than cleaned up. The table handed in therefore differs from
-     * the copybook's first entry in <strong>nothing but the program name</strong>, so the composed
-     * {@code OPTN001O} line is byte-identical to the real one and the prefix is the only variable.
-     *
-     * @param invocation the seeded inputs, the pinned clock and the codec
-     * @return {@code null}, meaning the recorder holds the observation
-     */
-    private static UnitOutcome runDummyPrefixBranch(Invocation invocation) {
-        MainMenuService service = service(invocation.codec());
-        MainMenuInput input = inputOf(invocation);
-        MainMenuOptionTable dummyTable = dummyPrefixTableFor(1);
-
-        MainMenuOutcome outcome = service.handle(input, dummyTable);
-        assertServiceInvariants(service, input, outcome);
-
-        MenuOption stubbed = dummyTable.optionBySubscript(1).orElseThrow();
-        assertThat(stubbed.menuOptPgmName())
-                .describedAs("line 146 reference-modifies the first five characters, so the prefix is "
-                        + "what matters and the remaining three bytes are ordinary name characters")
-                .startsWith(DUMMY_PROGRAM_PREFIX)
-                .hasSize(OPTION_PROGRAMS.get(0).length());
-        assertThat(stubbed.menuOptName())
-                .describedAs("the name is the copybook's own, so the composed line is unchanged")
-                .isEqualTo(OPTION_NAMES.get(0));
-        assertThat(outcome.hasNextProgram())
-                .describedAs("line 146 found 'DUMMY', so the XCTL at 152-155 is skipped entirely")
-                .isFalse();
-        assertThat(outcome.screenPainted())
-                .describedAs("lines 157-164 are reachable only here, and line 164 sends the map")
-                .isTrue();
-        assertThat(outcome.messageColourOverridden())
-                .describedAs("line 158 MOVE DFHGREEN TO ERRMSGC overrides the mapset's COLOR=RED, and "
-                        + "this is the only statement in the program that does")
-                .isTrue();
-        assertThat(outcome.errFlgImage())
-                .describedAs("WS-ERR-FLG is untouched on this path: a skipped transfer is a successful "
-                        + "outcome, not a rejection")
-                .isEqualTo(MainMenuService.ERR_FLG_OFF);
-        assertThat(outcome.message())
-                .describedAs("lines 159-163 STRING all three operands, the middle one DELIMITED BY "
-                        + "SPACE, and the suffix has no leading space")
-                .isEqualTo(picX(COMING_SOON_MESSAGE, WS_MESSAGE_LENGTH));
-        assertThat(outcome.optionLine(1))
-                .describedAs("the injected entry differs from the copybook's only in its program name, "
-                        + "so the composed line must be byte-identical to the real one")
-                .isEqualTo(PAINTED_MENU_LINES.get(0));
-        assertThat(outcome.optionLines())
-                .describedAs("one active option, so one composed line and eleven blanks")
-                .isEqualTo(STUB_MENU_LINES);
-
-        recordServiceOutcome(invocation, outcome);
-        return null;
-    }
-
-    /**
      * {@code case17}: {@code CDEMO-USER-TYPE} travels through unaltered, even when it names neither
      * condition.
      *
@@ -1466,10 +1442,13 @@ class COMEN01CParityTest {
      * communication area in a server-side session would have nothing to return. Only the first outcome
      * is reported, because one invocation produces one response.
      *
-     * <p>The case ends in the {@code XCTL} at {@code app/cbl/COMEN01C.cbl:152-155}, which is the path
-     * that mutates the most communication-area fields and therefore has the most to leak, and the
-     * transfer target arrives as a {@code nextProgram} response field rather than as a server-side
-     * forward - which is the whole of what {@code G40} asks of the eight {@code XCTL} sites.
+     * <p>The case ends in the {@code XCTL} at {@code app/cbl/COMEN01C.cbl:175-177}, reached from the
+     * {@code DFHPF3} arm, and it is the one case in the directory that carries a fully populated
+     * communication area: line 97 overwrites {@code CDEMO-TO-PROGRAM} while the other fifteen fields
+     * must survive the round trip byte for byte, so a leak anywhere in the area is visible rather
+     * than hidden behind an initialised image. The transfer target arrives as a {@code nextProgram}
+     * response field rather than as a server-side forward - which is the whole of what {@code G40}
+     * asks of the eight {@code XCTL} sites.
      *
      * @param invocation the seeded inputs, the pinned clock and the codec
      * @return {@code null}, meaning the recorder holds the observation

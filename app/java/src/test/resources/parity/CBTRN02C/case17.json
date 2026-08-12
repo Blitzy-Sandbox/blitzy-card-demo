@@ -1,7 +1,7 @@
 {
   "program": "CBTRN02C",
   "caseId": "case17",
-  "description": "The failure ladder of 0300-DALYREJS-OPEN :292-306, reached before a single transaction is read. The OPEN OUTPUT at :293 is arranged to report a status other than '00', so :297 moves 12 into APPL-RESULT and :302-305 display 'ERROR OPENING DALY REJECTS FILE', render the status and abend. The seeded input is case01's, which would have posted cleanly: that is the point, because it shows the open ladder firing on its own rather than as a consequence of anything the data does. DALYREJS is the fourth of the six opens - :195-200 orders them DALYTRAN, TRANFILE, XREFFILE, DALYREJS, ACCTFILE, TCATBALF - so the two opens after it never happen either, and neither does the loop. RETURN-CODE is 12, there are no count lines and there is no closing banner. A run whose rejects file cannot be established writes nothing anywhere, which is why every dataset comes back exactly as it was seeded.",
+  "description": "The failure ladder of 0300-DALYREJS-OPEN :291-307 - the fourth of the program's six opens - firing before a single transaction has been read, and the case is as much about what the abend prevents as about the three lines it emits. THE LADDER, STATEMENT BY STATEMENT. :292 MOVE 8 TO APPL-RESULT establishes the assumed failure every I/O paragraph in this program starts from, so the guard that follows only ever has to confirm success. :293 OPEN OUTPUT DALYREJS-FILE is arranged to report a status other than '00'. :294 tests DALYREJS-STATUS = '00' and it is false, so the ELSE at :296 takes :297 MOVE 12 TO APPL-RESULT rather than :295 MOVE 0. :299 then tests 88 APPL-AOK, declared VALUE 0 at :143 over APPL-RESULT PIC S9(9) COMP at :142; APPL-RESULT holds 12, so the condition is FALSE, :300 CONTINUE is skipped and the ELSE at :301 runs its four statements in order: :302 DISPLAY 'ERROR OPENING DALY REJECTS FILE', :303 MOVE DALYREJS-STATUS TO IO-STATUS, :304 PERFORM 9910-DISPLAY-IO-STATUS, :305 PERFORM 9999-ABEND-PROGRAM. That drives 88 APPL-AOK in its FALSE state; case01, which shares this case's exact seed and opens all six files cleanly, drives the TRUE state, and between them the APPL-AOK half of the program's only two 88-levels - APPL-AOK VALUE 0 and APPL-EOF VALUE 16 at :143-144 - is complete in both directions. THE STATUS LINE, CHARACTER BY CHARACTER. IO-STATUS is a group of two PIC X items, IO-STAT1 and IO-STAT2 at :132-133, and IO-STATUS-04 at :138-140 is IO-STATUS-0401 PIC 9 followed by IO-STATUS-0403 PIC 999 - so the rendered image is exactly FOUR characters wide and can never be more. 9910-DISPLAY-IO-STATUS :714-727 has two arms. The status a refused open reports here is the permanent-error one, the character '9' followed by a binary zero, which is not numeric in the COBOL class-condition sense and whose IO-STAT1 is '9', so :715-716 is satisfied twice over and the first arm is taken. :717 MOVE IO-STAT1 TO IO-STATUS-04(1:1) puts '9' at position one. :718 MOVE 0 TO TWO-BYTES-BINARY zeroes the PIC 9(4) BINARY halfword at :134 and :719 MOVE IO-STAT2 TO TWO-BYTES-RIGHT overwrites only its low-order byte through the TWO-BYTES-ALPHA redefinition at :135-137, leaving the field holding that byte's unsigned value, which is 0. :720 MOVE TWO-BYTES-BINARY TO IO-STATUS-0403 lands it in a PIC 999 receiver as three zero-padded digits, 000. :721 DISPLAY 'FILE STATUS IS: NNNN' IO-STATUS-04 concatenates the twenty-character literal and the four-character field with nothing between them, so the line is FILE STATUS IS: NNNN9000 - positions 1-20 the literal, 21-24 the image, and no space at the join. The trailing NNNN belongs to the COBOL literal and is not a placeholder awaiting substitution; reproducing the oddity is required and correcting it would be a divergence. The ELSE arm at :722-725, which renders '00' followed by the two status characters, is what a numeric status takes - case18 reaches it with '22' and renders NNNN0022. THE ABEND. 9999-ABEND-PROGRAM :707-711 displays 'ABENDING PROGRAM' at :708, moves 0 to TIMING at :709 and 999 to ABCODE at :710 - both PIC S9(9) BINARY at :147-148 - and calls CEE3ABD at :711. APPL-RESULT is 12 at that moment, and the call does not return. WHAT THE ABEND PREVENTS, EXHAUSTIVELY. The mainline :193-234 orders the opens DALYTRAN :195, TRANFILE :196, XREFFILE :197, DALYREJS :198, ACCTFILE :199, TCATBALF :200, so an abend inside the fourth means none of the following ever runs: 0400-ACCTFILE-OPEN and 0500-TCATBALF-OPEN; the entire PERFORM UNTIL END-OF-FILE = 'Y' loop at :202-219, so no DALYTRAN record is read, WS-TRANSACTION-COUNT is never incremented at :206, WS-VALIDATION-FAIL-REASON is never cleared at :208, 1500-VALIDATE-TRAN is never performed at :210, and neither 2000-POST-TRANSACTION at :212 nor ADD 1 TO WS-REJECT-COUNT at :214 nor 2500-WRITE-REJECT-REC at :215 is reached; the six closes 9000-DALYTRAN-CLOSE :221, 9100-TRANFILE-CLOSE :222, 9200-XREFFILE-CLOSE :223, 9300-DALYREJS-CLOSE :224, 9400-ACCTFILE-CLOSE :225 and 9500-TCATBALF-CLOSE :226; both count lines, DISPLAY 'TRANSACTIONS PROCESSED :' WS-TRANSACTION-COUNT at :227 and DISPLAY 'TRANSACTIONS REJECTED  :' WS-REJECT-COUNT at :228; the IF WS-REJECT-COUNT > 0 / MOVE 4 TO RETURN-CODE / END-IF at :229-231; DISPLAY 'END OF EXECUTION OF PROGRAM CBTRN02C' at :232; and GOBACK at :234. The four-entry message list is therefore the assertion rather than an abbreviation of a longer one: the only line emitted before the ladder is the opening banner at :194, because the three opens that precede DALYREJS succeed silently. THE RETURN CODE AND WHERE 12 COMES FROM. CBTRN02C executes no MOVE ... TO RETURN-CODE on any abend path; its single such statement is the literal 4 at :230, which sits downstream of END-PERFORM and is unreachable here. The value asserted is the one the abend itself carries: the translation raises common.AbendException through the job's shared failure tail, which passes the current APPL-RESULT as the RETURN-CODE - 12, AbendException.RETURN_CODE_IO_ERROR, the value :297 moved - alongside ABCODE 999 and TIMING 0 from :710 and :709. Twelve sits inside the domain this model permits, 0, 3, 4, 8, 12 and 16, and satisfies gate G35, which requires the abend to carry the code the COBOL held. Note what it displaces: on this seed a completed run rejects nothing and ends at 0, and a completed run with a reject would have ended at 4 through :229-231. Neither happens. WHY THE FAILURE IS ARRANGED RATHER THAN SEEDED. No arrangement of fixture data can make an OPEN OUTPUT of a sequential output dataset refuse: the refusal is a property of the backend, not of the records, and DALYREJS holds no record at all at the moment it is opened. Nor is the arrangement expressible in this file - ForcedOutcome belongs to ParityCase.ScreenRequest, which ParityCase refuses for any unitKind other than CONTROLLER_POJO, so a BATCH_JOB case may not carry one. It therefore lives in CBTRN02CParityTest's own scenario table as REJECT_OPEN_FAILS and is applied to the rejects sink alone, so that the sink's open reports the OTHER outcome while every other operation in the run behaves exactly as case01's does. Refusing at the JDBC layer instead would refuse the open and the write together and no case could then tell :302's ladder from :460's - which is precisely the distinction between this case and case14. case14 shares this three-line tail but reaches it from 2500-WRITE-REJECT-REC :446-465, after a transaction has been read, validated and rejected; case18 reaches it from the transaction-file write with a numeric status. The site, the preceding state and the status digits differ; the tail is identical by construction. WHAT EVERY DATASET HOLDS AFTERWARDS. Nothing is written anywhere, and expectedWrites is empty as a positive statement of that rather than an absence of interest. DALYREJS is declared at zero rows on the WRITES channel at its 430-byte width from app/jcl/POSTTRAN.jcl:34, and it is empty for two independent reasons: no record was ever composed, and DISP=(NEW,CATLG,DELETE) names DELETE as the abnormal disposition, so a step that abends leaves no generation behind. TRANFILE is seeded empty and stays empty. The four seeded datasets come back exactly as seeded, which is the sharpest part of the assertion because the seed is case01's: the three fields case01's clean post mutates are ACCT-CURR-BAL, which stays at 193.00 instead of becoming 697.77, ACCT-CURR-CYC-CREDIT, which stays at 0.00 instead of becoming 504.77, and TRAN-CAT-BAL, which stays at 0.00 instead of becoming 504.77. Each of the four rows is pinned field by field as well as byte for byte, FILLER included - the account record's trailing 178 spaces, the cross-reference's 14 and the category balance's 22 zero characters - because a total width that is right for the wrong reason is exactly what an omitted FILLER produces. DALYTRAN-CARD-NUM 4859452612877065 resolves through cardxref.txt's zero-based row 20 to XREF-ACCT-ID 00000000007, which is why acctdata.txt row 6 and tcatbal.txt row 6 are the rows seeded; the cross-reference rows are still 36 bytes on disk as the fixture ships them (gate G16), and the CARDXREF_FILLER_PAD_36_TO_50 normalisation supplies CVACT03Y's trailing FILLER X(14) once, at seed time, before anything decodes the row. The misspelled ACCT-EXPIRAION-DATE is carried under its source name: renaming it would silently break the field-for-field diff this case depends on. PROVENANCE AND STANDARDS. Every expected value here is STATICALLY DERIVED, by structured reading of app/cbl/CBTRN02C.cbl against the byte layouts of app/cpy/CVTRA06Y.cpy, CVACT03Y.cpy, CVACT01Y.cpy and CVTRA01Y.cpy, the DD and DCB contracts of app/jcl/POSTTRAN.jcl, and the real rows of app/data/ASCII. It is NOT captured from, recorded against or replayed from any execution of the legacy program, because executing it is empirically impossible in this environment; the provenance of the expected values is substituted and nothing else, so the case count, the field-for-field diffing and the zero-diff gate are all unchanged. Because that modifies a stated success criterion it is escalated for explicit user confirmation rather than absorbed (AAP 0.7.6, risk R-A). review_rules reports that no user rules were provided for this project, so the case is held to the AAP 0.10.2 enterprise practices instead: B1 no placeholders, every value specific; B3 the legacy sources and app/data are read-only and the seed rows are byte-exact copies; B5 the truncated tail is preserved exactly rather than tidied into a graceful shutdown; B7 deterministic, with no TRAN-PROC-TS generated anywhere on this path; B8 explicit widths, channels and values throughout; B11 the status image derived character by character above rather than asserted; and B12 this paragraph.",
   "unitKind": "BATCH_JOB",
   "inputs": {
     "DALYTRAN": {
@@ -30,26 +30,71 @@
       "copybook": "CVTRA05Y"
     }
   },
+  "jobParameters": {},
   "expectedWrites": [],
   "expectedFinalState": [
     {
       "dataset": "DALYTRAN",
       "rowIndex": 0,
+      "fields": {
+        "DALYTRAN-ID": "0000000000683580",
+        "DALYTRAN-TYPE-CD": "01",
+        "DALYTRAN-CAT-CD": "0001",
+        "DALYTRAN-SOURCE": "POS TERM  ",
+        "DALYTRAN-DESC": "Purchase at Abshire-Lowe                                                                            ",
+        "DALYTRAN-AMT": "504.77",
+        "DALYTRAN-MERCHANT-ID": "800000000",
+        "DALYTRAN-MERCHANT-NAME": "Abshire-Lowe                                      ",
+        "DALYTRAN-MERCHANT-CITY": "North Enoshaven                                   ",
+        "DALYTRAN-MERCHANT-ZIP": "72112     ",
+        "DALYTRAN-CARD-NUM": "4859452612877065",
+        "DALYTRAN-ORIG-TS": "2022-06-10 19:27:53.000000",
+        "DALYTRAN-PROC-TS": "                          ",
+        "FILLER": "                    "
+      },
       "expectedBytes": "0000000000683580010001POS TERM  Purchase at Abshire-Lowe                                                                            0000005047G800000000Abshire-Lowe                                      North Enoshaven                                   72112     48594526128770652022-06-10 19:27:53.000000                                              "
     },
     {
       "dataset": "XREFFILE",
       "rowIndex": 0,
+      "fields": {
+        "XREF-CARD-NUM": "4859452612877065",
+        "XREF-CUST-ID": "000000007",
+        "XREF-ACCT-ID": "00000000007",
+        "FILLER": "              "
+      },
       "expectedBytes": "485945261287706500000000700000000007              "
     },
     {
       "dataset": "ACCTFILE",
       "rowIndex": 0,
+      "fields": {
+        "ACCT-ID": "00000000007",
+        "ACCT-ACTIVE-STATUS": "Y",
+        "ACCT-CURR-BAL": "193.00",
+        "ACCT-CREDIT-LIMIT": "2065.00",
+        "ACCT-CASH-CREDIT-LIMIT": "264.00",
+        "ACCT-OPEN-DATE": "2012-10-12",
+        "ACCT-EXPIRAION-DATE": "2024-12-13",
+        "ACCT-REISSUE-DATE": "2024-12-13",
+        "ACCT-CURR-CYC-CREDIT": "0.00",
+        "ACCT-CURR-CYC-DEBIT": "0.00",
+        "ACCT-ADDR-ZIP": "A000000000",
+        "ACCT-GROUP-ID": "          ",
+        "FILLER": "                                                                                                                                                                                  "
+      },
       "expectedBytes": "00000000007Y00000001930{00000020650{00000002640{2012-10-122024-12-132024-12-1300000000000{00000000000{A000000000                                                                                                                                                                                            "
     },
     {
       "dataset": "TCATBALF",
       "rowIndex": 0,
+      "fields": {
+        "TRANCAT-ACCT-ID": "00000000007",
+        "TRANCAT-TYPE-CD": "01",
+        "TRANCAT-CD": "0001",
+        "TRAN-CAT-BAL": "0.00",
+        "FILLER": "0000000000000000000000"
+      },
       "expectedBytes": "000000000070100010000000000{0000000000000000000000"
     }
   ],

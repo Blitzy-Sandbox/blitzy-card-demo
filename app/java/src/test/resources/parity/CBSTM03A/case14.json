@@ -1,17 +1,19 @@
 {
   "program": "CBSTM03A",
   "caseId": "case14",
-  "description": "FILE STATUS '10' on the CUSTFILE keyed read ABENDS: the EVALUATE at L379-L386 has only a WHEN '00' and a WHEN OTHER, so end-of-file is fatal here even though it is benign at L356. Collapsing the two guards into one shared helper would silently make this survivable.",
+  "description": "ST-NAME, ST-ADD3 and the ONE-SPACE STRING builds of 5000-CREATE-STATEMENT, paired with the RIGHT truncation of TRNX-DESC into ST-TRANDT, over three back-to-back transactions chosen so that all three width regimes are observable in a single run. THE DELIMITER HERE IS ONE SPACE, AND THAT IS THE SUBJECT. app/cbl/CBSTM03A.CBL:L462-L469 fills ST-NAME PIC X(75) (:L91) with STRING CUST-FIRST-NAME DELIMITED BY ' ', ' ' DELIMITED BY SIZE, CUST-MIDDLE-NAME DELIMITED BY ' ', ' ' DELIMITED BY SIZE, CUST-LAST-NAME DELIMITED BY ' ', ' ' DELIMITED BY SIZE. DELIMITED BY ' ' is a ONE-character delimiter, so each source field contributes its characters up to its FIRST SINGLE SPACE and stops there, while each DELIMITED BY SIZE operand contributes its literal in full. STRING leaves the rest of the receiver UNCHANGED, and INITIALIZE STATEMENT-LINES at :L459 has just set that receiver to spaces, so the tail is spaces rather than whatever a previous statement left behind. NEVER CONFLATED WITH THE TWO-SPACE BUILD. 5200-WRITE-HTML-NMADBS uses DELIMITED BY '  ' - TWO spaces - for L23-NAME, ST-ADD1, ST-ADD2 and ST-ADD3 at :L560-L592, which is a DIFFERENT delimiter with a DIFFERENT result, and pinning it is the subject of case05.json. The difference is visible in this very run on one field: under the ONE-space rule ST-NAME is 'Immanuel Madeline Kessler ' - 8 + 1 + 8 + 1 + 7 + 1 = 26 bytes, closing on the third DELIMITED BY SIZE literal - while HTMLFILE row 22 of the same run carries the TWO-space form, which stops one byte earlier at 'Immanuel Madeline Kessler' (25 bytes, the run of spaces beginning at byte 26 being the first pair) and then appends two literal spaces for 27. Same source field, same statement, two delimiters, two byte results. THE ONE-SPACE STOP HERE FIRES ON A TRAILING SPACE, NOT AN INTERIOR ONE. CUST-ADDR-LINE-3 of custdata.txt row 1 is 'Altenwerthshire' - fifteen characters with no interior space - so it contributes whole, and the four-operand build at :L472-L481 yields ST-ADD3 PIC X(80) (:L100) = 'Altenwerthshire NC USA 12546 ', which is 15 + 1 + 2 + 1 + 3 + 1 + 5 + 1 = 29 bytes padded to 80. The case where the stop lands on an INTERIOR space and silently drops the rest of the field - 'West Bernita' contributing only 'West' - is case19.json, and that is a defect preserved rather than corrected (practice B5). Both are the same one-space delimiter; only the data differs. A NUMERIC SOURCE MOVED TO AN ALPHANUMERIC RECEIVER LANDS LEFT JUSTIFIED. MOVE ACCT-ID TO ST-ACCT-ID at :L483 takes ACCT-ID PIC 9(11) [app/cpy/CVACT01Y.cpy:5] into ST-ACCT-ID PIC X(20) (:L109), and MOVE CUST-FICO-CREDIT-SCORE TO ST-FICO-SCORE at :L485 takes PIC 9(03) [app/cpy/CUSTREC.cpy:22] into PIC X(20) (:L118). Both receivers are alphanumeric, so the digits are placed at the LEFT of the field and the remainder is space filled: ST-ACCT-ID = '00000000001' + 9 spaces and ST-FICO-SCORE = '274' + 17 spaces. That padding is neither cosmetic nor invisible - HTMLFILE rows 35 and 37 build their lines with DELIMITED BY '*', which no operand contains, so the WHOLE 20-byte field including its trailing spaces reaches the record and the nine and the seventeen spaces are countable before the closing tag. SUBJECT TWO: TRNX-DESC TRUNCATES ON THE RIGHT. 6000-WRITE-TRANS performs MOVE TRNX-DESC TO ST-TRANDT at :L677. TRNX-DESC is PIC X(100) [app/cpy/COSTM01.CPY:28] and ST-TRANDT is PIC X(49) (:L135) - a 100-to-49 width comparison that loses 51 bytes. For an ALPHANUMERIC receiver COBOL keeps the LEFTMOST characters and truncates on the RIGHT, so bytes 1 to 49 survive and bytes 50 to 100 are discarded. All three regimes are seeded so the rule is observable rather than merely asserted: the 68-character description of TRAN000000000141 keeps 'Recurring subscription renewal at Abshire-Lowe On' and loses the 19 characters 'line Marketplace UK', the cut landing MID-WORD because a byte offset knows nothing of words; the 49-character description of TRAN000000000142 fits exactly, is neither truncated nor padded, and abuts the '$' FILLER with no space between them; and the 20-character description of TRAN000000000143 is space padded with 29 spaces out to 49. THE OPPOSITE DIRECTION IS IN THE SAME PROGRAM, AND IT IS A DIFFERENT CASE. MOVE ACCT-CURR-BAL TO ST-CURR-BAL at :L484 moves PIC S9(10)V99 into PIC 9(9).99- (:L113), and because that receiver is NUMERIC-edited the loss is on the LEFT - the HIGH-ORDER digit goes, not the low-order one. Both directions therefore occur in this one program, six lines apart in 5000-CREATE-STATEMENT and 6000-WRITE-TRANS, and which one applies is decided by the receiver category and by nothing else. Pinning the LEFT-truncating move in all four of its sign-and-width regimes is case12.json; this case pins the RIGHT-truncating one. Treating the two as one rule is a parity failure in whichever direction it is made. ST-LINE14 IS 80 BYTES AS ARITHMETIC, NOT AS AN ASSUMPTION: ST-TRANID X(16) + FILLER VALUE ' ' X(01) + ST-TRANDT X(49) + FILLER VALUE '$' X(01) + ST-TRANAMT PIC Z(9).99- = 16 + 1 + 49 + 1 + 13 = 80 (:L132-L137). ST-TRANID receives TRNX-ID X(16) into X(16) at :L676 - equal widths, so exact, with nothing truncated at either end. Both single-byte FILLERs carry VALUE clauses and both are emitted; a record that dropped either would be 79 bytes and would fail on width before it failed on content (gates G19, G21). ORDER AND COUNTS DERIVED FROM THE WRITES THEMSELVES. STMTFILE is 19 + N records: ST-LINE0 at :L460, the fifteen writes at :L488-L502 in which ST-LINE5 and ST-LINE12 each appear twice and both repeats are preserved, then N ST-LINE14 at :L679, then ST-LINE12, ST-LINE14A and ST-LINE15 at :L435-L437. HTMLFILE is 64 + 11N records: 22 from 5100-WRITE-HTML-HEADER (:L509-L552), 34 from 5200-WRITE-HTML-NMADBS (:L568-L669), 11 per transaction (:L682-L721) and an 8-record footer (:L440-L454). With N = 3 that is exactly 22 STMTFILE and 97 HTMLFILE records, pinned at contiguous zero-based indices in write order, and expectedDatasets states both counts and both widths on the WRITES channel. expectedFinalState is empty by intent: CREASTMT.JCL:L87-L96 declares both outputs DISP=(NEW,CATLG,DELETE), and the retained-state channel belongs to the case whose subject it is. UNIT AND INVOCATION: statement.StatementGenerationJobA as a BATCH_JOB, reached at step/Tasklet level with statement.StatementGenerationJobB as its constructor-injected data-access collaborator - no JobLauncher, no job repository and no HTTP anywhere in the path (gate G51). jobParameters is empty because not one of the five steps of app/jcl/CREASTMT.JCL declares a PARM; CBSTM03A takes none. SEEDS ARE REAL BYTES. XREFFILE is row 48 of app/data/ASCII/cardxref.txt verbatim - XREF-CARD-NUM 9680294154603697, XREF-CUST-ID 000000001, XREF-ACCT-ID 00000000001 - and it stays 36 bytes here. ParityCase.Normalisation is the sole owner of the 14-space pad up to CVACT03Y's declared 50 and applies it once, at seed time, through the declared CARDXREF_FILLER_PAD_36_TO_50, so the fixture is never edited and the pad is never double-applied (gate G16). ACCTFILE and CUSTFILE are acctdata.txt (300 x 50) and custdata.txt (500 x 50) whole. Both keyed reads take their key from that xref row - 2000-CUSTFILE-GET moves XREF-CUST-ID into WS-M03B-KEY and sets WS-M03B-KEY-LN from LENGTH OF XREF-CUST-ID = 9 (:L372-L374) before calling the collaborator at :L377, and 3000-ACCTFILE-GET uses LENGTH OF XREF-ACCT-ID = 11 (:L398) - so the statement is for CUSTOMER 000000001 and ACCOUNT 00000000001: Immanuel / Madeline / Kessler, 618 Deshaun Route, Apt. 802, Altenwerthshire NC USA 12546, FICO 274, and ACCT-CURR-BAL '00000001940{' whose closing '{' is the zoned +0 sign overpunch, so +194.00. The customer is read through CUSTREC (COPY at :L55), whose date of birth is CUST-DOB-YYYYMMDD and never CVCUS01Y's CUST-DOB-YYYY-MM-DD; the two copybooks describe near-identical layouts and are kept distinct precisely so that field name survives (requirement I1). TRNXFILE IS INLINE BECAUSE THERE IS NO TENTH FIXTURE: app/data/ASCII holds exactly nine .txt files and none of them is a statement transaction file, so the three rows are composed from app/cpy/COSTM01.CPY at exactly 350 bytes each - TRNX-CARD-NUM X(16) plus TRNX-ID X(16) as the 32-byte composite key that DELDEF01's IDCAMS corroborates with KEYS(32 0) at CREASTMT.JCL:L30 and RECORDSIZE(350 350) at :L32, then 2 + 4 + 10 + 100 + 11 + 9 + 50 + 50 + 10 + 26 + 26 = 298 plus a trailing FILLER X(20) emitted as spaces = 318. Every TRNX-CARD-NUM equals the xref card so the table search at :L417-L432 matches, and the rows ascend by card and then by id, which is the order STEP010's SORT FIELDS=(263,16,CH,A,1,16,CH,A) at :L53 produces. AMOUNTS ARE SCALE 2 AND TRUNCATING. ADD TRNX-AMT TO WS-TOTAL-AMT at :L429 is the only arithmetic on this path, into WS-TOTAL-AMT PIC S9(9)V99 COMP-3 (:L64-L65), from where :L433-L434 moves it through WS-TRN-AMT PIC S9(9)V99 DISPLAY (:L68) into ST-TOTAL-TRAMT. Every amount is a BigDecimal at scale 2 with RoundingMode.DOWN - never HALF_UP, never HALF_EVEN, never double and never float - because the keyword ROUNDED appears zero times in all 28 programs, so COBOL truncates on store. The three seeded TRNX-AMT images are 11-byte zoned S9(09)V99: '0000012345F' = 1234.56, '0000000870{' = 87.00 and '0000000099I' = 9.99, summing to 1331.55, which PIC Z(9).99- renders as '     1331.55 ' with the leading zeros of the integer part suppressed to spaces and the trailing sign position blank for a positive value. All three are positive on purpose: the mixed-sign trailing-sign regime is case11.json, and this case keeps its subject to the delimiter and the truncation. WIDTHS COME FROM TWO SOURCES EACH. STMTFILE is 80 bytes, from 01 FD-STMTFILE-REC PIC X(80) (:L45) and from CREASTMT.JCL LINE 89, DCB=(LRECL=80,BLKSIZE=8000,RECFM=FB), under the STMTFILE DD at line 87. Line 90 of that JCL is genuinely corrupted - verbatim '//         SPACE=(CYL,(1,1),RLSE), 00,RECFM=FB), ATA.VSAM.KSDS', a text-overlay artefact splicing fragments of other lines - and its ' 00,RECFM=FB)' remnant sits directly beneath STMTFILE where it is easily misread as LRECL=100. Line 89 is authoritative, and the JCL is left exactly as it stands: it is the parity oracle, so the hazard is recorded and worked around here rather than corrected there (practice B4). HTMLFILE is 100 bytes, from 01 FD-HTMLFILE-REC PIC X(100) (:L47) and from line 94, DCB=(LRECL=100,BLKSIZE=800,RECFM=FB), under the HTMLFILE DD at line 92; that supersedes STEP030's pre-delete LRECL=80,BLKSIZE=3200 at line 69, because the step that creates the dataset wins (gate G20, risk R-G). FIELD GRANULARITY: both FD records are single elementary items, and the 22 STMTFILE records are eight different line templates that no one multi-span layout could describe, so exactly one addressable span is declared per dataset - FD-STMTFILE-REC and FD-HTMLFILE-REC. Each expectation pins that span by its whole image, which parity.FieldDiffer walks span by span rather than comparing as one opaque string, and which at the same time fixes the total width and so proves that every VALUE SPACES and FILLER span was emitted (gates G19, G20, G21). MESSAGES AND RETURN CODE: the nine DISPLAY_LINE expectations are the TIOT walk and nothing else - the job and step line at :L270 with TIOTNJOB 'CREASTMT' and TIOTJSTP 'STEP040 ', the 'DD Names from TIOT: ' line at :L275, one ' -- valid UCB' line at :L279 for each of STEP040's six dataset DDs in JCL declaration order (:L83-L92; STEPLIB, SYSPRINT and SYSOUT at :L80-L82 are not data allocations), and the post-loop entry at :L290, whose ' -- null  UCB' is byte-different from the in-loop ' --  null UCB' at :L281 and where TIOCDDNM X(08) is blank. Every guard arm on this path takes its '00' branch, 9999-ABEND-PROGRAM at :L921 is never performed and no CALL 'CEE3ABD' is reached, so expectedReturnCode is 0. DETERMINISM AND CHARSET: nothing here is read from a clock. The program composes no timestamp of its own, and the two X(26) spans TRNX-ORIG-TS and TRNX-PROC-TS are seed bytes carrying fixed 2022 literals in the shape the shipped transaction data uses, never a 'now' (practice B7). Bytes are US-ASCII throughout, matching app/data/ASCII, and never a platform default (practice B8). PROVENANCE: every expected value here is STATICALLY DERIVED - by structured reading of the CBSTM03A paragraphs, cross-checked against the COSTM01, CUSTREC, CVACT01Y and CVACT03Y byte layouts, the CREASTMT.JCL DD and DCB contracts and the real ASCII fixtures. It was never captured from, recorded against or replayed from any execution of the legacy COBOL, which is empirically impossible in this environment: there is no z/OS or CICS runtime, the available compiler reports its indexed file handler disabled, no Language Environment CEE* services exist, and app/cpy/CUSTREC.cpy - the very copybook this case reads its customer through - carries literal TAB characters on 17 of its lines, which breaks parsing outright (risk R-A, practice B12). GOVERNING PRACTICES: review_rules returns exactly one line, 'No user rules provided', so NO user-specified rule governs this fixture and none is invented; the bar is held by the Agent Action Plan's enterprise substitutes instead. B8 is decisive here and is met by naming the delimiter (ONE space) and the truncation direction (RIGHT, because the receiver is PIC X) outright and contrasting both with their counterparts; B11 by showing 16 + 1 + 49 + 1 + 13 = 80 and the 100-to-49 loss as arithmetic; B1 by using the real custdata.txt and acctdata.txt bytes with no placeholder anywhere; B5 by preserving the truncation and the STRING semantics rather than widening, trimming or warning about them; B3 by treating app/cbl, app/cpy, app/jcl and app/data as read-only; and B4 by working around the line-90 corruption instead of silently correcting it. Gates: G15, G16, G18, G19, G20, G21, G51.",
   "unitKind": "BATCH_JOB",
   "inputs": {
     "TRNXFILE": {
       "rows": [
-        "0500024453765740TRAN000000000001010001POS TERM  Never written                                                                                       0000000010{000000001Blick-Rippin                                      Port Renayfurt                                    60176     2022-07-18 12:00:00.0000002022-07-18 12:00:00.000000                    "
+        "9680294154603697TRAN000000000141010001POS TERM  Recurring subscription renewal at Abshire-Lowe Online Marketplace UK                                0000012345F000000012Abshire-Lowe                                      North Enoshaven                                   72112     2022-06-10 19:27:53.0000002022-06-11 02:14:07.000000                    ",
+        "9680294154603697TRAN000000000142010002POS TERM  Fuel and convenience purchases at North Enoshaven                                                   0000000870{000000012Abshire-Lowe                                      North Enoshaven                                   72112     2022-06-24 08:02:31.0000002022-06-24 21:45:12.000000                    ",
+        "9680294154603697TRAN000000000143030004ADJUSTMENTMonthly fee reversal                                                                                0000000099I000000012Abshire-Lowe                                      North Enoshaven                                   72112     2022-07-05 11:38:44.0000002022-07-06 03:09:58.000000                    "
       ]
     },
     "XREFFILE": {
       "fixture": "cardxref.txt",
-      "fromRow": 0,
+      "fromRow": 48,
       "rowCount": 1
     },
     "ACCTFILE": {
@@ -24,9 +26,605 @@
   "jobParameters": {},
   "screenRequest": null,
   "expectedResponse": null,
-  "expectedWrites": [],
+  "expectedWrites": [
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 0,
+      "expectedBytes": "*******************************START OF STATEMENT*******************************"
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 1,
+      "expectedBytes": "Immanuel Madeline Kessler                                                       "
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 2,
+      "expectedBytes": "618 Deshaun Route                                                               "
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 3,
+      "expectedBytes": "Apt. 802                                                                        "
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 4,
+      "expectedBytes": "Altenwerthshire NC USA 12546                                                    "
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 5,
+      "expectedBytes": "--------------------------------------------------------------------------------"
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 6,
+      "expectedBytes": "                                 Basic Details                                  "
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 7,
+      "expectedBytes": "--------------------------------------------------------------------------------"
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 8,
+      "expectedBytes": "Account ID         :00000000001                                                 "
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 9,
+      "expectedBytes": "Current Balance    :000000194.00                                                "
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 10,
+      "expectedBytes": "FICO Score         :274                                                         "
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 11,
+      "expectedBytes": "--------------------------------------------------------------------------------"
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 12,
+      "expectedBytes": "                              TRANSACTION SUMMARY                               "
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 13,
+      "expectedBytes": "--------------------------------------------------------------------------------"
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 14,
+      "expectedBytes": "Tran ID         Tran Details                                         Tran Amount"
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 15,
+      "expectedBytes": "--------------------------------------------------------------------------------"
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 16,
+      "expectedBytes": "TRAN000000000141 Recurring subscription renewal at Abshire-Lowe On$     1234.56 "
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 17,
+      "expectedBytes": "TRAN000000000142 Fuel and convenience purchases at North Enoshaven$       87.00 "
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 18,
+      "expectedBytes": "TRAN000000000143 Monthly fee reversal                             $        9.99 "
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 19,
+      "expectedBytes": "--------------------------------------------------------------------------------"
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 20,
+      "expectedBytes": "Total EXP:                                                        $     1331.55 "
+    },
+    {
+      "dataset": "STMTFILE",
+      "rowIndex": 21,
+      "expectedBytes": "********************************END OF STATEMENT********************************"
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 0,
+      "expectedBytes": "<!DOCTYPE html>                                                                                     "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 1,
+      "expectedBytes": "<html lang=\"en\">                                                                                    "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 2,
+      "expectedBytes": "<head>                                                                                              "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 3,
+      "expectedBytes": "<meta charset=\"utf-8\">                                                                              "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 4,
+      "expectedBytes": "<title>HTML Table Layout</title>                                                                    "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 5,
+      "expectedBytes": "</head>                                                                                             "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 6,
+      "expectedBytes": "<body style=\"margin:0px;\">                                                                          "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 7,
+      "expectedBytes": "<table  align=\"center\" frame=\"box\" style=\"width:70%; font:12px Segoe UI,sans-serif;\">               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 8,
+      "expectedBytes": "<tr>                                                                                                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 9,
+      "expectedBytes": "<td colspan=\"3\" style=\"padding:0px 5px;background-color:#1d1d96b3;\">                                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 10,
+      "expectedBytes": "<h3>Statement for Account Number: 00000000001         </h3>                                         "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 11,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 12,
+      "expectedBytes": "</tr>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 13,
+      "expectedBytes": "<tr>                                                                                                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 14,
+      "expectedBytes": "<td colspan=\"3\" style=\"padding:0px 5px;background-color:#FFAF33;\">                                  "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 15,
+      "expectedBytes": "<p style=\"font-size:16px\">Bank of XYZ</p>                                                           "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 16,
+      "expectedBytes": "<p>410 Terry Ave N</p>                                                                              "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 17,
+      "expectedBytes": "<p>Seattle WA 99999</p>                                                                             "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 18,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 19,
+      "expectedBytes": "</tr>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 20,
+      "expectedBytes": "<tr>                                                                                                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 21,
+      "expectedBytes": "<td colspan=\"3\" style=\"padding:0px 5px;background-color:#f2f2f2;\">                                  "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 22,
+      "expectedBytes": "<p style=\"font-size:16px\">Immanuel Madeline Kessler  </p>                                           "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 23,
+      "expectedBytes": "<p>618 Deshaun Route  </p>                                                                          "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 24,
+      "expectedBytes": "<p>Apt. 802  </p>                                                                                   "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 25,
+      "expectedBytes": "<p>Altenwerthshire NC USA 12546  </p>                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 26,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 27,
+      "expectedBytes": "</tr>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 28,
+      "expectedBytes": "<tr>                                                                                                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 29,
+      "expectedBytes": "<td colspan=\"3\" style=\"padding:0px 5px;background-color:#33FFD1; text-align:center;\">               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 30,
+      "expectedBytes": "<p style=\"font-size:16px\">Basic Details</p>                                                         "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 31,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 32,
+      "expectedBytes": "</tr>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 33,
+      "expectedBytes": "<tr>                                                                                                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 34,
+      "expectedBytes": "<td colspan=\"3\" style=\"padding:0px 5px;background-color:#f2f2f2;\">                                  "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 35,
+      "expectedBytes": "<p>Account ID         : 00000000001         </p>                                                    "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 36,
+      "expectedBytes": "<p>Current Balance    : 000000194.00 </p>                                                           "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 37,
+      "expectedBytes": "<p>FICO Score         : 274                 </p>                                                    "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 38,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 39,
+      "expectedBytes": "</tr>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 40,
+      "expectedBytes": "<tr>                                                                                                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 41,
+      "expectedBytes": "<td colspan=\"3\" style=\"padding:0px 5px;background-color:#33FFD1; text-align:center;\">               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 42,
+      "expectedBytes": "<p style=\"font-size:16px\">Transaction Summary</p>                                                   "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 43,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 44,
+      "expectedBytes": "</tr>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 45,
+      "expectedBytes": "<tr>                                                                                                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 46,
+      "expectedBytes": "<td style=\"width:25%; padding:0px 5px; background-color:#33FF5E; text-align:left;\">                 "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 47,
+      "expectedBytes": "<p style=\"font-size:16px\">Tran ID</p>                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 48,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 49,
+      "expectedBytes": "<td style=\"width:55%; padding:0px 5px; background-color:#33FF5E; text-align:left;\">                 "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 50,
+      "expectedBytes": "<p style=\"font-size:16px\">Tran Details</p>                                                          "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 51,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 52,
+      "expectedBytes": "<td style=\"width:20%; padding:0px 5px; background-color:#33FF5E; text-align:right;\">                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 53,
+      "expectedBytes": "<p style=\"font-size:16px\">Amount</p>                                                                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 54,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 55,
+      "expectedBytes": "</tr>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 56,
+      "expectedBytes": "<tr>                                                                                                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 57,
+      "expectedBytes": "<td style=\"width:25%; padding:0px 5px; background-color:#f2f2f2; text-align:left;\">                 "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 58,
+      "expectedBytes": "<p>TRAN000000000141</p>                                                                             "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 59,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 60,
+      "expectedBytes": "<td style=\"width:55%; padding:0px 5px; background-color:#f2f2f2; text-align:left;\">                 "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 61,
+      "expectedBytes": "<p>Recurring subscription renewal at Abshire-Lowe On</p>                                            "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 62,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 63,
+      "expectedBytes": "<td style=\"width:20%; padding:0px 5px; background-color:#f2f2f2; text-align:right;\">                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 64,
+      "expectedBytes": "<p>     1234.56 </p>                                                                                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 65,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 66,
+      "expectedBytes": "</tr>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 67,
+      "expectedBytes": "<tr>                                                                                                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 68,
+      "expectedBytes": "<td style=\"width:25%; padding:0px 5px; background-color:#f2f2f2; text-align:left;\">                 "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 69,
+      "expectedBytes": "<p>TRAN000000000142</p>                                                                             "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 70,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 71,
+      "expectedBytes": "<td style=\"width:55%; padding:0px 5px; background-color:#f2f2f2; text-align:left;\">                 "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 72,
+      "expectedBytes": "<p>Fuel and convenience purchases at North Enoshaven</p>                                            "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 73,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 74,
+      "expectedBytes": "<td style=\"width:20%; padding:0px 5px; background-color:#f2f2f2; text-align:right;\">                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 75,
+      "expectedBytes": "<p>       87.00 </p>                                                                                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 76,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 77,
+      "expectedBytes": "</tr>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 78,
+      "expectedBytes": "<tr>                                                                                                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 79,
+      "expectedBytes": "<td style=\"width:25%; padding:0px 5px; background-color:#f2f2f2; text-align:left;\">                 "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 80,
+      "expectedBytes": "<p>TRAN000000000143</p>                                                                             "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 81,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 82,
+      "expectedBytes": "<td style=\"width:55%; padding:0px 5px; background-color:#f2f2f2; text-align:left;\">                 "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 83,
+      "expectedBytes": "<p>Monthly fee reversal                             </p>                                            "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 84,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 85,
+      "expectedBytes": "<td style=\"width:20%; padding:0px 5px; background-color:#f2f2f2; text-align:right;\">                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 86,
+      "expectedBytes": "<p>        9.99 </p>                                                                                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 87,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 88,
+      "expectedBytes": "</tr>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 89,
+      "expectedBytes": "<tr>                                                                                                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 90,
+      "expectedBytes": "<td colspan=\"3\" style=\"padding:0px 5px;background-color:#1d1d96b3;\">                                "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 91,
+      "expectedBytes": "<h3>End of Statement</h3>                                                                           "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 92,
+      "expectedBytes": "</td>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 93,
+      "expectedBytes": "</tr>                                                                                               "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 94,
+      "expectedBytes": "</table>                                                                                            "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 95,
+      "expectedBytes": "</body>                                                                                             "
+    },
+    {
+      "dataset": "HTMLFILE",
+      "rowIndex": 96,
+      "expectedBytes": "</html>                                                                                             "
+    }
+  ],
   "expectedFinalState": [],
-  "expectedReturnCode": 8,
+  "expectedReturnCode": 0,
   "expectedMessages": [
     {
       "channel": "DISPLAY_LINE",
@@ -63,18 +661,6 @@
     {
       "channel": "DISPLAY_LINE",
       "text": ":          -- null  UCB"
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "ERROR READING CUSTFILE"
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "RETURN CODE: 10"
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "ABENDING PROGRAM"
     }
   ],
   "normalisations": [
@@ -87,25 +673,13 @@
     {
       "dataset": "STMTFILE",
       "channel": "WRITES",
-      "rowCount": 0,
+      "rowCount": 22,
       "recordLength": 80
     },
     {
       "dataset": "HTMLFILE",
       "channel": "WRITES",
-      "rowCount": 0,
-      "recordLength": 100
-    },
-    {
-      "dataset": "STMTFILE",
-      "channel": "FINAL_STATE",
-      "rowCount": 0,
-      "recordLength": 80
-    },
-    {
-      "dataset": "HTMLFILE",
-      "channel": "FINAL_STATE",
-      "rowCount": 0,
+      "rowCount": 97,
       "recordLength": 100
     }
   ]

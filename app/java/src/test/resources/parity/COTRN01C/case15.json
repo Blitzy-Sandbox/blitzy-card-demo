@@ -1,24 +1,54 @@
 {
   "program" : "COTRN01C",
   "caseId" : "case15",
-  "description" : "Re-entry with CLEAR. This is the trap in the EVALUATE at :112: CLEAR is one of the AIDs DFHAID declares and several sibling screens act on it, but COTRN01C names no arm for it - the screen-clearing key here is PF4 at :123. So CLEAR takes WHEN OTHER and reports the invalid-key message, and the typed values are echoed back rather than wiped. Compare case11, which is the same operator intent through the key this program actually implements.",
+  "description" : "Risk R-B first, because the class name inverts the behaviour: the prompt-mandated Java class for COTRN01C is TransactionAddController, and this program adds nothing - it VIEWS. Four independent sources say so: app/cbl/COTRN01C.cbl:5 'Function    : View a Transaction from TRANSACT file', README.md:314 '| CT01 | COTRN01 | COTRN01C | Transaction View |', app/bms/COTRN01.bms:2 '*    CardDemo - Transaction View' and the on-screen literal INITIAL='View Transaction' at POS=(4,30) - app/bms/COTRN01.bms:78-79. The mapset corroborates it structurally: 56 DFHMDF entries, 21 named, and exactly ONE UNPROT - TRNIDIN at :85, ATTRB=(FSET,IC,NORM,UNPROT) with IC for the initial cursor - so one input-capable field faces twenty output-only ones, which is a lookup-then-display screen and not a data-entry screen, and it is also why MOVE -1 TO TRNIDINL is this program's only cursor-positioning target. Rule R1 resolves the divergence - the name comes from the prompt, the behaviour comes from the source - and practice B4 governs the disclosure, so it is documented here and never silently corrected. No arm of this case asserts an insert, expectedWrites is empty, and the half of the swap that genuinely adds a transaction lives in parity/COTRN02C. WHAT THIS CASE PINS: the PF4 arm - the ONLY path in the whole program that reaches CLEAR-CURRENT-SCREEN (:301-304) and therefore the ONLY exerciser of INITIALIZE-ALL-FIELDS (:309-326). Both paragraphs have exactly one caller each: :303 and :304 are performed only from CLEAR-CURRENT-SCREEN, and CLEAR-CURRENT-SCREEN is performed only from :124, so this case is the only coverage either paragraph will ever get. app/bms/COTRN01.bms:267 documents the operator-facing meaning independently - INITIAL='ENTER=Fetch  F3=Back  F4=Clear  F5=Browse Tran.' - so F4 is the clear key, and CLEAR itself is a different AID that this program names no arm for. THE EXACT TRACE. EIBCALEN is 218, so :94 takes its else arm and :98 copies the passed area over CARDDEMO-COMMAREA. CDEMO-PGM-CONTEXT arrives at 1, so CDEMO-PGM-REENTER already holds at :99 and control takes the ELSE at :110-111 rather than the first-entry arm - which is why the :100 SET, the :101 MOVE LOW-VALUES TO COTRN1AO and the :102 cursor request never run, and why the :103-104 guard on CDEMO-CT01-TRN-SELECTED is never evaluated even though this case supplies a non-blank value for it. :111 performs RECEIVE-TRNVIEW-SCREEN (:230-238). The ordered EVALUATE EIBAID at :112 then takes its THIRD arm: WHEN DFHENTER (:113) is tested and fails, WHEN DFHPF3 (:115) is tested and fails, WHEN DFHPF4 (:123) MATCHES, and WHEN DFHPF5 (:125) and WHEN OTHER (:128) are never reached - the arm order is behaviour and is pinned here in source order (gate G30). :124 performs CLEAR-CURRENT-SCREEN, which performs INITIALIZE-ALL-FIELDS at :303 and then SEND-TRNVIEW-SCREEN at :304 - exactly ONE send - and the task ends at the EXEC CICS RETURN TRANSID(WS-TRANID) COMMAREA(CARDDEMO-COMMAREA) of :136-139. No read, no write, no transfer. THE DISTINGUISHING DETAIL, and it is a two-field difference that is easy to lose: INITIALIZE-ALL-FIELDS blanks FOURTEEN map items PLUS WS-MESSAGE in the single MOVE SPACES of :312-326 - TRNIDINI, TRNIDI, CARDNUMI, TTYPCDI, TCATCDI, TRNSRCI, TRNAMTI, TDESCI, TORIGDTI, TPROCDTI, MIDI, MNAMEI, MCITYI, MZIPI and WS-MESSAGE - whereas the superficially similar blanking inside PROCESS-ENTER-KEY at :159-171 covers only THIRTEEN and includes neither TRNIDINI nor WS-MESSAGE. TRNIDIN is deliberately spared there because the value just typed into it is the key about to be read at :172, and blanking it would erase the key before the read; :312 blanks it separately, on this path, where erasing it IS the intent. So TRNIDINO comes back as sixteen SPACES here and this is the one case in the folder where it does not carry the requested identifier - every other case either echoes what was typed or returns the LOW-VALUES of :101, and neither is the same byte as a space. To make the blanking an assertion with content rather than a coincidence, ALL FOURTEEN items arrive POPULATED at their full declared widths: a case that supplied blanks would have observed blanks coming back without having proven that anything cleared them. ERRMSGO IS 78 BLANKS, AND THAT IS THE CLEARED ERROR. ERRMSGI is NOT among the fourteen - the message is cleared at its source instead. :326 blanks WS-MESSAGE, and SEND-TRNVIEW-SCREEN then moves that now-blank field into ERRMSGO at :217, which is what actually wipes the error line. This case supplies ERRMSGI carrying 'Transaction ID NOT found...' - the literal :285-286 left on the operator's screen on the previous turn - so the wipe is demonstrated on a screen that genuinely had an error showing, and PF4 is shown to clear a displayed error rather than only the data fields. :217 moves WS-MESSAGE PIC X(80) into ERRMSGO PIC X(78) and COBOL loses the two rightmost bytes, so the two are declared as separate channels at 80 and at 78 to keep that truncation observable; both are all spaces here. ERRMSGO is pinned at 78, never 80. THE TWO MESSAGE CHANNELS, and why an empty list would be the wrong expectation: no DISPLAY line is emitted on this path at all - the program's only DISPLAY is at :290, inside the WHEN OTHER arm of the read's EVALUATE WS-RESP-CD, which this arm never reaches - so no DISPLAY_LINE entry is declared. WS-MESSAGE and ERRMSGO are a different matter: they are working-storage and screen state that every path of this program leaves behind and every fingerprint of it therefore carries, so they are pinned blank at their declared widths rather than omitted. Omitting them would not assert 'no message'; it would assert 'two fewer emitted lines than the program produces' and would fail the diff gate on a count rather than on a value. THE HEADER IS REPOPULATED, which distinguishes this arm from the two that send nothing. Because :304 does send, POPULATE-HEADER-INFO runs at :215 and all six header items are rebuilt. All six arrive STALE in this case - 'ZZZZ', 'STALEPGM', 01/02/03, 04:05:06 and two placeholder heading lines - so the rebuild is proven rather than assumed. Byte for byte from the copybooks: TITLE01O is CCDA-TITLE01 and TITLE02O is CCDA-TITLE02, both PIC X(40) with their leading and trailing spaces inside the field, and TITLE02O takes the ACTIVE app/cpy/COTTL01Y.cpy:22 value rather than the commented-out :21 alternative; TRNNAMEO is WS-TRANID 'CT01' at PIC X(04) and PGMNAMEO is WS-PGMNAME 'COTRN01C' at PIC X(08), both from :36-37. CURDATEO and CURTIMEO are PINNED (practice B7) to 2022-07-19 23:12:34, the instant case01 through case14 declare and the one the source's own footer at :329 carries, because MOVE FUNCTION CURRENT-DATE TO WS-CURDATE-DATA at :245 is otherwise non-deterministic; the date is composed MM/DD/YY at :252-254 with WS-CURDATE-YY taken from WS-CURDATE-YEAR(3:2) and the time HH:MM:SS at :258-260. Neither thank-you literal is emitted on any path of this program, and the two are not interchangeable: COTTL01Y's CCDA-THANK-YOU is PIC X(40) and names 'CCDA application' while CSMSG01Y's CCDA-MSG-THANK-YOU is PIC X(50) and names 'CardDemo application'. THE CURSOR. MOVE -1 TO TRNIDINL appears at SIX sites - :102, :151, :154, :287, :294 and :311 - and :311 is reached ONLY on this PF4 path, so this case is the sole cover for it. It is reported as cursorField and never as a payload member, because an xxxL item is validation and highlight metadata: AAP section 0.3.9 draws that line, and -1 in an xxxL item is a cursor request rather than a value. NO READ, AND NOTHING FABRICATED FOR ONE. PROCESS-ENTER-KEY is not performed on this arm, so the keyed EXEC CICS READ ... UPDATE at :269-278 is unreachable and its three-arm EVALUATE at :280-296 is never entered. TRANSACT is therefore seeded with NOTHING - a case that seeded rows it never touches would suggest it had - and no FILE STATUS, RESP or RESP2 outcome is asserted anywhere here, because there is no I/O to report one for. No forced outcome is declared either: an unconsumed one would claim to have driven an arm that nothing asked for. There is no tenth ASCII fixture to request and none is requested: app/data/ASCII holds exactly nine and none of them is a transaction master. NO HIGHLIGHT, AND THE EMPTY ATTRIBUTE MAP IS THE ASSERTION. Gate G38 asks that field highlighting apply only in REENTER state. This case IS a REENTER case, and it applies none - which is the point: the highlight is REENTER AND error, not REENTER alone. :88 set ERR-FLG-OFF and no arm of this path raises it, so WS-ERR-FLG is still 'N' when the screen is sent; CLEAR-CURRENT-SCREEN deliberately leaves the flag alone. COTRN01C copies no CSSETATY at all - its COPY statements at :52-72 are COCOM01Y, COTRN01, COTTL01Y, CSDAT01Y, CSMSG01Y, CVTRA05Y, DFHAID and DFHBMSCA - and it declares no FLG-<field>-NOT-OK pair for a resolver to act on, so no DFHRED reaches TRNIDINC and no '*' reaches TRNIDINO on this path or on any other. The decision is still resolved through the same FieldAttributeSetter the highlighting screens use and comes back untouched, which is why 'attributes' is present and empty rather than absent. DFHAID and DFHBMSCA are IBM-supplied and absent from this repository (risk R-D), so the AID mnemonic and any attribute constant come from common/CicsAid and common/BmsAttributes. COTRN01C does not copy CSSTRPFY either, so its AID testing is inline and common/PfKeyResolver must reproduce identical boolean outcomes. NO XCTL, SO NO TRANSFER TARGET IS INVENTED. The PF4 arm returns to the same screen: there is no EXEC CICS XCTL anywhere on this path, gate G40 is NOT discharged here, and CDEMO-TO-PROGRAM stays blank because only the PF3 arm at :117/:119-120, the PF5 arm at :126 and the no-commarea arm at :95 ever set it. nextProgram carries COTRN01C because the task ends at EXEC CICS RETURN TRANSID(WS-TRANID) and app/csd/CARDDEMO.CSD:429-430 binds TRANSACTION(CT01) to PROGRAM(COTRN01C), so the operator's next input returns to this same program; nextMapset and nextMap carry the COTRN01 and COTRN1A the SEND at :219-225 names; and termination is RETURN_TRANSID rather than XCTL, which are not interchangeable. CDEMO-PGM-CONTEXT is still 1 in the echoed area, not 0: it is zeroed only by RETURN-TO-PREV-SCREEN at :204, which this arm does not perform, and set only at :100, which this arm does not reach. STATELESSNESS (rule R6, gate G37), and the asymmetry it exposes: the whole 218-byte area travels in the payload and nothing is held server-side. app/cpy/COCOM01Y.cpy is 34 + 84 + 12 + 16 + 14 = 160 bytes and the CDEMO-CT01-INFO extension at :53-61 is 16 + 16 + 8 + 1 + 1 + 16 = 58, which is 218 in all; the extension is carried as its OWN field rather than folded into the 160-byte context all seventeen controllers share, and all 22 fields are pinned so none is left unchecked. Every span the caller filled comes back UNCHANGED, and that is the easily-missed part: INITIALIZE-ALL-FIELDS blanks MAP fields and WS-MESSAGE, and touches the communication area not at all - so the screen is cleared while the paging cursor is NOT. CDEMO-CT01-TRNID-FIRST, CDEMO-CT01-TRNID-LAST, CDEMO-CT01-PAGE-NUM, CDEMO-CT01-NEXT-PAGE-FLG, CDEMO-CT01-TRN-SEL-FLG and CDEMO-CT01-TRN-SELECTED all survive PF4 intact, and so do CDEMO-FROM-TRANID and CDEMO-FROM-PROGRAM, which the PF3 and PF5 arms would have overwritten with 'CT01' and 'COTRN01C' at :202-203 on their way through RETURN-TO-PREV-SCREEN. A field the passed area does not name keeps what its picture gives it - spaces for PIC X, zeros for PIC 9 - which is why the three customer-name spans and CDEMO-ACCT-STATUS are blank and CDEMO-CUST-ID is zeros. DEAD WORKING STORAGE IS LEFT EXACTLY AS IT IS (practice B5). WS-USR-MODIFIED at :45-47 is SET at :89 and never read again, and WS-TRAN-DATE PIC X(08) VALUE '00/00/00' at :50 is never used at all - note that it is NOT among the fields INITIALIZE-ALL-FIELDS touches. Neither is implemented away, tidied or asserted on; preserving them is the parity requirement. BASELINE PROVENANCE (practice B12): every expected value here is STATICALLY DERIVED, by structured reading of MAIN-PARA, CLEAR-CURRENT-SCREEN, INITIALIZE-ALL-FIELDS, SEND-TRNVIEW-SCREEN and POPULATE-HEADER-INFO cross-checked against the copybook byte layouts (app/cpy/COCOM01Y.cpy, app/cpy/COTTL01Y.cpy, app/cpy/CSDAT01Y.cpy, app/cpy/CSMSG01Y.cpy), the BMS field contract (app/cpy-bms/COTRN01.CPY - 21 xxxI payload items summing to 416, so the group is 12 + 21 x 7 + 416 = 575 bytes) and the transaction definition in app/csd/CARDDEMO.CSD. Every width in this fixture was applied from its PICTURE clause by mechanical character count rather than by hand (practice B11), including the 80-into-78 truncation and the 160 / 58 / 218 totals. It was NEVER captured from a live COBOL execution: running the legacy programs is empirically impossible in this environment, which AAP section 0.7.6 establishes with eight independently verified blockers, and the change of provenance is escalated as risk R-A rather than absorbed silently. GATES DISCHARGED: G15 (one of exactly twenty cases in parity/COTRN01C), G18 (the diff count must be zero, per module rather than per build), G30 (the five-armed EVALUATE EIBAID at :112-132 honoured in source order, with DFHENTER and DFHPF3 tested and failing before DFHPF4 matches and WHEN OTHER remaining last), G37, G38 (REENTER WITHOUT an error, so no highlight - the strongest form of that gate, since the condition is REENTER and error) and G51 (the controller is driven as a plain object, with no MockMvc, no TestRestTemplate, no servlet container and no HTTP in the path). Deliberately NOT asserted, because this program or this path has none of them: G19, G21 and G23 (no record is seeded, read or written, so this case pins no record width; case20 pins the 350-byte CVTRA05Y record and the dataset-level no-write proof), G32 (zero GO TO in COTRN01C), G35 (zero CALL 'CEE3ABD', which is why the return code is 0 and no abend path exists), G39 (no pagination arithmetic on this arm), G40 (no XCTL), G43 (no 9300-CHECK-CHANGE-IN-REC in this program) and G47 (the keyed-read call site is never reached, so no I/O outcome is fabricated for it).",
   "unitKind" : "CONTROLLER_POJO",
-  "inputs" : {
-    "TRANSACT" : {
-      "rows" : [ "0000000000000001010005POS TERM  GROCERY PURCHASE AT PARITY MARKET WITH A DESCRIPTION THAT OVERFLOWS THE SCREEN FIELD                0000005047G800000001PARITY MARKET NUMBER ONE OF SEVERAL LONG NAMES    SPRINGFIELD MASSACHUSETTS USA                     01103-123441111111111111112022-07-19 23:12:34.1234562022-07-20 01:02:03.654321                    ", "0000000000000002020010ONLINE    REFUND ISSUED BY MERCHANT                                                                           0000000500}800000002PARITY REFUNDS LIMITED                            PORTLAND OREGON                                   97201-000242222222222222222022-07-18 08:00:00.0000012022-07-18 09:30:00.000002                    ", "0000000000000003034444BATCH     LARGE SETTLEMENT                                                                                    1234567891B800000003PARITY SETTLEMENT HOUSE                           NEW YORK NEW YORK                                 10001-000343333333333333332022-07-17 12:00:00.0000032022-07-17 12:00:01.000004                    " ]
-    }
-  },
+  "inputs" : { },
+  "jobParameters" : { },
   "screenRequest" : {
     "eibcalen" : 218,
-    "aid" : "DFHCLEAR",
+    "aid" : "DFHPF4",
     "pinnedClock" : "2022-07-19T23:12:34",
     "charset" : "US-ASCII",
     "commarea" : {
-      "CDEMO-PGM-CONTEXT" : "1"
+      "CDEMO-FROM-TRANID" : "CT00",
+      "CDEMO-FROM-PROGRAM" : "COTRN00C",
+      "CDEMO-USER-ID" : "PARITY01",
+      "CDEMO-USER-TYPE" : "U",
+      "CDEMO-PGM-CONTEXT" : "1",
+      "CDEMO-ACCT-ID" : "00000000011",
+      "CDEMO-CARD-NUM" : "4111111111111111",
+      "CDEMO-LAST-MAP" : "COTRN1A",
+      "CDEMO-LAST-MAPSET" : "COTRN01",
+      "CDEMO-CT01-TRNID-FIRST" : "0000000000000001",
+      "CDEMO-CT01-TRNID-LAST" : "0000000000000010",
+      "CDEMO-CT01-PAGE-NUM" : "00000003",
+      "CDEMO-CT01-NEXT-PAGE-FLG" : "Y",
+      "CDEMO-CT01-TRN-SEL-FLG" : "S",
+      "CDEMO-CT01-TRN-SELECTED" : "0000000000000001"
     },
     "mapFields" : {
+      "TRNNAMEI" : "ZZZZ",
+      "TITLE01I" : "STALE HEADING ONE FROM THE PRIOR TURN   ",
+      "CURDATEI" : "01/02/03",
+      "PGMNAMEI" : "STALEPGM",
+      "TITLE02I" : "STALE HEADING TWO FROM THE PRIOR TURN   ",
+      "CURTIMEI" : "04:05:06",
       "TRNIDINI" : "0000000000000001",
-      "TDESCI" : "TYPED BY THE OPERATOR"
+      "TRNIDI" : "0000000000000001",
+      "CARDNUMI" : "4111111111111111",
+      "TTYPCDI" : "01",
+      "TCATCDI" : "0005",
+      "TRNSRCI" : "POS TERM  ",
+      "TDESCI" : "GROCERY PURCHASE AT PARITY MARKET                           ",
+      "TRNAMTI" : "+00000050.47",
+      "TORIGDTI" : "2022-07-19",
+      "TPROCDTI" : "2022-07-20",
+      "MIDI" : "800000001",
+      "MNAMEI" : "PARITY MARKET NUMBER ONE      ",
+      "MCITYI" : "SPRINGFIELD MASSACHUSETTS",
+      "MZIPI" : "01103-1234",
+      "ERRMSGI" : "Transaction ID NOT found...                                                   "
     },
     "forcedOutcomes" : { }
   },
@@ -27,28 +57,28 @@
     "nextMapset" : "COTRN01",
     "nextMap" : "COTRN1A",
     "navigation" : {
-      "CDEMO-FROM-TRANID" : "    ",
-      "CDEMO-FROM-PROGRAM" : "        ",
+      "CDEMO-FROM-TRANID" : "CT00",
+      "CDEMO-FROM-PROGRAM" : "COTRN00C",
       "CDEMO-TO-TRANID" : "    ",
       "CDEMO-TO-PROGRAM" : "        ",
-      "CDEMO-USER-ID" : "        ",
-      "CDEMO-USER-TYPE" : " ",
+      "CDEMO-USER-ID" : "PARITY01",
+      "CDEMO-USER-TYPE" : "U",
       "CDEMO-PGM-CONTEXT" : "1",
       "CDEMO-CUST-ID" : "000000000",
       "CDEMO-CUST-FNAME" : "                         ",
       "CDEMO-CUST-MNAME" : "                         ",
       "CDEMO-CUST-LNAME" : "                         ",
-      "CDEMO-ACCT-ID" : "00000000000",
+      "CDEMO-ACCT-ID" : "00000000011",
       "CDEMO-ACCT-STATUS" : " ",
-      "CDEMO-CARD-NUM" : "0000000000000000",
-      "CDEMO-LAST-MAP" : "       ",
-      "CDEMO-LAST-MAPSET" : "       ",
-      "CDEMO-CT01-TRNID-FIRST" : "                ",
-      "CDEMO-CT01-TRNID-LAST" : "                ",
-      "CDEMO-CT01-PAGE-NUM" : "00000000",
-      "CDEMO-CT01-NEXT-PAGE-FLG" : " ",
-      "CDEMO-CT01-TRN-SEL-FLG" : " ",
-      "CDEMO-CT01-TRN-SELECTED" : "                "
+      "CDEMO-CARD-NUM" : "4111111111111111",
+      "CDEMO-LAST-MAP" : "COTRN1A",
+      "CDEMO-LAST-MAPSET" : "COTRN01",
+      "CDEMO-CT01-TRNID-FIRST" : "0000000000000001",
+      "CDEMO-CT01-TRNID-LAST" : "0000000000000010",
+      "CDEMO-CT01-PAGE-NUM" : "00000003",
+      "CDEMO-CT01-NEXT-PAGE-FLG" : "Y",
+      "CDEMO-CT01-TRN-SEL-FLG" : "S",
+      "CDEMO-CT01-TRN-SELECTED" : "0000000000000001"
     },
     "sends" : [ {
       "fields" : {
@@ -58,53 +88,37 @@
         "PGMNAMEO" : "COTRN01C",
         "TITLE02O" : "              CardDemo                  ",
         "CURTIMEO" : "23:12:34",
-        "TRNIDINO" : "0000000000000001",
+        "TRNIDINO" : "                ",
         "TRNIDO" : "                ",
         "CARDNUMO" : "                ",
         "TTYPCDO" : "  ",
         "TCATCDO" : "    ",
         "TRNSRCO" : "          ",
-        "TDESCO" : "TYPED BY THE OPERATOR                                       ",
         "TRNAMTO" : "            ",
+        "TDESCO" : "                                                            ",
         "TORIGDTO" : "          ",
         "TPROCDTO" : "          ",
         "MIDO" : "         ",
         "MNAMEO" : "                              ",
         "MCITYO" : "                         ",
         "MZIPO" : "          ",
-        "ERRMSGO" : "Invalid key pressed. Please see below...                                      "
+        "ERRMSGO" : "                                                                              "
       },
       "attributes" : { }
     } ],
+    "cursorField" : "TRNIDINL",
     "termination" : "RETURN_TRANSID"
   },
   "expectedWrites" : [ ],
-  "expectedFinalState" : [ {
-    "dataset" : "TRANSACT",
-    "rowIndex" : 0,
-    "expectedBytes" : "0000000000000001010005POS TERM  GROCERY PURCHASE AT PARITY MARKET WITH A DESCRIPTION THAT OVERFLOWS THE SCREEN FIELD                0000005047G800000001PARITY MARKET NUMBER ONE OF SEVERAL LONG NAMES    SPRINGFIELD MASSACHUSETTS USA                     01103-123441111111111111112022-07-19 23:12:34.1234562022-07-20 01:02:03.654321                    "
-  }, {
-    "dataset" : "TRANSACT",
-    "rowIndex" : 1,
-    "expectedBytes" : "0000000000000002020010ONLINE    REFUND ISSUED BY MERCHANT                                                                           0000000500}800000002PARITY REFUNDS LIMITED                            PORTLAND OREGON                                   97201-000242222222222222222022-07-18 08:00:00.0000012022-07-18 09:30:00.000002                    "
-  }, {
-    "dataset" : "TRANSACT",
-    "rowIndex" : 2,
-    "expectedBytes" : "0000000000000003034444BATCH     LARGE SETTLEMENT                                                                                    1234567891B800000003PARITY SETTLEMENT HOUSE                           NEW YORK NEW YORK                                 10001-000343333333333333332022-07-17 12:00:00.0000032022-07-17 12:00:01.000004                    "
-  } ],
+  "expectedFinalState" : [ ],
   "expectedReturnCode" : 0,
   "expectedMessages" : [ {
     "channel" : "WS_MESSAGE_80",
-    "text" : "Invalid key pressed. Please see below...                                        "
+    "text" : "                                                                                "
   }, {
     "channel" : "SCREEN_ERRMSG_78",
-    "text" : "Invalid key pressed. Please see below...                                      "
+    "text" : "                                                                              "
   } ],
   "normalisations" : [ ],
-  "expectedDatasets" : [ {
-    "dataset" : "TRANSACT",
-    "channel" : "FINAL_STATE",
-    "rowCount" : 3,
-    "recordLength" : 350
-  } ]
+  "expectedDatasets" : [ ]
 }

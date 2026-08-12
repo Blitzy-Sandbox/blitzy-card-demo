@@ -1,7 +1,7 @@
 {
   "program": "COADM01C",
   "caseId": "case14",
-  "description": "The lines BUILD-MENU-OPTIONS never writes. app/cpy/COADM02Y.cpy gives values to four entries of a table declared OCCURS 9, and app/cbl/COADM01C.cbl:238-261 has arms for subscripts 1 to 10 plus WHEN OTHER CONTINUE - so arms 5 to 10 cannot fire while the count is 4, and there is no arm at all for OPTN011O or OPTN012O even though app/cpy-bms/COADM01.CPY:242-248 declares both and COMEN01C does dispatch to twelve. All eight remaining lines must therefore come back as the forty spaces the map initialises them to, and all twelve are carried because the map declares twelve. This case also arrives with every carried identifier populated - customer, account, card, last map and last mapset - so the navigation expectation proves COADM01C returns them untouched: it reads none of them and writes none of them.",
+  "description": "The second term of the invalid-option guard at app/cbl/COADM01C.cbl:128, WS-OPTION > CDEMO-ADMIN-OPT-COUNT, reached with a fully occupied two-byte OPTIONI of '12'. app/cpy/COADM02Y.cpy:20 declares CDEMO-ADMIN-OPT-COUNT PIC 9(02) VALUE 4, so 12 is eight above the highest option the menu offers. The guard at 127 to 129 is a single OR of three terms evaluated in source order and this case pins the middle one: WS-OPTION IS NOT NUMERIC is false because '12' holds digits, WS-OPTION > CDEMO-ADMIN-OPT-COUNT is true and decides the condition, and WS-OPTION = ZEROS is never what accounts for the outcome - case11 is the case that pins that third term, with a blank field that normalises to '00'. Each term therefore has a case of its own rather than one case reaching the shared error path and being counted for all three (G30).\n\nThe normalisation at lines 117 to 125 is the other half of what this case exists for, and it is deliberately identical to case10's - the accepted '03' - for every one of its four steps. Both inputs occupy the whole field, and a fully occupied field passes through untouched. The PERFORM VARYING at 117 to 121 is a test-before scan: it sets WS-IDX from LENGTH OF OPTIONI, which app/cpy-bms/COADM01.CPY:132 declares PIC X(2), so WS-IDX starts at 2, and byte 2 is '2', which satisfies OPTIONI(WS-IDX:1) NOT = SPACES on the very first test. The loop body never runs and WS-IDX is left at 2 - the value it was initialised with, not a value it decremented to. Line 122 then moves OPTIONI(1:2), the whole field, into WS-OPTION-X, which line 45 declares PIC X(02) JUST RIGHT; the sender and the receiver are the same width, so right-justification has nothing to relocate and '12' lands as '12'. Line 123's INSPECT REPLACING ALL ' ' BY '0' finds no space to replace, so it too is a no-op. Line 124 moves '12' into WS-OPTION PIC 9(02), again at equal width, giving 12. Two consecutive no-ops on the same input as an accepted case is what isolates the guard as the single decision that separates this run's outcome from case10's: nothing before line 127 differs at all.\n\nOPTIONO below is '12', identical to the OPTIONI the request declares, and that identity is the assertion. Line 125 echoes the normalised option to the screen BEFORE the guard at line 127 runs, so a rejected option is still echoed - the value is not suppressed because it failed validation. It is also the untouched-passthrough proof: OPTIONI in and OPTIONO out are the same two bytes, which they would not be for ' 1' or '3 '. OPTIONO is PIC X(2) at app/cpy-bms/COADM01.CPY:254, so two digits fill it exactly; a third digit has nowhere to go and no input can produce one, which is why 12 is representable here and a three-digit over-count value is not.\n\nLines 130 to 133 then set WS-ERR-FLG to 'Y', move the thirty-seven-character literal into the eighty-byte WS-MESSAGE - which space-fills on the right and so leaves exactly forty-three trailing spaces - and perform SEND-MENU-SCREEN. That is a PERFORM and not a transfer, so control returns to line 137, whose IF NOT ERR-FLG-ON is now false; the XCTL at 142 to 145, the MOVE DFHGREEN of line 148 and the coming-soon STRING at 149 to 153 are all skipped. So no successor is named, ERRMSGC keeps the map's declared colour, no coming-soon text is emitted, and the transaction ends at the EXEC CICS RETURN TRANSID('CA00') COMMAREA(CARDDEMO-COMMAREA) of lines 107 to 110. The screen is nevertheless repainted, so BUILD-MENU-OPTIONS at 228 to 263 recomposes the four active lines to their canonical forty-character images: two characters of PIC 9(02) option number, the two of '. ', and thirty-five of PIC X(35) name is thirty-nine, and character forty stays the space line 231 put there.\n\nCDEMO-PGM-CONTEXT arrives as 1 and leaves as 1, and all sixteen communication-area fields are handed back exactly as they arrived. The SET CDEMO-PGM-REENTER of line 88 belongs to the first-entry branch this path did not take, and the MOVE ZEROS of line 141 belongs to the transfer branch the error flag suppressed, so nothing on this path writes the area at all (G37). The area is seeded from the real fixtures and is byte-identical to case11's, which is deliberate: holding every other input constant is what leaves the received option as the only difference between the two runs. Card 0500024453765740 with customer 000000050 and account 00000000050 is the first row of app/data/ASCII/cardxref.txt, Aniya, Alba and Von are that customer's row of custdata.txt, and the 'Y' is that account's status in acctdata.txt.\n\nTwo divergences are recorded here rather than papered over. First, the REENTER path performs no output reset: MOVE LOW-VALUES TO COADM1AO at line 89 sits inside the IF NOT CDEMO-PGM-REENTER of line 87 and is ENTER-only, so this run never executes it, and resetAllOutputFields is correspondingly not asserted. OPTN005O to OPTN012O are nonetheless the unpainted image below, and for a different reason than on the ENTER path - not because they were cleared, but because BUILD-MENU-OPTIONS iterates only to CDEMO-ADMIN-OPT-COUNT, which is 4, so lines 5 to 12 are never written at all. The request declares OPTN005I to OPTN012I explicitly, at their blank width, precisely so that this is evidenced rather than assumed: the client re-supplies them, and they still come back unpainted. COADM01C reads OPTIONI and nothing else from the received map, so a stateless projection has no previous COADM1AO to preserve and cannot echo a line it never read - which is what makes 'not reset' and 'never written' indistinguishable in the observable output. Stating that is more honest than asserting an echo the unit does not produce. Second, gate G38 is usually phrased around the DFHRED-plus-asterisk highlight CSSETATY applies, and none of it applies to this program: the COPY list at lines 50 to 61 is COCOM01Y, COADM02Y, COADM01, COTTL01Y, CSDAT01Y, CSMSG01Y, CSUSR01Y, DFHAID and DFHBMSCA, CSSETATY is not among them, and DFHRED appears nowhere in the program's 268 lines. Red reaches this screen only as ERRMSG's declared COLOR=RED at app/bms/COADM01.bms:154-157, so the ERRMSGC below is the map default and no colour was moved; the one colour the program ever moves is the DFHGREEN of line 148, on the path this case does not reach. Expecting an asterisk or an explicit DFHRED move would be inventing behaviour. For this program G38 resolves to exercising both the ENTER and the REENTER path and expecting the map default - and this case is the REENTER half.\n\nThe unit is the service, constructed and called directly with no HTTP and no MockMvc in the path (G51), so the thirteen items below are precisely what AdminMenuService produces: the twelve menu lines and the echoed option. TRNNAMEO, PGMNAMEO, TITLE01O, TITLE02O, CURDATEO and CURTIMEO are absent by design, because POPULATE-HEADER-INFO reads FUNCTION CURRENT-DATE at line 204 and belongs to the controller if the service is to stay deterministic; ERRMSGO is absent because the eighty-to-seventy-eight narrowing of line 177 is the controller's step, which is why the message below is declared on the WS_MESSAGE_80 channel and not on SCREEN_ERRMSG_78. No dataset is touched, so both record channels are empty rather than omitted, and an online transaction sets no step return code, so 0 is stated rather than defaulted. The clock is pinned to 2022-07-19T23:12:32, the instant COADM01C's own version footer at line 267 carries, so one clock governs every case in this directory, and US-ASCII is named explicitly rather than left to a platform default.\n\nEvery expected value above is statically derived: read out of the COBOL paragraph that produces it and cross-checked against the copybook byte layouts in app/cpy, the xxxI and xxxO PICTURE clauses of app/cpy-bms/COADM01.CPY, the DFHMDF definitions of app/bms/COADM01.bms and the real fixtures in app/data/ASCII. There is no COBOL execution baseline behind it: none was produced, and none could be produced in this environment - no z/OS or CICS runtime, an indexed file handler the available compiler reports as disabled, no Language Environment CEE services, and DFHAID, DFHBMSCA and DFHATTR absent from this repository. Only the provenance of the expected values changes; the twenty cases, the field-for-field comparison and the diff-count-of-zero gate all stand unchanged. Because provenance is a stated success criterion, the deviation is escalated for explicit user confirmation rather than quietly absorbed - risk R-A, as ParityHarness's class documentation states it.",
   "unitKind": "SERVICE",
   "inputs": {},
   "screenRequest": {
@@ -15,18 +15,28 @@
       "CDEMO-TO-PROGRAM": "COADM01C",
       "CDEMO-USER-ID": "ADMIN001",
       "CDEMO-USER-TYPE": "A",
-      "CDEMO-PGM-CONTEXT": "0",
-      "CDEMO-CUST-ID": "000000123",
-      "CDEMO-CUST-FNAME": "MARGARET                 ",
-      "CDEMO-CUST-MNAME": "J                        ",
-      "CDEMO-CUST-LNAME": "GOLD                     ",
-      "CDEMO-ACCT-ID": "00000000045",
+      "CDEMO-PGM-CONTEXT": "1",
+      "CDEMO-CUST-ID": "000000050",
+      "CDEMO-CUST-FNAME": "Aniya                    ",
+      "CDEMO-CUST-MNAME": "Alba                     ",
+      "CDEMO-CUST-LNAME": "Von                      ",
+      "CDEMO-ACCT-ID": "00000000050",
       "CDEMO-ACCT-STATUS": "Y",
-      "CDEMO-CARD-NUM": "0000000000000123",
+      "CDEMO-CARD-NUM": "0500024453765740",
       "CDEMO-LAST-MAP": "COADM1A",
       "CDEMO-LAST-MAPSET": "COADM01"
     },
-    "mapFields": {},
+    "mapFields": {
+      "OPTIONI": "12",
+      "OPTN005I": "                                        ",
+      "OPTN006I": "                                        ",
+      "OPTN007I": "                                        ",
+      "OPTN008I": "                                        ",
+      "OPTN009I": "                                        ",
+      "OPTN010I": "                                        ",
+      "OPTN011I": "                                        ",
+      "OPTN012I": "                                        "
+    },
     "forcedOutcomes": {}
   },
   "expectedResponse": {
@@ -40,13 +50,13 @@
       "CDEMO-USER-ID": "ADMIN001",
       "CDEMO-USER-TYPE": "A",
       "CDEMO-PGM-CONTEXT": "1",
-      "CDEMO-CUST-ID": "000000123",
-      "CDEMO-CUST-FNAME": "MARGARET                 ",
-      "CDEMO-CUST-MNAME": "J                        ",
-      "CDEMO-CUST-LNAME": "GOLD                     ",
-      "CDEMO-ACCT-ID": "00000000045",
+      "CDEMO-CUST-ID": "000000050",
+      "CDEMO-CUST-FNAME": "Aniya                    ",
+      "CDEMO-CUST-MNAME": "Alba                     ",
+      "CDEMO-CUST-LNAME": "Von                      ",
+      "CDEMO-ACCT-ID": "00000000050",
       "CDEMO-ACCT-STATUS": "Y",
-      "CDEMO-CARD-NUM": "0000000000000123",
+      "CDEMO-CARD-NUM": "0500024453765740",
       "CDEMO-LAST-MAP": "COADM1A",
       "CDEMO-LAST-MAPSET": "COADM01"
     },
@@ -65,7 +75,7 @@
           "OPTN010O": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
           "OPTN011O": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
           "OPTN012O": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
-          "OPTIONO": "\u0000\u0000"
+          "OPTIONO": "12"
         },
         "attributes": {
           "ERRMSGC": "DFHRED"
@@ -80,7 +90,7 @@
   "expectedMessages": [
     {
       "channel": "WS_MESSAGE_80",
-      "text": "                                                                                "
+      "text": "Please enter a valid option number...                                           "
     }
   ],
   "normalisations": []

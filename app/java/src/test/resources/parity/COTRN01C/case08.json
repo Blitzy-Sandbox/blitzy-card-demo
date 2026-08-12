@@ -1,13 +1,18 @@
 {
   "program" : "COTRN01C",
   "caseId" : "case08",
-  "description" : "The WHEN OTHER arm of the EVALUATE WS-RESP-CD at :289-295 - the only path that reaches the program's single DISPLAY. :289 is written for a condition the source does not enumerate, so no seeded row can produce it and the case forces the outcome; the harness then requires the run to have actually consumed it. The program displays 'RESP:' WS-RESP-CD 'REAS:' WS-REAS-CD at :290, both PIC S9(09) COMP and both rendered at their declared nine-character width, then moves 'Unable to lookup Transaction...' into WS-MESSAGE and sends. WS-RESP-CD renders as nine asterisks rather than nine digits because the JDBC substitution reports no CICS RESP for this condition and zero would have been indistinguishable from DFHRESP(NORMAL) - the width the DISPLAY produces is the source's either way.",
+  "description" : "Risk R-B first, because the class name inverts the behaviour: the prompt-mandated Java class for COTRN01C is TransactionAddController, and this program adds nothing - it VIEWS. Four independent artefacts say so: app/cbl/COTRN01C.cbl:5 'Function    : View a Transaction from TRANSACT file', README.md:314 '| CT01 | COTRN01 | COTRN01C | Transaction View |', app/bms/COTRN01.bms:2 'CardDemo - Transaction View' and the on-screen literal INITIAL='View Transaction' at POS=(4,30) - app/bms/COTRN01.bms:78-79. The mapset corroborates it structurally: 56 DFHMDF entries, 21 named, and exactly ONE UNPROT - TRNIDIN at :85 - so a single input-capable field faces twenty output-only ones, which is a lookup-then-display screen and not a data-entry screen. Mechanically, the program contains one EXEC CICS READ (:269-278) and zero WRITE, REWRITE and DELETE in its 330 lines. Rule R1 resolves the conflict - the name comes from the prompt, the behaviour comes from the source - and practice B4 governs the disclosure, so it is documented here and never silently corrected. THIS CASE IS THE CLEAREST PROOF OF THE INVERSION: a successful DFHENTER reads a record, displays it and writes nothing. expectedWrites is empty as a positive assertion, and the half of the swap that genuinely adds a transaction lives in parity/COTRN02C. WHAT THIS CASE PINS: the canonical happy path - the successful keyed read at :269-278 and the COMPLETE 21-field detail display that follows it. It is the reference projection for this program, so every other case's field expectations are consistent with this one. THE TRACE, arm by arm. EIBCALEN is 218, so :94 takes its else arm and :98 copies the passed area over CARDDEMO-COMMAREA. CDEMO-PGM-CONTEXT arrives at 1, so CDEMO-PGM-REENTER already holds at :99 and control takes the ELSE at :110-111 - which is why the echoed context is still 1 and why the :100 SET, the :101 MOVE LOW-VALUES TO COTRN1AO and the :102 MOVE -1 never run here. :111 performs RECEIVE-TRNVIEW-SCREEN (:230-238), then the ordered EVALUATE EIBAID at :112 takes its FIRST arm, WHEN DFHENTER, and performs PROCESS-ENTER-KEY. The EVALUATE TRUE at :146 takes its SECOND arm this time - TRNIDINI is populated, so it is neither SPACES nor LOW-VALUES - and that arm is MOVE -1 TO TRNIDINL (:154) followed by CONTINUE, with no message and no send. WS-ERR-FLG therefore stays 'N', so :158 IF NOT ERR-FLG-ON is TRUE: the thirteen detail items are blanked in source order at :159-171 (TRNIDI, CARDNUMI, TTYPCDI, TCATCDI, TRNSRCI, TRNAMTI, TDESCI, TORIGDTI, TPROCDTI, MIDI, MNAMEI, MCITYI, MZIPI), :172 moves TRNIDINI into TRAN-ID and :173 performs READ-TRANSACT-FILE. The read at :269-278 states DATASET ('TRANSACT') INTO(TRAN-RECORD) LENGTH(LENGTH OF TRAN-RECORD) RIDFLD(TRAN-ID) KEYLENGTH(LENGTH OF TRAN-ID) UPDATE RESP RESP2, and the EVALUATE WS-RESP-CD at :280 takes its FIRST arm, WHEN DFHRESP(NORMAL), which is CONTINUE. :176 IF NOT ERR-FLG-ON is TRUE as well - a second test, not an ELSE - so :177 moves TRAN-AMT into WS-TRAN-AMT, :178-190 perform the thirteen record-to-screen moves and :191 sends the map. The task ends at the EXEC CICS RETURN TRANSID(WS-TRANID) COMMAREA(CARDDEMO-COMMAREA) of :136-139. THE MAP IS SENT EXACTLY ONCE, and that count is behaviour rather than bookkeeping. The unconditional second send at :109 belongs to the first-entry arm and is unreachable from the :110-111 else arm, so a fixture asserting two sends here would be describing case04's fingerprint and not this one. No rejecting arm runs either, so :152, :288 and :295 all stay unreached and their sends with them. THE SEEDED RECORDS. TRANSACT has no ASCII fixture - app/data/ASCII holds exactly nine files and none is a transaction master - so the rows are declared inline and no tenth fixture is invented. Three rows are seeded and the MIDDLE one is read: a repository that ignored the key and answered with whatever it found first would satisfy a single-row seed and is caught by this one. Each row is 350 bytes, summed mechanically from the fourteen spans of app/cpy/CVTRA05Y.cpy (practice B11): TRAN-ID X(16) 1-16, TRAN-TYPE-CD X(02) 17-18, TRAN-CAT-CD 9(04) 19-22, TRAN-SOURCE X(10) 23-32, TRAN-DESC X(100) 33-132, TRAN-AMT S9(09)V99 133-143, TRAN-MERCHANT-ID 9(09) 144-152, TRAN-MERCHANT-NAME X(50) 153-202, TRAN-MERCHANT-CITY X(50) 203-252, TRAN-MERCHANT-ZIP X(10) 253-262, TRAN-CARD-NUM X(16) 263-278, TRAN-ORIG-TS X(26) 279-304, TRAN-PROC-TS X(26) 305-330 and FILLER X(20) 331-350. The FILLER is present and space-filled (gate G21): it is a span rather than a gap, and omitting it would leave every row 330 bytes and shift nothing but break everything. TRAN-AMT occupies ELEVEN bytes - nine integer digits and two fractional, scale 2 (gate G23) - with the sign OVERPUNCHED into the trailing byte 143 and never carried in a twelfth byte or a leading sign position: the read row's span is '0000123456G' where G is the zone-C overpunch for a positive 7, so the value is 12345.67. PIC X spans are space-padded and PIC 9 spans zero-filled. Both timestamps are PINNED 26-byte literals in the YYYY-MM-DD HH:MM:SS.mmmmmm shape - 4+1+2+1+2+1+2+1+2+1+2+1+6 = 26 - and never a captured 'now' (practice B7). THE CONTENTS DELIBERATELY FIT WITHIN THEIR TARGET SCREEN WIDTHS, which is what makes this the clean projection: TRAN-DESC carries 51 meaningful characters into TDESCO PIC X(60), TRAN-MERCHANT-NAME 23 into MNAMEO PIC X(30), TRAN-MERCHANT-CITY 20 into MCITYO PIC X(25), and TRAN-AMT 12345.67 sits far below the 100,000,000 ceiling of the eight-digit receiver. Every trailing space in those three targets is therefore the record's own PIC X padding rather than a lost tail, so a translation that truncated correctly and one that truncated a character early are still distinguishable elsewhere: the truncating edges are pinned by their own cases - the over-long description, name and city by the shared long-form row, the negative amount by case16 and the amount that overflows the eight-digit receiver by case17. The two timestamps are the deliberate exception and are reproduced rather than repaired (practice B5): :185-186 move PIC X(26) into PIC X(10), so the leading date survives and the time is discarded on the right - '2022-07-14 10:20:30.000802' arrives as '2022-07-14'. THE TWENTY-ONE PINNED FIELDS, all of them, at their declared widths from app/cpy-bms/COTRN01.CPY (01 COTRN1AO REDEFINES COTRN1AI, line 145), which sum to 416 and give a 575-byte group image of 12 + 21 x 7 + 416. Six are the header POPULATE-HEADER-INFO rebuilds at :245-262: TITLE01O is CCDA-TITLE01 and TITLE02O is CCDA-TITLE02, both PIC X(40) with their leading and trailing spaces inside the field, and TITLE02O takes the ACTIVE app/cpy/COTTL01Y.cpy:22 value rather than the commented-out :21 alternative; TRNNAMEO is WS-TRANID 'CT01' at PIC X(04) and PGMNAMEO is WS-PGMNAME 'COTRN01C' at PIC X(08), both from :36-37; CURDATEO and CURTIMEO are PINNED to the instant the source's own footer at :329 carries, 2022-07-19 23:12:34, because MOVE FUNCTION CURRENT-DATE at :245 is otherwise non-deterministic - MM/DD/YY and HH:MM:SS are each eight characters by app/cpy/CSDAT01Y.cpy. One is TRNIDINO, the echoed lookup key. Thirteen are the record, moved at :178-190: TRNIDO and CARDNUMO are exact 16-byte copies, TTYPCDO an exact 2, TCATCDO a 9(04) numeric moving into an X(4) alphanumeric with its stored leading zeros intact, TRNSRCO an exact 10, TRNAMTO the edited amount, TDESCO the leading 60 of 100, TORIGDTO and TPROCDTO the leading 10 of 26 each, MIDO an exact 9(09) image, MNAMEO the leading 30 of 50, MCITYO the leading 25 of 50 and MZIPO an exact 10. CARDNUMO and MIDO are NOT masked, because the source masks nothing and inventing a mask would change observable behaviour (practice B6). One is ERRMSGO. THE AMOUNT EDIT MASK. WS-TRAN-AMT is PIC +99999999.99 at :49 and is applied at :177 and :183: one fixed sign position, EIGHT unsuppressed integer digits, an actual decimal point and two more digits - twelve characters, never fewer and never more. The mask uses 9 and not Z, so leading zeros ARE emitted and the sign is ALWAYS rendered in position 1: 12345.67 renders '+00012345.67'. Note the asymmetry the receiver introduces and that this case is careful not to exercise - TRAN-AMT has nine integer digits and WS-TRAN-AMT has eight, so a large enough amount silently loses its high-order digit with no ON SIZE ERROR anywhere in the program. case17 pins that; this one stays well inside the receiver. THE ERROR LINE IS BLANK, at 78 and not 80. WS-MESSAGE was blanked at :91 and no arm of this path assigns it - CCDA-MSG-INVALID-KEY, 'Tran ID can NOT be empty...', 'Transaction ID NOT found...' and 'Unable to lookup Transaction...' all belong to arms this case does not take - so both message channels are blank. They are declared separately at their own widths because :217 moves WS-MESSAGE PIC X(80) into ERRMSGO PIC X(78) and COBOL loses the two rightmost bytes; ERRMSGO is pinned at 78 blanks, never 80. There is no DISPLAY line: the program's only DISPLAY is at :290, inside the WHEN OTHER arm of the read, which a NORMAL response never reaches. METADATA IS NOT PAYLOAD. The xxxL, xxxF and xxxA items of the symbolic map are length, flag and attribute metadata and are never payload members, which is why none of them appears among the twenty-one fields. TRNIDINL is the one that matters here: :154 moves -1 into it, and -1 in an xxxL item is the CURSOR request, so it is reported as cursorField exactly as AAP section 0.3.9 requires. THE HIGHLIGHT, and the subtlety this case exists to pin alongside the projection. Gate G38 asks that field highlighting apply only in REENTER state. This IS a REENTER case - CDEMO-PGM-CONTEXT is 1 - and it is also the SUCCESS path, so WS-ERR-FLG stays 'N' and NO DFHRED plus '*' highlight is applied. The highlight is REENTER-AND-error, not REENTER alone, and reading the gate as 'REENTER means highlight' would produce exactly the wrong expectation here. COTRN01C satisfies G38 in the strongest available form by applying no highlight in EITHER state: it does not copy CSSETATY - its eight COPY statements at :52-72 are COCOM01Y, COTRN01, COTTL01Y, CSDAT01Y, CSMSG01Y, CVTRA05Y, DFHAID and DFHBMSCA - and declares no FLG-<field>-NOT-OK pair for a resolver to act on. The decision is still resolved through the same FieldAttributeSetter the highlighting screens use and comes back untouched, which is why 'attributes' is present and empty rather than absent. STATELESSNESS (rule R6, gate G37): the whole 218-byte area travels in the payload and nothing is held server-side. app/cpy/COCOM01Y.cpy is 34 + 84 + 12 + 16 + 14 = 160 bytes and the CDEMO-CT01-INFO extension at :53-61 is 16 + 16 + 8 + 1 + 1 + 16 = 58, which is 218 in all; the 58-byte extension is carried as its own field rather than folded into the 160-byte context all seventeen controllers depend on, and all 22 fields are pinned so none is left unchecked. The AID travels in the payload too. A field the passed area does not name keeps what its picture gives it - spaces for PIC X, zeros for PIC 9 - so CDEMO-CT01-NEXT-PAGE-FLG is blank rather than the 'N' of its VALUE clause at :57, because :98 overwrote WORKING-STORAGE with the caller's bytes. CDEMO-PGM-CONTEXT remains 1. nextProgram carries COTRN01C because the task ends at EXEC CICS RETURN TRANSID(WS-TRANID) and app/csd/CARDDEMO.CSD:388-398 binds TRANSACTION(CT01) to PROGRAM(COTRN01C), so the operator's next input returns to this same program; nextMapset and nextMap carry the COTRN01 and COTRN1A the SEND at :219-225 names; and termination is RETURN_TRANSID. There is no EXEC CICS XCTL on this path at all, so no transfer target is invented. THE I/O OUTCOME (gate G47). This case is the DFHRESP(NORMAL) arm - FileStatus '00' - of the program's single keyed-read call site, and it reaches it from REAL SEEDED DATA rather than from a forced outcome: forcedOutcomes is empty, the fixture-backed read matches the record's own 16-byte TRAN-ID span against the key :172 left in the field, and TRANSACT's final state is reported UNCHANGED. That last point is an assertion and not bookkeeping: :275 states the UPDATE option, which takes a record lock, so a translation that took the lock and then rewrote the record would be caught by the three pinned row images and by nothing in the response. The repository returns a discriminated outcome carrying the status with its CICS RESP and RESP2 and never abends on the caller's behalf. BASELINE PROVENANCE (practice B12): every expected value here is STATICALLY DERIVED, by structured reading of MAIN-PARA, PROCESS-ENTER-KEY, READ-TRANSACT-FILE, SEND-TRNVIEW-SCREEN and POPULATE-HEADER-INFO cross-checked against the copybook byte layouts (app/cpy/CVTRA05Y.cpy, app/cpy/COCOM01Y.cpy, app/cpy/COTTL01Y.cpy, app/cpy/CSDAT01Y.cpy, app/cpy/CSMSG01Y.cpy), the BMS field contract (app/cpy-bms/COTRN01.CPY and app/bms/COTRN01.bms) and the file and transaction definitions in app/csd/CARDDEMO.CSD:76-87. Both the record images and the twenty-one widths were computed from those span tables rather than typed by eye, and every length was measured programmatically. It was NEVER captured from a live COBOL execution: running the legacy programs is empirically impossible in this environment, which AAP section 0.7.6 establishes with eight independently verified blockers, and the change of provenance is escalated as risk R-A rather than absorbed silently. No user rules were provided for this project - review_rules returns exactly 'No user rules provided.' - so the AAP section 0.10.2 practices bind instead, and their absence is not treated as licence to lower the bar. GATES DISCHARGED: G15 (one of exactly twenty cases in parity/COTRN01C), G18 (the diff count must be zero, per module rather than per build), G19 (three 350-byte records, each pinned as a whole image so the total width is asserted), G21 (FILLER present and space-filled at 331-350), G23 (the amount is scale 2 with its sign overpunched into byte 143 and is rendered through a BigDecimal path, never a double), G30 (both ordered EVALUATEs honoured in source order - EIBAID at :112 takes the first of its five arms and WS-RESP-CD at :280 the first of its three, with WHEN OTHER last in each), G37, G38 (REENTER WITHOUT error, so no highlight), G47 (the '00' outcome, reached from seeded data) and G51 (the controller is driven as a plain object, with no MockMvc, no TestRestTemplate, no servlet container and no HTTP in the path). Deliberately NOT asserted, because this program or this path has none of them: G32 (zero GO TO in COTRN01C), G35 (zero CALL 'CEE3ABD', which is why the return code is 0 and no abend path exists), G39 (no pagination), G40 (no XCTL on this path) and G43 (no 9300-CHECK-CHANGE-IN-REC). COTRN01C performs no arithmetic at all - zero ADD, SUBTRACT, COMPUTE, MULTIPLY and DIVIDE - and ROUNDED appears zero times in it as in all 28 programs, so any scaling is RoundingMode.DOWN by rule R2.",
   "unitKind" : "CONTROLLER_POJO",
   "inputs" : {
     "TRANSACT" : {
-      "rows" : [ "0000000000000001010005POS TERM  GROCERY PURCHASE AT PARITY MARKET WITH A DESCRIPTION THAT OVERFLOWS THE SCREEN FIELD                0000005047G800000001PARITY MARKET NUMBER ONE OF SEVERAL LONG NAMES    SPRINGFIELD MASSACHUSETTS USA                     01103-123441111111111111112022-07-19 23:12:34.1234562022-07-20 01:02:03.654321                    ", "0000000000000002020010ONLINE    REFUND ISSUED BY MERCHANT                                                                           0000000500}800000002PARITY REFUNDS LIMITED                            PORTLAND OREGON                                   97201-000242222222222222222022-07-18 08:00:00.0000012022-07-18 09:30:00.000002                    ", "0000000000000003034444BATCH     LARGE SETTLEMENT                                                                                    1234567891B800000003PARITY SETTLEMENT HOUSE                           NEW YORK NEW YORK                                 10001-000343333333333333332022-07-17 12:00:00.0000032022-07-17 12:00:01.000004                    " ]
+      "rows" : [
+        "0000000000000801010005POS TERM  GROCERY PURCHASE AT THE PARITY MARKET 0801                                                          0000002550A800000801PARITY MARKET 0801                                SPRINGFIELD MASSACHUSETTS                         01103-080140000000000008012022-07-13 09:15:00.0008012022-07-13 09:15:01.000801                    ",
+        "0000000000000802030007BRANCH    MONTHLY SERVICE CHARGE POSTED BY PARITY BRANCH 0802                                                 0000123456G800000802PARITY BRANCH DESK 0802                           SPRINGFIELD ILLINOIS                              62701-080240000000000008022022-07-14 10:20:30.0008022022-07-15 11:21:31.000802                    ",
+        "0000000000000803020010ONLINE    REFUND ISSUED BY THE PARITY MARKET 0803                                                             0000009999I800000803PARITY REFUNDS LIMITED 0803                       PORTLAND OREGON                                   97201-080340000000000008032022-07-16 08:00:00.0008032022-07-16 09:30:00.000803                    "
+      ]
     }
   },
+  "jobParameters" : {},
   "screenRequest" : {
     "eibcalen" : 218,
     "aid" : "DFHENTER",
@@ -17,13 +22,9 @@
       "CDEMO-PGM-CONTEXT" : "1"
     },
     "mapFields" : {
-      "TRNIDINI" : "0000000000000001"
+      "TRNIDINI" : "0000000000000802"
     },
-    "forcedOutcomes" : {
-      "readForUpdate" : {
-        "outcome" : "OTHER"
-      }
-    }
+    "forcedOutcomes" : {}
   },
   "expectedResponse" : {
     "nextProgram" : "COTRN01C",
@@ -53,65 +54,89 @@
       "CDEMO-CT01-TRN-SEL-FLG" : " ",
       "CDEMO-CT01-TRN-SELECTED" : "                "
     },
-    "sends" : [ {
-      "fields" : {
-        "TRNNAMEO" : "CT01",
-        "TITLE01O" : "      AWS Mainframe Modernization       ",
-        "CURDATEO" : "07/19/22",
-        "PGMNAMEO" : "COTRN01C",
-        "TITLE02O" : "              CardDemo                  ",
-        "CURTIMEO" : "23:12:34",
-        "TRNIDINO" : "0000000000000001",
-        "TRNIDO" : "                ",
-        "CARDNUMO" : "                ",
-        "TTYPCDO" : "  ",
-        "TCATCDO" : "    ",
-        "TRNSRCO" : "          ",
-        "TDESCO" : "                                                            ",
-        "TRNAMTO" : "            ",
-        "TORIGDTO" : "          ",
-        "TPROCDTO" : "          ",
-        "MIDO" : "         ",
-        "MNAMEO" : "                              ",
-        "MCITYO" : "                         ",
-        "MZIPO" : "          ",
-        "ERRMSGO" : "Unable to lookup Transaction...                                               "
-      },
-      "attributes" : { }
-    } ],
+    "sends" : [
+      {
+        "fields" : {
+          "TRNNAMEO" : "CT01",
+          "TITLE01O" : "      AWS Mainframe Modernization       ",
+          "CURDATEO" : "07/19/22",
+          "PGMNAMEO" : "COTRN01C",
+          "TITLE02O" : "              CardDemo                  ",
+          "CURTIMEO" : "23:12:34",
+          "TRNIDINO" : "0000000000000802",
+          "TRNIDO" : "0000000000000802",
+          "CARDNUMO" : "4000000000000802",
+          "TTYPCDO" : "03",
+          "TCATCDO" : "0007",
+          "TRNSRCO" : "BRANCH    ",
+          "TDESCO" : "MONTHLY SERVICE CHARGE POSTED BY PARITY BRANCH 0802         ",
+          "TRNAMTO" : "+00012345.67",
+          "TORIGDTO" : "2022-07-14",
+          "TPROCDTO" : "2022-07-15",
+          "MIDO" : "800000802",
+          "MNAMEO" : "PARITY BRANCH DESK 0802       ",
+          "MCITYO" : "SPRINGFIELD ILLINOIS     ",
+          "MZIPO" : "62701-0802",
+          "ERRMSGO" : "                                                                              "
+        },
+        "attributes" : {}
+      }
+    ],
     "cursorField" : "TRNIDINL",
     "termination" : "RETURN_TRANSID"
   },
-  "expectedWrites" : [ ],
-  "expectedFinalState" : [ {
-    "dataset" : "TRANSACT",
-    "rowIndex" : 0,
-    "expectedBytes" : "0000000000000001010005POS TERM  GROCERY PURCHASE AT PARITY MARKET WITH A DESCRIPTION THAT OVERFLOWS THE SCREEN FIELD                0000005047G800000001PARITY MARKET NUMBER ONE OF SEVERAL LONG NAMES    SPRINGFIELD MASSACHUSETTS USA                     01103-123441111111111111112022-07-19 23:12:34.1234562022-07-20 01:02:03.654321                    "
-  }, {
-    "dataset" : "TRANSACT",
-    "rowIndex" : 1,
-    "expectedBytes" : "0000000000000002020010ONLINE    REFUND ISSUED BY MERCHANT                                                                           0000000500}800000002PARITY REFUNDS LIMITED                            PORTLAND OREGON                                   97201-000242222222222222222022-07-18 08:00:00.0000012022-07-18 09:30:00.000002                    "
-  }, {
-    "dataset" : "TRANSACT",
-    "rowIndex" : 2,
-    "expectedBytes" : "0000000000000003034444BATCH     LARGE SETTLEMENT                                                                                    1234567891B800000003PARITY SETTLEMENT HOUSE                           NEW YORK NEW YORK                                 10001-000343333333333333332022-07-17 12:00:00.0000032022-07-17 12:00:01.000004                    "
-  } ],
+  "expectedWrites" : [],
+  "expectedFinalState" : [
+    {
+      "dataset" : "TRANSACT",
+      "rowIndex" : 0,
+      "expectedBytes" : "0000000000000801010005POS TERM  GROCERY PURCHASE AT THE PARITY MARKET 0801                                                          0000002550A800000801PARITY MARKET 0801                                SPRINGFIELD MASSACHUSETTS                         01103-080140000000000008012022-07-13 09:15:00.0008012022-07-13 09:15:01.000801                    "
+    },
+    {
+      "dataset" : "TRANSACT",
+      "rowIndex" : 1,
+      "fields" : {
+        "TRAN-ID" : "0000000000000802",
+        "TRAN-TYPE-CD" : "03",
+        "TRAN-CAT-CD" : "0007",
+        "TRAN-SOURCE" : "BRANCH    ",
+        "TRAN-DESC" : "MONTHLY SERVICE CHARGE POSTED BY PARITY BRANCH 0802                                                 ",
+        "TRAN-AMT" : "12345.67",
+        "TRAN-MERCHANT-ID" : "800000802",
+        "TRAN-MERCHANT-NAME" : "PARITY BRANCH DESK 0802                           ",
+        "TRAN-MERCHANT-CITY" : "SPRINGFIELD ILLINOIS                              ",
+        "TRAN-MERCHANT-ZIP" : "62701-0802",
+        "TRAN-CARD-NUM" : "4000000000000802",
+        "TRAN-ORIG-TS" : "2022-07-14 10:20:30.000802",
+        "TRAN-PROC-TS" : "2022-07-15 11:21:31.000802",
+        "FILLER" : "                    "
+      },
+      "expectedBytes" : "0000000000000802030007BRANCH    MONTHLY SERVICE CHARGE POSTED BY PARITY BRANCH 0802                                                 0000123456G800000802PARITY BRANCH DESK 0802                           SPRINGFIELD ILLINOIS                              62701-080240000000000008022022-07-14 10:20:30.0008022022-07-15 11:21:31.000802                    "
+    },
+    {
+      "dataset" : "TRANSACT",
+      "rowIndex" : 2,
+      "expectedBytes" : "0000000000000803020010ONLINE    REFUND ISSUED BY THE PARITY MARKET 0803                                                             0000009999I800000803PARITY REFUNDS LIMITED 0803                       PORTLAND OREGON                                   97201-080340000000000008032022-07-16 08:00:00.0008032022-07-16 09:30:00.000803                    "
+    }
+  ],
   "expectedReturnCode" : 0,
-  "expectedMessages" : [ {
-    "channel" : "WS_MESSAGE_80",
-    "text" : "Unable to lookup Transaction...                                                 "
-  }, {
-    "channel" : "SCREEN_ERRMSG_78",
-    "text" : "Unable to lookup Transaction...                                               "
-  }, {
-    "channel" : "DISPLAY_LINE",
-    "text" : "RESP:*********REAS:000000000"
-  } ],
-  "normalisations" : [ ],
-  "expectedDatasets" : [ {
-    "dataset" : "TRANSACT",
-    "channel" : "FINAL_STATE",
-    "rowCount" : 3,
-    "recordLength" : 350
-  } ]
+  "expectedMessages" : [
+    {
+      "channel" : "WS_MESSAGE_80",
+      "text" : "                                                                                "
+    },
+    {
+      "channel" : "SCREEN_ERRMSG_78",
+      "text" : "                                                                              "
+    }
+  ],
+  "normalisations" : [],
+  "expectedDatasets" : [
+    {
+      "dataset" : "TRANSACT",
+      "channel" : "FINAL_STATE",
+      "rowCount" : 3,
+      "recordLength" : 350
+    }
+  ]
 }
