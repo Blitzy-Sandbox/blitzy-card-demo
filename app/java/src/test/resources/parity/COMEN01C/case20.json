@@ -1,7 +1,7 @@
 {
   "program": "COMEN01C",
   "caseId": "case20",
-  "description": "All twenty name-labelled DFHMDF fields of mapset COMEN01, pinned in one send. The six POPULATE-HEADER-INFO fields of app/cbl/COMEN01C.cbl:212-231 - TRNNAMEO, TITLE01O, CURDATEO, PGMNAMEO, TITLE02O and CURTIMEO - exist only in the controller projection, which is why they cannot be observed on a service case at all, and CURDATEO and CURTIMEO are comparable only because the case pins the clock. Each width comes from the matching xxxI item of app/cpy-bms/COMEN01.CPY and from nowhere else: the xxxL, xxxF and xxxA items are length, flag and attribute metadata rather than payload, which is why ERRMSGC appears as an attribute and not as a field. The date is rendered MM/DD/YY from WS-CURDATE-YEAR(3:2) and the time HH:MM:SS, both eight bytes.",
+  "description": "OPTION 09 ON THE DFHENTER ARM WITH A FULLY POPULATED COMMUNICATION AREA - the closing case of this directory and the only one that pins the complete set of context mutations PROCESS-ENTER-KEY performs at app/cbl/COMEN01C.cbl:147-151 while simultaneously proving that every field it does not touch survives byte for byte. Where case19 carries a full area through the DFHPF3 path, which mutates exactly one field, this carries a full area through the option-dispatch path, which mutates exactly three - and proves that the two commented-out MOVE statements between them mutate none. THE PATH, STATEMENT BY STATEMENT: line 82 finds EIBCALEN is 160 so the ELSE at 85 is taken and line 86 copies DFHCOMMAREA into CARDDEMO-COMMAREA; line 87 IF NOT CDEMO-PGM-REENTER is FALSE because the inbound CDEMO-PGM-CONTEXT is 1, so the ELSE at 91 performs RECEIVE-MENU-SCREEN and reaches the ordered EVALUATE EIBAID at 93-103, whose FIRST arm - WHEN DFHENTER at 94 - is taken (gate G30; arm two is case14 and case19, arm three case15 and case16). In PROCESS-ENTER-KEY the backward scan at 117-121 starts WS-IDX at LENGTH OF OPTIONI, which app/cpy-bms/COMEN01.CPY:132 declares PIC X(2), and stops immediately because OPTIONI(2:1) holds '9' and is not a space, so WS-IDX is 2; line 122 moves the full two bytes into WS-OPTION-X PIC X(02) JUST RIGHT giving '09'; the INSPECT at 123 finds no space to replace; line 124 gives WS-OPTION the value 09 and line 125 echoes it into OPTIONO. All three terms of the guard at 127-129 are false - the value is numeric, 09 is not greater than CDEMO-MENU-OPT-COUNT of 10 (app/cpy/COMEN02Y.cpy:21) and it is not zero - so no rejection message is painted and WS-ERR-FLG stays 'N'. The authorisation filter at 136-137 is skipped on its FIRST conjunct alone: 88 CDEMO-USRTYP-USER (app/cpy/COCOM01Y.cpy:28) is false for the inbound 'A', so no No access text is composed whatever the authorisation column holds - and for option 9 that column is 'U' in any event, at app/cpy/COMEN02Y.cpy:78. Line 145 IF NOT ERR-FLG-ON is therefore true, and line 146 finds CDEMO-MENU-OPT-PGMNAME(9)(1:5) is 'CORPT' and not 'DUMMY', because option 9's program is CORPT00C at app/cpy/COMEN02Y.cpy:77 and CDEMO-MENU-OPT-PGMNAME is declared PIC X(08) at :91. THE THREE-GROUP AUDIT: the sixteen-field area is CDEMO-FROM-TRANID X(04) 4, CDEMO-FROM-PROGRAM X(08) 8, CDEMO-TO-TRANID X(04) 4, CDEMO-TO-PROGRAM X(08) 8, CDEMO-USER-ID X(08) 8, CDEMO-USER-TYPE X(01) 1, CDEMO-PGM-CONTEXT 9(01) 1, CDEMO-CUST-ID 9(09) 9, CDEMO-CUST-FNAME X(25) 25, CDEMO-CUST-MNAME X(25) 25, CDEMO-CUST-LNAME X(25) 25, CDEMO-ACCT-ID 9(11) 11, CDEMO-ACCT-STATUS X(01) 1, CDEMO-CARD-NUM 9(16) 16, CDEMO-LAST-MAP X(7) 7 and CDEMO-LAST-MAPSET X(7) 7, summing to exactly 160 bytes (app/cpy/COCOM01Y.cpy:19-44), and all sixteen are pinned explicitly because a field that is not stated cannot be asserted unchanged. CHANGED, three: CDEMO-FROM-TRANID becomes CM00, from WS-TRANID PIC X(04) VALUE 'CM00' at COMEN01C.cbl:37 (line 147); CDEMO-FROM-PROGRAM becomes COMEN01C, from WS-PGMNAME PIC X(08) VALUE 'COMEN01C' at :36 (line 148); CDEMO-PGM-CONTEXT becomes 0, from MOVE ZEROS at line 151, which leaves the successor in its own CDEMO-PGM-ENTER state so that CORPT00C paints on arrival rather than validating. DELIBERATELY UNCHANGED THOUGH AN ASSIGNMENT EXISTS IN THE SOURCE, two: CDEMO-USER-ID stays ADMIN042 and CDEMO-USER-TYPE stays 'A', because lines 149 and 150 - MOVE WS-USER-ID TO CDEMO-USER-ID and MOVE SEC-USR-TYPE TO CDEMO-USER-TYPE - are COMMENTED OUT in the source and must remain inert. This is the highest-value assertion in the file. Line 150 is the only statement anywhere in the program that would ever assign a user type, so user type is strictly inbound-only, which is exactly why the filter at 136 reads it and never writes it; and WS-USER-ID is not declared in this program's WORKING-STORAGE at all, so line 149 could not even compile if it were uncommented. Completing either line is the single most plausible unrequested change to COMEN01C, and an implementation that stamped a signed-on identity into the outbound area differs here in a field the run must leave alone. It would also be a security posture nobody asked for: the program performs no USRSEC lookup, no hashing and no re-verification, so adding one would be a behaviour change rather than an improvement. UNCHANGED AND NEVER REFERENCED, eleven: CDEMO-TO-TRANID, CDEMO-TO-PROGRAM, CDEMO-CUST-ID, CDEMO-CUST-FNAME, CDEMO-CUST-MNAME, CDEMO-CUST-LNAME, CDEMO-ACCT-ID, CDEMO-ACCT-STATUS, CDEMO-CARD-NUM, CDEMO-LAST-MAP and CDEMO-LAST-MAPSET all leave exactly as they arrived, at full declared width. Note CDEMO-TO-PROGRAM in particular: it is UNCHANGED here, in deliberate contrast with case14, case16 and case19, where line 97 overwrites it with 'COSGN00C' on the DFHPF3 arm. The dispatch path never touches it - line 153 transfers to CDEMO-MENU-OPT-PGMNAME(WS-OPTION) and reads nothing from CDEMO-TO-PROGRAM - so it arrives as the stale COACTVWC a previous account-view navigation left and stays that. WHY THE INBOUND VALUES ARE THESE VALUES: CDEMO-FROM-TRANID arrives CC00 and CDEMO-FROM-PROGRAM arrives COSGN00C, the state COSGN00C hands a caller over in, and - critically - NOT CM00 and NOT COMEN01C, so lines 147 and 148 are observed to CHANGE both rather than to agree with them coincidentally. CDEMO-USER-ID arrives ADMIN042, an eight-byte value distinctive enough that any write to the field is unmistakable in a diff. CDEMO-TO-PROGRAM arrives COACTVWC, which is neither the transfer target CORPT00C nor the sign-on default COSGN00C, so an implementation that wrote the target into it, or that ran RETURN-TO-SIGNON-SCREEN's default at line 173, fails here. CDEMO-LAST-MAP and CDEMO-LAST-MAPSET arrive as the sign-on pair COSGN0A and COSGN00 - both exactly the seven bytes COCOM01Y declares - so an implementation that stamped this program's own COMEN1A and COMEN01 into them fails too; COMEN01C references neither field anywhere in its 282 lines, which is what distinguishes the program's map identity from the conversation's record of it. The customer, account and card identifiers are genuine rather than invented: app/data/ASCII/cardxref.txt row 1 binds card 0500024453765740 to customer 000000050 and account 00000000050, app/data/ASCII/custdata.txt gives that customer the names Aniya, Alba and Von, and app/data/ASCII/acctdata.txt gives that account the active status Y. They are a different triple from case19's on purpose, so the two full-area cases cannot be mistaken for one another. Every PIC X value is written to its full width with its trailing spaces intact and every PIC 9 value is zero-filled to its full nine, eleven or sixteen digits, and the bytes are US-ASCII by name rather than by platform default. The AID is the DFHENTER mnemonic resolved through common.CicsAid and never a hand-typed byte: DFHAID is IBM-supplied and absent from this repository, which makes CicsAid its single reproduction (risk R-D). NO MESSAGE, NO SEND, NO COMING-SOON: EXEC CICS XCTL at 152-155 never returns, so the statements after END-IF at 156 - MOVE SPACES TO WS-MESSAGE, MOVE DFHGREEN TO ERRMSGC, the STRING at 159-163 and PERFORM SEND-MENU-SCREEN at 164 - are NOT executed (rule R7). Had they been, the composition for option 9 would read 'This option Transactionis coming soon ...', because the middle operand is DELIMITED BY SPACE and stops at the first space of the thirty-five-byte name 'Transaction Reports                ' while the suffix 'is coming soon ...' carries no leading space; this case asserts that text ABSENT, and the message colour is not overridden either, since MOVE DFHGREEN TO ERRMSGC at 158 sits in the same unreached block. Because no map is sent the response carries no screen send at all, exactly as the other transfer cases carry none, so the twelve OPTN00nO lines and the echoed OPTIONO are not pinned here: control leaves at line 152 before SEND-MENU-SCREEN could compose them, and pinning a screen that was never painted would assert the opposite of what the path does. The echo is nevertheless real - line 125 moved '09' into OPTIONO - and it is the service cases, whose adapter checks the echoed value directly, that pin it. The one line this run emits is the seventy-eight-byte ERRMSGO that line 80 blanked, declared on the SCREEN_ERRMSG_78 channel because a controller run produces the screen field app/cpy-bms/COMEN01.CPY:260 declares PIC X(78) rather than the eighty-byte WS-MESSAGE of COMEN01C.cbl:38, which is WORKING-STORAGE and is what the service cases pin instead; the differ refuses a comparison across the two channels. nextMapset and nextMap are omitted rather than named, because neither XCTL names a map - line 153 names a program and line 176 names a program - and telling the client to paint the screen this program is leaving is the one answer that is certainly wrong: the successor names its own map. RED IS THE MAP, NOT A HIGHLIGHT: gate G38 is usually phrased around the DFHRED-plus-asterisk highlight CSSETATY applies, and that highlight has no site in this program - the COPY list at 50-61 is COCOM01Y, COMEN02Y, COMEN01, COTTL01Y, CSDAT01Y, CSMSG01Y, CSUSR01Y, DFHAID and DFHBMSCA, with neither CSSETATY nor CSSTRPFY among them - so no asterisk and no DFHRED is ever written to a field and neither may appear in any expectation here. G38 is honoured across this directory through the ENTER-versus-REENTER split instead, and this is a REENTER invocation that produces no error output whatsoever. No farewell text appears either: COTTL01Y's CCDA-THANK-YOU and CSMSG01Y's CCDA-MSG-THANK-YOU are both copied in and neither is ever referenced, a case-insensitive search for THANK over app/cbl/COMEN01C.cbl returning zero hits. STATELESSNESS CLOSURE (gate G37, rule R6): every scrap of conversation state - the 160-byte CARDDEMO-COMMAREA, the AID byte and the screen's OPTIONI value - arrives in the request and leaves in the response, and nothing is read from or written to a session, a cache, a static field or a dataset. The EXEC CICS XCTL becomes a nextProgram response field the client acts on, so there is no server-side forward, no redirect chain and no session affinity (gate G40). Taken with case19, which mutates exactly one context field on the PF3 path, this case - which mutates exactly three on the dispatch path - closes the argument that the translation mutates precisely the fields the source mutates and rebuilds nothing. The unit holds no static mutable state, because COBOL WORKING-STORAGE becoming a Java field would break request isolation and test determinism (practice B9), and running the twenty cases in any order must yield identical results. DETERMINISM (practice B7): the clock is pinned to the folder-wide 2022-07-19T23:12:33, the instant COMEN01C's own version footer at line 281 carries, so it is anchored in the source rather than chosen, and there is no wall clock, no randomness and no locale-dependent formatting. It is pinned in screenRequest and not in jobParameters, because ParityCase refuses jobParameters for any unitKind other than BATCH_JOB - a job parameter models a JCL PARM, and COMEN01C is reached by CICS transaction CM00 rather than by EXEC PGM=. POPULATE-HEADER-INFO does not run on this path, so the instant changes nothing this case asserts; it is declared all the same so that one clock governs the whole directory and no two cases can differ by their clock. NO DATASET ACTIVITY: inputs, expectedWrites and expectedFinalState are all empty and no normalisation is declared, because COMEN01C has no SELECT, no FD and no file-handling EXEC CICS command - its five EXEC CICS statements are one RETURN, two XCTL, one SEND MAP and one RECEIVE MAP - so gates G19, G21 and G47 have no subject here, and case18 pins that absence for the directory by seeding the security file and expecting nothing. expectedReturnCode is 0: an XCTL is a successful termination, an online transaction sets no step return code, and the program contains no CALL 'CEE3ABD' and no GO TO, so gates G35 and G32 have no subject either - as do the arithmetic gates G22 to G29, since the program declares no decimal PICTURE and performs no arithmetic at all. Gates pinned: G15, G18, G30, G37, G40 and G51 - the unit is reached as a plain Java object, with no MockMvc, no servlet container, no application context and no JobLauncher between the assertion and the code. RECORDED DIVERGENCE: the build plan assigned this case the SERVICE unit kind, but COMEN01CParityTest names case20 among its three CONTROLLER_POJO cases, dispatches it through MainMenuController as a plain Java object and asserts that unit kind for it, while ParityHarness refuses a kind the adapter does not construct. The declared kind therefore follows the harness contract and the case keeps the subject the plan gave it - a fully populated area carried through the option-09 dispatch - with the divergence recorded here rather than silently resolved in either direction. The subject loses nothing by the choice: the three mutations, the two non-mutations and the eleven pass-throughs are all observable in the controller's projection of the same area, and the controller path adds the eighty-to-seventy-eight narrowing to the evidence. PROVENANCE (risk R-A): every value above is statically derived - read out of app/cbl/COMEN01C.cbl paragraph by paragraph and cross-checked against the 160-byte layout of app/cpy/COCOM01Y.cpy, the option table of app/cpy/COMEN02Y.cpy, the xxxI PICTURE clauses of app/cpy-bms/COMEN01.CPY, the DFHMDF definitions of app/bms/COMEN01.bms, the transaction bindings of app/csd/CARDDEMO.CSD and the real fixtures under app/data/ASCII - and NONE of it was captured from a live execution of the legacy program, which is empirically impossible in this environment for eight verified reasons: no z/OS and no CICS emulator, an indexed file handler the available compiler reports as disabled, subprogram linkage that cannot produce an executable, a copybook that will not parse, no Language Environment CEE services, EBCDIC fixtures needing binary handling the compiler is not configured for, and DFHAID, DFHBMSCA and DFHATTR all absent from the repository. The substitution changes the provenance of the expected values and nothing else, and it is escalated for confirmation rather than absorbed.",
   "unitKind": "CONTROLLER_POJO",
   "inputs": {},
   "screenRequest": {
@@ -12,65 +12,48 @@
     "commarea": {
       "CDEMO-FROM-TRANID": "CC00",
       "CDEMO-FROM-PROGRAM": "COSGN00C",
-      "CDEMO-TO-PROGRAM": "COMEN01C",
-      "CDEMO-USER-ID": "ADMIN001",
+      "CDEMO-TO-TRANID": "CAVW",
+      "CDEMO-TO-PROGRAM": "COACTVWC",
+      "CDEMO-USER-ID": "ADMIN042",
       "CDEMO-USER-TYPE": "A",
-      "CDEMO-PGM-CONTEXT": "0"
+      "CDEMO-PGM-CONTEXT": "1",
+      "CDEMO-CUST-ID": "000000050",
+      "CDEMO-CUST-FNAME": "Aniya                    ",
+      "CDEMO-CUST-MNAME": "Alba                     ",
+      "CDEMO-CUST-LNAME": "Von                      ",
+      "CDEMO-ACCT-ID": "00000000050",
+      "CDEMO-ACCT-STATUS": "Y",
+      "CDEMO-CARD-NUM": "0500024453765740",
+      "CDEMO-LAST-MAP": "COSGN0A",
+      "CDEMO-LAST-MAPSET": "COSGN00"
     },
-    "mapFields": {},
+    "mapFields": {
+      "OPTIONI": "09"
+    },
     "forcedOutcomes": {}
   },
   "expectedResponse": {
-    "nextMapset": "COMEN01",
-    "nextMap": "COMEN1A",
+    "nextProgram": "CORPT00C",
     "navigation": {
-      "CDEMO-FROM-TRANID": "CC00",
-      "CDEMO-FROM-PROGRAM": "COSGN00C",
-      "CDEMO-TO-TRANID": "    ",
-      "CDEMO-TO-PROGRAM": "COMEN01C",
-      "CDEMO-USER-ID": "ADMIN001",
+      "CDEMO-FROM-TRANID": "CM00",
+      "CDEMO-FROM-PROGRAM": "COMEN01C",
+      "CDEMO-TO-TRANID": "CAVW",
+      "CDEMO-TO-PROGRAM": "COACTVWC",
+      "CDEMO-USER-ID": "ADMIN042",
       "CDEMO-USER-TYPE": "A",
-      "CDEMO-PGM-CONTEXT": "1",
-      "CDEMO-CUST-ID": "000000000",
-      "CDEMO-CUST-FNAME": "                         ",
-      "CDEMO-CUST-MNAME": "                         ",
-      "CDEMO-CUST-LNAME": "                         ",
-      "CDEMO-ACCT-ID": "00000000000",
-      "CDEMO-ACCT-STATUS": " ",
-      "CDEMO-CARD-NUM": "0000000000000000",
-      "CDEMO-LAST-MAP": "       ",
-      "CDEMO-LAST-MAPSET": "       "
+      "CDEMO-PGM-CONTEXT": "0",
+      "CDEMO-CUST-ID": "000000050",
+      "CDEMO-CUST-FNAME": "Aniya                    ",
+      "CDEMO-CUST-MNAME": "Alba                     ",
+      "CDEMO-CUST-LNAME": "Von                      ",
+      "CDEMO-ACCT-ID": "00000000050",
+      "CDEMO-ACCT-STATUS": "Y",
+      "CDEMO-CARD-NUM": "0500024453765740",
+      "CDEMO-LAST-MAP": "COSGN0A",
+      "CDEMO-LAST-MAPSET": "COSGN00"
     },
-    "sends": [
-      {
-        "fields": {
-          "TRNNAMEO": "CM00",
-          "TITLE01O": "      AWS Mainframe Modernization       ",
-          "CURDATEO": "07/19/22",
-          "PGMNAMEO": "COMEN01C",
-          "TITLE02O": "              CardDemo                  ",
-          "CURTIMEO": "23:12:33",
-          "OPTN001O": "01. Account View                        ",
-          "OPTN002O": "02. Account Update                      ",
-          "OPTN003O": "03. Credit Card List                    ",
-          "OPTN004O": "04. Credit Card View                    ",
-          "OPTN005O": "05. Credit Card Update                  ",
-          "OPTN006O": "06. Transaction List                    ",
-          "OPTN007O": "07. Transaction View                    ",
-          "OPTN008O": "08. Transaction Add                     ",
-          "OPTN009O": "09. Transaction Reports                 ",
-          "OPTN010O": "10. Bill Payment                        ",
-          "OPTN011O": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
-          "OPTN012O": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
-          "OPTIONO": "\u0000\u0000",
-          "ERRMSGO": "                                                                              "
-        },
-        "attributes": {
-          "ERRMSGC": "DFHRED"
-        }
-      }
-    ],
-    "termination": "RETURN_TRANSID"
+    "sends": [],
+    "termination": "XCTL"
   },
   "expectedWrites": [],
   "expectedFinalState": [],

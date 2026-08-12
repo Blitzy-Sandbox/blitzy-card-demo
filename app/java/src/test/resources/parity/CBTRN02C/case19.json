@@ -1,29 +1,28 @@
 {
   "program": "CBTRN02C",
   "caseId": "case19",
-  "description": "Create then rewrite, within one run and on one key - the transition the guard at :481 exists for. TCATBALF is seeded empty and the two dailytran rows of case09 both address key (26,01,0001). The first record's READ at :474 reports '23', so the not-found line is displayed once and 2700-A creates the record at +281.77 with its 22 reserved bytes left as spaces, INITIALIZE having skipped the FILLER. The second record's READ then reports '00' - the row the first record wrote is there to be found - so WS-CREATE-TRANCAT-REC stays 'N', 2700-B REWRITEs, and the balance accumulates to 655.43 while the FILLER stays whatever the READ transferred, which is the spaces the create left. Exactly ONE not-found line is displayed for two transactions on the same key, and TCATBALF ends with one row rather than two: a translation that always created, or always rewrote, would fail on the line count or on the row count before it failed on a byte.",
+  "description": "The '00' OR '23' tolerance of 2700-UPDATE-TCATBAL read from its FAILING side, and the exact counterpart of case02, which reaches the same guard with '23' and is waved through. THE TWO LADDERS AT THIS SITE, IN SOURCE ORDER. 2700-UPDATE-TCATBAL :467-501 builds the 17-byte FD-TRAN-CAT-KEY of :93-96 at :469-471 from XREF-ACCT-ID, DALYTRAN-TYPE-CD and DALYTRAN-CAT-CD - the account the cross reference resolved, not the one the transaction names - moves 'N' into WS-CREATE-TRANCAT-REC (PIC X(01) VALUE 'N' at :190) at :473, and reads TCATBAL-FILE INTO TRAN-CAT-BAL-RECORD at :474. Two ordered ladders follow, and only the first of them runs here. THE STATUS LADDER :481-485 is IF TCATBALF-STATUS = '00' OR '23', quoted from :481 where the source carries two spaces after the IF and two after the first literal; it moves 0 into APPL-RESULT at :482 when the test holds and 12 at :484 when it does not. The read reports '30', which is neither value, so :484 runs. 88 APPL-AOK is declared VALUE 0 at :143 over APPL-RESULT PIC S9(9) COMP at :142, and APPL-RESULT now holds 12, so :486 is FALSE, :487 CONTINUE is skipped and the ELSE at :488 runs its four statements in order: :489 DISPLAY 'ERROR READING TRANSACTION BALANCE FILE', :490 MOVE TCATBALF-STATUS TO IO-STATUS, :491 PERFORM 9910-DISPLAY-IO-STATUS, :492 PERFORM 9999-ABEND-PROGRAM. THE CREATE-VS-UPDATE LADDER :495-499 - IF WS-CREATE-TRANCAT-REC = 'Y' PERFORM 2700-A-CREATE-TCATBAL-REC ELSE PERFORM 2700-B-UPDATE-TCATBAL-REC - sits BELOW the abend and is therefore never consulted: neither the create arm nor the update arm runs, and that ordering is the assertion rather than an incidental consequence. Gate G30 is about ordered decisions, and CBTRN02C contains no EVALUATE at all - its verb census is EVALUATE 0, GO TO 0, ROUNDED 0, COMPUTE 1 and exactly two 88-levels, APPL-AOK VALUE 0 and APPL-EOF VALUE 16 at :143-144 - so G30 governs nested-IF ladders such as these two rather than WHEN arms. The contrast with case02 is the whole point: '23' and '30' are both 'not 00', and only one of them is tolerated. A translation that widened the guard to 'anything but a hard error' would pass case02 and fail here; one that narrowed it to '00' alone would pass here and fail case02. WHY NO 'Creating.' LINE IS DISPLAYED. The DISPLAY 'TCATBAL record not found for key : ' FD-TRAN-CAT-KEY '.. Creating.' at :476-477 and the MOVE 'Y' TO WS-CREATE-TRANCAT-REC at :478 sit inside the INVALID KEY phrase of the READ at :475-479 and nowhere else in the program. '30' is not the INVALID KEY condition, so the phrase does not fire: no notice is emitted and WS-CREATE-TRANCAT-REC still holds the 'N' that :473 moved. The absence of that line from expectedMessages is therefore a deliberate assertion and not an abbreviation - case02, whose read reports '23' on key 00000000020030001, does emit it. THE STATUS LINE, CHARACTER BY CHARACTER. IO-STATUS is a group of two PIC X items, IO-STAT1 and IO-STAT2 at :131-133, and IO-STATUS-04 at :138-140 is IO-STATUS-0401 PIC 9 followed by IO-STATUS-0403 PIC 999 - so the rendered image is exactly FOUR characters wide and can never be more. 9910-DISPLAY-IO-STATUS :714-727 tests IF IO-STATUS NOT NUMERIC OR IO-STAT1 = '9' at :715-716. The two characters here are '3' and '0': both are digits, so the class condition finds IO-STATUS numeric and its negation is false, and IO-STAT1 is '3' rather than '9', so the second disjunct is false too. The first arm is skipped and the ELSE at :722 runs. :723 MOVE '0000' TO IO-STATUS-04 fills all four positions with the character '0'. :724 MOVE IO-STATUS TO IO-STATUS-04(3:2) overwrites positions three and four - and only those two - with the status characters '3' and '0', leaving positions one and two as the '0' and '0' the previous statement put there. The image is therefore '0', '0', '3', '0' = 0030. :725 DISPLAY 'FILE STATUS IS: NNNN' IO-STATUS-04 concatenates the twenty-character literal and the four-character field with nothing between them, so the line is FILE STATUS IS: NNNN0030 - positions 1-20 the literal, 21-24 the image, and NO space at the join. The trailing NNNN belongs to the COBOL literal and is not a placeholder awaiting substitution; reproducing the oddity is required and correcting it would be a divergence. The extended arm at :717-721, which passes IO-STAT1 through and renders IO-STAT2's raw byte as three decimal digits, is what case17's non-numeric status takes and renders NNNN9000. THE ABEND. 9999-ABEND-PROGRAM :707-711 displays 'ABENDING PROGRAM' at :708, moves 0 to TIMING at :709 and 999 to ABCODE at :710 - both PIC S9(9) BINARY at :147-148 - and calls CEE3ABD at :711. APPL-RESULT is 12 at that moment and the call does not return. WHAT REACHED THIS POINT, AND WHAT THE ABEND PREVENTS. All six opens at :195-200 succeed, the loop at :202-219 reads the single seeded record through 1000-DALYTRAN-GET-NEXT at :204, WS-TRANSACTION-COUNT becomes 1 at :206, and 1500-VALIDATE-TRAN :370-378 passes in full: 1500-A-LOOKUP-XREF :380-392 finds card 4859452612877065 in the cross reference so reason 100 is not stored; 1500-B-LOOKUP-ACCT :393-422 finds account 00000000007 so reason 101 is not stored; COMPUTE WS-TEMP-BAL = ACCT-CURR-CYC-CREDIT - ACCT-CURR-CYC-DEBIT + DALYTRAN-AMT at :403-405 is 0.00 - 0.00 + 504.77 = 504.77 at scale 2 with no ROUNDED phrase anywhere in the program, so truncation toward zero is the only rounding the arithmetic can perform; IF ACCT-CREDIT-LIMIT >= WS-TEMP-BAL at :407 is 2065.00 >= 504.77, true, so reason 102 is not stored; and IF ACCT-EXPIRAION-DATE >= DALYTRAN-ORIG-TS (1:10) at :414 is '2024-12-13' >= '2022-06-10', true - a ten-character comparison of two ISO dates, which orders correctly as text - so reason 103 is not stored either. WS-VALIDATION-FAIL-REASON is still 0, so :211 is true and :212 performs 2000-POST-TRANSACTION rather than :214-215's reject path. 2000-POST-TRANSACTION :424-444 makes its twelve field moves at :425-436, performs Z-GET-DB2-FORMAT-TIMESTAMP at :437 and moves DB2-FORMAT-TS into TRAN-PROC-TS at :438, and then performs 2700-UPDATE-TCATBAL at :440 as its FIRST sub-paragraph - before 2800-UPDATE-ACCOUNT-REC at :441 and before 2900-WRITE-TRANSACTION-FILE at :442. Because the abend happens inside that first sub-paragraph, NOTHING HAS BEEN WRITTEN ANYWHERE: no TCATBALF WRITE at :510 and no REWRITE at :528, no ACCOUNT REWRITE at :554, no TRANFILE WRITE at :564, and no reject record, since the transaction passed validation and 2500-WRITE-REJECT-REC :446-465 was never reached. The abend is also inside the PERFORM UNTIL at :202-219, so everything below END-PERFORM at :219 is unreachable: the six closes 9000-DALYTRAN-CLOSE :221, 9100-TRANFILE-CLOSE :222, 9200-XREFFILE-CLOSE :223, 9300-DALYREJS-CLOSE :224, 9400-ACCTFILE-CLOSE :225 and 9500-TCATBALF-CLOSE :226; both count lines, DISPLAY 'TRANSACTIONS PROCESSED :' WS-TRANSACTION-COUNT at :227 and DISPLAY 'TRANSACTIONS REJECTED  :' WS-REJECT-COUNT at :228; the IF WS-REJECT-COUNT > 0 / MOVE 4 TO RETURN-CODE / END-IF at :229-231; DISPLAY 'END OF EXECUTION OF PROGRAM CBTRN02C' at :232; and GOBACK at :234. The four-entry message list is the assertion rather than an excerpt: the only line emitted before the failing ladder is the opening banner at :194, because six clean opens and a clean validation are all silent. THE CLOCK. Z-GET-DB2-FORMAT-TIMESTAMP :692-705 did run at :437, and :438 did deposit its 26 bytes into TRAN-PROC-TS - so a TRAN-PROC-TS exists in WORKING-STORAGE at the moment of the abend. It is never persisted, because the only statement that would have written it, 2900-WRITE-TRANSACTION-FILE at :442, is downstream of the abend. The harness pins the clock rather than reading the system one (practice B7), and this case is the one place where that pinning is invisible in the expectation: no expected record carries a timestamp at all, and the case would read identically under any pinned value. WHAT EVERY DATASET HOLDS AFTERWARDS. This is the cleanest of the abend cases on this program's posting path: EVERY output is untouched, which makes it the right first diagnostic when an implementation writes before it checks. expectedWrites is empty as a positive statement rather than an absence of interest. TCATBALF still holds exactly the one seeded row, key 00000000007010001 with TRAN-CAT-BAL 0.00 and its 22 reserved characters still the zeros the fixture ships - not a created row, not a rewritten one, and one row rather than two. ACCTFILE still holds ACCT-CURR-BAL 193.00 and both cycle amounts at 0.00, where case01's clean post on this same seed would have made them 697.77 and 504.77. TRANFILE is seeded empty and stays empty at zero rows. DALYREJS is declared at zero rows on the WRITES channel at its 430-byte width from app/jcl/POSTTRAN.jcl:34: its OPEN OUTPUT at :293 succeeded here, unlike case17's, but no record was ever composed for it, and DISP=(NEW,CATLG,DELETE) names DELETE as the abnormal disposition so an abending step leaves no generation behind in any event. DALYTRAN and XREFFILE come back exactly as seeded, which is what makes 'the inputs were not disturbed' an assertion rather than an omission. Each of the four surviving rows is pinned field by field as well as byte for byte, FILLER included - the account record's trailing 178 spaces, the cross-reference's 14 and the category balance's 22 zero characters - because a total width that is right for the wrong reason is exactly what an omitted FILLER produces (gate G21). The misspelled ACCT-EXPIRAION-DATE is carried under its source name: renaming it would silently break the field-for-field diff this case depends on. THE SEED. DALYTRAN-CARD-NUM 4859452612877065 on dailytran.txt row 1 - DALYTRAN-ID 0000000000683580, type 01, category 0001, DALYTRAN-SOURCE 'POS TERM  ', the 100-character description 'Purchase at Abshire-Lowe' space-padded, DALYTRAN-AMT stored as the zoned image 0000005047G whose G overpunch is digit 7 positive, hence +504.77, DALYTRAN-MERCHANT-ID 800000000, DALYTRAN-ORIG-TS '2022-06-10 19:27:53.000000', DALYTRAN-PROC-TS 26 spaces and FILLER 20 spaces - resolves through cardxref.txt zero-based row 20 to XREF-CUST-ID 000000007 and XREF-ACCT-ID 00000000007, which is why acctdata.txt row 6 and tcatbal.txt row 6 are the rows seeded. The cross-reference rows are still 36 bytes on disk as the fixture ships them (gate G16) and the CARDXREF_FILLER_PAD_36_TO_50 normalisation supplies CVACT03Y's trailing FILLER PIC X(14) once, at seed time, before anything decodes the row. Seeding a PRESENT category-balance key is deliberate and load-bearing: the abend has to be attributable to the reported status alone, and a case that seeded the key away could not tell this ladder from the '23' one. THE RETURN CODE AND WHERE 12 COMES FROM. CBTRN02C executes no MOVE ... TO RETURN-CODE on any abend path; its single such statement is the literal 4 at :230, which sits downstream of END-PERFORM and is unreachable here. The value asserted is the one the abend itself carries: the translation raises common.AbendException through the job's shared failure tail, which passes the current APPL-RESULT as the RETURN-CODE - 12, AbendException.RETURN_CODE_IO_ERROR, the value :484 moved - alongside ABCODE 999 and TIMING 0 from :710 and :709. Twelve sits inside the domain this model permits, 0, 3, 4, 8, 12 and 16, and satisfies gate G35, which requires the abend to carry the code the COBOL held. Note what it displaces: on this seed a completed run rejects nothing and ends at 0, and a completed run with a reject would have ended at 4 through :229-231. Neither happens. WHY THE FAILING READ IS ARRANGED RATHER THAN SEEDED. No arrangement of fixture data can make a keyed read of an indexed dataset report '30'. The two statuses the data can produce are '00', when the key is present, and '23', when it is not; '30' is a permanent error reported by the access method, a property of the backend rather than of the records, and TranCatBalRepository deliberately surfaces '23' as a NORMAL outcome precisely because :481 tolerates it. Nor is the arrangement expressible in this file: ForcedOutcome belongs to ParityCase.ScreenRequest, which ParityCase refuses for any unitKind other than CONTROLLER_POJO, so a BATCH_JOB case may not carry one. It therefore lives in CBTRN02CParityTest's own scenario table as TCATBAL_READ_FAILS, scoped to the single readByKey of the category-balance handle - the OPEN I-O at :329, the cross-reference and account reads, and every other operation in the run behave exactly as case01's do, so the '30' is the only difference between a clean post and this one. This case is the guard that stops that '23' leniency being widened to every status: anything outside '00' or '23' must still abend. Together with the siblings that share its three-line tail it brackets the program's failure semantics - case19 fails at the first step of the post so nothing is written, case18 fails at the last so the first two updates stand, case17 fails before any transaction is read, and case14 fails on the reject path after a transaction was rejected - and all four share the same three-line tail: the site's own message, FILE STATUS IS: NNNN with the rendered status, and ABENDING PROGRAM, with the closes, the counters and the closing banner absent from every one of them. PROVENANCE AND STANDARDS. Every expected value here is STATICALLY DERIVED, by structured reading of app/cbl/CBTRN02C.cbl against the byte layouts of app/cpy/CVTRA06Y.cpy, CVACT03Y.cpy, CVACT01Y.cpy, CVTRA01Y.cpy and CVTRA05Y.cpy, the DD and DCB contracts of app/jcl/POSTTRAN.jcl, and the real rows of app/data/ASCII. It is NOT captured from, recorded against or replayed from any execution of the legacy program, because executing it is empirically impossible in this environment; the provenance of the expected values is substituted and nothing else, so the case count, the field-for-field diffing and the zero-diff gate are all unchanged. Because that modifies a stated success criterion it is escalated for explicit user confirmation rather than absorbed (AAP 0.7.6, risk R-A). review_rules reports that no user rules were provided for this project, so the case is held to the AAP 0.10.2 enterprise practices instead: B1 no placeholders, every value specific and the injected status the exact two characters '30' rather than 'an error'; B3 the legacy sources and app/data are read only and the seed rows are byte-exact copies; B5 behaviour preserved, an unexpected read status abending rather than being tidied into 'not found'; B7 deterministic, with the clock pinned and the timestamp it produced noted above as computed but never persisted; B8 explicit widths, channels, code page and values throughout, the injected status named rather than described; B11 the status image and the overpunched amount derived character by character above rather than asserted; and B12 this paragraph.",
   "unitKind": "BATCH_JOB",
   "inputs": {
     "DALYTRAN": {
-      "rows": [
-        "0000000009101861010001POS TERM  Purchase at Guann LLC                                                                               0000002817G800000000Guann LLC                                         South Lynn                                        51508-916680405804103486802022-06-10 19:27:53.000000                                              ",
-        "0000000017874199010001POS TERM  Purchase at Legros Group                                                                            0000003736F800000000Legros Group                                      Carmeloborough                                    34849-512780405804103486802022-06-10 19:27:53.000000                                              "
-      ]
+      "fixture": "dailytran.txt",
+      "fromRow": 0,
+      "rowCount": 1
     },
     "XREFFILE": {
       "fixture": "cardxref.txt",
-      "fromRow": 40,
+      "fromRow": 20,
       "rowCount": 1
     },
     "ACCTFILE": {
       "fixture": "acctdata.txt",
-      "fromRow": 25,
+      "fromRow": 6,
       "rowCount": 1
     },
     "TCATBALF": {
-      "empty": true,
-      "recordLength": 50,
-      "copybook": "CVTRA01Y"
+      "fixture": "tcatbal.txt",
+      "fromRow": 6,
+      "rowCount": 1
     },
     "TRANFILE": {
       "empty": true,
@@ -31,45 +30,75 @@
       "copybook": "CVTRA05Y"
     }
   },
+  "jobParameters": {},
   "expectedWrites": [],
   "expectedFinalState": [
     {
       "dataset": "DALYTRAN",
       "rowIndex": 0,
-      "expectedBytes": "0000000009101861010001POS TERM  Purchase at Guann LLC                                                                               0000002817G800000000Guann LLC                                         South Lynn                                        51508-916680405804103486802022-06-10 19:27:53.000000                                              "
-    },
-    {
-      "dataset": "DALYTRAN",
-      "rowIndex": 1,
-      "expectedBytes": "0000000017874199010001POS TERM  Purchase at Legros Group                                                                            0000003736F800000000Legros Group                                      Carmeloborough                                    34849-512780405804103486802022-06-10 19:27:53.000000                                              "
+      "fields": {
+        "DALYTRAN-ID": "0000000000683580",
+        "DALYTRAN-TYPE-CD": "01",
+        "DALYTRAN-CAT-CD": "0001",
+        "DALYTRAN-SOURCE": "POS TERM  ",
+        "DALYTRAN-DESC": "Purchase at Abshire-Lowe                                                                            ",
+        "DALYTRAN-AMT": "504.77",
+        "DALYTRAN-MERCHANT-ID": "800000000",
+        "DALYTRAN-MERCHANT-NAME": "Abshire-Lowe                                      ",
+        "DALYTRAN-MERCHANT-CITY": "North Enoshaven                                   ",
+        "DALYTRAN-MERCHANT-ZIP": "72112     ",
+        "DALYTRAN-CARD-NUM": "4859452612877065",
+        "DALYTRAN-ORIG-TS": "2022-06-10 19:27:53.000000",
+        "DALYTRAN-PROC-TS": "                          ",
+        "FILLER": "                    "
+      },
+      "expectedBytes": "0000000000683580010001POS TERM  Purchase at Abshire-Lowe                                                                            0000005047G800000000Abshire-Lowe                                      North Enoshaven                                   72112     48594526128770652022-06-10 19:27:53.000000                                              "
     },
     {
       "dataset": "XREFFILE",
       "rowIndex": 0,
-      "expectedBytes": "804058041034868000000002600000000026              "
+      "fields": {
+        "XREF-CARD-NUM": "4859452612877065",
+        "XREF-CUST-ID": "000000007",
+        "XREF-ACCT-ID": "00000000007",
+        "FILLER": "              "
+      },
+      "expectedBytes": "485945261287706500000000700000000007              "
     },
     {
       "dataset": "ACCTFILE",
       "rowIndex": 0,
-      "expectedBytes": "00000000026Y00000007014C00000021810{00000013750{2009-04-202024-12-192024-12-1900000006554C00000000000{A000000000                                                                                                                                                                                            "
+      "fields": {
+        "ACCT-ID": "00000000007",
+        "ACCT-ACTIVE-STATUS": "Y",
+        "ACCT-CURR-BAL": "193.00",
+        "ACCT-CREDIT-LIMIT": "2065.00",
+        "ACCT-CASH-CREDIT-LIMIT": "264.00",
+        "ACCT-OPEN-DATE": "2012-10-12",
+        "ACCT-EXPIRAION-DATE": "2024-12-13",
+        "ACCT-REISSUE-DATE": "2024-12-13",
+        "ACCT-CURR-CYC-CREDIT": "0.00",
+        "ACCT-CURR-CYC-DEBIT": "0.00",
+        "ACCT-ADDR-ZIP": "A000000000",
+        "ACCT-GROUP-ID": "          ",
+        "FILLER": "                                                                                                                                                                                  "
+      },
+      "expectedBytes": "00000000007Y00000001930{00000020650{00000002640{2012-10-122024-12-132024-12-1300000000000{00000000000{A000000000                                                                                                                                                                                            "
     },
     {
       "dataset": "TCATBALF",
       "rowIndex": 0,
-      "expectedBytes": "000000000260100010000006554C                      "
-    },
-    {
-      "dataset": "TRANFILE",
-      "rowIndex": 0,
-      "expectedBytes": "0000000009101861010001POS TERM  Purchase at Guann LLC                                                                               0000002817G800000000Guann LLC                                         South Lynn                                        51508-916680405804103486802022-06-10 19:27:53.0000002022-07-19-23.12.34.000000                    "
-    },
-    {
-      "dataset": "TRANFILE",
-      "rowIndex": 1,
-      "expectedBytes": "0000000017874199010001POS TERM  Purchase at Legros Group                                                                            0000003736F800000000Legros Group                                      Carmeloborough                                    34849-512780405804103486802022-06-10 19:27:53.0000002022-07-19-23.12.34.000000                    "
+      "fields": {
+        "TRANCAT-ACCT-ID": "00000000007",
+        "TRANCAT-TYPE-CD": "01",
+        "TRANCAT-CD": "0001",
+        "TRAN-CAT-BAL": "0.00",
+        "FILLER": "0000000000000000000000"
+      },
+      "expectedBytes": "000000000070100010000000000{0000000000000000000000"
     }
   ],
-  "expectedReturnCode": 0,
+  "expectedReturnCode": 12,
   "expectedMessages": [
     {
       "channel": "DISPLAY_LINE",
@@ -77,19 +106,15 @@
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "TCATBAL record not found for key : 00000000026010001.. Creating."
+      "text": "ERROR READING TRANSACTION BALANCE FILE"
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "TRANSACTIONS PROCESSED :000000002"
+      "text": "FILE STATUS IS: NNNN0030"
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "TRANSACTIONS REJECTED  :000000000"
-    },
-    {
-      "channel": "DISPLAY_LINE",
-      "text": "END OF EXECUTION OF PROGRAM CBTRN02C"
+      "text": "ABENDING PROGRAM"
     }
   ],
   "normalisations": [
@@ -108,7 +133,7 @@
     {
       "dataset": "DALYTRAN",
       "channel": "FINAL_STATE",
-      "rowCount": 2,
+      "rowCount": 1,
       "recordLength": 350
     },
     {
@@ -132,7 +157,7 @@
     {
       "dataset": "TRANFILE",
       "channel": "FINAL_STATE",
-      "rowCount": 2,
+      "rowCount": 0,
       "recordLength": 350
     }
   ]

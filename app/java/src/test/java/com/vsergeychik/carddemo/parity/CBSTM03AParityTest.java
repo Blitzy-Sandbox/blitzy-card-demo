@@ -287,16 +287,23 @@ class CBSTM03AParityTest {
         FieldSpan.alphanumeric("FD-HTMLFILE-REC", 0, StatementHtmlWriter.RECORD_LENGTH));
 
     /**
-     * The step whose non-zero return code case 17 uses to close the {@code COND=(0,NE)} gate.
+     * The step whose non-zero return code closes the {@code COND=(0,NE)} gate on {@code STEP040}.
      *
      * <p>{@value StatementGenerationJobA#STEP_010} is the {@code SORT}, and it is the honest choice:
      * it is the last <em>ungated</em> step of {@code app/jcl/CREASTMT.JCL}, so it is exactly the step
      * whose failure the three gates downstream of it exist to react to.
+     *
+     * <p>No case currently declares {@link Scenario#bypassedAfter(int)}. The gate is a genuine
+     * dimension of this step's environment and the harness keeps the ability to express it, but the
+     * behaviour itself is asserted where it can be asserted far more thoroughly - {@code
+     * StatementGenerationJobATest} drives all three gates and the ungated control through a real
+     * {@code JobRepository}, and {@code BatchConfigTest} pins the shared decider. A parity case, whose
+     * whole output under a bypass is "nothing happened", is the weakest possible statement of it.
      */
     private static final String BYPASSING_STEP = StatementGenerationJobA.STEP_010;
 
     /**
-     * The return code case 17's preceding step leaves behind, closing the {@code COND=(0,NE)} gate.
+     * The return code a preceding step leaves behind to close the {@code COND=(0,NE)} gate.
      *
      * <p>Four rather than eight or twelve, and the choice carries a point: four is z/OS's warning code,
      * the one a {@code SORT} really does return for a condition it survived, so the bypass being tested
@@ -508,10 +515,11 @@ class CBSTM03AParityTest {
     /**
      * The scenario each case runs under, kept beside the twenty case files it belongs to.
      *
-     * <p>The fourteen cases that name {@link CallSite#NONE} with no bypass and no null UCB are not
+     * <p>The fifteen cases that name {@link CallSite#NONE} with no bypass and no null UCB are not
      * uninteresting - they are the ones whose whole assertion is the record sequence, and they differ
-     * from each other only in their seed, which is where a case file belongs. The six that do name
-     * something are the guard-arm and gating cases, and each states its one deviation and nothing else.
+     * from each other only in their seed, which is where a case file belongs. The five that do name
+     * something are the guard-arm and null-UCB cases, and each states its one deviation and nothing
+     * else.
      *
      * @param caseId the case whose scenario to resolve
      * @return that case's scenario; never {@code null}
@@ -553,8 +561,13 @@ class CBSTM03AParityTest {
             case "case15" -> Scenario.reporting(CallSite.READ_ACCTFILE, "23");
             case "case16" -> Scenario.reporting(CallSite.CLOSE_TRNXFILE, "38");
 
-            // COND=(0,NE) on STEP040, app/jcl/CREASTMT.JCL:L79.
-            case "case17" -> Scenario.bypassedAfter(BYPASSING_RETURN_CODE);
+            // The ordered three-arm EVALUATE of 1000-XREFFILE-GET-NEXT at L353-L362, driven across
+            // both arms a seeded run can reach: two '00' reads producing two statements and the '10'
+            // read that terminates the loop cleanly. Neither arm is an environmental deviation - the
+            // '10' arrives because the seeded XREFFILE window is exhausted - so the scenario is the
+            // ordinary one. The third arm needs a substituted status and is case13's, at this very
+            // call site (gates G30, G47).
+            case "case17" -> Scenario.normal();
 
             // The only case whose TIOT image reports a DD with no unit control block.
             case "case20" -> Scenario.withNullUcb(StatementGenerationJobA.HTMLFILE_DD);

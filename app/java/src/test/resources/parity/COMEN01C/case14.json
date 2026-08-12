@@ -1,36 +1,37 @@
 {
   "program": "COMEN01C",
   "caseId": "case14",
-  "description": "The second arm of the ordered EVALUATE EIBAID, app/cbl/COMEN01C.cbl:96-98: WHEN DFHPF3 moves 'COSGN00C' into CDEMO-TO-PROGRAM - TO here, where line 83 wrote FROM - and performs RETURN-TO-SIGNON-SCREEN. The combined relation at line 172 now finds the field populated and leaves it alone, and the XCTL at 175-177 transfers with NO COMMAREA, which is the difference from the option transfer at 152-155 and is exactly the condition COSGN00C's own EIBCALEN = 0 test is looking for. PROCESS-ENTER-KEY never runs on this arm, so nothing writes OPTIONO and the field still holds the image the client re-supplied - statelessness made visible, because the value survives only by having travelled in the payload. WS-MESSAGE stays as the spaces line 79 left in it.",
+  "description": "THE INSPECT THAT FIRES AND STILL LEAVES A FIELD THAT IS NOT NUMERIC. Received OPTIONI is 'A ' - exactly two bytes, the letter A then one space - and it is the only input in this directory that makes all three moving parts of the option normalisation act at once: the descending scan runs all the way down to byte 1, the JUST RIGHT receiver relocates a one-byte sender, and the INSPECT substitutes a zero for a space - and the field STILL fails the class test at app/cbl/COMEN01C.cbl:127. Every PICTURE is quoted below so the transformation can be followed byte by byte without a copybook parser. STEP ONE, the descending test-before scan at :117-121. PERFORM VARYING WS-IDX FROM LENGTH OF OPTIONI BY -1 UNTIL OPTIONI(WS-IDX:1) NOT = SPACES OR WS-IDX = 1. OPTIONI is PIC X(2) at app/cpy-bms/COMEN01.CPY:132, so WS-IDX starts at 2. Byte 2 IS a space, so the first term is false; WS-IDX is 2 and not 1, so the second term is false too; the loop decrements to WS-IDX = 1, where the second term now holds and the scan exits. WS-IDX = 1 - and this is the branch of the scan that case13's 'AB' never takes, because there the very first test succeeds and the decrement never happens. STEP TWO, :122. MOVE OPTIONI(1:WS-IDX) TO WS-OPTION-X sends ONE byte, 'A', into a TWO-byte receiver declared PIC X(02) JUST RIGHT at :45. Right justification is the whole of the difference: the sender lands at the RIGHTMOST position and the receiver is space-filled on the LEFT, so WS-OPTION-X is ' A' and not 'A '. A plain left-to-right MOVE would have produced 'A ' and the case would already have diverged at step two. STEP THREE, :123. INSPECT WS-OPTION-X REPLACING ALL ' ' BY '0' now has something to do, and this is the interaction the case exists to pin. The leading space the JUST RIGHT created becomes '0', so WS-OPTION-X is '0A'. Contrast the neighbour deliberately: in case13 the field is 'AB' and the INSPECT is a NO-OP because there is no space to replace, while here it FIRES - and yet the outcome is the same rejection for the same reason, because the 'A' survives the substitution untouched. The INSPECT does not test whether its result is a number; it replaces spaces, and nothing else. STEP FOUR, :124. MOVE WS-OPTION-X TO WS-OPTION, where WS-OPTION is PIC 9(02) at :46. An equal-width MOVE from an alphanumeric field to a numeric-display field transfers the bytes AS THEY ARE: it does not parse, does not validate, does not raise and does not zero-fill. WS-OPTION is therefore DECLARED numeric while CONTAINING '0' and 'A' - a mixed state that is neither all digits nor all letters, and precisely the state IS NOT NUMERIC at :127 exists to detect. A translation that parsed the field into an integer would have deleted that branch rather than translated it. THE DECISIVE ASSERTION IS THE ECHO. Line 125 MOVEs WS-OPTION to OPTIONO, an equal-width transfer into the two-byte map field, so the screen carries '0A' - and four wrong values each diagnose a different defect, which is why this field is pinned to the byte. 'A ' means the JUST RIGHT at :45 was ignored and the MOVE filled from the left. ' A' means the INSPECT at :123 was skipped, or applied after the echo instead of before it. '00' means the input was coerced - a translation that parsed the field, caught the failure and substituted zero - which would ALSO silently credit the wrong validation term while painting the same message. 'A0' means the justification or the substitution was applied to the wrong end of the field. Only '0A' is what those four COBOL statements actually leave there. WHICH TERM FIRES, AND WHY THAT MATTERS. The guard at :127-129 is one OR chain of three terms evaluated in source order, which is gate G30: term one is WS-OPTION IS NOT NUMERIC (:127), term two WS-OPTION > CDEMO-MENU-OPT-COUNT (:128), term three WS-OPTION = ZEROS (:129). Here term ONE is true and it fires alone; the count comparison and the zero comparison are never the cause. The counterfactual is worth stating because the two states are adjacent and easily conflated: had OPTIONI arrived as two spaces, the scan would still have run down to 1 and the JUST RIGHT would still have moved a single space, but the INSPECT would then have produced '00' - numeric, and equal to zero - so term THREE would have fired instead, behind the IDENTICAL message text. The single 'A' byte is the entire reason this case sits on term one. The over-count reading of term two is carried by case08 with '11' and case09 with '99', neither of which is this. And the successful counterpart of the very same scan-and-justify mechanism is case07, which sends '1 ' through the same four steps with the same administrator caller, reaches '01', passes all three terms and dispatches to COACTVWC - so between case07 and this case the mechanism is held constant and the surviving byte is the only variable. WHAT FOLLOWS THE REJECTION. Line 130 MOVEs 'Y' into WS-ERR-FLG - the 88 ERR-FLG-ON condition at :41 - lines 131-132 MOVE the thirty-seven-character literal into WS-MESSAGE, declared PIC X(80) at :38, so the eighty-byte image is that literal followed by forty-three spaces, and line 133 PERFORMs SEND-MENU-SCREEN. That is the one and only screen painted here. PERFORM returns, so control reaches the filter at :136-137, which is NOT guarded by the error flag - but its first conjunct CDEMO-USRTYP-USER is false, because the communication area carries CDEMO-USER-TYPE 'A', and the conjunction short-circuits before CDEMO-MENU-OPT-USRTYPE(WS-OPTION) is evaluated at all. That is deliberate: WS-OPTION holds '0' and 'A' and is no COBOL subscript, and choosing an administrator caller keeps this case about the class test rather than about an out-of-range table read - the subscript readings belong to case08, case09, case10 and case11, which all use a 'U' caller. So the filter adds no second image. Line 145's IF NOT ERR-FLG-ON is then false and the whole dispatch block at :146-164 is skipped: no XCTL, so no successor is named; no coming-soon text is composed; CDEMO-PGM-CONTEXT stays 1 because :151 never runs; and CDEMO-FROM-TRANID and CDEMO-FROM-PROGRAM keep their inbound values because :147-148 never run. The transaction ends at the EXEC CICS RETURN TRANSID of :107-110, so the termination is RETURN_TRANSID and the whole communication area travels back in the payload - gate G37, no server-side session state. THE PAINT ITSELF. SEND-MENU-SCREEN at :182 performs BUILD-MENU-OPTIONS at :185 before the SEND at :189-194, so the ten forty-character option lines ARE built. Each is STRING CDEMO-MENU-OPT-NUM, '. ', CDEMO-MENU-OPT-NAME DELIMITED BY SIZE (:243-246) - two plus two plus the full thirty-five-byte name is thirty-nine characters, space-padded to forty by the PIC X(40) receiver. The loop at :238-239 runs only while WS-IDX is not greater than the count of 10 that app/cpy/COMEN02Y.cpy:21 declares as PIC 9(02) VALUE 10, so the arms for subscripts 11 and 12 at :269-272 are never taken and OPTN011O and OPTN012O remain the forty X'00' bytes that the MOVE LOW-VALUES of :89 left them - NOT spaces, because the MOVE SPACES at :241 targets WS-MENU-OPT-TXT, the working-storage composition buffer, and not a map field. ERRMSGO is absent from this expectation on purpose: the service produces WS-MESSAGE at eighty bytes, and the narrowing to the seventy-eight-byte screen field at :187 is case16's subject rather than this one's. NO COLOUR HIGHLIGHT IS EXPECTED AND NONE MAY BE. COMEN01C does not COPY CSSETATY - its copy list at :50-61 is COCOM01Y, COMEN02Y, COMEN01, COTTL01Y, CSDAT01Y, CSMSG01Y, CSUSR01Y, DFHAID and DFHBMSCA - so the DFHRED-plus-asterisk error highlight that copybook applies belongs to COACTUPC, its only consumer, and this program writes DFHRED nowhere. The DFHRED recorded against ERRMSGC here is NOT that highlight: it is the mnemonic of the COLOR=RED the mapset itself declares for the ERRMSG field at app/bms/COMEN01.bms:154-157, reported unchanged precisely BECAUSE the program never touches the attribute on this path - the only statement that ever does is the MOVE DFHGREEN of :158, which sits inside the block line 145 skips. The error is therefore signalled by the message text and the error flag alone, exactly as the prohibition on a program-applied highlight requires. Gate G38's pair is honoured through the ENTER and REENTER split rather than through any colour: this is a REENTER-side case, arriving with CDEMO-PGM-CONTEXT 1 so that the test at :87 sends it down the RECEIVE-and-validate path, and the message and the flag become non-default only there. A DEFECT IS PRESERVED RATHER THAN REPAIRED, in two respects. First, the INSPECT at :123 turns spaces into zeros with no regard for whether the result is a number, and the odd intermediate '0A' it produces is echoed to the operator unsanitised; the substitution is not reordered relative to the class test, and no early rejection of alphabetic input is added. Second, the mapset already asks the terminal to do this work - OPTION DFHMDF ATTRB=(FSET,IC,NORM,NUM,UNPROT) with JUSTIFY=(RIGHT,ZERO) at app/bms/COMEN01.bms:145-149 is a numeric-only hint plus a right-justify-and-zero-fill - and the program nevertheless performs its own justification, its own substitution and its own class test. That the terminal attributes do not make any of the three redundant is inherited behaviour. This case pins the RECEIVED image explicitly rather than assuming any terminal-level transformation, which is also the only reason case06's ' 1' and case07's '1 ' can differ from each other at all. NEGATIVES, stated as assertions rather than omissions. No thank-you line: COTTL01Y's CCDA-THANK-YOU PIC X(40) and CSMSG01Y's CCDA-MSG-THANK-YOU PIC X(50) are both copied in and neither is ever referenced - an exhaustive search of app/cbl/COMEN01C.cbl for THANK returns nothing. No invalid-key text, because the DFHENTER arm at :94-95 is the first arm of the ordered EVALUATE EIBAID at :93-103 and it is the arm this AID takes. No 'No access - Admin Only option... ' text, because the filter did not fire. No coming-soon text and no successor program, because line 145 suppressed the dispatch. inputs, expectedWrites and expectedFinalState are all empty because COMEN01C performs no dataset access whatsoever - it declares WS-USRSEC-FILE at :39 and copies CSUSR01Y at :58, but there is no SELECT, no FD and no file operand among its five EXEC CICS commands, which are the RETURN at :107, the two XCTLs at :152 and :175, the SEND at :189 and the RECEIVE at :201 - and no job parameter is declared, because this is an online program reached by transaction CM00 and not by EXEC PGM=. User type is inbound only and is never re-verified: :150's MOVE SEC-USR-TYPE TO CDEMO-USER-TYPE is commented out, so the 'A' that arrives is never looked up in USRSEC, never re-derived and never hashed, and this single PIC X(01) byte is the whole of the authorisation mechanism, exactly as the legacy program leaves it. The clock is pinned to 2022-07-19T23:12:33, the instant the program's own version footer at :281 carries, and all twenty cases in this directory pin that same instant so none can differ by its clock; POPULATE-HEADER-INFO at :212-231 does run on this path because SEND-MENU-SCREEN is performed, so CURDATE and CURTIME are genuinely produced in the MM/DD/YY and HH:MM:SS shapes of app/cpy/CSDAT01Y.cpy:30-41. US-ASCII is named explicitly rather than left to a platform default, and that matters more here than almost anywhere else in the suite: 'is this byte a digit' is only a well-defined question once the code page is stated, and this case turns entirely on that question. No user-specified rules govern this project - review_rules returns exactly 'No user rules provided.' - so this fixture is held to enterprise-standard best practice instead: every value concrete, every reference input read-only, the inherited oddity preserved rather than tidied, the byte semantics explicit, and the provenance stated honestly. Every expected value here is STATICALLY DERIVED - read out of the COBOL paragraph that produces it and cross-checked against the option table and 46-byte entry layout of app/cpy/COMEN02Y.cpy, the sixteen-field 160-byte communication area of app/cpy/COCOM01Y.cpy, the xxxI PICTURE clauses of app/cpy-bms/COMEN01.CPY, the DFHMDF definitions of app/bms/COMEN01.bms and the CM00-to-COMEN01C binding of app/csd/CARDDEMO.CSD - and NONE OF IT WAS CAPTURED FROM AN EXECUTION of the legacy program, which is empirically impossible in this environment: no z/OS or CICS runtime, an indexed file handler the available compiler reports as disabled, subprogram linkage that cannot produce an executable, no Language Environment CEE services, and DFHAID, DFHBMSCA and DFHATTR absent from the repository altogether. That substitution of provenance is escalated rather than absorbed - risk R-A. This case pins gates G15, G18, G30, G37, G38 and G51.",
   "unitKind": "SERVICE",
   "inputs": {},
   "screenRequest": {
     "eibcalen": 160,
-    "aid": "DFHPF3",
+    "aid": "DFHENTER",
     "pinnedClock": "2022-07-19T23:12:33",
     "charset": "US-ASCII",
     "commarea": {
       "CDEMO-FROM-TRANID": "CC00",
       "CDEMO-FROM-PROGRAM": "COSGN00C",
       "CDEMO-TO-PROGRAM": "COMEN01C",
-      "CDEMO-USER-ID": "USER0001",
-      "CDEMO-USER-TYPE": "U",
+      "CDEMO-USER-ID": "ADMIN001",
+      "CDEMO-USER-TYPE": "A",
       "CDEMO-PGM-CONTEXT": "1"
     },
     "mapFields": {
-      "OPTIONI": "  "
+      "OPTIONI": "A "
     },
     "forcedOutcomes": {}
   },
   "expectedResponse": {
-    "nextProgram": "COSGN00C",
+    "nextMapset": "COMEN01",
+    "nextMap": "COMEN1A",
     "navigation": {
       "CDEMO-FROM-TRANID": "CC00",
       "CDEMO-FROM-PROGRAM": "COSGN00C",
       "CDEMO-TO-TRANID": "    ",
-      "CDEMO-TO-PROGRAM": "COSGN00C",
-      "CDEMO-USER-ID": "USER0001",
-      "CDEMO-USER-TYPE": "U",
+      "CDEMO-TO-PROGRAM": "COMEN01C",
+      "CDEMO-USER-ID": "ADMIN001",
+      "CDEMO-USER-TYPE": "A",
       "CDEMO-PGM-CONTEXT": "1",
       "CDEMO-CUST-ID": "000000000",
       "CDEMO-CUST-FNAME": "                         ",
@@ -42,8 +43,29 @@
       "CDEMO-LAST-MAP": "       ",
       "CDEMO-LAST-MAPSET": "       "
     },
-    "sends": [],
-    "termination": "XCTL"
+    "sends": [
+      {
+        "fields": {
+          "OPTN001O": "01. Account View                        ",
+          "OPTN002O": "02. Account Update                      ",
+          "OPTN003O": "03. Credit Card List                    ",
+          "OPTN004O": "04. Credit Card View                    ",
+          "OPTN005O": "05. Credit Card Update                  ",
+          "OPTN006O": "06. Transaction List                    ",
+          "OPTN007O": "07. Transaction View                    ",
+          "OPTN008O": "08. Transaction Add                     ",
+          "OPTN009O": "09. Transaction Reports                 ",
+          "OPTN010O": "10. Bill Payment                        ",
+          "OPTN011O": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "OPTN012O": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "OPTIONO": "0A"
+        },
+        "attributes": {
+          "ERRMSGC": "DFHRED"
+        }
+      }
+    ],
+    "termination": "RETURN_TRANSID"
   },
   "expectedWrites": [],
   "expectedFinalState": [],
@@ -51,7 +73,7 @@
   "expectedMessages": [
     {
       "channel": "WS_MESSAGE_80",
-      "text": "                                                                                "
+      "text": "Please enter a valid option number...                                           "
     }
   ],
   "normalisations": []

@@ -42,6 +42,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -204,7 +205,7 @@ final class CBTRN02CParityTest {
      * <p>Used for <em>every</em> dataset here rather than only for the sequential ones, and
      * deliberately in preference to key order. For a keyed dataset the physical order is the seed order
      * followed by whatever the run appended, so a record the program <strong>created</strong> is
-     * visibly at the end - which is how case08, case15 and case20 tell the {@code '23'} create arm at
+     * visibly at the end - which is how case02, case08 and case15 tell the {@code '23'} create arm at
      * {@code :495-496} apart from the {@code '00'} rewrite arm at {@code :498} by row position alone,
      * before a single byte is compared.
      */
@@ -274,15 +275,22 @@ final class CBTRN02CParityTest {
     // =============================================================================================
     //  THE SCENARIO TABLE
     //
-    //  Seventeen of the twenty cases are driven entirely by their seeded data. Three cannot be,
-    //  because the arm they exercise is not reachable through data at all, and each of those three
+    //  Fifteen of the twenty cases are driven entirely by their seeded data. Five cannot be,
+    //  because the arm they exercise is not reachable through data at all, and each of those five
     //  states the arrangement here rather than hiding it in the case file:
     //
     //    * the account REWRITE at :554 reporting INVALID KEY - a KSDS row a keyed read found moments
     //      earlier does not vanish, so the only honest place to arrange it is the seam where the
     //      backend reports it;
     //    * the rejects OPEN at :293 refusing;
-    //    * the rejects WRITE at :451 refusing.
+    //    * the rejects WRITE at :451 refusing;
+    //    * the DALYTRAN READ at :346 reporting a status that is neither '00' nor '10' - a sequential
+    //      read of a physical-sequential dataset refuses because of the backend and never because of
+    //      the records, so no arrangement of fixture rows can reach the third arm of :347-356;
+    //    * the category-balance READ at :474 reporting a status that is neither '00' nor '23' - the
+    //      failing arm of the tolerance guard at :481. Seeded data can only ever produce those two:
+    //      '00' when the key is present and '23' when it is not, so the third answer has to come
+    //      from the seam where the access method reports it.
     //
     //  A BATCH_JOB case may NOT carry a ForcedOutcome: that member belongs to
     //  ParityCase.ScreenRequest, which ParityCase refuses for anything but an online case. So the
@@ -306,8 +314,58 @@ final class CBTRN02CParityTest {
         REJECT_OPEN_FAILS,
 
         /** {@code WRITE FD-REJS-RECORD} at {@code :451} reports a status other than {@code '00'}. */
-        REJECT_WRITE_FAILS
+        REJECT_WRITE_FAILS,
+
+        /**
+         * The <em>second</em> {@code READ DALYTRAN-FILE INTO DALYTRAN-RECORD} at {@code :346} reports
+         * {@value #DALYTRAN_PERMANENT_ERROR_STATUS}, which is the only way the third arm of the guard
+         * at {@code :347-356} can ever be taken.
+         *
+         * <p>Scoped to the second read and to that dataset alone: the first read succeeds normally and
+         * delivers a record the run posts in full, so the case can assert both that the failure
+         * happened and that what preceded it survived. Arranging the refusal at the JDBC layer instead
+         * would refuse the open as well, and the run would never reach the read at all.
+         */
+        DALYTRAN_READ_FAILS,
+
+        /**
+         * {@code READ TCATBAL-FILE INTO TRAN-CAT-BAL-RECORD} at {@code :474} reports
+         * {@value #TCATBAL_READ_FAILURE_STATUS}, which is neither {@code '00'} nor {@code '23'}, so the
+         * guard at {@code :481} takes its {@code ELSE} arm and {@code :489-492} abends.
+         *
+         * <p>The failing arm of a tolerance the repository deliberately widens: {@code '23'} is a normal
+         * outcome there because {@code :481} accepts it beside {@code '00'}. This is the arrangement that
+         * keeps that leniency from being read as "any status is survivable" - case02 reaches the same
+         * guard with {@code '23'} and is waved through, and case19 proves the {@code ELSE} arm is still
+         * reachable.
+         */
+        TCATBAL_READ_FAILS
     }
+
+    /**
+     * The file status the arranged {@value #DALYTRAN_KEY} read reports: {@value}.
+     *
+     * <p>Named rather than inlined (practice B8), and chosen rather than borrowed. {@code '30'} is the
+     * z/OS permanent-error file status, it is exactly {@link FileStatus#STATUS_LENGTH} characters, and
+     * it is neither {@code '00'} nor {@code '10'} - which is the whole requirement the third arm of
+     * {@code :347-356} places on it. It is deliberately <em>numeric</em> and deliberately does not
+     * begin {@code '9'}, so {@code 9910-DISPLAY-IO-STATUS} takes its {@code ELSE} arm at
+     * {@code :722-725} and renders {@code FILE STATUS IS: NNNN0030}. case14 and case17 arrange a
+     * {@code '9'}-prefixed status and reach the other arm, so between them the paragraph's two arms
+     * are driven from three different call sites.
+     */
+    private static final String DALYTRAN_PERMANENT_ERROR_STATUS = "30";
+
+    /**
+     * The status the arranged category-balance read reports for {@link Scenario#TCATBAL_READ_FAILS}.
+     *
+     * <p>{@code '30'} is the permanent-error status of the access method, named rather than described
+     * (practice B8): it is numeric and its first character is not {@code '9'}, so
+     * {@code 9910-DISPLAY-IO-STATUS} takes its {@code ELSE} arm at {@code :722-725} and renders
+     * {@code FILE STATUS IS: NNNN0030}. It is also not the {@code INVALID KEY} condition, so the
+     * not-found notice at {@code :476-477} is not displayed - the silence is part of what case19 asserts.
+     */
+    private static final String TCATBAL_READ_FAILURE_STATUS = "30";
 
     /**
      * The arrangement each of the twenty cases runs under, in case order and unmodifiable, so no test
@@ -340,8 +398,8 @@ final class CBTRN02CParityTest {
         declared.put("case16", Scenario.CLEAN);
         declared.put("case17", Scenario.REJECT_OPEN_FAILS);
         declared.put("case18", Scenario.CLEAN);
-        declared.put("case19", Scenario.CLEAN);
-        declared.put("case20", Scenario.CLEAN);
+        declared.put("case19", Scenario.TCATBAL_READ_FAILS);
+        declared.put("case20", Scenario.DALYTRAN_READ_FAILS);
         return Collections.unmodifiableMap(declared);
     }
 
@@ -628,7 +686,7 @@ final class CBTRN02CParityTest {
      * cannot report its expectation back and pass while implementing nothing.
      *
      * <p><strong>Everything is recorded in a {@code finally} block, and that is load-bearing.</strong>
-     * Three of these cases abend, and an abend is an observation rather than a failure: the lines the run
+     * Five of these cases abend, and an abend is an observation rather than a failure: the lines the run
      * displayed before it abended were displayed, and the category-balance and account rows case18 had
      * already rewritten stand, because every dataset here is {@code RECOVERY(NONE)} and the program
      * issues no syncpoint. Recording on the way out captures that, and returning {@code null} tells the
@@ -931,7 +989,7 @@ final class CBTRN02CParityTest {
      * charset are named explicitly on every one of them, so no conversion anywhere in the path consults a
      * platform default (practice B8).
      *
-     * <p>Two collaborators are wrapped, and only where the arm under test is unreachable otherwise:
+     * <p>Four collaborators are wrapped, and only where the arm under test is unreachable otherwise:
      * <ul>
      *   <li>the reject writer always, so {@code OPEN OUTPUT} and {@code WRITE} land on this case's
      *       in-memory sink rather than on a relation - which is what lets case14 refuse the write while
@@ -939,7 +997,17 @@ final class CBTRN02CParityTest {
      *   <li>the account repository only for {@link Scenario#ACCOUNT_REWRITE_NOT_FOUND}, where
      *       {@code REWRITE} must report the {@code INVALID KEY} condition that {@code :555} branches on.
      *       Everything else on that handle stays real, including the keyed read at {@code :395} that
-     *       found the row in the first place.</li>
+     *       found the row in the first place;</li>
+     *   <li>the daily-transaction repository only for {@link Scenario#DALYTRAN_READ_FAILS}, where the
+     *       second {@code READ} at {@code :346} must report a status the guard's first two arms do not
+     *       name. The open and the first read stay real, so the record the run posts is the one the
+     *       relation actually held;</li>
+     *   <li>the category-balance repository only for {@link Scenario#TCATBAL_READ_FAILS}, where the keyed
+     *       read at {@code :474} must report {@value #TCATBAL_READ_FAILURE_STATUS} - the one answer no
+     *       arrangement of rows can produce, since a present key reads {@code '00'} and an absent one
+     *       reads {@code '23'}. The {@code OPEN I-O} at {@code :329}, the write at {@code :510} and the
+     *       rewrite at {@code :528} all stay real on that handle, so the abend is attributable to the
+     *       read alone.</li>
      * </ul>
      *
      * @param database the per-case database
@@ -956,15 +1024,53 @@ final class CBTRN02CParityTest {
         DatasetBindings bindings = bindings();
         return new TransactionValidationJob(
             new BatchConfig(new NoBeanPublished<>(), new NoBeanPublished<>(), contracts(), bindings),
-            new DalyTranRepository(database, bindings, charset, RecordImageForm.CHARACTER, WRITE_ORDER),
+            dalyTranRepository(database, bindings, charset, scenario),
             new CardXrefRepository(database, bindings, charset, RecordImageForm.CHARACTER),
             accountRepository(database, bindings, charset, scenario),
-            new TranCatBalRepository(database, bindings, charset, RecordImageForm.CHARACTER),
+            tranCatBalRepository(database, bindings, charset, scenario),
             new TransactionRepository(database, bindings, charset, RecordImageForm.CHARACTER,
                 WRITE_ORDER),
             rejectWriter(database, bindings, charset, rejects),
             new SuppliedBean<SysoutSink>(sysout),
             clock);
+    }
+
+    /**
+     * The daily-transaction repository, arranged only where a case needs the third arm of the read
+     * guard at {@code :347-356}.
+     *
+     * <p>The stub is placed on the <strong>repository</strong> rather than on the handle, and that is
+     * what makes the first read real. {@code DalytranFile.readNext()} delegates to
+     * {@code repository.readNext(this)}, and the handle the spy's own {@code open()} builds is bound to
+     * the spy, so one interception point sees every read in the run and can answer the first one by
+     * running the real method. A stub on the handle would have had to reproduce cursor advancement to
+     * deliver record 1 at all, which would mean asserting the test's own idea of a record instead of
+     * the one the codec produces.
+     *
+     * <p>The counter is per-invocation and never shared, so no two cases and no two runs of one case
+     * can see each other's read count (practice B9, gate G53).
+     *
+     * @param database the per-case database
+     * @param bindings the DD catalogue
+     * @param charset  the dataset code page
+     * @param scenario the arrangement this case runs under
+     * @return the repository, real or arranged; never {@code null}
+     */
+    private static DalyTranRepository dalyTranRepository(JdbcTemplate database,
+                                                        DatasetBindings bindings, Charset charset,
+                                                        Scenario scenario) {
+        DalyTranRepository real =
+            new DalyTranRepository(database, bindings, charset, RecordImageForm.CHARACTER, WRITE_ORDER);
+        if (scenario != Scenario.DALYTRAN_READ_FAILS) {
+            return real;
+        }
+        DalyTranRepository arranged = Mockito.spy(real);
+        AtomicInteger reads = new AtomicInteger();
+        Mockito.doAnswer(call -> reads.incrementAndGet() == 1
+                ? call.callRealMethod()
+                : DalyTranRepository.ReadResult.other(DALYTRAN_PERMANENT_ERROR_STATUS))
+            .when(arranged).readNext(Mockito.any());
+        return arranged;
     }
 
     /**
@@ -997,6 +1103,49 @@ final class CBTRN02CParityTest {
                 .when(handle).rewrite(Mockito.any());
             return handle;
         }).when(arranged).open(AccountRepository.OpenMode.I_O);
+        return arranged;
+    }
+
+    /**
+     * The category-balance repository, arranged only where a case needs the failing arm of the tolerance
+     * guard at {@code :481}.
+     *
+     * <p>{@code IF TCATBALF-STATUS = '00' OR '23'} accepts two statuses, and seeded rows can only ever
+     * produce those two: a present key reads {@code '00'} and an absent one reads {@code '23'}, which is
+     * why {@link TranCatBalRepository.ReadResult#notFound()} is documented there as an expected outcome
+     * rather than an error. A third answer is a property of the access method, so this is the only honest
+     * place to arrange it, and {@value #TCATBAL_READ_FAILURE_STATUS} is named rather than left to a
+     * generic "failure" so the rendered status line is derivable from this constant alone (practice B8).
+     *
+     * <p>The stub is placed on the <em>handle</em> and on the {@link TranCatBalRecord.TranCatKey} overload
+     * of {@code readByKey} alone - the one {@code 2700-UPDATE-TCATBAL} calls at {@code :474}. Everything
+     * else on that handle stays real: {@code 0500-TCATBALF-OPEN}'s {@code OPEN I-O} at {@code :329} still
+     * opens the relation, and the write at {@code :510} and the rewrite at {@code :528} are still the
+     * production ones, so a case that expects nothing to be written is asserting that the program never
+     * reached them rather than that they were disabled.
+     *
+     * @param database the per-case database
+     * @param bindings the DD catalogue
+     * @param charset  the dataset code page
+     * @param scenario the arrangement this case runs under
+     * @return the repository, real or arranged; never {@code null}
+     */
+    private static TranCatBalRepository tranCatBalRepository(JdbcTemplate database,
+                                                            DatasetBindings bindings,
+                                                            Charset charset, Scenario scenario) {
+        TranCatBalRepository real =
+            new TranCatBalRepository(database, bindings, charset, RecordImageForm.CHARACTER);
+        if (scenario != Scenario.TCATBAL_READ_FAILS) {
+            return real;
+        }
+        TranCatBalRepository arranged = Mockito.spy(real);
+        Mockito.doAnswer(call -> {
+            TranCatBalRepository.TranCatBalFile handle =
+                Mockito.spy(real.open(TranCatBalRepository.OpenMode.I_O));
+            Mockito.doReturn(TranCatBalRepository.ReadResult.of(TCATBAL_READ_FAILURE_STATUS))
+                .when(handle).readByKey(Mockito.any(TranCatBalRecord.TranCatKey.class));
+            return handle;
+        }).when(arranged).open(TranCatBalRepository.OpenMode.I_O);
         return arranged;
     }
 

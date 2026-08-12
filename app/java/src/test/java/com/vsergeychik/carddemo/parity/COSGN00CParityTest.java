@@ -331,8 +331,17 @@ final class COSGN00CParityTest {
      * {@code :230} remain reached and {@link #theRoleFieldReplacesTheXctl()} still finds its admin
      * transfer, and {@code case03}, {@code case10}, {@code case16} and {@code case20} keep the
      * regular-user target driven.
+     *
+     * <p>Then six rather than five, which is the fourth deliberate change. {@code case19} became the
+     * folder's byte-complete decode of an 80-byte {@code CSUSR01Y} record, and a record can only be
+     * decoded in full on a path that actually reads one - so it moved off the {@code WHEN OTHER}
+     * invalid-key arm, where {@code PROCESS-ENTER-KEY} is never performed and {@code USRSEC} is
+     * never opened, and onto the successful administrator sign-on that {@code case18} is the failing
+     * counterpart of. It signs on with {@code ADMIN005}, so the administrator target is now driven by
+     * {@code case02} and {@code case19} together and {@link #SCREEN_SENDS} fell by the same one this
+     * rose by.
      */
-    private static final int SUCCESSFUL_SIGN_ONS = 5;
+    private static final int SUCCESSFUL_SIGN_ONS = 6;
 
     /**
      * How many of the twenty reach {@code SEND-SIGNON-SCREEN} at {@code :145-157} and transmit the
@@ -341,12 +350,16 @@ final class COSGN00CParityTest {
      * <p>Fourteen rather than twelve because {@code case09} and {@code case15} paint the screen
      * instead of transferring: {@code case09} drives the {@code LOW-VALUES} term of {@code :123} and
      * so leaves through {@code :127}, and {@code case15} is refused by the padded comparison at
-     * {@code :223}. This number and {@link #SUCCESSFUL_SIGN_ONS} move together - the two plus
+     * {@code :223}. Thirteen rather than fourteen because {@code case19} then stopped painting
+     * altogether: it moved from the {@code WHEN OTHER} invalid-key arm onto a successful
+     * administrator sign-on, so it leaves by {@code XCTL} at {@code :230-232} and
+     * {@code SEND-SIGNON-SCREEN} is not performed on its path at all. This number and
+     * {@link #SUCCESSFUL_SIGN_ONS} move together - the two plus
      * {@link #PLAIN_TEXT_SENDS} must always total
      * {@value ParityHarness#CASES_PER_PROGRAM}, which
      * {@link #theThreeExitsPartitionTheCaseSet()} asserts.
      */
-    private static final int SCREEN_SENDS = 14;
+    private static final int SCREEN_SENDS = 13;
 
     /**
      * How many of the twenty reach {@code SEND-PLAIN-TEXT} at {@code :162-172} - exactly one, the
@@ -2041,7 +2054,7 @@ final class COSGN00CParityTest {
         }
 
         assertThat(adminTargets + userTargets)
-                .as("five of the twenty sign on; a change in that number means a case stopped "
+                .as("six of the twenty sign on; a change in that number means a case stopped "
                         + "exercising the comparison at :223")
                 .isEqualTo(SUCCESSFUL_SIGN_ONS);
         assertThat(adminTargets)
@@ -2348,10 +2361,10 @@ final class COSGN00CParityTest {
                 .as("exactly one of the twenty presses PF3")
                 .isEqualTo(PLAIN_TEXT_SENDS);
         assertThat(transfers)
-                .as("five sign on")
+                .as("six sign on")
                 .isEqualTo(SUCCESSFUL_SIGN_ONS);
         assertThat(painted)
-                .as("fourteen paint the screen")
+                .as("thirteen paint the screen")
                 .isEqualTo(SCREEN_SENDS);
         assertThat(transfers + painted + plainText)
                 .as("and the three account for every case: MAIN-PARA reaches exactly one terminal "
@@ -2360,27 +2373,55 @@ final class COSGN00CParityTest {
     }
 
     /**
-     * The invalid-key arm is driven by more than one key, and it is the {@code WHEN OTHER} of an
-     * ordered {@code EVALUATE} rather than a test for one particular key.
+     * The invalid-key arm is the {@code WHEN OTHER} of an ordered {@code EVALUATE} rather than a test
+     * for one particular key, and it is exactly the complement of the two keys the source names.
      *
-     * <p>{@code :85-95} names {@code DFHENTER} and {@code DFHPF3} and defaults everything else. Two
-     * cases press two different keys that are neither, and both must land on the same arm with the
-     * same message and no cursor request - {@code :91-94} contains no {@code MOVE -1} at all, which
-     * is easy to miss because every other rejecting path in the program has one.
+     * <p>{@code :85-95} names {@code DFHENTER} and {@code DFHPF3} and defaults everything else. The
+     * property is therefore asserted in both directions over the whole case set: every re-entering
+     * case pressing a key that is neither must land on the arm, with the same message and no cursor
+     * request - {@code :91-94} contains no {@code MOVE -1} at all, which is easy to miss because
+     * every other rejecting path in the program has one - and no case pressing either named key may
+     * land on it, which is what makes it a default rather than a third alternative.
+     *
+     * <p>Quantified over the set rather than over {@code case13} and {@code case19}, which is what it
+     * named while both happened to press an unnamed key. {@code case19} now signs on, so a hard-coded
+     * pair would assert the default arm of a case that no longer reaches it. Stating the property as
+     * "every unnamed key lands here and nothing else does" keeps the original claim true of whatever
+     * the folder holds, widens by itself if another unnamed key is added, and is strictly stronger
+     * than the pair it replaces, because the pair asserted only the first direction. The keys are
+     * compared as the bytes {@code :85} evaluates, through {@link #aidByteOf(String)}, and the
+     * arm is required to be non-empty so it can never pass vacuously.
      */
     @Test
-    @DisplayName("the invalid-key arm is WHEN OTHER, driven by two different keys")
+    @DisplayName("the invalid-key arm is WHEN OTHER: every unnamed key lands there, and only those")
     void theInvalidKeyArmIsTheDefault() {
-        Map<String, ParityCase> byId = casesById();
-        ParityCase functionKey = byId.get(ParityHarness.caseId(13));
-        ParityCase clearKey = byId.get(ParityHarness.caseId(19));
+        List<ParityCase> unnamedKey = new ArrayList<>();
+        List<String> mnemonics = new ArrayList<>();
+        for (ParityCase parityCase : cases()) {
+            if (parityCase.screenRequest() == null
+                    || parityCase.screenRequest().eibcalen() == 0
+                    || parityCase.screenRequest().aid() == null) {
+                continue;
+            }
+            byte aid = aidByteOf(parityCase.screenRequest().aid());
+            if (aid == CicsAid.DFHENTER || aid == CicsAid.DFHPF3) {
+                assertThat(errMsgOf(parityCase))
+                        .as("%s: :85-90 matches this key by name, so it cannot reach the WHEN OTHER "
+                                + "arm at :91-94 - if it shows the invalid-key text, the EVALUATE is "
+                                + "not ordered as the source orders it", parityCase.caseId())
+                        .isNotEqualTo(truncated(SystemMessages.CCDA_MSG_INVALID_KEY));
+                continue;
+            }
+            unnamedKey.add(parityCase);
+            mnemonics.add(parityCase.caseId() + '=' + parityCase.screenRequest().aid());
+        }
 
-        assertThat(functionKey.screenRequest().aid())
-                .as("case13 and case19 must press different keys, or the arm is being shown to "
-                        + "accept one key rather than to be the default")
-                .isNotEqualTo(clearKey.screenRequest().aid());
+        assertThat(unnamedKey)
+                .as("the WHEN OTHER arm at :91-94 has to be reached by something, or every "
+                        + "expectation below holds vacuously. Reached by: %s", mnemonics)
+                .isNotEmpty();
 
-        for (ParityCase parityCase : List.of(functionKey, clearKey)) {
+        for (ParityCase parityCase : unnamedKey) {
             assertThat(errMsgOf(parityCase))
                     .as("%s: :93 moves CCDA-MSG-INVALID-KEY, a PIC X(50) literal from "
                             + "app/cpy/CSMSG01Y.cpy, into the PIC X(80) WS-MESSAGE, which :149 then "

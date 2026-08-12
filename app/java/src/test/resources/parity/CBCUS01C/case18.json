@@ -1,31 +1,19 @@
 {
   "program": "CBCUS01C",
   "caseId": "case18",
-  "description": "Two records seeded inline at exactly the copybook width, with every byte of both pinned on both channels. Each of the four record lines is exactly 500 characters and so is each final-state row, which is the total-width assertion gate G19 asks for stated the plain way: an image one byte short or one byte long is a different string and is reported as such. Seeding the rows inline rather than by fixture range is deliberate - the 500 characters are in the case file, so the width the case asserts is visible in the case rather than inferred from a file it names.",
+  "description": "The fatal CLOSE on a run that read everything it was given. Rows 1, 2 and 3 of app/data/ASCII/custdata.txt are seeded and each is read and displayed twice - the L96 display inside the read's '00' arm and the mainline's own at L78, adjacent and byte-identical because no statement between them touches the record area - and the fourth READ then reports '10' normally, so L99 moves 16 into APPL-RESULT, the 88 APPL-EOF at L107 is true, L108 moves 'Y' into END-OF-FILE and the L74-L81 loop ends quietly. Everything to that point is a completely clean run. The CLOSE at L138 then reports '42', the status a close against a file that is not open reports, so the '00' test at L139 fails, L142 puts 12 into APPL-RESULT, the 88 APPL-AOK at L144 is false, and the error arm at L147-L150 displays 'ERROR CLOSING CUSTOMER FILE', moves CUSTFILE-STATUS into IO-STATUS, renders it and performs Z-ABEND-PROGRAM. THE ASSERTION THIS CASE EXISTS FOR: CALL 'CEE3ABD' at L158 ends the enclave inside Z-ABEND-PROGRAM, so control never returns from the PERFORM at L83, and the closing banner that app/cbl/CBCUS01C.cbl:85 would display - the counterpart of the L71 line that opened the run - is never displayed, despite a record pass that was faultless from the first row through to the read that met end of file. L87's GOBACK never runs either. The ten expected lines below therefore carry no closing banner at all, and that absence is the point of the case. It is the subtlest ordering statement in this folder and the only place it can be made: the open failures and the read failures abend before or during the record stream, so their missing banner is unsurprising, whereas here a reader expects it. An implementation that emitted that banner from a finally block, or that treated a refused close as recoverable and ran on to the end of the mainline, would produce an eleventh line and be caught here and nowhere else. Ten lines exactly: the opening banner, three pairs of 500-character record images, the close's error text, the rendered status and the abend banner. RETURN-CODE is 12 from ADD 12 TO ZERO GIVING APPL-RESULT at L142 - the third distinct statement in this program to carry that value, after the MOVE 12 at L124 the open-failure cases take it from and the MOVE 12 at L101 the read-failure cases do. 9000-CUSTFILE-CLOSE is also the only paragraph that writes APPL-RESULT with arithmetic rather than a MOVE: ADD 8 TO ZERO GIVING at L137 is the pessimistic pre-set the open spells MOVE 8 at L119, SUBTRACT APPL-RESULT FROM APPL-RESULT at L140 is this paragraph's way of writing zero, and the L142 ADD ... GIVING is its way of writing MOVE 12. The three are stylistic variants with identical effect and practice B5 keeps them as written. All three are integer bookkeeping on APPL-RESULT PIC S9(9) COMP and not money: CBCUS01C contains no COMPUTE, no MULTIPLY, no DIVIDE, no ROUNDED and no scaled PICTURE, so no BigDecimal arises anywhere in it (AAP rule R4). The status renders through the else arm of Z-DISPLAY-IO-STATUS at L169-L173, Branch B: '42' is two digits and IO-STAT1 is '4' rather than '9', so L170 moves '0000' into IO-STATUS-04 and L171 overlays IO-STATUS at (3:2), giving 0042 across the PIC 9 plus PIC 999 pair declared at L57-L59. The 'NNNN' in the L172 literal is placeholder text the program never substitutes; it is emitted verbatim with the four-character image appended directly to it and no separating space, and practice B5 keeps that quirk. This is that arm reached from the CLOSE site, which no other case in this folder does - case16 refuses the very first READ with '30' and renders through the same arm from 1000-CUSTFILE-GET-NEXT instead - so this case is the only place the renderer is driven from 9000-CUSTFILE-CLOSE at all. Against case06 this case is an exact complement: the same three fixture rows, the same clean stream, and a close that refuses instead of succeeding. Each of the six record images is exactly 500 characters, the width app/cpy/CVCUS01Y.cpy declares across its nineteen spans (gate G19), and positions 333-500 are the trailing FILLER X(168), present and space-filled on all three distinct rows (gate G21) - asserted here across a full successful stream that still ends in an abend. The date-of-birth span at 309-318 is CVCUS01Y's hyphenated CUST-DOB-YYYY-MM-DD - 1961-06-08, 1961-10-08 and 1987-11-30 on the three rows - and not the unhyphenated spelling app/cpy/CUSTREC.cpy gives the same 10-byte span, a different copybook that the statement package models as its own type (requirement I1). The rows are read as US-ASCII, named explicitly rather than defaulted (practice B8), and carry no character that JSON has to escape. The unit is the tasklet of customer.CustomerFileReaderJob - unitKind BATCH_JOB - so the retained lines and the non-zero exit are observed together at step level with no JobLauncher and no HTTP in the path (gate G51), with customer.CustomerService holding the decisions; a tasklet rather than a chunk step is what guarantees that no commit boundary reorders the record stream relative to the close failure. Nothing is written: expectedWrites is empty as the positive assertion that a program whose whole function is 'Read and print customer data file' issues no WRITE and no REWRITE, and CustomerFileReaderJob is a Job by name only (AAP rule R1). The '42' the CLOSE reports is arranged in the scenario table of CBCUS01CParityTest, because a BATCH_JOB case cannot carry a ForcedOutcome - that member belongs to ParityCase.ScreenRequest - and the arranged input and the expected output are written independently of each other. Provenance, practice B12: every expected value here is statically derived from app/cbl/CBCUS01C.cbl, the byte layout of app/cpy/CVCUS01Y.cpy, the DD and PARM contract of app/jcl/READCUST.jcl - STEP05 declares no PARM, hence no job parameter - and the real rows of app/data/ASCII/custdata.txt. None of it was captured from a live COBOL execution: running the legacy programs is empirically impossible in this environment, with no z/OS or CICS runtime, an indexed file handler the available compiler reports as disabled, and no Language Environment CEE* services, so CEE3ABD itself cannot be called. Only the provenance of the expected values is substituted, and it is escalated rather than absorbed (AAP section 0.7.6, risk R-A).",
   "unitKind": "BATCH_JOB",
   "inputs": {
     "CUSTFILE": {
-      "rows": [
-        "000000025Elliott                  Fermin                   Howell                   9524 McKenzie Lakes                               Suite 245                                         West Alexa                                        NHUSA75721-7382(092)336-8599  (311)969-1460  788820436000000000005482230481989-03-270032297533Y355                                                                                                                                                                        ",
-        "000000026Marjory                  Damien                   Stracke                  30161 Bogan Canyon                                Suite 916                                         Walshberg                                         ILUSA59945     (584)772-2867  (819)733-9809  840478806000000000009474116261990-03-170060808858Y001                                                                                                                                                                        "
-      ]
+      "fixture": "custdata.txt",
+      "fromRow": 0,
+      "rowCount": 3
     }
   },
   "jobParameters": {},
   "expectedWrites": [],
-  "expectedFinalState": [
-    {
-      "dataset": "CUSTFILE",
-      "rowIndex": 0,
-      "expectedBytes": "000000025Elliott                  Fermin                   Howell                   9524 McKenzie Lakes                               Suite 245                                         West Alexa                                        NHUSA75721-7382(092)336-8599  (311)969-1460  788820436000000000005482230481989-03-270032297533Y355                                                                                                                                                                        "
-    },
-    {
-      "dataset": "CUSTFILE",
-      "rowIndex": 1,
-      "expectedBytes": "000000026Marjory                  Damien                   Stracke                  30161 Bogan Canyon                                Suite 916                                         Walshberg                                         ILUSA59945     (584)772-2867  (819)733-9809  840478806000000000009474116261990-03-170060808858Y001                                                                                                                                                                        "
-    }
-  ],
-  "expectedReturnCode": 0,
+  "expectedFinalState": [],
+  "expectedReturnCode": 12,
   "expectedMessages": [
     {
       "channel": "DISPLAY_LINE",
@@ -33,32 +21,40 @@
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "000000025Elliott                  Fermin                   Howell                   9524 McKenzie Lakes                               Suite 245                                         West Alexa                                        NHUSA75721-7382(092)336-8599  (311)969-1460  788820436000000000005482230481989-03-270032297533Y355                                                                                                                                                                        "
+      "text": "000000001Immanuel                 Madeline                 Kessler                  618 Deshaun Route                                 Apt. 802                                          Altenwerthshire                                   NCUSA12546     (908)119-8310  (373)693-8684  020973888000000000000493684371961-06-080053581756Y274                                                                                                                                                                        "
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "000000025Elliott                  Fermin                   Howell                   9524 McKenzie Lakes                               Suite 245                                         West Alexa                                        NHUSA75721-7382(092)336-8599  (311)969-1460  788820436000000000005482230481989-03-270032297533Y355                                                                                                                                                                        "
+      "text": "000000001Immanuel                 Madeline                 Kessler                  618 Deshaun Route                                 Apt. 802                                          Altenwerthshire                                   NCUSA12546     (908)119-8310  (373)693-8684  020973888000000000000493684371961-06-080053581756Y274                                                                                                                                                                        "
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "000000026Marjory                  Damien                   Stracke                  30161 Bogan Canyon                                Suite 916                                         Walshberg                                         ILUSA59945     (584)772-2867  (819)733-9809  840478806000000000009474116261990-03-170060808858Y001                                                                                                                                                                        "
+      "text": "000000002Enrico                   April                    Rosenbaum                4917 Myrna Flats                                  Apt. 453                                          West Bernita                                      INUSA22770     (429)706-9510  (744)950-5272  587518382000000000005062103711961-10-080069194009Y268                                                                                                                                                                        "
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "000000026Marjory                  Damien                   Stracke                  30161 Bogan Canyon                                Suite 916                                         Walshberg                                         ILUSA59945     (584)772-2867  (819)733-9809  840478806000000000009474116261990-03-170060808858Y001                                                                                                                                                                        "
+      "text": "000000002Enrico                   April                    Rosenbaum                4917 Myrna Flats                                  Apt. 453                                          West Bernita                                      INUSA22770     (429)706-9510  (744)950-5272  587518382000000000005062103711961-10-080069194009Y268                                                                                                                                                                        "
     },
     {
       "channel": "DISPLAY_LINE",
-      "text": "END OF EXECUTION OF PROGRAM CBCUS01C"
+      "text": "000000003Larry                    Cody                     Homenick                 362 Esta Parks                                    Apt. 390                                          New Gladys                                        GAUSA19852-6716(950)396-9024  (685)168-8826  317460867000000000000524193031987-11-300006465789Y616                                                                                                                                                                        "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "000000003Larry                    Cody                     Homenick                 362 Esta Parks                                    Apt. 390                                          New Gladys                                        GAUSA19852-6716(950)396-9024  (685)168-8826  317460867000000000000524193031987-11-300006465789Y616                                                                                                                                                                        "
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ERROR CLOSING CUSTOMER FILE"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "FILE STATUS IS: NNNN0042"
+    },
+    {
+      "channel": "DISPLAY_LINE",
+      "text": "ABENDING PROGRAM"
     }
   ],
-  "normalisations": [],
-  "expectedDatasets": [
-    {
-      "dataset": "CUSTFILE",
-      "channel": "FINAL_STATE",
-      "rowCount": 2,
-      "recordLength": 500
-    }
-  ]
+  "normalisations": []
 }

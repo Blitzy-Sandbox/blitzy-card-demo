@@ -173,7 +173,7 @@ import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException
  *   <tr><td>arranges nothing, and declares a {@code CUSTFILE}</td>
  *       <td>a private in-memory relation holding the declared rows, read through the real
  *           {@link CustomerRepository}</td>
- *       <td>the ordinary path: {@code '00'} per record, then {@code '10'}. Thirteen cases</td></tr>
+ *       <td>the ordinary path: {@code '00'} per record, then {@code '10'}. Twelve cases</td></tr>
  *   <tr><td>arranges nothing, and declares no {@code CUSTFILE} at all</td>
  *       <td>a database with no such relation</td>
  *       <td>{@code 0000-CUSTFILE-OPEN}'s fatal arm, from a dataset that is genuinely not there. No
@@ -183,7 +183,7 @@ import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException
  *   <tr><td>arranges an open, read or close outcome</td>
  *       <td>a stubbed repository reporting exactly that status, with the reads assembled from the
  *           case's own declared rows through the real {@link CustomerRecord#decode(String, Charset)}</td>
- *       <td>the {@code WHEN OTHER} arms and both branches of {@code Z-DISPLAY-IO-STATUS}. Seven
+ *       <td>the {@code WHEN OTHER} arms and both branches of {@code Z-DISPLAY-IO-STATUS}. Eight
  *           cases</td></tr>
  * </table>
  * The real relation is used wherever it can be, because it is the only backend against which "the
@@ -386,6 +386,15 @@ class CBCUS01CParityTest {
         /**
          * Every read succeeds and the {@code CLOSE} at {@code L138} then fails.
          *
+         * <p>{@code case18} is the one entry in {@link #declaredScenarios()} that arranges this, and
+         * it is necessarily the only shape that can: {@link Scenario} refuses a failing {@code CLOSE}
+         * beside a failing {@code READ}, and every read failure in this table abends before
+         * {@code L83} runs the close at all, so the close site is reachable only from a run that was
+         * clean through to its last statement. The vocabulary of this table is therefore the three
+         * I/O paragraphs {@code CBCUS01C} actually has, and each of them is reached from it.
+         * {@code customer.CustomerServiceTest} drives {@code 9000-CUSTFILE-CLOSE} directly as well,
+         * at the service rather than the case level.
+         *
          * @param status the status it reports
          * @return the scenario
          */
@@ -432,7 +441,7 @@ class CBCUS01CParityTest {
     /**
      * One scenario per case, in case order - the arranged input side of all twenty cases.
      *
-     * <p>Thirteen cases arrange nothing and differ only in what they seed; seven arrange a failure,
+     * <p>Twelve cases arrange nothing and differ only in what they seed; eight arrange a failure,
      * and between them they reach all three abend sites and both arms of
      * {@code Z-DISPLAY-IO-STATUS}:
      * <ul>
@@ -457,8 +466,25 @@ class CBCUS01CParityTest {
      *       file would otherwise have been reported - it seeds two rows and fails the read after
      *       them, which is the one arrangement no other entry makes and the only way to state that a
      *       forced status is not quietly re-read as {@code '10'};</li>
-     *   <li>{@code case16} fails the {@code CLOSE} at {@code L138} with the extended status
-     *       {@code '96'} on a run that read nothing.</li>
+     *   <li>{@code case16} fails the <strong>first</strong> {@code READ} with {@code '30'}, the
+     *       permanent I/O error, on a dataset that does hold a record. It is the only entry whose
+     *       failing read sits at ordinal zero, so it is the only one with no record image standing
+     *       ahead of the failure to hide behind - which is what makes it the complement of
+     *       {@code case04}, where the first read reports {@code '10'} instead and the very same
+     *       {@code IF} ladder ends the loop quietly rather than abending;</li>
+     *   <li>{@code case18} fails the {@code CLOSE} at {@code L138} with {@code '42'} - a close
+     *       against a file that is not open - on a run that read everything it was given. It is the
+     *       only entry that reaches the third abend site, the one inside
+     *       {@code 9000-CUSTFILE-CLOSE} at {@code L147-L150}, and the only one that arranges a
+     *       failure <em>after</em> a complete record pass and a normal end-of-file transition, which
+     *       is the one arrangement that can state that {@code L85}'s banner is still never
+     *       displayed: {@code CALL 'CEE3ABD'} at {@code L158} ends the enclave inside the close, so
+     *       control never returns from the {@code PERFORM} at {@code L83}. An implementation that
+     *       emitted that banner from a finally block, or that treated a refused close as
+     *       recoverable, passes every other case in this folder and fails that one. {@code '42'} is
+     *       two digits whose first byte is not {@code '9'}, so it renders through the {@code ELSE}
+     *       arm of {@code Z-DISPLAY-IO-STATUS}; the {@code IO-STAT1 = '9'} arm is reached from the
+     *       open and read sites instead, by {@code case10} and {@code case17}.</li>
      * </ul>
      *
      * <p>Deeply immutable: an unmodifiable view over a map of records built once by
@@ -502,8 +528,8 @@ class CBCUS01CParityTest {
         // 500-character lines to exist, which only the ordinary path produces. An arranged read failure
         // would abend before the first image was displayed and the case would assert nothing about
         // either gate. Nothing is lost by arranging nothing here, because the fatal read arm is reached
-        // four more times - case12, case14, case15 and case17 - and the numeric branch of
-        // Z-DISPLAY-IO-STATUS that a status of '30' renders through is the same branch case12's '04',
+        // five more times - case12, case14, case15, case16 and case17 - and the numeric branch of
+        // Z-DISPLAY-IO-STATUS that case16's '30' renders through is the same branch case12's '04',
         // case13's '37', case14's '22' and case15's '23' already drive.
         declared.put("case11", Scenario.asDeclared());
 
@@ -533,9 +559,30 @@ class CBCUS01CParityTest {
         // asserted to survive the abend through the tasklet rather than only through the service.
         declared.put("case15", Scenario.readFailsAfter(2, FileStatus.NOT_FOUND));
 
-        declared.put("case16", Scenario.closeFails("96"));
+        // case16 fails the read at ordinal zero - the first one - which is the arrangement no other
+        // entry makes: case17 is the next earliest and still delivers one record first. Seeding a real
+        // fixture row and then refusing the read that would have returned it is deliberate, and it is
+        // what separates this case from case04. Both produce no record image, but for opposite reasons
+        // and down opposite arms of the same ladder: case04's empty dataset reports '10', reaches 88
+        // APPL-EOF at L107 and ends the loop quietly at return code 0, while '30' leaves APPL-RESULT at
+        // 12 from L101 with both 88 conditions false and abends. A repository that answered "nothing to
+        // deliver" with '10' regardless of the arranged status, or one that displayed the row it held
+        // before testing the status, passes case04 and fails here - which is the only place in this
+        // folder that distinction is observable, since every other read failure has a record image
+        // ahead of it.
+        declared.put("case16", Scenario.readFailsAfter(0, "30"));
         declared.put("case17", Scenario.readFailsAfter(1, CustomerRepository.PERMANENT_ERROR_STATUS));
-        declared.put("case18", Scenario.asDeclared());
+
+        // case18 fails the CLOSE after every seeded row has been read and end of file has been
+        // reported normally - the one arrangement in this table where the fatal arm is reached on a
+        // run that was clean up to its last statement. It is the complement of case06, which seeds
+        // the same three fixture rows and closes successfully, and of case16, which refuses the very
+        // first READ and so never reaches the close. '42' has no named constant in FileStatus because
+        // no CBCUS01C paragraph tests for it, so it is written here as the literal the CLOSE
+        // reports, exactly as case10's '92' and case13's '37' are; being two digits with a first
+        // byte other than '9' it renders through the ELSE arm of Z-DISPLAY-IO-STATUS as
+        // FILE STATUS IS: NNNN0042, which is that arm reached from the close site for the only time.
+        declared.put("case18", Scenario.closeFails("42"));
         declared.put("case19", Scenario.asDeclared());
         declared.put("case20", Scenario.asDeclared());
         return Collections.unmodifiableMap(declared);

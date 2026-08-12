@@ -1,23 +1,19 @@
 {
   "program" : "COTRN01C",
   "caseId" : "case18",
-  "description" : "Re-entry with ENTER on a lookup key that is not numeric. TRAN-ID is PIC X(16) in app/cpy/CVTRA05Y.cpy and COTRN01C edits it for nothing but emptiness at :147, so an alphanumeric key is moved into the record key at :172 and read with exactly as much ceremony as a numeric one - and reports NOTFND because no record carries it. Pinned because adding a numeric edit here would be a new business rule, which a like-for-like migration may not introduce however reasonable it looks.",
+  "description" : "The WHEN OTHER arm of the EVALUATE EIBAID at :128-131, driven by DFHCLEAR, and the second half of the pair that proves that arm is a genuine catch-all rather than a fifth named key. case17 reaches it with PF12 and this case reaches it with CLEAR; every other input is identical - the same 218-byte commarea, the same typed lookup key, the same pinned clock, the same absence of any seeded dataset - so the AID is the single variable and the expected fingerprint below is byte-identical to case17's. Diff the two files and the only substantive differences are the AID, the caseId and this prose. That is the design rather than a shortcut: varying one input at a time is what turns 'WHEN OTHER matched' into 'WHEN OTHER matches whatever the four named arms do not', which is the claim gate G30 actually needs. case14 approaches the same arm from a third direction, with no AID at all - the DFHNULL that CICS reports when no key raised the interrupt - and seeds TRANSACT where these two seed nothing, so the three together cover an unhandled function key, an unhandled non-function key and no key. The negative fact this case exists to pin. app/cpy/CSSTRPFY.cpy carries the YYYY-STORE-PFKEY routine, which EVALUATEs EIBAID against DFHENTER, DFHCLEAR, DFHPA1, DFHPA2 and DFHPF1 through DFHPF12, and it is copied by exactly five programs - COACTUPC:L4199, COACTVWC:L913, COCRDLIC:L1416, COCRDSLC:L855 and COCRDUPC:L1528. COTRN01C is not one of them. Its COPY list at :52-72 is COCOM01Y, COTRN01, COTTL01Y, CSDAT01Y, CSMSG01Y, CVTRA05Y, DFHAID and DFHBMSCA, and it tests EIBAID inline in the five-arm EVALUATE at :112-132, which names DFHENTER, DFHPF3, DFHPF4 and DFHPF5 and nothing else. So DFHCLEAR gets no special handling here, and in particular it does NOT clear the screen: the clearing key is PF4, a separately named arm at :123 performing CLEAR-CURRENT-SCREEN at :301-304, and the screen says so itself - app/bms/COTRN01.bms:265-268 paints a LENGTH=47 footer at POS=(24,1) reading 'ENTER=Fetch  F3=Back  F4=Clear  F5=Browse Tran.' which enumerates exactly the four handled keys. CLEAR therefore falls to WHEN OTHER and produces the invalid-key message, and so do DFHPA1, DFHPA2, DFHPA3, PF1, PF2 and PF6 through PF24. common/PfKeyResolver is shared by all seventeen controllers, but for this program it must reproduce ONLY those inline four-key-plus-default outcomes and never CSSTRPFY's wider table: a resolver that imported the wider table would report that CLEAR cleared the screen, which is a genuine parity violation, and this is the case that catches it. Check that deliberately in the fields below - TRNIDINO still carries the typed key rather than sixteen spaces, and not one of the thirteen detail fields is blanked, which is the exact opposite of case15, the PF4 case that does blank them. Risk R-B, stated rather than reconciled, practice B4: the mandated class is TransactionAddController and the program VIEWS. Four independent confirmations - app/cbl/COTRN01C.cbl:5 reads 'View a Transaction from TRANSACT file', README.md's online transaction inventory carries the row 'CT01 | COTRN01 | COTRN01C | Transaction View', app/bms/COTRN01.bms:2 names the view mapset, and that mapset carries INITIAL='View Transaction' at POS=(4,30) on :78-79 as its only bright heading. Its structure agrees: 56 DFHMDF definitions, 21 named, and exactly ONE UNPROT field - TRNIDIN at :85 - which is a lookup screen and not an entry form. Rule R1 keeps the mandated name and takes every expectation below from the source; practice B4 documents the inversion and never corrects it. No insert expectation is authored here, because an unrecognised key produces a message and nothing else, and the add half of the pair is parity/COTRN02C. Provenance, practice B12. Every value below is STATICALLY DERIVED by structured reading of the COBOL cross-checked against app/cpy/CSMSG01Y.cpy, app/cpy/COTTL01Y.cpy, app/cpy/CSDAT01Y.cpy, app/cpy/COCOM01Y.cpy and app/cpy-bms/COTRN01.CPY. Nothing here was captured from, recorded against or replayed from an execution of the legacy program, which is empirically impossible in this environment. review_rules reports that no user rules were provided for this project, so AAP 0.10.2's enterprise practices bind in their place; their absence is not treated as licence to lower the bar. The width arithmetic, counted mechanically rather than eyeballed, practice B11. CCDA-MSG-INVALID-KEY is declared PIC X(50) at app/cpy/CSMSG01Y.cpy:20-21, but its quoted literal is only 49 characters, so COBOL pads the item by one - 40 characters of visible text ending in three dots, plus 10 spaces, is 50. :130 moves that X(50) item into WS-MESSAGE PIC X(80) at :38, left-aligned and space-filled, so 50 + 30 = 80. :217 then moves the X(80) field into ERRMSGO PIC X(78), which right-truncates by two bytes; both lost bytes are spaces, so no visible text is lost and the field is exactly 78. Stated the way a reviewer checks it: 50 + 28 = 78. Both stages are pinned as separate message channels, because comparing an 80-byte expectation against a 78-byte one is exactly how a two-byte truncation defect goes unnoticed. Do not conflate this literal with either thank-you literal, and do not conflate those two with each other: app/cpy/COTTL01Y.cpy declares CCDA-THANK-YOU PIC X(40) naming 'CCDA application', whose literal already fills the item at 40, while app/cpy/CSMSG01Y.cpy declares CCDA-MSG-THANK-YOU PIC X(50) naming 'CardDemo application', whose 49-character literal is padded to 50 - different copybooks, different widths, different wording, and COTRN01C emits neither. On the same footing, TITLE02O carries the value from the ACTIVE COTTL01Y line 22; line 21 is commented out and its 'Credit Card Demo Application (CCDA)' text is not this screen's second title. Ordering is the substance of this arm, gate G30: DFHENTER at :113, DFHPF3 at :115, DFHPF4 at :123 and DFHPF5 at :125 are each tested and each fail before WHEN OTHER at :128 matches as the fifth and last arm. The program has TWO WHEN OTHER arms and they must never be conflated - this one, which sets CCDA-MSG-INVALID-KEY and emits no DISPLAY, and EVALUATE WS-RESP-CD's at :289-295, which sets 'Unable to lookup Transaction...' and carries the program's only DISPLAY at :290. expectedMessages below is therefore the two message-field channels and no DISPLAY_LINE. What is deliberately absent, each of it asserted rather than left unsaid. No cursor is requested: not one of the six MOVE -1 sites (:102, :151, :154, :287, :294 and :311) lies on this path, so cursorField is omitted - a real, checkable difference from case02 and case06, which both carry TRNIDINL. No attribute byte is written either, although the error flag is set at :129 and the state is REENTER: COTRN01C copies no CSSETATY and moves neither DFHRED nor an asterisk anywhere in its 330 lines, so attributes is empty and gate G38 is satisfied by this screen highlighting in NEITHER state rather than by highlighting in one. No dataset is seeded, so the case also asserts that the arm runs to completion without the TRANSACT repository being touched once; expectedFinalState and expectedDatasets are empty for that reason rather than by omission, and no FileStatus or RESP outcome is declared because the keyed READ at :269 is never reached. No navigation occurs: RETURN-TO-PREV-SCREEN at :197-208 holds the only XCTL and is unreached, so nextProgram still names this program and control leaves through the EXEC CICS RETURN TRANSID('CT01') at :136-139. Nothing is written, which the source guarantees outright - COTRN01C contains no WRITE, no REWRITE and no DELETE at all. Statelessness, rule R6 and gate G37: the 218-byte commarea is the 160-byte CARDDEMO-COMMAREA (34+84+12+16+14) plus the 58-byte CDEMO-CT01-INFO extension (16+16+8+1+1+16) declared at :53-61 and carried as its own member rather than folded into the shared navigation context that all seventeen controllers depend on. The AID itself travels in the payload, which is the whole point of a case keyed on an unrecognised key, and CDEMO-PGM-CONTEXT is still 1 on the way out because only :100 sets it and only :204 resets it and neither statement is reached. The clock is pinned, practice B7, because :245 moves FUNCTION CURRENT-DATE into the header and a captured 'now' would leave the two header items unassertable. The code page is stated as US-ASCII rather than defaulted, practice B8. DFHAID and DFHBMSCA are IBM-supplied and absent from this repository, risk R-D, so DFHCLEAR is named from the constants reproduced in common/CicsAid from IBM CICS documentation, where it is the EBCDIC underscore 0x6D.",
   "unitKind" : "CONTROLLER_POJO",
-  "inputs" : {
-    "TRANSACT" : {
-      "rows" : [ "0000000000000001010005POS TERM  GROCERY PURCHASE AT PARITY MARKET WITH A DESCRIPTION THAT OVERFLOWS THE SCREEN FIELD                0000005047G800000001PARITY MARKET NUMBER ONE OF SEVERAL LONG NAMES    SPRINGFIELD MASSACHUSETTS USA                     01103-123441111111111111112022-07-19 23:12:34.1234562022-07-20 01:02:03.654321                    ", "0000000000000002020010ONLINE    REFUND ISSUED BY MERCHANT                                                                           0000000500}800000002PARITY REFUNDS LIMITED                            PORTLAND OREGON                                   97201-000242222222222222222022-07-18 08:00:00.0000012022-07-18 09:30:00.000002                    ", "0000000000000003034444BATCH     LARGE SETTLEMENT                                                                                    1234567891B800000003PARITY SETTLEMENT HOUSE                           NEW YORK NEW YORK                                 10001-000343333333333333332022-07-17 12:00:00.0000032022-07-17 12:00:01.000004                    " ]
-    }
-  },
+  "inputs" : { },
   "screenRequest" : {
     "eibcalen" : 218,
-    "aid" : "DFHENTER",
+    "aid" : "DFHCLEAR",
     "pinnedClock" : "2022-07-19T23:12:34",
     "charset" : "US-ASCII",
     "commarea" : {
       "CDEMO-PGM-CONTEXT" : "1"
     },
     "mapFields" : {
-      "TRNIDINI" : "ABCDEFGHIJKLMNOP"
+      "TRNIDINI" : "0000000000000017"
     },
     "forcedOutcomes" : { }
   },
@@ -57,7 +53,7 @@
         "PGMNAMEO" : "COTRN01C",
         "TITLE02O" : "              CardDemo                  ",
         "CURTIMEO" : "23:12:34",
-        "TRNIDINO" : "ABCDEFGHIJKLMNOP",
+        "TRNIDINO" : "0000000000000017",
         "TRNIDO" : "                ",
         "CARDNUMO" : "                ",
         "TTYPCDO" : "  ",
@@ -71,40 +67,22 @@
         "MNAMEO" : "                              ",
         "MCITYO" : "                         ",
         "MZIPO" : "          ",
-        "ERRMSGO" : "Transaction ID NOT found...                                                   "
+        "ERRMSGO" : "Invalid key pressed. Please see below...                                      "
       },
       "attributes" : { }
     } ],
-    "cursorField" : "TRNIDINL",
     "termination" : "RETURN_TRANSID"
   },
   "expectedWrites" : [ ],
-  "expectedFinalState" : [ {
-    "dataset" : "TRANSACT",
-    "rowIndex" : 0,
-    "expectedBytes" : "0000000000000001010005POS TERM  GROCERY PURCHASE AT PARITY MARKET WITH A DESCRIPTION THAT OVERFLOWS THE SCREEN FIELD                0000005047G800000001PARITY MARKET NUMBER ONE OF SEVERAL LONG NAMES    SPRINGFIELD MASSACHUSETTS USA                     01103-123441111111111111112022-07-19 23:12:34.1234562022-07-20 01:02:03.654321                    "
-  }, {
-    "dataset" : "TRANSACT",
-    "rowIndex" : 1,
-    "expectedBytes" : "0000000000000002020010ONLINE    REFUND ISSUED BY MERCHANT                                                                           0000000500}800000002PARITY REFUNDS LIMITED                            PORTLAND OREGON                                   97201-000242222222222222222022-07-18 08:00:00.0000012022-07-18 09:30:00.000002                    "
-  }, {
-    "dataset" : "TRANSACT",
-    "rowIndex" : 2,
-    "expectedBytes" : "0000000000000003034444BATCH     LARGE SETTLEMENT                                                                                    1234567891B800000003PARITY SETTLEMENT HOUSE                           NEW YORK NEW YORK                                 10001-000343333333333333332022-07-17 12:00:00.0000032022-07-17 12:00:01.000004                    "
-  } ],
+  "expectedFinalState" : [ ],
   "expectedReturnCode" : 0,
   "expectedMessages" : [ {
     "channel" : "WS_MESSAGE_80",
-    "text" : "Transaction ID NOT found...                                                     "
+    "text" : "Invalid key pressed. Please see below...                                        "
   }, {
     "channel" : "SCREEN_ERRMSG_78",
-    "text" : "Transaction ID NOT found...                                                   "
+    "text" : "Invalid key pressed. Please see below...                                      "
   } ],
   "normalisations" : [ ],
-  "expectedDatasets" : [ {
-    "dataset" : "TRANSACT",
-    "channel" : "FINAL_STATE",
-    "rowCount" : 3,
-    "recordLength" : 350
-  } ]
+  "expectedDatasets" : [ ]
 }

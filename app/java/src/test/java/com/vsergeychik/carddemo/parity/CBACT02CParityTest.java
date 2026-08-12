@@ -661,8 +661,8 @@ final class CBACT02CParityTest {
             // carry it.  This guard is about the arm at :110-113 and the abend at :154-158, not about a
             // case slot, and sourcing it from one meant that re-purposing that slot silently retargeted
             // the guard - which is how a test ends up proving something other than what it says.
-            // '23' on the first read is the shape: case14 and case17 still pin it through the gate,
-            // after three and two records respectively.
+            // '23' on the first read is the shape: case17 still pins it through the gate, after two
+            // records rather than before the first.
             final CardRepository cardRepository = stubbedCardMaster(
                     Scenario.readFailingAfter(0, Terminator.NOT_FOUND),
                     ParityHarness.SeededDataset.empty(AccountBalanceReaderJob.DD_NAME,
@@ -971,15 +971,15 @@ final class CBACT02CParityTest {
      *       is the tasklet's own body, so the pass runs with no launcher, no context and no HTTP
      *       (gate G51).</li>
      *   <li><strong>The abend is an observation.</strong> {@code PERFORM 9999-ABEND-PROGRAM} does not
-     *       return, so eleven of the twenty cases end in an {@link AbendException} - four from the
-     *       open, five from a read, and {@code case18} and {@code case19} from the close. It is caught
+     *       return, so ten of the twenty cases end in an {@link AbendException} - four from the
+     *       open, four from a read, and {@code case18} and {@code case19} from the close. It is caught
      *       here
      *       only so the no-write proof runs on the failure paths too, and is then rethrown unchanged
      *       so the harness folds its {@code RETURN-CODE} into the fingerprint. Recording the lines
      *       into {@link ParityHarness.Invocation#recorder()} rather than returning them is what makes
      *       the lines an abending run has already emitted survive the exception - four for a run that
-     *       fails before its first record, and seven for {@code case14}, which fails after three of
-     *       them.</li>
+     *       fails before its first record, and seven for {@code case19}, whose {@code CLOSE} refuses
+     *       once three record lines have already been written.</li>
      *   <li><strong>The return code is stated.</strong> {@code GOBACK} at
      *       {@code app/cbl/CBACT02C.cbl:87} leaves {@code RETURN-CODE} at zero on the normal path;
      *       that is recorded explicitly rather than left to a default, because a default is the one
@@ -1469,7 +1469,7 @@ final class CBACT02CParityTest {
                 // sequentially on RECORD KEY IS FD-CARD-NUM, so the READ walks the key sequence and
                 // not the load order; this run pins that the delivered order is the key order.  It is
                 // a wholeFile() run and not a closeFailing() one because this folder's twenty fixtures
-                // spend their four abending OPEN shapes, their five abending READ shapes and their
+                // spend their four abending OPEN shapes, their four abending READ shapes and their
                 // two abending CLOSE shapes elsewhere, and this is the one run that can carry the
                 // ordering assertion.
                 case "case15" -> wholeFile();          // inline rows, ascending CARD-NUM
@@ -1480,6 +1480,18 @@ final class CBACT02CParityTest {
                 // for a run shape to express.  All fifty fixture rows carry 'Y', which is why the row
                 // is inline rather than a range over the fixture.
                 case "case11" -> wholeFile();
+
+                // An inline row synthesized from carddata.txt row 1 with CARD-EMBOSSED-NAME X(50) and
+                // CARD-EXPIRAION-DATE X(10) both blanked, so one-based offsets 31-90 are sixty
+                // consecutive spaces.  A normal completion for the same reason case11 is one: the
+                // program inspects no record field, so a blank name and a blank date are displayed
+                // exactly as stored and there is no validation, defaulting or rejection arm for a run
+                // shape to express.  What it pins is the whitespace fidelity of the pass-through -
+                // a trimmed, collapsed or nulled span would shorten the image and shift every offset
+                // after it - and it is the lower-boundary complement of case13, which fills the same
+                // X(50) span to all fifty bytes.  Inline rather than a fixture range because all
+                // fifty fixture rows carry a populated name and a populated date.
+                case "case14" -> wholeFile();
 
                 // --- 0000-CARDFILE-OPEN failures: :121 is two-armed, so anything but '00' abends.
                 //     The remaining status the open can report, '23', is driven at unit level by
@@ -1497,15 +1509,15 @@ final class CBACT02CParityTest {
                 // --- 1000-CARDFILE-GET-NEXT failures: :101, then the arm at :110-113. ---
                 case "case12" -> readFailingAfter(0, Terminator.DUPLICATE_KEY);
                 case "case13" -> readFailingAfter(0, Terminator.INVALID_REQUEST);
-                case "case14" -> readFailingAfter(3, Terminator.NOT_FOUND);
                 // Two of its three inline rows are delivered and the third READ reports '23', so the
                 // row still sitting in the dataset is never read - which is what proves the loop
-                // reads one record at a time rather than pre-reading or buffering its input.  case14
-                // fails after three of three and exhausts its input; case20 also leaves a row behind
-                // but on the extended '9' arm rather than on '23'.  This run fails strictly
-                // mid-stream, over an input small enough that the unread row is written out in the
-                // case file.  The count is 2 and not EVERY_SEEDED_ROW for exactly that reason -
-                // readSequence would otherwise deliver all three and the third image would appear.
+                // reads one record at a time rather than pre-reading or buffering its input.  case20
+                // also leaves a row behind but on the extended '9' arm rather than on '23'.  This run
+                // fails strictly mid-stream, over an input small enough that the unread row is
+                // written out in the case file.  The count is 2 and not EVERY_SEEDED_ROW for exactly
+                // that reason - readSequence would otherwise deliver all three and the third image
+                // would appear.  It is this folder's only '23' at the READ site, so the shape stated
+                // here is the whole of that coverage (gate G47).
                 case "case17" -> readFailingAfter(2, Terminator.NOT_FOUND);
                 // One of its two seeded rows is delivered and displayed, and the second READ reports a
                 // response with no two-character batch equivalent, so the status becomes
@@ -1524,8 +1536,9 @@ final class CBACT02CParityTest {
                 //     '00', every seeded row is delivered and displayed, the loop ends on a clean
                 //     end-of-file, and only then does the CLOSE refuse.  Between them they are the
                 //     third and last call site of the 9910 paragraph the OPEN and READ cases leave
-                //     unreached - case08 to case16 reach 9910 from the OPEN, case12 to case20 from the
-                //     READ - so they are this directory's whole coverage of the close site's error arm
+                //     unreached - case08, case09, case10 and case16 reach 9910 from the OPEN, and
+                //     case12, case13, case17 and case20 from the READ - so they are this directory's
+                //     whole coverage of the close site's error arm
                 //     (gate G47) and of the end banner at :85 being lost while an emitted record line
                 //     stands: case18 states it over a single inline overpunch row, case19 over three
                 //     fixture rows.  The 8 -> 12 arithmetic ladder of :137, :140 and :142 stays pinned

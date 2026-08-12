@@ -104,8 +104,12 @@ import org.junit.jupiter.params.provider.MethodSource;
  * valued entries and <strong>no</strong> authorisation column, while {@code app/cpy/COMEN02Y.cpy} is
  * {@code OCCURS 12} with ten populated options <strong>and</strong> an {@code X(01)} user-type
  * column that filters what a signed-on user may see. Nothing below is shared with the main-menu
- * program, and {@code case13} deliberately signs a different administrator on to demonstrate that
- * {@code COADM01C} composes the same four lines regardless of who is looking.
+ * program, and nothing below filters an option by user type either: {@code COADM01C} composes the
+ * same four lines regardless of who is looking, and it does so because {@code COADM02Y} declares no
+ * authorisation column at all rather than because any one case varies the administrator. The four
+ * composed lines are pinned by {@code case04} and {@code case05} at the two ends of the active
+ * range, and {@code case06} and {@code case13} then pin the five slots past it - {@code case06} from
+ * the unwritten side and {@code case13} at the {@code OCCURS} bound itself.
  *
  * <h2>How the unit is reached: no HTTP, no launcher, no container</h2>
  *
