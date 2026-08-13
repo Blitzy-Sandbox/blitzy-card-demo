@@ -1,4 +1,4 @@
-package com.vsergeychik.carddemo.config;
+package com.vsergeychik.carddemo.common;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
@@ -11,7 +11,6 @@ import java.util.ArrayList;
 import java.util.List;
 import javax.sql.DataSource;
 
-import com.vsergeychik.carddemo.common.DatasetIntegrityException;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -24,25 +23,9 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 
 /**
  * Proves the unit-of-work boundary a locking read depends on.
- *
- * <p>The boundary exists because CICS gives it for free and JDBC does not. In {@code COACTUPC}'s
- * {@code 9600-WRITE-PROCESSING} the task locks the account, locks the customer, compares each against
- * the copy the screen was painted from, and only then rewrites - and the comparison is only meaningful
- * because nothing can change either record in between. A connection in auto-commit mode releases a
- * {@code FOR UPDATE} lock the instant the statement returns, so the same sequence run that way would
- * still pass its comparison and protect nothing. These tests hold that boundary to three obligations:
- * a body runs inside one transaction on one connection, a failing body rolls the whole thing back, and
- * a locking read taken with no boundary open is refused rather than issued anyway.
- *
- * <p>An in-memory database backs the transaction manager. That is not a shortcut around residual risk
- * R-E: the subject here is the transaction boundary itself, which is the framework's behaviour rather
- * than the deployment driver's, and a real manager over a real connection is the only way to observe
- * a commit and a rollback actually happening.
  */
 @DisplayName("DatasetUnitOfWork - the CICS task boundary, made explicit")
 class DatasetUnitOfWorkTest {
-
-    /** A single-connection source, so "the same connection throughout" is observable. */
     private static DataSource singleConnection() {
         SingleConnectionDataSource source = new SingleConnectionDataSource(
                 "jdbc:h2:mem:unit-of-work-" + System.nanoTime()
@@ -52,7 +35,6 @@ class DatasetUnitOfWorkTest {
         return source;
     }
 
-    /** A unit of work over a real transaction manager. */
     private static DatasetUnitOfWork unitOfWork(DataSource dataSource) {
         return new DatasetUnitOfWork(new JdbcTransactionManager(dataSource));
     }
@@ -60,7 +42,6 @@ class DatasetUnitOfWorkTest {
     @Nested
     @DisplayName("Construction")
     class Construction {
-
         @Test
         @DisplayName("a transaction manager is required: without one there is no boundary to open")
         void aManagerIsRequired() {
@@ -75,8 +56,6 @@ class DatasetUnitOfWorkTest {
             DataSource dataSource = singleConnection();
             PlatformTransactionManager manager = new JdbcTransactionManager(dataSource);
 
-            // The same manager and the same source the repositories read through, or the boundary would
-            // not enclose their statements.
             assertThat(new DatasetUnitOfWork(manager)).isNotNull();
         }
     }
@@ -84,7 +63,6 @@ class DatasetUnitOfWorkTest {
     @Nested
     @DisplayName("The boundary")
     class Boundary {
-
         @Test
         @DisplayName("a body sees an active transaction, and does not once it returns")
         void aBodyRunsInsideATransaction() {
@@ -108,8 +86,6 @@ class DatasetUnitOfWorkTest {
                 return null;
             });
 
-            // Two reads on two connections would let another task change the record between them, which
-            // is exactly the interleaving 9700-CHECK-CHANGE-IN-REC exists to detect and cannot.
             assertThat(seen).hasSize(2);
             assertThat(seen.get(0)).isSameAs(seen.get(1));
         }
@@ -148,9 +124,6 @@ class DatasetUnitOfWorkTest {
         void aFailingBodyRollsBack() {
             DatasetUnitOfWork unitOfWork = unitOfWork(singleConnection());
 
-            // The rollback is what keeps a half-applied update - the account rewritten, the customer not
-            // - out of the datasets. The CICS original cannot produce that state and therefore has no
-            // code to recover from it.
             assertThatIllegalStateException()
                     .isThrownBy(() -> unitOfWork.execute("a rewrite that fails", () -> {
                         throw new IllegalStateException("the rewrite refused");
@@ -176,28 +149,9 @@ class DatasetUnitOfWorkTest {
         }
     }
 
-    /**
-     * Proves the second boundary: one batch verb, persisted on its own.
-     *
-     * <p>Batch is not online, and the difference is recorded in the file definitions rather than in the
-     * programs. Every {@code FILE} in {@code app/csd/CARDDEMO.CSD} carries {@code RECOVERY(NONE)}
-     * ({@code :9}, {@code :21}, {@code :33}, {@code :46}, {@code :59}, {@code :72}, {@code :84},
-     * {@code :96}), and {@code CBACT04C} issues no syncpoint of any kind. Its {@code REWRITE} at
-     * {@code app/cbl/CBACT04C.cbl:356} is therefore permanent the moment it returns, and the abend at
-     * {@code :632} does not take it back.
-     *
-     * <p>That is the opposite of {@link Boundary}'s obligation, which is why it needs its own entry point
-     * rather than a flag. {@code execute} joins whatever transaction encloses it, because a CICS task has
-     * one syncpoint; {@code persistVerb} deliberately does not, because a JCL step has none. Enclosing a
-     * batch verb in a chunk transaction and letting a later failure roll it back would revert an account
-     * whose cycle amounts had been zeroed along with it - and the operator's re-run would then post its
-     * interest a second time.
-     */
     @Nested
     @DisplayName("The per-verb boundary a RECOVERY(NONE) batch write depends on")
     class VerbBoundary {
-
-        /** A table to write into, so a commit and a rollback are observable rather than asserted. */
         private JdbcTemplate seeded(DataSource dataSource) {
             JdbcTemplate template = new JdbcTemplate(dataSource);
             template.execute("CREATE TABLE VERBS (ID INT)");
@@ -222,8 +176,6 @@ class DatasetUnitOfWorkTest {
             JdbcTemplate template = seeded(dataSource);
             DatasetUnitOfWork unitOfWork = unitOfWork(dataSource);
 
-            // The enclosing boundary stands for the chunk transaction. The verb inside it stands for
-            // 1050-UPDATE-ACCOUNT's REWRITE, and the exception for the abend at CBACT04C:632.
             assertThatIllegalStateException().isThrownBy(() -> unitOfWork.execute("a chunk", () -> {
                 unitOfWork.persistVerb("REWRITE FD-ACCTFILE-REC",
                         () -> template.update("INSERT INTO VERBS VALUES (1)"));
@@ -276,9 +228,6 @@ class DatasetUnitOfWorkTest {
             DatasetUnitOfWork unitOfWork = unitOfWork(dataSource);
             template.update("INSERT INTO VERBS VALUES (1)");
 
-            // MVS applies a DD's abnormal disposition AFTER the step, outside anything the step did. A
-            // disposition enrolled in the step's own transaction would be undone by the very failure that
-            // triggered it, leaving exactly the partial output it exists to remove.
             assertThatIllegalStateException().isThrownBy(() -> unitOfWork.execute("a chunk", () -> {
                 unitOfWork.persistDisposition("DISP=(NEW,CATLG,DELETE)",
                         () -> template.update("DELETE FROM VERBS"));
@@ -307,7 +256,6 @@ class DatasetUnitOfWorkTest {
     @Nested
     @DisplayName("The precondition a locking read enforces")
     class Precondition {
-
         @Test
         @DisplayName("inside a unit of work, a locking read is permitted")
         void insideAUnitOfWorkItIsPermitted() {
@@ -344,7 +292,6 @@ class DatasetUnitOfWorkTest {
     @Nested
     @DisplayName("The precondition a write enforces")
     class WritePrecondition {
-
         @Test
         @DisplayName("inside a unit of work, a write is permitted")
         void insideAUnitOfWorkItIsPermitted() {
@@ -358,10 +305,6 @@ class DatasetUnitOfWorkTest {
         @Test
         @DisplayName("outside one it is refused, and the message says why the row would be lost")
         void outsideOneItIsRefused() {
-            // The reason differs from the locking read's and the message has to say so: a WRITE takes no
-            // lock, and what goes wrong is that the pool is configured auto-commit: false, so the row is
-            // rolled back when the connection is returned while the statement's row count would be handed
-            // back as a completed write.
             assertThatIllegalStateException()
                     .isThrownBy(() -> DatasetUnitOfWork.requireActiveToPersist(
                             "A write to the transaction master", "TEST.TRANSACT.KSDS"))
@@ -377,9 +320,6 @@ class DatasetUnitOfWorkTest {
         @Test
         @DisplayName("it decides from the thread alone, so it needs no data source to reach a verdict")
         void itDecidesFromTheThreadAlone() {
-            // Cheap inside a boundary and cheap outside one: the decision is a thread-local read, not a
-            // round trip, so putting the guard on every write costs a write nothing. Asserted by reaching
-            // both verdicts with no DataSource, no JdbcTemplate and no connection in sight.
             assertThat(DatasetUnitOfWork.active()).isFalse();
             assertThatIllegalStateException().isThrownBy(() -> DatasetUnitOfWork.requireActiveToPersist(
                     "A write to the transaction master", "TEST.TRANSACT.KSDS"));
@@ -409,7 +349,6 @@ class DatasetUnitOfWorkTest {
     @Nested
     @DisplayName("The refusal a rewrite that changed too much raises")
     class Refusal {
-
         @Test
         @DisplayName("inside a unit of work the throw is the rollback: nothing the body did commits")
         void insideAUnitOfWorkTheThrowIsTheRollback() {
@@ -418,9 +357,6 @@ class DatasetUnitOfWorkTest {
             JdbcTemplate template = new JdbcTemplate(dataSource);
             template.execute("CREATE TABLE REFUSAL (IMAGE VARCHAR(8))");
 
-            // The body writes a row and then discovers that the write must not stand. A file status
-            // returned from there would let the row commit on the way out - which is exactly the
-            // outcome BD-03 describes - so the refusal is a throw and the row must be gone afterwards.
             assertThatExceptionOfType(DatasetIntegrityException.class)
                     .isThrownBy(() -> unitOfWork.execute("a rewrite that fanned out", () -> {
                         template.update("INSERT INTO REFUSAL VALUES ('DAMAGE')");

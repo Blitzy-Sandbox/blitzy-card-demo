@@ -25,71 +25,9 @@ import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 
 /**
  * Unit tests for {@link FixedWidthRecord}, the byte-span layer beneath the fixed-width codec.
- *
- * <p>These are plain JUnit 5 tests with no Spring context, because every decision in the class under
- * test is reachable without one. The layouts declared here are transcribed <strong>by hand from the
- * copybooks</strong> under {@code app/cpy}, field for field and offset for offset, so that the
- * arithmetic asserted below is the copybooks' own arithmetic rather than a restatement of the
- * implementation. Field names, including the misspelled {@code ACCT-EXPIRAION-DATE} and
- * {@code CARD-EXPIRAION-DATE}, are carried verbatim.
- *
- * <p>Two charsets are used throughout, both named explicitly and never defaulted: {@code IBM037} for
- * EBCDIC and {@code US-ASCII} for the text fixtures.
- *
- * <h2>What these tests are the audit of</h2>
- * The record codecs in this module are hand-written precisely so that every byte offset stays
- * reviewable against its copybook. That only holds if something actually checks the offsets, and
- * these assertions are that check. Three acceptance gates are enforced here directly:
- * <ul>
- *   <li><strong>G19</strong> - every record is byte-identical in width to its copybook declaration.
- *       Proved for seven layouts by {@code copybookLayoutsTotalTheirDeclaredRecordLength}, and
- *       proved in the negative by the 305-byte and 51-byte cases, which must fail.</li>
- *   <li><strong>G21</strong> - {@code FILLER} spans are present and space-filled. The mechanism is
- *       the layout's total-width self-check: dropping {@code CVACT01Y}'s trailing
- *       {@code FILLER X(178)} leaves the layout 178 bytes short of 300 and is rejected immediately,
- *       which is why {@code droppingTheTrailingFillerIsRejected} asserts the <em>failure</em> rather
- *       than only asserting that a correct layout passes.</li>
- *   <li><strong>G34</strong> - every {@code REDEFINES} pair exposes two accessors over one backing
- *       span, round-tripped in both directions, and contributes <em>zero</em> additional bytes to the
- *       record total. That last property is what separates a legitimate overlay from the accidental
- *       overlap rejected by {@code overlappingStorageSpansAreRejected}; both are asserted in this one
- *       file so the distinction cannot be lost.</li>
- * </ul>
- * The file-wide conventions exist for the remaining gates: no wildcard import anywhere, not even a
- * static one, so each imported member is named (<strong>G52</strong>); no mutable static state, only
- * {@code static final} constants and layout factory methods that return freshly built immutable
- * values (<strong>G53</strong>); and nothing that waits on input or watches for changes, so the whole
- * suite runs in one non-interactive command (<strong>G54</strong>).
- *
- * <h2>Every expectation is statically derived, and says so</h2>
- * The legacy COBOL cannot be executed in this environment, so no expectation here was captured from a
- * run: each was derived by re-adding the copybook by hand. Every layout therefore carries a
- * {@code app/cpy/...} provenance note naming the file it was transcribed from, and the arithmetic is
- * written out in the assertions rather than computed from the implementation, so a transcription
- * error shows up as a failing test instead of agreeing with itself.
- *
- * <h2>The charset is passed explicitly in every single call</h2>
- * {@link FixedWidthRecord} takes a {@link Charset} as a constructor argument so that no platform
- * default can leak into a record area, and a test that omitted it would defeat the point. Two audits
- * back this up, both re-run as part of validating this file: neither this test nor the class under
- * test ever calls the charset-less overload of either {@code getBytes} or the {@code String}
- * byte-array constructor: all ten call sites across the two files name their charset, seven here and
- * three there. And {@code FixedWidthRecord} imports nothing from the configuration package that
- * resolves the code pages - its only import outside {@code java.util} is
- * {@code java.nio.charset.Charset} itself - so the dependency runs one way and the foundation cannot
- * be inverted. {@code theSameSpanDecodesDifferentlyUnderEachCharset} then proves the parameter is
- * genuinely honoured rather than accepted and ignored.
- *
- * <h2>No packed decimal is exercised, because none exists</h2>
- * {@code COMP-3} and {@code PACKED-DECIMAL} appear <strong>zero</strong> times across all 28
- * copybooks in {@code app/cpy} - verified by search, not assumed. Every persisted numeric field is
- * consequently zoned {@code DISPLAY}, one digit per byte, so there is no nibble packing to test and
- * no test for it below. The absence is recorded here so a later reader does not go looking for a gap
- * that is not one.
  */
 @DisplayName("FixedWidthRecord - the COBOL record area as an offset-addressed byte span")
 class FixedWidthRecordTest {
-
     private static final Charset ASCII = Charset.forName("US-ASCII");
     private static final Charset EBCDIC = Charset.forName("IBM037");
 
@@ -98,31 +36,10 @@ class FixedWidthRecordTest {
     private static final byte EBCDIC_SPACE = 0x40;
     private static final byte EBCDIC_ZERO = (byte) 0xF0;
 
-    /**
-     * The width of {@code CVTRA01Y}'s composite key {@code TRAN-CAT-KEY}, which is
-     * {@code TRANCAT-ACCT-ID PIC 9(11)} plus {@code TRANCAT-TYPE-CD PIC X(02)} plus
-     * {@code TRANCAT-CD PIC 9(04)}, so 11 + 2 + 4 = 17.
-     */
     private static final int TRAN_CAT_KEY_WIDTH = 17;
 
-    /**
-     * The width of {@code CVTRA02Y}'s composite key {@code DIS-GROUP-KEY}, which is
-     * {@code DIS-ACCT-GROUP-ID PIC X(10)} plus {@code DIS-TRAN-TYPE-CD PIC X(02)} plus
-     * {@code DIS-TRAN-CAT-CD PIC 9(04)}, so 10 + 2 + 4 = 16 - one byte narrower than
-     * {@link #TRAN_CAT_KEY_WIDTH}, while both parent records are 50 bytes wide.
-     */
     private static final int DIS_GROUP_KEY_WIDTH = 16;
 
-    // ---------------------------------------------------------------------------------------------
-    // Layouts transcribed from the copybooks. Each is the authoritative statement of that record's
-    // geometry, and each one existing at all is proof that its self-check passed.
-    // ---------------------------------------------------------------------------------------------
-
-    /**
-     * {@code app/cpy/CVACT01Y.cpy}, {@code 01 ACCOUNT-RECORD}, documented {@code RECLN 300}.
-     *
-     * @return the validated 300-byte account layout
-     */
     private static RecordLayout accountRecordLayout() {
         return RecordLayout.of(300,
                 FieldSpan.unsignedNumeric("ACCT-ID", 0, 11),
@@ -131,7 +48,6 @@ class FixedWidthRecordTest {
                 FieldSpan.signedScaled("ACCT-CREDIT-LIMIT", 24, 10, 2),
                 FieldSpan.signedScaled("ACCT-CASH-CREDIT-LIMIT", 36, 10, 2),
                 FieldSpan.alphanumeric("ACCT-OPEN-DATE", 48, 10),
-                // Misspelling preserved exactly as app/cpy/CVACT01Y.cpy declares it.
                 FieldSpan.alphanumeric("ACCT-EXPIRAION-DATE", 58, 10),
                 FieldSpan.alphanumeric("ACCT-REISSUE-DATE", 68, 10),
                 FieldSpan.signedScaled("ACCT-CURR-CYC-CREDIT", 78, 10, 2),
@@ -141,11 +57,6 @@ class FixedWidthRecordTest {
                 FieldSpan.filler(122, 178));
     }
 
-    /**
-     * {@code app/cpy/CVTRA05Y.cpy}, {@code 01 TRAN-RECORD}, documented {@code RECLN = 350}.
-     *
-     * @return the validated 350-byte transaction layout
-     */
     private static RecordLayout tranRecordLayout() {
         return RecordLayout.of(350,
                 FieldSpan.alphanumeric("TRAN-ID", 0, 16),
@@ -164,28 +75,17 @@ class FixedWidthRecordTest {
                 FieldSpan.filler(330, 20));
     }
 
-    /**
-     * {@code app/cpy/CVACT02Y.cpy}, {@code 01 CARD-RECORD}, documented {@code RECLN 150}.
-     *
-     * @return the validated 150-byte card layout
-     */
     private static RecordLayout cardRecordLayout() {
         return RecordLayout.of(150,
                 FieldSpan.alphanumeric("CARD-NUM", 0, 16),
                 FieldSpan.unsignedNumeric("CARD-ACCT-ID", 16, 11),
                 FieldSpan.unsignedNumeric("CARD-CVV-CD", 27, 3),
                 FieldSpan.alphanumeric("CARD-EMBOSSED-NAME", 30, 50),
-                // The same missing T as CVACT01Y; both are part of the migration contract.
                 FieldSpan.alphanumeric("CARD-EXPIRAION-DATE", 80, 10),
                 FieldSpan.alphanumeric("CARD-ACTIVE-STATUS", 90, 1),
                 FieldSpan.filler(91, 59));
     }
 
-    /**
-     * {@code app/cpy/CVACT03Y.cpy}, {@code 01 CARD-XREF-RECORD}, documented {@code RECLN 50}.
-     *
-     * @return the validated 50-byte cross-reference layout
-     */
     private static RecordLayout cardXrefLayout() {
         return RecordLayout.of(50,
                 FieldSpan.alphanumeric("XREF-CARD-NUM", 0, 16),
@@ -194,16 +94,6 @@ class FixedWidthRecordTest {
                 FieldSpan.filler(36, 14));
     }
 
-    /**
-     * {@code app/cpy/CVTRA01Y.cpy}, {@code 01 TRAN-CAT-BAL-RECORD}, documented {@code RECLN = 50}.
-     *
-     * <p>The three items at level 10 are the elementary components of the {@code TRAN-CAT-KEY} group,
-     * flattened here because this layer models elementary spans: {@code 11 + 2 + 4 = 17} bytes of
-     * composite key, then {@code TRAN-CAT-BAL PIC S9(09)V99} at 11 bytes, then
-     * {@code FILLER PIC X(22)}. Read together with {@link #disclosureGroupLayout()} - the two records
-     *
-     * @return the validated 50-byte transaction-category-balance layout, key 17 bytes
-     */
     private static RecordLayout tranCatBalLayout() {
         return RecordLayout.of(50,
                 FieldSpan.unsignedNumeric("TRANCAT-ACCT-ID", 0, 11),
@@ -213,17 +103,6 @@ class FixedWidthRecordTest {
                 FieldSpan.filler(28, 22));
     }
 
-    /**
-     * {@code app/cpy/CVTRA02Y.cpy}, {@code 01 DIS-GROUP-RECORD}, documented {@code RECLN = 50}.
-     *
-     * <p>{@code DIS-GROUP-KEY} is {@code 10 + 2 + 4 = 16} bytes - one byte narrower than
-     * {@code CVTRA01Y}'s key, because the group is identified by a ten-character
-     * {@code DIS-ACCT-GROUP-ID} rather than an eleven-digit account id.
-     * {@code DIS-INT-RATE PIC S9(04)V99} then occupies 6 bytes, and {@code FILLER PIC X(28)}
-     * carries the record to 50.
-     *
-     * @return the validated 50-byte disclosure-group layout, key 16 bytes
-     */
     private static RecordLayout disclosureGroupLayout() {
         return RecordLayout.of(50,
                 FieldSpan.alphanumeric("DIS-ACCT-GROUP-ID", 0, 10),
@@ -233,11 +112,6 @@ class FixedWidthRecordTest {
                 FieldSpan.filler(22, 28));
     }
 
-    /**
-     * {@code app/cpy/CVCUS01Y.cpy}, {@code 01 CUSTOMER-RECORD}, documented {@code RECLN 500}.
-     *
-     * @return the validated 500-byte customer layout
-     */
     private static RecordLayout customerRecordLayout() {
         return RecordLayout.of(500,
                 FieldSpan.unsignedNumeric("CUST-ID", 0, 9),
@@ -261,12 +135,6 @@ class FixedWidthRecordTest {
                 FieldSpan.filler(332, 168));
     }
 
-    /**
-     * {@code app/cpy/CSDAT01Y.cpy}, {@code 05 WS-CURDATE-MM-DD-YY} - eight bytes, two of which are
-     * {@code FILLER PIC X(01) VALUE '/'}. This is the group that proves a {@code FILLER} emits its
-     *
-     * @return the validated 8-byte MM/DD/YY group layout
-     */
     private static RecordLayout curdateMmDdYyLayout() {
         return RecordLayout.of(8,
                 FieldSpan.unsignedNumeric("WS-CURDATE-MM", 0, 2),
@@ -276,50 +144,27 @@ class FixedWidthRecordTest {
                 FieldSpan.unsignedNumeric("WS-CURDATE-YY", 6, 2));
     }
 
-    /**
-     * {@code app/cpy/CSDAT01Y.cpy}, the whole {@code 01 WS-DATE-TIME} group - <strong>58 bytes</strong>
-     * carrying <strong>ten</strong> separator {@code FILLER}s and <strong>two</strong> group
-     * {@code REDEFINES} overlays. Declaration order is the copybook's own, which matters because an
-     * overlay may only redefine storage already declared ahead of it.
-     *
-     * <p>Re-added by hand: {@code WS-CURDATE} 4 + 2 + 2 = 8 at offset 0, redefined whole by
-     * {@code WS-CURDATE-N PIC 9(08)}; {@code WS-CURTIME} 2 + 2 + 2 + 2 = 8 at offset 8, redefined
-     * whole by {@code WS-CURTIME-N PIC 9(08)}; {@code WS-CURDATE-MM-DD-YY} 2 + 1 + 2 + 1 + 2 = 8 at
-     * offset 16; {@code WS-CURTIME-HH-MM-SS} 2 + 1 + 2 + 1 + 2 = 8 at offset 24; and
-     * {@code WS-TIMESTAMP} 4 + 1 + 2 + 1 + 2 + 1 + 2 + 1 + 2 + 1 + 2 + 1 + 6 = 26 at offset 32,
-     * ending exactly on byte 58.
-     *
-     * <p>This is the layout that shows {@code FILLER} is not a name at all: ten of them coexist here,
-     * carrying five distinct literals - {@code '/'}, {@code ':'}, {@code '-'}, {@code ' '} and
-     *
-     * @return the validated 58-byte date and time layout, 10 FILLERs and 2 overlays
-     */
     private static RecordLayout dateTimeLayout() {
         return RecordLayout.of(58,
-                // 05 WS-CURDATE-DATA / 10 WS-CURDATE, and its whole-group redefinition.
                 FieldSpan.unsignedNumeric("WS-CURDATE-YEAR", 0, 4),
                 FieldSpan.unsignedNumeric("WS-CURDATE-MONTH", 4, 2),
                 FieldSpan.unsignedNumeric("WS-CURDATE-DAY", 6, 2),
                 FieldSpan.redefining("WS-CURDATE-N", 0, 8, PictureKind.UNSIGNED_NUMERIC),
-                // 10 WS-CURTIME, four two-digit items, and its whole-group redefinition.
                 FieldSpan.unsignedNumeric("WS-CURTIME-HOURS", 8, 2),
                 FieldSpan.unsignedNumeric("WS-CURTIME-MINUTE", 10, 2),
                 FieldSpan.unsignedNumeric("WS-CURTIME-SECOND", 12, 2),
                 FieldSpan.unsignedNumeric("WS-CURTIME-MILSEC", 14, 2),
                 FieldSpan.redefining("WS-CURTIME-N", 8, 8, PictureKind.UNSIGNED_NUMERIC),
-                // 05 WS-CURDATE-MM-DD-YY - two slash separators.
                 FieldSpan.unsignedNumeric("WS-CURDATE-MM", 16, 2),
                 FieldSpan.filler(18, 1, "/"),
                 FieldSpan.unsignedNumeric("WS-CURDATE-DD", 19, 2),
                 FieldSpan.filler(21, 1, "/"),
                 FieldSpan.unsignedNumeric("WS-CURDATE-YY", 22, 2),
-                // 05 WS-CURTIME-HH-MM-SS - two colon separators.
                 FieldSpan.unsignedNumeric("WS-CURTIME-HH", 24, 2),
                 FieldSpan.filler(26, 1, ":"),
                 FieldSpan.unsignedNumeric("WS-CURTIME-MM", 27, 2),
                 FieldSpan.filler(29, 1, ":"),
                 FieldSpan.unsignedNumeric("WS-CURTIME-SS", 30, 2),
-                // 05 WS-TIMESTAMP - six separators across three distinct literals.
                 FieldSpan.unsignedNumeric("WS-TIMESTAMP-DT-YYYY", 32, 4),
                 FieldSpan.filler(36, 1, "-"),
                 FieldSpan.unsignedNumeric("WS-TIMESTAMP-DT-MM", 37, 2),
@@ -335,26 +180,6 @@ class FixedWidthRecordTest {
                 FieldSpan.unsignedNumeric("WS-TIMESTAMP-TM-MS6", 52, 6));
     }
 
-    /**
-     * {@code app/cpy/CVCRD01Y.cpy}, {@code 05 CC-WORK-AREA} - <strong>213 bytes</strong> of storage
-     * carrying <strong>three</strong> {@code REDEFINES} overlays. The overlays cover 11 + 16 + 9 = 36
-     * bytes between them and add <strong>nothing</strong> to the total, which is the property that
-     * distinguishes an overlay from an accidental overlap.
-     *
-     * <p>Re-added by hand from the items the copybook actually declares: {@code CCARD-AID X(5)},
-     * {@code CCARD-NEXT-PROG X(8)}, {@code CCARD-NEXT-MAPSET X(7)}, {@code CCARD-NEXT-MAP X(7)},
-     * {@code CCARD-ERROR-MSG X(75)}, {@code CCARD-RETURN-MSG X(75)}, {@code CC-ACCT-ID X(11)},
-     * {@code CC-CARD-NUM X(16)} and {@code CC-CUST-ID X(09)} = 213. The four items commented out in
-     * the copybook ({@code CCARD-LAST-PROG}, {@code CCARD-RETURN-TO-PROG}, {@code CCARD-RETURN-FLAG}
-     * and {@code CCARD-FUNCTION}) carry an asterisk in the indicator column and are therefore COBOL
-     * comments, occupying no storage; excluding them is what makes the total 213 rather than 231.
-     *
-     * <p>The final three named fields each declare {@code VALUE SPACES}, and each is redefined by a
-     * numeric view of the same bytes - the {@code X(11)} over {@code 9(11)} shape that leaves an
-     * initialised record holding spaces where the numeric view expects digits. That combination is
-     *
-     * @return the validated 213-byte work-area layout, 3 overlays adding no bytes
-     */
     private static RecordLayout ccWorkAreaLayout() {
         FieldSpan acctId = FieldSpan.alphanumeric("CC-ACCT-ID", 177, 11).withInitialValue(" ");
         FieldSpan cardNum = FieldSpan.alphanumeric("CC-CARD-NUM", 188, 16).withInitialValue(" ");
@@ -374,18 +199,6 @@ class FixedWidthRecordTest {
                 custId.redefinedAs("CC-CUST-ID-N", PictureKind.UNSIGNED_NUMERIC));
     }
 
-    /**
-     * Resolves a layout by the <strong>copybook name</strong> that declares it. Keyed on the name and
-     * deliberately not on the record width, because three of these records are 50 bytes wide and a
-     * width-keyed lookup would quietly return the wrong one - the precise mistake that makes a
-     * 17-byte key indistinguishable from a 16-byte key at record level.
-     *
-     * @param copybook the copybook member name, for example {@code CVTRA01Y}
-     * @return a freshly built, self-checked layout for that copybook
-     * @throws IllegalArgumentException if the name is not one of the transcribed copybooks, so that
-     *                                  adding a parameter row without its layout fails loudly instead
-     *                                  of asserting against some other record
-     */
     private static RecordLayout layoutFor(String copybook) {
         return switch (copybook) {
             case "CVACT01Y" -> accountRecordLayout();
@@ -400,17 +213,12 @@ class FixedWidthRecordTest {
         };
     }
 
-    // =============================================================================================
     @Nested
     @DisplayName("Layout self-check - gates G19 and G21 as a run-time assertion")
     class LayoutSelfCheck {
-
         @DisplayName("every copybook layout sums to exactly its documented RECLN")
         @ParameterizedTest(name = "{0} {1} totals {2} bytes")
         @CsvSource({
-                // Gate G19, one row per copybook. Dispatch is keyed on the copybook NAME and never on
-                // the expected total, because CVACT03Y, CVTRA01Y and CVTRA02Y are all 50 bytes wide -
-                // keying on the total would silently collapse three different records into one.
                 "CVACT01Y, ACCOUNT-RECORD,      300",
                 "CVTRA05Y, TRAN-RECORD,         350",
                 "CVACT02Y, CARD-RECORD,         150",
@@ -467,14 +275,9 @@ class FixedWidthRecordTest {
         @Test
         @DisplayName("the two 50-byte records have keys of 17 and 16 bytes - assert both, always")
         void theTwoFiftyByteRecordsHaveDifferentKeyWidths() {
-            // source: app/cpy/CVTRA01Y.cpy and app/cpy/CVTRA02Y.cpy.
-            // Both records are exactly 50 bytes wide, so a 17-for-16 key confusion is completely
-            // invisible at record level: the totals agree and only the field offsets are wrong. The
-            // only defence is to assert each key's components and each key's width independently.
             RecordLayout tranCatBal = tranCatBalLayout();
             RecordLayout disclosureGroup = disclosureGroupLayout();
 
-            // CVTRA01Y TRAN-CAT-KEY: 9(11) + X(02) + 9(04).
             assertThat(tranCatBal.span("TRANCAT-ACCT-ID").offset()).isZero();
             assertThat(tranCatBal.span("TRANCAT-ACCT-ID").length()).isEqualTo(11);
             assertThat(tranCatBal.span("TRANCAT-TYPE-CD").offset()).isEqualTo(11);
@@ -492,7 +295,6 @@ class FixedWidthRecordTest {
                     .as("S9(09)V99 is 11 bytes; the sign is overpunched, not stored separately")
                     .isEqualTo(11);
 
-            // CVTRA02Y DIS-GROUP-KEY: X(10) + X(02) + 9(04) - ten characters, not eleven digits.
             assertThat(disclosureGroup.span("DIS-ACCT-GROUP-ID").offset()).isZero();
             assertThat(disclosureGroup.span("DIS-ACCT-GROUP-ID").length()).isEqualTo(10);
             assertThat(disclosureGroup.span("DIS-TRAN-TYPE-CD").offset()).isEqualTo(10);
@@ -520,10 +322,6 @@ class FixedWidthRecordTest {
         @Test
         @DisplayName("a 17-byte DIS-GROUP-KEY is caught even though both records are 50 bytes")
         void theSeventeenForSixteenKeySlipIsCaughtByTheTotal() {
-            // source: app/cpy/CVTRA02Y.cpy, transcribed WRONGLY on purpose - DIS-ACCT-GROUP-ID given
-            // eleven bytes by carrying CVTRA01Y's eleven-digit account id across. Every field after it
-            // shifts by one and the record becomes 51 bytes, so the self-check catches at declaration
-            // time what a record-level width comparison never could.
             List<FieldSpan> seventeenByteKey = List.of(
                     FieldSpan.alphanumeric("DIS-ACCT-GROUP-ID", 0, 11),
                     FieldSpan.alphanumeric("DIS-TRAN-TYPE-CD", 11, 2),
@@ -547,10 +345,6 @@ class FixedWidthRecordTest {
         @Test
         @DisplayName("CSDAT01Y declares ten FILLERs in 58 bytes with no name collision")
         void csdat01yDeclaresTenFillersWithoutCollision() {
-            // source: app/cpy/CSDAT01Y.cpy, the whole 01 WS-DATE-TIME group.
-            // FILLER is not a referable name, so ten of them coexist here quite legally while a single
-            // repeated referable name is rejected outright - see
-            // duplicateReferableNamesAreRejectedWhileFillerMayRepeat.
             RecordLayout layout = dateTimeLayout();
 
             assertThat(layout.recordLength()).isEqualTo(58);
@@ -575,8 +369,6 @@ class FixedWidthRecordTest {
                     .isEqualTo(58);
             assertThat(fillers).hasSize(10).allMatch(FieldSpan::hasInitialValue);
 
-            // A FILLER is addressable as a reserved RANGE - by descriptor and by offset - even though
-            // it can never be looked up by name. Both routes must agree byte for byte.
             FixedWidthRecord record = layout.newRecord(ASCII);
             StringBuilder separators = new StringBuilder();
             for (FieldSpan filler : fillers) {
@@ -611,9 +403,6 @@ class FixedWidthRecordTest {
         @Test
         @DisplayName("gate G19: reserving a sign byte on the five S9(10)V99 fields makes 305 and fails")
         void reservingASignByteForEverySignedFieldIsRejected() {
-            // Exactly the mistake this layer exists to catch: five signed fields, each given a
-            // thirteenth byte for a sign that is really overpunched into the trailing byte. The
-            // layout is written out in full so the skewed arithmetic is visible rather than derived.
             List<FieldSpan> withSignBytes = List.of(
                     FieldSpan.unsignedNumeric("ACCT-ID", 0, 11),
                     FieldSpan.alphanumeric("ACCT-ACTIVE-STATUS", 11, 1),
@@ -751,11 +540,9 @@ class FixedWidthRecordTest {
         }
     }
 
-    // =============================================================================================
     @Nested
     @DisplayName("FieldSpan declaration guards")
     class FieldSpanGuards {
-
         @Test
         @DisplayName("null name and null kind are both rejected with an explanatory message")
         void nullReferencesAreRejected() {
@@ -848,11 +635,9 @@ class FixedWidthRecordTest {
         }
     }
 
-    // =============================================================================================
     @Nested
     @DisplayName("Construction, charset handling and the defensive copy")
     class ConstructionAndCharset {
-
         @Test
         @DisplayName("a fresh area is space-filled with the charset's own space byte")
         void freshAreaIsSpaceFilledPerCharset() {
@@ -911,11 +696,6 @@ class FixedWidthRecordTest {
         @Test
         @DisplayName("the same span decodes differently under each charset, so the parameter is used")
         void theSameSpanDecodesDifferentlyUnderEachCharset() {
-            // 0x40, 0x5A and 0x7B are each a single valid byte in BOTH code pages and each means a
-            // different character in the two: space, '!' and '#' under IBM037; '@', 'Z' and '{' under
-            // US-ASCII. Decoding one identical byte sequence two ways is what proves the charset
-            // argument is honoured rather than accepted and ignored - and it is why nothing in this
-            // layer may fall back to a platform default, which would silently pick one of the two.
             byte[] identicalBytes = {0x40, 0x5A, 0x7B};
 
             FixedWidthRecord asEbcdic = FixedWidthRecord.copyOf(identicalBytes, 3, EBCDIC);
@@ -928,11 +708,6 @@ class FixedWidthRecordTest {
                     .as("the bytes are identical; only the interpretation differs")
                     .isEqualTo(asAscii.toByteArray());
 
-            // The EBCDIC alphabet is not contiguous with the ASCII one either: 'ABC' is C1 C2 C3, which
-            // US-ASCII does not define at all. Reading mainframe data under the wrong code page is
-            // therefore not a cosmetic error, it is unrecoverable - so it is REPORTED rather than
-            // decoded into U+FFFD replacement characters, which is what new String(bytes, charset)
-            // would have produced: three plausible-looking characters that were never stored.
             byte[] ebcdicAbc = {(byte) 0xC1, (byte) 0xC2, (byte) 0xC3};
 
             assertThat(FixedWidthRecord.copyOf(ebcdicAbc, 3, EBCDIC).readString(0, 3))
@@ -971,11 +746,6 @@ class FixedWidthRecordTest {
         @Test
         @DisplayName("copyOf rejects a row that is not exactly the declared width")
         void copyOfRejectsAWrongWidthRow() {
-            // The real case this guards: app/data/ASCII/cardxref.txt rows are 36 bytes where
-            // CVACT03Y declares 50, because the fixture omits the trailing FILLER X(14). Right-padding
-            // such a row from 36 to 50 belongs to FixedWidthCodec one layer up; this layer's whole
-            // contribution is to make wrapping the short row impossible to do by accident, so the
-            // padding has to be a deliberate act somewhere a reviewer can see it.
             byte[] shortRow = new byte[36];
 
             assertThatIllegalArgumentException()
@@ -1045,12 +815,6 @@ class FixedWidthRecordTest {
             assertThat(ebcdicRecord.toByteArray()).as("IBM037 maps it to a real code point")
                     .containsExactly((byte) 0x51);
 
-            // US-ASCII has no representation for the character at all, and an unrepresentable
-            // character is REPORTED rather than replaced. String.getBytes would have substituted
-            // '?' here: the record would still measure its declared width, the layout self-check
-            // would still pass, and a byte nobody chose would travel to the dataset and into the
-            // parity fingerprint as though it had been written deliberately. Failing instead is what
-            // makes the code page's repertoire part of the record's contract.
             FixedWidthRecord asciiRecord = new FixedWidthRecord(1, ASCII);
 
             assertThatIllegalArgumentException()
@@ -1089,11 +853,9 @@ class FixedWidthRecordTest {
         }
     }
 
-    // =============================================================================================
     @Nested
     @DisplayName("Raw span primitives and their bounds")
     class RawPrimitives {
-
         @Test
         @DisplayName("a short value is left justified and space-padded to the full span")
         void writeStringPadsOnTheRight() {
@@ -1237,10 +999,6 @@ class FixedWidthRecordTest {
         @Test
         @DisplayName("CVACT01Y's first and last spans are both writable to the exact byte")
         void theFirstAndFinalSpansOfARealRecordAreWritable() {
-            // source: app/cpy/CVACT01Y.cpy - ACCT-ID PIC 9(11) occupies bytes 0..10 and the trailing
-            // FILLER X(178) occupies bytes 122..299, ending exactly on the record's last byte. The
-            // first and last spans are the two boundaries that break first, so both are exercised on
-            // the real geometry rather than on a conveniently small span.
             FixedWidthRecord record = new FixedWidthRecord(300, ASCII);
 
             record.writeString(0, 11, "10000000001", false, record.zeroPadByte());
@@ -1253,7 +1011,6 @@ class FixedWidthRecordTest {
                     .hasSize(178);
             assertThat(record.toByteArray()).as("no byte was added or lost").hasSize(300);
 
-            // One byte further along, or one byte wider, must not be reachable.
             assertThatExceptionOfType(IndexOutOfBoundsException.class)
                     .isThrownBy(() -> record.writeBytes(123, new byte[178]))
                     .withMessageContaining("reaches byte 301")
@@ -1266,10 +1023,6 @@ class FixedWidthRecordTest {
         @Test
         @DisplayName("a write touches its own span and leaves every other byte untouched")
         void aWriteLeavesEveryOtherByteUntouched() {
-            // The property every repository silently depends on. In a fixed-width record a field is
-            // defined by nothing but its offset, so a write that strayed one byte either side would
-            // corrupt its neighbour with no error anywhere. Offsets 16..24 are CVACT03Y's
-            // XREF-CUST-ID PIC 9(09) within the 50-byte cross-reference record.
             FixedWidthRecord record = new FixedWidthRecord(50, ASCII);
 
             record.writeString(16, 9, "000000042", false, record.zeroPadByte());
@@ -1286,11 +1039,9 @@ class FixedWidthRecordTest {
         }
     }
 
-    // =============================================================================================
     @Nested
     @DisplayName("Descriptor-driven access")
     class DescriptorDrivenAccess {
-
         @Test
         @DisplayName("writeSpan takes its alignment and pad from the descriptor's kind")
         void writeSpanUsesTheDescriptorsAlignment() {
@@ -1365,11 +1116,9 @@ class FixedWidthRecordTest {
         }
     }
 
-    // =============================================================================================
     @Nested
     @DisplayName("Initialisation - a FILLER emits its VALUE, not a blanket space")
     class Initialisation {
-
         @Test
         @DisplayName("CSDAT01Y's WS-CURDATE-MM-DD-YY initialises to 00/00/00, separators intact")
         void fillerLiteralsSurviveInitialisation() {
@@ -1401,11 +1150,6 @@ class FixedWidthRecordTest {
         @Test
         @DisplayName("the whole 58-byte WS-DATE-TIME group initialises with every separator in place")
         void theWholeDateTimeGroupInitialisesWithAllTenSeparators() {
-            // source: app/cpy/CSDAT01Y.cpy - twenty numeric items, ten separator FILLERs carrying five
-            // distinct literals, and two group overlays that initialisation must skip. Two mistakes are
-            // ruled out at once here: space-filling FILLER blanket-fashion would blank every date and
-            // time separator in the system, and space-filling the whole area would additionally leave
-            // the numeric items blank rather than zeroed.
             FixedWidthRecord record = dateTimeLayout().newRecord(ASCII);
 
             assertThat(record.readString(0, 58))
@@ -1455,8 +1199,6 @@ class FixedWidthRecordTest {
         @Test
         @DisplayName("a named field's VALUE literal is honoured too, right-justified when numeric")
         void namedFieldLiteralsAreHonoured() {
-            // app/cpy/CVCRD01Y.cpy declares CC-ACCT-ID PIC X(11) VALUE SPACES, and
-            // app/cpy/COMEN02Y.cpy declares FILLER PIC 9(02) VALUE 1 - a numeric filler literal.
             RecordLayout layout = RecordLayout.of(13,
                     FieldSpan.alphanumeric("CC-ACCT-ID", 0, 11).withInitialValue(" "),
                     new FieldSpan("FILLER", 11, 2, PictureKind.UNSIGNED_NUMERIC, "1", false));
@@ -1527,11 +1269,6 @@ class FixedWidthRecordTest {
         @Test
         @DisplayName("every signed span's category default ends in a positive-zero overpunch")
         void signedSpansInitialiseWithASignOverpunch() {
-            // Measured, not inferred. app/data/ASCII/acctdata.txt holds 250 '{' and no '}' - one per
-            // signed field of its 50 records - and its first record renders ACCT-CURR-BAL as
-            // 00000001940{ with both zero cycle amounts as 00000000000{. tcatbal.txt and discgrp.txt
-            // agree. A signed span whose trailing byte were a plain '0' would match no row of
-            // production-shaped data, and would read back as an unsigned quantity.
             FixedWidthRecord tranCatBal = tranCatBalLayout().newRecord(ASCII);
             FixedWidthRecord disclosure = disclosureGroupLayout().newRecord(ASCII);
 
@@ -1631,11 +1368,9 @@ class FixedWidthRecordTest {
         }
     }
 
-    // =============================================================================================
     @Nested
     @DisplayName("Strict transcoding - a coding failure is refused, never substituted")
     class StrictTranscoding {
-
         @Test
         @DisplayName("an unrepresentable character is refused instead of becoming a question mark")
         void anUnrepresentableCharacterIsRefused() {
@@ -1759,11 +1494,9 @@ class FixedWidthRecordTest {
         }
     }
 
-    // =============================================================================================
     @Nested
     @DisplayName("REDEFINES - two views over one backing span")
     class Redefines {
-
         @Test
         @DisplayName("CVCRD01Y's CC-ACCT-ID / CC-ACCT-ID-N pair reads the same eleven bytes")
         void anOverlayReadsTheSameBytes() {
@@ -1859,8 +1592,6 @@ class FixedWidthRecordTest {
         @Test
         @DisplayName("gate G34: three overlays view 36 bytes and add none to the record total")
         void overlaysContributeNoBytesToTheRecordTotal() {
-            // source: app/cpy/CVCRD01Y.cpy, 05 CC-WORK-AREA - 213 bytes of storage carrying three
-            // X-over-9 REDEFINES pairs of 11, 16 and 9 bytes.
             RecordLayout layout = ccWorkAreaLayout();
 
             int storage = 0;
@@ -1882,10 +1613,6 @@ class FixedWidthRecordTest {
                     .isEqualTo(213)
                     .isNotEqualTo(storage + overlaid);
 
-            // This is the distinction the overlay flag carries, and it is worth stating in the same
-            // file as the failure it is contrasted with: two descriptors over the same bytes are legal
-            // only when the second declares itself an overlay. Declared as plain storage the very same
-            // pair is an overlap and is rejected - see overlappingStorageSpansAreRejected above.
             assertThatIllegalArgumentException()
                     .isThrownBy(() -> RecordLayout.of(11,
                             FieldSpan.alphanumeric("CC-ACCT-ID", 0, 11),
@@ -1899,8 +1626,6 @@ class FixedWidthRecordTest {
         @Test
         @DisplayName("CVCRD01Y's CC-CUST-ID / CC-CUST-ID-N pair round-trips through both views")
         void theCustIdPairSharesOneNineByteSpan() {
-            // source: app/cpy/CVCRD01Y.cpy - CC-CUST-ID PIC X(09) with CC-CUST-ID-N REDEFINES it
-            // PIC 9(9), at offset 204 in the work area.
             RecordLayout layout = ccWorkAreaLayout();
             FieldSpan text = layout.span("CC-CUST-ID");
             FieldSpan digits = layout.span("CC-CUST-ID-N");
@@ -1913,14 +1638,12 @@ class FixedWidthRecordTest {
             assertThat(digits.redefinition()).isTrue();
             assertThat(text.redefinition()).isFalse();
 
-            // Through the numeric view: right justified and zero padded.
             record.writeSpan(digits, "42");
             assertThat(record.readSpan(digits)).isEqualTo("000000042");
             assertThat(record.readSpan(text))
                     .as("and immediately visible through the character view")
                     .isEqualTo("000000042");
 
-            // Then the reverse direction: through the character view, left justified and space padded.
             record.writeSpan(text, "AB");
             assertThat(record.readSpan(text)).isEqualTo("AB       ");
             assertThat(record.readSpan(digits))
@@ -1932,8 +1655,6 @@ class FixedWidthRecordTest {
         @Test
         @DisplayName("CSDAT01Y's WS-CURTIME-N redefines four two-digit items as one PIC 9(08)")
         void theCurtimeGroupRedefinitionCoversFourItems() {
-            // source: app/cpy/CSDAT01Y.cpy - WS-CURTIME-N REDEFINES WS-CURTIME PIC 9(08) over
-            // WS-CURTIME-HOURS, -MINUTE, -SECOND and -MILSEC, each PIC 9(02), at bytes 8..15.
             RecordLayout layout = dateTimeLayout();
             FieldSpan whole = layout.span("WS-CURTIME-N");
             FixedWidthRecord record = layout.newRecord(ASCII);
@@ -1951,7 +1672,6 @@ class FixedWidthRecordTest {
                     .as("four elementary items read as one eight-digit value; MILSEC zero-pads to 07")
                     .isEqualTo("23155907");
 
-            // And the reverse: a write through the group is visible through every elementary item.
             record.writeSpan(whole, "01020304");
 
             assertThat(record.readSpan(layout.span("WS-CURTIME-HOURS"))).isEqualTo("01");
@@ -1966,13 +1686,6 @@ class FixedWidthRecordTest {
         @Test
         @DisplayName("VALUE SPACES seen through a PIC 9(11) view stays spaces - COBOL permits it")
         void anAllSpacesSpanReadThroughTheNumericViewIsNotCorrected() {
-            // source: app/cpy/CVCRD01Y.cpy - CC-ACCT-ID PIC X(11) VALUE SPACES, redefined by
-            // CC-ACCT-ID-N PIC 9(11). An initialised record therefore holds eleven spaces exactly where
-            // the numeric view expects eleven digits. COBOL permits that, and the online programs rely
-            // on it to mean "no account id entered", so the Java form must NOT "fix" it: this layer
-            // returns the bytes it holds and never validates, coerces, zero-fills or trims them.
-            // Deciding what a non-numeric numeric field means belongs to the codec one layer up, which
-            // is the only place that knows the field's PICTURE.
             RecordLayout layout = ccWorkAreaLayout();
             FieldSpan text = layout.span("CC-ACCT-ID");
             FieldSpan digits = layout.span("CC-ACCT-ID-N");
@@ -2007,11 +1720,9 @@ class FixedWidthRecordTest {
         }
     }
 
-    // =============================================================================================
     @Nested
     @DisplayName("OCCURS - COBOL subscripts are 1-based")
     class Occurs {
-
         @Test
         @DisplayName("gate G33: index 1 is the first element and index n the last")
         void firstAndLastElementsResolveCorrectly() {
@@ -2065,7 +1776,6 @@ class FixedWidthRecordTest {
         @Test
         @DisplayName("occursElementSpan derives an element descriptor for the first and last entry")
         void elementSpansAreDerivedFromTheTableSpan() {
-            // COADM02Y shape: OCCURS 9, each option 4 bytes wide, table starting at offset 4.
             FieldSpan table = FieldSpan.alphanumeric("CDEMO-ADMIN-OPT", 4, 36);
 
             FieldSpan first = FixedWidthRecord.occursElementSpan(table, 9, 1,
@@ -2117,11 +1827,9 @@ class FixedWidthRecordTest {
         }
     }
 
-    // =============================================================================================
     @Nested
     @DisplayName("End-to-end: a real record serialises back to its exact declared width")
     class EndToEnd {
-
         @Test
         @DisplayName("an account record round-trips through 300 bytes with FILLER intact")
         void accountRecordRoundTrip() {
@@ -2172,27 +1880,9 @@ class FixedWidthRecordTest {
         }
     }
 
-    // =============================================================================================
-    // F08 - the strict character/byte boundary, and F18 - exact geometry arithmetic.
-    // =============================================================================================
-
-    /**
-     * That every character/byte conversion in this class <strong>reports</strong> rather than
-     * replaces, and that the published helpers behave identically to the internal call sites.
-     *
-     * <p>The condition being guarded against is silent corruption with no signal:
-     * {@code String.getBytes(Charset)} substitutes the code page's replacement byte and
-     * {@code new String(bytes, Charset)} substitutes {@code U+FFFD}, so a record built through them
-     * still measures its declared width and still passes the layout self-check while carrying bytes
-     * nobody chose. Every assertion here also checks that the offending value is absent from the
-     * failure message, because an exception message reaches logs and HTTP error bodies and these
-     * areas hold card numbers, government identifiers and balances.
-     */
     @Nested
     @DisplayName("Strict coding boundary and exact geometry - F08 and F18")
     class StrictCodingAndGeometry {
-
-        /** A character US-ASCII has no representation for. */
         private static final String UNMAPPABLE_UNDER_ASCII = "\u00e9";
 
         @Test
@@ -2267,8 +1957,6 @@ class FixedWidthRecordTest {
         @Test
         @DisplayName("F18 - a FieldSpan whose end offset would overflow an int is refused")
         void aFieldSpanWhoseEndOffsetWouldOverflowIsRefused() {
-            // offset + length is 2^31, which wraps to Integer.MIN_VALUE in int arithmetic and would
-            // otherwise present as an apparently ordinary - indeed negative - end offset.
             assertThatIllegalArgumentException()
                     .isThrownBy(() -> FieldSpan.alphanumeric("WIDE", Integer.MAX_VALUE, 1))
                     .withMessageContaining("2147483648")
@@ -2291,15 +1979,11 @@ class FixedWidthRecordTest {
         @Test
         @DisplayName("F18 - an OCCURS element whose offset would overflow an int is refused")
         void anOccursElementWhoseOffsetWouldOverflowIsRefused() {
-            // (3 - 1) * 1_500_000_000 is 3e9, which wraps to a small positive int - an offset that
-            // would look perfectly valid inside a record.
             assertThatExceptionOfType(IndexOutOfBoundsException.class)
                     .isThrownBy(() -> FixedWidthRecord.occursElementOffsetOneBased(0, 1_500_000_000,
                             3, 3))
                     .withMessageContaining("addressing limit");
 
-            // The element STARTS inside the range but FINISHES outside it, which start-only checking
-            // would have accepted.
             assertThatExceptionOfType(IndexOutOfBoundsException.class)
                     .isThrownBy(() -> FixedWidthRecord.occursElementOffsetOneBased(
                             Integer.MAX_VALUE - 10, 100, 2, 1))

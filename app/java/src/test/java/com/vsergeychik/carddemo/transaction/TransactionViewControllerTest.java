@@ -72,6 +72,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.mockito.ArgumentCaptor;
 import org.mockito.InOrder;
 import org.springframework.context.annotation.AnnotationConfigApplicationContext;
 import org.springframework.context.annotation.Configuration;
@@ -88,73 +89,25 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionTemplate;
 
 /**
- * {@link TransactionViewController} - the {@code COTRN02C} / {@code CT02} screen, which despite its
- * mandated name <strong>adds</strong> a transaction (risk R-B).
- *
- * <h2>Risk R-B, and the rule that settles it</h2>
  * The mandated class name and the program it was migrated from disagree, deliberately.
- * {@code app/cbl/COTRN02C.cbl:5} reads {@code * Function    : Add a new Transaction to TRANSACT file},
- * the program issues {@code STARTBR} at L644, {@code READPREV} at L675, {@code ENDBR} at L704 and
- * {@code WRITE} at L713, and {@code README.md:213-231} documents {@code CT02} as "Transaction Add" -
- * so the prompt's mapping is inverted, and {@code TransactionAddController} carries the mirror image
- * of the same swap. The resolution is rule <strong>R1</strong>: <em>the name comes from the prompt,
- * the behaviour comes from the source</em>. This class therefore asserts an <strong>insert</strong>
- * throughout, and asserts it against {@code COTRN02C} line by line. Per practice <strong>B4</strong>
- * the conflict is recorded rather than corrected: the ambiguity is not resolved in either direction
- * here, because the Agent Action Plan escalates it for explicit user confirmation.
- *
- * <p><strong>No user rules were provided for this project</strong> - {@code review_rules} returns the
- * single line "No user rules provided" - so the bar this class is held to is the Agent Action Plan's
- * twelve enterprise practices, cited by name where they bite.
- *
- * <p>Every test that asserts a <em>decision</em> instantiates the controller <strong>directly</strong>
- * with mocked repositories, a real {@link DateUtilityJob} and a fixed {@link Clock}. There is no Spring
- * context and no {@code MockMvc} in the decision path, which is gate <strong>G51</strong>: the guard
- * chains are asserted where they live, so a failure names the paragraph rather than an HTTP status. One
- * nested class exercises the HTTP adapter, and only the adapter.
- *
- * <p>{@link DateUtilityJob} is used for real rather than stubbed, because it is deterministic and
- * because the three {@code CSUTLDTC} outcomes this screen distinguishes are reachable with three real
- * dates: {@code 2022-07-18} is valid, {@code 1500-01-01} precedes the Lillian epoch and so reports
- * severity 3 with message <strong>2513</strong> - the one error both call sites tolerate - and
- * {@code 2022-13-01} reports severity 3 with message 2517, which they reject. Stubbing would have
- * asserted the controller against a fiction.
  */
 @DisplayName("TransactionViewController - COTRN02C / CT02, which adds a transaction (risk R-B)")
 class TransactionViewControllerTest {
-
-
-    /**
-     * The code page {@code application-test.yml} names under {@code carddemo.charset.dataset}, which is
-     * what {@code CobolCharsetConfig} publishes as the active dataset charset under this profile.
-     *
-     * <p>Stated here, and passed to the production customizer, because the inbound screen-text boundary
-     * judges every value against the page in force rather than against a page of its own choosing: a
-     * mapper built for a test has to name the same one the profile does or it is not the production
-     * mapper.
-     */
     private static final Charset TEST_PROFILE_CHARSET = StandardCharsets.US_ASCII;
 
-    /** A fixed instant, so every {@code FUNCTION CURRENT-DATE} read sees the same second. */
     private static final Clock FIXED_CLOCK =
             Clock.fixed(Instant.parse("2022-07-19T23:12:33Z"), ZoneOffset.UTC);
 
-    /** US-ASCII: the fixtures' code page, and the one the parity harness seeds from. */
     private static final Charset CHARSET = StandardCharsets.US_ASCII;
 
-    /** An eleven-digit account id at its declared {@code PIC X(11)} width. */
     private static final String ACCOUNT_ID = "00000000011";
 
-    /** A sixteen-digit card number at its declared {@code PIC X(16)} width. */
     private static final String CARD_NUMBER = "4111111111111111";
 
-    /** A valid ten-character date the real {@code CSUTLDTC} accepts with severity {@code '0000'}. */
     private static final String VALID_DATE = "2022-07-18";
 
-    /** A date before the Lillian epoch, which {@code CSUTLDTC} reports as 2513 and both sites tolerate. */
     private static final String TOLERATED_DATE = "1500-01-01";
 
-    /** A date with month 13, which {@code CSUTLDTC} reports as 2517 and both sites reject. */
     private static final String REJECTED_DATE = "2022-13-01";
 
     private TransactionRepository transactionRepository;
@@ -171,16 +124,10 @@ class TransactionViewControllerTest {
                 dateUtilityJob, FIXED_CLOCK, CHARSET);
     }
 
-    // =================================================================================================
-    // Helpers
-    // =================================================================================================
-
-    /** @return a re-enter communication area, which is what every keyed interaction arrives with */
     private static NavigationContext reenterCommarea() {
         return NavigationContext.empty().withPgmReenter();
     }
 
-    /** @return a request that has arrived with a communication area and the Enter key */
     private static TransactionViewRequest enterRequest() {
         TransactionViewRequest request = new TransactionViewRequest();
         request.setNavigationContext(reenterCommarea());
@@ -188,7 +135,6 @@ class TransactionViewControllerTest {
         return request;
     }
 
-    /** @return a fully and validly filled screen, confirmed, ready to be added */
     private static TransactionViewRequest completeRequest() {
         TransactionViewRequest request = enterRequest();
         request.setActidin(ACCOUNT_ID);
@@ -208,7 +154,6 @@ class TransactionViewControllerTest {
         return request;
     }
 
-    /** Makes the cross-reference read by account id succeed, returning {@link #CARD_NUMBER}. */
     private void xrefByAccountFound() {
         when(cardXrefRepository.readByAccountIdViaAltIndex(anyString()))
                 .thenReturn(xrefFound(
@@ -216,19 +161,12 @@ class TransactionViewControllerTest {
                         new CardXrefRecord(CARD_NUMBER, 123_456_789, 11L)));
     }
 
-    /** Makes the cross-reference read by card number succeed, returning account 11. */
     private void xrefByCardFound() {
         when(cardXrefRepository.readByCardNumber(anyString()))
                 .thenReturn(xrefFound(CardXrefRepository.BASE_DD_NAME,
                         new CardXrefRecord(CARD_NUMBER, 123_456_789, 11L)));
     }
 
-    /**
-     * Positions a backward browse whose single {@code READPREV} yields the given outcome.
-     *
-     * @param result what the read reports
-     * @return the browse handle, so a caller can verify {@code ENDBR}
-     */
     private TransactionRepository.Browse browseYielding(TransactionRepository.ReadResult result) {
         TransactionRepository.Browse browse = positionedBrowse();
         when(browse.readPrev()).thenReturn(result);
@@ -237,35 +175,26 @@ class TransactionViewControllerTest {
         return browse;
     }
 
-    /** @return a 350-byte record whose {@code TRAN-ID} is the given key */
     private static TranRecord recordWithId(String tranId) {
         TranRecord record = new TranRecord(CHARSET);
         record.moveTranId(tranId);
         return record;
     }
 
-    /** Positions a browse that reports one record with key {@code 0000000000000050}. */
     private TransactionRepository.Browse browseWithLastId() {
         return browseYielding(TransactionRepository.ReadResult.found(
                 TransactionRepository.CICS_FILE_NAME, recordWithId("0000000000000050")));
     }
 
-    /** Makes the write succeed. */
     private void writeSucceeds() {
         when(transactionRepository.write(any()))
                 .thenReturn(TransactionRepository.WriteResult.written(
                         TransactionRepository.CICS_FILE_NAME));
     }
 
-    // =================================================================================================
-    // Risk R-B: the name contradicts the program, and that has to be recorded in the source itself.
-    // =================================================================================================
-
     @Nested
     @DisplayName("Risk R-B - the class name says view and the program adds")
     class RiskRb {
-
-        /** @return the controller's own source text */
         private String source() throws IOException {
             Path file = Path.of("src/main/java/com/vsergeychik/carddemo/transaction",
                     "TransactionViewController.java");
@@ -279,11 +208,9 @@ class TransactionViewControllerTest {
             String text = source();
 
             assertThat(text)
-                    .as("practice B4 requires the conflict to be surfaced in the code, not only in a plan")
-                    .contains("risk R-B")
+                    .as("the conflict has to be surfaced in the code, not only in a plan document")
                     .contains("Function    : Add a new Transaction to TRANSACT file")
-                    .contains("README.md")
-                    .contains("Transaction Add");
+                    .contains("the source is the authority");
         }
 
         @Test
@@ -308,39 +235,22 @@ class TransactionViewControllerTest {
         }
 
         @Test
-        @DisplayName("it names rule R1 as the resolution, and resolves the swap in neither direction")
+        @DisplayName("it states the resolution, and resolves the swap in neither direction")
         void documentationNamesTheResolvingRule() throws IOException {
-            String text = source();
-
-            assertThat(text)
-                    .as("rule R1: the name comes from the prompt, the behaviour comes from the source")
-                    .contains("R1")
-                    .contains("verbatim");
-            assertThat(text)
-                    .as("practice B4: the conflict is surfaced for confirmation, never quietly fixed")
-                    .contains("B4");
+            assertThat(source())
+                    .as("the mandated name is honoured as given and the behaviour comes from the source")
+                    .contains("kept verbatim rather than corrected towards the behaviour");
             assertThat(controller.getClass().getSimpleName())
                     .as("the name is not corrected towards the behaviour")
                     .isEqualTo("TransactionViewController")
                     .isNotEqualTo("TransactionAddController");
             verifyNoInteractions(transactionRepository, cardXrefRepository);
         }
-
-        @Test
-        @DisplayName("it records that no user rules exist, so the bar is the twelve practices")
-        void documentationRecordsTheAbsenceOfRules() throws IOException {
-            assertThat(source()).contains("No user rules provided.");
-        }
     }
-
-    // =================================================================================================
-    // Identity, wiring and the dead declarations.
-    // =================================================================================================
 
     @Nested
     @DisplayName("Identity, wiring and the five dead declarations")
     class IdentityAndWiring {
-
         @Test
         @DisplayName("the program and transaction identifiers are the source's own")
         void identifiers() {
@@ -465,14 +375,9 @@ class TransactionViewControllerTest {
         }
     }
 
-    // =================================================================================================
-    // MAIN-PARA - COTRN02C:107-159.
-    // =================================================================================================
-
     @Nested
     @DisplayName("MAIN-PARA - the six arms of L107-159")
     class MainPara {
-
         @Test
         @DisplayName("EIBCALEN = 0 hands control to the sign-on program and touches no dataset")
         void noCommareaGoesToSignOn() {
@@ -593,9 +498,6 @@ class TransactionViewControllerTest {
         @Test
         @DisplayName("a raw PF15 byte is an invalid key, where the folded token took the PF3 exit")
         void aRawUpperKeyIsNotItsFoldedPartner() {
-            // COTRN02C compares EIBAID inline at L133-152 against four DFHAID constants and names no
-            // DFHPF15, so on the terminal PF15 paints the invalid-key message. CSSTRPFY folds PF15 onto
-            // 'PFK03', so a request that could only send the token had to transfer instead.
             assertThat(PfKeyResolver.resolve(CicsAid.DFHPF15)).contains(PfKeyResolver.AidKey.PFK03);
 
             TransactionViewRequest request = enterRequest();
@@ -693,7 +595,6 @@ class TransactionViewControllerTest {
                     .startsWith(SystemMessages.CCDA_MSG_INVALID_KEY.strip());
         }
 
-        /** A {@link CicsAid} function-key constant by number, so the copybook name is the source. */
         private static byte functionKeyByte(int pfNumber) {
             try {
                 return CicsAid.class.getDeclaredField("DFHPF" + pfNumber).getByte(null);
@@ -749,14 +650,9 @@ class TransactionViewControllerTest {
         }
     }
 
-    // =================================================================================================
-    // VALIDATE-INPUT-KEY-FIELDS - COTRN02C:193-230.
-    // =================================================================================================
-
     @Nested
     @DisplayName("VALIDATE-INPUT-KEY-FIELDS - the ordered EVALUATE of L193-230")
     class KeyFields {
-
         @Test
         @DisplayName("an account id resolves the card through the CXACAIX path and normalises in place")
         void accountIdResolvesTheCard() {
@@ -1004,15 +900,9 @@ class TransactionViewControllerTest {
         }
     }
 
-    // =================================================================================================
-    // VALIDATE-INPUT-DATA-FIELDS - COTRN02C:235-437.
-    // =================================================================================================
-
     @Nested
     @DisplayName("VALIDATE-INPUT-DATA-FIELDS - every edit of L235-437, in the source's order")
     class DataFields {
-
-        /** @return a screen whose keys resolve, so every test here reaches the detail edits */
         private TransactionViewRequest keyedRequest() {
             xrefByAccountFound();
             TransactionViewRequest request = completeRequest();
@@ -1372,15 +1262,9 @@ class TransactionViewControllerTest {
         }
     }
 
-    // =================================================================================================
-    // PROCESS-ENTER-KEY's CONFIRM evaluation - COTRN02C:169-188.
-    // =================================================================================================
-
     @Nested
     @DisplayName("PROCESS-ENTER-KEY - the ordered EVALUATE CONFIRMI of L169-188")
     class ConfirmEvaluation {
-
-        /** @return a valid, keyed screen carrying the given confirmation value */
         private TransactionViewRequest confirming(String value) {
             xrefByAccountFound();
             TransactionViewRequest request = completeRequest();
@@ -1435,15 +1319,9 @@ class TransactionViewControllerTest {
         }
     }
 
-    // =================================================================================================
-    // The TRANSACT browse and the next identifier - COTRN02C:442-449 and :642-706.
-    // =================================================================================================
-
     @Nested
     @DisplayName("The next-identifier browse - L444-449 and L642-706")
     class NextIdentifier {
-
-        /** @return a valid, keyed, confirmed screen */
         private TransactionViewRequest addRequest() {
             xrefByAccountFound();
             return completeRequest();
@@ -1555,9 +1433,6 @@ class TransactionViewControllerTest {
         @Test
         @DisplayName("a READPREV that fails outright still ends the browse ADD-TRANSACTION opened")
         void anUnmodelledReadFailureStillEndsTheBrowse() {
-            // L446's EVALUATE classifies a CICS response; it does not wrap the command, so a
-            // driver-level refusal propagates and bypasses L447's ENDBR. Under CICS the unended browse
-            // costs nothing because task termination releases it, and there is no implicit release here.
             TransactionRepository.Browse browse = positionedBrowse();
             when(browse.readPrev()).thenThrow(new IllegalStateException("the read was refused"));
             when(transactionRepository.startBrowse(TransactionRepository.BrowseDirection.BACKWARD))
@@ -1577,8 +1452,6 @@ class TransactionViewControllerTest {
         @Test
         @DisplayName("a rejecting STARTBR arm ends the task, and the browse is released anyway")
         void aRejectingStartbrStillReleasesTheBrowse() {
-            // startbrOutcome's OTHER arm sends a map and ends the task, so L447's ENDBR is skipped by
-            // the taskEnded guard rather than by an exception.
             TransactionRepository.Browse browse = positionedBrowse();
             when(browse.readPrev()).thenReturn(TransactionRepository.ReadResult.endOfFile(
                     TransactionRepository.CICS_FILE_NAME));
@@ -1597,7 +1470,6 @@ class TransactionViewControllerTest {
         @Test
         @DisplayName("COPY-LAST-TRAN-DATA releases its browse on an outright read failure too")
         void copyLastTranDataAlsoReleasesTheBrowse() {
-            // The same three-statement browse as ADD-TRANSACTION, at L476-L478, and its own try/finally.
             ProgramState state = new ProgramState(controller.codec());
             state.setCommarea(reenterCommarea());
             state.setActidinI(ACCOUNT_ID);
@@ -1635,15 +1507,9 @@ class TransactionViewControllerTest {
         }
     }
 
-    // =================================================================================================
-    // ADD-TRANSACTION and WRITE-TRANSACT-FILE - COTRN02C:442-466 and :711-749.
-    // =================================================================================================
-
     @Nested
     @DisplayName("ADD-TRANSACTION and WRITE-TRANSACT-FILE - the record and the three write arms")
     class TheWrite {
-
-        /** @return a valid, keyed, confirmed screen with a positioned browse and a successful write */
         private TransactionViewRequest readyToAdd() {
             xrefByAccountFound();
             browseWithLastId();
@@ -1764,9 +1630,6 @@ class TransactionViewControllerTest {
             assertThat(state.errFlagOn()).isTrue();
             assertThat(state.message()).startsWith("Unable to Add Transaction...");
             assertThat(state.displayLines()).hasSize(1);
-            // The write reported NO CICS response, so the response operand is not a number: rendering it
-            // as nine zeros would say DFHRESP(NORMAL), on the arm reached only because the write failed.
-            // The reason operand IS reported - zero means "no further reason" - so it stays numeric.
             assertThat(state.displayLines().get(0))
                     .matches("RESP:\\*{9}REAS:\\d{9}")
                     .doesNotContain("RESP:000000000");
@@ -1778,8 +1641,6 @@ class TransactionViewControllerTest {
         @Test
         @DisplayName("a write that DOES report a response renders that response as its number")
         void aReportedWriteResponseStaysNumeric() {
-            // The other side of the sentinel: a reported DFHRESP must still render numerically, so the
-            // asterisk image cannot be over-applied.
             xrefByAccountFound();
             browseWithLastId();
             when(transactionRepository.write(any())).thenReturn(
@@ -1794,8 +1655,14 @@ class TransactionViewControllerTest {
         }
 
         @Test
-        @DisplayName("the record image is recorded whatever the write reported")
-        void theImageIsAlwaysRecorded() {
+        @DisplayName("a refused write records no image, because the dataset gained no record")
+        void aRefusedWriteRecordsNoImage() {
+            // writtenRecords() is the account of what EXEC CICS WRITE inserted. DFHRESP(DUPKEY) and
+            // DFHRESP(DUPREC) mean the key was already present and the existing record is untouched, so
+            // nothing was inserted and nothing may be recorded. A parity case reads this list onto its
+            // WRITES channel, so counting a refused hand-over there would pin a row TRANSACT does not
+            // hold - and would make the channel mean "attempted" for one case and "inserted" for the
+            // other nineteen.
             xrefByAccountFound();
             browseWithLastId();
             when(transactionRepository.write(any())).thenReturn(
@@ -1804,8 +1671,64 @@ class TransactionViewControllerTest {
 
             ProgramState state = controller.mainPara(completeRequest());
 
+            assertThat(state.writtenRecords())
+                    .as("the duplicate arm inserted nothing")
+                    .isEmpty();
+            assertThat(state.message().trim())
+                    .as("and the arm it took is the one that says so")
+                    .isEqualTo(TransactionViewController.MSG_TRAN_ID_ALREADY_EXISTS);
+        }
+
+        @Test
+        @DisplayName("an accepted write records the image at its full 350 bytes")
+        void anAcceptedWriteRecordsTheImage() {
+            xrefByAccountFound();
+            browseWithLastId();
+            when(transactionRepository.write(any())).thenReturn(
+                    TransactionRepository.WriteResult.written(
+                            TransactionRepository.CICS_FILE_NAME));
+
+            ProgramState state = controller.mainPara(completeRequest());
+
             assertThat(state.writtenRecords()).hasSize(1);
-            assertThat(state.writtenRecords().get(0)).hasSize(350);
+            assertThat(state.writtenRecords().get(0))
+                    .as("the whole record including the trailing FILLER - gates G19 and G21")
+                    .hasSize(TranRecord.RECORD_LENGTH)
+                    .hasSize(350);
+        }
+
+        @Test
+        @DisplayName("a refused write still handed over a complete 350-byte record")
+        void aRefusedWriteStillHandedOverACompleteRecord() {
+            // The half of the old expectation that is still true, asserted where it belongs: on the
+            // ARGUMENT of the call rather than on the contents of the dataset. COTRN02C composes the
+            // whole record at :450-465 and hands it to EXEC CICS WRITE at :713 before the EVALUATE can
+            // reject it, so a translation that composed a short or half-filled record would be wrong even
+            // on the arm where the write fails. parity/COTRN02C case20 delegates this assertion here for
+            // exactly that reason: its WRITES channel is now empty, as a refused write requires.
+            xrefByAccountFound();
+            browseWithLastId();
+            when(transactionRepository.write(any())).thenReturn(
+                    TransactionRepository.WriteResult.duplicate(
+                            TransactionRepository.CICS_FILE_NAME));
+
+            controller.mainPara(completeRequest());
+
+            ArgumentCaptor<TranRecord> handedOver = ArgumentCaptor.forClass(TranRecord.class);
+            verify(transactionRepository).write(handedOver.capture());
+            String image = handedOver.getValue().displayImage();
+
+            assertThat(image)
+                    .as("350 bytes, FILLER included - G19 and G21 on the composed record")
+                    .hasSize(TranRecord.RECORD_LENGTH)
+                    .hasSize(350);
+            assertThat(image.substring(330))
+                    .as("bytes 331-350 are the trailing FILLER PIC X(20), space filled")
+                    .isEqualTo(" ".repeat(20));
+            assertThat(image.substring(132, 143))
+                    .as("TRAN-AMT at 133-143 is the zoned S9(09)V99 image of +12.34, scale 2 truncating "
+                            + "- G23 and G24")
+                    .isEqualTo("0000000123D");
         }
 
         @Test
@@ -1824,15 +1747,9 @@ class TransactionViewControllerTest {
         }
     }
 
-    // =================================================================================================
-    // COPY-LAST-TRAN-DATA - COTRN02C:471-495.
-    // =================================================================================================
-
     @Nested
     @DisplayName("COPY-LAST-TRAN-DATA - the PF5 convenience of L471-495")
     class CopyLastTranData {
-
-        /** @return a fully populated 350-byte record to copy back onto the screen */
         private TranRecord populatedRecord() {
             TranRecord record = new TranRecord(CHARSET);
             record.moveTranId("0000000000000050");
@@ -1949,14 +1866,9 @@ class TransactionViewControllerTest {
         }
     }
 
-    // =================================================================================================
-    // The intrinsic functions and the numeric receivers - gate G29 and gates G22 to G24.
-    // =================================================================================================
-
     @Nested
     @DisplayName("FUNCTION NUMVAL and NUMVAL-C - accept and reject exactly as COBOL does (gate G29)")
     class Intrinsics {
-
         @ParameterizedTest(name = "NUMVAL(\"{0}\") = {1}")
         @CsvSource({
             "'1234',            1234",
@@ -2014,10 +1926,6 @@ class TransactionViewControllerTest {
         @Test
         @DisplayName("NUMVAL accepts no comma at all, not even a well-placed grouping one")
         void numvalAcceptsNoComma() {
-            // The grouping comma is a NUMVAL-C extension. Both of this screen's NUMVAL call sites -
-            // COTRN02C lines 204 and 218 - are guarded by an IS NOT NUMERIC test, and a comma is not
-            // numeric, so the guard errors before the conversion is reached; tightening the grammar
-            // therefore changes no live path while making the intrinsic right about the language.
             assertThat(TransactionViewController.testNumval("1,234"))
                     .as("well-placed under NUMVAL-C, still not a NUMVAL argument")
                     .isPositive();
@@ -2062,9 +1970,6 @@ class TransactionViewControllerTest {
         @Test
         @DisplayName("CR and DB belong to both intrinsics, which is the tempting wrong simplification")
         void theCreditIndicatorsBelongToBoth() {
-            // A credit indicator reads as a currency-ish notion, so it looks as though it might be a
-            // NUMVAL-C extension like the '$' and the ','. It is not: both intrinsics accept CR and DB,
-            // and removing them from NUMVAL would itself be a parity defect.
             for (String image : new String[] {"1234CR", "1234DB"}) {
                 assertThat(TransactionViewController.testNumval(image))
                         .isEqualTo(TransactionViewController.NUMVAL_CONFORMS);
@@ -2220,9 +2125,6 @@ class TransactionViewControllerTest {
             assertThat(TransactionViewController.isSpacesOrLowValues("")).isTrue();
             assertThat(TransactionViewController.isSpacesOrLowValues("   ")).isTrue();
             assertThat(TransactionViewController.isSpacesOrLowValues("\u0000\u0000")).isTrue();
-            // = SPACES OR LOW-VALUES expands to two WHOLE-ITEM comparisons, so a mixture equals neither
-            // constant and the condition is false - the item holds a value as far as the source is
-            // concerned.
             assertThat(TransactionViewController.isSpacesOrLowValues(" \u0000 ")).isFalse();
             assertThat(TransactionViewController.isSpacesOrLowValues("\u0000 \u0000")).isFalse();
             assertThat(TransactionViewController.isSpacesOrLowValues(" x ")).isFalse();
@@ -2275,8 +2177,6 @@ class TransactionViewControllerTest {
         @Test
         @DisplayName("the one-character aid image IS the EIBAID byte, and nothing else is a byte")
         void theAidReconstruction() {
-            // The payload carries the byte itself, so every AID round-trips - including the twelve high
-            // function keys the CCARD-AID token folds onto their low twins.
             assertThat(TransactionViewController.eibAidOf(PfKeyResolver.aidImage(CicsAid.DFHENTER)))
                     .isEqualTo(CicsAid.DFHENTER);
             assertThat(TransactionViewController.eibAidOf(PfKeyResolver.aidImage(CicsAid.DFHPF3)))
@@ -2288,7 +2188,6 @@ class TransactionViewControllerTest {
                     .as("a byte CSSTRPFY names in no branch is still a byte a terminal can send")
                     .isEqualTo(CicsAid.DFHPA3);
 
-            // A five-character CCARD-AID token is not one byte, so it names no key: WHEN OTHER.
             assertThat(TransactionViewController.eibAidOf("ENTER")).isEqualTo(CicsAid.DFHNULL);
             assertThat(TransactionViewController.eibAidOf("PFK03")).isEqualTo(CicsAid.DFHNULL);
             assertThat(TransactionViewController.eibAidOf("")).isEqualTo(CicsAid.DFHNULL);
@@ -2310,14 +2209,9 @@ class TransactionViewControllerTest {
         }
     }
 
-    // =================================================================================================
-    // ProgramState - the per-request working storage, including the items the program never uses.
-    // =================================================================================================
-
     @Nested
     @DisplayName("ProgramState - COTRN02C's WORKING-STORAGE, per request")
     class TheWorkingStorage {
-
         @Test
         @DisplayName("a fresh area is the storage image, zeros and flags off")
         void aFreshArea() {
@@ -2623,9 +2517,6 @@ class TransactionViewControllerTest {
                     .as("L502-503: an unset CDEMO-TO-PROGRAM becomes COSGN00C")
                     .isEqualTo("COSGN00C");
             assertThat(state.response().getNextProgram()).isEqualTo("COSGN00C");
-            // An XCTL states no map: which map COSGN00C paints is its decision, made after this program
-            // has ended, and COTRN02C names none in the XCTL at L508-511. Publishing COTRN02 / COTRN2A
-            // here would tell the client to repaint the screen it is leaving.
             assertThat(state.response().getNextMapset()).isBlank()
                     .hasSize(NavigationContext.LAST_MAPSET_LENGTH);
             assertThat(state.response().getNextMap()).isBlank()
@@ -2649,8 +2540,6 @@ class TransactionViewControllerTest {
             assertThat(state.response().getNextProgram()).isEqualTo("COTRN00C");
             assertThat(state.response().getNextMapset()).isBlank();
             assertThat(state.response().getNextMap()).isBlank();
-            // And the caller's own two commarea items are untouched by the blanking: they are different
-            // storage, and COTRN02C never writes them.
             assertThat(state.commarea().lastMapset()).isEqualTo(NavigationContext.empty().lastMapset());
             assertThat(state.commarea().lastMap()).isEqualTo(NavigationContext.empty().lastMap());
         }
@@ -2667,14 +2556,9 @@ class TransactionViewControllerTest {
         }
     }
 
-    // =================================================================================================
-    // Statelessness and the HTTP adapter.
-    // =================================================================================================
-
     @Nested
     @DisplayName("Statelessness (gate G37) and the HTTP adapter (gate G51)")
     class StatelessnessAndAdapter {
-
         @Test
         @DisplayName("two requests through one controller cannot see each other's screen")
         void twoRequestsAreIsolated() {
@@ -2733,14 +2617,12 @@ class TransactionViewControllerTest {
                     .isTrue();
         }
 
-        /** @return the module's own JSON mapping, so the adapter is asserted through real converters */
         private ObjectMapper carddemoMapper() {
             Jackson2ObjectMapperBuilder builder = new Jackson2ObjectMapperBuilder();
             new WebConfig().carddemoJacksonCustomizer(TEST_PROFILE_CHARSET).customize(builder);
             return builder.build();
         }
 
-        /** @return a stand-alone {@code MockMvc} over the controller, using the module's converters */
         private MockMvc mockMvc(ObjectMapper mapper) {
             return MockMvcBuilders.standaloneSetup(controller)
                     .setMessageConverters(new MappingJackson2HttpMessageConverter(mapper))
@@ -2821,8 +2703,6 @@ class TransactionViewControllerTest {
             assertThat(viaAdapter.getNextProgram()).isEqualTo("COTRN02C");
             assertThat(viaAdapter.getNextMapset()).isEqualTo("COTRN02");
             assertThat(viaAdapter.getNextMap()).isEqualTo("COTRN2A");
-            // The twenty-one attribute quads and the cursor request are metadata by declaration, so
-            // they travel beside the screen rather than not travelling at all.
             assertThat(answer.screenMetadata().fields())
                     .hasSize(TransactionViewResponse.ScreenField.values().length);
         }
@@ -2856,65 +2736,27 @@ class TransactionViewControllerTest {
         }
     }
 
-    // =================================================================================================
-    // The transaction boundary. COTRN02C's add path is two commands against one file - the L644-650
-    // high-water-mark browse and the L713-721 write - and under CICS the task's syncpoint at RETURN is
-    // what makes the second one durable. Every other test in this class stubs the repository, which is
-    // right for parity and is exactly why none of them can see whether the record survives the
-    // connection going back to the pool.
-    // =================================================================================================
-
     @Nested
     @DisplayName("The transaction boundary - the TRANSACT insert must survive the connection's return")
     class TheTransactionBoundary {
-
-        /** The master the binding names, quoted as a delimited identifier by the repository. */
         private static final String MASTER_DS = "CARDDEMO.TEST.TXBOUND.TRANSACT";
 
-        /** The generated-transaction output the repository also resolves, unused by this screen. */
         private static final String SYSTRAN_DS = "CARDDEMO.TEST.TXBOUND.SYSTRAN";
 
-        /** The record image column, as the repository addresses it. */
         private static final String IMAGE_COLUMN = "RECORD_IMAGE";
 
-        /**
-         * The physical-record ordinal for an in-memory relation: H2's own row-identifier
-         * pseudo-column, exactly as {@code application-test.yml} states it.
-         */
         private static final PhysicalSequence ORDINAL = PhysicalSequence.of("_ROWID_");
 
-        /**
-         * The identifier seeded into the master before each body runs, and therefore the high-water
-         * mark the add path's browse finds.
-         *
-         * <p>The master is seeded rather than left empty because the {@code STARTBR} is a real
-         * operation with a real outcome. {@code app/cbl/COTRN02C.cbl:444} moves {@code HIGH-VALUES}
-         * into {@code TRAN-ID} and {@code :445} positions on it; {@code GTEQ} positioning over an
-         * <em>empty</em> KSDS finds no record in either direction, so {@code :655-660} sets
-         * {@code WS-ERR-FLG}, paints 'Transaction ID NOT found...' and sends - and
-         * {@code SEND-TRNADD-SCREEN} carries {@code EXEC CICS RETURN}, so the task ends and nothing is
-         * added. That is the legacy program's own behaviour over an empty master, and it leaves
-         * {@code :689}'s {@code MOVE ZEROS TO TRAN-ID} unreachable on that path - preserved rather than
-         * repaired, per practice B5. CardDemo ships {@code TRANSACT} populated, so the add path this
-         * class exists to exercise is only reachable over a master that holds a record.
-         */
         private static final String SEEDED_TRAN_ID = "0000000000000001";
 
-        /** What the add derives from the seeded mark: READPREV returns it, plus one. */
         private static final String ADDED_TRAN_ID = "0000000000000002";
 
-        /** What a second add derives, once the first has committed and advanced the mark. */
         private static final String SECOND_ADDED_TRAN_ID = "0000000000000003";
 
         @Test
         @DisplayName("the added transaction is still there after the request, on a pool that does not "
                 + "auto-commit")
         void theInsertIsCommitted() {
-            // The pool is configured exactly as application.yml:146 configures production - auto-commit
-            // false - because that setting is what makes this observable. Under it a statement issued
-            // with no transaction open is rolled back when Hikari takes the connection back, and the
-            // screen still names the identifier because the repository reported NORMAL and was telling
-            // the truth about the statement it executed.
             withTransactionalContext(true, (controller, verifier) -> {
                 ScreenResponse<TransactionViewResponse> response =
                         controller.addTransaction(completeRequest(), null, null);
@@ -2940,15 +2782,6 @@ class TransactionViewControllerTest {
         @DisplayName("without the boundary the write is refused outright, so no identifier is ever "
                 + "promised for a record that was not stored")
         void withoutTheBoundaryTheInsertIsRefused() {
-            // The control, and it is what makes the case above evidence rather than assertion. The only
-            // difference is that transaction management is not enabled, so @Transactional advises
-            // nothing - the same runtime the annotation's absence produced.
-            //
-            // This used to name the identifier on the screen and leave the master empty, which is the
-            // sharper half of the defect: the operator was told a transaction had been added, and nothing
-            // downstream could tell that it had not. The repository now refuses a write it cannot commit,
-            // so the missing boundary surfaces as a wiring failure at the call site instead of as a
-            // successful screen over an empty dataset.
             withTransactionalContext(false, (controller, verifier) -> {
                 assertThatIllegalStateException()
                         .isThrownBy(() -> controller.addTransaction(completeRequest(), null, null))
@@ -2966,11 +2799,6 @@ class TransactionViewControllerTest {
         @DisplayName("the probe and the write are one unit, so the next identifier is the committed "
                 + "high-water mark")
         void theProbeSeesWhatTheLastRequestCommitted() {
-            // Two requests through one controller over one pool. The second request's browse has to see
-            // what the first one committed, or it computes the same key again and the write lands on the
-            // DUPKEY arm instead of adding. That is the second half of why the boundary exists: the
-            // probe and the write have to be on the same connection AND the first unit has to have
-            // finished.
             withTransactionalContext(true, (controller, verifier) -> {
                 controller.addTransaction(completeRequest(), null, null);
 
@@ -2995,11 +2823,6 @@ class TransactionViewControllerTest {
         @DisplayName("the insert enlists in the unit of work, so a task that never commits leaves "
                 + "nothing behind")
         void theInsertIsRolledBackWithTheUnitOfWork() {
-            // The other half of a boundary. Committing is only meaningful if not committing is equally
-            // possible: this drives the same request inside a unit of work the test then abandons, which
-            // is the CICS task that abends before its syncpoint. The insert has to be enlisted in that
-            // unit rather than standing outside it, or the record would survive an abend the mainframe
-            // would have backed out.
             withTransactionalContext(true, (controller, verifier) -> {
                 TransactionTemplate abandoned = new TransactionTemplate(new JdbcTransactionManager(
                         Objects.requireNonNull(verifier.getDataSource())));
@@ -3026,10 +2849,6 @@ class TransactionViewControllerTest {
         @Test
         @DisplayName("the boundary is on the HTTP entry point, and mainPara stays free of it")
         void theBoundaryIsOnTheEntryPoint() throws Exception {
-            // Placement is the whole of it. On the entry point the annotation is advised by the proxy
-            // Spring creates; on mainPara it would be reached by self-invocation from within the same
-            // instance and advise nothing at all - and it would also put a transaction in the path of
-            // every parity test, which drive mainPara directly against a stubbed repository.
             assertThat(TransactionViewController.class
                     .getMethod("addTransaction", TransactionViewRequest.class, Integer.class,
                             Integer.class)
@@ -3054,21 +2873,9 @@ class TransactionViewControllerTest {
                     .isFalse();
         }
 
-        /**
-         * Runs a body against a real controller over a real repository, a real non-auto-commit pool and a
-         * private in-memory database. The cross-reference stays stubbed, because it is read-only and its
-         * outcome is not what this class is about.
-         *
-         * @param transactionManagementEnabled whether {@code @Transactional} is advised at all
-         * @param body                         given the controller as the context exposes it - proxied
-         *                                     when management is enabled - and a template for reading the
-         *                                     master back
-         */
         private void withTransactionalContext(boolean transactionManagementEnabled,
                 java.util.function.BiConsumer<TransactionViewController, JdbcTemplate> body) {
             xrefByAccountFound();
-            // A fresh name per test rather than a shared counter, which is how TransactionRepositoryTest
-            // isolates its relations and which keeps this class free of mutable static state (gate G53).
             String url = "jdbc:h2:mem:tranview_tx" + UUID.randomUUID()
                     + ";DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE";
             HikariDataSource pool = new HikariDataSource();
@@ -3076,8 +2883,6 @@ class TransactionViewControllerTest {
             pool.setDriverClassName("org.h2.Driver");
             pool.setUsername("sa");
             pool.setPassword("");
-            // The two settings that matter, and both mirror production: no auto-commit, and a pool small
-            // enough that the connection a request used is the one the next request gets back.
             pool.setAutoCommit(false);
             pool.setMaximumPoolSize(2);
 
@@ -3089,7 +2894,6 @@ class TransactionViewControllerTest {
                                 schema.execute("CREATE TABLE \"" + dataset + "\" (\"" + IMAGE_COLUMN
                                         + "\" CHAR(" + TranRecord.RECORD_LENGTH + "))");
                             }
-                            // One record, so :445's HIGH-VALUES positioning has something to land on.
                             schema.update("INSERT INTO \"" + MASTER_DS + "\" (\"" + IMAGE_COLUMN
                                     + "\") VALUES (?)", seededImage());
                         });
@@ -3114,21 +2918,15 @@ class TransactionViewControllerTest {
             }
         }
 
-        /** @return the 350-byte image of the seeded high-water-mark record */
         private static String seededImage() {
             return new String(recordWithId(SEEDED_TRAN_ID).encode(CHARSET), CHARSET);
         }
 
-        /**
-         * @param template a template over the master's database
-         * @return every record image the master holds, read outside any transaction the body opened
-         */
         private List<String> recordsIn(JdbcTemplate template) {
             return template.queryForList("SELECT \"" + IMAGE_COLUMN + "\" FROM \"" + MASTER_DS + "\"",
                     String.class);
         }
 
-        /** The three bindings the repository resolves, at {@code CVTRA05Y}'s geometry. */
         private DatasetBindings bindings() {
             DatasetBindings catalogue = new DatasetBindings();
             DatasetBinding master = new DatasetBinding(MASTER_DS, "ksds", false, "FB", null,
@@ -3142,58 +2940,21 @@ class TransactionViewControllerTest {
             return catalogue;
         }
 
-        /** Turns on the proxying that makes {@code @Transactional} mean anything. */
         @Configuration
         @EnableTransactionManagement
         static class TransactionManagementEnabled {
         }
     }
 
-    // =================================================================================================
-    // The written record, carved at CVTRA05Y's own offsets. Every other assertion about the record reads
-    // it through TranRecord's accessors, which is the right way round for a behavioural test and is
-    // exactly why it cannot catch a span that has moved: an accessor and the span it reads move together,
-    // so both stay self-consistently wrong. These assertions cut the 350 bytes at the copybook's numbers
-    // instead - the wire format is the contract (rule R5), and gates G19 and G21 are about bytes at
-    // offsets, not about values behind getters.
-    //
-    // app/cpy/CVTRA05Y.cpy, one span per line, 1-based COBOL columns in the comment and 0-based Java
-    // offsets in the code:
-    //   TRAN-ID            PIC X(16)      1-16     offset 0
-    //   TRAN-TYPE-CD       PIC X(02)     17-18     offset 16
-    //   TRAN-CAT-CD        PIC 9(04)     19-22     offset 18
-    //   TRAN-SOURCE        PIC X(10)     23-32     offset 22
-    //   TRAN-DESC          PIC X(100)    33-132    offset 32
-    //   TRAN-AMT           PIC S9(09)V99 133-143   offset 132, eleven zoned bytes
-    //   TRAN-MERCHANT-ID   PIC 9(09)     144-152   offset 143
-    //   TRAN-MERCHANT-NAME PIC X(50)     153-202   offset 152
-    //   TRAN-MERCHANT-CITY PIC X(50)     203-252   offset 202
-    //   TRAN-MERCHANT-ZIP  PIC X(10)     253-262   offset 252
-    //   TRAN-CARD-NUM      PIC X(16)     263-278   offset 262
-    //   TRAN-ORIG-TS       PIC X(26)     279-304   offset 278
-    //   TRAN-PROC-TS       PIC X(26)     305-330   offset 304
-    //   FILLER             PIC X(20)     331-350   offset 330
-    // =================================================================================================
-
     @Nested
     @DisplayName("CVTRA05Y offsets - the written 350 bytes cut at the copybook's own numbers")
     class CopybookOffsets {
-
-        /** {@code TRAN-AMT} for {@code +00000012.34}: ten digits and a {@code D}, positive four. */
         private static final String POSITIVE_AMOUNT_IMAGE = "0000000123D";
 
-        /** {@code TRAN-AMT} for {@code -00000012.34}: the same ten digits and an {@code M}. */
         private static final String NEGATIVE_AMOUNT_IMAGE = "0000000123M";
 
-        /** {@code TRAN-AMT} for {@code +00000000.00}: ten zeros and a {@code &#123;}, positive zero. */
         private static final String ZERO_AMOUNT_IMAGE = "0000000000{";
 
-        /**
-         * Drives one complete add and returns the single image the write received.
-         *
-         * @param amount the twelve-character {@code TRNAMTI} value to type
-         * @return exactly {@link TranRecord#RECORD_LENGTH} characters
-         */
         private String writtenImage(String amount) {
             xrefByAccountFound();
             browseWithLastId();
@@ -3209,14 +2970,6 @@ class TransactionViewControllerTest {
             return state.writtenRecords().get(0);
         }
 
-        /**
-         * One span of an image, addressed absolutely.
-         *
-         * @param image  the record image
-         * @param offset the 0-based offset the copybook implies
-         * @param length the declared width
-         * @return that span, exactly {@code length} characters
-         */
         private static String span(String image, int offset, int length) {
             return image.substring(offset, offset + length);
         }
@@ -3325,10 +3078,6 @@ class TransactionViewControllerTest {
         @Test
         @DisplayName("the amount's sign is overpunched into the trailing byte, for both signs and zero")
         void theAmountSignIsOverpunched() {
-            // Zoned decimal carries the sign in the zone half of the last digit rather than in a byte of
-            // its own, which is why S9(09)V99 is eleven bytes wide and not twelve: 4 positive is 'D' and
-            // 4 negative is 'M'. There is no COMP-3 anywhere in app/cpy - verified - so this is the only
-            // signed representation any record in this system uses.
             assertThat(span(writtenImage("+00000012.34"), 132, 11))
                     .isEqualTo(POSITIVE_AMOUNT_IMAGE)
                     .hasSize(TranRecord.TRAN_AMT_LENGTH)
@@ -3346,11 +3095,6 @@ class TransactionViewControllerTest {
         @Test
         @DisplayName("the amount span is stored truncated at scale 2, never rounded")
         void theAmountIsTruncatedNotRounded() {
-            // L456-458 is COMPUTE WS-TRAN-AMT-N = FUNCTION NUMVAL-C(...) followed by MOVE ... TO
-            // TRAN-AMT, and the receiver is PIC S9(09)V99. COBOL truncates excess fraction digits on
-            // store because ROUNDED appears zero times in all 28 programs, so 12.349 becomes 12.34 and
-            // never 12.35 (rule R2, gate G24). Asserted through the written span, because a rounding
-            // policy that only holds in a decoded value is not the policy the file receives.
             TranRecord record = new TranRecord(CHARSET);
 
             record.moveTranAmt(CobolDecimal.storeAtPicture(new BigDecimal("12.349"),
@@ -3367,17 +3111,9 @@ class TransactionViewControllerTest {
         }
     }
 
-    // =================================================================================================
-    // The three browse commands, as a sequence. COTRN02C:445-447 is STARTBR, then READPREV, then ENDBR,
-    // and L466's WRITE comes after all three. Verifying each call on its own says nothing about the order
-    // they were issued in, and the order is the behaviour: a write issued while the browse is still
-    // positioned is a different program.
-    // =================================================================================================
-
     @Nested
     @DisplayName("STARTBR then READPREV then ENDBR - the ordering of L445-447, not merely the calls")
     class TheBrowseSequence {
-
         @Test
         @DisplayName("the add issues STARTBR, READPREV, ENDBR and only then WRITE")
         void theFourCommandsIssueInTheSourcesOrder() {
@@ -3389,10 +3125,10 @@ class TransactionViewControllerTest {
 
             InOrder ordered = inOrder(transactionRepository, browse);
             ordered.verify(transactionRepository)
-                    .startBrowse(TransactionRepository.BrowseDirection.BACKWARD);       // L644-650
-            ordered.verify(browse).readPrev();                                          // L675-683
-            ordered.verify(browse).endBrowse();                                         // L704-706
-            ordered.verify(transactionRepository).write(any());                         // L713-721
+                    .startBrowse(TransactionRepository.BrowseDirection.BACKWARD);
+            ordered.verify(browse).readPrev();
+            ordered.verify(browse).endBrowse();
+            ordered.verify(transactionRepository).write(any());
         }
 
         @Test
@@ -3450,9 +3186,9 @@ class TransactionViewControllerTest {
 
             InOrder ordered = inOrder(transactionRepository, browse);
             ordered.verify(transactionRepository)
-                    .startBrowse(TransactionRepository.BrowseDirection.BACKWARD);       // L476
-            ordered.verify(browse).readPrev();                                          // L477
-            ordered.verify(browse).endBrowse();                                         // L478
+                    .startBrowse(TransactionRepository.BrowseDirection.BACKWARD);
+            ordered.verify(browse).readPrev();
+            ordered.verify(browse).endBrowse();
             verify(transactionRepository, never())
                     .write(any());
         }
@@ -3460,9 +3196,6 @@ class TransactionViewControllerTest {
         @Test
         @DisplayName("the identifier comes from the browse and from no field of the request")
         void theIdentifierIsNeverTyped() {
-            // app/cpy-bms/COTRN02.CPY declares no TRNIDIN item, so there is nothing to type it into: the
-            // key is generated. A request cannot influence it, which this drives by handing the browse a
-            // different high-water mark and watching only that change the key.
             xrefByAccountFound();
             browseYielding(TransactionRepository.ReadResult.found(
                     TransactionRepository.CICS_FILE_NAME, recordWithId("0000000000000999")));
@@ -3478,48 +3211,25 @@ class TransactionViewControllerTest {
         }
     }
 
-    // =================================================================================================
-    // The caller-side projection of CSUTLDTC's eighty bytes. COTRN02C:62-69 redefines LS-RESULT as
-    // severity X(04) + FILLER X(11) + message-number X(04) + message X(61), which is a DIFFERENT split
-    // from the producer's own WS-MESSAGE at app/cbl/CSUTLDTC.cbl:42-57 - and the two agree only because
-    // the producer's 'Mesg Code:' literal is exactly eleven bytes wide. The tolerance at L400 is read
-    // from offsets 15-18; read it one byte out and a 2513 stops being tolerated, silently.
-    // =================================================================================================
-
     @Nested
     @DisplayName("CSUTLDTC's eighty bytes - the caller's split, and the offsets the 2513 rule reads")
     class TheCsutldtcProjection {
-
-        /** {@code CSUTLDTC-RESULT-SEV-CD PIC X(04)} - offsets 0 to 3. */
         private static final int SEVERITY_OFFSET = 0;
 
-        /** The width of {@code CSUTLDTC-RESULT-SEV-CD}. */
         private static final int SEVERITY_LENGTH = 4;
 
-        /** The caller's unnamed {@code FILLER PIC X(11)} - offsets 4 to 14. */
         private static final int FILLER_OFFSET = 4;
 
-        /** The width of that {@code FILLER}, which is what puts the message number at 15. */
         private static final int FILLER_LENGTH = 11;
 
-        /** {@code CSUTLDTC-RESULT-MSG-NUM PIC X(04)} - offsets 15 to 18. */
         private static final int MESSAGE_NUMBER_OFFSET = 15;
 
-        /** The width of {@code CSUTLDTC-RESULT-MSG-NUM}. */
         private static final int MESSAGE_NUMBER_LENGTH = 4;
 
-        /** {@code CSUTLDTC-RESULT-MSG PIC X(61)} - offsets 19 to 79. */
         private static final int MESSAGE_OFFSET = 19;
 
-        /** The width of {@code CSUTLDTC-RESULT-MSG}, which closes the eighty. */
         private static final int MESSAGE_LENGTH = 61;
 
-        /**
-         * Calls one site and returns the eighty bytes the subprogram composed.
-         *
-         * @param date the ten-byte date to validate
-         * @return the state the call was made against, carrying the result
-         */
         private ProgramState callWith(String date) {
             ProgramState state = new ProgramState(controller.codec());
             controller.callCsutldtc(state, date);
@@ -3594,8 +3304,6 @@ class TransactionViewControllerTest {
         @Test
         @DisplayName("both non-zero results carry severity 0003, so the verdict cannot be the severity")
         void theVerdictIsTheMessageNumberAndNotTheSeverity() {
-            // This is the whole point of the 2513 rule and the reason an offset slip is invisible: the
-            // tolerated result and the rejected one are indistinguishable at offsets 0-3.
             ProgramState tolerated = callWith(TOLERATED_DATE);
             ProgramState rejected = callWith(REJECTED_DATE);
 
@@ -3637,8 +3345,6 @@ class TransactionViewControllerTest {
         @Test
         @DisplayName("a short date is padded to ten before the call, because the parameter is X(10)")
         void aShortDateIsPaddedToTheParameterWidth() {
-            // MOVE TORIGDTI TO CSUTLDTC-DATE is a PIC X move into X(10), so a short sender pads on the
-            // right and the subprogram judges ten bytes whatever the client sent.
             ProgramState shortDate = callWith("2022-7-1");
             ProgramState empty = callWith("");
 
@@ -3675,24 +3381,9 @@ class TransactionViewControllerTest {
         }
     }
 
-    // =================================================================================================
-    // Gate G38, and what it means for a program that does not have CSSETATY. The gate reads "the CSSETATY
-    // error highlight applies only in the re-enter state". COTRN02C's copybook list at L71-93 does not
-    // include CSSETATY - its only consumer in the estate is COACTUPC - so this screen applies the
-    // DFHRED-plus-asterisk highlight in NO state, which is the strongest form the gate can take. That is
-    // asserted here rather than assumed, because "we did not implement it" and "it is not applied" are
-    // different claims, and only the second one is testable.
-    //
-    // It also matters that it stays unapplied: CSSETATY writes its asterisk into the field's OUTPUT item,
-    // and on this map the xxxO item is the same storage as the xxxI item the operator typed into - so a
-    // highlight here would overwrite a payload value and put the field-for-field diff permanently off
-    // zero.
-    // =================================================================================================
-
     @Nested
     @DisplayName("The highlight policy (gate G38) and the width of what travels (gate G37)")
     class TheHighlightPolicy {
-
         @Test
         @DisplayName("CSSETATY would order DFHRED and an asterisk for a blank field under re-entry")
         void whatCssetatyWouldOrder() {
@@ -3816,19 +3507,9 @@ class TransactionViewControllerTest {
         }
     }
 
-    // =================================================================================================
-    // The twenty-one-field projection of app/cpy-bms/COTRN02.CPY. The copybook declares 01 COTRN2AI at
-    // L17 with twenty-one xxxI items and 01 COTRN2AO REDEFINES COTRN2AI at L145 with twenty-one xxxO
-    // items over the same storage. The payload is those items and nothing else: the xxxL halfwords, the
-    // xxxF flag bytes and the xxxA attribute redefinitions are metadata, and this screen has thirty-five
-    // MOVE -1 cursor sites - the most in the package - so the halfwords carry real behaviour while still
-    // never appearing in a payload.
-    // =================================================================================================
-
     @Nested
     @DisplayName("The twenty-one-field payload projection of COTRN02.CPY")
     class ThePayloadProjection {
-
         @ParameterizedTest
         @CsvSource({
             "TRNNAME, 4", "TITLE01, 40", "CURDATE, 8", "PGMNAME, 8", "TITLE02, 40", "CURTIME, 8",
@@ -3955,59 +3636,19 @@ class TransactionViewControllerTest {
         }
     }
 
-    // =================================================================================================
-    // Synthesised cross-reference read outcomes. A ReadResult carries the decoded record AND the bytes it
-    // was decoded from, because DISPLAY CARD-XREF-RECORD (app/cbl/CBACT03C.cbl:78 and :96) writes the
-    // record area and the area's FILLER X(14) holds whatever the row held. A test constructing an outcome
-    // has no row, so the image it supplies is the one a row of exactly this record would carry - stated
-    // once here rather than at every call site.
-    // =================================================================================================
-
-    /**
-     * The found arm over a synthesised row of this record.
-     *
-     * @param ddName the access path
-     * @param record the record the row would carry
-     * @return the outcome, carrying the record and the image a row of it would hold
-     */
     private static CardXrefRepository.ReadResult xrefFound(String ddName, CardXrefRecord record) {
         return CardXrefRepository.ReadResult.found(ddName, record, xrefImageOf(record));
     }
 
-    /**
-     * The duplicate arm over a synthesised row of this record.
-     *
-     * @param ddName   the access path
-     * @param first    the first of the matching records
-     * @param cicsResp DUPREC for the base key or DUPKEY for an alternate key
-     * @return the outcome, carrying the record and the image a row of it would hold
-     */
     private static CardXrefRepository.ReadResult xrefDuplicate(String ddName, CardXrefRecord first,
             int cicsResp) {
         return CardXrefRepository.ReadResult.duplicate(ddName, first, xrefImageOf(first), cicsResp);
     }
 
-    /**
-     * The 50-character image a row of this record would hold.
-     *
-     * @param record the record
-     * @return its encoded image
-     */
     private static String xrefImageOf(CardXrefRecord record) {
         return new String(record.encode(StandardCharsets.US_ASCII), StandardCharsets.US_ASCII);
     }
 
-    /**
-     * A mocked {@code TRANSACT} browse whose {@code STARTBR} positioned successfully.
-     *
-     * <p>{@link TransactionRepository#startBrowse(TransactionRepository.BrowseDirection)} issues the
-     * position as a real operation and reports what it found, so a handle carries a positioning outcome
-     * that its caller's {@code EVALUATE WS-RESP-CD} branches on. A bare mock reports {@code null} for it,
-     * which is not a state a real handle can be in - so every mock is built here with the successful arm
-     * stubbed, and a test that wants {@code NOTFND} or {@code WHEN OTHER} re-stubs it.
-     *
-     * @return the mock; never {@code null}
-     */
     private static TransactionRepository.Browse positionedBrowse() {
         TransactionRepository.Browse handle = mock(TransactionRepository.Browse.class);
         when(handle.positioningResult()).thenReturn(

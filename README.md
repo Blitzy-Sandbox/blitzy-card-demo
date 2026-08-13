@@ -42,18 +42,18 @@ Note that the intent of this application is to provide mainframe coding scenario
 
 <br/>
 
-## Installation on the mainframe 
+## Installation on the mainframe
 
 To install this repository on the mainframe please follow the following steps
 
 1. Clone this repository to your local development environment
 
 2. Create datasets on the mainframe  hold the code
-   * It is recommended to group them under a High Level Qualifier (HLQ)for all your datasets. 
+   * It is recommended to group them under a High Level Qualifier (HLQ)for all your datasets.
    * Upload the following application source folders from the main branch of git repository on to your mainframe
       using $INDFILE or your preferred upload tool.
    * If you have used AWS.M2 as your HLQ, you should end up with the below code structure on the mainframe
-   
+
       | HLQ    | Name          | Format | Length |
       | :----- | :------------ | :----- | -----: |
       | AWS.M2 | CARDDEMO.JCL  | FB     |     80 |
@@ -61,11 +61,11 @@ To install this repository on the mainframe please follow the following steps
       | AWS.M2 | CARDDEMO.CBL  | FB     |     80 |
       | AWS.M2 | CARDDEMO.CPY  | FB     |     80 |
       | AWS.M2 | CARDDEMO.BMS  | FB     |     80 |
-      
+
 3. Use data for testing using either of the below approaches
 
    ** Use the supplied sample data**
-   
+
       * Upload the sample data provided in the main/-/data/EBCDIC/ folder to the mainframe. Ensure that you use transfer mode binary
 
          | Dataset name                      | Name                                             | Copybook (Layout) | Format | Length | Name of equivalent ascii file |
@@ -102,40 +102,40 @@ To install this repository on the mainframe please follow the following steps
          | DEFGDGB  | Defines GDG Base                                    |
 
 
-4. Compile the Programs. 
-   
+4. Compile the Programs.
+
    You should use the compile process followed by your mainframe shopfloor
-   
-   We have however provided some sample JCLs in the samples folder in git to help you craft the JCL   
+
+   We have however provided some sample JCLs in the samples folder in git to help you craft the JCL
 
    The Java module added under app/java is built with Maven instead. See [Building and running the Java module](#building-and-running-the-java-module) below
 
 5. Create resources in the CARDDEMO group in CICS
-   
+
    You have 2 options
-   
+
    Be sure to edit the HLQs in the below documents as required before you do the definition
-   
+
    * (Preferred) . Use the DFHCSDUP JCL that the resources required by the application
 
       The resources required are in the CSD file provided in the CSD folder
-       
+
       * Group CARDDEMO
       * Mapsets
       * Transactions
       * Maps
       * Files
-      
+
    * Use the CEDA transaction to execute the commands in the above listing
-   
-      * Define group 
+
+      * Define group
          ```shell
          DEFINE LIBRARY(COM2DOLL) GROUP(CARDDEMO) DSNAME01(&HLQ..LOADLIB)
          ```
       * Define Mapsets, Maps , Programs and Files
-      
+
          Sample CEDA commands
-         
+
          ```shell
          DEF PROGRAM(COCRDLIC) GROUP(CARDDEMO)
          DEF MAPSET(COCRDLI) GROUP(CARDDEMO)
@@ -155,7 +155,7 @@ To install this repository on the mainframe please follow the following steps
    * Execute a NEWCOPY of mapsets and maps
       ```shell
       CEMT SET PROG(COCRDUP) NEWCOPY
-      CEMT SET PROG(COCRDUPC) NEWCOPY  
+      CEMT SET PROG(COCRDUPC) NEWCOPY
       ```
 6. Enjoy the demo
 
@@ -164,8 +164,15 @@ To install this repository on the mainframe please follow the following steps
      - Enter userid USER0001 and the initially configured password PASSWORD to access back office functions
    * For batch            : See the instructions for running full batch below.
 
-## Running full batch 
-   
+> [!WARNING]
+> **Those two credentials are published seed values, and they must be replaced before any deployment that is reachable by anyone but you.** They are printed above, they are in `app/jcl/DUSRSECJ.jcl` in the clear, and `USRSEC` stores `SEC-USR-PWD` as `PIC X(08)` plaintext -- so anyone who has read this file has administrator credentials, and `ADMIN001` has user-maintenance authority. `PASSWORD` is also eight characters, which is the field's whole width: `CSUSR01Y.cpy:21` declares `PIC X(08)`, so no longer password is representable and the password space is small by construction.
+>
+> Sign-on additionally distinguishes its failure reasons -- `Wrong Password. Try again ...` for a known user, `User not found. Try again ...` for an unknown one -- which lets a caller enumerate valid user ids. **That is preserved deliberately.** Those message texts are transcribed byte for byte from `app/cbl/COSGN00C.cbl:242-249` and the parity suite compares them character for character, so collapsing them into one message would be a behaviour change and would fail the gate. Nothing in the application throttles, delays, locks out or counts failed attempts either, because nothing in the COBOL does.
+>
+> The consequence is that **rate limiting, lockout and authentication monitoring are controls the deployment must supply**, outside this application: at the gateway or in the network in front of it. Replace both seed passwords, and see *Securing a deployment* below before exposing either the CICS region or the Java module beyond a private environment.
+
+## Running full batch
+
   * Execute the following JCLs in order
 
     | Jobname  | What it does                                        |
@@ -184,7 +191,7 @@ To install this repository on the mainframe please follow the following steps
     | INTCALC  | Run interest calculations                           |
     | TRANBKP  | Backup Transaction database                         |
     | COMBTRAN | Combine system transactions with daily ones         |
-    | CREASTMT | Produce transaction statement                       | 	
+    | CREASTMT | Produce transaction statement                       |
     | TRANIDX  | Define alternate index on transaction file          |
     | OPENFIL  | Makes files available to CICS                       |
 <br/>
@@ -195,7 +202,7 @@ The repository also carries a Java translation of the same application in `app/j
 
 ### Prerequisites
 
-1. Java 21 (LTS) -- verified with OpenJDK 21.0.11
+1. Java 21 (LTS). The module targets release level 21 (`<release>21</release>`), so any Java 21 JDK compiles it. The build here was verified with OpenJDK 21.0.11, and **21.0.11 is a version this build was verified on, not a version you should deploy on**: the JDK a deployment runs is a deployment input, and it should be a 21.x build carrying the **current quarterly Critical Patch Update**. Oracle and the OpenJDK distributors publish 21.x CPU releases every quarter, each closing vulnerabilities that affect every earlier 21.x build; 21.0.11 predates the current one. Pin the JDK explicitly in your deployment and advance it on the CPU cadence -- this repository cannot do that for you, and no `pom.xml` setting can, because `<release>` fixes the *language and API level* and says nothing about the runtime's patch level.
 2. Apache Maven 3.9 or newer -- verified with Maven 3.9.16. Maven 3.8.x is below the required floor
 
 Nothing else is needed to build and test the module: no database server, no container runtime, no cloud account and no mainframe connectivity.
@@ -233,6 +240,15 @@ LOADER_PATH=/opt/carddemo/drivers java -jar app/java/target/carddemo.jar
 
 **A `-cp` entry beside `-jar` will not work.** `java -cp /opt/carddemo/drivers/driver.jar -jar carddemo.jar` is silently ignored by the JVM: with `-jar`, the class path comes from the archive alone. That command fails at startup with *"The JDBC driver class ... is not on the classpath"* while the driver sits on the machine, which is why the diagnostic itself names `LOADER_PATH`.
 
+**`LOADER_PATH` is a code-loading path, so treat it as one.** Anything in that directory is loaded into the application's class loader and runs with the application's full authority, and `PropertiesLauncher` *prepends* it -- so a jar placed there can also shadow a class the application would otherwise have loaded from inside `carddemo.jar`. Whoever can write to the directory, or set the variable, can therefore execute code in this process (CWE-427, CWE-494). The build pinning no driver coordinate is what makes the deployment portable; it also means **the integrity of that jar is entirely the deployment's responsibility**, because nothing in this repository can verify a driver it never names. At minimum:
+
+* **Name one approved driver at one exact version** in your own deployment configuration, and treat a change to it as a change to the application.
+* **Verify the artefact before it is installed** -- a published checksum, and a signature where the vendor provides one. Record the verified digest with the release.
+* **Own the directory outside the application.** It should be owned by `root` (or a deployment account that is not the account the application runs as) and mode `0755` or tighter, containing nothing writable by the runtime user. The application must be able to read it and must not be able to write it.
+* **Put nothing else in it.** It is not a general library directory; every jar there is trusted code. Prefer naming individual jars via `-Dloader.path=/opt/carddemo/drivers/driver.jar` over naming a directory, so adding a file to the directory is not by itself enough to load it.
+* **Run the application as an unprivileged account** that owns none of its own code, so a compromise of the runtime user cannot alter what is loaded next time.
+* **Put the variable under change control.** `LOADER_PATH` is read from the environment, so whoever controls the unit file, container spec or shell that starts the process controls what is loaded. Set it in the deployment manifest, not interactively.
+
 The programs listed under Online below are served as REST resources under `/api`, one per CICS transaction -- `POST /api/signon`, `GET /api/menu`, `GET /api/accounts/{acctId}`, `GET /api/cards`, `GET /api/transactions`, `POST /api/billpay`, `GET /api/users` and their siblings. CICS is pseudo-conversational, so the migration keeps no server-side session: the communication area, the key that was pressed and the screen's own field values all travel in the request and response payloads, and every reply carries the state the next call needs.
 
 To start the service locally with no external data source at all, run it on the fixture-backed `test` profile. That profile reaches its in-memory settings through a classpath import that lives in the test tree, so the JVM that runs has to carry `target/test-classes`: `spring-boot:run` forks a JVM that does not, and asking the plugin for the test classpath is not enough. From `app/java`
@@ -246,7 +262,16 @@ java -cp "target/test-classes:target/classes:$(cat target/cp.txt)" \
 
 Started that way the context comes up and `/api` answers with no mainframe and no database server in sight. What that command does not do is create a dataset. This module issues no DDL at all, by design -- that is the same guarantee the production deployment depends on -- so the profile only says *where* each dataset lives, and an in-memory database starts with no relation in it. Until the relations exist a data-backed call fails rather than reading nothing: sign-on answers `Unable to verify the User ...` because the backend reported `SQLSTATE 42S02`, which the repository maps to file status `9000`, and `accountBalanceJob` abends with `ERROR OPENING ACCTFILE`, `RETURN-CODE=12` and process exit code 12. The test suite never meets that, because each test creates and seeds the relations it needs itself, which is why `mvn -f app/java/pom.xml clean verify` needs none of the steps below.
 
-To give a local run some data, create one relation per dataset -- the record image in column 1, the copybook width, one row per fixed-width record -- and point the run at a database that outlives the provisioning step, because the profile's own in-memory database is created fresh per run. The dataset names this profile uses are listed in `app/java/src/main/resources/application-test.yml` and the records come from `app/data/ASCII`. The account master is shown here; every other dataset follows the same two steps. From `app/java`
+The quickest way to put the profile's own declared data behind those bindings is the seeded entry point that lives in the test tree. `com.vsergeychik.carddemo.testsupport.FixtureSeededApplication` is the shipped application plus one test-scope configuration that materialises what `app/java/src/test/resources/carddemo-test-fixtures.yml` declares: the nine fixed-width fixtures across the DD names they serve, and the ten `USRSEC` rows from `app/jcl/DUSRSECJ.jcl`, each right-padded once to its copybook width. It is under `src/test` and is never packaged, because those ten rows carry plaintext passwords and a credential-shaped value inside a distributable artifact is indistinguishable from a real one. With the same two preparation commands as above, from `app/java`
+
+```shell
+java -cp "target/test-classes:target/classes:$(cat target/cp.txt)" \
+     com.vsergeychik.carddemo.testsupport.FixtureSeededApplication --spring.profiles.active=test
+```
+
+Started that way the log states what it seeded -- ten relations, 636 records -- and the data-backed calls answer instead of failing: `POST /api/signon` as `ADMIN001` with password `PASSWORD` returns a blank `errmsg` and `COADM01C` as the next program, and `GET /api/cards?eibaid=125` returns real card numbers. Those relations belong to that one process's in-memory database and go away with it, which is the one thing the file-backed procedure below does differently.
+
+To provision a database that **outlives** the run, so that a second process, a repeated start or an SQL client sees the same rows, do it by hand against a file-backed database instead. Each relation is one column wide: the record image in column 1, at the copybook width, one row per fixed-width record. The dataset names this profile uses are listed in `app/java/src/main/resources/application-test.yml` and the records come from `app/data/ASCII`. The account master is shown here; every other dataset follows the same two steps. From `app/java`
 
 ```shell
 CP="target/test-classes:target/classes:$(cat target/cp.txt)"
@@ -284,11 +309,45 @@ The interest calculation translated from CBACT04C is the only job that takes a p
 
 Dataset names and the JDBC `DataSource` are entirely configuration bound in `app/java/src/main/resources/application.yml`, so no dataset name and no connection detail is compiled into the code. The site-specific data access driver is a deployment-time input, supplied through `CARDDEMO_DATASOURCE_URL`, `CARDDEMO_DATASOURCE_DRIVER_CLASS_NAME` and the matching credential variables; the build deliberately pins no driver of its own, and startup is refused with a message naming the missing property when none is supplied.
 
-The CICS region identity is a deployment input for the same reason. `COSGN00C` obtains two of its eleven screen fields from `EXEC CICS ASSIGN APPLID` and `EXEC CICS ASSIGN SYSID`, which have no Java equivalent, so they are supplied through `CARDDEMO_CICS_APPLID` and `CARDDEMO_CICS_SYSID`. Neither has a default: both fields are compared byte for byte by the parity suite, so a deployment that states no region is refused at startup rather than painting eight spaces into a field a real region would have filled.
+The CICS region identity is a deployment input for the same reason. `COSGN00C` obtains two of its eleven screen fields from `EXEC CICS ASSIGN APPLID` and `EXEC CICS ASSIGN SYSID`, which have no Java equivalent, so they are supplied through `CARDDEMO_CICS_APPLID` and `CARDDEMO_CICS_SYSID`. Neither has a default: both fields are compared byte for byte by the parity suite, so a deployment that states no region is refused at startup rather than painting eight spaces into a field a real region would have filled. Both are checked against what `ASSIGN` could have reported, too - at most 8 characters of application identifier and at most 4 of system identifier, the latter despite its field being eight columns wide - and against the code page, so an identity no region could have answered is refused rather than truncated into a compared field. Two further inputs describe the site's gateway rather than the module and are defaultless for the same kind of reason: `CARDDEMO_RECORD_IMAGE_FORM` states whether a record image crosses JDBC as characters or as bytes, and `CARDDEMO_PHYSICAL_SEQUENCE_EXPRESSION` names the ordinal that stands for a stored record's physical position. The packaged `application.yml` supplies neither value, because a default would be indistinguishable from a decision the deployment never made: a gateway presenting binary columns would otherwise have had every record decoded as text, and a differently spelled ordinal would have ordered a report by something that is not the record's position.
 
 The module reaches the existing datasets over plain JDBC and changes nothing about how they are stored: no DDL, no schema migration, no ORM and no new database. Record layouts stay exactly as the copybooks in `app/cpy` define them, which is why the dataset and copybook table above is the reference every Java record width is checked against, and why the code pages are named explicitly -- IBM037 for the EBCDIC datasets, US-ASCII for the sample text files -- rather than left to a platform default.
 
-`application-test.yml` rebinds all 27 dataset bindings onto in-memory test data, so the test suite runs with no external database and no mainframe connectivity. Seventeen of them are backed by the nine fixed-width fixtures derived from app/data/ASCII -- one fixture reaches several DD names where the legacy estate addresses one dataset under more than one name, and `cardxref`'s 36-byte rows are padded up to the 50 bytes CVACT03Y declares. `USRSEC` is seeded inline from the ten sign-on rows of app/jcl/DUSRSECJ.jcl, padded from 57 bytes to 80. The remaining nine -- `DALYREJS`, `DATEPARM`, `HTMLFILE`, `STMTFILE`, `SYSTRAN`, `TRANFILE`, `TRANREPT`, `TRANSACT` and `TRNXFILE` -- hold nothing at the start of a run: they are what a run produces rather than what it reads, and each test seeds only what its own case declares. The seeding is the tests' own work rather than the profile's: a test declares the datasets its case needs, loads its rows, and holds them privately for the duration of that one case.
+`application-test.yml` rebinds all 27 dataset bindings onto in-memory test data, so the test suite runs with no external database and no mainframe connectivity. Seventeen of them are backed by the nine fixed-width fixtures derived from app/data/ASCII -- one fixture reaches several DD names where the legacy estate addresses one dataset under more than one name, and `cardxref`'s 36-byte rows are padded up to the 50 bytes CVACT03Y declares. `USRSEC` is seeded inline from the ten sign-on rows of app/jcl/DUSRSECJ.jcl, padded from 57 bytes to 80. The remaining nine -- `DALYREJS`, `DATEPARM`, `HTMLFILE`, `STMTFILE`, `SYSTRAN`, `TRANFILE`, `TRANREPT`, `TRANSACT` and `TRNXFILE` -- hold nothing at the start of a run: they are what a run produces rather than what it reads. Inside the suite the seeding is each test's own work rather than the profile's: a case declares the datasets it needs, loads its rows and holds them privately for its own duration, which is what lets one case seed an expired card, another an empty dataset and another a record narrower than its copybook -- a shared baseline underneath them all would make those cases unreachable. What the profile declares is nevertheless bound and checked rather than merely written down: `app/java/src/test/resources/carddemo-test-fixtures.yml` states the ten entries, each with its resource, record count, record width, the copybook width to pad up to where it is short, and the DD names it serves; `FixtureInventory` binds that strictly, so a misspelled key fails the bind, and re-derives every number from the fixture bytes and the shipped dataset catalogue rather than trusting it; and `FixtureSeeder` materialises it for a hand-started JVM, as described above.
+
+### Securing a deployment
+
+This module is a like-for-like translation, and its security posture is therefore the COBOL's security posture plus whatever the boundary around it supplies. That split matters more here than in most applications, because on the mainframe a great deal was enforced by the CICS region and the terminal network rather than by the programs -- and **none of that surrounding enforcement is reproduced by translating the programs.** What follows separates the three kinds of control so that nothing is assumed to be in place that is not. [docs/project-guide.md](docs/project-guide.md) carries the same split in full, finding by finding.
+
+**Enforced by this module.** These are properties of the code and configuration as shipped, and each is covered by a test:
+
+* Request bodies are bounded. Document length is capped at 1 MiB and token count at 100,000 -- both of which Jackson leaves *unlimited* by default -- along with string length, nesting depth, property-name length and numeric-token length. An over-size body is answered `400` and nothing of it is echoed back.
+* Every response carries `Cache-Control: no-store` (with the legacy `Pragma`/`Expires` pair) and `X-Content-Type-Options: nosniff`, on the success path and on the container's error path alike. No screen this API paints is reusable by another caller.
+* The listener binds to loopback unless told otherwise, and `X-Forwarded-*` headers are ignored unless a deployment names a terminator it trusts.
+* Error responses carry no message, no binding detail and no stack trace; the field names behind a rejection go to the server log and only to the server log.
+* The submitted sign-on password is never returned in a response body.
+* No dataset name and no connection detail is compiled in, and startup is refused rather than guessed at when a required deployment input is missing.
+* Every SQL statement is parameterised, every code page is named explicitly, and no mutable state is static or session-scoped.
+
+**Must be supplied by the deployment.** These are not optional, and this module cannot provide any of them without changing observable behaviour or adding a framework the migration excludes:
+
+* **TLS.** The listener is plain HTTP until a keystore is supplied, and every request carries screen data -- account numbers, full card numbers, customer addresses, and on `POST /api/signon` a password compared in plaintext exactly as `COSGN00C.cbl:223` compares it. Enable it with `CARDDEMO_SERVER_SSL_ENABLED=true` plus `SERVER_SSL_KEY_STORE`, `SERVER_SSL_KEY_STORE_PASSWORD` and, where needed, `SERVER_SSL_KEY_STORE_TYPE` and `SERVER_SSL_KEY_ALIAS`. Spring Boot reads all of those from the environment, so no keystore or password ever enters this repository or an image layer. Terminating TLS at a gateway instead is equally acceptable; leaving it off is not.
+* **Authentication and authorization at the boundary.** `POST /api/signon` verifies a password against `USRSEC`, and that is the whole of it: it issues no token, sets no cookie and establishes no server-side session, because CICS was pseudo-conversational and the migration keeps that shape (no session is a deliberate, tested property). Consequently **every other route is reachable without signing on**, including `GET /api/admin/menu` and the `USRSEC` maintenance routes under `/api/users`, and the `userType` a request carries is a value the *client* supplied rather than an identity the server established. Put a trusted gateway or a private enclave in front of this listener, have it establish identity, and have it authorize `/api/admin/**` and `/api/users/**` against that identity -- never against a field in the payload. Spring Security, JWT and credential hashing are excluded from this migration by plan, so this cannot be closed inside the application.
+* **Authorize on the effective key, not on the URI.** A path variable such as the `{acctId}` in `PUT /api/accounts/{acctId}` seeds the screen on a *first* entry only. On a re-entry the screen's own field governs, because typing another account number over a painted screen is how the legacy operator moved from one record to the next, and refusing that would remove the screen's primary navigation. So the URI is a convenience, not the resource identity: a gateway that authorizes on the path alone can authorize `A` while the request acts on `B`. Authorize and audit on the key in the payload -- which the response echoes back in the corresponding screen field.
+* **Rate limiting, lockout and authentication monitoring**, for the reasons given with the seed credentials above.
+* **Access control, retention and monitoring for the raw output channels.** Batch `SYSOUT` carries whole records by design -- `CBACT02C.cbl:78` is `DISPLAY CARD-RECORD`, so a full card number reaches standard output, and `CBCUS01C.cbl:78` displays the entire 500-byte customer record -- and the report and statement files carry cardholder data in the clear. Those bytes are the parity contract and cannot be masked here. Treat job output, `TRANREPT`, `STMTFILE` and `HTMLFILE` as cardholder-data stores: restrict who can read them, set a retention period, and log access.
+* **Isolated delivery for the generated HTML statement.** `CBSTM03A` writes operator-supplied values into HTML without escaping, because the COBOL emits them raw and the record is a fixed 100 bytes; escaping would change the bytes and fail the gate. Serve `HTMLFILE` from an origin that shares nothing with an application session, or escape it in a renderer outside this boundary.
+* **A supported Spring line, or a support contract.** Spring Boot 3.5 and Spring Framework 6.2 reached the end of OSS support on 30 June 2026. The migration pins Boot 3.x by plan, and 3.5.16 is the last published OSS 3.5.x release, so future fixes for the framework itself will not arrive through a parent upgrade inside that pin. Four transitive families are pinned forward to their fixed releases in `app/java/pom.xml` for exactly this reason, and that route does not extend to the framework. Obtain commercial support or authorize a move to a supported line.
+* **A current JDK**, per the note under Prerequisites.
+* **Driver provenance controls** for `LOADER_PATH`, per the note above.
+* **Privacy governance.** This module implements no retention limit, no export, no erasure and no field-level encryption at rest, because the legacy application implements none and adding any of them would change observable behaviour. If the data is real, those obligations are the surrounding platform's.
+
+**Inherited from the source and deliberately preserved.** These are not defects in the translation; they are the legacy behaviour, and the parity gate holds them in place. Each is recorded with its evidence in [docs/project-guide.md](docs/project-guide.md):
+
+* Passwords are stored and compared as plaintext `PIC X(08)`, and the user-update screen paints the stored password into a field because `COUSR02C.cbl:169` moves it there.
+* Sign-on distinguishes an unknown user from a wrong password.
+* Response payloads project the screen exactly, so a field the 3270 showed an operator is a field the payload carries -- full card numbers included.
+* Bill payment writes its transaction *before* debiting the balance and does not guard the debit on the write having succeeded, so a refused duplicate leaves a debited balance with no transaction record. This is `COBIL00C.cbl:211-235` faithfully, it is asserted positively by a parity case, and it means bill payment needs an external single-flight control before concurrent production use.
 
 ### Verification gates
 
@@ -302,8 +361,8 @@ app/cbl, app/cpy, app/bms, app/cpy-bms, app/jcl, app/proc, app/csd, app/ctl, app
 
 <br/>
 
-## Application Details 
-The CardDemo is a Credit Card management application, built primarily using COBOL programming language. The application has various functions that allows users to manage Account, Credit card, Transaction and Bill payment. 
+## Application Details
+The CardDemo is a Credit Card management application, built primarily using COBOL programming language. The application has various functions that allows users to manage Account, Credit card, Transaction and Bill payment.
 
 There are 2 types of users:
 * Regular User
@@ -354,7 +413,7 @@ The Regular user can perform the user functions and the Admin users can only per
 | Job      | Program  | Function                                   |
 | :------- | :------- | :----------------------------------------- |
 | DUSRSECJ | IEBGENER | Initial Load of User security file         |
-| DEFGDGB  | IDCAMS   | Setup GDG Bases                            | 
+| DEFGDGB  | IDCAMS   | Setup GDG Bases                            |
 | ACCTFILE | IDCAMS   | Refresh Account Master                     |
 | CARDFILE | IDCAMS   | Refresh Card Master                        |
 | CUSTFILE | IDCAMS   | Refresh Customer Master                    |
@@ -404,16 +463,16 @@ The following features are planned for upcoming releases
 
 1. More database types
 
-   1. Relational Database usage : Db2 
-   
+   1. Relational Database usage : Db2
+
    2. Hierachical database calls : IMS
 
 2. Integration
 
    * ftp, sftp
-   
+
    * Message queue integration
-   
+
    * Exposure of transactions for distributed application integration
 
 <br/>
@@ -439,5 +498,3 @@ We are planning a v2 of this application in Q1 2023.
 Watch this space for updates
 
 <br/>
-
-

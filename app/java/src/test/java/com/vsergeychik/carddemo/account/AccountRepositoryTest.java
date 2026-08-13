@@ -78,173 +78,66 @@ import org.junit.jupiter.api.Timeout;
 
 /**
  * Unit tests for {@link AccountRepository}, the account master dataset's only reader and only writer.
- *
- * <h2>Two kinds of test, and why both are needed</h2>
- *
- * <p><strong>Round trips against a real single-column relation.</strong> The dataset is seeded from
- * {@code src/test/resources/fixtures/acctdata.txt} - the classpath copy of
- * {@code app/data/ASCII/acctdata.txt}, 50 records of exactly 300 bytes each - into an in-memory
- * relation with one record-image column, which is precisely the shape the parity harness seeds and the
- * shape the production gateway is expected to present. That is what makes the byte-level assertions
- * meaningful: a record read and re-encoded has to come back identical, {@code FILLER X(178)} included.
- *
- * <p><strong>Mocked JDBC for the failure arms.</strong> An unreachable dataset, a relation that
- * describes no record-image column, and a row whose image is absent cannot be produced by a healthy
- * database, so they are driven through mocks. Every one of them must reach a reported file status or a
- * thrown contract violation - never a silent success.
- *
- * <h2>No dataset name from the real system appears here</h2>
- *
- * <p>The tests supply their own dataset name. The real one lives only in {@code application.yml}, which
- * is the whole point of the binding the constructor resolves, so this file needs no mainframe dataset
- * literal and contains none.
- *
- * <h2>Expectations are transcribed from the COBOL</h2>
- *
- * <p>The statuses, the {@code APPL-RESULT} values and the outcome ladders below were written by reading
- * {@code app/cbl/CBACT01C.cbl:L92-L167}, {@code app/cbl/CBACT04C.cbl:L289-L391} and
- * {@code app/cbl/COACTUPC.cbl:L3888-L4081} and are restated here rather than read back off the
- * implementation, so agreement between the two is an audit and not a tautology.
  */
 @DisplayName("AccountRepository - the account master dataset over JDBC")
 class AccountRepositoryTest {
-
-    /** The code page every test names explicitly; never a platform default. */
     private static final Charset ASCII = StandardCharsets.US_ASCII;
 
-    /** A stand-in dataset name. The real one lives only in {@code application.yml}. */
     private static final String TEST_DSNAME = "TEST.ACCOUNT.KSDS";
 
-    /** The record-image column of the seeded relation, and the name the probe will discover. */
     private static final String RECORD_IMAGE_COLUMN = "REC";
 
-    /** The classpath location of the account fixture, copied from the reference tree. */
     private static final String FIXTURE = "/fixtures/acctdata.txt";
 
-    /** The fixture's measured record count, restated from the reference data. */
     private static final int FIXTURE_RECORDS = 50;
 
-    /** The copybook record width, restated from {@code app/cpy/CVACT01Y.cpy:L2} ({@code RECLN 300}). */
     private static final int THREE_HUNDRED = 300;
 
-    /** The copybook key width, restated from {@code ACCT-ID PIC 9(11)}. */
     private static final int ELEVEN = 11;
 
-    /** The declared width of {@code FILLER}, restated from {@code app/cpy/CVACT01Y.cpy:L17}. */
     private static final int FILLER_WIDTH = 178;
 
-    /** An account identifier the fixture does not contain, for the invalid-key arms. */
     private static final long ABSENT_ACCT_ID = 99_999_999_999L;
 
-    /**
-     * Distinguishes the in-memory database each seeded test uses, so no two tests share a relation.
-     *
-     * <p>A counter rather than a random or time-derived name, so a run is reproducible.
-     */
     private static final AtomicInteger DATABASE_SEQUENCE = new AtomicInteger();
 
-    /**
-     * How long a second connection waits for a row lock before reporting failure.
-     *
-     * <p>Short, because the point is to observe that a lock is held rather than to wait out a realistic
-     * one, and a held lock must not stall the suite.
-     */
     private static final int LOCK_TIMEOUT_MILLIS = 250;
 
-    /**
-     * The classpath location of the disclosure-group fixture, copied from the reference tree.
-     *
-     * <p>Read because the {@code DISCGRP} DD is the account package's other keyed access path - see
-     * {@link DisclosureGroupAccessPathTests} for why it is asserted here and not exercised through a
-     * repository method.
-     */
     private static final String DISCLOSURE_GROUP_FIXTURE = "/fixtures/discgrp.txt";
 
-    /** The disclosure-group fixture's measured record count: {@code awk 'END{print NR}'} prints 51. */
     private static final int DISCLOSURE_GROUP_FIXTURE_RECORDS = 51;
 
-    /** The copybook record width of {@code DIS-GROUP-RECORD}, from {@code app/cpy/CVTRA02Y.cpy:L2}. */
     private static final int FIFTY = 50;
 
-    /**
-     * The width {@code DIS-GROUP-KEY} really has: 16, from {@code app/cpy/CVTRA02Y.cpy:L5-L8}.
-     *
-     * <p>Named as a constant because the trap this file guards is the <em>other</em> number. See
-     * {@link #SEVENTEEN_BYTE_KEY_WIDTH}.
-     */
     private static final int SIXTEEN = 16;
 
-    /**
-     * The 17-byte key width that belongs to {@code CVTRA01Y}, not to {@code CVTRA02Y}.
-     *
-     * <p>{@code TRAN-CAT-KEY} is 17 bytes and {@code TRAN-CAT-BAL-RECORD} also totals 50, so an
-     * adapter that laid out this dataset with a 17-byte key would produce rows that pass every width
-     * check in this class while shifting {@code DIS-INT-RATE} one byte and corrupting every rate.
-     */
     private static final int SEVENTEEN_BYTE_KEY_WIDTH = 17;
 
-    /** The declared width of {@code DIS-INT-RATE}: {@code S9(04)V99} is 4 + 2 = 6 bytes, sign included. */
     private static final int SIX = 6;
 
-    /** The declared width of {@code CVTRA02Y}'s {@code FILLER X(28)}, from {@code CVTRA02Y.cpy:L10}. */
     private static final int DISCLOSURE_GROUP_FILLER_WIDTH = 28;
 
-    /**
-     * Row 1 of the disclosure-group fixture, transcribed from the reference data.
-     *
-     * <p>Measured with {@code awk 'NR==1' app/data/ASCII/discgrp.txt}, which prints exactly these 50
-     * characters. Restated rather than read back off the file, so agreement between this expectation
-     * and the fixture is a check and not a tautology - the fixture is read separately and compared.
-     */
     private static final String DISCLOSURE_GROUP_ROW_1 =
             "A00000000001000100150{0000000000000000000000000000";
 
-    /** Row 1's {@code DIS-INT-RATE} image: {@code 00150} with {@code '{'}, the overpunch for {@code +0}. */
     private static final String ROW_1_RATE_IMAGE = "00150{";
 
-    /** What a 17-byte key would read as row 1's rate: one byte late, and not a rate at all. */
     private static final String ROW_1_RATE_IMAGE_UNDER_A_17_BYTE_KEY = "0150{0";
 
-    /** Row 1's rate, decoded: {@code 001500} at scale 2 is 15.00, a 15% APR. */
     private static final BigDecimal FIFTEEN_PERCENT = new BigDecimal("15.00");
 
-    /** The repository-relative path of this repository's own source, read by the G46 guard. */
     private static final String REPOSITORY_SOURCE_PATH =
             "app/java/src/main/java/com/vsergeychik/carddemo/account/AccountRepository.java";
 
-    /** The repository-relative path of the module's main sources, walked by the G44 guard. */
     private static final String MAIN_SOURCE_ROOT = "app/java/src/main/java/com/vsergeychik/carddemo";
 
-    /** The repository-relative path of the configuration that owns every dataset name. */
     private static final String APPLICATION_YAML = "app/java/src/main/resources/application.yml";
 
-    /** The high-order qualifiers of every dataset name in the estate; none may appear in Java code. */
     private static final String MAINFRAME_DATASET_PREFIX = "AWS.M2.CARDDEMO.";
 
-    /**
-     * Any data-definition statement. A repository that reaches an existing dataset never emits one.
-     *
-     * <p>{@code CREATE}, {@code ALTER}, {@code DROP}, {@code TRUNCATE} and {@code RENAME} against a
-     * table, index, view, sequence or schema - the whole vocabulary a migration would need.
-     */
     private static final Pattern DDL_STATEMENT = Pattern.compile(
             "(?i)\\b(create|alter|drop|truncate|rename)\\s+(table|index|view|sequence|schema)\\b");
 
-    // =============================================================================================
-    // Fixtures and helpers.
-    // =============================================================================================
-
-    /**
-     * Builds the pair of bindings the repository resolves, with every component under the test's
-     * control so each of the constructor's checks can be driven both ways.
-     *
-     * @param cicsDsname   the dataset name for the CICS file key
-     * @param batchDsname  the dataset name for the batch DD key
-     * @param recordLength the record length to configure for both
-     * @param keyLength    the key length to configure for both, or {@code null} to omit it as
-     *                     {@code application.yml} does
-     * @return a catalogue containing exactly those two bindings
-     */
     private static DatasetBindings bindings(String cicsDsname, String batchDsname, int recordLength,
             Integer keyLength) {
         DatasetBindings catalogue = new DatasetBindings();
@@ -255,49 +148,18 @@ class AccountRepositoryTest {
         return catalogue;
     }
 
-    /**
-     * The correctly configured binding pair every behavioural test uses.
-     *
-     * @return a catalogue naming {@link #TEST_DSNAME} at the copybook width under both keys
-     */
     private static DatasetBindings validBindings() {
         return bindings(TEST_DSNAME, TEST_DSNAME, THREE_HUNDRED, null);
     }
 
-    /**
-     * A repository over the given template and the correctly configured bindings.
-     *
-     * @param template the template to reach the relation with
-     * @return the repository
-     */
     private static AccountRepository repository(JdbcTemplate template) {
         return new AccountRepository(template, validBindings(), ASCII, RecordImageForm.CHARACTER);
     }
 
-    /**
-     * Creates a private in-memory relation with one record-image column and seeds it.
-     *
-     * <p>The relation is deliberately created without a key constraint, so a test can seed two rows
-     * under one key and drive the arm that a unique key would otherwise make unreachable.
-     *
-     * @param rows the record images to insert, in the order given
-     * @return a template over the seeded relation
-     */
     private static JdbcTemplate seeded(List<String> rows) {
         return seeded(rows, THREE_HUNDRED);
     }
 
-    /**
-     * Creates a private in-memory relation whose record-image column is as wide as asked, and seeds it.
-     *
-     * <p>The width is a parameter for one reason only: a test has to be able to store an image
-     * <em>wider</em> than the copybook declares, in order to prove that such an image is rejected rather
-     * than truncated. Every other test uses the copybook width.
-     *
-     * @param rows        the record images to insert, in the order given
-     * @param columnWidth the declared width of the record-image column
-     * @return a template over the seeded relation
-     */
     private static JdbcTemplate seeded(List<String> rows, int columnWidth) {
         DriverManagerDataSource dataSource = new DriverManagerDataSource(
                 "jdbc:h2:mem:acctrepo" + DATABASE_SEQUENCE.incrementAndGet()
@@ -312,11 +174,6 @@ class AccountRepositoryTest {
         return template;
     }
 
-    /**
-     * The 50 fixture records, exactly as stored.
-     *
-     * @return the fixture's lines
-     */
     private static List<String> fixtureRows() {
         try (InputStream stream = AccountRepositoryTest.class.getResourceAsStream(FIXTURE)) {
             if (stream == null) {
@@ -329,24 +186,10 @@ class AccountRepositoryTest {
         }
     }
 
-    /**
-     * The stored key image of a fixture row: its leading eleven bytes.
-     *
-     * @param row a fixture record image
-     * @return the eleven-character key image
-     */
     private static String keyImageOf(String row) {
         return row.substring(0, ELEVEN);
     }
 
-    /**
-     * The 51 disclosure-group fixture records, exactly as stored.
-     *
-     * <p>The classpath copy of {@code app/data/ASCII/discgrp.txt}, which is never opened in place: the
-     * reference tree is the parity oracle and is read-only.
-     *
-     * @return the fixture's lines
-     */
     private static List<String> disclosureGroupRows() {
         try (InputStream stream =
                      AccountRepositoryTest.class.getResourceAsStream(DISCLOSURE_GROUP_FIXTURE)) {
@@ -361,16 +204,6 @@ class AccountRepositoryTest {
         }
     }
 
-    /**
-     * Locates a repository-relative path by walking upwards from the working directory.
-     *
-     * <p>The same approach {@code CardDemoApplicationTest} and {@code NoRawBackendDiagnosticTest} use,
-     * so every suite that reads the checkout does it one way. Surefire's working directory is the
-     * module, not the repository root, which is why the walk is needed at all.
-     *
-     * @param relativePath the repository-relative path
-     * @return the resolved path
-     */
     private static Path repositoryFile(String relativePath) {
         Path candidate = Path.of("").toAbsolutePath();
         while (candidate != null) {
@@ -384,12 +217,6 @@ class AccountRepositoryTest {
                 + Path.of("").toAbsolutePath());
     }
 
-    /**
-     * Reads a checkout file as text.
-     *
-     * @param file the file
-     * @return its text
-     */
     private static String read(Path file) {
         try {
             return Files.readString(file, StandardCharsets.UTF_8);
@@ -398,29 +225,6 @@ class AccountRepositoryTest {
         }
     }
 
-    /**
-     * A source file's text with every comment removed, so a scan sees code and not prose.
-     *
-     * <h4>Why the stripping is necessary</h4>
-     *
-     * <p>{@code common/DatasetRelation.java} and {@code card/CardRepository.java} both <em>discuss</em>
-     * mainframe dataset names in their Javadoc, which is exactly where such a name belongs: it documents
-     * the contract being implemented. A raw text scan would report those as violations and would
-     * therefore have to be switched off, which is how a gate stops being a gate. Stripping comments
-     * first keeps the guard pointed at the thing that matters - a dataset name compiled into the module -
-     * and leaves documentation free.
-     *
-     * <h4>Why it is a scanner and not a regular expression</h4>
-     *
-     * <p>The obvious expression for a block comment - an alternation repeated over a thousand-line file
-     * - overflows the stack on the larger sources in this module, and a simpler one cannot tell a
-     * {@code //} inside a string literal from the start of a comment. A single left-to-right pass costs
-     * nothing, handles both, and is readable.
-     *
-     * @param source the source text
-     * @return the same text with line, block and Javadoc comments replaced by single spaces, and with
-     *         every string and character literal left exactly as written
-     */
     private static String codeOnly(String source) {
         StringBuilder code = new StringBuilder(source.length());
         int index = 0;
@@ -445,13 +249,6 @@ class AccountRepositoryTest {
         return code.toString();
     }
 
-    /**
-     * The index just past a line comment that starts at {@code start}.
-     *
-     * @param source the source text
-     * @param start  the index of the first {@code /}
-     * @return the index of the terminating newline, or the length of the text
-     */
     private static int skipLineComment(String source, int start) {
         int index = start + 2;
         while (index < source.length() && source.charAt(index) != '\n') {
@@ -460,13 +257,6 @@ class AccountRepositoryTest {
         return index;
     }
 
-    /**
-     * The index just past a block or Javadoc comment that starts at {@code start}.
-     *
-     * @param source the source text
-     * @param start  the index of the first {@code /}
-     * @return the index after the closing delimiter, or the length of the text if it is unterminated
-     */
     private static int skipBlockComment(String source, int start) {
         int index = start + 2;
         while (index + 1 < source.length()
@@ -476,18 +266,6 @@ class AccountRepositoryTest {
         return Math.min(index + 2, source.length());
     }
 
-    /**
-     * The index just past a string or character literal that starts at {@code start}.
-     *
-     * <p>Escape sequences are honoured, so {@code "\""} does not end the literal, and a text block's
-     * triple quote is handled by the ordinary rules - its interior cannot contain an unescaped quote
-     * that would end it early.
-     *
-     * @param source the source text
-     * @param start  the index of the opening delimiter
-     * @param quote  the delimiter character
-     * @return the index after the closing delimiter, or the length of the text if it is unterminated
-     */
     private static int skipLiteral(String source, int start, char quote) {
         int index = start + 1;
         while (index < source.length()) {
@@ -504,11 +282,6 @@ class AccountRepositoryTest {
         return source.length();
     }
 
-    /**
-     * Every {@code .java} file under the module's main source root.
-     *
-     * @return the source files, in walk order
-     */
     private static List<Path> mainSources() {
         Path root = repositoryFile(MAIN_SOURCE_ROOT);
         try (Stream<Path> walk = Files.walk(root)) {
@@ -520,16 +293,6 @@ class AccountRepositoryTest {
         }
     }
 
-    /**
-     * Every annotation attached to a type, to its declared fields, and to its declared executables -
-     * constructors and methods - including the annotations on their parameters.
-     *
-     * <p>All four positions, because a persistence mapping can be declared at any of them and finding
-     * none on the type alone would prove very little.
-     *
-     * @param type the type to scan
-     * @return every annotation found, in discovery order
-     */
     private static List<Annotation> allAnnotationsOf(Class<?> type) {
         List<Annotation> found = new ArrayList<>(List.of(type.getAnnotations()));
         for (Field field : type.getDeclaredFields()) {
@@ -547,12 +310,6 @@ class AccountRepositoryTest {
         return found;
     }
 
-    /**
-     * The types this file holds to the no-schema contract: the repository, every type nested inside it,
-     * and both record classes the account package owns.
-     *
-     * @return the types to scan
-     */
     private static List<Class<?>> datasetAccessTypes() {
         List<Class<?>> types = new ArrayList<>();
         types.add(AccountRepository.class);
@@ -562,12 +319,6 @@ class AccountRepositoryTest {
         return types;
     }
 
-    /**
-     * The names of every {@code public} method a type declares.
-     *
-     * @param type the type to inspect
-     * @return the method names, de-duplicated
-     */
     private static Set<String> publicMethodNamesOf(Class<?> type) {
         Set<String> names = new LinkedHashSet<>();
         for (Method method : type.getDeclaredMethods()) {
@@ -578,16 +329,6 @@ class AccountRepositoryTest {
         return names;
     }
 
-    /**
-     * The block of {@code application.yml} that configures one dataset binding.
-     *
-     * <p>Extracted textually - from the key line to the next line at the same indentation - because
-     * what is being asserted is what the file <em>declares</em>. Binding it through Spring would prove
-     * that Spring can read a map, which is not the question.
-     *
-     * @param datasetKey the binding key, for example {@code ACCTDAT}
-     * @return the stanza's lines, the key line included
-     */
     private static List<String> datasetStanza(String datasetKey) {
         List<String> lines = read(repositoryFile(APPLICATION_YAML)).lines().toList();
         String keyLine = "    " + datasetKey + ":";
@@ -608,13 +349,6 @@ class AccountRepositoryTest {
         return stanza;
     }
 
-    /**
-     * Drains a browse into a list, stopping at the first end-of-file outcome.
-     *
-     * @param file  the opened file to browse
-     * @param limit the most reads to perform, so a defect cannot loop for ever
-     * @return the record images returned, in the order returned
-     */
     private static List<String> drain(AccountFile file, int limit) {
         List<String> images = new ArrayList<>();
         for (int read = 0; read < limit; read++) {
@@ -627,29 +361,10 @@ class AccountRepositoryTest {
         return images;
     }
 
-    /**
-     * Opens the account master for input over a template, asserting nothing.
-     *
-     * @param template the template to reach the relation with
-     * @return the opened file
-     */
     private static AccountFile openedInput(JdbcTemplate template) {
         return repository(template).open(OpenMode.INPUT);
     }
 
-    /**
-     * Runs an action with the calling thread marked as being inside a transaction.
-     *
-     * <p>The marker rather than a real transaction, because the failure arms are driven through mocked
-     * JDBC chains that cannot yield a connection at all - a real transaction manager would fail while
-     * trying to begin, before the operation under test ran. What
-     * {@link AccountRepository#readForUpdate(String)} inspects is exactly this marker, so this is the
-     * honest way to reach the code after the guard.
-     *
-     * @param action the action to run
-     * @param <T>    the action's result type
-     * @return the action's result
-     */
     private static <T> T withUnitOfWork(Supplier<T> action) {
         TransactionSynchronizationManager.setActualTransactionActive(true);
         try {
@@ -659,28 +374,10 @@ class AccountRepositoryTest {
         }
     }
 
-    /**
-     * A transaction template over a seeded relation, for the tests that need a genuine unit of work.
-     *
-     * @param template the template whose data source the transaction is bound to
-     * @return a transaction template that begins and commits a real transaction
-     */
     private static TransactionTemplate transactionOver(JdbcTemplate template) {
         return new TransactionTemplate(new DataSourceTransactionManager(template.getDataSource()));
     }
 
-    /**
-     * A mocked chain that describes a usable column and records the text of every statement prepared
-     * against it, returning no rows.
-     *
-     * <p>This is how the locking read is proved to be a locking read without depending on any backend's
-     * behaviour: what the repository asks the driver for is captured verbatim, so a test can assert that
-     * a read for update carries {@code FOR UPDATE} and a plain keyed read does not.
-     *
-     * @param prepared the list every prepared statement's text is appended to, in order
-     * @return a template over the recording chain
-     * @throws SQLException never; declared because the mocked JDBC methods declare it
-     */
     private static JdbcTemplate recordingPreparedStatements(List<String> prepared)
             throws SQLException {
         DataSource dataSource = Mockito.mock(DataSource.class);
@@ -708,44 +405,14 @@ class AccountRepositoryTest {
         return new JdbcTemplate(dataSource);
     }
 
-    /**
-     * A mocked chain whose keyed count finds exactly one row and whose {@code UPDATE} then reports two.
-     *
-     * <p>The race the pre-write count cannot close: between the count and the {@code UPDATE} the relation
-     * changed, so the write replaced rows the count never saw. It is unreachable against a unique primary
-     * key and is mocked rather than assumed away, because the outcome it produces - rows already
-     * overwritten - is the one outcome a file status must not carry.
-     *
-     * @return a template whose count says one and whose update says two
-     * @throws SQLException never; declared because the mocked JDBC methods declare it
-     */
     private static JdbcTemplate describingThenFanningOutOnUpdate() throws SQLException {
         return countingOneThenReportingUpdateCount(2);
     }
 
-    /**
-     * A mocked chain whose keyed count finds exactly one row and whose {@code UPDATE} then reports none.
-     *
-     * <p>The other side of the race the count cannot close: the row the count saw was deleted before the
-     * write reached it. Nothing was written, so the outcome is the invalid-key condition - which is what
-     * it would have been had the row never existed - and must not be confused with the fan-out case,
-     * where something <em>was</em> written.
-     *
-     * @return a template whose count says one and whose update says none
-     * @throws SQLException never; declared because the mocked JDBC methods declare it
-     */
     private static JdbcTemplate describingThenLosingTheRowBeforeUpdate() throws SQLException {
         return countingOneThenReportingUpdateCount(0);
     }
 
-    /**
-     * A mocked chain whose keyed count finds exactly one row and whose {@code UPDATE} reports the count
-     * asked for.
-     *
-     * @param updateCount what {@code executeUpdate} should report
-     * @return a template over the mocked chain
-     * @throws SQLException never; declared because the mocked JDBC methods declare it
-     */
     private static JdbcTemplate countingOneThenReportingUpdateCount(int updateCount)
             throws SQLException {
         DataSource dataSource = Mockito.mock(DataSource.class);
@@ -763,24 +430,11 @@ class AccountRepositoryTest {
         Mockito.when(metaData.getColumnName(1)).thenReturn(RECORD_IMAGE_COLUMN);
         Mockito.when(connection.prepareStatement(Mockito.anyString())).thenReturn(preparedStatement);
         Mockito.when(preparedStatement.executeQuery()).thenReturn(oneRow);
-        // One row, then exhausted: the count the rewrite requires before it writes.
         Mockito.when(oneRow.next()).thenReturn(true, false);
         Mockito.when(preparedStatement.executeUpdate()).thenReturn(updateCount);
         return new JdbcTemplate(dataSource);
     }
 
-    /**
-     * Whether an independent connection can take an exclusive lock on the row carrying a key.
-     *
-     * <p>A genuinely separate connection, obtained from the data source directly rather than through
-     * {@code DataSourceUtils}, so it is not the transaction-bound one the repository is using. Its lock
-     * timeout is set to a fraction of a second, so a held lock is reported as a failure quickly instead
-     * of stalling the suite.
-     *
-     * @param dataSource the seeded relation's data source
-     * @param keyImage   the eleven-character key of the row to try to lock
-     * @return {@code true} when the lock was granted, {@code false} when it was refused or timed out
-     */
     private static boolean anotherConnectionCanLock(DataSource dataSource, String keyImage) {
         try (Connection other = dataSource.getConnection()) {
             other.setAutoCommit(false);
@@ -804,11 +458,6 @@ class AccountRepositoryTest {
         }
     }
 
-    /**
-     * A mocked chain whose connection cannot be obtained at all.
-     *
-     * @return a template that translates every operation into a data-access failure
-     */
     private static JdbcTemplate unreachable() {
         DataSource dataSource = Mockito.mock(DataSource.class);
         try {
@@ -820,14 +469,6 @@ class AccountRepositoryTest {
         return new JdbcTemplate(dataSource);
     }
 
-    /**
-     * A mocked chain whose probe reports the given column metadata.
-     *
-     * @param columnCount how many columns the relation describes
-     * @param columnName  the name of the column at position one
-     * @return a template whose probe answers with that metadata
-     * @throws SQLException never; declared because the mocked JDBC methods declare it
-     */
     private static JdbcTemplate describing(int columnCount, String columnName) throws SQLException {
         DataSource dataSource = Mockito.mock(DataSource.class);
         Connection connection = Mockito.mock(Connection.class);
@@ -843,12 +484,6 @@ class AccountRepositoryTest {
         return new JdbcTemplate(dataSource);
     }
 
-    /**
-     * A mocked chain whose probe describes no metadata at all.
-     *
-     * @return a template whose probe answers with a null metadata object
-     * @throws SQLException never; declared because the mocked JDBC methods declare it
-     */
     private static JdbcTemplate describingNothing() throws SQLException {
         DataSource dataSource = Mockito.mock(DataSource.class);
         Connection connection = Mockito.mock(Connection.class);
@@ -861,17 +496,6 @@ class AccountRepositoryTest {
         return new JdbcTemplate(dataSource);
     }
 
-    /**
-     * A mocked chain that describes a usable column, answers the keyed read with no rows, and then
-     * refuses the unreadable-row probe that follows it.
-     *
-     * <p>For the one arm of the absence proof no seeded relation can produce: a probe the backend will not
-     * run. Two prepared statements are handed out - the read's, which yields nothing, and the probe's,
-     * which raises - so the outcome under test is the repository's response to an unprovable absence.
-     *
-     * @return a template whose keyed read is empty and whose probe is refused
-     * @throws SQLException never; declared because the mocked JDBC methods declare it
-     */
     private static JdbcTemplate emptyReadThenRefusedProbe() throws SQLException {
         DataSource dataSource = Mockito.mock(DataSource.class);
         Connection connection = Mockito.mock(Connection.class);
@@ -899,12 +523,6 @@ class AccountRepositoryTest {
         return new JdbcTemplate(dataSource);
     }
 
-    /**
-     * A mocked chain that describes a usable column but refuses every prepared statement.
-     *
-     * @return a template whose probe succeeds and whose reads and writes fail
-     * @throws SQLException never; declared because the mocked JDBC methods declare it
-     */
     private static JdbcTemplate describingThenRefusing() throws SQLException {
         DataSource dataSource = Mockito.mock(DataSource.class);
         Connection connection = Mockito.mock(Connection.class);
@@ -922,12 +540,6 @@ class AccountRepositoryTest {
         return new JdbcTemplate(dataSource);
     }
 
-    /**
-     * A mocked chain that describes a usable column and then returns one row with no record image.
-     *
-     * @return a template whose reads yield a row whose image is absent
-     * @throws SQLException never; declared because the mocked JDBC methods declare it
-     */
     private static JdbcTemplate describingThenReturningNoImage() throws SQLException {
         DataSource dataSource = Mockito.mock(DataSource.class);
         Connection connection = Mockito.mock(Connection.class);
@@ -949,15 +561,9 @@ class AccountRepositoryTest {
         return new JdbcTemplate(dataSource);
     }
 
-    // =============================================================================================
-    // Construction: the bindings and the geometry they must declare.
-    // =============================================================================================
-
-    /** Everything the constructor establishes before the context finishes starting. */
     @Nested
     @DisplayName("Construction resolves the bindings and proves the geometry")
     class ConstructionTests {
-
         @Test
         @DisplayName("resolves the configured dataset name, the record width and the code page")
         void resolvesTheConfiguredBinding() {
@@ -1073,8 +679,6 @@ class AccountRepositoryTest {
             String corrupt = "TEST.ACCOUNT\u0001KSDS";
             DatasetBindings corruptName = bindings(corrupt, corrupt, THREE_HUNDRED, null);
 
-            // The grammar decides, so the diagnostic names the offending position rather than the
-            // category of character - which is what a reader needs to correct the configured value.
             assertThatIllegalArgumentException()
                     .isThrownBy(() -> new AccountRepository(new JdbcTemplate(), corruptName, ASCII, RecordImageForm.CHARACTER))
                     .withMessageContaining("well-formed z/OS dataset name");
@@ -1097,15 +701,9 @@ class AccountRepositoryTest {
         }
     }
 
-    // =============================================================================================
-    // The composed statements.
-    // =============================================================================================
-
-    /** The statements the repository issues, asserted as text rather than inferred from behaviour. */
     @Nested
     @DisplayName("Statement composition")
     class StatementCompositionTests {
-
         @Test
         @DisplayName("the probe delimits the dataset name and transfers no rows")
         void probeDelimitsTheDatasetNameAndTransfersNothing() {
@@ -1121,9 +719,6 @@ class AccountRepositoryTest {
             String awkward = "TEST.\"ACCOUNT\".KSDS";
             DatasetBindings quoted = bindings(awkward, awkward, THREE_HUNDRED, null);
 
-            // A quotation mark is not a character a z/OS dataset name admits, so the name is refused
-            // rather than quoted into an identifier. The grammar is the defence; the delimited rendering
-            // that follows it is belt and braces, and is asserted directly on DatasetRelation.
             assertThatIllegalArgumentException()
                     .isThrownBy(() -> new AccountRepository(new JdbcTemplate(), quoted, ASCII, RecordImageForm.CHARACTER))
                     .withMessageContaining("well-formed z/OS dataset name");
@@ -1142,9 +737,6 @@ class AccountRepositoryTest {
             String keyed = " WHERE " + column + " LIKE ? ESCAPE '\\'";
             assertThat(statements.selectFirst())
                     .isEqualTo("SELECT * FROM " + dataset + " ORDER BY " + column + " ASC");
-            // The advancing read also qualifies a row whose record image is absent - "OR <column> IS
-            // NULL" - because a comparison against a null is UNKNOWN and such a row would otherwise be
-            // invisible to the predicate, letting the browse skip a record it must fail on instead.
             assertThat(statements.selectNext())
                     .isEqualTo("SELECT * FROM " + dataset + " WHERE (" + column + " > ? OR " + column
                             + " IS NULL) ORDER BY " + column + " ASC");
@@ -1176,22 +768,13 @@ class AccountRepositoryTest {
             Statements first = repository.resolveStatements();
             Statements second = repository.resolveStatements();
 
-            // Equal in every component, because the dataset and the discovered column cannot change -
-            // and NOT the same instance, because nothing is held between calls. A cache here would be
-            // shared mutable state on a Spring singleton, which is what F02 is about.
             assertThat(second).isEqualTo(first).isNotSameAs(first);
         }
     }
 
-    // =============================================================================================
-    // OPEN and CLOSE.
-    // =============================================================================================
-
-    /** The two {@code OPEN} verbs, the {@code CLOSE}, and what each does to the file position. */
     @Nested
     @DisplayName("OPEN INPUT, OPEN I-O and CLOSE")
     class OpenAndCloseTests {
-
         @ParameterizedTest
         @EnumSource(OpenMode.class)
         @DisplayName("a successful open reports '00' and its handle records the verb that was issued")
@@ -1220,9 +803,6 @@ class AccountRepositoryTest {
                 assertThat(file.openStatus()).isEqualTo(AccountRepository.PERMANENT_ERROR_STATUS);
                 assertThat(file.openOutcome()).isSameAs(Outcome.OTHER);
 
-                // A caller that ignored openStatus() still cannot mistake a dataset it never reached
-                // for one that was empty: the open's own status comes back, not a fresh one and not
-                // end of file.
                 ReadResult browsed = file.readNext();
                 assertThat(browsed.isEndOfFile()).isFalse();
                 assertThat(browsed.status()).isEqualTo(AccountRepository.PERMANENT_ERROR_STATUS);
@@ -1250,9 +830,6 @@ class AccountRepositoryTest {
         @Test
         @DisplayName("close reports a permanent error when the dataset is no longer addressable")
         void closeReportsAPermanentErrorWhenUnreachable() throws SQLException {
-            // The open succeeds against a chain that describes the column, and the close then finds the
-            // dataset undescribable - the analogue of a dataset de-allocated under an open file. Both of
-            // the COBOL's symmetric guards are therefore reachable, and neither is dead code.
             DataSource dataSource = Mockito.mock(DataSource.class);
             Connection connection = Mockito.mock(Connection.class);
             Statement statement = Mockito.mock(Statement.class);
@@ -1305,8 +882,6 @@ class AccountRepositoryTest {
                         .isNotEqualTo(lowestKey);
             }
 
-            // A CLOSE followed by an OPEN INPUT re-reads a COBOL file from its first record, and a fresh
-            // handle re-reads this one from its first record too.
             try (AccountFile second = repository.open(OpenMode.INPUT)) {
                 assertThat(second.readNext().account().orElseThrow().keyImage()).isEqualTo(lowestKey);
             }
@@ -1331,15 +906,9 @@ class AccountRepositoryTest {
         }
     }
 
-    // =============================================================================================
-    // The sequential browse.
-    // =============================================================================================
-
-    /** The browse: every record, in ascending key order, then end of file. */
     @Nested
     @DisplayName("readNext - the sequential browse")
     class BrowseTests {
-
         @Test
         @DisplayName("returns all 50 fixture records byte-identically, then reports '10'")
         void returnsEveryRecordByteIdenticallyThenEndOfFile() {
@@ -1357,7 +926,6 @@ class AccountRepositoryTest {
                 assertThat(atEnd.status()).isEqualTo(FileStatus.END_OF_FILE);
                 assertThat(atEnd.account()).isEmpty();
                 assertThat(atEnd.applResult()).isEqualTo(FileStatus.APPL_EOF);
-                // Reading past end of file keeps reporting end of file rather than inventing a status.
                 assertThat(file.readNext().isEndOfFile()).isTrue();
             }
         }
@@ -1399,12 +967,6 @@ class AccountRepositoryTest {
         @Test
         @DisplayName("reports a short stored image rather than padding it into a different record")
         void reportsAShortStoredImage() {
-            // The row is the first fixture record with its trailing FILLER X(178) removed, which is
-            // exactly the shape a backend that trims a character column presents. Widening it back with
-            // spaces would be right if the missing bytes were certainly the trailing ones - and nothing
-            // about a short row says they are. A row that lost bytes anywhere else pads into a record
-            // whose every field decodes from an offset that is not its own, and ACCT-CURR-BAL read from
-            // the wrong span is still a number, so the caller could not tell.
             String full = fixtureRows().get(0);
             String trimmed = full.substring(0, THREE_HUNDRED - FILLER_WIDTH);
 
@@ -1415,8 +977,6 @@ class AccountRepositoryTest {
                 assertThat(result.account()).isEmpty();
                 assertThat(result.status()).isEqualTo(AccountRepository.PERMANENT_ERROR_STATUS);
                 assertThat(result.applResult()).isEqualTo(AccountRepository.APPL_RESULT_FATAL);
-                // LENGERR is what CICS reports when a record does not fit its receiver, and the actual
-                // width is named in the log line rather than carried as a reason code.
                 assertThat(result.cicsResp()).hasValue(FileStatus.LENGERR);
                 assertThat(result.cicsResp2()).isEqualTo(FileStatus.NO_REASON_CODE);
             }
@@ -1483,32 +1043,18 @@ class AccountRepositoryTest {
                 assertThat(result.isOther()).isTrue();
                 assertThat(result.isEndOfFile()).isFalse();
                 assertThat(result.status()).isEqualTo(AccountRepository.PERMANENT_ERROR_STATUS);
-                // The permanent status is this module's own; the condition it stands for has a
-                // determinate CICS counterpart, and carrying it is what lets an online caller render
-                // ' Resp:' ERROR-RESP ' Reas:' ERROR-RESP2 for a row it could not read.
                 assertThat(result.cicsResp()).hasValue(FileStatus.INVREQ);
                 assertThat(result.cicsResp2()).isEqualTo(FileStatus.NO_REASON_CODE);
             }
         }
     }
 
-    // =============================================================================================
-    // The keyed reads.
-    // =============================================================================================
-
-    /** The random keyed read and the read for update. */
     @Nested
     @DisplayName("readByKey and readForUpdate - the keyed reads")
     class KeyedReadTests {
-
         @Test
         @DisplayName("finding DB-05: a present-but-unreadable row is not reported as an absent record")
         void anUnreadableRowIsNotReportedAsAbsent() {
-            // ACCT-ID is the leading eleven bytes of the record image, so a row whose record-image column
-            // holds nothing has no knowable key: the keyed predicate - a comparison, UNKNOWN against a
-            // null - cannot match it, and the read comes back empty. Reporting '23' from there would tell
-            // CBTRN02C to reject the transaction with reason 103 and COACTVWC to paint "Account not found"
-            // about a record that is sitting in the dataset.
             List<String> rows = new ArrayList<>(fixtureRows());
             rows.add(null);
             AccountRepository repository = repository(seeded(rows));
@@ -1535,8 +1081,6 @@ class AccountRepositoryTest {
         @Test
         @DisplayName("finding DB-05: a read that found its record is untouched by an unreadable row")
         void aFoundRecordIsUnaffectedByAnUnreadableRowElsewhere() {
-            // The boundary of the proof: it runs on the empty path only, because a VSAM READ of a key that
-            // resolves does not fail because another record is damaged.
             List<String> rows = new ArrayList<>(fixtureRows());
             rows.add(null);
             AccountRepository repository = repository(seeded(rows));
@@ -1560,7 +1104,6 @@ class AccountRepositoryTest {
                     .isFalse();
             assertThat(result.isOther()).isTrue();
         }
-
 
         @Test
         @DisplayName("finds the record for an existing identifier")
@@ -1645,8 +1188,6 @@ class AccountRepositoryTest {
         void refusesARidfldOfTheWrongWidth() {
             AccountRepository repository = repository(seeded(List.of()));
 
-            // The width check precedes the unit-of-work check, so a malformed key is reported as a
-            // malformed key whether or not the caller happened to be inside a transaction.
             assertThatIllegalArgumentException().isThrownBy(() -> repository.readForUpdate("0000000001"))
                     .withMessageContaining("PIC X(11)");
             assertThatNullPointerException().isThrownBy(() -> repository.readForUpdate(null))
@@ -1658,11 +1199,6 @@ class AccountRepositoryTest {
         void aReadForUpdateOutsideAUnitOfWorkIsRefused() {
             AccountRepository repository = repository(seeded(fixtureRows()));
 
-            // COACTUPC's 9600-WRITE-PROCESSING locks the account, locks the customer, compares each
-            // against the copy the screen was painted from, and only then rewrites - and that comparison
-            // is only meaningful because nothing can change the records in between. A lock taken with no
-            // transaction to hold it is released at once, so the comparison would still pass and protect
-            // nothing. Refusing turns a silent correctness bug into a loud wiring bug.
             assertThatIllegalStateException()
                     .isThrownBy(() -> repository.readForUpdate("00000000001"))
                     .withMessageContaining("no transaction is open on this thread")
@@ -1689,9 +1225,6 @@ class AccountRepositoryTest {
             AccountRepository repository = repository(seeded(List.of()));
             String malformedKey = "00000000012345";
 
-            // The account identifier is the caller's data and this message is one an error boundary
-            // could publish, so the guard names the declared width and the width it was given and
-            // stops there.
             assertThatIllegalArgumentException()
                     .isThrownBy(() -> repository.readForUpdate(malformedKey))
                     .withMessageContaining("declared PIC X(11)")
@@ -1710,9 +1243,6 @@ class AccountRepositoryTest {
             assertThat(noImage.status()).isEqualTo(AccountRepository.PERMANENT_ERROR_STATUS);
             assertThat(noImage.cicsResp()).hasValue(FileStatus.INVREQ);
 
-            // A backend refusal has no determinate CICS counterpart, and inventing one would be exactly
-            // the fabrication a carried pair exists to prevent, so the response is reported as absent and
-            // the driver's own SQLSTATE travels in the diagnostic instead.
             ReadResult refused = repository(describingThenRefusing()).readByKey(1L);
             assertThat(refused.cicsResp()).isEmpty();
             assertThat(refused.cicsResp2()).isEqualTo(FileStatus.NO_REASON_CODE);
@@ -1727,9 +1257,6 @@ class AccountRepositoryTest {
             AccountRepository refusingRepository = repository(describingThenRefusing());
             String key = "0".repeat(ELEVEN);
 
-            // A conflict, a timeout or an outright refusal all arrive as a DataAccessException and all
-            // become the same coarse status, which is what puts COACTUPC on its
-            // COULD-NOT-LOCK-ACCT-FOR-UPDATE arm at L3910-L3913.
             assertThat(withUnitOfWork(() -> unreachableRepository.readForUpdate(key)).status())
                     .isEqualTo(AccountRepository.PERMANENT_ERROR_STATUS);
             assertThat(withUnitOfWork(() -> refusingRepository.readForUpdate(key)).status())
@@ -1740,18 +1267,6 @@ class AccountRepositoryTest {
         }
     }
 
-    /**
-     * Runs a body with a transaction marked active on this thread, which a locking read requires.
-     *
-     * <p>Marking the flag rather than starting a real transaction is the honest test of the precondition:
-     * what {@code readForUpdate} demands is that a unit of work be open, and this asserts exactly that
-     * without dragging a transaction manager and a live {@code DataSource} into a test whose subject is
-     * the read.
-     *
-     * @param work the body
-     * @param <T>  its result type
-     * @return the body's result
-     */
     private static <T> T inUnitOfWork(java.util.function.Supplier<T> work) {
         TransactionSynchronizationManager.setActualTransactionActive(true);
         try {
@@ -1761,15 +1276,9 @@ class AccountRepositoryTest {
         }
     }
 
-    // =============================================================================================
-    // The rewrite.
-    // =============================================================================================
-
-    /** The rewrite: keyed by the record's own key, and never silently successful. */
     @Nested
     @DisplayName("rewrite - the REWRITE of one record")
     class RewriteTests {
-
         @Test
         @DisplayName("rewrites the account-break mutations and leaves the record 300 bytes wide")
         void rewritesTheAccountBreakMutations() {
@@ -1778,7 +1287,6 @@ class AccountRepositoryTest {
             long acctId = Long.parseLong(keyImageOf(rows.get(0)));
             AccountRecord account = repository.readByKey(acctId).account().orElseThrow();
 
-            // The 1050-UPDATE-ACCOUNT sequence, performed by the caller exactly as CBACT04C does.
             account.setAcctCurrBal(account.getAcctCurrBal().add(new BigDecimal("12.34")));
             account.zeroAcctCurrCycCredit();
             account.zeroAcctCurrCycDebit();
@@ -1801,9 +1309,6 @@ class AccountRepositoryTest {
         @Test
         @DisplayName("a record built over another code page is refused, and nothing is written")
         void aRecordInAForeignCodePageIsRefused() {
-            // AccountRecord is byte-backed and this repository binds record.toByteArray() unchanged, so a
-            // record built over another page would be stored as corrupt bytes and reported as FILE STATUS
-            // '00' - a silent success. Both rewrite entry points share one body, so both refuse it.
             List<String> rows = fixtureRows();
             AccountRepository repository = repository(seeded(rows));
             long acctId = Long.parseLong(keyImageOf(rows.get(0)));
@@ -1816,11 +1321,9 @@ class AccountRepositoryTest {
                     .withMessageContaining("IBM037")
                     .withMessageContaining("US-ASCII");
 
-            // Nothing was written: the stored row is still the one that was read.
             assertThat(repository.readByKey(acctId).account().orElseThrow().toFixedWidthString())
                     .isEqualTo(stored.toFixedWidthString());
 
-            // The dataset's own page is accepted, which is what every other rewrite test relies on.
             assertThat(repository.datasetCharset()).isEqualTo(ASCII);
             assertThat(withUnitOfWork(() -> repository.rewrite(stored)).isWritten()).isTrue();
         }
@@ -1828,10 +1331,6 @@ class AccountRepositoryTest {
         @Test
         @DisplayName("a rewrite issued through an open handle writes through that handle's statements")
         void aRewriteThroughAnOpenHandleWrites() {
-            // Every other rewrite test here goes straight to the repository. A COBOL program does not:
-            // it issues REWRITE against a file it has OPEN I-O, and the handle is what carries the
-            // prepared statements. Exercising that route proves the handle delegates rather than
-            // holding a second, divergent path to the same dataset.
             List<String> rows = fixtureRows();
             AccountRepository repository = repository(seeded(rows));
             long acctId = Long.parseLong(keyImageOf(rows.get(0)));
@@ -1885,11 +1384,6 @@ class AccountRepositoryTest {
         @Test
         @DisplayName("refuses before writing when more than one row carries the key, and changes neither")
         void refusesBeforeWritingWhenSeveralRowsCarryTheKey() {
-            // The seeded relation deliberately has no key constraint, which is the shape of a deployment
-            // whose primary key is absent or declared over the wrong span. A KSDS key is unique, so the
-            // rewrite's LIKE predicate names one row; here it names two, and the same UPDATE would
-            // replace BOTH with this one record. Learning that from the affected-row count is learning it
-            // after the fact, so the count is established first and nothing is written at all.
             String duplicated = fixtureRows().get(0);
             JdbcTemplate template = seeded(List.of(duplicated, duplicated));
             AccountRepository repository = repository(template);
@@ -1901,12 +1395,9 @@ class AccountRepositoryTest {
             assertThat(result.isOther()).isTrue();
             assertThat(result.status()).isEqualTo(AccountRepository.PERMANENT_ERROR_STATUS);
             assertThat(result.applResult()).isEqualTo(AccountRepository.APPL_RESULT_FATAL);
-            // INVREQ is what CICS reports for a request the file cannot satisfy; the row count is named
-            // in the log line rather than carried as a reason code, because a count is not a reason code.
             assertThat(result.cicsResp()).hasValue(FileStatus.INVREQ);
             assertThat(result.cicsResp2()).isEqualTo(FileStatus.NO_REASON_CODE);
 
-            // The whole point: both rows are still exactly as they were seeded.
             assertThat(template.queryForList("SELECT " + RECORD_IMAGE_COLUMN + " FROM \""
                     + TEST_DSNAME + "\"", String.class))
                     .as("a refused rewrite must not have changed a single row")
@@ -1916,13 +1407,6 @@ class AccountRepositoryTest {
         @Test
         @DisplayName("outside a unit of work the rewrite is refused before any statement is prepared")
         void outsideAUnitOfWorkTheRewriteIsRefused() throws SQLException {
-            // The pool hands out connections with auto-commit disabled on purpose, so an UPDATE issued
-            // with nothing bound to the thread executes, reports the row it replaced, and is rolled back
-            // when the connection is returned. Reporting '00' from there would tell CBACT04C that an
-            // account break had been stored and COACTUPC that an update had been applied, for a record no
-            // later read could find - and no FILE STATUS means "written, then discarded". So the missing
-            // boundary is refused, and refused before a statement is prepared rather than after a row
-            // count has been read from one.
             List<String> prepared = new ArrayList<>();
             AccountRepository repository = repository(recordingPreparedStatements(prepared));
             AccountRecord account = AccountRecord.decode(fixtureRows().get(0), ASCII);
@@ -1941,9 +1425,6 @@ class AccountRepositoryTest {
         @Test
         @DisplayName("inside a unit of work the refusal says the count was taken under a row lock")
         void insideAUnitOfWorkTheRefusalNamesTheRowLock() throws SQLException {
-            // The same race, with a unit of work open. The refusal has to say which it was, because the
-            // remedy differs: under a lock the relation itself changed, and without one there was never
-            // anything holding it still.
             JdbcTemplate template = describingThenFanningOutOnUpdate();
             AccountRepository repository = repository(template);
             AccountRecord account = AccountRecord.decode(fixtureRows().get(0), ASCII);
@@ -1959,9 +1440,6 @@ class AccountRepositoryTest {
         @Test
         @DisplayName("a row that disappears between the count and the write is '23', not a refusal")
         void aRowThatDisappearsBetweenTheCountAndTheWriteIsInvalidKey() throws SQLException {
-            // Nothing was written, so nothing has to be undone: this is the invalid-key condition, which
-            // is exactly what it would have been had the row never existed. Only a write that changed too
-            // much refuses the commit.
             AccountRepository repository = repository(describingThenLosingTheRowBeforeUpdate());
             AccountRecord account = AccountRecord.decode(fixtureRows().get(0), ASCII);
 
@@ -1980,8 +1458,6 @@ class AccountRepositoryTest {
             AccountRepository repository = repository(template);
             AccountRecord account = AccountRecord.decode(fixtureRows().get(0), ASCII);
 
-            // A rewrite needs a unit of work, so there is no second, lock-free form of the count to
-            // choose between: the count and the UPDATE always see the same rows.
             transactionOver(template).execute(status -> repository.rewrite(account));
             assertThat(prepared).isNotEmpty();
             assertThat(prepared.get(0)).endsWith("FOR UPDATE");
@@ -1990,8 +1466,6 @@ class AccountRepositoryTest {
         @Test
         @DisplayName("a rewrite whose key selects nothing issues no UPDATE at all")
         void aRewriteWhoseKeySelectsNothingIssuesNoUpdate() throws SQLException {
-            // Reporting '23' without issuing the UPDATE is the same outcome the UPDATE would have
-            // reported, and one statement fewer against a dataset that has no such record.
             List<String> prepared = new ArrayList<>();
             AccountRepository repository = repository(recordingPreparedStatements(prepared));
             AccountRecord absent = new AccountRecord(ASCII);
@@ -2006,8 +1480,6 @@ class AccountRepositoryTest {
         @Test
         @DisplayName("a refused count is reported as a permanent error, not as a missing record")
         void aRefusedCountIsAPermanentError() throws SQLException {
-            // The count is a statement like any other and the backend can refuse it. That must not be
-            // mistaken for "no such record", which is what a count of zero means.
             AccountRepository repository = repository(describingThenRefusing());
             AccountRecord account = AccountRecord.decode(fixtureRows().get(0), ASCII);
 
@@ -2044,15 +1516,9 @@ class AccountRepositoryTest {
         }
     }
 
-    // =============================================================================================
-    // The shape of the dataset itself.
-    // =============================================================================================
-
-    /** A relation that is not a record-image relation is a contract violation, not a file status. */
     @Nested
     @DisplayName("A dataset that is not a record-image relation")
     class DatasetShapeTests {
-
         @Test
         @DisplayName("no metadata at all is refused, naming the column position it needed")
         void noMetadataIsRefused() throws SQLException {
@@ -2091,36 +1557,14 @@ class AccountRepositoryTest {
         }
     }
 
-    // =============================================================================================
-    // The locking read. F01: readForUpdate used to issue the same plain SELECT as readByKey, so nothing
-    // held the record between COACTUPC's comparison at L3947-L3948 and its REWRITE at L4065.
-    // =============================================================================================
-
-    /** {@code EXEC CICS READ ... UPDATE}: a lock that is really taken, and really held. */
     @Nested
     @DisplayName("readForUpdate - the locking read")
     class LockingReadTests {
-
-        /**
-         * The statement text a keyed read against the seeded relation must produce.
-         *
-         * <p>The ordering clause is part of it: every read this module composes states its order
-         * explicitly rather than relying on whatever a backend happens to return, so a keyed read is
-         * ordered by the record image exactly as a browse of the same relation is.
-         */
         private String keyedSelect() {
             return "SELECT * FROM \"" + TEST_DSNAME + "\" WHERE \"" + RECORD_IMAGE_COLUMN
                     + "\" LIKE ? ESCAPE '\\' ORDER BY \"" + RECORD_IMAGE_COLUMN + "\" ASC";
         }
 
-        /**
-         * The unreadable-row probe a keyed read that matched nothing issues before it reports the absence
-         * (finding DB-05).
-         *
-         * <p>It appears in these sequences because these reads find no record: {@code ACCT-ID} lives inside
-         * the record image, so a row with no image has no knowable key, and {@code NOTFND} is only sayable
-         * once no such row exists. A read that finds its record issues no probe.
-         */
         private String unreadableRowsProbe() {
             return "SELECT * FROM \"" + TEST_DSNAME + "\" WHERE \"" + RECORD_IMAGE_COLUMN
                     + "\" IS NULL";
@@ -2141,8 +1585,6 @@ class AccountRepositoryTest {
             prepared.clear();
             withUnitOfWork(() -> repository.readForUpdate("0".repeat(ELEVEN)));
 
-            // What the repository actually handed the driver, captured verbatim. This is the whole of
-            // F01: the two reads must not be the same statement.
             assertThat(prepared).containsExactly(keyedSelect() + " FOR UPDATE", unreadableRowsProbe());
         }
 
@@ -2171,8 +1613,6 @@ class AccountRepositoryTest {
                     .withMessageContaining("no transaction is open on this thread")
                     .withMessageContaining("9700-CHECK-CHANGE-IN-REC");
 
-            // The plain keyed read has no such requirement: it takes no lock, so there is nothing for a
-            // transaction to hold, and CBACT04C reads by key with no unit of work of its own.
             assertThat(repository.readByKey(Long.parseLong(key)).isFound()).isTrue();
         }
 
@@ -2219,9 +1659,6 @@ class AccountRepositoryTest {
             assertThat(dataSource).isNotNull();
             String key = keyImageOf(rows.get(0));
 
-            // The control for the test above: the plain keyed read leaves the row unlocked, so the
-            // second connection takes it immediately. That is exactly the state readForUpdate used to
-            // leave COACTUPC in.
             Boolean free = transactionOver(template).execute(status -> {
                 assertThat(repository.readByKey(Long.parseLong(key)).isFound()).isTrue();
                 return anotherConnectionCanLock(dataSource, key);
@@ -2240,13 +1677,9 @@ class AccountRepositoryTest {
             long acctId = Long.parseLong(key);
 
             WriteResult written = transactionOver(template).execute(status -> {
-                // 9600-WRITE-PROCESSING: read for update ...
                 AccountRecord locked = repository.readForUpdate(key).account().orElseThrow();
-                // ... 9700-CHECK-CHANGE-IN-REC: the caller's field-by-field comparison, which is the
-                // service's job and is represented here by the image it compares ...
                 assertThat(locked.toFixedWidthString()).isEqualTo(rows.get(0));
                 locked.setAcctCurrBal(locked.getAcctCurrBal().add(new BigDecimal("1.00")));
-                // ... then the REWRITE at L4065, still holding the record.
                 return repository.rewrite(locked);
             });
 
@@ -2258,16 +1691,9 @@ class AccountRepositoryTest {
         }
     }
 
-    // =============================================================================================
-    // Execution-state isolation. F02: the singleton used to hold the resolved shape, the open mode and
-    // the browse position, so two concurrent executions shared one file position.
-    // =============================================================================================
-
-    /** One repository, many independent files: the state a COBOL program owns is not shared. */
     @Nested
     @DisplayName("Per-execution state isolation")
     class StateIsolationTests {
-
         @Test
         @DisplayName("the repository declares no non-final instance field, so it holds nothing mutable")
         void theRepositoryHoldsNothingMutable() {
@@ -2324,8 +1750,6 @@ class AccountRepositoryTest {
                 assertThat(second.readNext().isEndOfFile()).isTrue();
             }
 
-            // Before the fix the two browses shared one position on the singleton: the second open would
-            // have rewound the first, and the reads would have consumed alternate records.
             assertThat(left).containsExactlyElementsOf(expected);
             assertThat(right).containsExactlyElementsOf(expected);
         }
@@ -2347,7 +1771,6 @@ class AccountRepositoryTest {
                             .isEqualTo(expected.get(0));
                 }
 
-                // The inner file's close ended the inner file only.
                 assertThat(first.isClosed()).isFalse();
                 assertThat(first.mode()).isSameAs(OpenMode.INPUT);
                 assertThat(first.readNext().account().orElseThrow().toFixedWidthString())
@@ -2363,10 +1786,6 @@ class AccountRepositoryTest {
             List<String> expected = rows.stream().sorted().toList();
             AccountRepository repository = repository(seeded(rows));
 
-            // The barrier is what makes the two browses genuinely overlap: neither reads a record until
-            // both have arrived, so a shared cursor would be shared while both are using it. Its await is
-            // bounded, and a task that never reaches the barrier now fails as a timeout naming the task
-            // rather than hanging the join forever with no report written for this suite at all.
             CyclicBarrier startTogether = new CyclicBarrier(2);
             Callable<List<String>> browse = () -> {
                 startTogether.await(ConcurrentTasks.TIMEOUT_SECONDS, TimeUnit.SECONDS);
@@ -2375,11 +1794,6 @@ class AccountRepositoryTest {
                 }
             };
 
-            // Each task returns its own rows instead of filling a sink handed to it, and any throwable it
-            // raises arrives here as the cause of the assertion. The previous shape caught three named
-            // exception types into a synchronised list and asserted that list empty - which reported an
-            // exception, but let an Error through unrecorded and still needed an unbounded join to get
-            // there.
             List<List<String>> results = ConcurrentTasks.runBoth(browse, browse);
 
             assertThat(results).hasSize(2);
@@ -2396,8 +1810,6 @@ class AccountRepositoryTest {
             long first = Long.parseLong(keyImageOf(rows.get(0)));
             long last = Long.parseLong(keyImageOf(rows.get(rows.size() - 1)));
 
-            // Repeated in a different order, from one instance, with no open in sight: each call depends
-            // only on its own argument.
             assertThat(repository.readByKey(last).account().orElseThrow().getAcctId()).isEqualTo(last);
             assertThat(repository.readByKey(first).account().orElseThrow().getAcctId()).isEqualTo(first);
             assertThat(repository.readByKey(ABSENT_ACCT_ID).isNotFound()).isTrue();
@@ -2405,16 +1817,9 @@ class AccountRepositoryTest {
         }
     }
 
-    // =============================================================================================
-    // The discriminated outcomes.
-    // =============================================================================================
-
-    /** {@link ReadResult} and {@link WriteResult}: their invariants, predicates and mappings. */
     @Nested
     @DisplayName("ReadResult and WriteResult")
     class OutcomeTests {
-
-        /** A freshly allocated record, for the arms that need one. */
         private AccountRecord blank() {
             return new AccountRecord(ASCII);
         }
@@ -2573,15 +1978,9 @@ class AccountRepositoryTest {
         }
     }
 
-    // =============================================================================================
-    // Structure.
-    // =============================================================================================
-
-    /** The structural guarantees the migration's practices require of this class. */
     @Nested
     @DisplayName("Structure")
     class StructuralTests {
-
         @Test
         @DisplayName("holds no mutable static state, in the class or in any nested type")
         void holdsNoMutableStaticState() {
@@ -2612,31 +2011,13 @@ class AccountRepositoryTest {
         }
     }
 
-    // =============================================================================================
-    // No schema is introduced, no index is invented, and no dataset name is compiled in.
-    // =============================================================================================
-
-    /**
-     * The "no database migration, no schema changes" guarantee, asserted rather than asserted-in-prose.
-     *
-     * <p>The instruction this module was built under is that the existing datasets are reached over
-     * JDBC and that nothing about them is redefined. That is easy to honour on day one and easy to lose
-     * on day forty, because every one of the three ways to lose it looks like an improvement at the
-     * time: annotate the record so an ORM can map it, add a second repository for the alternate index,
-     * or paste the dataset name into the class that uses it. Each is checked here.
-     */
     @Nested
     @DisplayName("Schema integrity - nothing is defined, indexed or named in Java")
     class SchemaIntegrityTests {
-
         @Test
         @DisplayName("no persistence annotation appears on the repository, its nested types or either "
                 + "record")
         void noPersistenceAnnotationAppearsAnywhereOnTheAccessSurface() {
-            // An @Entity or @Table would declare a relational model for a dataset that has none, and an
-            // @Id or @Column would declare a column layout for a record whose layout is a copybook. The
-            // scan covers types, fields, constructors, methods and their parameters, because a mapping
-            // can be declared at any of them.
             List<String> offenders = new ArrayList<>();
             for (Class<?> type : datasetAccessTypes()) {
                 for (Annotation annotation : allAnnotationsOf(type)) {
@@ -2659,9 +2040,6 @@ class AccountRepositoryTest {
         @Test
         @DisplayName("the scan really would notice a mapping annotation")
         void theAnnotationScanIsNotVacuous() {
-            // The guard above passes trivially if the scan finds nothing at all, so the scan is pointed
-            // at a type that is annotated - the repository itself carries @Repository - and is required
-            // to see it. What it must not see is a persistence annotation, which is a different thing.
             List<Class<?>> annotationTypes = new ArrayList<>();
             for (Annotation annotation : allAnnotationsOf(AccountRepository.class)) {
                 annotationTypes.add(annotation.annotationType());
@@ -2698,9 +2076,6 @@ class AccountRepositoryTest {
         @DisplayName("no statement the repository prepares against a driver is a data-definition "
                 + "statement")
         void noPreparedStatementIsDdl() throws SQLException {
-            // Composition and execution are different surfaces: a repository could compose only queries
-            // and still prepare a CREATE somewhere on an initialisation path. Every operation is driven
-            // and every statement the driver is handed is captured verbatim.
             List<String> prepared = new ArrayList<>();
             AccountRepository repository = repository(recordingPreparedStatements(prepared));
             AccountRecord blank = new AccountRecord(ASCII);
@@ -2726,8 +2101,6 @@ class AccountRepositoryTest {
         @Test
         @DisplayName("the data-definition pattern really does recognise a migration statement")
         void theDdlPatternIsNotVacuous() {
-            // Named literals, so the pattern is proved against the statements a migration would issue
-            // rather than trusted. None of these appears anywhere in the module; they exist only here.
             assertThat(DDL_STATEMENT.matcher("CREATE TABLE ACCOUNT (ACCT_ID NUMERIC(11))").find())
                     .isTrue();
             assertThat(DDL_STATEMENT.matcher("alter table ACCOUNT add VERSION int").find()).isTrue();
@@ -2752,9 +2125,6 @@ class AccountRepositoryTest {
                             + "created")
                     .isEmpty();
 
-            // Flyway and Liquibase are both excluded from the dependency set, so their conventional
-            // locations must be empty too - a changelog left behind would be executed the moment one of
-            // them was ever added back.
             Path resources = repositoryFile("app/java/src/main/resources");
             assertThat(Files.exists(resources.resolve("db/migration"))).isFalse();
             assertThat(Files.exists(resources.resolve("db/changelog"))).isFalse();
@@ -2766,12 +2136,6 @@ class AccountRepositoryTest {
         @DisplayName("the repository exposes no alternate-index finder, because ACCTDAT has no "
                 + "alternate index")
         void exposesNoAlternateIndexFinder() {
-            // app/csd/CARDDEMO.CSD:L1-L12 defines FILE(ACCTDAT) with no AIX path. The two alternate
-            // index paths in the estate are CARDAIX over CARDDAT and CXACAIX over CCXREF, and both
-            // belong to the card package, where each is an additional finder method on the base
-            // dataset's repository rather than a repository of its own. There is therefore nothing for
-            // an alternate-index finder on the account master to find, and a method that offered one
-            // would be inventing an access path the COBOL cannot perform.
             Set<String> repositoryMethods = publicMethodNamesOf(AccountRepository.class);
             Set<String> handleMethods = publicMethodNamesOf(AccountFile.class);
 
@@ -2782,8 +2146,6 @@ class AccountRepositoryTest {
                     "openStatus", "openOutcome", "mode", "datasetName", "isClosed",
                     "readNext", "readByKey", "readForUpdate", "rewrite", "closeFile", "close");
 
-            // And the configuration agrees: neither binding declares a base cluster or an alternate key,
-            // which is what a path over another dataset would have to say.
             for (String datasetKey : List.of(AccountRepository.CICS_FILE_NAME,
                     AccountRepository.BATCH_DD_NAME)) {
                 assertThat(datasetStanza(datasetKey))
@@ -2805,8 +2167,6 @@ class AccountRepositoryTest {
                     .doesNotContain(".VSAM.KSDS")
                     .doesNotContain(".VSAM.AIX.PATH");
 
-            // What the source does name is the two keys it looks the name up under, which is the whole
-            // mechanism: a binding key is not a dataset name.
             assertThat(code).contains("\"" + AccountRepository.CICS_FILE_NAME + "\"");
             assertThat(code).contains("\"" + AccountRepository.BATCH_DD_NAME + "\"");
         }
@@ -2814,8 +2174,6 @@ class AccountRepositoryTest {
         @Test
         @DisplayName("the comment-stripping scan would still catch a name compiled into code")
         void theDatasetNameScanIsNotVacuous() {
-            // The stripping is what makes the guard above tolerable to documentation, so it has to be
-            // shown that it strips comments and nothing else. A name inside a string literal survives.
             String withProse = "/** Reaches AWS.M2.CARDDEMO.ACCTDATA.VSAM.KSDS. */\n"
                     + "// also AWS.M2.CARDDEMO.CARDDATA.VSAM.KSDS\n"
                     + "String key = \"ACCTDAT\";\n";
@@ -2830,10 +2188,6 @@ class AccountRepositoryTest {
         @DisplayName("both binding keys resolve one dataset name, and the configuration is where it "
                 + "lives")
         void theDatasetNameIsResolvedFromConfiguration() {
-            // The positive half of the same property. app/csd/CARDDEMO.CSD names the CICS file ACCTDAT
-            // and app/jcl/READACCT.jcl:L25-L26 names the batch DD ACCTFILE; both address one KSDS, so
-            // the two stanzas must agree on the dsname and on the geometry, and the repository refuses
-            // to start if they do not.
             List<String> cicsStanza = datasetStanza(AccountRepository.CICS_FILE_NAME);
             List<String> batchStanza = datasetStanza(AccountRepository.BATCH_DD_NAME);
 
@@ -2848,23 +2202,9 @@ class AccountRepositoryTest {
                     + AccountRecord.RECORD_LENGTH));
             assertThat(cicsStanza).anyMatch(line -> line.contains("copybook: CVACT01Y"));
 
-            // And the repository reports whatever the binding says, with no name of its own: a stand-in
-            // dataset name configured here is the name it uses.
             assertThat(repository(new JdbcTemplate()).datasetName()).isEqualTo(TEST_DSNAME);
         }
 
-        /**
-         * The dataset name a stanza configures, with its property key and its override removed.
-         *
-         * <p>Every stanza is written as {@code dsname: ${CARDDEMO_DATASET_<KEY>:<name>}}, so the
-         * placeholder differs per key by design - an operator overrides the CICS file and the batch DD
-         * independently - while the name after the colon is the one dataset both address. The default is
-         * therefore what has to be compared; comparing the whole expression would compare the
-         * placeholders and report a difference that is not one.
-         *
-         * @param stanza the stanza's lines
-         * @return the dataset name the stanza defaults to
-         */
         private String dsnameOf(List<String> stanza) {
             String configured = stanza.stream()
                     .filter(line -> line.contains("dsname:"))
@@ -2881,60 +2221,13 @@ class AccountRepositoryTest {
         }
     }
 
-    // =============================================================================================
-    // The DISCGRP access path, and the one status that means three different things.
-    // =============================================================================================
-
-    /**
-     * The account package's other keyed dataset: the disclosure group, read over the {@code DISCGRP} DD.
-     *
-     * <h2>Why these tests live in the repository's suite and what they do not do</h2>
-     *
-     * <p>{@code CBACT04C} reads two datasets by key. One is the account master, which this repository
-     * owns. The other is the disclosure group, whose record type - {@link DisclosureGroupRecord} - is
-     * owned by this same package because the interest run is an account-package concern.
-     *
-     * <p>{@link AccountRepository} exposes <strong>no</strong> disclosure-group access path, and no
-     * separate {@code DisclosureGroupRepository} exists in the module. That is stated here as a fact
-     * about the code and it is <em>asserted</em> below rather than left as a comment, because a comment
-     * would go stale the moment a method appeared and an assertion will not. So what follows covers what
-     * does exist: the record geometry the {@code DISCGRP} DD delivers, and the status vocabulary the
-     * caller branches on. {@code DisclosureGroupRecordTest} guards the record in isolation and in far
-     * more depth; these tests are the dataset-boundary view of the same contract, and the two agreeing
-     * is the point.
-     *
-     * <h2>The status that means three things</h2>
-     *
-     * <p>{@code '23'} - the invalid-key condition - is read three times in one program and answered
-     * differently every time:
-     *
-     * <ul>
-     *   <li>{@code 1100-GET-ACCT-DATA} ({@code app/cbl/CBACT04C.cbl:L372-L391}) tests
-     *       {@code IF ACCTFILE-STATUS = '00'} and abends otherwise, so on the account master
-     *       {@code '23'} is <strong>fatal</strong>;</li>
-     *   <li>{@code 1200-GET-INTEREST-RATE} ({@code L415-L440}) tests
-     *       {@code IF DISCGRP-STATUS = '00' OR '23'}, so on the disclosure group {@code '23'} is
-     *       <strong>benign</strong> - it means "fall back to the DEFAULT group";</li>
-     *   <li>{@code 1200-A-GET-DEFAULT-INT-RATE} ({@code L443-L460}) is a bare {@code READ} with no
-     *       {@code INVALID KEY} clause testing only {@code IF DISCGRP-STATUS = '00'}, so on the DEFAULT
-     *       group {@code '23'} is <strong>fatal again</strong>.</li>
-     * </ul>
-     *
-     * <p>A repository cannot know which of the three it is serving, which is precisely why it reports
-     * the status and decides nothing.
-     */
     @Nested
     @DisplayName("The DISCGRP access path and the meaning of '23'")
     class DisclosureGroupAccessPathTests {
-
         @Test
-        @DisplayName("the disclosure-group read is not a method on this repository, and no separate "
-                + "repository exists")
+        @DisplayName("the disclosure-group read is not a method on this repository - it belongs to "
+                + "DisclosureGroupRepository, which is a dataset of its own")
         void theDisclosureGroupReadIsNotOnThisRepository() {
-            // Enforcing the note above. Were a disclosure-group method to be added here later, this
-            // assertion would fail and its author would have to decide deliberately - which is the
-            // outcome wanted, because CBACT04C reads DISCGRP sequentially as well as by key and the
-            // access path is not a straight copy of the account master's.
             Set<String> names = new LinkedHashSet<>(publicMethodNamesOf(AccountRepository.class));
             names.addAll(publicMethodNamesOf(AccountFile.class));
 
@@ -2944,15 +2237,21 @@ class AccountRepositoryTest {
                         || lower.contains("intrate") || lower.contains("interestrate");
             });
 
-            assertThatExceptionOfType(ClassNotFoundException.class).isThrownBy(() -> Class.forName(
+            // ACCTDAT and DISCGRP are two base datasets, so they are two repositories - one per base
+            // dataset is the rule the plan's twelve-repository count is built on (AAP 0.3.5, gate G10).
+            // Asserting that the sibling EXISTS, and is a @Repository, is what keeps the disclosure-group
+            // access path from drifting back into this class.
+            assertThatNoException().isThrownBy(() -> Class.forName(
                     "com.vsergeychik.carddemo.account.DisclosureGroupRepository"));
+            assertThat(DisclosureGroupRepository.class
+                    .isAnnotationPresent(org.springframework.stereotype.Repository.class))
+                    .as("DISCGRP is a base dataset, so its access path is a @Repository of its own")
+                    .isTrue();
         }
 
         @Test
         @DisplayName("the record is exactly 50 bytes with a 16-byte key and the rate at offset 16")
         void theGeometryIsTheCopybookGeometry() {
-            // app/cpy/CVTRA02Y.cpy:L4-L10, summed by hand: 10 + 2 + 4 = 16 for DIS-GROUP-KEY, then 6 for
-            // DIS-INT-RATE at 16, then 28 of FILLER at 22. Total 50, which is what L2 declares.
             assertThat(DisclosureGroupRecord.RECORD_LENGTH).isEqualTo(FIFTY);
             assertThat(DisclosureGroupRecord.DIS_ACCT_GROUP_ID_OFFSET).isZero();
             assertThat(DisclosureGroupRecord.DIS_ACCT_GROUP_ID_LENGTH).isEqualTo(10);
@@ -2977,7 +2276,6 @@ class AccountRepositoryTest {
             assertThat(DisclosureGroupRecord.FILLER_LENGTH)
                     .isEqualTo(DISCLOSURE_GROUP_FILLER_WIDTH);
 
-            // The spans account for every byte: 16 + 6 + 28 leaves nothing over and nothing missing.
             assertThat(DisclosureGroupRecord.DIS_GROUP_KEY_LENGTH
                     + DisclosureGroupRecord.DIS_INT_RATE_LENGTH
                     + DisclosureGroupRecord.FILLER_LENGTH).isEqualTo(FIFTY);
@@ -2989,8 +2287,6 @@ class AccountRepositoryTest {
             List<String> rows = disclosureGroupRows();
             String row = rows.get(0);
 
-            // The transcription is checked against the file rather than trusted, so a fixture that ever
-            // changed would fail here instead of quietly redefining the expectation.
             assertThat(rows).hasSize(DISCLOSURE_GROUP_FIXTURE_RECORDS);
             assertThat(row).isEqualTo(DISCLOSURE_GROUP_ROW_1).hasSize(FIFTY);
             assertThat(row.substring(0, 10)).isEqualTo("A000000000");
@@ -3008,8 +2304,6 @@ class AccountRepositoryTest {
             assertThat(record.disTranCatCdImage()).isEqualTo("0001");
             assertThat(record.disGroupKey()).hasSize(SIXTEEN).isEqualTo("A000000000010001");
             assertThat(record.disGroupKeyBytes()).hasSize(SIXTEEN);
-            // '{' is the zoned overpunch for +0, so 00150{ is the digit string 001500 - 15.00 at scale 2,
-            // a 15% APR, which app/cbl/CBACT04C.cbl:L464-L465 divides by 1200 to reach a monthly figure.
             assertThat(record.disIntRateImage()).isEqualTo(ROW_1_RATE_IMAGE);
             assertThat(record.disIntRate())
                     .isEqualByComparingTo(FIFTEEN_PERCENT)
@@ -3021,10 +2315,6 @@ class AccountRepositoryTest {
         @Test
         @DisplayName("every one of the 51 rows re-encodes to the bytes it was decoded from")
         void everyRowReEncodesToItsStoredBytes() {
-            // G19 and G21 together: the width is asserted on every row, and a FILLER span dropped from
-            // the codec could not survive a byte-identity check because the record would come back 28
-            // bytes short. The fixture's own FILLER bytes are zeros rather than spaces, and they are
-            // preserved verbatim - a decode is not an opportunity to normalise anything.
             for (String row : disclosureGroupRows()) {
                 assertThat(row).hasSize(FIFTY);
                 DisclosureGroupRecord record = DisclosureGroupRecord.decode(row, ASCII);
@@ -3041,9 +2331,6 @@ class AccountRepositoryTest {
         @Test
         @DisplayName("a freshly constructed record emits 28 FILLER spaces and still totals 50 bytes")
         void aFreshRecordEmitsItsFillerAsSpaces() {
-            // The other half of G21. Reading preserves what was stored; writing a record this module
-            // composed emits FILLER as spaces, which is what a COBOL WORKING-STORAGE item initialised by
-            // MOVE SPACES holds. Omitting the span entirely would leave the record 22 bytes wide.
             DisclosureGroupRecord fresh = new DisclosureGroupRecord(ASCII);
             fresh.disAcctGroupId("A000000000");
             fresh.disTranTypeCd("01");
@@ -3065,18 +2352,12 @@ class AccountRepositoryTest {
         @DisplayName("a 17-byte key produces a 50-byte row the width check accepts and the rate check "
                 + "rejects")
         void aSeventeenByteKeyIsCaughtByTheOffsetAndNotByTheWidth() {
-            // The trap this class exists to catch. CVTRA01Y's TRAN-CAT-KEY is 17 bytes and its record
-            // also totals 50, so an adapter written against the wrong copybook produces rows of exactly
-            // the right length with DIS-INT-RATE one byte late. Width alone cannot tell them apart.
             String row = DISCLOSURE_GROUP_ROW_1;
             assertThat(row.substring(SEVENTEEN_BYTE_KEY_WIDTH, SEVENTEEN_BYTE_KEY_WIDTH + SIX))
                     .as("read one byte late, row 1's rate span is not a rate")
                     .isEqualTo(ROW_1_RATE_IMAGE_UNDER_A_17_BYTE_KEY)
                     .isNotEqualTo(ROW_1_RATE_IMAGE);
 
-            // A row laid out as a 17-byte-key adapter would lay it out: the same key bytes, one filler
-            // digit inserted, the rate image shifted right, and one filler byte dropped to keep the
-            // total at 50.
             String misLaid = row.substring(0, SIXTEEN) + "0" + ROW_1_RATE_IMAGE
                     + "0".repeat(DISCLOSURE_GROUP_FILLER_WIDTH - 1);
             assertThat(misLaid)
@@ -3100,10 +2381,6 @@ class AccountRepositoryTest {
         @Test
         @DisplayName("MOVE 'DEFAULT' right-pads a seven-character literal into the ten-byte group id")
         void theDefaultLiteralIsRightPaddedToTen() {
-            // app/cbl/CBACT04C.cbl:L437 - MOVE 'DEFAULT' TO FD-DIS-ACCT-GROUP-ID - moves seven
-            // characters into a PIC X(10), and COBOL pads alphanumeric moves on the right. The key that
-            // reaches the dataset is therefore 'DEFAULT   ' and never 'DEFAULT'. A plain Java assignment
-            // would produce a seven-character key that matches nothing.
             assertThat(DisclosureGroupRecord.DEFAULT_ACCT_GROUP_ID)
                     .as("the literal in the COBOL is seven characters")
                     .isEqualTo("DEFAULT")
@@ -3118,7 +2395,6 @@ class AccountRepositoryTest {
             assertThat(record.encodeToString().substring(0,
                     DisclosureGroupRecord.DIS_ACCT_GROUP_ID_LENGTH)).isEqualTo("DEFAULT   ");
 
-            // And the padded form is what the fixture actually stores, so the fallback read finds rows.
             List<String> defaultRows = disclosureGroupRows().stream()
                     .filter(row -> row.startsWith("DEFAULT"))
                     .toList();
@@ -3135,30 +2411,20 @@ class AccountRepositoryTest {
         @DisplayName("'23' is fatal on the account master, benign on the disclosure group, and fatal "
                 + "again on the DEFAULT re-read")
         void theSameStatusMeansThreeDifferentThings() {
-            // One status, three call sites, three answers - and the repository authors none of them. It
-            // reports '23'; the guard chain in CBACT04C decides.
             assertThat(FileStatus.isNotFound(FileStatus.NOT_FOUND)).isTrue();
 
-            // 1100-GET-ACCT-DATA, app/cbl/CBACT04C.cbl:L378-L390: IF ACCTFILE-STATUS = '00' ... ELSE
-            // MOVE 12 ... then abend. Only '00' passes, so '23' is fatal.
             assertThat(FileStatus.isOk(FileStatus.NOT_FOUND)).isFalse();
             assertThat(ReadResult.notFound().applResult())
                     .as("what the account master's caller would abend with")
                     .isEqualTo(AccountRepository.APPL_RESULT_FATAL);
 
-            // 1200-GET-INTEREST-RATE, L422: IF DISCGRP-STATUS = '00' OR '23' - the one place in the
-            // estate where an invalid key is an ordinary outcome, because L436-L438 answers it by
-            // switching to the DEFAULT group.
             assertThat(FileStatus.isOkOrNotFound(FileStatus.NOT_FOUND))
                     .as("on DISCGRP, '23' means 'try the DEFAULT group', not 'abend'")
                     .isTrue();
             assertThat(FileStatus.isOkOrNotFound(FileStatus.OK)).isTrue();
 
-            // 1200-A-GET-DEFAULT-INT-RATE, L444-L450: a bare READ with no INVALID KEY clause, testing
-            // only IF DISCGRP-STATUS = '00'. A missing DEFAULT row is unrecoverable.
             assertThat(FileStatus.isOk(FileStatus.NOT_FOUND)).isFalse();
 
-            // Every other status stays fatal at all three sites, so the concession is to '23' alone.
             assertThat(FileStatus.isOkOrNotFound(FileStatus.END_OF_FILE)).isFalse();
             assertThat(FileStatus.isOkOrNotFound(FileStatus.DUPLICATE)).isFalse();
             assertThat(FileStatus.isOkOrNotFound(AccountRepository.PERMANENT_ERROR_STATUS)).isFalse();
@@ -3167,9 +2433,6 @@ class AccountRepositoryTest {
         @Test
         @DisplayName("a not-found read returns its outcome and abends nothing")
         void aNotFoundReadReturnsRatherThanThrows() {
-            // The layering rule, stated as a test. A repository that threw on '23' would have decided
-            // the account master's answer for the disclosure group's caller as well, and 1200's fallback
-            // could not be written at all.
             AccountRepository repository = repository(seeded(fixtureRows()));
 
             assertThatNoException().isThrownBy(() -> repository.readByKey(ABSENT_ACCT_ID));
@@ -3179,9 +2442,6 @@ class AccountRepositoryTest {
             assertThat(result.status()).isEqualTo(FileStatus.NOT_FOUND);
             assertThat(result.account()).isEmpty();
 
-            // The abend is the caller's to raise, and when it does, it carries exactly the APPL-RESULT
-            // the repository reported: MOVE 12 TO APPL-RESULT then CALL 'CEE3ABD'
-            // (app/cbl/CBACT04C.cbl:L381 and L632).
             AbendException callersAbend = AbendException.standard("CBACT04C",
                     AbendException.RETURN_CODE_IO_ERROR);
             assertThat(callersAbend.getReturnCode())
@@ -3191,24 +2451,9 @@ class AccountRepositoryTest {
         }
     }
 
-    // =============================================================================================
-    // The account record's own byte layout, at the dataset boundary.
-    // =============================================================================================
-
-    /**
-     * Where every field of {@code ACCOUNT-RECORD} sits, checked against a record the dataset delivered.
-     *
-     * <p>The browse tests already prove that a record read from the dataset re-encodes to the bytes it
-     * came from, which is the strongest statement available about the record as a whole. This is the
-     * complementary statement about its parts: each field is compared with the substring of the stored
-     * row that {@code app/cpy/CVACT01Y.cpy} says is that field. Whole-image equality would survive two
-     * fields being swapped if they were the same width - and three pairs here are - so the offsets have
-     * to be asserted separately from the total.
-     */
     @Nested
     @DisplayName("The account record's fields sit exactly where CVACT01Y puts them")
     class AccountRecordOffsetTests {
-
         @Test
         @DisplayName("every field of a stored record decodes from its own copybook offset, and the "
                 + "record re-encodes byte for byte")
@@ -3218,52 +2463,46 @@ class AccountRepositoryTest {
 
             AccountRecord account = AccountRecord.decode(row, ASCII);
 
-            // Each raw accessor is compared with the span the copybook assigns it, taken out of the
-            // stored row directly. Reading the field and slicing the row are two independent routes to
-            // the same bytes, so agreement means the offset is right.
             assertThat(account.rawAcctId())
-                    .isEqualTo(spanOf(row, AccountRecord.ACCT_ID_OFFSET,          // CVACT01Y:L5  9(11)
+                    .isEqualTo(spanOf(row, AccountRecord.ACCT_ID_OFFSET,
                             AccountRecord.ACCT_ID_LENGTH));
             assertThat(account.rawAcctActiveStatus())
-                    .isEqualTo(spanOf(row, AccountRecord.ACCT_ACTIVE_STATUS_OFFSET,   // L6  X(01)
+                    .isEqualTo(spanOf(row, AccountRecord.ACCT_ACTIVE_STATUS_OFFSET,
                             AccountRecord.ACCT_ACTIVE_STATUS_LENGTH));
             assertThat(account.rawAcctCurrBal())
-                    .isEqualTo(spanOf(row, AccountRecord.ACCT_CURR_BAL_OFFSET,        // L7  S9(10)V99
+                    .isEqualTo(spanOf(row, AccountRecord.ACCT_CURR_BAL_OFFSET,
                             AccountRecord.ACCT_CURR_BAL_LENGTH));
             assertThat(account.rawAcctCreditLimit())
-                    .isEqualTo(spanOf(row, AccountRecord.ACCT_CREDIT_LIMIT_OFFSET,    // L8  S9(10)V99
+                    .isEqualTo(spanOf(row, AccountRecord.ACCT_CREDIT_LIMIT_OFFSET,
                             AccountRecord.ACCT_CREDIT_LIMIT_LENGTH));
             assertThat(account.rawAcctCashCreditLimit())
-                    .isEqualTo(spanOf(row, AccountRecord.ACCT_CASH_CREDIT_LIMIT_OFFSET,  // L9
+                    .isEqualTo(spanOf(row, AccountRecord.ACCT_CASH_CREDIT_LIMIT_OFFSET,
                             AccountRecord.ACCT_CASH_CREDIT_LIMIT_LENGTH));
             assertThat(account.rawAcctOpenDate())
-                    .isEqualTo(spanOf(row, AccountRecord.ACCT_OPEN_DATE_OFFSET,       // L10 X(10)
+                    .isEqualTo(spanOf(row, AccountRecord.ACCT_OPEN_DATE_OFFSET,
                             AccountRecord.ACCT_OPEN_DATE_LENGTH));
             assertThat(account.rawAcctExpiraionDate())
-                    .isEqualTo(spanOf(row, AccountRecord.ACCT_EXPIRAION_DATE_OFFSET,  // L11 X(10)
+                    .isEqualTo(spanOf(row, AccountRecord.ACCT_EXPIRAION_DATE_OFFSET,
                             AccountRecord.ACCT_EXPIRAION_DATE_LENGTH));
             assertThat(account.rawAcctReissueDate())
-                    .isEqualTo(spanOf(row, AccountRecord.ACCT_REISSUE_DATE_OFFSET,    // L12 X(10)
+                    .isEqualTo(spanOf(row, AccountRecord.ACCT_REISSUE_DATE_OFFSET,
                             AccountRecord.ACCT_REISSUE_DATE_LENGTH));
             assertThat(account.rawAcctCurrCycCredit())
-                    .isEqualTo(spanOf(row, AccountRecord.ACCT_CURR_CYC_CREDIT_OFFSET, // L13 S9(10)V99
+                    .isEqualTo(spanOf(row, AccountRecord.ACCT_CURR_CYC_CREDIT_OFFSET,
                             AccountRecord.ACCT_CURR_CYC_CREDIT_LENGTH));
             assertThat(account.rawAcctCurrCycDebit())
-                    .isEqualTo(spanOf(row, AccountRecord.ACCT_CURR_CYC_DEBIT_OFFSET,  // L14 S9(10)V99
+                    .isEqualTo(spanOf(row, AccountRecord.ACCT_CURR_CYC_DEBIT_OFFSET,
                             AccountRecord.ACCT_CURR_CYC_DEBIT_LENGTH));
             assertThat(account.rawAcctAddrZip())
-                    .isEqualTo(spanOf(row, AccountRecord.ACCT_ADDR_ZIP_OFFSET,        // L15 X(10)
+                    .isEqualTo(spanOf(row, AccountRecord.ACCT_ADDR_ZIP_OFFSET,
                             AccountRecord.ACCT_ADDR_ZIP_LENGTH));
             assertThat(account.rawAcctGroupId())
-                    .isEqualTo(spanOf(row, AccountRecord.ACCT_GROUP_ID_OFFSET,        // L16 X(10)
+                    .isEqualTo(spanOf(row, AccountRecord.ACCT_GROUP_ID_OFFSET,
                             AccountRecord.ACCT_GROUP_ID_LENGTH));
             assertThat(account.getFiller())
-                    .isEqualTo(spanOf(row, AccountRecord.FILLER_OFFSET,               // L17 X(178)
+                    .isEqualTo(spanOf(row, AccountRecord.FILLER_OFFSET,
                             AccountRecord.FILLER_LENGTH));
 
-            // The three same-width pairs whose order a whole-image comparison could not police:
-            // ACCT-ADDR-ZIP before ACCT-GROUP-ID, the three dates in their declared sequence, and the
-            // two cycle amounts in theirs.
             assertThat(AccountRecord.ACCT_ADDR_ZIP_OFFSET)
                     .isLessThan(AccountRecord.ACCT_GROUP_ID_OFFSET);
             assertThat(AccountRecord.ACCT_OPEN_DATE_OFFSET)
@@ -3273,7 +2512,6 @@ class AccountRepositoryTest {
             assertThat(AccountRecord.ACCT_CURR_CYC_CREDIT_OFFSET)
                     .isLessThan(AccountRecord.ACCT_CURR_CYC_DEBIT_OFFSET);
 
-            // And the round trip: nothing was normalised, trimmed or re-padded on the way through.
             assertThat(account.toFixedWidthString()).isEqualTo(row).hasSize(THREE_HUNDRED);
             assertThat(account.toByteArray()).hasSize(THREE_HUNDRED);
             assertThat(account.keyImage())
@@ -3281,70 +2519,19 @@ class AccountRepositoryTest {
                     .hasSize(AccountRecord.KEY_LENGTH);
         }
 
-        /**
-         * The bytes a stored row holds at a copybook span.
-         *
-         * @param row    the stored record image
-         * @param offset the span's zero-based offset
-         * @param length the span's declared width
-         * @return exactly those characters
-         */
         private String spanOf(String row, int offset, int length) {
             return row.substring(offset, offset + length);
         }
     }
 
-    // =============================================================================================
-    // The outcome vocabulary, driven exhaustively: every status, and every call site that can raise it.
-    // =============================================================================================
-
-    /**
-     * Every file status this dataset can report, against every operation that can report it.
-     *
-     * <h2>Why one repository has to speak two vocabularies</h2>
-     *
-     * <p>The account master is read by batch programs that test a two-character {@code FILE STATUS} and
-     * by online programs that test a CICS {@code RESP} and {@code RESP2} pair. {@code CBACT01C} and
-     * {@code CBACT04C} do the former; {@code COACTVWC} and {@code COACTUPC} do the latter. One
-     * repository serves both, so an outcome carries the batch status the guard chain branches on and,
-     * where the correspondence is unambiguous, the CICS pair the online program reports.
-     *
-     * <h2>Where the correspondence stops</h2>
-     *
-     * <p>{@code '22'} translates to no single {@code RESP}, because CICS distinguishes {@code DUPREC} - a
-     * duplicate on the base key - from {@code DUPKEY} - a duplicate on an alternate key - and the batch
-     * status cannot say which. An empty {@code RESP} is the truthful answer there, and fabricating one
-     * would put a number in an operator's message that CICS never produced.
-     */
     @Nested
     @DisplayName("The status matrix - every outcome, every call site")
     class StatusMatrixTests {
-
-        /**
-         * A read outcome's whole reported shape, for every status a read can carry but {@code '00'}.
-         *
-         * <p>{@code '00'} is absent because it is unrepresentable without a record: the constructor
-         * refuses it, which {@code aSuccessfulReadCannotBeBuiltWithoutItsRecord} asserts directly.
-         *
-         * @param status            the two-character status
-         * @param expectedOutcome   the classification the guard chain branches on
-         * @param expectedApplResult the {@code APPL-RESULT} the COBOL would move
-         * @param expectedCicsResp  the {@code RESP} to report, or {@code -1} when there is none
-         * @param expectedPredicate the one predicate that answers true, or {@code none} when the status
-         *                          corresponds to no arm any program in this estate wrote
-         */
         @ParameterizedTest(name = "read status ''{0}'' -> {1}, APPL-RESULT {2}, RESP {3}, {4}")
         @CsvSource({
-            // '10' is the end-of-file condition of CBACT01C:L98, whose arm moves 16 - APPL-EOF.
             "10, END_OF_FILE, 16, 20, isEndOfFile",
-            // '22' is a duplicate. No batch program in this estate tests it and it maps to no single
-            // RESP, so the pair is absent, no predicate claims it, and the status is still carried
-            // verbatim - which is what lets a caller see a duplicate it has no arm for.
             "22, DUPLICATE,   12, -1, none",
-            // '23' is the invalid-key condition of CBACT04C:L374 and the NOTFND arm of COACTVWC:L789.
             "23, NOT_FOUND,   12, 13, isNotFound",
-            // '37' is a real VSAM status - an OPEN whose attributes do not match - that no program in
-            // this estate enumerates, so it must reach WHEN OTHER rather than any named arm.
             "37, OTHER,       12, -1, isOther"
         })
         @DisplayName("a read reports every status with its classification, APPL-RESULT and CICS pair")
@@ -3367,8 +2554,6 @@ class AccountRepositoryTest {
                     .as("no reason code is reported unless a backend produced one")
                     .isEqualTo(FileStatus.NO_REASON_CODE);
 
-            // At most one predicate answers true, so no caller can take two arms - and for '22' none
-            // answers true at all, because the estate wrote no arm for it.
             assertThat(trueNamesAmong(List.of("isFound", "isEndOfFile", "isNotFound", "isOther"),
                     List.of(result.isFound(), result.isEndOfFile(), result.isNotFound(),
                             result.isOther())))
@@ -3376,19 +2561,6 @@ class AccountRepositoryTest {
                             ? List.of() : List.of(expectedPredicate));
         }
 
-        /**
-         * The same exhaustive shape for a rewrite.
-         *
-         * <p>{@code '10'} is absent for a different reason than {@code '00'} was above: a rewrite cannot
-         * reach the end of a dataset at all, and the factory rejects it - which
-         * {@code aRewriteCannotReachEndOfFile} asserts.
-         *
-         * @param status            the two-character status
-         * @param expectedOutcome   the classification the guard chain branches on
-         * @param expectedApplResult the {@code APPL-RESULT} the COBOL would move
-         * @param expectedCicsResp  the {@code RESP} to report, or {@code -1} when there is none
-         * @param expectedPredicate the one predicate that answers true, or {@code none}
-         */
         @ParameterizedTest(name = "rewrite status ''{0}'' -> {1}, APPL-RESULT {2}, RESP {3}, {4}")
         @CsvSource({
             "22, DUPLICATE, 12, -1, none",
@@ -3418,8 +2590,6 @@ class AccountRepositoryTest {
         @Test
         @DisplayName("the permanent-error status is the '9' convention and reaches WHEN OTHER")
         void thePermanentErrorStatusReachesTheCatchAll() {
-            // Not expressible in a CSV row: its second byte is a binary feedback code, which is the
-            // COBOL convention 9910-DISPLAY-IO-STATUS tests for at app/cbl/CBACT01C.cbl:L177-L178.
             assertThat(AccountRepository.PERMANENT_ERROR_STATUS)
                     .hasSize(FileStatus.STATUS_LENGTH)
                     .startsWith("9");
@@ -3432,24 +2602,13 @@ class AccountRepositoryTest {
                     .hasSize(FileStatus.STATUS_IMAGE_LENGTH);
         }
 
-        /**
-         * Every CICS response the online callers can see, and the batch status it does or does not
-         * translate to.
-         *
-         * @param cicsResp            the value CICS places in {@code RESP}
-         * @param expectedOutcome     the classification
-         * @param expectedBatchStatus the equivalent two-character status, or {@code none}
-         */
         @ParameterizedTest(name = "RESP {0} -> {1}, batch status {2}")
         @CsvSource({
             "0,    OK,          00",
             "13,   NOT_FOUND,   23",
-            // DUPREC and DUPKEY are distinct CICS conditions that collapse onto one batch status.
             "14,   DUPLICATE,   22",
             "15,   DUPLICATE,   22",
             "20,   END_OF_FILE, 10",
-            // INVREQ, NOTOPEN and LENGERR are real conditions with no two-character counterpart, so
-            // they translate to nothing rather than to something invented.
             "16,   OTHER,       none",
             "19,   OTHER,       none",
             "22,   OTHER,       none",
@@ -3473,10 +2632,6 @@ class AccountRepositoryTest {
         @Test
         @DisplayName("COACTVWC's EVALUATE has three arms, so everything but NORMAL and NOTFND is OTHER")
         void theOnlineEvaluateHasExactlyThreeArms() {
-            // app/cbl/COACTVWC.cbl:L786-L819 - WHEN DFHRESP(NORMAL), WHEN DFHRESP(NOTFND), WHEN OTHER.
-            // There is no ENDFILE arm and no DUPREC arm, so a response this repository classifies as
-            // END_OF_FILE or DUPLICATE still lands in that program's WHEN OTHER. Preserving the online
-            // program's arm structure means the classification must not be mistaken for the arm.
             assertThat(onlineArmFor(FileStatus.NORMAL)).isEqualTo("NORMAL");
             assertThat(onlineArmFor(FileStatus.NOTFND)).isEqualTo("NOTFND");
             for (int unenumerated : List.of(FileStatus.ENDFILE, FileStatus.DUPREC, FileStatus.DUPKEY,
@@ -3491,9 +2646,6 @@ class AccountRepositoryTest {
         @Test
         @DisplayName("the WHEN OTHER arm receives RESP and RESP2 as two distinct values")
         void theOtherArmReceivesBothRespAndResp2() {
-            // COACTVWC:L814-L815 moves WS-RESP-CD to ERROR-RESP and WS-REAS-CD to ERROR-RESP2, and
-            // WS-FILE-ERROR-MESSAGE renders both. Collapsing the pair into one number, or reporting the
-            // reason code as the response, would change the message the operator reads.
             CicsResponse reported = CicsResponse.reported(FileStatus.LENGERR, 42);
             ReadResult result = ReadResult.of(AccountRepository.PERMANENT_ERROR_STATUS, reported);
 
@@ -3518,31 +2670,19 @@ class AccountRepositoryTest {
             String firstKey = keyImageOf(rows.get(0));
             long firstId = Long.parseLong(firstKey);
 
-            // OPEN: '00'. The failing arm is driven separately, over an unreachable backend, because a
-            // seeded relation cannot refuse to be described.
             try (AccountFile file = repository.open(OpenMode.INPUT)) {
                 assertThat(file.openStatus()).isEqualTo(FileStatus.OK);
                 assertThat(file.openOutcome()).isEqualTo(Outcome.OK);
 
-                // readNext: '00' for every record, then '10' once - and only once the browse is
-                // exhausted. A keyed read can never report '10'; reaching the end of a dataset is
-                // something only a browse does, which is why CBACT01C tests '10' in
-                // 1000-ACCTFILE-GET-NEXT and CBACT04C's 1100-GET-ACCT-DATA does not test it at all.
                 assertThat(drain(file, FIXTURE_RECORDS + 1)).hasSize(FIXTURE_RECORDS);
                 assertThat(file.readNext().status()).isEqualTo(FileStatus.END_OF_FILE);
 
-                // CLOSE: '00'.
                 assertThat(file.closeFile()).isEqualTo(FileStatus.OK);
             }
 
-            // readByKey: '00' when the key selects a record, '23' when it selects none. '22' cannot
-            // arise here - a KSDS primary key is unique, so a keyed read has no duplicate to report, and
-            // a key that does select several rows is a broken deployment reported as a permanent error.
             assertThat(repository.readByKey(firstId).status()).isEqualTo(FileStatus.OK);
             assertThat(repository.readByKey(ABSENT_ACCT_ID).status()).isEqualTo(FileStatus.NOT_FOUND);
 
-            // readForUpdate: the same two, inside a unit of work. Outside one it is refused before any
-            // statement is issued, because a lock taken outside a transaction is released immediately.
             String absentKey = AccountRecord.keyImage(ABSENT_ACCT_ID, ASCII);
             transactionOver(template).executeWithoutResult(status -> {
                 assertThat(repository.readForUpdate(firstKey).status()).isEqualTo(FileStatus.OK);
@@ -3551,7 +2691,6 @@ class AccountRepositoryTest {
             });
             assertThatIllegalStateException().isThrownBy(() -> repository.readForUpdate(firstKey));
 
-            // rewrite: '00' when the record's own key selects it, '23' when it selects nothing.
             AccountRecord present = repository.readByKey(firstId).account().orElseThrow();
             assertThat(withUnitOfWork(() -> repository.rewrite(present).status()))
                     .isEqualTo(FileStatus.OK);
@@ -3559,7 +2698,6 @@ class AccountRepositoryTest {
             absent.setAcctId(ABSENT_ACCT_ID);
             assertThat(withUnitOfWork(() -> repository.rewrite(absent).status()))
                     .isEqualTo(FileStatus.NOT_FOUND);
-            // And outside one it is refused, exactly as the locking read above is.
             assertThatIllegalStateException().isThrownBy(() -> repository.rewrite(present))
                     .withMessageContaining("no transaction is open on this thread");
         }
@@ -3567,9 +2705,6 @@ class AccountRepositoryTest {
         @Test
         @DisplayName("every operation reports the permanent error when the backend refuses it")
         void everyOperationReportsThePermanentError() throws SQLException {
-            // The WHEN OTHER arm of every guard chain, reached the only way it can be reached: a backend
-            // that refuses. Each operation is driven so no call site is left with an untested failure
-            // path, since a failure a repository swallows is a record a program believes it read.
             AccountRepository unreachableRepository = repository(unreachable());
             AccountRecord blank = new AccountRecord(ASCII);
             blank.setAcctId(ABSENT_ACCT_ID);
@@ -3589,8 +2724,6 @@ class AccountRepositoryTest {
                         .isEqualTo(AccountRepository.PERMANENT_ERROR_STATUS);
             }
 
-            // And a backend that describes the relation but then refuses the statement fails the same
-            // way, so the failure is not an artefact of never having connected at all.
             AccountRepository refusing = repository(describingThenRefusing());
             assertThat(refusing.readByKey(ABSENT_ACCT_ID).status())
                     .isEqualTo(AccountRepository.PERMANENT_ERROR_STATUS);
@@ -3599,9 +2732,6 @@ class AccountRepositoryTest {
         @Test
         @DisplayName("the '00' arm is the one predicate a successful outcome answers")
         void theSuccessfulArmAnswersExactlyOnePredicate() {
-            // '00' cannot appear in the tables above, because a successful read is unrepresentable
-            // without its record. Asserted here so the matrix covers every status the dataset can
-            // report and not merely every status a factory will accept a bare string for.
             ReadResult read = ReadResult.found(new AccountRecord(ASCII));
             assertThat(trueNamesAmong(List.of("isFound", "isEndOfFile", "isNotFound", "isOther"),
                     List.of(read.isFound(), read.isEndOfFile(), read.isNotFound(), read.isOther())))
@@ -3617,13 +2747,6 @@ class AccountRepositoryTest {
             assertThat(write.applResult()).isEqualTo(FileStatus.APPL_AOK);
         }
 
-        /**
-         * The names of the predicates that answered true, so a failure names them instead of counting.
-         *
-         * @param names   the predicate names, in the order they were evaluated
-         * @param answers what each predicate answered, in the same order
-         * @return the names whose answer was {@code true}
-         */
         private List<String> trueNamesAmong(List<String> names, List<Boolean> answers) {
             List<String> claimed = new ArrayList<>();
             for (int index = 0; index < names.size(); index++) {
@@ -3634,16 +2757,6 @@ class AccountRepositoryTest {
             return claimed;
         }
 
-        /**
-         * Which arm of {@code COACTVWC}'s three-arm {@code EVALUATE} a CICS response reaches.
-         *
-         * <p>Written as the COBOL is written - {@code NORMAL}, then {@code NOTFND}, then everything else
-         * - rather than derived from the classification, because the program's arms and this module's
-         * classification are deliberately different things and this test is about the arms.
-         *
-         * @param cicsResp the value CICS placed in {@code RESP}
-         * @return {@code NORMAL}, {@code NOTFND} or {@code OTHER}
-         */
         private String onlineArmFor(int cicsResp) {
             if (cicsResp == FileStatus.NORMAL) {
                 return "NORMAL";
@@ -3655,27 +2768,9 @@ class AccountRepositoryTest {
         }
     }
 
-    // =============================================================================================
-    // Numeric parity: scale 2 everywhere, truncation toward zero, and no binary floating point.
-    // =============================================================================================
-
-    /**
-     * The numeric contract of everything this repository carries.
-     *
-     * <p>The keyword {@code ROUNDED} appears zero times in all 28 COBOL programs, which settles the
-     * question: on store, COBOL discards excess fractional digits rather than rounding them. So the only
-     * faithful mode is {@link RoundingMode#DOWN}, and {@code HALF_UP} or {@code HALF_EVEN} would each
-     * produce a different balance for the same input - silently, and only for some inputs, which is the
-     * worst way for a migration to be wrong.
-     *
-     * <p>Every persisted amount in {@code CVACT01Y} is {@code PIC S9(10)V99}: twelve bytes, scale two,
-     * the sign overpunched into the twelfth. There is no {@code COMP-3} anywhere in the copybook, so
-     * every one of these fields is a zoned {@code DISPLAY} field and a {@code BigDecimal} in Java.
-     */
     @Nested
     @DisplayName("Numeric parity - scale 2, truncation toward zero, no binary floating point")
     class MonetaryParityTests {
-
         @Test
         @DisplayName("every monetary field of all 50 fixture records reports scale exactly 2")
         void everyMonetaryFieldOfEveryFixtureRecordReportsScaleTwo() {
@@ -3685,11 +2780,11 @@ class AccountRepositoryTest {
             for (String row : rows) {
                 AccountRecord account = AccountRecord.decode(row, ASCII);
                 List<BigDecimal> amounts = List.of(
-                        account.getAcctCurrBal(),            // CVACT01Y:L7  S9(10)V99
-                        account.getAcctCreditLimit(),        // CVACT01Y:L8  S9(10)V99
-                        account.getAcctCashCreditLimit(),    // CVACT01Y:L9  S9(10)V99
-                        account.getAcctCurrCycCredit(),      // CVACT01Y:L13 S9(10)V99
-                        account.getAcctCurrCycDebit());      // CVACT01Y:L14 S9(10)V99
+                        account.getAcctCurrBal(),
+                        account.getAcctCreditLimit(),
+                        account.getAcctCashCreditLimit(),
+                        account.getAcctCurrCycCredit(),
+                        account.getAcctCurrCycDebit());
 
                 assertThat(amounts).allSatisfy(amount -> assertThat(amount.scale())
                         .describedAs("a PIC S9(10)V99 field always reads at scale 2, zero included")
@@ -3713,21 +2808,15 @@ class AccountRepositoryTest {
         void storingTruncatesTowardZero() {
             AccountRecord account = new AccountRecord(ASCII);
 
-            // 12.349 with HALF_UP would store 12.35. COBOL stores 12.34, and so does this.
             account.setAcctCurrBal(new BigDecimal("12.349"));
             assertThat(account.getAcctCurrBal()).isEqualByComparingTo(new BigDecimal("12.34"));
 
-            // 12.345 is the case that separates DOWN from HALF_UP and from HALF_EVEN: those two would
-            // store 12.35 and 12.34 respectively, and only one of the three is what COBOL does.
             account.setAcctCurrBal(new BigDecimal("12.345"));
             assertThat(account.getAcctCurrBal()).isEqualByComparingTo(new BigDecimal("12.34"));
 
-            // Toward zero, not toward negative infinity: FLOOR would store -12.35.
             account.setAcctCreditLimit(new BigDecimal("-12.349"));
             assertThat(account.getAcctCreditLimit()).isEqualByComparingTo(new BigDecimal("-12.34"));
 
-            // And the same policy applied through the shared seam, so the record and the arithmetic
-            // helper cannot disagree about what storing means.
             assertThat(CobolDecimal.store(new BigDecimal("12.345"), CobolDecimal.MONETARY_SCALE))
                     .isEqualByComparingTo(new BigDecimal("12.34"));
             assertThat(CobolDecimal.storeMonetary(new BigDecimal("-0.009")))
@@ -3737,10 +2826,6 @@ class AccountRepositoryTest {
         @Test
         @DisplayName("the 1050-UPDATE-ACCOUNT sequence stores a truncated balance and a 300-byte record")
         void theAccountBreakSequenceStoresATruncatedBalance() {
-            // app/cbl/CBACT04C.cbl:L352-L356, in order: ADD WS-TOTAL-INT TO ACCT-CURR-BAL, MOVE 0 to
-            // both cycle amounts, REWRITE. The interest total is a PIC S9(09)V99 accumulation of
-            // per-category figures that were themselves truncated at L464-L465, so the addend arrives at
-            // scale 2 - and an addend with more precision than that must still truncate, never round.
             List<String> rows = fixtureRows();
             AccountRepository repository = repository(seeded(rows));
             long acctId = Long.parseLong(keyImageOf(rows.get(0)));
@@ -3771,9 +2856,6 @@ class AccountRepositoryTest {
         @Test
         @DisplayName("no binary floating-point type appears anywhere on the access surface")
         void noBinaryFloatingPointAppearsOnTheAccessSurface() {
-            // A double cannot represent 0.01, so a balance held in one drifts. The rule is structural
-            // rather than aspirational: nothing on the repository, its nested outcome types or either
-            // record may return, accept or hold a float or a double.
             List<Class<?>> forbidden = List.of(double.class, float.class, Double.class, Float.class);
             List<String> offenders = new ArrayList<>();
 
@@ -3807,10 +2889,6 @@ class AccountRepositoryTest {
         @DisplayName("the record's own monetary span is twelve bytes with the sign overpunched, not "
                 + "thirteen")
         void theMonetarySpanIsTwelveBytes() {
-            // The arithmetic that makes CVACT01Y total 300: PIC S9(10)V99 is ten digits plus two, and
-            // the sign is carried in the trailing byte rather than in one of its own. Assuming a
-            // thirteenth byte per amount would make the record 305 and every offset after the first
-            // amount wrong.
             assertThat(AccountRecord.MONETARY_INTEGER_DIGITS).isEqualTo(10);
             assertThat(AccountRecord.MONETARY_SCALE).isEqualTo(CobolDecimal.MONETARY_SCALE);
             assertThat(AccountRecord.ACCT_CURR_BAL_LENGTH).isEqualTo(12);
@@ -3827,8 +2905,6 @@ class AccountRepositoryTest {
             assertThat(account.rawAcctCurrCycDebit())
                     .hasSize(AccountRecord.ACCT_CURR_CYC_DEBIT_LENGTH);
 
-            // Summed field by field from app/cpy/CVACT01Y.cpy:L5-L17, the whole record accounted for:
-            // 11 + 1 + 12 + 12 + 12 + 10 + 10 + 10 + 12 + 12 + 10 + 10 + 178 = 300.
             int declared = AccountRecord.ACCT_ID_LENGTH
                     + AccountRecord.ACCT_ACTIVE_STATUS_LENGTH
                     + AccountRecord.ACCT_CURR_BAL_LENGTH
@@ -3844,8 +2920,6 @@ class AccountRepositoryTest {
                     + AccountRecord.FILLER_LENGTH;
             assertThat(declared).isEqualTo(THREE_HUNDRED).isEqualTo(AccountRecord.RECORD_LENGTH);
 
-            // And the misspelling in the copybook survives into the field name, because a differ
-            // comparing field names would otherwise report a difference at every account record.
             assertThat(AccountRecord.ACCT_EXPIRAION_DATE_NAME)
                     .as("app/cpy/CVACT01Y.cpy:L11 spells it EXPIRAION; renaming it would break parity")
                     .isEqualTo("ACCT-EXPIRAION-DATE");

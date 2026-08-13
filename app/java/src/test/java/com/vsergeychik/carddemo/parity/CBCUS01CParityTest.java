@@ -59,260 +59,35 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
 
 /**
- * The parity gate for {@code CBCUS01C}: twenty declarative cases, each judged field by field, each
- * required to report a diff count of zero.
- *
- * <h2>Where the expected values come from - read this first</h2>
- * <p>Every expectation in {@code src/test/resources/parity/CBCUS01C/case01.json} through
- * {@code case20.json} is <strong>statically derived</strong>. It was obtained by reading
- * {@code app/cbl/CBCUS01C.cbl} paragraph by paragraph - all 178 lines of it, with
- * <strong>zero</strong> {@code EXEC CICS} statements in them - and cross-checking the result against
- * three other authoritative sources: the byte layout of {@code app/cpy/CVCUS01Y.cpy} (nineteen spans
- * totalling 500 bytes, ending in {@code FILLER PIC X(168)}), the DD and {@code PARM} contract of
- * {@code app/jcl/READCUST.jcl} (one step {@code STEP05}, a bare {@code EXEC PGM=CBCUS01C} with
- * <em>no</em> {@code PARM}, one input DD named {@code CUSTFILE}, and {@code SYSOUT} and
- * {@code SYSPRINT} for output), and the real fixture data in {@code app/data/ASCII/custdata.txt}
- * (exactly fifty records of exactly 500 bytes, every one of them with a blank {@code FILLER}).
- *
- * <p><strong>No expected value here was captured from a run of the legacy COBOL, and none was
- * captured from a run of this Java translation either.</strong> Executing the 28 legacy programs is
- * impossible in this environment: there is no z/OS runtime, the available COBOL compiler has its
- * indexed file handler disabled - which rules out the {@code ORGANIZATION INDEXED} {@code SELECT} at
- * {@code app/cbl/CBCUS01C.cbl:L29-L33} outright - and no Language Environment {@code CEE*} service is
- * present, so the {@code CALL 'CEE3ABD'} at {@code app/cbl/CBCUS01C.cbl:L158} cannot even be linked.
- * The static derivation is the documented substitute for a captured baseline. It is a deliberate,
- * escalated deviation from the original wording of the acceptance criterion - recorded as risk
- * <strong>R-A</strong> - and not an unremarked convenience. What survives the substitution is
- * everything substantive: twenty cases for this program, comparison field by field rather than as
- * whole strings, and a diff count that must be zero across all twenty before this module is
- * complete. Only the provenance of the expected values changed.
- *
- * <h2>The mandated names call this a repository and a service; the program is a batch job</h2>
- * <p>{@code CBCUS01C} is mapped by name onto {@link CustomerRepository} and {@link CustomerService},
- * and that pair of names leaves out the single most important thing about the program: its own header
- * reads {@code Type : BATCH COBOL Program} and {@code Function : Read and print customer data file},
- * and {@code app/jcl/READCUST.jcl} runs it as {@code EXEC PGM=CBCUS01C}. It is a standalone, runnable
- * batch program, not a data-access helper that something else drives.
- * {@link CustomerFileReaderJob} exists precisely to preserve that runnable behaviour, and fifteen of
- * the twenty cases below reach the program through it, as a Spring Batch tasklet. The divergence is
- * documented rather than resolved by reshaping the program: the names come from the plan and the
- * behaviour comes from the source (rule <strong>R1</strong>, register 0.8.4, practice
- * <strong>B4</strong>). Nobody should conclude from the mandated names that this program has no
- * runnable form, and nobody should "simplify" it into one that has none.
- *
- * <h2>What the fingerprint of this program is - and the defect that doubles it</h2>
- * <p>{@code CBCUS01C} writes no record anywhere, so its {@code SYSOUT} <em>is</em> its observable
- * output. The fingerprint is the ordered list of {@code DISPLAY} lines plus the {@code RETURN-CODE},
- * and the case files state that list line for line and character for character.
- *
- * <p>The line sequence of one successful pass is:
- * <ol>
- *   <li>{@value CustomerService#START_OF_EXECUTION} - the mainline's first statement, {@code L71};</li>
- *   <li>for each record, <strong>{@value CustomerService#DISPLAYS_PER_RECORD} byte-identical
- *       lines</strong>, because each record is displayed <em>twice</em> by two different paragraphs:
- *       {@code 1000-CUSTFILE-GET-NEXT} emits the raw 500-byte group image from inside its {@code '00'}
- *       arm at {@code L96}, and then the mainline's own {@code DISPLAY CUSTOMER-RECORD} at {@code L78}
- *       emits the very same image again;</li>
- *   <li>{@value CustomerService#END_OF_EXECUTION} - {@code L85}.</li>
- * </ol>
- * For the fifty-record fixture that is {@code 2 + (50 x 2) = 102} lines, which {@code case01.json}
- * states in full. <strong>The duplication is a preserved defect, not redundant code</strong> (practice
- * <strong>B5</strong>): de-duplicating it would halve every fingerprint this program produces. This is
- * also the exact point at which {@code CBCUS01C} differs from its sibling {@code CBACT01C}, whose
- * {@code L96} performs a labelled-field display paragraph and which therefore emits thirteen lines per
- * record rather than two. {@code CBCUS01C} has no labelled display paragraph at all and must not be
- * given one.
- *
- * <p>A fatal arm replaces the closing banner with three lines and a non-zero return code: the failing
- * paragraph's own error literal, then the rendering of {@code Z-DISPLAY-IO-STATUS} -
- * {@code "}{@value FileStatus#DISPLAY_PREFIX}{@code "} followed by the four-character
- * {@code IO-STATUS-04} image, where the {@code NNNN} is part of the COBOL literal at {@code L168} and
- * {@code L172} rather than a placeholder awaiting substitution - and then
- * {@value AbendException#ABEND_DISPLAY_TEXT} from {@code Z-ABEND-PROGRAM}. The
- * {@code CALL 'CEE3ABD'} at {@code L158} arrives here as an {@link AbendException} carrying
- * {@code APPL-RESULT}, which is {@value CustomerService#APPL_RESULT_FATAL} at every one of this
- * program's three fatal arms. An abend is an <em>observation</em> and is compared like any other
- * expectation; it never fails a case by escaping.
- *
- * <h2>How the units are reached: no launcher, no HTTP, no context</h2>
- * <p>Two of the four unit kinds are used, and each case states which one it is:
- * <ul>
- *   <li><strong>{@code "unitKind": "BATCH_JOB"}</strong> - eighteen cases. The adapter drives
- *       {@link CustomerFileReaderJob#customerFileDisplayTasklet()} directly, calling
- *       {@link Tasklet#execute} with a plain {@link StepContribution} and {@link ChunkContext}. There
- *       is no {@code JobLauncher}, no {@code JobLauncherTestUtils}, no job repository write, no
- *       asynchronous executor, no application context and nothing resembling an HTTP layer between
- *       the assertion and the code, so the read order and the display order observed here are the ones
- *       the translated statements produce (gate <strong>G51</strong>).</li>
- *   <li><strong>{@code "unitKind": "SERVICE"}</strong> - two cases. The adapter constructs
- *       {@link CustomerService} and calls
- *       {@link CustomerService#readAndPrintCustomerFileTo(SysoutSink)}, which is the production
- *       streaming entry point and the shortest path there is to the decision logic. Both kinds are
- *       legitimate for this program because the whole of its logic lives in the service and the job is
- *       only its wiring; using both means neither the wiring nor the logic is asserted only
- *       indirectly.</li>
- * </ul>
- * In both shapes the {@code SYSOUT} seam is what makes the fingerprint possible: lines are handed to
- * the harness's recorder rather than written to a stream, so they survive an abend and reach the
- * comparison even when the run does not finish.
- *
- * <p>The collaborators are constructed rather than injected. No dataset name from the real system
- * appears anywhere in this file: the cases address the dataset by its {@code CUSTFILE} binding key and
- * this class supplies a stand-in name of its own, because the eight names taken from
- * {@code app/csd/CARDDEMO.CSD} live only in {@code application.yml} (gate <strong>G46</strong>).
- *
- * <h2>Two backends, and what decides which one a case meets</h2>
- * <p>A parity case is inputs and expectations; it is never a script. {@link Invocation} deliberately
- * exposes no part of the expectation, so this adapter cannot and does not branch on what a case
- * expects. It branches on two things only, both of them inputs: the datasets the case declares, and the
- * {@code unitStimulus} the case declares, which states the I/O outcomes no arrangement of rows can
- * produce.
- * <table border="1">
- *   <caption>Which backend a case meets, and why</caption>
- *   <tr><th>the case</th><th>the backend is</th><th>what it reaches</th></tr>
- *   <tr><td>arranges nothing, and declares a {@code CUSTFILE}</td>
- *       <td>a private in-memory relation holding the declared rows, read through the real
- *           {@link CustomerRepository}</td>
- *       <td>the ordinary path: {@code '00'} per record, then {@code '10'}. Eleven cases</td></tr>
- *   <tr><td>arranges nothing, and declares no {@code CUSTFILE} at all</td>
- *       <td>a database with no such relation</td>
- *       <td>{@code 0000-CUSTFILE-OPEN}'s fatal arm, from a dataset that is genuinely not there. No
- *           case currently declares itself this way - every one of the twenty names its
- *           {@code CUSTFILE}, two of them as a dataset that exists and holds no row - so this row
- *           records a shape the adapter supports rather than one a case takes today</td></tr>
- *   <tr><td>arranges an open, read or close outcome</td>
- *       <td>a stubbed repository reporting exactly that status, with the reads assembled from the
- *           case's own declared rows through the real {@link CustomerRecord#decode(String, Charset)}</td>
- *       <td>the {@code WHEN OTHER} arms and both branches of {@code Z-DISPLAY-IO-STATUS}. Nine
- *           cases</td></tr>
- * </table>
- * The real relation is used wherever it can be, because it is the only backend against which "the
- * fifty stored records are still exactly the fifty stored records" is an assertion rather than an echo:
- * the final state of those cases is read back out of the relation, not repeated from the seed. The
- * stub is used only where the real backend cannot report the status the COBOL branches on - it reports
- * {@code '00'}, {@code '10'} and its permanent-error convention and nothing else, whereas
- * {@code L94} and {@code L98} test exactly two values and route the remaining hundred-odd to a fatal
- * arm that gate <strong>G47</strong> requires be exercised.
- *
- * <h2>Independence</h2>
- * <p>Every case that uses a relation gets a private
- * record-image store of its own, created inside the case, so there is nothing to shut down and
- * nothing to leak. This class holds no mutable state, static or otherwise - every scenario is
- * decoded on demand from the case that declares it - so the twenty cases may run in any order,
- * repeatedly, or in parallel, and each observes exactly what it seeded (practice <strong>B9</strong>,
- * gate <strong>G53</strong>).
- *
- * <h2>Why a width difference found here is a cross-module finding</h2>
- * <p>{@code CVCUS01Y} has six consumers, and its 500-byte layout is also the shape {@code CBSTM03B}
- * reports for its {@code CUSTFILE} DD, whose {@code FD} splits the record as {@code X(09)} of key plus
- * {@code X(491)} of data - 500 exactly. An offset or width difference surfaced by these twenty cases
- * therefore breaks the statement job as well as this one, so it is never a local defect.
- *
- * @see CustomerService the unit under test - the translation of {@code CBCUS01C}
- * @see CustomerFileReaderJob its Spring Batch form, which preserves the program's runnable behaviour
- * @see ParityHarness which seeds a case, invokes the unit and captures the fingerprint
- * @see FieldDiffer which compares the fingerprint field by field and counts the differences
+ * The parity gate for {@code CBCUS01C}: twenty declarative cases, each judged field by field, each required
+ * to report a diff count of zero.
  */
 @DisplayName("CBCUS01C parity - 20 statically derived cases over the standalone batch program that "
         + "reads the customer master and displays every record twice")
 class CBCUS01CParityTest {
-
-    // =================================================================================================
-    // Identity. Every name is taken from the class under test or from the repository, so this file and
-    // the resource directory parity/CBCUS01C/ cannot drift apart and no dataset literal appears here.
-    // =================================================================================================
-
-    /** {@code CBCUS01C} - also the {@code parity/<PROGRAM>/} resource directory and this class's stem. */
     private static final String PROGRAM = CustomerService.PROGRAM_ID;
 
-    /** {@code CUSTFILE} - the one DD {@code app/jcl/READCUST.jcl:L9} declares, and the case key. */
     private static final String DD_NAME = CustomerRepository.BATCH_DD_NAME;
 
-    /**
-     * The call site a case names to arrange a failed {@code OPEN INPUT} - {@code 0000-CUSTFILE-OPEN}.
-     * Spelt {@code <VERB>-<DD>} so a case file reads as the paragraph does, and validated by
-     * {@link ParityCase.UnitStimulus} rather than by convention here.
-     */
     private static final String OPEN_SITE = "OPEN-" + CustomerRepository.BATCH_DD_NAME;
 
-    /** The call site for the sequential read - {@code 1000-CUSTFILE-GET-NEXT}. */
     private static final String READ_SITE = "READ-" + CustomerRepository.BATCH_DD_NAME;
 
-    /** The call site for the close - {@code 9000-CUSTFILE-CLOSE}. */
     private static final String CLOSE_SITE = "CLOSE-" + CustomerRepository.BATCH_DD_NAME;
 
-    /**
-     * The code page the seeded rows and the repository both use: {@code US-ASCII}, taken from the
-     * harness so the two cannot disagree.
-     *
-     * <p>Named explicitly and never left to the platform. A fixed-width mainframe record is bytes in a
-     * specific code page, and {@code app/data/ASCII} is the ASCII half of the shipped data - the
-     * EBCDIC half is read as {@code IBM037} and is not what these cases seed (practice
-     * <strong>B8</strong>).
-     */
     private static final Charset DATASET_CHARSET = ParityHarness.FIXTURE_CHARSET;
 
-    /**
-     * A stand-in dataset name. The eight real ones declared by {@code app/csd/CARDDEMO.CSD} live only
-     * in {@code application.yml}, so no fully-qualified mainframe dataset name appears in Java at
-     * all - a case addresses its dataset by binding key, and this is the local name that key resolves
-     * to (gate <strong>G46</strong>).
-     */
     private static final String TEST_DSNAME = "PARITY.CBCUS01C.CUSTOMER.KSDS";
 
-    /** The record-image column of the seeded relation, which the repository's probe discovers. */
     private static final String RECORD_IMAGE_COLUMN = "REC";
 
-    /**
-     * The rendered status line a backend refusal produces.
-     *
-     * <p>{@link CustomerRepository#PERMANENT_ERROR_STATUS} is {@code '9'} followed by a binary
-     * feedback byte, so {@code Z-DISPLAY-IO-STATUS} renders it through the extended branch at
-     * {@code app/cbl/CBCUS01C.cbl:L162-L168}. Composed through the class that owns the paragraph's
-     * shape rather than transcribed, so a change to either shows up as a failure here.
-     */
     private static final String PERMANENT_ERROR_LINE =
             FileStatus.toDisplayLine(CustomerRepository.PERMANENT_ERROR_STATUS);
 
-    // =================================================================================================
-    // THE SCENARIO TABLE - the I/O outcomes seeded data cannot produce.
-    // =================================================================================================
-
-    /**
-     * What the backend does during one case: how the {@code OPEN} answers, how the {@code CLOSE}
-     * answers, and which {@code READ} - if any - fails and with what status.
-     *
-     * <p>This is an <strong>input</strong>, in exactly the sense the seeded rows are. The three I/O
-     * paragraphs of {@code CBCUS01C} each test a {@code FILE STATUS} and abend on the arm they do not
-     * name, and no arrangement of rows can produce a failed {@code OPEN}, a {@code '22'} or a
-     * {@code '23'} on a sequential read, or a failed {@code CLOSE} - those come from the dataset being
-     * unavailable, from a catalogue or hardware fault, or from the dataset ceasing to be addressable
-     * between the browse and the close. A case therefore states its expected output in
-     * {@code parity/CBCUS01C/caseNN.json} and its arranged input here, and the two are written
-     * independently: nothing in this table is derived from a case file, and nothing in a case file is
-     * derived from this table.
-     *
-     * <p>Every component is validated on construction, so a table entry that says two contradictory
-     * things - a failed open that also arranges a read outcome, a failing read index with no status -
-     * cannot be written at all. That matters more than it looks: an entry that quietly did nothing
-     * would leave the run on its ordinary path while the case file described a failure, and the case
-     * would then fail with a message about lines rather than about the omission.
-     *
-     * @param openStatus the two-character status {@code OPEN INPUT} at {@code L120} reports
-     * @param closeStatus the two-character status {@code CLOSE} at {@code L138} reports
-     * @param failingRead the zero-based index of the {@code READ} that fails, or
-     *     {@link #NO_FAILING_READ} when every read succeeds until end of file. It may equal the seeded
-     *     row count, which arranges the failure at the position end of file would otherwise have been
-     *     reported
-     * @param failingReadStatus the status that read reports, or {@code null} when no read fails
-     */
     private record Scenario(String openStatus, String closeStatus, int failingRead,
                             String failingReadStatus) {
-
-        /** The {@link #failingRead} value meaning "no read fails". */
         private static final int NO_FAILING_READ = -1;
 
-        /** Validates the entry against the shapes {@code CBCUS01C} can actually take. */
         private Scenario {
             requireStatus(openStatus, "openStatus");
             requireStatus(closeStatus, "closeStatus");
@@ -349,7 +124,6 @@ class CBCUS01CParityTest {
             }
         }
 
-        /** Refuses anything that is not a two-character COBOL {@code FILE STATUS}. */
         private static void requireStatus(String status, String member) {
             Objects.requireNonNull(status, "Scenario." + member + " is required; a COBOL FILE STATUS "
                     + "is always two characters, and '" + FileStatus.OK + "' is how a successful "
@@ -361,91 +135,34 @@ class CBCUS01CParityTest {
             }
         }
 
-        /**
-         * Nothing is arranged: the case's declared inputs alone decide what happens.
-         *
-         * <p>Used by the eleven ordinary cases. A case that reaches a fatal arm through its inputs
-         * alone - by declaring no {@code CUSTFILE} at all, so the {@code OPEN}'s metadata probe finds
-         * no such relation - would also be declared this way, because that is a property of its
-         * inputs and not something this table has to say.
-         *
-         * @return the scenario
-         */
         private static Scenario asDeclared() {
             return new Scenario(FileStatus.OK, FileStatus.OK, NO_FAILING_READ, null);
         }
 
-        /**
-         * {@code OPEN INPUT} at {@code L120} reports something other than {@code '00'}.
-         *
-         * @param status the status it reports
-         * @return the scenario
-         */
         private static Scenario openFails(String status) {
             return new Scenario(status, FileStatus.OK, NO_FAILING_READ, null);
         }
 
-        /**
-         * The {@code READ} at {@code L93} succeeds for a number of records and then fails.
-         *
-         * @param afterRecords how many records are read and displayed first, which is also the
-         *     zero-based index of the failing read
-         * @param status the status the failing read reports
-         * @return the scenario
-         */
         private static Scenario readFailsAfter(int afterRecords, String status) {
             return new Scenario(FileStatus.OK, FileStatus.OK, afterRecords, status);
         }
 
-        /**
-         * Every read succeeds and the {@code CLOSE} at {@code L138} then fails.
-         *
-         * <p>{@code case18} and {@code case19} are the two cases that declare this, and a run that was
-         * clean through to its last statement is necessarily the only shape that can: {@link Scenario}
-         * refuses a failing {@code CLOSE} beside a failing {@code READ}, and every read failure abends
-         * before {@code L83} runs the close at all. The two differ in <strong>record count and nothing else</strong> - {@code case18}
-         * refuses the close after three complete record pairs and {@code case19} after none, over a
-         * dataset that exists and holds no row - which is what makes them a pair rather than a
-         * duplicate: {@code L137}'s {@code ADD 8 TO ZERO GIVING APPL-RESULT} resets the register on
-         * entry regardless of the {@code 16} the end-of-file read left in it, so both must reach the
-         * same three trailing lines and the same return code, and an implementation that carried
-         * {@code APPL-RESULT} forward instead of resetting it passes one and fails the other. The
-         * vocabulary of this table is therefore the three I/O paragraphs {@code CBCUS01C} actually
-         * has, and each of them is reached from it. {@code customer.CustomerServiceTest} drives
-         * {@code 9000-CUSTFILE-CLOSE} directly as well, at the service rather than the case level.
-         *
-         * @param status the status it reports
-         * @return the scenario
-         */
         private static Scenario closeFails(String status) {
             return new Scenario(FileStatus.OK, status, NO_FAILING_READ, null);
         }
 
-        /** @return whether this entry arranges anything the seeded rows could not produce */
         private boolean arranged() {
             return !FileStatus.isOk(openStatus) || readFails() || closeFails();
         }
 
-        /** @return whether one of the reads is arranged to fail */
         private boolean readFails() {
             return failingRead != NO_FAILING_READ;
         }
 
-        /** @return whether {@code 9000-CUSTFILE-CLOSE} is arranged to fail */
         private boolean closeFails() {
             return !FileStatus.isOk(closeStatus);
         }
 
-        /**
-         * The status whose {@code IO-STATUS-04} image the run is expected to display, or {@code null}
-         * for an entry that arranges no failure at all.
-         *
-         * <p>Exactly one of the three can be the failing one, because the compact constructor above
-         * refuses an entry that arranges two: a failed open never reaches the read or the close, and a
-         * failed read never reaches the close. So the first match is the only match.
-         *
-         * @return the arranged failing status, whichever paragraph reports it, or {@code null}
-         */
         private String failingStatus() {
             if (!FileStatus.isOk(openStatus)) {
                 return openStatus;
@@ -457,56 +174,10 @@ class CBCUS01CParityTest {
         }
     }
 
-    /**
-     * The three arrangements this program's cases make, and which cases make them.
-     *
-     * <p>Kept as prose beside the decoder because the distribution is itself an assertion: eleven cases
-     * arrange nothing and run the ordinary path; {@code case10} ({@code '92'}) and {@code case13}
-     * ({@code '37'}) fail the {@code OPEN}; {@code case12} ({@code '04'} after three), {@code case14}
-     * ({@code '22'} after four), {@code case15} ({@code '23'} at the row count), {@code case16}
-     * ({@code '30'} on the first read) and {@code case17} (the permanent-error status after one) fail the
-     * {@code READ}; and {@code case18} and {@code case19} fail the {@code CLOSE} with {@code '42'} after
-     * three record pairs and after none. Every one of those values now lives in the case file that runs
-     * it, and {@link #scenarioFor(ParityCase)} is the only thing that reads them.
-     *
-     * <ul>
-     *   <li>{@code '42'} is two digits whose first byte is not {@code '9'}, so it renders through the
-     *       {@code ELSE} arm of {@code Z-DISPLAY-IO-STATUS}, identically for {@code case18} and
-     *       {@code case19}; the {@code IO-STAT1 = '9'} arm is reached from the open and read sites
-     *       instead, by {@code case10} and {@code case17}.</li>
-     * </ul>
-     */
-    /**
-     * The scenario a case runs under, decoded from the stimulus that case declares.
-     *
-     * <p>This was a table in Java keyed by case identifier, and the table was the defect: a reader of
-     * {@code parity/CBCUS01C/case10.json} saw four lines ending in an abend and nothing anywhere in the
-     * file to say the {@code OPEN} had been arranged to report {@code '92'}, so the case read as though
-     * it described an ordinary pass. It also made the identifier configuration rather than identity -
-     * renumber a case and it silently ran a different arrangement.
-     *
-     * <p>The case now names one of this program's three call sites -
-     * {@code OPEN-}{@value #DD_NAME}, {@code READ-}{@value #DD_NAME}, {@code CLOSE-}{@value #DD_NAME} -
-     * and gives it the two-character {@code FILE STATUS} it reports, with {@code afterRecords} on the
-     * read for the number of record pairs displayed first. A case that declares nothing runs the
-     * ordinary path, which is what eleven of the twenty do. The arrangement is still an input and the
-     * expected lines are still declared independently, so the two agreeing remains evidence; both are
-     * now in one reviewable file.
-     *
-     * @param parityCase the case
-     * @return the arranged backend behaviour; never {@code null}
-     * @throws IllegalArgumentException if the case names a call site this program does not have, gives a
-     *     shape that site cannot report, or declares a kind of stimulus this program has no use for
-     */
     private static Scenario scenarioFor(ParityCase parityCase) {
         return scenarioFrom(parityCase.unitStimulus());
     }
 
-    /**
-     * @param stimulus the declared stimulus
-     * @return the arranged backend behaviour
-     * @throws IllegalArgumentException as {@link #scenarioFor(ParityCase)} documents
-     */
     private static Scenario scenarioFrom(ParityCase.UnitStimulus stimulus) {
         if (!stimulus.operationScript().isEmpty() || !stimulus.linkage().isEmpty()
                 || !stimulus.stepStatuses().isEmpty() || !stimulus.environment().isEmpty()) {
@@ -540,17 +211,6 @@ class CBCUS01CParityTest {
         return new Scenario(openStatus, closeStatus, failingRead, failingReadStatus);
     }
 
-    /**
-     * @param site the call site, for the failure message
-     * @param outcome the declared outcome
-     * @return the {@code FILE STATUS} it reports
-     * @throws IllegalArgumentException if the outcome is a CICS response - every one of this program's
-     *     I/O verbs reports a two-character status into {@code CUSTFILE-STATUS} and the program tests
-     *     that and nothing else - or declares nothing at all. A refusal is accepted and means the
-     *     dataset could not be reached, which this repository reports as
-     *     {@link CustomerRepository#PERMANENT_ERROR_STATUS}: the character {@code '9'} followed by a
-     *     zero feedback byte, and the one status no JSON string can hold
-     */
     private static String requireStatusOutcome(String site, ParityCase.CallSiteOutcome outcome) {
         if (outcome.resp() != null) {
             throw new IllegalArgumentException("Call site " + site + " declares a CICS RESP, but "
@@ -567,11 +227,6 @@ class CBCUS01CParityTest {
         return outcome.status();
     }
 
-    /**
-     * Every shipped case's scenario, in case order, for the assertions that take a census of the set.
-     *
-     * @return case identifier to scenario, unmodifiable
-     */
     private static Map<String, Scenario> shippedScenarios() {
         Map<String, Scenario> declared = new LinkedHashMap<>();
         for (ParityCase parityCase : ParityHarness.casesOf(PROGRAM)) {
@@ -580,38 +235,10 @@ class CBCUS01CParityTest {
         return Collections.unmodifiableMap(declared);
     }
 
-    // =================================================================================================
-    // The case set.
-    // =================================================================================================
-
-    /**
-     * This program's complete case set, in {@code case01} through {@code case20} order.
-     *
-     * <p>{@link ParityHarness#casesOf(String)} enforces the set: a missing case is named individually,
-     * and a resource in the directory that the twenty-case enumeration would never read - a
-     * {@code case21.json}, a {@code Case07.json}, a {@code case07.json.bak} - is refused by name. A
-     * short set is not a smaller gate; it is a gate that passes without asking the questions.
-     *
-     * @return the twenty cases, in ascending case order
-     */
     static List<ParityCase> cases() {
         return ParityHarness.casesOf(PROGRAM);
     }
 
-    /**
-     * The count is part of the gate, so it is asserted rather than assumed.
-     *
-     * <p>{@code casesOf} already refuses a set that is not exactly twenty, which makes this a statement
-     * of the requirement at the place a reader looks for it rather than a second mechanism - and it
-     * also pins several properties of the <em>set</em> that the loader checks per file and nothing
-     * otherwise states as a whole: that every case in the directory really is a {@code CBCUS01C} case,
-     * that each declares one of the two unit kinds this program has, that none declares a job
-     * parameter, and that none expects a written record.
-     *
-     * <p>The scenario table is compared against the case set in both directions here too. A case with
-     * no scenario would run on its ordinary path while its file described a failure; a scenario with no
-     * case would arrange something nothing runs. Neither is detectable from one side alone.
-     */
     @Test
     @DisplayName("the set is exactly 20 CBCUS01C cases, case01 through case20, each with a scenario")
     void theCaseSetIsExactlyTwenty() {
@@ -659,19 +286,6 @@ class CBCUS01CParityTest {
                 .containsExactlyElementsOf(declared.stream().map(ParityCase::caseId).toList());
     }
 
-    /**
-     * The declared unit kinds are exactly eighteen {@link UnitKind#BATCH_JOB} and two
-     * {@link UnitKind#SERVICE}, and the two are the ones the class documentation names.
-     *
-     * <p>{@link ParityHarness#run(ParityCase, UnitKind, ParityUnit)} already refuses a mismatch between
-     * a case's declared kind and the adapter it is handed to, but it refuses it one case at a time and
-     * only when that case runs, and {@link #theCaseSetIsExactlyTwenty()} only requires each kind to be
-     * one of the two legitimate ones. Neither pins how many cases take which path. Counting the whole
-     * set here does, which matters because the class documentation states the distribution in prose and
-     * prose cannot be executed: it had drifted to claiming fifteen batch jobs and five services while
-     * the directory held eighteen and two. Stating the two service cases by name means a case that
-     * changes path has to come to this assertion and say so.
-     */
     @Test
     @DisplayName("declares BATCH_JOB for eighteen cases and SERVICE for case10 and case14")
     void theDeclaredUnitKindsAreEighteenJobsAndTwoServices() {
@@ -697,34 +311,6 @@ class CBCUS01CParityTest {
                 .isEqualTo(ParityHarness.CASES_PER_PROGRAM);
     }
 
-    /**
-     * Pins the shape every case's expected line sequence must have, so a fixture cannot quietly
-     * describe a program other than this one.
-     *
-     * <p>This is a check on the <em>expectations</em>, and it is worth having beside the gate rather
-     * than folded into it. The gate compares one case's expectations against one run; nothing in it
-     * would notice a fixture whose expected lines were internally inconsistent - a fatal case that
-     * expected the closing banner, say, or a successful case whose line count was not the two banners
-     * plus an even number of record images. Such a fixture would then be compared faithfully against a
-     * translation written to match it, and both would be wrong together.
-     *
-     * <p>Four properties are asserted, each taken from the source rather than restated:
-     * <ul>
-     *   <li>every run opens with {@code L71}'s banner;</li>
-     *   <li>a run that ends normally closes with {@code L85}'s banner, emits the two banners plus a
-     *       whole number of {@value CustomerService#DISPLAYS_PER_RECORD}-line record blocks, and ends
-     *       with {@code RETURN-CODE} 0 because the program never touches it;</li>
-     *   <li>a run that abends ends with exactly the three lines of the shared fatal arm - one of the
-     *       three error literals, the rendered file status, and
-     *       {@value AbendException#ABEND_DISPLAY_TEXT} - carries
-     *       {@value CustomerService#APPL_RESULT_FATAL} as its return code, and never reaches the
-     *       closing banner;</li>
-     *   <li>every record image in every case is exactly {@value CustomerRecord#RECORD_LENGTH}
-     *       characters, and the images arrive in <strong>adjacent identical pairs</strong>, which is
-     *       the preserved {@code L96}-then-{@code L78} duplication stated as a property of the
-     *       expectations themselves (gates <strong>G19</strong> and <strong>G21</strong>).</li>
-     * </ul>
-     */
     @Test
     @DisplayName("every case's expected SYSOUT has the shape CBCUS01C's paragraphs produce")
     void expectedLineSequencesHaveTheProgramsShape() {
@@ -750,12 +336,6 @@ class CBCUS01CParityTest {
         }
     }
 
-    /**
-     * Asserts the shape of a run that reached {@code GOBACK}.
-     *
-     * @param where the case being described, for the failure text
-     * @param texts the expected line sequence
-     */
     private static void assertNormalEndShape(String where, List<String> texts) {
         assertThat(texts.get(texts.size() - 1))
                 .as("%s: a normal end reaches the L85 banner", where)
@@ -773,13 +353,6 @@ class CBCUS01CParityTest {
                 .doesNotContainAnyElementsOf(CustomerService.ERROR_TEXTS);
     }
 
-    /**
-     * Asserts the shape of a run that reached {@code CALL 'CEE3ABD'}.
-     *
-     * @param where the case being described, for the failure text
-     * @param declaredCase the case, for its expected return code
-     * @param texts the expected line sequence
-     */
     private static void assertFatalShape(String where, ParityCase declaredCase, List<String> texts) {
         assertThat(declaredCase.expectedReturnCode())
                 .as("%s: every fatal arm of this program leaves APPL-RESULT at %d before "
@@ -798,13 +371,6 @@ class CBCUS01CParityTest {
                 .startsWith(FileStatus.DISPLAY_PREFIX)
                 .hasSize(FileStatus.DISPLAY_PREFIX.length() + FileStatus.STATUS_IMAGE_LENGTH);
 
-        // The one place the two independently written sides of a case are cross-checked against each
-        // other: the status the case's own stimulus arranges must be the status it expects to
-        // see rendered. A case whose table entry and whose fixture disagreed would otherwise fail with
-        // a message about a line, and the line would be the symptom rather than the cause. A fatal case
-        // that arranges nothing could only be one whose dataset is absent, whose OPEN probe is refused
-        // and which therefore reports the permanent-error convention; no case declares itself that way
-        // today, and the arm stays because the alternative is a null the reader has to reason about.
         String arranged = scenarioFor(declaredCase).failingStatus();
         assertThat(texts.get(texts.size() - 2))
                 .as("%s: the rendered status must be the one this case arranges - %s", where,
@@ -824,19 +390,6 @@ class CBCUS01CParityTest {
                 .isZero();
     }
 
-    /**
-     * Asserts that every record image in a case is 500 characters and that they arrive in adjacent
-     * identical pairs.
-     *
-     * <p>The pairing is the preserved duplication, expressed as a property of the expectation rather
-     * than of the run: {@code L96} and {@code L78} display the <em>same</em> record area with no
-     * statement between them that could change it, so the two lines are byte-identical and adjacent. A
-     * fixture that stated one image per record, or two images that differed, would describe a program
-     * this is not.
-     *
-     * @param where the case being described, for the failure text
-     * @param texts the expected line sequence
-     */
     private static void assertRecordImagesArePairedAndFiveHundredBytes(String where,
             List<String> texts) {
         List<String> images = new ArrayList<>();
@@ -859,29 +412,6 @@ class CBCUS01CParityTest {
         }
     }
 
-    // =================================================================================================
-    // The facts the twenty case files rest on. Each is asserted here rather than assumed, because a
-    // case file states bytes and a wrong premise would be stated identically on both sides.
-    // =================================================================================================
-
-    /**
-     * The record is 500 bytes, its nineteen spans account for every one of them, and the trailing
-     * {@code FILLER} is present.
-     *
-     * <p>Gate <strong>G19</strong> asks that every record be byte-identical in length to its copybook
-     * declaration, and gate <strong>G21</strong> that {@code FILLER} spans be present rather than
-     * dropped. Both are properties of the layout before they are properties of any run, and stating them
-     * here is what stops an expectation and an implementation from agreeing on a wrong premise: if
-     * {@code FILLER PIC X(168)} were absent from the layout, every span after offset 332 would still
-     * line up and only the total width would betray it.
-     *
-     * <p>{@code CUST-DOB-YYYY-MM-DD} is named explicitly for the reason recorded as <strong>I1</strong>.
-     * {@code app/cpy/CUSTREC.cpy} declares the same 10-byte span at the same offset and spells it
-     * {@code CUST-DOB-YYYYMMDD}, and the statement package models that copybook separately as its own
-     * type. The two names are the contract; comparing one under the other's name is a difference rather
-     * than an equivalence, so a translation that collapsed the two layouts onto one type has to be
-     * caught by name and not by offset.
-     */
     @Test
     @DisplayName("CVCUS01Y is 500 bytes across 19 spans, FILLER included, and keeps its own DOB name")
     void theRecordLayoutAccountsForAllFiveHundredBytes() {
@@ -927,14 +457,6 @@ class CBCUS01CParityTest {
         assertThat(CustomerRecord.CUST_DOB_YYYY_MM_DD.length()).isEqualTo(10);
     }
 
-    /**
-     * Every shipped row is 500 bytes and its {@code FILLER} is blank.
-     *
-     * <p>The premise nineteen of the twenty cases seed from, asserted against the fixture itself. A
-     * fixture whose rows had been reflowed, re-encoded or line-ending-translated would be one byte wider
-     * per row, and the twenty cases would then all fail with messages about record widths rather than
-     * about the one thing that was actually wrong.
-     */
     @Test
     @DisplayName("all 50 shipped customer rows are 500 bytes with a blank FILLER")
     void everyShippedRowIsFiveHundredBytesWithABlankFiller() {
@@ -956,33 +478,6 @@ class CBCUS01CParityTest {
         }
     }
 
-    /**
-     * The three numeric spans of {@code CVCUS01Y} are <strong>unsigned</strong> zoned, so no customer
-     * row carries a sign overpunch - and the codec is what proves it rather than an assertion about the
-     * copybook text.
-     *
-     * <p>This is where the agent's zoned-overpunch requirement lands, and the finding is worth stating
-     * plainly because it is a negative one. {@code CUST-ID PIC 9(09)}, {@code CUST-SSN PIC 9(09)} and
-     * {@code CUST-FICO-CREDIT-SCORE PIC 9(03)} are the only numeric spans in the record and every one
-     * of them is written {@code PIC 9} and not {@code PIC S9}: the copybook declares no sign position
-     * anywhere, and there is no {@code COMP-3} in it either. A customer record therefore has nowhere to
-     * put an overpunch, which is why the fifty shipped rows hold digits and nothing else in those spans.
-     *
-     * <p>Three things are asserted, in the order that makes the negative result meaningful:
-     * <ol>
-     *   <li>each span is declared {@code UNSIGNED_NUMERIC} and
-     *       {@link FixedWidthCodec#decodePic9(String)} reads all fifty rows' values from all three of
-     *       them, so the spans really are zoned {@code DISPLAY} digits at those offsets;</li>
-     *   <li>{@link FixedWidthCodec#decodeSignedZoned(String, int)} <em>does</em> read an overpunched
-     *       trailing byte, and reads it as the low-order digit plus a sign - so the codec understands
-     *       the convention perfectly well;</li>
-     *   <li>and {@code decodePic9} nevertheless refuses that same image. The refusal is therefore a
-     *       property of the {@code PIC 9} declaration and not a gap in the codec, which is exactly the
-     *       distinction that matters: were {@code CUST-FICO-CREDIT-SCORE} ever mis-transcribed as
-     *       {@code PIC S9(03)}, a value of 274 would store as {@code "27D"} and the record would differ
-     *       from the COBOL's on its 332nd byte.</li>
-     * </ol>
-     */
     @Test
     @DisplayName("CVCUS01Y's numeric spans are unsigned zoned, so an overpunch is refused by declaration")
     void theNumericSpansAreUnsignedZonedSoNoRowCarriesAnOverpunch() {
@@ -1026,22 +521,6 @@ class CBCUS01CParityTest {
                 .isThrownBy(() -> codec.decodePic9(overpunched));
     }
 
-    /**
-     * The program never writes to the customer master, verified against the repository rather than
-     * inferred from the absence of an expectation.
-     *
-     * <p>Ten of the twenty cases pin the dataset's final state row by row after reading it back out
-     * of a real relation, which is the strongest form of this assertion. This is the complementary one,
-     * and it is worth having because it answers a different question: not "did the stored rows change"
-     * but "was a write ever attempted at all". A rewrite that failed silently would leave the rows
-     * intact and pass the first check.
-     *
-     * <p>It matters for this program in particular because {@link CustomerRepository} does publish
-     * {@code rewrite}, for the online programs that share the dataset. {@code CBCUS01C} opens
-     * {@code CUSTFILE} {@code INPUT} at {@code app/cbl/CBCUS01C.cbl:L120} and contains no
-     * {@code WRITE}, no {@code REWRITE} and no {@code DELETE} anywhere in its 178 lines, so neither
-     * overload may be reached from a complete pass.
-     */
     @Test
     @DisplayName("a complete pass issues no WRITE and no REWRITE against the customer master")
     void theProgramNeverWritesToTheCustomerMaster() {
@@ -1059,43 +538,11 @@ class CBCUS01CParityTest {
         Mockito.verify(repository, Mockito.never()).rewrite(Mockito.any(CustomerRecord.class));
     }
 
-    /**
-     * The fifty shipped customer rows, obtained through the harness so the fixture is resolved exactly
-     * as a case file resolves it.
-     *
-     * <p>Seeding {@code case01} rather than reading the file directly is deliberate: the harness is what
-     * refuses a fixture with translated line endings and what applies any declared normalisation, so a
-     * premise asserted against its output is a premise asserted against what the twenty cases actually
-     * receive.
-     *
-     * @return the fifty 500-character record images, in stored order
-     */
     private List<String> shippedRows() {
         ParityHarness harness = ParityHarness.usAscii();
         return harness.seed(harness.load(PROGRAM, ParityHarness.caseId(1))).get(DD_NAME).rows();
     }
 
-    // =================================================================================================
-    // The gate.
-    // =================================================================================================
-
-    /**
-     * Runs one case and requires the diff count to be zero.
-     *
-     * <p>The whole gate is in the last assertion. A module is not complete until the count is zero
-     * across all twenty of its cases: nineteen clean and one difference is an incomplete module, not a
-     * nearly complete one. The failure text is {@link DiffResult#render()}, which names every
-     * difference it found - the dataset, the row, the field, its offset and length, and the expected
-     * and observed values - and never truncates the list, so one run is enough to see the whole
-     * picture.
-     *
-     * <p>The unit kind is dispatched on explicitly rather than handed straight back to the harness. The
-     * harness checks the adapter's declared kind against the case's own, and passing
-     * {@code parityCase.unitKind()} through would make that check tautological; naming the two kinds
-     * this program has means a case that declared a third is refused here by name.
-     *
-     * @param parityCase one of the twenty cases, supplied by {@link #cases()}
-     */
     @ParameterizedTest(name = "{0}")
     @MethodSource("cases")
     @DisplayName("the diff count is zero")
@@ -1116,71 +563,14 @@ class CBCUS01CParityTest {
                 .isZero();
     }
 
-    // =================================================================================================
-    // The adapters: how this class reaches the tasklet logic and the service.
-    // =================================================================================================
-
-    /**
-     * Drives the case through {@link CustomerFileReaderJob}'s tasklet - the {@code BATCH_JOB} shape.
-     *
-     * <p>{@link Tasklet#execute} is called directly, with a plain {@link StepContribution} and
-     * {@link ChunkContext} constructed here. No {@code JobLauncher} launches anything, no
-     * {@link JobRepository} is written to, and no application context exists, so what is observed is
-     * the step body and nothing around it. The tasklet is the right entry point rather than an
-     * approximation of one: it is what {@code READCUST.jcl}'s single {@code STEP05} runs, it reports
-     * the read count to the framework, and its own {@code finally} spools the displayed lines to the
-     * injected {@code SYSOUT} sink - which is how a failing run's lines reach the fingerprint, exactly
-     * as a mainframe spool holds what a job displayed before it abended.
-     *
-     * <p>{@code null} is returned rather than a built outcome, which is what the harness asks a unit
-     * that may abend to do: the recorder survives the exception and a method's return value does not.
-     *
-     * @param invocation the seeded datasets, the pinned clock, the codec and the recorder
-     * @return {@code null}, meaning the recorder holds the outcome
-     * @throws Exception if the tasklet fails. {@link AbendException} is an observation the harness
-     *     records; anything else is a defect and the harness reports it as one
-     */
     private UnitOutcome runThroughTheJob(Invocation invocation) throws Exception {
         return run(invocation, true);
     }
 
-    /**
-     * Drives the case through {@link CustomerService} - the {@code SERVICE} shape.
-     *
-     * <p>{@link CustomerService#readAndPrintCustomerFileTo(SysoutSink)} is the production streaming
-     * entry point and the shortest path to the decision logic there is: one Java method call on one
-     * Java object, with the {@code SYSOUT} destination being the harness's recorder. Every line is
-     * handed over as it is emitted, so the three lines of a fatal arm are recorded before the abend
-     * leaves the method.
-     *
-     * @param invocation the seeded datasets, the pinned clock, the codec and the recorder
-     * @return {@code null}, meaning the recorder holds the outcome
-     * @throws Exception if the service fails; declared for symmetry with the tasklet shape so both
-     *     adapters satisfy {@link ParityHarness.ParityUnit} identically
-     */
     private UnitOutcome runThroughTheService(Invocation invocation) throws Exception {
         return run(invocation, false);
     }
 
-    /**
-     * Constructs the unit for one case, runs one complete pass, and records what the pass produced.
-     *
-     * <p>One implementation behind both shapes, because the two differ only in which method is called:
-     * the seeding, the backend selection, the final-state reporting and the tidy-up are properties of
-     * the case rather than of the entry point, and writing them twice would be writing two things that
-     * had to stay identical.
-     *
-     * <p>The final state is reported inside a {@code finally} block so it is reported on the abend path
-     * too - "the dataset the run failed on still holds exactly what it held" is an assertion worth
-     * making - and the relation is shut down in an outer one, so no case leaves an in-memory database
-     * behind for the next.
-     *
-     * @param invocation the seeded datasets, the pinned clock, the codec and the recorder
-     * @param throughTheJob whether to drive the tasklet or the service directly
-     * @return {@code null}, meaning the recorder holds the outcome
-     * @throws Exception if the run fails; {@link Tasklet#execute} declares it, and an abend travels
-     *     out through it to the harness, which records the return code it carries
-     */
     private UnitOutcome run(Invocation invocation, boolean throughTheJob) throws Exception {
         Scenario scenario = scenarioFrom(invocation.stimulus());
         SeededDataset seeded = invocation.hasDataset(DD_NAME) ? invocation.dataset(DD_NAME) : null;
@@ -1188,9 +578,6 @@ class CBCUS01CParityTest {
         SysoutSink sysout = recorder::display;
 
         if (scenario.arranged()) {
-            // A status no relation can report. Nothing is stored, so there is no final state to read
-            // back and none is reported: the case asserts through its displayed lines and its return
-            // code, which is where an arranged failure's behaviour actually shows.
             runUnit(stubbedCustomerMaster(scenario, seeded, invocation.caseId()), sysout,
                     throughTheJob, recorder);
             return null;
@@ -1211,22 +598,6 @@ class CBCUS01CParityTest {
         return null;
     }
 
-    /**
-     * Runs the program once over the given customer master and records the return code it ended with.
-     *
-     * <p>A normal end records {@link CustomerService#RETURN_CODE_NORMAL_END}, because {@code GOBACK} at
-     * {@code app/cbl/CBCUS01C.cbl:L87} never touches {@code RETURN-CODE}. A fatal arm never reaches
-     * that statement: it leaves by {@link AbendException}, and the harness takes the code the abend
-     * carries instead.
-     *
-     * @param repository the customer master this run reads through
-     * @param sysout where every displayed line goes
-     * @param throughTheJob whether to drive the tasklet or the service directly
-     * @param recorder where the return code is reported
-     * @throws AbendException if the open, a read or the close reports a status the program treats as
-     *     fatal - which is an observation, not a failure
-     * @throws Exception if the tasklet itself fails, which {@link Tasklet#execute} declares
-     */
     private void runUnit(CustomerRepository repository, SysoutSink sysout, boolean throughTheJob,
             UnitOutcome.Builder recorder) throws Exception {
         CustomerService service = new CustomerService(repository);
@@ -1245,36 +616,9 @@ class CBCUS01CParityTest {
             service.readAndPrintCustomerFileTo(sysout);
         }
 
-        // GOBACK at app/cbl/CBCUS01C.cbl:L87.
         recorder.returnCode(CustomerService.RETURN_CODE_NORMAL_END);
     }
 
-    /**
-     * Reports what {@code CUSTFILE} holds after the run, read back from the relation rather than echoed
-     * from the seed.
-     *
-     * <p>Reading it back is the point. {@code CBCUS01C} opens the dataset {@code INPUT} and issues no
-     * {@code WRITE} and no {@code REWRITE}, so "the stored records are still exactly the stored
-     * records" is a real assertion about a program the plan names {@code CustomerRepository} - and
-     * echoing the seed back would assert nothing at all, because the seed is what the case declared.
-     *
-     * <p>The rows are ordered by the record image ascending, which is the order the browse itself reads
-     * them in: {@code app/cbl/CBCUS01C.cbl:L29-L33} declares {@code CUSTFILE} as
-     * {@code ORGANIZATION INDEXED}, {@code ACCESS MODE SEQUENTIAL}, {@code RECORD KEY FD-CUST-ID}, so
-     * key order and not insertion order is what a sequential pass sees, and {@code CUST-ID} occupies
-     * the first nine bytes of the image. That the browse really does reorder a backwards-loaded
-     * relation is pinned directly, by {@code CustomerRepositoryTest}'s "delivers records in ascending
-     * key order even when the relation is seeded backwards" and its companion assertion that every
-     * browse statement carries an explicit ascending {@code ORDER BY}.
-     *
-     * <p>Nothing is reported for a case that declared no dataset. {@code case08} has no customer master
-     * at all, so there is no state to describe, and describing one would be an invention rather than an
-     * observation.
-     *
-     * @param backend the store holding this case's relation
-     * @param seeded the dataset as it was seeded, or {@code null} when the case declared none
-     * @param recorder where the final state is reported
-     */
     private void reportFinalState(RecordImageDataSource backend, SeededDataset seeded,
             UnitOutcome.Builder recorder) {
         if (seeded == null) {
@@ -1285,70 +629,14 @@ class CBCUS01CParityTest {
         recorder.finalState(DD_NAME, CustomerRecord.LAYOUT, stored);
     }
 
-    // =================================================================================================
-    // Backend one: a private record-image store with one record-image column, and no DDL to create it.
-    // =================================================================================================
-
-    /**
-     * Declares the relation the repository will discover: one column, holding the record image.
-     *
-     * <p>No DDL. A {@link RecordImageDataSource} holds record images and has no schema, so gate
-     * <strong>G44</strong> - no DDL, no schema migration, no entity annotation and no generated table
-     * definition anywhere in this module - holds with nothing to reinterpret. Everything above the driver
-     * is unchanged: the real {@code JdbcTemplate}, the real {@link CustomerRepository},
-     * {@code DatasetRelation}'s real composed statements and {@code RecordImageForm}'s real column read.
-     *
-     * <p>The width is the one the case's own rows measure rather than the copybook's 500, so a case seeding
-     * a row of another width really does store a row of that width; padding it out to 500 would make the
-     * fatal read arms unreachable.
-     *
-     * @param backend     the store backing this case
-     * @param recordWidth the width the seeded rows measure
-     */
     private void declareRelation(RecordImageDataSource backend, int recordWidth) {
         backend.define(TEST_DSNAME, RECORD_IMAGE_COLUMN, ColumnForm.CHARACTER, recordWidth);
     }
 
-    /**
-     * Stores the case's rows, verbatim and in the order the case declared them.
-     *
-     * <p>Declaration order is preserved and deliberately not sorted: a KSDS browse reads in key order
-     * whatever order the records were loaded in, and a case seeding out of key order exists to prove the
-     * translation does the same.
-     *
-     * @param backend the store backing this case
-     * @param seeded  the dataset as the harness seeded it
-     */
     private void seedRelation(RecordImageDataSource backend, SeededDataset seeded) {
         backend.store().seed(TEST_DSNAME, seeded.rows());
     }
 
-
-    // =================================================================================================
-    // Backend two: a stubbed customer master, for the statuses no relation can report.
-    // =================================================================================================
-
-    /**
-     * Builds the customer master an arranged case reads through: an {@code OPEN} that answers as the
-     * scenario says, a {@code READ} sequence assembled from the case's own declared rows, and a
-     * {@code CLOSE} that either succeeds or refuses.
-     *
-     * <p>Mockito rather than a hand-written fake because {@link CustomerFile} is {@code final}, which is
-     * the established idiom for it in this module and needs no build change: the inline mock maker is
-     * the default from Mockito 5 onward. {@link CustomerRepository#datasetCharset()} is stubbed because
-     * {@link CustomerService}'s constructor reads it to build its codec, so leaving it unstubbed would
-     * fail the construction rather than the case.
-     *
-     * <p>Only what the scenario needs is stubbed. A scenario whose {@code OPEN} fails returns before the
-     * read sequence is even assembled, because {@code app/cbl/CBCUS01C.cbl:L132} abends inside
-     * {@code 0000-CUSTFILE-OPEN} and no read and no close is ever reached - stubbing them would describe
-     * a run that does not happen.
-     *
-     * @param scenario what this case's run must encounter
-     * @param seeded the seeded {@code CUSTFILE}, whose rows become the delivered records
-     * @param caseId the case being arranged, for the diagnostic if it declared no dataset
-     * @return the stubbed repository
-     */
     private CustomerRepository stubbedCustomerMaster(Scenario scenario, SeededDataset seeded,
             String caseId) {
         if (seeded == null) {
@@ -1374,11 +662,6 @@ class CBCUS01CParityTest {
                 .thenReturn(sequence.get(0),
                         sequence.subList(1, sequence.size()).toArray(ReadResult[]::new));
 
-        // The handle tracks whether it has been closed, exactly as the real one does, so that
-        // CustomerService's silent release on the way out is a no-op after 9000-CUSTFILE-CLOSE has run
-        // and a single quiet close after a fatal read - which is what the real handle's idempotence
-        // gives it. A plain stubbed value would make the release issue a second close, and a second
-        // close of a refused dataset would be a second refusal nobody asked for.
         AtomicBoolean closed = new AtomicBoolean();
         Mockito.when(custFile.closeFile()).thenAnswer(invocation -> {
             closed.set(true);
@@ -1388,26 +671,6 @@ class CBCUS01CParityTest {
         return repository;
     }
 
-    /**
-     * Assembles what the successive {@code READ}s at {@code app/cbl/CBCUS01C.cbl:L93} report: zero or
-     * more successful reads over the seeded rows, then the read that ends the loop or abends it.
-     *
-     * <p>The rows are delivered in <strong>ascending record-image order</strong>, which for this
-     * copybook is ascending {@code CUST-ID} order because {@code CUST-ID PIC 9(09)} occupies the first
-     * nine bytes. That is what a KSDS browse of a file keyed on {@code CUST-ID} reports, and it is what
-     * the real relation reports too, so the two backends deliver one order between them rather than
-     * two.
-     *
-     * <p>A delivered record carries both views of the same bytes, because {@code READ ... INTO} does:
-     * the decoded {@link CustomerRecord} for anything that branches on a value, and the row's own image
-     * for the two {@code DISPLAY}s, which write the record area including its {@code FILLER}. They are
-     * built from one string by the real {@link CustomerRecord#decode(String, Charset)}, so they cannot
-     * disagree and no expectation here rests on a hand-built record.
-     *
-     * @param scenario the case's arranged shape
-     * @param seeded the seeded rows
-     * @return the read results in the order the browse reports them; never empty
-     */
     private List<ReadResult> readSequence(Scenario scenario, SeededDataset seeded) {
         List<String> rows = new ArrayList<>(seeded.rows());
         Collections.sort(rows);
@@ -1425,43 +688,16 @@ class CBCUS01CParityTest {
             sequence.add(ReadResult.found(CustomerRecord.decode(image, DATASET_CHARSET), image));
         }
 
-        // The terminating read: '10' ends the loop through APPL-EOF at L107, and anything else reaches
-        // the WHEN OTHER arm at L101 and abends.
         sequence.add(scenario.readFails()
                 ? ReadResult.of(scenario.failingReadStatus())
                 : ReadResult.endOfFile());
         return sequence;
     }
 
-    // =================================================================================================
-    // The unit and the collaborators its constructors mandate.
-    // =================================================================================================
-
-    /**
-     * The job under test, over one case's customer master, writing every {@code DISPLAY} to the given
-     * sink.
-     *
-     * @param service the program, already wired to this case's backend
-     * @param sysout where the displayed lines are captured
-     * @return the job
-     */
     private CustomerFileReaderJob customerFileReaderJob(CustomerService service, SysoutSink sysout) {
         return new CustomerFileReaderJob(batchScaffolding(), service, new DeclaredBean<>(sysout));
     }
 
-    /**
-     * The dataset catalogue, naming one dataset under both of the keys the repository requires.
-     *
-     * <p>{@code app/csd/CARDDEMO.CSD} defines the CICS file {@code CUSTDAT} and
-     * {@code app/jcl/READCUST.jcl:L9} defines the batch DD {@code CUSTFILE} over <em>one</em> customer
-     * master, and {@link CustomerRepository} refuses a catalogue in which the two name different
-     * datasets - so both keys name the same stand-in dataset here. The declared record width is 500 and
-     * the declared key width is 9, from {@code CUST-ID PIC 9(09)}; both are read from the model rather
-     * than written as literals, so a copybook change surfaces here as a failure rather than as a
-     * disagreement nobody notices.
-     *
-     * @return the catalogue
-     */
     private DatasetBindings datasetBindings() {
         DatasetBinding customer = new DatasetBinding(TEST_DSNAME, DatasetBinding.KSDS, false, "FB",
                 null, CustomerRecord.RECORD_LENGTH, "CVCUS01Y", CustomerRepository.KEY_LENGTH, null,
@@ -1472,22 +708,6 @@ class CBCUS01CParityTest {
         return catalogue;
     }
 
-    /**
-     * The batch scaffolding, carrying the {@code carddemo.jobs} contract for this job.
-     *
-     * <p>The contract is what {@code application.yml} declares and what {@code app/jcl/READCUST.jcl}
-     * supports: program {@code CBCUS01C}, no parameters, and the one step
-     * {@link CustomerFileReaderJob#REQUIRED_STEPS} names, which is <strong>not</strong> gated on a
-     * preceding exit code because that JCL carries no {@code COND} and declares only the one step. The
-     * step sequence is taken from the job's own published requirement rather than rebuilt here, so the
-     * contract this test supplies cannot drift from the one the job validates.
-     *
-     * <p>The job repository and the transaction manager are mocked, and they are never used: nothing
-     * here launches a job or opens a step, so no batch metadata is written. They exist because the
-     * constructor takes them.
-     *
-     * @return the scaffolding
-     */
     private BatchConfig batchScaffolding() {
         JobContracts contracts = new JobContracts();
         contracts.put(CustomerFileReaderJob.JOB_KEY, new JobContract(PROGRAM, List.of(),
@@ -1497,45 +717,16 @@ class CBCUS01CParityTest {
                 datasetBindings());
     }
 
-    /**
-     * A step contribution for one tasklet call.
-     *
-     * <p>The tasklet reports its read count to the framework through this, which is step metadata rather
-     * than COBOL output - {@code CBCUS01C} keeps no counter of its own and displays none - so it is
-     * accepted and not compared.
-     *
-     * @return a fresh contribution
-     */
     private StepContribution stepContribution() {
         return new StepContribution(new StepExecution(CustomerService.STEP_NAME, new JobExecution(1L)));
     }
 
-    /**
-     * A chunk context for one tasklet call.
-     *
-     * <p>The tasklet does not consult it: a tasklet that runs once has no per-chunk state, and this
-     * program's only restart semantics are to read the dataset from its first record again. It exists
-     * because {@link Tasklet#execute} takes it.
-     *
-     * @return a fresh chunk context
-     */
     private ChunkContext chunkContext() {
         return new ChunkContext(new StepContext(
                 new StepExecution(CustomerService.STEP_NAME, new JobExecution(2L))));
     }
 
-    /**
-     * An {@link ObjectProvider} that always yields the bean it was given.
-     *
-     * <p>The job resolves its {@code SYSOUT} sink through a provider so a caller can supply one without
-     * reconfiguring the bean, which is exactly what a parity case needs: with the sink declared, the
-     * displayed lines reach the recorder instead of the process's standard output.
-     *
-     * @param bean the bean to yield
-     * @param <T> the bean type
-     */
     private record DeclaredBean<T>(T bean) implements ObjectProvider<T> {
-
         @Override
         public T getObject() {
             return bean;

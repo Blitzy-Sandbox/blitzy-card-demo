@@ -78,69 +78,22 @@ import static org.mockito.Mockito.when;
 
 /**
  * Unit tests for {@link AccountBalanceReaderJob}, the translation of {@code app/cbl/CBACT02C.cbl}.
- *
- * <p>Every test runs with <strong>no application context, no {@code JobLauncher}, no HTTP and no
- * backend</strong>. The job's whole {@code PROCEDURE DIVISION} is reachable as
- * {@link AccountBalanceReaderJob#execute(SysoutSink)} over a collecting sink, which is what lets the
- * emitted line sequence be asserted directly rather than inferred from an exit status - and what
- * makes the mandated per-package branch bar reachable deterministically.
- *
- * <h2>The assertion that matters most</h2>
- * <p>{@code CBACT02C} emits <strong>one</strong> line per record, because its inner
- * {@code DISPLAY CARD-RECORD} at {@code app/cbl/CBACT02C.cbl:96} is commented out and the program has
- * no {@code 1100-DISPLAY-…} paragraph at all. Fed the fifty-record fixture the job must therefore
- * write exactly fifty-two lines: one start banner, fifty {@value CardRecord#RECORD_LENGTH}-character
- * record images, one end banner. A run producing six hundred and fifty-two lines has copied the
- * sibling account reader's field-by-field rendering, and {@link RecordDisplay} exists to fail loudly
- * if that ever happens.
- *
- * <h2>Where the data comes from</h2>
- * <p>{@code src/test/resources/fixtures/carddata.txt}, verified byte-identical to
- * {@code app/data/ASCII/carddata.txt}: fifty records, every one exactly
- * {@value CardRecord#RECORD_LENGTH} bytes. Records are decoded from those rows and handed back
- * through a stubbed browse, so the images the job emits are compared against real production-shaped
- * data rather than against values invented here.
- *
- * <h2>User-specified rules</h2>
- * <p>{@code review_rules} returns exactly one line - "No user rules provided." - so no user rule
- * governs this file. The migration plan's practices bind instead; B10 is the one that puts this file
- * here, because tests are authored with the code rather than after it.
  */
 @DisplayName("AccountBalanceReaderJob - CBACT02C, which reads and prints the CARD file")
 class AccountBalanceReaderJobTest {
-
-    /** The fifty-record card fixture, byte-identical to {@code app/data/ASCII/carddata.txt}. */
     private static final String FIXTURE = "/fixtures/carddata.txt";
 
-    /** The fixture's code page, and the one {@code application-test.yml} selects for datasets. */
     private static final Charset FIXTURE_CHARSET = StandardCharsets.US_ASCII;
 
-    /** How many records the fixture holds. */
     private static final int FIXTURE_RECORD_COUNT = 50;
 
-    /** One start banner, fifty record images, one end banner. */
     private static final int EXPECTED_LINE_COUNT = FIXTURE_RECORD_COUNT + 2;
 
-    /**
-     * The line count a run would produce had the sibling account reader's thirteen-line-per-record
-     * rendering been copied here. Asserted against explicitly, because it is the specific wrong
-     * answer this program invites.
-     */
     private static final int SIBLING_THIRTEEN_LINE_COUNT = FIXTURE_RECORD_COUNT * 13 + 2;
 
-    /** The status line a permanent error renders as, through the shared status renderer. */
     private static final String PERMANENT_ERROR_LINE =
             FileStatus.toDisplayLine(AccountBalanceReaderJob.PERMANENT_ERROR_STATUS);
 
-    // =============================================================================================
-    // Fixtures and test stubs.
-    // =============================================================================================
-
-    /**
-     * The fifty fixture rows, each exactly {@value CardRecord#RECORD_LENGTH} characters.
-     *
-     * @return the rows in file order
-     */
     private static List<String> fixtureRows() {
         List<String> rows = new ArrayList<>();
         try (InputStream stream = AccountBalanceReaderJobTest.class.getResourceAsStream(FIXTURE)) {
@@ -160,26 +113,13 @@ class AccountBalanceReaderJobTest {
         return rows;
     }
 
-    /**
-     * The fifty fixture rows decoded into records.
-     *
-     * @return the records in file order
-     */
     private static List<CardRecord> fixtureRecords() {
         return fixtureRows().stream()
                 .map(row -> CardRecord.decodeImage(row, FIXTURE_CHARSET))
                 .toList();
     }
 
-    /**
-     * A sink that keeps every line it is given, in order.
-     *
-     * <p>Order is the whole point: a job that emits the right lines in the wrong order has not
-     * reproduced the program, so the collector must not sort, deduplicate or coalesce.
-     */
     private static final class CollectingSink implements SysoutSink {
-
-        /** The lines, in the order they were written. */
         private final List<String> lines = new ArrayList<>();
 
         @Override
@@ -187,33 +127,14 @@ class AccountBalanceReaderJobTest {
             lines.add(line);
         }
 
-        /**
-         * @return the collected lines, in order
-         */
         private List<String> lines() {
             return lines;
         }
     }
 
-    /**
-     * An {@link ObjectProvider} over a single optional value.
-     *
-     * <p>Written out rather than mocked because {@code ObjectProvider} declares no abstract method -
-     * every one of its members is a default - so it is neither a functional interface nor worth
-     * stubbing method by method. Overriding {@code getObject()} is sufficient: the
-     * {@code getIfAvailable(Supplier)} the production code calls resolves through it, and reports the
-     * value as absent exactly when a bean lookup would.
-     *
-     * @param <T> the provided type
-     */
     private static final class SingleValueProvider<T> implements ObjectProvider<T> {
-
-        /** The value to provide, or {@code null} to behave as though no bean were published. */
         private final T value;
 
-        /**
-         * @param value the value, or {@code null} for "no such bean"
-         */
         private SingleValueProvider(T value) {
             this.value = value;
         }
@@ -232,39 +153,15 @@ class AccountBalanceReaderJobTest {
         }
     }
 
-    /**
-     * The card master's dataset binding as {@code application.yml} declares it for {@code CARDFILE}.
-     *
-     * @param dsname the dataset name to declare
-     * @return the binding
-     */
     private static DatasetBinding cardfileBinding(String dsname) {
         return new DatasetBinding(dsname, "ksds", false, "FB", null, CardRecord.RECORD_LENGTH,
                 "CVACT02Y", CardRecord.CARD_NUM_LENGTH, null, null, null);
     }
 
-    /**
-     * The dataset catalogue, holding just the DD name this job resolves.
-     *
-     * @param dsname the dataset name to declare for {@value AccountBalanceReaderJob#DD_NAME}
-     * @return the catalogue
-     */
     private static DatasetBindings datasetBindings(String dsname) {
         return datasetBindings(dsname, dsname);
     }
 
-    /**
-     * The dataset catalogue, holding this job's own DD name and the key the card repository is bound to.
-     *
-     * <p>Both are declared because the job proves at construction that they name one dataset: its JCL
-     * says {@code CARDFILE} (app/jcl/READCARD.jcl:25-26) while the repository it reads through is bound
-     * to the CICS file name {@code CARDDAT}, and each key carries an independent override in
-     * {@code application.yml}. Passing two different names here is how a test exercises the rejection.
-     *
-     * @param dsname     the dataset name to declare for {@value AccountBalanceReaderJob#DD_NAME}
-     * @param baseDsname the dataset name to declare for {@code CARDDAT}
-     * @return the catalogue
-     */
     private static DatasetBindings datasetBindings(String dsname, String baseDsname) {
         DatasetBindings bindings = new DatasetBindings();
         bindings.put(AccountBalanceReaderJob.DD_NAME, cardfileBinding(dsname));
@@ -272,11 +169,6 @@ class AccountBalanceReaderJobTest {
         return bindings;
     }
 
-    /**
-     * This job's contract exactly as {@code application.yml} declares it: one step, no parameters.
-     *
-     * @return the contract
-     */
     private static JobContract sourceDerivedContract() {
         return new JobContract(AccountBalanceReaderJob.PROGRAM_ID, List.of(),
                 List.of(new StepContract(AccountBalanceReaderJob.STEP_NAME,
@@ -284,26 +176,10 @@ class AccountBalanceReaderJobTest {
                 null, Map.of());
     }
 
-    /**
-     * A real {@link BatchConfig} over stubbed infrastructure, so the builder seams the job uses are
-     * the production ones rather than mocks of them.
-     *
-     * @param contract the contract to publish under this job's key
-     * @param dsname   the dataset name to declare for {@value AccountBalanceReaderJob#DD_NAME}
-     * @return the scaffolding
-     */
     private static BatchConfig batchConfig(JobContract contract, String dsname) {
         return batchConfig(contract, dsname, dsname);
     }
 
-    /**
-     * The batch scaffolding, with this job's DD and the card repository's DD declared separately.
-     *
-     * @param contract   this job's contract
-     * @param dsname     the dataset to declare for {@value AccountBalanceReaderJob#DD_NAME}
-     * @param baseDsname the dataset to declare for {@code CARDDAT}
-     * @return the scaffolding
-     */
     private static BatchConfig batchConfig(JobContract contract, String dsname, String baseDsname) {
         BatchConfig.JobContracts contracts = new BatchConfig.JobContracts();
         contracts.put(AccountBalanceReaderJob.JOB_KEY, contract);
@@ -314,12 +190,6 @@ class AccountBalanceReaderJobTest {
                 datasetBindings(dsname, baseDsname));
     }
 
-    /**
-     * The job under test, wired over a stubbed repository and no published sink.
-     *
-     * @param cardRepository the repository to read through
-     * @return the job
-     */
     private static AccountBalanceReaderJob jobOver(CardRepository cardRepository) {
         return new AccountBalanceReaderJob(
                 batchConfig(sourceDerivedContract(), "CARDDEMO.TEST.CARDDATA.VSAM.KSDS"),
@@ -328,32 +198,12 @@ class AccountBalanceReaderJobTest {
                 new SingleValueProvider<>(null));
     }
 
-    /**
-     * A card repository mock that hands itself back when the job re-binds it to its own DD.
-     *
-     * <p>{@code CBACT02C} reads through the DD {@code app/jcl/READCARD.jcl:25-26} binds, so the job asks
-     * the repository for a view addressing {@value AccountBalanceReaderJob#DD_NAME} before it browses.
-     * A bare mock answers {@code null} to that, so every stub on the browse would be attached to an
-     * instance the job never uses - which is exactly the coupling the production change introduced, and
-     * exactly what a test should have to acknowledge rather than work around silently.
-     *
-     * <p>Returning the same mock is the behaviour the real repository has whenever the DD resolves to
-     * the dataset it already addresses, which is the shipped configuration.
-     *
-     * @return the mock, with the re-binding stubbed
-     */
     private static CardRepository cardRepositoryMock() {
         CardRepository repository = mock(CardRepository.class);
         when(repository.addressing(any(), any())).thenReturn(repository);
         return repository;
     }
 
-    /**
-     * A repository whose forward browse returns each supplied result in turn.
-     *
-     * @param results the results the browse reports, in order
-     * @return the stubbed repository
-     */
     private static CardRepository repositoryReturning(List<CardReadResult> results) {
         CardRepository repository = cardRepositoryMock();
         CardBrowse browse = mock(CardBrowse.class);
@@ -367,44 +217,18 @@ class AccountBalanceReaderJobTest {
         return repository;
     }
 
-    /**
-     * A step execution shaped as the framework builds one, so a tasklet can be driven exactly as a
-     * running step drives it.
-     *
-     * <p>Built by hand rather than with a test factory from another artifact, because the dependency set
-     * is closed and the three constructors needed are public API. Only the step name and the
-     * {@code terminateOnly} flag are read by anything under test here.
-     *
-     * @return a fresh step execution, not asked to stop
-     */
     private static StepExecution stepExecution() {
         return new StepExecution(AccountBalanceReaderJob.STEP_NAME, new JobExecution(1L));
     }
 
-    /**
-     * The chunk context the framework hands a tasklet, over the given step execution.
-     *
-     * @param stepExecution the execution the tasklet is running inside
-     * @return a real chunk context; never a mock, because the tasklet reads through it to the execution
-     */
     private static ChunkContext chunkContext(StepExecution stepExecution) {
         return new ChunkContext(new StepContext(stepExecution));
     }
 
-    /**
-     * A repository that walks every fixture record and then reports the end of the file.
-     *
-     * @return the stubbed repository
-     */
     private static CardRepository repositoryOverWholeFixture() {
         return repositoryReturning(wholeFixtureReadResults());
     }
 
-    /**
-     * The whole fixture as read outcomes, terminated by the end-of-file arm.
-     *
-     * @return one normal outcome per fixture record, then {@code '10'}
-     */
     private static List<CardReadResult> wholeFixtureReadResults() {
         List<CardReadResult> results = new ArrayList<>(
                 fixtureRecords().stream().map(AccountBalanceReaderJobTest::cardRead).toList());
@@ -412,17 +236,6 @@ class AccountBalanceReaderJobTest {
         return results;
     }
 
-    /**
-     * A repository that walks the whole fixture again on <em>every</em> browse it is asked to open.
-     *
-     * <p>{@link #repositoryOverWholeFixture()} stubs one sequence of consecutive returns, which a mock
-     * exhausts on first use and thereafter repeats its final value - so a second pass over that
-     * repository sees an immediate end of file. That is a property of the double, not of the job, and it
-     * would silently turn any "run it twice" assertion into a test of nothing. Answering with a fresh
-     * browse per open makes each pass see the same fifty records, which is what a real KSDS does.
-     *
-     * @return the stubbed repository
-     */
     private static CardRepository repositoryReplayingWholeFixture() {
         CardRepository repository = cardRepositoryMock();
         when(repository.openBrowse(any(), any())).thenAnswer(invocation -> {
@@ -435,12 +248,6 @@ class AccountBalanceReaderJobTest {
         return repository;
     }
 
-    /**
-     * Runs the job over a stubbed repository and returns everything it wrote.
-     *
-     * @param cardRepository the repository to read through
-     * @return the emitted lines, in order
-     */
     private static List<String> linesFrom(CardRepository cardRepository) {
         CollectingSink sink = new CollectingSink();
         jobOver(cardRepository).execute(sink);
@@ -450,7 +257,6 @@ class AccountBalanceReaderJobTest {
     @Nested
     @DisplayName("Bounded cancellation - the pass yields to a stop request between records")
     class BoundedCancellation {
-
         @Test
         @DisplayName("no stop requested leaves the pass exactly as it was: 52 lines, unchanged")
         void withoutAStopTheWholePassRuns() {
@@ -458,8 +264,6 @@ class AccountBalanceReaderJobTest {
 
             jobOver(repositoryOverWholeFixture()).execute(sink, StopSignal.of(stepExecution()));
 
-            // The signal is consulted on every iteration and changes nothing while nothing is pending,
-            // which is the property that makes the probe additive rather than a change to the pass.
             assertThat(sink.lines()).hasSize(FIXTURE_RECORD_COUNT + 2);
             assertThat(sink.lines().get(0)).isEqualTo(AccountBalanceReaderJob.START_BANNER);
             assertThat(sink.lines().get(sink.lines().size() - 1))
@@ -478,12 +282,8 @@ class AccountBalanceReaderJobTest {
                     .isThrownBy(() -> job.execute(sink, StopSignal.of(stepExecution)))
                     .withMessageContaining(AccountBalanceReaderJob.STEP_NAME)
                     .withMessageContaining("NO write is retried")
-                    // The cause is what makes AbstractStep report the step as STOPPED rather than
-                    // FAILED, so it is asserted rather than left as an implementation detail.
                     .withCauseInstanceOf(JobInterruptedException.class);
 
-            // The OPEN happened and its banner was written; not one record line was. The probe sits
-            // before the read, so the pass ends at a record boundary and never mid-record.
             assertThat(sink.lines()).containsExactly(AccountBalanceReaderJob.START_BANNER);
         }
 
@@ -495,21 +295,15 @@ class AccountBalanceReaderJobTest {
             AccountBalanceReaderJob job = jobOver(repositoryOverWholeFixture());
             int stopAfter = 3;
 
-            // Requests the stop from the probe itself, on its fourth consultation, which is the closest
-            // a unit test can get to an operator pressing stop mid-pass.
             StopSignal afterThreeRecords = countingSignal(stepExecution, stopAfter);
 
             assertThatExceptionOfType(StopRequestedException.class)
                     .isThrownBy(() -> job.execute(sink, afterThreeRecords));
 
-            // Banner plus exactly three record lines: each of the three is a WHOLE record image, so no
-            // line was truncated and no record was half displayed.
             assertThat(sink.lines()).hasSize(stopAfter + 1);
             assertThat(sink.lines().subList(1, sink.lines().size()))
                     .allSatisfy(line -> assertThat(line).hasSize(CardRecord.RECORD_LENGTH));
 
-            // And the close banner is NOT written, exactly as it is not written on an abend: a stopped
-            // pass must not report the end of a normal execution.
             assertThat(sink.lines()).doesNotContain(AccountBalanceReaderJob.END_BANNER);
         }
 
@@ -535,17 +329,6 @@ class AccountBalanceReaderJobTest {
                     .withMessageContaining("StopSignal.RUNNING");
         }
 
-        /**
-         * A probe that permits the given number of records and then reports a stop.
-         *
-         * <p>It sets {@code terminateOnly} on the real step execution and then delegates to the real
-         * {@link StopSignal}, so the refusal is produced by the production probe and by the framework's
-         * own interruption policy rather than by a stand-in that merely throws the same type.
-         *
-         * @param stepExecution the execution to mark
-         * @param permitted     how many consultations return before the stop is requested
-         * @return the probe
-         */
         private StopSignal countingSignal(StepExecution stepExecution, int permitted) {
             StopSignal real = StopSignal.of(stepExecution);
             int[] consulted = { 0 };
@@ -559,14 +342,9 @@ class AccountBalanceReaderJobTest {
         }
     }
 
-    // =============================================================================================
-    // Identity - every constant is transcribed from the source or the JCL.
-    // =============================================================================================
-
     @Nested
     @DisplayName("Identity, taken from the source and the JCL")
     class Identity {
-
         @Test
         @DisplayName("the program, job key, job name, step name and DD name are the source-derived ones")
         void identityMatchesTheSource() {
@@ -589,9 +367,6 @@ class AccountBalanceReaderJobTest {
         @Test
         @DisplayName("the configuration's bean name differs from the job bean's, or the context cannot start")
         void theConfigurationBeanNameIsDistinctFromTheJobBeanName() {
-            // Spring would name this configuration after its decapitalised class name, which is
-            // exactly the name the @Bean Job method claims. Two definitions of one name is refused,
-            // because bean-definition overriding is disabled by default.
             String naturalName = "accountBalanceReaderJob";
             assertThat(AccountBalanceReaderJob.JOB_NAME).isEqualTo(naturalName);
             assertThat(AccountBalanceReaderJob.CONFIGURATION_BEAN_NAME).isNotEqualTo(naturalName);
@@ -604,9 +379,6 @@ class AccountBalanceReaderJobTest {
                     .isEqualTo("START OF EXECUTION OF PROGRAM CBACT02C");
             assertThat(AccountBalanceReaderJob.END_BANNER)
                     .isEqualTo("END OF EXECUTION OF PROGRAM CBACT02C");
-            // The sibling account reader says ACCTFILE for its open and switches to the spaced form
-            // "ACCOUNT FILE" for its read and close. This program says CARDFILE in all three, with
-            // no space, and normalising that would change observable output.
             assertThat(AccountBalanceReaderJob.OPEN_ERROR_TEXT).isEqualTo("ERROR OPENING CARDFILE");
             assertThat(AccountBalanceReaderJob.READ_ERROR_TEXT).isEqualTo("ERROR READING CARDFILE");
             assertThat(AccountBalanceReaderJob.CLOSE_ERROR_TEXT).isEqualTo("ERROR CLOSING CARDFILE");
@@ -649,8 +421,6 @@ class AccountBalanceReaderJobTest {
             assertThat(AccountBalanceReaderJob.PERMANENT_ERROR_STATUS)
                     .hasSize(FileStatus.STATUS_LENGTH)
                     .startsWith("9");
-            // app/cbl/CBACT02C.cbl:162-163 tests IF IO-STATUS NOT NUMERIC OR IO-STAT1 = '9' before
-            // rendering, so this value takes the extended arm and prints four digits.
             assertThat(PERMANENT_ERROR_LINE).isEqualTo(FileStatus.DISPLAY_PREFIX + "9000");
         }
 
@@ -662,14 +432,9 @@ class AccountBalanceReaderJobTest {
         }
     }
 
-    // =============================================================================================
-    // THE CENTRAL PARITY ASSERTION: one line per record, fifty-two lines in total.
-    // =============================================================================================
-
     @Nested
     @DisplayName("Record display - one line per record, because :96 is a comment")
     class RecordDisplay {
-
         @Test
         @DisplayName("the fifty-record fixture yields exactly 52 lines, not 652")
         void wholeFixtureYieldsFiftyTwoLines() {
@@ -715,11 +480,6 @@ class AccountBalanceReaderJobTest {
         @Test
         @DisplayName("a row whose FILLER X(59) is not spaces is displayed as it stands, not re-encoded")
         void aRowsFillerSurvivesTheDisplay() {
-            // DISPLAY CARD-RECORD (app/cbl/CBACT02C.cbl:78) writes the FD record area, and READ INTO
-            // filled that area from the row. The area's FILLER X(59) is covered by no field of
-            // CVACT02Y, so whatever the row held there is what the line carries. Rendering the decoded
-            // record instead allocates a fresh area and blanks that span - which is a line the program
-            // cannot produce, and 59 wrong bytes on every one of the fifty records.
             CardRecord record = fixtureRecords().get(0);
             String clean = record.encodeToImage(StandardCharsets.US_ASCII);
             String dirty = clean.substring(0, CardRecord.RECORD_LENGTH - CardRecord.FILLER_LENGTH)
@@ -795,14 +555,9 @@ class AccountBalanceReaderJobTest {
         }
     }
 
-    // =============================================================================================
-    // 1000-CARDFILE-GET-NEXT - the read ladder, every arm.
-    // =============================================================================================
-
     @Nested
     @DisplayName("1000-CARDFILE-GET-NEXT - the read status ladder")
     class ReadLadder {
-
         @Test
         @DisplayName("status '00' continues and the record is displayed - the APPL-AOK arm")
         void okContinuesAndDisplays() {
@@ -868,9 +623,6 @@ class AccountBalanceReaderJobTest {
         @CsvSource({"22", "19", "16"})
         @DisplayName("a response with no two-character equivalent takes the MOVE 12 arm and prints 9000")
         void responsesWithoutABatchStatusRenderAsPermanentError(int cicsResp) {
-            // A length error, an unreachable dataset and an otherwise invalid request map to no
-            // two-character status at all. The repository reports that absence truthfully, so this
-            // job supplies the COBOL permanent-error convention rather than fabricating a status.
             assertThat(FileStatus.batchStatusOfCicsResp(cicsResp)).isEmpty();
             CollectingSink sink = new CollectingSink();
             CardRepository repository =
@@ -920,22 +672,12 @@ class AccountBalanceReaderJobTest {
         }
     }
 
-    // =============================================================================================
-    // 0000-CARDFILE-OPEN and 9000-CARDFILE-CLOSE.
-    // =============================================================================================
-
     @Nested
     @DisplayName("0000-CARDFILE-OPEN")
     class Open {
-
         @Test
         @DisplayName("a dataset the backend will not open abends at the OPEN, not at the first read")
         void aBackendRefusalAtOpenAbendsAtTheOpen() {
-            // app/cbl/CBACT02C.cbl:33 declares FILE STATUS IS CARDFILE-STATUS and :121-:127 tests it,
-            // reaching DISPLAY 'ERROR OPENING CARDFILE' at :129 and the abend at :132. That arm was
-            // unreachable while the job read through startBrowse, which issues no backend call and
-            // reports nothing - the online contract, because COCRDLIC discards its own STARTBR response.
-            // openBrowse is the batch entry point and reports what the open found.
             CardRepository repository = mock(CardRepository.class);
             CardBrowse refused = mock(CardBrowse.class);
             when(refused.openResp()).thenReturn(FileStatus.NOTOPEN);
@@ -950,7 +692,6 @@ class AccountBalanceReaderJobTest {
                     FileStatus.toDisplayLine(AccountBalanceReaderJob.PERMANENT_ERROR_STATUS),
                     AbendException.ABEND_DISPLAY_TEXT);
             assertThat(abend.getMessage()).contains(AccountBalanceReaderJob.OPEN_ERROR_TEXT);
-            // Never read: the abend happens before 1000-CARDFILE-GET-NEXT is performed.
             verify(refused, never()).readNext();
         }
 
@@ -985,7 +726,6 @@ class AccountBalanceReaderJobTest {
     @Nested
     @DisplayName("9000-CARDFILE-CLOSE")
     class Close {
-
         @Test
         @DisplayName("a failed close reports, prints the status, abends, and the end banner is lost")
         void aFailedCloseAbendsBeforeTheEndBanner() {
@@ -1027,22 +767,12 @@ class AccountBalanceReaderJobTest {
         }
     }
 
-    // =================================================================================================
-    // The browse is released on every exit, not only on the normal tail. CBACT02C abends outright
-    // without closing, so what is asserted here is that releasing changes nothing the program
-    // observably produces - the SYSOUT line sequence and the return code are the whole of it.
-    // =================================================================================================
-
     @Nested
     @DisplayName("the browse is released however the pass ends")
     class BrowseRelease {
-
         @Test
         @DisplayName("an unmodelled runtime failure in the read still releases the browse")
         void anUnmodelledReadFailureStillReleasesTheBrowse() {
-            // 1000-CARDFILE-GET-NEXT converts a file STATUS into the abend ladder, but it does not
-            // wrap the repository call - a driver-level refusal propagates as it is. That is precisely
-            // the exit the normal tail cannot cover, so it is the one worth pinning.
             CardRepository repository = cardRepositoryMock();
             CardBrowse browse = mock(CardBrowse.class);
             when(repository.openBrowse(any(), any())).thenReturn(browse);
@@ -1082,10 +812,6 @@ class AccountBalanceReaderJobTest {
         @Test
         @DisplayName("a normal run closes exactly once, because the program's own CLOSE already ran")
         void aNormalRunClosesExactlyOnce() {
-            // The property being pinned is the source's: :83 is one CLOSE statement, so one run is one
-            // close. The guard is this execution's own record of having run 9000-CARDFILE-CLOSE rather
-            // than the handle's state, which is why this holds for a test double as well as for a real
-            // browse - a double does not track whether it has been ended.
             CardRepository repository = cardRepositoryMock();
             CardBrowse browse = mock(CardBrowse.class);
             when(repository.openBrowse(any(), any())).thenReturn(browse);
@@ -1130,14 +856,9 @@ class AccountBalanceReaderJobTest {
         }
     }
 
-    // =============================================================================================
-    // 9999-ABEND-PROGRAM - the two CEE3ABD arguments and the RETURN-CODE.
-    // =============================================================================================
-
     @Nested
     @DisplayName("9999-ABEND-PROGRAM - gate G35")
     class Abend {
-
         @Test
         @DisplayName("the abend carries ABCODE 999, TIMING 0, the program id and return code 12")
         void abendCarriesBothCeeArgumentsAndTheReturnCode() {
@@ -1166,12 +887,6 @@ class AccountBalanceReaderJobTest {
             assertThat(abend.getReason().orElseThrow()).startsWith(errorText);
         }
 
-        /**
-         * Drives whichever paragraph emits {@code errorText} and returns the abend it raises.
-         *
-         * @param errorText the paragraph's {@code DISPLAY} literal
-         * @return the abend
-         */
         private AbendException abendFor(String errorText) {
             CardRepository repository = cardRepositoryMock();
             if (AccountBalanceReaderJob.OPEN_ERROR_TEXT.equals(errorText)) {
@@ -1191,18 +906,9 @@ class AccountBalanceReaderJobTest {
         }
     }
 
-    // =============================================================================================
-    // Wiring - the job, the step, the contract and the DD-name resolution.
-    // =============================================================================================
-
-    // =================================================================================================
-    // The declared DD is the DD read - the DD-mapping finding.
-    // =================================================================================================
-
     @Nested
     @DisplayName("the DD this job declares is the DD it reads - app/jcl/READCARD.jcl:25-26")
     class TheDeclaredDdDrivesTheRead {
-
         @Test
         @DisplayName("the read is taken through the resolved CARDFILE binding, not through CARDDAT")
         void theReadGoesThroughTheDeclaredDd() {
@@ -1210,9 +916,6 @@ class AccountBalanceReaderJobTest {
 
             linesFrom(repository);
 
-            // Before it browses, the job asks the repository for a view addressing its own DD. The DD
-            // name it names is the JCL's, and the binding it hands over is the one the job resolved -
-            // which is what makes a //CARDFILE DD statement mean something rather than decorate.
             ArgumentCaptor<DatasetBinding> used = ArgumentCaptor.forClass(DatasetBinding.class);
             verify(repository).addressing(used.capture(), eq(AccountBalanceReaderJob.DD_NAME));
             assertThat(used.getValue().dsname()).isEqualTo("CARDDEMO.TEST.CARDDATA.VSAM.KSDS");
@@ -1222,8 +925,6 @@ class AccountBalanceReaderJobTest {
         @Test
         @DisplayName("the re-binding is asked for once per run, not once per record")
         void theRebindingHappensOncePerRun() {
-            // addressing() hands back an instance whose statements resolve on first use, so asking per
-            // record would re-describe the relation for every record of the browse. One run, one ask.
             CardRepository repository = repositoryOverWholeFixture();
 
             linesFrom(repository);
@@ -1234,8 +935,6 @@ class AccountBalanceReaderJobTest {
         @Test
         @DisplayName("a repository addressing the declared DD is what the browse is taken on")
         void theBrowseIsTakenOnTheRebindingResult() {
-            // The distinction that matters: the job must browse the instance addressing() returned, not
-            // the injected one. Handing back a DIFFERENT double proves which one it used.
             CardRepository injected = cardRepositoryMock();
             CardRepository rebound = repositoryReturning(List.of(CardReadResult.endOfFile()));
             when(injected.addressing(any(), any())).thenReturn(rebound);
@@ -1250,7 +949,6 @@ class AccountBalanceReaderJobTest {
     @Nested
     @DisplayName("Wiring")
     class Wiring {
-
         @Test
         @DisplayName("the job bean is built, named for the mandated class, and carries one step")
         void theJobBeanIsBuilt() {
@@ -1263,11 +961,6 @@ class AccountBalanceReaderJobTest {
         @Test
         @DisplayName("CARDFILE and CARDDAT pointing at different datasets is refused at construction")
         void divergingDdNamesAreRefused() {
-            // The step's JCL names CARDFILE (app/jcl/READCARD.jcl:25-26); the repository it reads through
-            // is bound to the CICS file name CARDDAT. Both keys carry independent overrides in
-            // application.yml, so a deployment can point them at different datasets - and the job would
-            // then read one its own DD statement never named, silently, with a correct-looking result. A
-            // COBOL step cannot do this, because the DD statement is the binding.
             BatchConfig diverging = batchConfig(sourceDerivedContract(),
                     "CARDDEMO.TEST.CARDDATA.VSAM.KSDS", "CARDDEMO.TEST.SOMETHING.ELSE.KSDS");
 
@@ -1291,11 +984,6 @@ class AccountBalanceReaderJobTest {
         void eachLaunchIsAFreshRun() {
             Job job = jobOver(cardRepositoryMock()).accountBalanceReaderJob();
 
-            // READCARD.jcl passes no PARM, so without an identity of its own this job would have
-            // exactly one instance for all time and its second submission would be refused as already
-            // complete. The incrementer supplies a run identity - not a business value the COBOL
-            // receives - and preventRestart stops a failed execution being resumed mid-flight, which
-            // CBACT02C has no checkpoint state to support.
             assertThat(job.getJobParametersIncrementer())
                     .as("a parameterless job needs a per-launch identity to be submittable twice")
                     .isNotNull();
@@ -1335,9 +1023,6 @@ class AccountBalanceReaderJobTest {
         @DisplayName("a second step declared beside STEP05 is refused, because READCARD.jcl has one "
                 + "EXEC and no other")
         void anAddedStepIsRefused() {
-            // Resolving STEP05 by name finds it whether it stands alone or first of two, so the
-            // per-step checks cannot see this. A second step would read the CARDFILE dataset twice and
-            // emit two passes of DISPLAY output for one submission.
             JobContract withASecondStep = new JobContract(AccountBalanceReaderJob.PROGRAM_ID, List.of(),
                     List.of(new StepContract(AccountBalanceReaderJob.STEP_NAME,
                                     AccountBalanceReaderJob.PROGRAM_ID, false),
@@ -1418,11 +1103,6 @@ class AccountBalanceReaderJobTest {
         @Test
         @DisplayName("the tasklet reports the pass's record count as the step's read count")
         void theTaskletReportsTheReadCount() throws Exception {
-            // The gap this closes was visible in the batch metadata rather than in any output: a
-            // completed pass over the whole card master recorded READ_COUNT 0 in
-            // BATCH_STEP_EXECUTION, exactly as a pass over an empty dataset would, while three sibling
-            // reader jobs recorded their real counts. The count is metadata only: CBACT02C keeps no
-            // counter, so the displayed line sequence is asserted here too and is unchanged.
             CollectingSink sink = new CollectingSink();
             AccountBalanceReaderJob job = new AccountBalanceReaderJob(
                     batchConfig(sourceDerivedContract(), "CARDDEMO.TEST.CARDDATA.VSAM.KSDS"),
@@ -1478,14 +1158,8 @@ class AccountBalanceReaderJobTest {
                     .isZero();
         }
 
-        /** A throwing runnable, so the tasklet's checked signature can be asserted on. */
         @FunctionalInterface
         private interface Tasklets {
-            /**
-             * Runs the tasklet.
-             *
-             * @throws Exception whatever the tasklet throws
-             */
             void run() throws Exception;
         }
 
@@ -1517,45 +1191,19 @@ class AccountBalanceReaderJobTest {
         }
     }
 
-    // =============================================================================================
-    // Container wiring - gate G3, proved in a real Spring container rather than argued about.
-    // =============================================================================================
-
-    /**
-     * The collaborators this job needs, published as beans so a real container can inject them.
-     *
-     * <p>{@link BatchConfig} arrives from a {@code @Bean} method rather than by registering its
-     * class, deliberately: a registered configuration class has its own {@code @Bean} methods
-     * processed, and {@code BatchConfig} publishes a transaction manager over a {@code DataSource}
-     * this test has no business providing. An instance returned from a {@code @Bean} method is just an
-     * object, so the scaffolding is available without dragging a backend in behind it.
-     */
     @org.springframework.context.annotation.Configuration
     static class SupportingBeans {
-
-        /**
-         * @return the batch scaffolding, over stubbed infrastructure
-         */
         @org.springframework.context.annotation.Bean
         BatchConfig batchConfig() {
             return AccountBalanceReaderJobTest.batchConfig(sourceDerivedContract(),
                     "CARDDEMO.TEST.CARDDATA.VSAM.KSDS");
         }
 
-        /**
-         * @return a stubbed card repository, since nothing here reads a record
-         */
         @org.springframework.context.annotation.Bean
         CardRepository cardRepository() {
             return cardRepositoryMock();
         }
 
-        /**
-         * The dataset code page, published under the exact bean name the job's {@code @Qualifier}
-         * names. If that qualifier ever stopped matching, this context would fail to start.
-         *
-         * @return the fixture code page
-         */
         @org.springframework.context.annotation.Bean(CardRepository.DATASET_CHARSET_BEAN_NAME)
         Charset carddemoDatasetCharset() {
             return FIXTURE_CHARSET;
@@ -1565,7 +1213,6 @@ class AccountBalanceReaderJobTest {
     @Nested
     @DisplayName("Container wiring - gate G3")
     class ContainerWiring {
-
         @Test
         @DisplayName("a real container starts, and publishes the job bean and the configuration bean")
         void aRealContainerPublishesBothBeansWithoutCollision() {
@@ -1573,8 +1220,6 @@ class AccountBalanceReaderJobTest {
                     .AnnotationConfigApplicationContext()) {
                 context.register(SupportingBeans.class, AccountBalanceReaderJob.class);
 
-                // If the configuration took its natural bean name, this refresh would fail: the @Bean
-                // Job method claims that same name and bean-definition overriding is off by default.
                 context.refresh();
 
                 assertThat(context.containsBean(AccountBalanceReaderJob.JOB_NAME)).isTrue();
@@ -1604,8 +1249,6 @@ class AccountBalanceReaderJobTest {
             try (var context = new org.springframework.context.annotation
                     .AnnotationConfigApplicationContext(SupportingBeans.class,
                             AccountBalanceReaderJob.class)) {
-                // A job runs only when something deliberately launches it, exactly as a JCL step had
-                // to be submitted. No runner, no scheduler and no launcher may appear here.
                 assertThat(context.getBeansOfType(
                         org.springframework.boot.ApplicationRunner.class)).isEmpty();
                 assertThat(context.getBeansOfType(
@@ -1616,14 +1259,9 @@ class AccountBalanceReaderJobTest {
         }
     }
 
-    // =============================================================================================
-    // SYSOUT - the seam and its default.
-    // =============================================================================================
-
     @Nested
     @DisplayName("SYSOUT")
     class Sysout {
-
         @Test
         @DisplayName("a published sink is used in preference to the default")
         void aPublishedSinkWins() {
@@ -1647,10 +1285,6 @@ class AccountBalanceReaderJobTest {
         @Test
         @DisplayName("the default sink encodes in the injected dataset code page, not the platform's")
         void theDefaultSinkEncodesInTheDatasetCodePage() {
-            // CBACT02C:78 DISPLAYs the 150-byte CARD-RECORD itself, so a SYSOUT line carries the
-            // dataset's own stored characters and the code page has to be the one the dataset was read
-            // in (practice B8). System.out is bound to file.encoding - a property of the JVM, not of the
-            // program - so it is deliberately not the stream underneath.
             AccountBalanceReaderJob job = jobOver(cardRepositoryMock());
 
             PrintStream stream = ((PrintStreamSysoutSink) job.sysoutSink()).stream();
@@ -1689,10 +1323,6 @@ class AccountBalanceReaderJobTest {
         @Test
         @DisplayName("the standard-output factory takes the code page as a parameter and demands one")
         void theStandardOutputFactoryTakesItsCharsetAsAParameter() {
-            // The production dataset code page is IBM037 (application.yml), the test profile's is
-            // US-ASCII, and neither is reached for by this factory - it is told. Building a sink is
-            // side-effect free; only writing through it reaches the process's own standard output, which
-            // is why nothing is emitted here.
             Charset ebcdic = Charset.forName("IBM037");
             assertThat(((PrintStreamSysoutSink) AccountBalanceReaderJob.standardOutput(ebcdic)).stream()
                     .charset()).isEqualTo(ebcdic);
@@ -1703,17 +1333,6 @@ class AccountBalanceReaderJobTest {
         }
     }
 
-    // =============================================================================================
-    // Shared assertion helper.
-    // =============================================================================================
-
-    /**
-     * Runs the job over {@code repository} and asserts that it abends.
-     *
-     * @param repository the stubbed repository
-     * @param sink       the sink collecting the run's output
-     * @return the abend raised
-     */
     private static AbendException assertThatAbend(CardRepository repository, CollectingSink sink) {
         AccountBalanceReaderJob job = new AccountBalanceReaderJob(
                 batchConfig(sourceDerivedContract(), "CARDDEMO.TEST.CARDDATA.VSAM.KSDS"),
@@ -1728,10 +1347,6 @@ class AccountBalanceReaderJobTest {
         return abend;
     }
 
-    /**
-     * Guards against an unused-import style drift: {@link Optional} and {@link Supplier} are used by
-     * the provider stub above, and this keeps the intent explicit for a reader.
-     */
     @Test
     @DisplayName("the provider stub reports absence the way a bean lookup does")
     void theProviderDoubleReportsAbsence() {
@@ -1747,55 +1362,21 @@ class AccountBalanceReaderJobTest {
         assertThat(published.stream()).containsExactly(present);
     }
 
-    // =================================================================================================
-    // Synthesised read outcomes. A CardReadResult carries the decoded record AND the bytes it was
-    // decoded from, because DISPLAY CARD-RECORD (app/cbl/CBACT02C.cbl:78) writes the record area and the
-    // area's FILLER X(59) holds whatever the row held. A test constructing an outcome has no row, so the
-    // image it supplies is the one a row of exactly this record would carry - which is what these two
-    // helpers state, once, rather than at every call site.
-    // =================================================================================================
-
-    /**
-     * The normal arm over a synthesised row of this record.
-     *
-     * @param record the record the row would carry
-     * @return the outcome, carrying the record and the image a row of it would hold
-     */
     private static CardReadResult cardRead(CardRecord record) {
         return CardReadResult.normal(record, record.encodeToImage(StandardCharsets.US_ASCII));
     }
 
-    /**
-     * The duplicate-key arm over a synthesised row of this record.
-     *
-     * @param record the first record sharing the alternate key
-     * @return the outcome, carrying the record and the image a row of it would hold
-     */
     private static CardReadResult cardReadDuplicate(CardRecord record) {
         return CardReadResult.duplicateKey(record, record.encodeToImage(StandardCharsets.US_ASCII));
     }
 
-    // =================================================================================================
-    // Rule R1, asserted rather than annotated.
-    //
-    // The register in the migration plan records that this class carries a mandated name which does not
-    // describe what its source does, and the class documentation restates it. Neither is a test. A
-    // comment cannot fail, so a later edit that wired this job to the account file - the single most
-    // natural mistake available here, given the class name and the package it sits in - would be caught
-    // by nothing. The tests below turn the divergence into something the build enforces.
-    // =================================================================================================
-
     @Nested
     @DisplayName("Rule R1 - the name says Account, the program reads the CARD file")
     class NameDivergenceIsStructural {
-
-        /** The account record's declared width, for contrast with the card record's. */
         private static final int ACCOUNT_RECORD_LENGTH = 300;
 
-        /** The copybook {@code CBACT02C} does NOT copy, named so the assertion below can exclude it. */
         private static final String ACCOUNT_COPYBOOK = "CVACT01Y";
 
-        /** The DD name {@code CBACT02C} never mentions - grep 'ACCTFILE' app/cbl/CBACT02C.cbl is 0. */
         private static final String ACCOUNT_DD_NAME = "ACCTFILE";
 
         @Test
@@ -1807,9 +1388,6 @@ class AccountBalanceReaderJobTest {
                     .hasSize(1);
             List<Class<?>> parameters = List.of(constructors[0].getParameterTypes());
 
-            // app/cbl/CBACT02C.cbl:29  SELECT CARDFILE-FILE ASSIGN TO CARDFILE, and :45 COPY CVACT02Y.
-            // The repository is the card one and the record type is the card one, both from the card
-            // package, because one Java type per copybook is shared rather than duplicated per program.
             assertThat(parameters).contains(CardRepository.class);
             assertThat(CardRepository.class.getPackageName())
                     .isEqualTo("com.vsergeychik.carddemo.card");
@@ -1825,8 +1403,6 @@ class AccountBalanceReaderJobTest {
         @Test
         @DisplayName("no account repository or account record type is reachable from this job's wiring")
         void noAccountTypeIsWiredIn() {
-            // Every type the job can hold: its constructor parameters and its declared fields, plus the
-            // fields of the per-run state object, which is where the record itself lives.
             List<Class<?>> wired = new ArrayList<>();
             for (Constructor<?> constructor : AccountBalanceReaderJob.class.getDeclaredConstructors()) {
                 wired.addAll(List.of(constructor.getParameterTypes()));
@@ -1856,8 +1432,6 @@ class AccountBalanceReaderJobTest {
                     batchConfig(sourceDerivedContract(), "CARDDEMO.TEST.CARDDATA.VSAM.KSDS"),
                     cardRepositoryMock(), FIXTURE_CHARSET, new SingleValueProvider<>(null));
 
-            // app/jcl/READCARD.jcl:25-26 binds //CARDFILE to CARDDATA.VSAM.KSDS. There is no //ACCTFILE
-            // statement in that job at all, and the program has no file to attach one to.
             assertThat(AccountBalanceReaderJob.DD_NAME)
                     .isEqualTo("CARDFILE")
                     .isNotEqualTo(ACCOUNT_DD_NAME);
@@ -1870,9 +1444,6 @@ class AccountBalanceReaderJobTest {
         @Test
         @DisplayName("a whole run touches the card repository only, and never an account-side lookup")
         void aRunTouchesTheCardRepositoryOnly() {
-            // The behavioural half of the same statement. There is no AccountRepository to hand this job,
-            // so the strongest available form is: after a complete fifty-record pass, every interaction
-            // the job had was with the card repository, and it took none of the account-keyed paths.
             CardRepository repository = repositoryOverWholeFixture();
 
             List<String> lines = linesFrom(repository);
@@ -1880,17 +1451,13 @@ class AccountBalanceReaderJobTest {
             assertThat(lines).hasSize(EXPECTED_LINE_COUNT);
             verify(repository, never()).readByAccountIdViaAltIndex(any(String.class));
             verify(repository, never()).readByAccountIdViaAltIndex(eq(0L));
-            // Everything else the run did was addressing() and openBrowse(), both already verified; this
-            // states that nothing further was asked of the collaborator at all.
             verifyNoMoreInteractions(ignoreStubs(repository));
         }
 
         @Test
         @DisplayName("the program id is CBACT02C, whose Function header reads 'card data file'")
         void theProgramIdIsTheCardReader() {
-            // app/cbl/CBACT02C.cbl:5  * Function    : Read and print card data file.
             assertThat(AccountBalanceReaderJob.PROGRAM_ID).isEqualTo("CBACT02C");
-            // Every DISPLAY the program makes about its file names CARDFILE, all three consistently.
             assertThat(AccountBalanceReaderJob.OPEN_ERROR_TEXT).endsWith("CARDFILE");
             assertThat(AccountBalanceReaderJob.READ_ERROR_TEXT).endsWith("CARDFILE");
             assertThat(AccountBalanceReaderJob.CLOSE_ERROR_TEXT).endsWith("CARDFILE");
@@ -1899,14 +1466,9 @@ class AccountBalanceReaderJobTest {
         }
     }
 
-    // =================================================================================================
-    // WORKING-STORAGE never becomes static state - practice B9, gate G53.
-    // =================================================================================================
-
     @Nested
     @DisplayName("WORKING-STORAGE is per-invocation state, never a static field - gate G53")
     class WorkingStorageIsNeverStatic {
-
         @Test
         @DisplayName("every static field the job declares is final, on the class and on its nested types")
         void noStaticFieldIsMutable() {
@@ -1919,10 +1481,6 @@ class AccountBalanceReaderJobTest {
         @Test
         @DisplayName("every instance field the job bean declares is final, so the singleton holds no state")
         void theSingletonHoldsNoMutableState() {
-            // app/cbl/CBACT02C.cbl:46-:67 declares CARDFILE-STATUS, IO-STATUS, APPL-RESULT, END-OF-FILE,
-            // ABCODE and TIMING in WORKING-STORAGE. A singleton bean carrying those as fields would let
-            // one run overwrite another's and would make one test's outcome depend on another's. They
-            // belong to the per-run object instead, which is what the following two assertions pin down.
             for (Field field : AccountBalanceReaderJob.class.getDeclaredFields()) {
                 if (field.isSynthetic() || Modifier.isStatic(field.getModifiers())) {
                     continue;
@@ -1936,11 +1494,6 @@ class AccountBalanceReaderJobTest {
         @Test
         @DisplayName("two runs of one job instance do not see each other's working storage")
         void runsAreIndependent() {
-            // The observable consequence, and the reason the reflection above matters. One job instance,
-            // two passes: the second must produce exactly what the first did. Shared APPL-RESULT or a
-            // shared END-OF-FILE flag would make the second pass end early or not at all - END-OF-FILE
-            // is the sharpest of them, because :74's PERFORM UNTIL tests it before the first read, so a
-            // 'Y' left behind by the first pass would make the second emit two banners and nothing else.
             AccountBalanceReaderJob job = new AccountBalanceReaderJob(
                     batchConfig(sourceDerivedContract(), "CARDDEMO.TEST.CARDDATA.VSAM.KSDS"),
                     repositoryReplayingWholeFixture(), FIXTURE_CHARSET,
@@ -1955,15 +1508,6 @@ class AccountBalanceReaderJobTest {
             assertThat(second.lines()).containsExactlyElementsOf(first.lines());
         }
 
-        /**
-         * Asserts that {@code type} declares no static field that can be reassigned.
-         *
-         * <p>Synthetic fields are skipped deliberately. The build runs the tests under the coverage
-         * agent, which adds a {@code private static transient boolean[]} probe array to every
-         * instrumented class; it is marked synthetic and is not ours to hold to this rule.
-         *
-         * @param type the class to inspect
-         */
         private void assertNoMutableStaticFieldOn(Class<?> type) {
             for (Field field : type.getDeclaredFields()) {
                 if (field.isSynthetic() || field.getName().startsWith("$")) {
@@ -1981,25 +1525,12 @@ class AccountBalanceReaderJobTest {
         }
     }
 
-    // =================================================================================================
-    // 9910-DISPLAY-IO-STATUS - app/cbl/CBACT02C.cbl:161-174. BOTH arms.
-    //
-    // The paragraph has two branches and this program can reach both, so both are driven here. The
-    // renderer itself lives in FileStatus because sixteen emission sites across the estate share it;
-    // what these tests own is that THIS program's status values render as this program's paragraph
-    // renders them, and that the line the paragraph emits carries the literal text it emits.
-    // =================================================================================================
-
     @Nested
     @DisplayName("9910-DISPLAY-IO-STATUS - both arms, and the literal byte for byte")
     class IoStatusRenderer {
-
         @Test
         @DisplayName("the literal is 'FILE STATUS IS: NNNN' - the NNNN really is part of it")
         void theLiteralIsByteExact() {
-            // app/cbl/CBACT02C.cbl:168 and :172 are both DISPLAY 'FILE STATUS IS: NNNN' IO-STATUS-04.
-            // Written out here rather than only referenced through the constant, so that a constant
-            // quietly reworded into 'FILE STATUS IS: ' would fail this test instead of passing silently.
             assertThat(FileStatus.DISPLAY_PREFIX).isEqualTo("FILE STATUS IS: NNNN");
             assertThat(FileStatus.STATUS_IMAGE_LENGTH).isEqualTo(4);
         }
@@ -2013,8 +1544,6 @@ class AccountBalanceReaderJobTest {
             "04, 0004"})
         @DisplayName("a numeric status not beginning '9' takes the ELSE arm: '0000' with it overlaid")
         void numericStatusesTakeTheElseArm(String status, String image) {
-            // :170  MOVE '0000' TO IO-STATUS-04
-            // :171  MOVE IO-STATUS TO IO-STATUS-04(3:2)   <- one-based positions 3 and 4
             assertThat(FileStatus.toDisplayLine(status))
                     .isEqualTo("FILE STATUS IS: NNNN" + image);
             assertThat(FileStatus.toStatusImage(status)).isEqualTo(image).startsWith("00");
@@ -2023,9 +1552,6 @@ class AccountBalanceReaderJobTest {
         @Test
         @DisplayName("a status beginning '9' takes the IF arm: the byte becomes three decimal digits")
         void extendedStatusTakesTheIfArm() {
-            // :162-:163  IF IO-STATUS NOT NUMERIC OR IO-STAT1 = '9'
-            // :164-:167  the first byte verbatim, then the second byte as an unsigned integer in a
-            //            PIC 999 tail, which is why 0x0A prints 010 rather than 00A.
             assertThat(FileStatus.toDisplayLine('9', (char) 0))
                     .isEqualTo("FILE STATUS IS: NNNN9000");
             assertThat(FileStatus.toDisplayLine('9', (char) 10))
@@ -2038,18 +1564,12 @@ class AccountBalanceReaderJobTest {
         @Test
         @DisplayName("a non-numeric status takes the IF arm too, even though it does not begin '9'")
         void nonNumericStatusTakesTheIfArm() {
-            // The class condition IO-STATUS NOT NUMERIC is the first half of :162's OR, so a status whose
-            // bytes are not both digits reaches the extended arm regardless of its first character.
             assertThat(FileStatus.toDisplayLine("AB")).isEqualTo("FILE STATUS IS: NNNNA066");
         }
 
         @Test
         @DisplayName("a read failure emits the error text, then the status line, then the abend text")
         void theEmissionOrderIsTheParagraphOrder() {
-            // :110  DISPLAY 'ERROR READING CARDFILE'
-            // :111  MOVE CARDFILE-STATUS TO IO-STATUS
-            // :112  PERFORM 9910-DISPLAY-IO-STATUS      -> the FILE STATUS line
-            // :113  PERFORM 9999-ABEND-PROGRAM          -> 'ABENDING PROGRAM' at :155, then CEE3ABD
             CollectingSink sink = new CollectingSink();
 
             assertThatAbend(repositoryReturning(List.of(CardReadResult.notFound())), sink);
@@ -2062,20 +1582,9 @@ class AccountBalanceReaderJobTest {
         }
     }
 
-    // =================================================================================================
-    // 0000-CARDFILE-OPEN, every status the call site can report - gate G47.
-    //
-    // The open is the one call site of the three whose status is genuinely multi-valued here: it reads a
-    // response from the file and translates it, so '00', '10', '22', '23' and an untranslatable response
-    // are all reachable. The COBOL tests only IF CARDFILE-STATUS = '00' (:121), so every one of the other
-    // four must land on the same MOVE 12 arm - and the point of driving them individually is that a
-    // translation which quietly treated '10' at OPEN as an empty file would pass a two-case test.
-    // =================================================================================================
-
     @Nested
     @DisplayName("0000-CARDFILE-OPEN - every reachable status - gate G47")
     class OpenStatusLadder {
-
         @ParameterizedTest(name = "CICS response {0} is status ''{1}'' at the OPEN, and abends with 12")
         @CsvSource({
             "20, 10",
@@ -2092,15 +1601,12 @@ class AccountBalanceReaderJobTest {
 
             AbendException abend = assertThatAbend(repository, sink);
 
-            // :124  MOVE 12 TO APPL-RESULT, and :126's guard then falls through to :129-:132.
             assertThat(abend.getReturnCode()).isEqualTo(AccountBalanceReaderJob.APPL_RESULT_FATAL);
             assertThat(sink.lines()).containsExactly(
                     AccountBalanceReaderJob.START_BANNER,
                     "ERROR OPENING CARDFILE",
                     FileStatus.toDisplayLine(expectedStatus),
                     AbendException.ABEND_DISPLAY_TEXT);
-            // There is no APPL-EOF arm in 0000-CARDFILE-OPEN: :121-:125 has two branches, not three, so
-            // '10' at the open is a failure and not an empty file.
             verify(browse, never()).readNext();
         }
 
@@ -2132,7 +1638,6 @@ class AccountBalanceReaderJobTest {
 
             jobOver(repository).execute(sink);
 
-            // :122  MOVE 0 TO APPL-RESULT, so :126 IF APPL-AOK is true and :127 CONTINUEs.
             assertThat(FileStatus.batchStatusOfCicsResp(FileStatus.NORMAL))
                     .contains(FileStatus.OK);
             verify(browse).readNext();
@@ -2141,20 +1646,9 @@ class AccountBalanceReaderJobTest {
         }
     }
 
-    // =================================================================================================
-    // 9000-CARDFILE-CLOSE, the arithmetic - gate G28.
-    //
-    // These three statements are the whole arithmetic surface of CBACT02C: two ADDs and one SUBTRACT,
-    // and no other program-level computation exists anywhere in the file. They are also the only place
-    // the program spells a plain assignment as arithmetic, which is exactly why they get their own test:
-    // the ladder is easy to "simplify" into MOVE 8 / MOVE 0 / MOVE 12 and thereby lose the audit trail
-    // back to :137, :140 and :142.
-    // =================================================================================================
-
     @Nested
     @DisplayName("9000-CARDFILE-CLOSE - the 8 -> 0-or-12 arithmetic ladder - gate G28")
     class CloseArithmeticLadder {
-
         @Test
         @DisplayName("ADD 8 TO ZERO GIVING APPL-RESULT yields 8 - app/cbl/CBACT02C.cbl:137")
         void addEightToZeroGivingYieldsEight() {
@@ -2167,7 +1661,6 @@ class AccountBalanceReaderJobTest {
         @Test
         @DisplayName("SUBTRACT APPL-RESULT FROM APPL-RESULT yields 0 - app/cbl/CBACT02C.cbl:140")
         void subtractingTheFieldFromItselfYieldsZero() {
-            // The field less itself, whatever it held. Started at 8 by :137, so this is 8 - 8.
             int applResult = AccountBalanceReaderJob.APPL_RESULT_ASSUMED_FAILURE;
             applResult -= applResult;
 
@@ -2192,11 +1685,11 @@ class AccountBalanceReaderJobTest {
             "04, 12"})
         @DisplayName("the :139 test is equality with '00', so every other status leaves 12")
         void theLadderMapsEveryStatus(String status, int expected) {
-            int applResult = AccountBalanceReaderJob.APPL_RESULT_ASSUMED_FAILURE;   // :137
-            if (FileStatus.OK.equals(status)) {                                     // :139
-                applResult -= applResult;                                           // :140
+            int applResult = AccountBalanceReaderJob.APPL_RESULT_ASSUMED_FAILURE;
+            if (FileStatus.OK.equals(status)) {
+                applResult -= applResult;
             } else {
-                applResult = AccountBalanceReaderJob.APPL_RESULT_FATAL;             // :142
+                applResult = AccountBalanceReaderJob.APPL_RESULT_FATAL;
             }
 
             assertThat(applResult).isEqualTo(expected);
@@ -2205,8 +1698,6 @@ class AccountBalanceReaderJobTest {
         @Test
         @DisplayName("a close failure abends with 12 and never with the assumed 8")
         void aCloseFailureCarriesTwelveNotEight() {
-            // The observable consequence of the ladder: the 8 that :137 deposits is never what reaches
-            // the RETURN-CODE, because :139-:143 always overwrites it before the guard at :144 reads it.
             CardRepository repository = cardRepositoryMock();
             CardBrowse browse = mock(CardBrowse.class);
             when(repository.openBrowse(any(), any())).thenReturn(browse);
@@ -2225,31 +1716,17 @@ class AccountBalanceReaderJobTest {
         void aSuccessfulCloseLeavesZero() {
             List<String> lines = linesFrom(repositoryReturning(List.of(CardReadResult.endOfFile())));
 
-            // :144 IF APPL-AOK is true, :145 CONTINUEs, and :85's banner follows at the mainline.
             assertThat(lines).containsExactly(
                     AccountBalanceReaderJob.START_BANNER, AccountBalanceReaderJob.END_BANNER);
         }
     }
 
-    // =================================================================================================
-    // The emitted line, field by field at its absolute offset - gates G19 and G21.
-    //
-    // The elsewhere-asserted "the line equals the fixture row" is the strongest statement available about
-    // the line as a whole, and it is deliberately kept. What it does not do is say WHERE anything is, so
-    // a codec that transposed two adjacent same-width spans would satisfy it on every row that happened
-    // to agree. These tests pin each CVACT02Y field to the offset the copybook gives it.
-    // =================================================================================================
-
     @Nested
     @DisplayName("Record geometry - every CVACT02Y field at its declared offset - gates G19, G21")
     class RecordGeometry {
-
         @Test
         @DisplayName("the copybook field widths sum to the declared 150, FILLER included")
         void fieldWidthsSumToTheRecordLength() {
-            // app/cpy/CVACT02Y.cpy: X(16) + 9(11) + 9(03) + X(50) + X(10) + X(01) + FILLER X(59).
-            // 9(11) is eleven bytes and 9(03) is three: DISPLAY usage, one byte per digit, no sign and
-            // no decimal point, so there is no p+2 adjustment to make on this record at all.
             int sum = CardRecord.CARD_NUM_LENGTH
                     + CardRecord.CARD_ACCT_ID_LENGTH
                     + CardRecord.CARD_CVV_CD_LENGTH
@@ -2303,10 +1780,6 @@ class AccountBalanceReaderJobTest {
                 assertThat(span(line, CardRecord.CARD_NUM_OFFSET, CardRecord.CARD_NUM_LENGTH))
                         .as("record %d CARD-NUM PIC X(16) at offset 0", i + 1)
                         .isEqualTo(record.cardNum());
-                // PIC 9(11) DISPLAY: eleven zero-filled digits, which is the zoned image DISPLAY writes.
-                // Compared against the digits themselves rather than against any decimal rendering of
-                // the decoded value - a scaled or grouped rendering would be a line the program cannot
-                // produce.
                 assertThat(span(line, CardRecord.CARD_ACCT_ID_OFFSET,
                                 CardRecord.CARD_ACCT_ID_LENGTH))
                         .as("record %d CARD-ACCT-ID PIC 9(11) at offset 16", i + 1)
@@ -2336,11 +1809,6 @@ class AccountBalanceReaderJobTest {
         @Test
         @DisplayName("a record encoded from scratch emits FILLER X(59) as spaces - gate G21")
         void fillerIsSpaceFilledWhenTheAreaIsBuiltFresh() {
-            // Distinct from the elsewhere-asserted "a row's dirty FILLER survives verbatim". That test
-            // covers READ INTO, where the area already holds the row's bytes. This one covers the codec
-            // building an area from a decoded record, where FILLER is covered by no field of CVACT02Y and
-            // so must be written as spaces: omit it and the record is 91 bytes and every later offset in
-            // the file moves.
             CardRecord record = fixtureRecords().get(0);
 
             String image = record.encodeToImage(StandardCharsets.US_ASCII);
@@ -2354,9 +1822,6 @@ class AccountBalanceReaderJobTest {
         @Test
         @DisplayName("the emitted line is US-ASCII bytes of exactly the record length")
         void theLineIsOneHundredAndFiftyBytesInTheNamedCharset() {
-            // The charset is named at the byte boundary rather than defaulted: app/data/ASCII is the
-            // authoritative fixture set and application-test.yml selects US-ASCII for it. A default-charset
-            // encode would be correct here by accident and wrong on a host configured otherwise.
             List<String> lines = linesFrom(repositoryOverWholeFixture());
 
             for (String line : lines.subList(1, lines.size() - 1)) {
@@ -2365,41 +1830,19 @@ class AccountBalanceReaderJobTest {
             }
         }
 
-        /**
-         * The characters of {@code image} covering one copybook field.
-         *
-         * @param image  the record image
-         * @param offset the field's zero-based offset
-         * @param length the field's declared width
-         * @return the field's span
-         */
         private String span(String image, int offset, int length) {
             return image.substring(offset, offset + length);
         }
 
-        /**
-         * A {@code PIC 9(n)} DISPLAY span: the value in decimal, zero-filled on the left to {@code n}.
-         *
-         * @param value the value the span holds
-         * @param width the field's declared width
-         * @return the zoned display image
-         */
         private String zoned(long value, int width) {
             String digits = Long.toString(value);
             return "0".repeat(width - digits.length()) + digits;
         }
     }
 
-    // =================================================================================================
-    // The fixture itself. Every expectation in this file is seeded from it, so its shape is asserted
-    // rather than assumed - and it is the COPY under src/test/resources, never app/data/ASCII in place,
-    // because the reference trees are read-only (practice B3).
-    // =================================================================================================
-
     @Nested
     @DisplayName("The card fixture - 50 records of exactly 150 characters")
     class FixtureContract {
-
         @Test
         @DisplayName("the fixture holds fifty rows, every one exactly 150 characters wide")
         void everyRowIsTheDeclaredWidth() {
@@ -2434,15 +1877,9 @@ class AccountBalanceReaderJobTest {
         }
     }
 
-    // =================================================================================================
-    // Gate G46 - no dataset name is written in Java.
-    // =================================================================================================
-
     @Nested
     @DisplayName("Dataset name provenance - gate G46")
     class DatasetNameProvenance {
-
-        /** The dataset-name prefix the JCL uses, which must appear in no Java source. */
         private static final String MAINFRAME_DSN_PREFIX = "AWS.M2.CARDDEMO.";
 
         @Test
@@ -2481,8 +1918,6 @@ class AccountBalanceReaderJobTest {
         @Test
         @DisplayName("whatever the configuration says is what the job reports and reads")
         void theConfiguredNameIsTheNameUsed() {
-            // Two different values through the same code path, so the answer demonstrably comes from
-            // configuration rather than from a constant that happens to match one of them.
             String first = "CARDDEMO.SITE.ONE.CARDDATA.VSAM.KSDS";
             String second = "CARDDEMO.SITE.TWO.CARDDATA.VSAM.KSDS";
 

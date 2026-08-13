@@ -14,58 +14,29 @@ import org.junit.jupiter.params.provider.CsvSource;
 
 /**
  * Tests for {@link DatasetBindings#validate()}, the startup check on the dataset catalogue.
- *
- * <h2>What this closes</h2>
- * Only two of the twenty keyed entries declared a {@code key-length}, on the stated reasoning that a
- * width should appear in configuration only where a source file verifies it. Every one of them is
- * verifiable - each width is the {@code PICTURE} of the key field in the copybook the entry already
- * names - so the reasoning did not hold, and its effect was that a keyed read had no declared authority
- * for where its key ended. Eighteen entries now declare their geometry, and this class proves the check
- * that keeps it declared.
- *
- * <h2>Why at startup</h2>
- * A dataset whose key geometry is wrong is wrong for every read of it. The difference between learning
- * that while the context builds and learning it from a production batch window is the entire value of
- * the check, so {@code validate()} is bound to {@code @PostConstruct} and refuses to let the context
- * come up.
- *
- * <p>Each rule below is asserted by construction rather than through a container, so the rejection is
- * attributable to one rule and one entry. {@link DatasetBindings#validateKeyGeometry()} is therefore
- * the entry point used here rather than {@link DatasetBindings#validate()}: the geometry rules are what
- * this class is about, and calling them directly keeps a rejection attributable to the rule under test
- * instead of to the separate completeness rule that {@code validate()} applies first - which requires
- * the catalogue to declare exactly the twenty-seven DD names the migrated code reads, and is asserted
- * in {@code ConfigBranchCoverageTest} where it belongs. The shipped configuration is separately
- * asserted to satisfy all of them in {@code DataSourceConfigTest}.
  */
 @DisplayName("DatasetBindings.validate - the dataset catalogue must be addressable as configured")
 class DatasetBindingsValidationTest {
-
-    /** A well-formed base cluster: the account master, keyed on {@code ACCT-ID PIC 9(11)}. */
     private static DatasetBinding acctdat() {
         return new DatasetBinding("AWS.M2.CARDDEMO.ACCTDATA.VSAM.KSDS", "ksds", false, "FB", null,
                 300, "CVACT01Y", 11, null, null, null);
     }
 
-    /** A well-formed base cluster: the card master, keyed on {@code CARD-NUM PIC X(16)}. */
     private static DatasetBinding carddat() {
         return new DatasetBinding("AWS.M2.CARDDEMO.CARDDATA.VSAM.KSDS", "ksds", false, "FB", null,
                 150, "CVACT02Y", 16, null, null, null);
     }
 
-    /** A well-formed alternate-index path over {@link #carddat()}. */
     private static DatasetBinding cardaix() {
         return new DatasetBinding("AWS.M2.CARDDEMO.CARDDATA.VSAM.AIX.PATH", "aix-path", false, "FB",
                 null, 150, "CVACT02Y", 11, 16, "CARDDAT", "CARD-ACCT-ID");
     }
 
-    /** A well-formed sequential dataset: no key, because it is read front to back. */
     private static DatasetBinding dalytran() {
         return new DatasetBinding("AWS.M2.CARDDEMO.DALYTRAN.PS", "sequential", false, "FB", null,
                 350, "CVTRA06Y", null, null, null, null);
     }
 
-    /** A catalogue holding the supplied entries. */
     private static DatasetBindings catalogue(Object... nameThenBinding) {
         DatasetBindings bindings = new DatasetBindings();
         for (int i = 0; i < nameThenBinding.length; i += 2) {
@@ -77,7 +48,6 @@ class DatasetBindingsValidationTest {
     @Nested
     @DisplayName("A well-formed catalogue is accepted")
     class Accepted {
-
         @Test
         @DisplayName("base clusters, an alternate-index path and a sequential dataset together")
         void aWellFormedCatalogueIsAccepted() {
@@ -91,9 +61,6 @@ class DatasetBindingsValidationTest {
         @Test
         @DisplayName("an empty catalogue is accepted - emptiness is a different defect, reported elsewhere")
         void anEmptyCatalogueIsAccepted() {
-            // Emptiness is refused by the completeness rule validate() applies before this one, and
-            // binding(String) reports a missing DD name at the point of use with the configured keys
-            // listed. This check is about entries that ARE configured being self-consistent.
             assertThatNoException().isThrownBy(new DatasetBindings()::validateKeyGeometry);
         }
 
@@ -110,7 +77,6 @@ class DatasetBindingsValidationTest {
     @Nested
     @DisplayName("Rule 1 - a keyed entry must declare a key length")
     class KeyLengthRequired {
-
         @ParameterizedTest(name = "organization {0}")
         @DisplayName("a KSDS or an alternate-index path with no key length is refused")
         @CsvSource({"ksds", "aix-path"})
@@ -148,9 +114,6 @@ class DatasetBindingsValidationTest {
         @Test
         @DisplayName("the diagnostic still reads sensibly for an entry with no copybook at all")
         void theDiagnosticReadsSensiblyWithoutACopybook() {
-            // A real configured state, not a hypothetical: a few output datasets declare their layout
-            // inline in the program rather than in an app/cpy member, so copybook is null for them. The
-            // message has to name something a reader can act on instead of printing "null".
             DatasetBinding inlineLayout = new DatasetBinding("X.Y", "ksds", false, "FB", null, 300,
                     null, null, null, null, null);
 
@@ -168,7 +131,6 @@ class DatasetBindingsValidationTest {
     @Nested
     @DisplayName("Rule 2 - the key span must lie inside the record")
     class KeySpanFitsTheRecord {
-
         @Test
         @DisplayName("a key wider than its record is refused")
         void aKeyWiderThanItsRecordIsRefused() {
@@ -183,7 +145,6 @@ class DatasetBindingsValidationTest {
         @Test
         @DisplayName("a key whose OFFSET pushes it past the end is refused")
         void anOffsetPastTheEndIsRefused() {
-            // The case an offset-free check would miss entirely: the width fits, the offset does not.
             DatasetBinding pastEnd = new DatasetBinding("X.Y", "aix-path", false, "FB", null, 50,
                     "CVACT03Y", 11, 45, "CCXREF", "XREF-ACCT-ID");
 
@@ -231,7 +192,6 @@ class DatasetBindingsValidationTest {
     @Nested
     @DisplayName("Rule 3 - a sequential entry must not declare a key")
     class SequentialHasNoKey {
-
         @Test
         @DisplayName("a sequential dataset claiming a key length is refused")
         void aSequentialDatasetClaimingAKeyIsRefused() {
@@ -255,7 +215,6 @@ class DatasetBindingsValidationTest {
     @Nested
     @DisplayName("Rule 4 - an alternate-index path must agree with its base")
     class PathAgreesWithBase {
-
         @Test
         @DisplayName("a path naming no base is refused")
         void aPathWithNoBaseIsRefused() {
@@ -290,8 +249,6 @@ class DatasetBindingsValidationTest {
         @Test
         @DisplayName("a path whose RECORD LENGTH differs from its base is refused")
         void aPathWithADifferentRecordLengthIsRefused() {
-            // The defect this rule exists for. A path reaches the SAME records as its base, so a width
-            // disagreement means one repository would decode the other's bytes against the wrong layout.
             DatasetBinding wrongWidth = new DatasetBinding("X.Y", "aix-path", false, "FB", null, 300,
                     "CVACT02Y", 11, 16, "CARDDAT", "CARD-ACCT-ID");
 
@@ -342,7 +299,6 @@ class DatasetBindingsValidationTest {
     @Nested
     @DisplayName("The key span a repository addresses")
     class KeySpanExposure {
-
         @Test
         @DisplayName("a primary key spans from zero; an alternate key from its declared offset")
         void theKeySpanCarriesTheDeclaredGeometry() {

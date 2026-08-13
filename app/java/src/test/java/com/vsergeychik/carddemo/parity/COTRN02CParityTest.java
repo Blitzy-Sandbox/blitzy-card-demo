@@ -54,165 +54,23 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
 
 /**
- * The parity gate for {@code app/cbl/COTRN02C.cbl} - twenty declarative cases, judged field by field,
- * with a required diff count of zero.
- *
- * <h2>Risk R-B: the class is called {@code TransactionViewController} and the program <em>adds</em></h2>
- *
- * <p>This is the other half of the highest-risk naming ambiguity in the migration, and it is recorded
- * here in full rather than quietly reconciled, because a reader who trusts the class name will write a
- * read-only expectation and a read-only expectation will pass against a program that inserts nothing -
- * which is precisely the failure this file exists to prevent.
- *
- * <ul>
- *   <li><strong>The build prompt's mapping.</strong> {@code COTRN02C} maps to
- *       {@link TransactionViewController} and {@code COTRN01C} maps to
- *       {@code TransactionAddController}.</li>
- *   <li><strong>The verified source behaviour is the opposite.</strong>
- *       {@code app/cbl/COTRN02C.cbl:5} states
- *       {@code Function    : Add a new Transaction to TRANSACT file}, and the program browses
- *       {@code TRANSACT} backwards for the highest key ({@code STARTBR} at {@code :644},
- *       {@code READPREV} at {@code :675}, {@code ENDBR} at {@code :704}), adds one to it, and
- *       <strong>writes</strong> a 350-byte record at {@code :713}.</li>
- *   <li><strong>An independent corroboration.</strong> {@code README.md:213-231} carries the project's
- *       own online inventory and records {@code CT02 | COTRN02 | COTRN02C | Transaction Add} against
- *       {@code CT01 | COTRN01 | COTRN01C | Transaction View} - the inverse of the prompt's mapping.</li>
- *   <li><strong>The resolution, by rule R1.</strong> The name comes from the prompt and the behaviour
- *       comes from the source. The prompt's class name is honoured verbatim; <em>every</em> expectation
- *       in this file therefore describes an <strong>INSERT</strong> - resolve the account or the card
- *       through the cross-reference, validate the eleven data fields, generate the next identifier from
- *       a backward browse, and write.</li>
- *   <li><strong>It is flagged, not decided.</strong> Per practice B4 the conflict is documented rather
- *       than corrected: the Agent Action Plan escalates it for <strong>explicit user confirmation</strong>
- *       and nothing here guesses which artefact is authoritative about <em>intent</em> - only about
- *       behaviour, where the source is the only oracle there is.</li>
- * </ul>
- *
- * <p><strong>Consequence for anyone editing this file:</strong> a case that asserts no write on the
- * confirmed-add path would be wrong. {@link RiskRb} makes that failure immediate rather than subtle. The
- * mirror-image test is {@code COTRN01CParityTest}, whose class is named {@code TransactionAddController}
- * and whose source performs a single keyed {@code READ} and never writes.
- *
- * <h2>Risk R-A: the baseline is statically derived, never captured</h2>
- *
- * <p>Every expected value in {@code src/test/resources/parity/COTRN02C/} was derived by reading the
- * COBOL, its copybooks, its BMS mapset and the CSD - <strong>not</strong> by executing the legacy
- * program. Execution is impossible in this environment; the eight independently verified blockers are
- * recorded in the migration plan and include a COBOL compiler whose indexed-file handler is disabled,
- * the absence of any Language Environment {@code CEE*} service (so no {@code CEEDAYS} behind
- * {@code CSUTLDTC}), the absence of a CICS emulator, and the absence of the IBM-supplied {@code DFHAID}
- * and {@code DFHBMSCA} copybooks this program copies at {@code :91-92}. Practice B12 requires that limit
- * be stated where the expectations live rather than absorbed silently, so it is stated here.
- *
- * <p>Because a statically derived expectation can encode a misreading where a captured one cannot, each
- * case's {@code description} names the source lines it was derived from, and the structural assertions in
- * the nested classes below re-derive every width mechanically from the copybook-backed layouts instead of
- * restating them as literals.
- *
- * <h2>No user rules were provided</h2>
- *
- * <p>{@code review_rules} returns exactly one line - "No user rules provided" - so no rule forces this
- * file into scope and no rule constrains how it is written. Per <strong>UR4</strong> that absence is
- * stated explicitly and is <em>not</em> treated as permission to lower the bar: the standard held here is
- * the Agent Action Plan's twelve enterprise practices, cited by name where they bite. B1/B2 (only
- * JUnit 5.12.2, AssertJ 3.27.7 and Mockito 5.17.0, all managed by the Spring Boot 3.5.16 parent), B7
- * (a pinned clock, nothing interactive), B8 (no wildcard import, no {@code double}, no rounding mode but
- * {@link RoundingMode#DOWN}, a named code page, no dataset-name literal), B9 (no static mutable state),
- * B10 (shipped with the implementation), B12 (the provenance statement above).
- *
- * <h2>What the twenty cases pin</h2>
- *
- * <p>Four datasets are named by the program and only <strong>two</strong> are ever touched:
- * {@code TRANSACT} and the cross-reference, which is reached by <em>two access paths over one
- * dataset</em> - the {@code CXACAIX} alternate index at {@code :578} and the {@code CCXREF} base cluster
- * at {@code :611} - never as two tables (gate G45). {@code ACCTDAT} is declared at {@code :40} and
- * {@code COPY CVACT01Y} at {@code :89} and neither is referenced anywhere in the program; both are
- * preserved as dead declarations (practice B5) and are asserted to stay dead by {@link DeadDeclarations}.
- *
- * <p>Between them the cases drive: the {@code EIBCALEN = 0} guard; first entry with and without a
- * selection carried in {@code CDEMO-CT02-TRN-SELECTED}; every arm of the ordered inline
- * {@code EVALUATE EIBAID} including {@code WHEN OTHER}; both key-field guard chains and their
- * {@code FUNCTION NUMVAL} conversions; the eleven blank-field arms and the three positional-shape arms;
- * both {@code CSUTLDTC} call sites with the {@code '0000'}-or-{@code '2513'} acceptance rule; the
- * {@code FUNCTION NUMVAL-C} conversion of the amount at both of its sites; the backward browse and the
- * {@code ENDFILE} arm that makes an empty master loadable; the 350-byte written image; the
- * {@code DFHGREEN} success line; the duplicate and {@code WHEN OTHER} write arms with their
- * {@code DISPLAY 'RESP:' ... 'REAS:'} lines; and the {@code nextProgram} that replaces
- * {@code EXEC CICS XCTL} at {@code :509}.
- *
- * <p>The unit is constructed as a plain Java object and its {@code MAIN-PARA} method is called directly.
- * There is no {@code MockMvc}, no {@code TestRestTemplate}, no {@code WebTestClient} and no
- * {@code JobLauncher} anywhere in the path, so the program's decisions are reached with no HTTP layer
- * between the assertion and the arithmetic (gate G51).
- *
- * @see ParityHarness for how a case is seeded, run and fingerprinted
- * @see FieldDiffer for the field-by-field comparison the diff count comes from
+ * The parity gate for {@code app/cbl/COTRN02C.cbl} - twenty declarative cases, judged field by field, with
+ * a required diff count of zero.
  */
 @DisplayName("COTRN02C parity - transaction CT02, a 350-byte INSERT, and the class name says View")
 final class COTRN02CParityTest {
-
-    /**
-     * The program under test, which is also the name of its case directory:
-     * {@code src/test/resources/parity/COTRN02C/}.
-     */
     private static final String PROGRAM = "COTRN02C";
 
-    /**
-     * {@code COTRN02C} is a CICS online program and the migration gives it a controller with no service
-     * beneath it, so the unit a case reaches is the controller itself, constructed as a plain object.
-     */
     private static final ParityCase.UnitKind UNIT_KIND = ParityCase.UnitKind.CONTROLLER_POJO;
 
-    /**
-     * The dataset binding key for {@code WS-TRANSACT-FILE PIC X(08) VALUE 'TRANSACT'} ({@code :39}).
-     *
-     * <p>Taken from the repository rather than written as a literal, so no dataset name is spelled out in
-     * Java (gate G46) and the key a case declares cannot drift from the key the repository answers to.
-     */
     private static final String TRANSACT_DATASET = TransactionRepository.CICS_FILE_NAME;
 
-    /**
-     * The dataset binding key for the cross-reference: {@code WS-CCXREF-FILE PIC X(08) VALUE 'CCXREF  '}
-     * ({@code :41}).
-     *
-     * <p><strong>One key, not two.</strong> {@code WS-CXACAIX-FILE} ({@code :42}) names an alternate-index
-     * <em>path</em> over this same base cluster, so a case seeds the base and both finders answer from it.
-     * Seeding two datasets would model two tables, which is exactly what gate G45 forbids.
-     */
     private static final String CCXREF_DATASET = CardXrefRepository.BASE_DD_NAME;
 
-    /**
-     * The {@code EIBAID} a request carries when the case declares none: {@code DFHNULL}, the attention
-     * identifier CICS reports when no key raised the interrupt, which matches none of the four named arms
-     * of the {@code EVALUATE} at {@code :133-152} and therefore falls to {@code WHEN OTHER}.
-     */
     private static final String NO_AID_TOKEN = null;
 
-    /**
-     * The status the {@code WHEN OTHER} arms are reached with when a case forces one.
-     *
-     * <p>Those arms are written for conditions the source does not enumerate, so no enumerated status can
-     * reach them. {@link FileStatus#RECORD_LENGTH_CONFLICT} is used because it is a real status that is
-     * deliberately none of the ones the program's own arms test for, which is exactly the shape of an
-     * unexpected condition.
-     */
     private static final String UNEXPECTED_STATUS = FileStatus.RECORD_LENGTH_CONFLICT;
 
-    // =================================================================================================
-    // The gate.
-    // =================================================================================================
-
-    /**
-     * The program's twenty cases, in ascending case order.
-     *
-     * <p>{@link ParityHarness#casesOf(String)} is the only loader used, and it refuses anything other than
-     * exactly {@code case01.json} through {@code case20.json} - a short set, a long set, or a directory
-     * holding a stray file all fail loudly there. The redundant check below states the count a second time
-     * at the call site so a reader of this class can see the number the gate requires without following
-     * the call (gate G15).
-     *
-     * @return exactly twenty cases
-     */
     static List<ParityCase> cases() {
         List<ParityCase> loaded = ParityHarness.casesOf(PROGRAM);
 
@@ -250,16 +108,6 @@ final class COTRN02CParityTest {
         return loaded;
     }
 
-    /**
-     * The gate: one case, run once, judged field by field, and required to differ in nothing.
-     *
-     * <p>The assertion is on the whole {@link FieldDiffer.DiffResult} rather than on a boolean, so a
-     * failure reports the count and then every difference the differ found, each naming the field, the
-     * expected value, the observed value and why the field matters. That rendering is the differ's work
-     * and is surfaced verbatim rather than summarised.
-     *
-     * @param parityCase one of the twenty cases
-     */
     @ParameterizedTest(name = "{0}")
     @MethodSource("cases")
     @DisplayName("field-for-field identical to app/cbl/COTRN02C.cbl")
@@ -279,38 +127,6 @@ final class COTRN02CParityTest {
                 .isTrue();
     }
 
-    // =================================================================================================
-    // The adapter: how a case reaches COTRN02C. No HTTP, no job launcher, no session (gates G37, G51).
-    // =================================================================================================
-
-    /**
-     * Constructs {@link TransactionViewController} as a plain object and calls its {@code MAIN-PARA}
-     * method once.
-     *
-     * <p>One invocation is one CICS task. The four collaborators are supplied explicitly:
-     *
-     * <ul>
-     *   <li>the {@code TRANSACT} master, stubbed over the case's own seeded rows so that the backward
-     *       browse and the write answer from the data the case declares rather than from a hand-written
-     *       outcome;</li>
-     *   <li>the cross-reference dataset, likewise stubbed over one seeded base cluster answering
-     *       <em>both</em> access paths (gate G45);</li>
-     *   <li>a <strong>real</strong> {@link DateUtilityJob}, not a stub. It is deterministic and the three
-     *       {@code CSUTLDTC} outcomes this screen distinguishes are reachable with three real dates, so
-     *       stubbing it would assert the controller against a fiction. The full nine-token feedback table
-     *       is pinned by {@code CSUTLDTCParityTest}; the only thing asserted here is the acceptance
-     *       <em>rule</em>;</li>
-     *   <li>the case's pinned clock, so the two header items {@code POPULATE-HEADER-INFO} builds at
-     *       {@code :554-570} are comparable byte for byte and the run is deterministic (practice B7).</li>
-     * </ul>
-     *
-     * <p>No {@code DataSource} and no transaction manager are wired, because this program takes no record
-     * lock: the browse is read-only and the {@code WRITE} at {@code :713} carries no {@code UPDATE}
-     * option to pair with. The code page is the case's, never the platform default (practice B8).
-     *
-     * @param invocation the seeded, clocked invocation the harness prepared
-     * @return the fingerprint of that one run
-     */
     private static ParityHarness.UnitOutcome execute(ParityHarness.Invocation invocation) {
         TransactMaster master = masterOf(invocation);
         CrossReference crossReference = crossReferenceOf(invocation);
@@ -332,27 +148,6 @@ final class COTRN02CParityTest {
         return fingerprintOf(invocation, master, state);
     }
 
-    /**
-     * Proves, on <em>every</em> case rather than on one, that the run reached the datasets only the way
-     * the source reaches them.
-     *
-     * <p>Three claims, and each of them is a translation defect that no field comparison would catch:
-     *
-     * <ul>
-     *   <li>{@code TRANSACT} is never read by key. The program has no {@code EXEC CICS READ} against it -
-     *       the highest identifier comes from a browse, deliberately, because {@code READ} needs a key and
-     *       the point of the browse is that the key is not yet known.</li>
-     *   <li>{@code TRANSACT} is never browsed <em>forwards</em>. {@code STARTBR} at {@code :644} is issued
-     *       with {@code TRAN-ID} holding {@code HIGH-VALUES}, which positions past the end so the first
-     *       {@code READPREV} returns the highest key. A forward browse would return the <em>lowest</em>,
-     *       and every generated identifier after that would be wrong by the size of the file.</li>
-     *   <li>The cross-reference is never rewritten or browsed. The program only reads it, by one of its two
-     *       keys.</li>
-     * </ul>
-     *
-     * @param transactions    the {@code TRANSACT} master the run went through
-     * @param crossReference  the cross-reference the run went through
-     */
     private static void requireOnlyTheSourcesOwnAccessPaths(TransactionRepository transactions,
                                                             CardXrefRepository crossReference) {
         verify(transactions, never()).readByTranId(anyString());
@@ -364,41 +159,15 @@ final class COTRN02CParityTest {
         verify(crossReference, never()).openBrowse();
     }
 
-    // =================================================================================================
-    // The TRANSACT master, as a key-sequenced file private to one run.
-    // =================================================================================================
-
-    /**
-     * The {@code TRANSACT} dataset as this case declares it, held in key sequence.
-     *
-     * <p>An instance per run, never a static field, so twenty cases cannot see each other's rows
-     * (practice B9, gate G53). Key sequence rather than declaration order because that is what a KSDS is:
-     * {@code app/csd/CARDDEMO.CSD} defines {@code TRANSACT} over
-     * {@code AWS.M2.CARDDEMO.TRANSACT.VSAM.KSDS}, and "the record with the highest key" is only a
-     * well-defined thing to browse for if the file is ordered by key.
-     */
     private static final class TransactMaster {
-
-        /** The 350-byte record images, ascending by the sixteen-character {@code TRAN-ID}. */
         private final List<String> rows;
 
-        /** The case's code page. */
         private final Charset charset;
 
-        /** The move-rule engine, used to bring a short declared row up to the copybook's width. */
         private final FixedWidthCodec codec;
 
-        /**
-         * The backward browse position: the index one <em>above</em> the next row a {@code READPREV} will
-         * return. Starts at the row count, which is where {@code RIDFLD} holding {@code HIGH-VALUES}
-         * positions it.
-         */
         private int backwardCursor;
 
-        /**
-         * @param seededRows the rows the case declared, in any order
-         * @param charset    the case's code page
-         */
         TransactMaster(List<String> seededRows, Charset charset) {
             this.charset = Objects.requireNonNull(charset, "A code page is required");
             this.codec = new FixedWidthCodec(charset);
@@ -411,26 +180,14 @@ final class COTRN02CParityTest {
             this.backwardCursor = ordered.size();
         }
 
-        /** @return the rows as the dataset now holds them, in key sequence */
         List<String> rows() {
             return Collections.unmodifiableList(new ArrayList<>(rows));
         }
 
-        /**
-         * Positions a fresh backward browse. {@code EXEC CICS STARTBR} with {@code RIDFLD} at
-         * {@code HIGH-VALUES} positions past the last record, so the next {@code READPREV} returns it.
-         */
         void startBackwardBrowse() {
             backwardCursor = rows.size();
         }
 
-        /**
-         * {@code EXEC CICS READPREV} - {@code :675-683}.
-         *
-         * @return the next lower record, or {@code ENDFILE} once the browse is exhausted, which for an
-         *         empty master is on the very first read - the arm at {@code :688-689} that makes an empty
-         *         file loadable
-         */
         TransactionRepository.ReadResult readPrev() {
             if (backwardCursor <= 0) {
                 return TransactionRepository.ReadResult
@@ -441,13 +198,6 @@ final class COTRN02CParityTest {
                     TranRecord.decode(rows.get(backwardCursor), charset));
         }
 
-        /**
-         * {@code EXEC CICS WRITE} - {@code :713-721}: insert the record at its key position.
-         *
-         * @param record the 350-byte record the program built
-         * @return {@code written}, or {@code duplicate} when a row already carries that key - which is
-         *         what {@code DFHRESP(DUPREC)} at {@code :736} means for a KSDS base cluster
-         */
         TransactionRepository.WriteResult insert(TranRecord record) {
             String image = new String(record.encode(charset), charset);
             String key = keyOf(image);
@@ -463,22 +213,12 @@ final class COTRN02CParityTest {
                     .written(TransactionRepository.CICS_FILE_NAME);
         }
 
-        /**
-         * @param image a 350-byte record image
-         * @return its sixteen-character {@code TRAN-ID} span, which is the cluster's key
-         */
         private static String keyOf(String image) {
             return image.substring(TranRecord.TRAN_ID_OFFSET,
                     TranRecord.TRAN_ID_OFFSET + TranRecord.TRAN_ID_LENGTH);
         }
     }
 
-    /**
-     * Builds the master from whatever the case seeded, including nothing at all.
-     *
-     * @param invocation the invocation being run
-     * @return the master, empty when the case declares no {@code TRANSACT} rows
-     */
     private static TransactMaster masterOf(ParityHarness.Invocation invocation) {
         List<String> rows = invocation.hasDataset(TRANSACT_DATASET)
                 ? invocation.dataset(TRANSACT_DATASET).rows()
@@ -486,19 +226,6 @@ final class COTRN02CParityTest {
         return new TransactMaster(rows, invocation.charset());
     }
 
-    /**
-     * The {@code TRANSACT} repository over that master.
-     *
-     * <p>The browse is answered from the seeded rows, so the {@code NORMAL} and {@code ENDFILE} arms of
-     * {@code EVALUATE WS-RESP-CD} at {@code :685-697} are both reached by the same mechanism a terminal
-     * would reach them by: rows present, or no rows. The {@code WHEN OTHER} arm at {@code :690} is
-     * different in kind - it is written for a condition the source does not enumerate, so no seeded row
-     * can produce it, and a case reaches it by declaring a forced outcome for the browse read.
-     *
-     * @param invocation the invocation being run
-     * @param master     the dataset the repository reads and writes
-     * @return the repository the controller will go through
-     */
     private static TransactionRepository transactionRepositoryFor(ParityHarness.Invocation invocation,
                                                                   TransactMaster master) {
         TransactionRepository repository = mock(TransactionRepository.class);
@@ -512,17 +239,6 @@ final class COTRN02CParityTest {
         return repository;
     }
 
-    /**
-     * A backward browse over the master, positioned afresh.
-     *
-     * <p>{@code readNext} is stubbed to fail rather than left to return {@code null}: a translation that
-     * read the browse forwards would otherwise get a silent {@code null} and fail somewhere unrelated,
-     * whereas the message here names the mistake.
-     *
-     * @param invocation the invocation being run
-     * @param master     the dataset being browsed
-     * @return the browse handle
-     */
     private static TransactionRepository.Browse backwardBrowseOver(ParityHarness.Invocation invocation,
                                                                    TransactMaster master) {
         master.startBackwardBrowse();
@@ -537,13 +253,6 @@ final class COTRN02CParityTest {
         return browse;
     }
 
-    /**
-     * One {@code READPREV}, honouring a forced outcome when the case declared one.
-     *
-     * @param invocation the invocation being run
-     * @param master     the dataset being browsed
-     * @return the outcome the read reports
-     */
     private static TransactionRepository.ReadResult browseReadOf(ParityHarness.Invocation invocation,
                                                                  TransactMaster master) {
         if (!invocation.hasForcedOutcome(ParityCase.RepositoryOperation.READ_NEXT)) {
@@ -568,19 +277,6 @@ final class COTRN02CParityTest {
         };
     }
 
-    /**
-     * One {@code WRITE}, honouring a forced outcome when the case declared one.
-     *
-     * <p>The two rejecting arms at {@code :736} and {@code :742} cannot be reached from seeded data: the
-     * identifier the program writes is one above the highest key that exists, so it never collides, and a
-     * backend refusal is by definition not something a row can express. A case reaches them by declaring
-     * a forced outcome, and the harness then requires the run to have actually consumed it.
-     *
-     * @param invocation the invocation being run
-     * @param master     the dataset being written to
-     * @param record     the record the program built
-     * @return the outcome the write reports
-     */
     private static TransactionRepository.WriteResult writeOutcomeOf(ParityHarness.Invocation invocation,
                                                                     TransactMaster master,
                                                                     TranRecord record) {
@@ -607,40 +303,13 @@ final class COTRN02CParityTest {
         };
     }
 
-    // =================================================================================================
-    // The cross-reference: ONE dataset, TWO access paths (gate G45).
-    // =================================================================================================
-
-    /**
-     * The cross-reference dataset as this case declares it - one base cluster, read by either of its two
-     * keys.
-     *
-     * <p>This is the shape gate G45 asks for, expressed as data rather than as a comment: there is a
-     * single list of records here, and the two finders below differ only in which span of each record they
-     * compare the key against. A translation that had made {@code CXACAIX} a second table would need a
-     * second list, and there is nowhere to put one.
-     *
-     * <p>Rows arrive already right-padded from 36 to 50 bytes, because a case seeding
-     * {@code app/data/ASCII/cardxref.txt} declares the
-     * {@link ParityCase.Normalisation#CARDXREF_FILLER_PAD_36_TO_50} normalisation and the harness applies
-     * it at seed time (gate G16). The trailing {@code FILLER PIC X(14)} that {@code app/cpy/CVACT03Y.cpy}
-     * declares is absent from the fixture and is supplied as spaces.
-     */
     private static final class CrossReference {
-
-        /** The decoded records, in the order the case seeded them. */
         private final List<CardXrefRecord> records;
 
-        /** The 50-byte image each record was decoded from, index-aligned with {@link #records}. */
         private final List<String> images;
 
-        /** The move-rule engine, used to bring a supplied key up to its declared width. */
         private final FixedWidthCodec codec;
 
-        /**
-         * @param seededRows the 50-byte rows the case declared, already normalised by the harness
-         * @param charset    the case's code page
-         */
         CrossReference(List<String> seededRows, Charset charset) {
             this.codec = new FixedWidthCodec(Objects.requireNonNull(charset,
                     "A code page is required"));
@@ -655,13 +324,6 @@ final class COTRN02CParityTest {
             this.images = raw;
         }
 
-        /**
-         * {@code EXEC CICS READ DATASET(WS-CCXREF-FILE) RIDFLD(XREF-CARD-NUM)} - {@code :611-619}: the
-         * base cluster and its sixteen-character primary key.
-         *
-         * @param key the sixteen-character image the program moved into {@code XREF-CARD-NUM}
-         * @return the found or not-found outcome, named against the base access path
-         */
         CardXrefRepository.ReadResult byCardNumber(String key) {
             String wanted = codec.movePicX(key == null ? "" : key,
                     CardXrefRecord.XREF_CARD_NUM_LENGTH);
@@ -674,13 +336,6 @@ final class COTRN02CParityTest {
             return CardXrefRepository.ReadResult.notFound(CardXrefRepository.BASE_DD_NAME);
         }
 
-        /**
-         * {@code EXEC CICS READ DATASET(WS-CXACAIX-FILE) RIDFLD(XREF-ACCT-ID)} - {@code :578-586}: the
-         * alternate-index path over the same cluster and its eleven-digit key.
-         *
-         * @param key the eleven-digit image the program moved into {@code XREF-ACCT-ID}
-         * @return the found or not-found outcome, named against the alternate-index access path
-         */
         CardXrefRepository.ReadResult byAccountId(String key) {
             String wanted = codec.movePicX(key == null ? "" : key,
                     CardXrefRecord.XREF_ACCT_ID_LENGTH);
@@ -698,12 +353,6 @@ final class COTRN02CParityTest {
         }
     }
 
-    /**
-     * Builds the cross-reference from whatever the case seeded, including nothing at all.
-     *
-     * @param invocation the invocation being run
-     * @return the dataset, empty when the case declares no cross-reference rows
-     */
     private static CrossReference crossReferenceOf(ParityHarness.Invocation invocation) {
         List<String> rows = invocation.hasDataset(CCXREF_DATASET)
                 ? invocation.dataset(CCXREF_DATASET).rows()
@@ -711,18 +360,6 @@ final class COTRN02CParityTest {
         return new CrossReference(rows, invocation.charset());
     }
 
-    /**
-     * The cross-reference repository over that dataset.
-     *
-     * <p>Both finders share one forced-outcome declaration, keyed {@code read}, because a single run takes
-     * exactly one of the two paths: {@code EVALUATE TRUE} at {@code :195} chooses between them on whether
-     * the account field is blank, and never performs both. A case therefore cannot be ambiguous about
-     * which read it is forcing.
-     *
-     * @param invocation     the invocation being run
-     * @param crossReference the dataset the finders read
-     * @return the repository the controller will go through
-     */
     private static CardXrefRepository cardXrefRepositoryFor(ParityHarness.Invocation invocation,
                                                             CrossReference crossReference) {
         CardXrefRepository repository = mock(CardXrefRepository.class);
@@ -740,19 +377,6 @@ final class COTRN02CParityTest {
         return repository;
     }
 
-    /**
-     * Translates a case's declared {@link ParityCase.ForcedOutcome} into the outcome a cross-reference read
-     * reports.
-     *
-     * <p>{@code OK} and {@code DUPLICATE} are refused rather than mapped. Both carry a record, and a forced
-     * one would have to invent that record's 50 bytes - a record no copybook, no fixture and no case
-     * declared - and the card number taken from it would then be written into a 350-byte transaction and
-     * compared against an expectation derived from nothing. A case that wants a record present seeds one.
-     *
-     * @param invocation the invocation being run
-     * @param ddName     the access path the read was issued against
-     * @return the corresponding read outcome
-     */
     private static CardXrefRepository.ReadResult forcedXrefResult(ParityHarness.Invocation invocation,
                                                                   String ddName) {
         ParityCase.ForcedOutcome forced =
@@ -771,29 +395,6 @@ final class COTRN02CParityTest {
         };
     }
 
-    // =================================================================================================
-    // Building the inbound screen: the commarea, the EIBAID and the received map.
-    // =================================================================================================
-
-    /**
-     * Assembles the request from the three things {@code COTRN02C} is driven by.
-     *
-     * <p>{@code EIBCALEN = 0} is expressed by leaving the communication area absent, which is what the
-     * translation reads it as at {@code :115} - a request with no area cannot say who called, and that is
-     * the whole content of the condition. A case declaring {@code eibcalen: 0} therefore produces a request
-     * carrying no {@link NavigationContext} at all rather than one carrying a blank area, and the two are
-     * not the same state.
-     *
-     * <p>For a non-zero length, the area is assembled through the codec from the field images the case
-     * declares and then parsed back by the domain types. That is
-     * {@code MOVE DFHCOMMAREA(1:EIBCALEN) TO CARDDEMO-COMMAREA} done the way the copybook describes it:
-     * the case names fields, the codec lays them out at their declared offsets and widths, and any field
-     * the case does not name keeps the initialised content its {@code VALUE} clause or its picture gives
-     * it. Nothing here decides what a field means.
-     *
-     * @param invocation the invocation being run
-     * @return the inbound screen
-     */
     private static TransactionViewRequest requestOf(ParityHarness.Invocation invocation) {
         TransactionViewRequest request = new TransactionViewRequest();
         FixedWidthCodec codec = invocation.codec();
@@ -808,11 +409,6 @@ final class COTRN02CParityTest {
                     invocation.charset()));
         }
 
-        // EIBAID. Declared by DFHAID mnemonic in the case, because the mnemonic is what a reader of the
-        // case needs to see, and rendered here as the one-character image the payload carries - the byte
-        // itself, never the folded token. An undeclared AID stays absent, which the translation reads as
-        // DFHNULL - the AID CICS reports when no key raised the interrupt, and one that matches none of
-        // the four named arms of the EVALUATE at :133-152.
         String token = aidTokenOf(invocation.aid());
         if (token != NO_AID_TOKEN) {
             request.setAid(token);
@@ -824,21 +420,6 @@ final class COTRN02CParityTest {
         return request;
     }
 
-    /**
-     * Narrows a case's communication-area declaration to the fields one layout actually owns.
-     *
-     * <p>{@code COTRN02C} declares its 58-byte {@code CDEMO-CT02-INFO} extension <em>inside</em> the same
-     * {@code 01} group as the 160-byte {@code CARDDEMO-COMMAREA} at {@code :72-80}, which is what makes the
-     * passed area 218 bytes. In Java the two are separate types - the extension travels in the payload
-     * rather than by widening {@link NavigationContext}, which all seventeen online programs share - so a
-     * case's single flat {@code commarea} map has to be split, and the split is made by asking each layout
-     * which names it declares rather than by matching a name prefix. A prefix test would quietly send an
-     * unrecognised {@code CDEMO-} field nowhere; this way the codec rejects it.
-     *
-     * @param values every communication-area field the case declares
-     * @param names  the names one layout declares a span for
-     * @return only the entries that layout owns
-     */
     private static Map<String, String> subsetOf(Map<String, String> values, List<String> names) {
         Map<String, String> owned = new LinkedHashMap<>();
         for (Map.Entry<String, String> entry : values.entrySet()) {
@@ -849,52 +430,18 @@ final class COTRN02CParityTest {
         return owned;
     }
 
-    /**
-     * The sixteen field names the 160-byte {@code CARDDEMO-COMMAREA} declares, read from its own layout so
-     * this class restates no offset and no width.
-     *
-     * @return the declared names, in copybook order
-     */
     private static List<String> baseCommareaFieldNames() {
         List<String> names = new ArrayList<>();
         NavigationContext.LAYOUT.spans().forEach(span -> names.add(span.name()));
         return names;
     }
 
-    /**
-     * The six field names the 58-byte {@code CDEMO-CT02-INFO} extension declares ({@code :72-80}), read
-     * from its own layout for the same reason.
-     *
-     * @return the declared names, in copybook order
-     */
     private static List<String> extensionFieldNames() {
         List<String> names = new ArrayList<>();
         TransactionViewRequest.Ct02Info.LAYOUT.spans().forEach(span -> names.add(span.name()));
         return names;
     }
 
-    /**
-     * The payload token a {@code DFHAID} mnemonic stands for.
-     *
-     * <p>Two indirections, deliberately, because they are the two the translation itself makes.
-     * {@code DFHAID} is IBM-supplied and absent from this repository (risk R-D), so {@link CicsAid} is the
-     * single reproduction of it and the mnemonic-to-byte correspondence is read from there rather than
-     * restated; and the byte is then resolved through {@link PfKeyResolver}, which is the one place the
-     * migration turns an {@code EIBAID} into a key identity. {@code COTRN02C} is one of the twelve
-     * programs that test {@code EIBAID} <em>inline</em> rather than copying {@code CSSTRPFY}, and the
-     * requirement is that the shared resolver reproduce those inline tests as identical boolean outcomes -
-     * which is exactly what routing the case's mnemonic through it asserts.
-     *
-     * <p>The image is the one character whose code point <em>is</em> the byte, which is the shape the
-     * payload carries, and never the folded five-character {@code CCARD-AID} token: {@code CSSTRPFY} maps
-     * {@code DFHPF13}-{@code DFHPF24} onto {@code 'PFK01'}-{@code 'PFK12'}, so a token cannot say which
-     * key of a pair was pressed and this program's inline tests compare the byte. A case that declares no
-     * AID sends no member at all, which the translation reads as {@code DFHNULL} - the {@code WHEN OTHER}
-     * arm.
-     *
-     * @param mnemonic the mnemonic the case declared, or {@code null} for no AID
-     * @return the one-character image, or {@code null} when the case declared no key
-     */
     private static String aidTokenOf(String mnemonic) {
         if (mnemonic == null) {
             return NO_AID_TOKEN;
@@ -909,24 +456,6 @@ final class COTRN02CParityTest {
                 + "same map, so this means they have drifted apart.");
     }
 
-    /**
-     * {@code EXEC CICS RECEIVE MAP('COTRN2A') MAPSET('COTRN02') INTO(COTRN2AI)} - one received field.
-     *
-     * <p>Written as an explicit dispatch over the twenty-one {@code xxxI} names the symbolic map declares,
-     * resolved through {@link TransactionViewRequest.ScreenField#inputItem()} so a name can never be
-     * mistyped here and so the accepted set is the copybook's rather than this file's. Explicit rather than
-     * reflective on purpose: the copybook-to-field correspondence is the thing under test, and a reflective
-     * setter would make it invisible to a reviewer.
-     *
-     * <p>Every one of the twenty-one is settable even though the program reads only fourteen of them,
-     * because all twenty-one carry {@code FSET} in {@code app/bms/COTRN02.bms} - so CICS returns all
-     * twenty-one whether or not the operator touched them, {@code RECEIVE-TRNADD-SCREEN} copies all
-     * twenty-one, and a case that could not set them could not assert the echo.
-     *
-     * @param request the request being assembled
-     * @param name    the {@code xxxI} item name
-     * @param value   the image the case declared
-     */
     private static void applyReceivedField(TransactionViewRequest request, String name, String value) {
         for (TransactionViewRequest.ScreenField field : TransactionViewRequest.ScreenField.values()) {
             if (field.inputItem().equals(name)) {
@@ -945,50 +474,6 @@ final class COTRN02CParityTest {
                 + "case.");
     }
 
-    // =================================================================================================
-    // Projecting the run into a fingerprint.
-    // =================================================================================================
-
-    /**
-     * Everything one execution of {@code COTRN02C} leaves behind that a case can compare.
-     *
-     * <p>Five channels, and the second and third are the ones a reader is most likely to overlook:
-     *
-     * <ol>
-     *   <li>the record written, at its full declared 350 bytes, on the one path that writes. Recorded from
-     *       {@link ProgramState#writtenRecords()} rather than from the master, because <em>what the program
-     *       handed to the dataset</em> is the observation - the duplicate and {@code WHEN OTHER} arms hand
-     *       over a record that is then refused, and a fingerprint taken from the master would report those
-     *       runs as having written nothing at all;</li>
-     *   <li>{@code TRANSACT}'s final state, reported on <strong>every</strong> path including the many that
-     *       never reach the write. That is a positive assertion rather than bookkeeping: "exactly as
-     *       seeded" is the honest answer for a rejected screen, and it is the only channel that can say
-     *       so;</li>
-     *   <li>the online response - the screen, the 218-byte communication area, the next program, the cursor
-     *       and the termination;</li>
-     *   <li>{@code WS-MESSAGE} at its declared {@code PIC X(80)} and {@code ERRMSGO} at its declared
-     *       {@code PIC X(78)}, reported as two separate channels. {@code MOVE WS-MESSAGE TO ERRMSGO} at
-     *       {@code :520} moves 80 characters into a 78-character receiver, so the two differ by the two
-     *       bytes COBOL loses on the right, and reporting only one of them would make that move
-     *       unobservable;</li>
-     *   <li>the {@code DISPLAY 'RESP:' WS-RESP-CD 'REAS:' WS-REAS-CD} lines from the five byte-identical
-     *       {@code WHEN OTHER} arms at {@code :598}, {@code :631}, {@code :662}, {@code :691} and
-     *       {@code :743}.</li>
-     * </ol>
-     *
-     * <p>The {@code DISPLAY} lines are recorded <strong>before</strong> the two message channels because
-     * that is the order they happen in: every one of the five arms displays and only then composes the
-     * message it rejects with.
-     *
-     * <p>The {@code RETURN-CODE} is reported as zero. {@code COTRN02C} is an online program: it sets no
-     * {@code RETURN-CODE} and contains no {@code CALL 'CEE3ABD'}, so zero is the value and it is stated
-     * rather than defaulted.
-     *
-     * @param invocation the invocation that was run
-     * @param master     the {@code TRANSACT} master as the run left it
-     * @param state      the working storage as it stood when the task ended
-     * @return the recorded outcome
-     */
     private static ParityHarness.UnitOutcome fingerprintOf(ParityHarness.Invocation invocation,
                                                            TransactMaster master,
                                                            ProgramState state) {
@@ -1015,38 +500,10 @@ final class COTRN02CParityTest {
         return recorder.build();
     }
 
-    /**
-     * The response as the differ compares it.
-     *
-     * <h4>Why there is at most one send</h4>
-     *
-     * <p>{@code SEND-TRNADD-SCREEN} ({@code :516-534}) ends with {@code EXEC CICS RETURN}, so it is
-     * <strong>terminal</strong>: control never returns to the statement after the {@code PERFORM}, and no
-     * path through this program paints a second screen. That is the structural difference from
-     * {@code COTRN01C}, whose send is not terminal and which therefore reports a send <em>count</em>. Here
-     * the count is zero or one, and a state reporting otherwise is refused rather than reported, because a
-     * single {@link ProgramState} cannot carry two different screens.
-     *
-     * <h4>Why a blank mapset is reported as none</h4>
-     *
-     * <p>{@code RETURN-TO-PREV-SCREEN} sends no map before transferring - the target program paints its own
-     * - so the response blanks its mapset and map rather than leaving them naming this screen. A blank is
-     * how the 3270 layer says "no map"; {@code null} is how the case model says it, because
-     * {@link ParityCase.ExpectedResponse} validates a mapset name against a pattern that a run of spaces
-     * cannot satisfy. Translating one to the other here keeps the case readable and loses nothing: the
-     * blank and the absence carry the same single fact.
-     *
-     * @param codec the case's code page and move rules
-     * @param state the working storage as it stood when the task ended
-     * @return the observed response
-     */
     private static FieldDiffer.ObservedResponse observedResponseOf(FixedWidthCodec codec,
                                                                   ProgramState state) {
         TransactionViewResponse response = state.response();
 
-        // The 218 bytes the XCTL at :509 and the RETURN at :530 both pass, projected field by field.
-        // Statelessness (rule R6, gate G37) is what makes this comparable at all: the conversation state
-        // is in the payload, so it can be read off the response instead of out of a session.
         Map<String, String> navigation = new LinkedHashMap<>();
         navigation.putAll(codec.deserialise(NavigationContext.LAYOUT,
                 response.getNavigationContext().toFixedWidth(codec)));
@@ -1062,22 +519,6 @@ final class COTRN02CParityTest {
                 terminationOf(state));
     }
 
-    /**
-     * The 58-byte {@code CDEMO-CT02-INFO} extension as six named field images.
-     *
-     * <p>Rendered through the extension's own {@link TransactionViewRequest.Ct02Info#LAYOUT} rather than by
-     * reading the group's components, so every value is the image the field actually occupies -
-     * {@code CDEMO-CT02-PAGE-NUM} as eight digits, the two identifiers as sixteen characters each - at the
-     * copybook's declared width.
-     *
-     * <p>The response and the request each carry their own projection of the group, so the response's is
-     * copied into the request's here purely to reach that layout. The copy goes through the group's own
-     * {@code PIC X} setters, so a value is padded or truncated exactly as a {@code MOVE} would do it.
-     *
-     * @param codec the case's code page and move rules
-     * @param info  the extension the response is carrying forward
-     * @return field name to image, in copybook order
-     */
     private static Map<String, String> extensionImagesOf(FixedWidthCodec codec,
                                                          TransactionViewResponse.Ct02Info info) {
         TransactionViewRequest.Ct02Info projection = new TransactionViewRequest.Ct02Info();
@@ -1091,22 +532,6 @@ final class COTRN02CParityTest {
                 projection.toFixedWidth(codec.charset()));
     }
 
-    /**
-     * Every {@code EXEC CICS SEND MAP} the run performed, which is zero or one.
-     *
-     * <p>All twenty-one {@code xxxO} items are reported on the send, taken from the response's own
-     * projection so the set is the copybook's. One attribute item is reported with them:
-     * {@code ERRMSGC}, which is the only attribute byte this program ever assigns -
-     * {@code MOVE DFHGREEN TO ERRMSGC OF COTRN2AO} at {@code :727}, on the successful-write arm and nowhere
-     * else. It is reported on <em>every</em> send rather than only when it was assigned, so a case can pin
-     * the default colour on a rejecting path and {@link BmsAttributes#DFHGREEN} on the accepting one, and
-     * the mnemonic comes from {@link BmsAttributes} - which reproduces the absent {@code DFHBMSCA} from IBM
-     * CICS documentation (risk R-D) - rather than from a byte written here.
-     *
-     * @param state the working storage as it stood when the task ended
-     * @return zero or one send
-     * @throws IllegalStateException if the run reported more than one
-     */
     private static List<FieldDiffer.ObservedSend> sendsOf(ProgramState state) {
         if (!state.screenSent()) {
             return List.of();
@@ -1123,51 +548,15 @@ final class COTRN02CParityTest {
         return List.of(new FieldDiffer.ObservedSend(painted, attributes));
     }
 
-    /**
-     * A mapset or map name, or {@code null} where the program named none.
-     *
-     * @param reference the value the response carries
-     * @return the name, or {@code null} when it is absent or blank
-     */
     private static String namedOrNone(String reference) {
         return reference == null || reference.isBlank() ? null : reference;
     }
 
-    /**
-     * The symbolic-map length item {@code MOVE -1} was moved into, or {@code null} where the program
-     * requested no cursor.
-     *
-     * <p>COBOL positions the cursor by moving {@code -1} into a field's {@code xxxL} item, so the length
-     * item <em>is</em> the cursor and it is reported under that name rather than under the field's - which
-     * is also why it is metadata rather than payload (gate G9).
-     *
-     * <p>Where more than one length item holds {@code -1}, the <strong>first in map declaration order</strong>
-     * is reported, because that is where a 3270 puts the cursor. This program reaches that state on the
-     * first-entry path that also processes a selection: {@code :123} sets {@code ACTIDINL} and a rejection
-     * inside {@code PROCESS-ENTER-KEY} then sets another, and the cursor lands on the account field.
-     *
-     * @param state the working storage as it stood when the task ended
-     * @return the {@code xxxL} item name, or {@code null}
-     */
     private static String cursorLengthItemOf(ProgramState state) {
         String label = state.screenMetadata().cursorField();
         return label == null ? null : label + LENGTH_ITEM_SUFFIX;
     }
 
-    /**
-     * How the task ended: {@code EXEC CICS XCTL} at {@code :508-511} or {@code EXEC CICS RETURN} at
-     * {@code :530-534}.
-     *
-     * <p>The two are not interchangeable and cannot both happen: an {@code XCTL} transfers and never comes
-     * back, so the {@code RETURN} that follows it in the source is not reached. Neither happening would mean
-     * a path fell out of {@code MAIN-PARA} without terminating, which no arm of the source does, so it is
-     * refused rather than reported as a difference - a fingerprint that cannot say how the task ended is not
-     * a fingerprint of a CICS program.
-     *
-     * @param state the working storage as it stood when the task ended
-     * @return the termination
-     * @throws IllegalStateException if the run reported both or neither
-     */
     private static ParityCase.Termination terminationOf(ProgramState state) {
         if (state.transferred() == state.returned()) {
             throw new IllegalStateException("The run reports transferred=" + state.transferred()
@@ -1179,53 +568,20 @@ final class COTRN02CParityTest {
                 : ParityCase.Termination.RETURN_TRANSID;
     }
 
-    /**
-     * The suffix a symbolic map gives a field's length item - the {@code L} of {@code ACTIDINL}.
-     *
-     * <p>Stated once here because {@link FieldAttributeSetter} owns the {@code O} and {@code C} suffixes but
-     * not this one: {@code CSSETATY} writes a colour and an output item and never a length item, since
-     * moving {@code -1} into a length item is the program's own cursor request rather than an attribute
-     * decision.
-     */
     private static final String LENGTH_ITEM_SUFFIX = "L";
 
-    // =================================================================================================
-    // Fixtures for the assertions that do not go through a case file.
-    //
-    // The twenty cases judge behaviour. The nested classes below pin the structural facts the cases are
-    // *written against* - the record widths, the two commarea widths, the intrinsic conversion table, the
-    // CSUTLDTC acceptance rule, the AID dispatch order and the absence of highlighting. A case cannot
-    // assert those: it can only be consistent with them, and a case consistent with a wrong width still
-    // reports a diff count of zero.
-    // =================================================================================================
-
-    /** The instant the direct assertions pin, matching the one the case files declare. */
     private static final Instant PINNED_INSTANT = Instant.parse("2022-07-19T23:12:34Z");
 
-    /** An eleven-digit account identifier - all eleven, because {@code IS NUMERIC} accepts nothing less. */
     private static final String ACCOUNT_ID = "00000000011";
 
-    /** The sixteen-digit card number the seeded cross-reference row carries. */
     private static final String CARD_NUMBER = "4111111111111111";
 
-    /** A ten-character date {@code CSUTLDTC} reports valid, with severity {@code '0000'}. */
     private static final String VALID_DATE = "2022-07-18";
 
-    /** A date before the Lillian epoch: severity 3, message {@code 2513}, and both call sites accept it. */
     private static final String TOLERATED_DATE = "1500-01-01";
 
-    /** A date with month 13: severity 3, message {@code 2517}, and both call sites reject it. */
     private static final String REJECTED_DATE = "2022-13-01";
 
-    /**
-     * Runs {@code work} against a controller wired exactly as {@link #execute} wires one.
-     *
-     * @param transactions   the {@code TRANSACT} master
-     * @param crossReference the cross-reference dataset
-     * @param work           what to do with the controller
-     * @param <T>            whatever the caller wants back
-     * @return the result of {@code work}
-     */
     private static <T> T withController(TransactionRepository transactions,
                                         CardXrefRepository crossReference,
                                         Function<TransactionViewController, T> work) {
@@ -1237,7 +593,6 @@ final class COTRN02CParityTest {
                 ParityHarness.FIXTURE_CHARSET));
     }
 
-    /** @return a {@code TRANSACT} repository whose backward browse holds one record keyed {@code ...50} */
     private static TransactionRepository masterHoldingOneRecord() {
         TransactionRepository repository = mock(TransactionRepository.class);
         TransactionRepository.Browse browse = positionedBrowse();
@@ -1250,7 +605,6 @@ final class COTRN02CParityTest {
         return repository;
     }
 
-    /** @return a cross-reference whose alternate-index read resolves {@link #ACCOUNT_ID} to a card */
     private static CardXrefRepository crossReferenceResolvingTheAccount() {
         CardXrefRepository repository = mock(CardXrefRepository.class);
         CardXrefRecord record = new CardXrefRecord(CARD_NUMBER, 123_456_789, 11L);
@@ -1262,7 +616,6 @@ final class COTRN02CParityTest {
         return repository;
     }
 
-    /** @return a 350-byte {@code TRAN-RECORD} whose key is {@code tranId} and whose amount is 504.77 */
     private static TranRecord recordKeyed(String tranId) {
         TranRecord record = new TranRecord(ParityHarness.FIXTURE_CHARSET);
         record.moveTranId(tranId);
@@ -1281,7 +634,6 @@ final class COTRN02CParityTest {
         return record;
     }
 
-    /** @return a re-entry request carrying the given {@code DFHAID} mnemonic's token */
     private static TransactionViewRequest reentryWith(String aidMnemonic) {
         TransactionViewRequest request = new TransactionViewRequest();
         request.setNavigationContext(NavigationContext.empty().withPgmReenter());
@@ -1289,7 +641,6 @@ final class COTRN02CParityTest {
         return request;
     }
 
-    /** @return a re-entry request with every field validly filled and the add confirmed */
     private static TransactionViewRequest confirmedAdd(String origDate, String procDate) {
         TransactionViewRequest request = reentryWith("DFHENTER");
         request.setActidin(ACCOUNT_ID);
@@ -1308,12 +659,9 @@ final class COTRN02CParityTest {
         return request;
     }
 
-    // =================================================================================================
-
     @Nested
     @DisplayName("Risk R-B - the class name says view and the program adds")
     class RiskRb {
-
         @Test
         @DisplayName("the source's own header says Add, and it browses, adds one and writes")
         void theCobolSourceAdds() throws IOException {
@@ -1382,9 +730,6 @@ final class COTRN02CParityTest {
             TransactionRepository transactions = masterHoldingOneRecord();
 
             withController(transactions, crossReferenceResolvingTheAccount(), controller -> {
-                // The key guard, the eleven-arm empty cascade, the shape guards, the date guard, the
-                // confirmation guard and the unnamed-key arm: six ways to be rejected, none of which
-                // reaches :713.
                 controller.mainPara(reentryWith("DFHENTER"));
                 controller.mainPara(reentryWith("DFHPF3"));
                 controller.mainPara(reentryWith("DFHPF4"));
@@ -1411,7 +756,6 @@ final class COTRN02CParityTest {
     @Nested
     @DisplayName("Practice B5 - ACCTDAT and CVACT01Y are declared, never used, and stay that way")
     class DeadDeclarations {
-
         @Test
         @DisplayName("the COBOL names ACCTDAT and copies CVACT01Y and references neither")
         void theSourceDeclaresThemAndUsesNeither() throws IOException {
@@ -1439,10 +783,6 @@ final class COTRN02CParityTest {
                     .doesNotContain("ACCT-GROUP-ID")
                     .doesNotContain("ACCT-OPEN-DATE");
 
-            // ACCT-ID is the twelfth field and cannot be tested by absence, because it is a substring of
-            // XREF-ACCT-ID (the cross-reference key, :580 and :585) and of WS-ACCT-ID-N (the program's own
-            // PIC 9(11) carrier, :55). Counting is the precise form of the same claim: every occurrence
-            // belongs to one of those two names, so none of them is a reference to the dead copybook's key.
             assertThat(occurrencesOf(cobol, "ACCT-ID"))
                     .as("every ACCT-ID in the source is part of XREF-ACCT-ID or WS-ACCT-ID-N; a bare one "
                             + "would be a reference to the dead COPY's key field")
@@ -1450,12 +790,6 @@ final class COTRN02CParityTest {
                             + occurrencesOf(cobol, "WS-ACCT-ID"));
         }
 
-        /**
-         * @param text  the text to scan
-         * @param token the token to count
-         * @return how many times {@code token} occurs in {@code text}, counting overlaps as COBOL names
-         *         cannot overlap
-         */
         private int occurrencesOf(String text, String token) {
             int count = 0;
             int from = text.indexOf(token);
@@ -1494,7 +828,6 @@ final class COTRN02CParityTest {
     @Nested
     @DisplayName("The widths every case is written against")
     class DeclaredWidths {
-
         @Test
         @DisplayName("TRAN-RECORD is 350 bytes and its FILLER is present and space-filled")
         void tranRecordIsThreeHundredAndFiftyBytesIncludingFiller() {
@@ -1562,8 +895,6 @@ final class COTRN02CParityTest {
                     .isEqualTo(TransactionViewResponse.ERRMSGO_LENGTH)
                     .isEqualTo(78);
 
-            // A message wide enough to actually lose its last two characters, which none of this program's
-            // own twenty-six literals is - so the rule is proved rather than assumed.
             TransactionViewResponse response = new TransactionViewResponse();
             response.setErrmsgo("X".repeat(TransactionViewController.WS_MESSAGE_LENGTH));
             assertThat(response.getErrmsgo())
@@ -1614,7 +945,6 @@ final class COTRN02CParityTest {
     @Nested
     @DisplayName("Gate G29 - FUNCTION NUMVAL and NUMVAL-C accept and reject exactly as COBOL does")
     class NumericIntrinsicParity {
-
         @Test
         @DisplayName("NUMVAL accepts a signed integer with surrounding spaces and a trailing CR")
         void numvalAcceptsWhatTheIntrinsicAccepts() {
@@ -1642,9 +972,6 @@ final class COTRN02CParityTest {
         @Test
         @DisplayName("NUMVAL rejects a comma, a currency sign, an embedded space and a second point")
         void numvalRejectsWhatTheIntrinsicRejects() {
-            // The seven malformed inputs gate G29 names, each with the one-based position of the first
-            // character in error. A non-conforming argument converts to zero, which is why the verdict has
-            // to be asserted alongside the value: zero alone cannot tell "00" from "ab".
             assertThat(TransactionViewController.testNumval("1,234"))
                     .as("a digit-grouping comma is a NUMVAL-C extension and is an error here, at the comma")
                     .isEqualTo(2);
@@ -1737,13 +1064,6 @@ final class COTRN02CParityTest {
                     .isFalse();
         }
 
-        /**
-         * Stores a converted value into {@code WS-TRAN-AMT-N PIC S9(9)V99} the one way this migration
-         * stores a monetary value.
-         *
-         * @param value the value {@code FUNCTION NUMVAL-C} produced
-         * @return the value at scale {@value CobolDecimal#MONETARY_SCALE}, truncated
-         */
         private BigDecimal scaled(BigDecimal value) {
             assertThat(CobolDecimal.COBOL_ROUNDING)
                     .as("the only faithful mode, because ROUNDED never appears in the source (gate G24)")
@@ -1760,8 +1080,6 @@ final class COTRN02CParityTest {
     @Nested
     @DisplayName("The CSUTLDTC acceptance rule - severity '0000', or message 2513 tolerated")
     class CsutldtcAcceptanceRule {
-
-        /** The subprogram, used for real because it is deterministic (see {@link #execute}). */
         private final DateUtilityJob dateUtility = new DateUtilityJob(ParityHarness.FIXTURE_CHARSET);
 
         @Test
@@ -1802,8 +1120,6 @@ final class COTRN02CParityTest {
             assertThat(result.result()).isEqualTo("Unsupp. Range  ");
             assertThat(result.returnCode()).isEqualTo(3);
 
-            // :400 and :420 - IF CSUTLDTC-RESULT-MSG-NUM NOT = '2513' ... so 2513 falls through and the
-            // screen proceeds. Turning this into a rejection would refuse dates the legacy program accepts.
             ProgramState state = withController(masterHoldingOneRecord(),
                     crossReferenceResolvingTheAccount(),
                     controller -> controller.mainPara(confirmedAdd(TOLERATED_DATE, TOLERATED_DATE)));
@@ -1851,7 +1167,6 @@ final class COTRN02CParityTest {
     @Nested
     @DisplayName("Gate G30 - EVALUATE EIBAID keeps the source's order with WHEN OTHER last")
     class AidDispatch {
-
         @Test
         @DisplayName("the four named arms are the four the source names, and nothing else matches")
         void onlyTheFourNamedKeysMatchAnArm() {
@@ -1963,7 +1278,6 @@ final class COTRN02CParityTest {
     @Nested
     @DisplayName("Gate G38 - this screen highlights in neither state; gate G37 - it keeps no session")
     class HighlightingAndStatelessness {
-
         @Test
         @DisplayName("the CSSETATY decision is 'touch nothing' on both ENTER and REENTER")
         void neverHighlightsInEitherState() {
@@ -2018,8 +1332,6 @@ final class COTRN02CParityTest {
         void theControllerKeepsNoStateBetweenRuns() {
             withController(masterHoldingOneRecord(), crossReferenceResolvingTheAccount(), controller -> {
                 ProgramState first = controller.mainPara(confirmedAdd(VALID_DATE, VALID_DATE));
-                // A second run with an empty form. If any WORKING-STORAGE item had become a field on the
-                // controller, the first run's amount, merchant and card number would still be here.
                 ProgramState second = controller.mainPara(reentryWith("DFHENTER"));
 
                 assertThat(first.writtenRecords()).hasSize(1);
@@ -2039,13 +1351,6 @@ final class COTRN02CParityTest {
             });
         }
 
-        /**
-         * A confirmed add with one field blanked, so exactly one arm of the eleven-arm empty cascade at
-         * {@code :251-320} is reached.
-         *
-         * @param blanked the field to leave empty
-         * @return the request
-         */
         private TransactionViewRequest confirmedAddWithout(ScreenField blanked) {
             TransactionViewRequest request = confirmedAdd(VALID_DATE, VALID_DATE);
             request.setPayloadValue(TransactionViewRequest.ScreenField.valueOf(blanked.name()),
@@ -2057,7 +1362,6 @@ final class COTRN02CParityTest {
     @Nested
     @DisplayName("Gate G47 - every browse and write outcome the source names is reachable")
     class BrowseAndWriteOutcomes {
-
         @Test
         @DisplayName("an empty master reports ENDFILE, which zeros TRAN-ID and yields identifier 1")
         void anEmptyMasterIsLoadable() {
@@ -2170,10 +1474,12 @@ final class COTRN02CParityTest {
                     .as(":744-748")
                     .startsWith(TransactionViewController.MSG_UNABLE_TO_ADD);
             assertThat(state.writtenRecords())
-                    .as("the record was handed over and refused, so it is still an observation - a "
-                            + "fingerprint taken from the dataset instead would report this run as having "
-                            + "written nothing")
-                    .hasSize(1);
+                    .as("the record was handed over and REFUSED, so TRANSACT gained nothing and the "
+                            + "WRITES channel this list feeds carries nothing. The record the program "
+                            + "composed is still asserted - on the argument of the call, by "
+                            + "transaction.TransactionViewControllerTest - because that is an observation "
+                            + "about the program rather than about the dataset")
+                    .isEmpty();
         }
 
         @Test
@@ -2222,9 +1528,6 @@ final class COTRN02CParityTest {
         @Test
         @DisplayName("a forced outcome nothing asks for fails the run rather than passing quietly")
         void anUnconsumedForcedOutcomeFailsTheRun() {
-            // REWRITE is an operation this program does not perform at all - the source has no
-            // EXEC CICS REWRITE anywhere - so nothing can consume it, which is exactly the shape of a
-            // case whose description claims an arm the run never reached.
             assertThatThrownBy(() -> ParityHarness.usAscii().run(
                     syntheticConfirmedAdd(ParityCase.RepositoryOperation.REWRITE,
                             FileStatus.Outcome.OTHER),
@@ -2233,17 +1536,6 @@ final class COTRN02CParityTest {
                     .hasMessageContaining("that nothing asked for during the run");
         }
 
-        /**
-         * A synthetic case that drives a complete, valid, confirmed add and forces one outcome.
-         *
-         * <p>Built in code rather than loaded from a resource, because it exists to reach the adapter's own
-         * refusals - and a refusal is by definition something no shippable case file can express, since a
-         * case that provokes one can never report a diff count of zero.
-         *
-         * @param operation the operation to force
-         * @param outcome   the outcome to force
-         * @return the case
-         */
         private ParityCase syntheticConfirmedAdd(ParityCase.RepositoryOperation operation,
                                                  FileStatus.Outcome outcome) {
             Map<String, ParityCase.DatasetInput> inputs = Map.of(CCXREF_DATASET,
@@ -2257,8 +1549,6 @@ final class COTRN02CParityTest {
                     new ParityCase.ScreenRequest(ProgramState.PASSED_COMMAREA_LENGTH, "DFHENTER",
                             PINNED_INSTANT.atZone(ZoneOffset.UTC).toLocalDateTime().toString(),
                             ParityHarness.FIXTURE_CHARSET.name(),
-                            // CDEMO-PGM-CONTEXT at '1' is the re-enter state, which is the only state that
-                            // reads the map at all - a first entry paints the screen and stops.
                             Map.of(NavigationContext.PGM_CONTEXT_FIELD,
                                     String.valueOf(NavigationContext.PGM_CONTEXT_REENTER)),
                             receivedFields(),
@@ -2271,11 +1561,6 @@ final class COTRN02CParityTest {
                             ParityCase.Normalisation.CARDXREF_FILLER_PAD_36_TO_50)));
         }
 
-        /**
-         * The fourteen {@code xxxI} items a valid confirmed add carries, keyed as a case file keys them.
-         *
-         * @return the received map
-         */
         private Map<String, String> receivedFields() {
             Map<String, String> received = new LinkedHashMap<>();
             received.put(TransactionViewRequest.ScreenField.ACTIDIN.inputItem(), ACCOUNT_ID);
@@ -2296,19 +1581,6 @@ final class COTRN02CParityTest {
         }
     }
 
-
-    /**
-     * Resolves a repository-relative path from wherever the suite was launched.
-     *
-     * <p>Reference sources are read to <em>assert</em> facts about them and never written: the trees under
-     * {@code app/cbl}, {@code app/cpy}, {@code app/cpy-bms}, {@code app/bms}, {@code app/jcl},
-     * {@code app/proc}, {@code app/csd}, {@code app/ctl}, {@code app/catlg} and {@code app/data} are the
-     * only oracle this migration has (practice B3).
-     *
-     * @param relativePath the path relative to the repository root
-     * @return the resolved path
-     * @throws IllegalStateException if it cannot be found at or above the working directory
-     */
     private static Path repositoryFile(String relativePath) {
         Path candidate = Path.of("").toAbsolutePath();
         while (candidate != null) {
@@ -2323,17 +1595,6 @@ final class COTRN02CParityTest {
                 + "README.md as evidence for risk R-B, so the suite must run inside the repository.");
     }
 
-    /**
-     * A mocked {@code TRANSACT} browse whose {@code STARTBR} positioned successfully.
-     *
-     * <p>{@link TransactionRepository#startBrowse(TransactionRepository.BrowseDirection)} issues the
-     * position as a real operation and reports what it found, so a handle carries a positioning outcome
-     * that its caller's {@code EVALUATE WS-RESP-CD} branches on. A bare mock reports {@code null} for it,
-     * which is not a state a real handle can be in - so every mock is built here with the successful arm
-     * stubbed, and a test that wants {@code NOTFND} or {@code WHEN OTHER} re-stubs it.
-     *
-     * @return the mock; never {@code null}
-     */
     private static TransactionRepository.Browse positionedBrowse() {
         TransactionRepository.Browse handle = mock(TransactionRepository.Browse.class);
         when(handle.positioningResult()).thenReturn(

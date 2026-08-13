@@ -28,152 +28,31 @@ import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 /**
- * Unit tests for {@link AbendException}, the Java equivalent of the COBOL
- * {@code CALL 'CEE3ABD'} abend service.
- *
- * <p>These are plain JUnit 5 tests: no Spring context, no Mockito, no fixtures. The class under test
- * is a root of the dependency graph - it references nothing from Spring and nothing from any sibling
- * package - so it has no collaborators to stub and every decision in it is reachable by direct
- * construction.
- *
- * <h2>The nine COBOL abend sites this class replaces</h2>
- *
- * <p>{@code CALL 'CEE3ABD'} occurs exactly nine times in {@code app/cbl}, once per batch program.
- * The table is transcribed here as test data and is never read from {@code app/cbl} at run time: the
- * COBOL trees are the immutable parity oracle, and a test that reached into them would couple the
- * build to files it must never touch.</p>
- *
- * <table border="1">
- *   <caption>Every {@code CALL 'CEE3ABD'} site, with the paragraph that contains it</caption>
- *   <tr><th>#</th><th>Site</th><th>Paragraph</th><th>Sets {@code ABCODE} / {@code TIMING}?</th></tr>
- *   <tr><td>1</td><td>{@code app/cbl/CBACT01C.cbl:173}</td><td>{@code 9999-ABEND-PROGRAM}</td>
- *       <td>yes - {@code MOVE 0 TO TIMING}, {@code MOVE 999 TO ABCODE}</td></tr>
- *   <tr><td>2</td><td>{@code app/cbl/CBACT02C.cbl:158}</td><td>{@code 9999-ABEND-PROGRAM}</td>
- *       <td>yes - 0 / 999</td></tr>
- *   <tr><td>3</td><td>{@code app/cbl/CBACT03C.cbl:158}</td><td>{@code 9999-ABEND-PROGRAM}</td>
- *       <td>yes - 0 / 999</td></tr>
- *   <tr><td>4</td><td>{@code app/cbl/CBACT04C.cbl:632}</td><td>{@code 9999-ABEND-PROGRAM}</td>
- *       <td>yes - 0 / 999</td></tr>
- *   <tr><td>5</td><td>{@code app/cbl/CBCUS01C.cbl:158}</td><td>{@code Z-ABEND-PROGRAM}</td>
- *       <td>yes - 0 / 999</td></tr>
- *   <tr><td>6</td><td>{@code app/cbl/CBTRN01C.cbl:473}</td><td>{@code Z-ABEND-PROGRAM}</td>
- *       <td>yes - 0 / 999</td></tr>
- *   <tr><td>7</td><td>{@code app/cbl/CBTRN02C.cbl:711}</td><td>{@code 9999-ABEND-PROGRAM}</td>
- *       <td>yes - 0 / 999</td></tr>
- *   <tr><td>8</td><td>{@code app/cbl/CBTRN03C.cbl:630}</td><td>{@code 9999-ABEND-PROGRAM}</td>
- *       <td>yes - 0 / 999</td></tr>
- *   <tr><td>9</td><td>{@code app/cbl/CBSTM03A.CBL:923}</td><td>{@code 9999-ABEND-PROGRAM}</td>
- *       <td><strong>NO - sets neither</strong></td></tr>
- * </table>
- *
- * <p>Two independent axes run through that table and confusing them is easy. The <em>paragraph
- * name</em> is {@code Z-ABEND-PROGRAM} in {@code CBCUS01C} and {@code CBTRN01C} and
- * {@code 9999-ABEND-PROGRAM} in the other seven; that difference is cosmetic, the two bodies are
- * identical, and it is recorded only so a reader checking the count does not conclude a site was
- * missed. The <em>body</em> differs in exactly one program, and it is not one of those two:
- * {@code CBSTM03A.CBL:921-923} is only {@code DISPLAY 'ABENDING PROGRAM'} followed by
- * {@code CALL 'CEE3ABD'.}, with no {@code MOVE} of either argument.</p>
- *
- * <h2>The asymmetry these tests exist to protect</h2>
- *
- * <p>Eight sites set {@code TIMING} to <strong>zero</strong> and {@code ABCODE} to 999. The ninth
- * sets neither. Because one of the values actually written is zero, absence can never be modelled as
- * a plain {@code 0}: if it were, {@code CBSTM03A}'s abend would be indistinguishable from the other
- * eight and the divergence would vanish silently. {@link AbendException} therefore reports both
- * arguments as an {@link OptionalInt}, and the nested {@code DivergentShape} and
- * {@code ShapeDistinction} groups below are the assertions that hold it to that.</p>
- *
- * <h2>Provenance of every expectation</h2>
- *
- * <p>The legacy COBOL cannot be executed in this environment, so no expectation here was captured
- * from a live run; each one is derived statically from the source and is annotated with the
- * {@code file:line} it came from. {@code ABCODE} and {@code TIMING} are declared
- * {@code PIC S9(9) BINARY} at {@code app/cbl/CBACT01C.cbl:66-67}, which is why they are {@code int}
- * and why no binary floating-point type may appear anywhere in the class under test.</p>
- *
- * <p>{@code review_rules} reports <em>"No user rules provided."</em> for this project, so no
- * project-specific rule governs this file; the migration's own engineering practices apply instead,
- * and the ones that bind here are: only the pinned test stack (JUnit Jupiter and AssertJ, both
- * supplied by {@code spring-boot-starter-test}), no wildcard imports of any kind, no static mutable
- * state, and no disabled, empty or deferred test.</p>
- *
- * @see AbendException
+ * Unit tests for {@link AbendException}, the Java equivalent of the COBOL {@code CALL 'CEE3ABD'} abend
+ * service.
  */
 @DisplayName("AbendException - the Java equivalent of CALL 'CEE3ABD' at all nine COBOL abend sites")
 class AbendExceptionTest {
-
-    /**
-     * A representative of the eight standard sites: {@code app/cbl/CBACT01C.cbl:173}, whose
-     * paragraph moves 0 into {@code TIMING} and 999 into {@code ABCODE}. Exactly eight characters,
-     * which is the {@code PIC X(8)} width of a COBOL {@code PROGRAM-ID}.
-     */
     private static final String STANDARD_SITE_PROGRAM = "CBACT01C";
 
-    /**
-     * The one divergent site: {@code app/cbl/CBSTM03A.CBL:923}, whose paragraph sets neither
-     * argument. Also exactly eight characters.
-     */
     private static final String DIVERGENT_SITE_PROGRAM = "CBSTM03A";
 
-    /**
-     * The text {@code CBACT01C} displays immediately before its abend, from
-     * {@code app/cbl/CBACT01C.cbl:144}: {@code DISPLAY 'ERROR OPENING ACCTFILE'}.
-     */
     private static final String OPEN_FAILURE_REASON = "ERROR OPENING ACCTFILE";
 
-    /**
-     * The style of text {@code CBSTM03A} displays before its abend - {@code 'ERROR READING
-     * XREFFILE'} followed by {@code 'RETURN CODE: '} and the {@code CBSTM03B} status, for example at
-     * {@code app/cbl/CBSTM03A.CBL:359-361}.
-     */
     private static final String READ_FAILURE_REASON = "ERROR READING XREFFILE";
 
-    /**
-     * A locale whose numbering system renders decimal digits as Arabic-Indic characters, used to
-     * prove that the detail message is composed with {@link Locale#ROOT} and not with the platform
-     * default. Under this locale a default-locale {@code %d} would render 12 as
-     * {@code \u0661\u0662}.
-     */
     private static final Locale ARABIC_INDIC_DIGIT_LOCALE = Locale.forLanguageTag("ar-EG-u-nu-arab");
 
-    /** The instance field names the class carries, asserted by the immutability audit. */
     private static final List<String> CARRIED_FIELD_NAMES =
             List.of("program", "returnCode", "abendCode", "timing", "reason", "sourceDiagnostic");
 
-    /**
-     * Types that gate G22 forbids: no COBOL numeric may be represented in binary floating point.
-     *
-     * <p>An immutable list rather than an array, so this constant carries no mutable state of any
-     * kind. These four class literals are the only textual occurrences of {@code double} and
-     * {@code float} in this file, and they appear here precisely in order to <em>forbid</em> those
-     * types - no value of either type is ever declared, computed or stored.
-     */
     private static final List<Class<?>> FORBIDDEN_NUMERIC_TYPES =
             List.<Class<?>>of(double.class, float.class, Double.class, Float.class);
 
-    /**
-     * Distinguishes members the coverage agent adds at class-load time from members the source
-     * declares. The agent contributes a synthetic {@code $jacocoData} field and a {@code $jacocoInit}
-     * method; a structural audit that did not skip them would fail only when coverage is being
-     * measured, which is precisely when it needs to pass.
-     *
-     * @param memberName the reflective member name
-     * @param synthetic  whether the member is flagged synthetic
-     * @return {@code true} when the member was injected rather than declared in source
-     */
     private static boolean isInstrumentationArtifact(String memberName, boolean synthetic) {
         return synthetic || memberName.startsWith("$");
     }
 
-    /**
-     * Serializes and deserializes an abend, so the carried state can be asserted to survive the
-     * round trip that a distributed batch failure report would put it through.
-     *
-     * @param original the abend to round-trip
-     * @return an independent, deserialized copy
-     * @throws IOException            if the in-memory streams fail
-     * @throws ClassNotFoundException if the type cannot be resolved on the way back
-     */
     private static AbendException serializeAndBack(AbendException original)
             throws IOException, ClassNotFoundException {
         ByteArrayOutputStream buffer = new ByteArrayOutputStream();
@@ -186,17 +65,11 @@ class AbendExceptionTest {
         }
     }
 
-    /**
-     * Raises the eight-site shape from a method that declares no {@code throws} clause. That this
-     * method compiles is itself the proof that the exception is unchecked; the assertion in the test
-     * merely confirms what the compiler already accepted.
-     */
     private static void raiseStandardAbend() {
         throw AbendException.standard(STANDARD_SITE_PROGRAM, AbendException.RETURN_CODE_IO_ERROR,
                 OPEN_FAILURE_REASON);
     }
 
-    /** Raises the {@code CBSTM03A} shape, likewise without a {@code throws} clause. */
     private static void raiseDivergentAbend() {
         throw AbendException.withoutAbendParameters(DIVERGENT_SITE_PROGRAM,
                 AbendException.RETURN_CODE_IO_ERROR, READ_FAILURE_REASON);
@@ -205,7 +78,6 @@ class AbendExceptionTest {
     @Nested
     @DisplayName("Type and contract")
     class TypeAndContract {
-
         @Test
         @DisplayName("is unchecked, so an abend needs no throws clause anywhere in the batch layer")
         void isUnchecked() {
@@ -235,7 +107,6 @@ class AbendExceptionTest {
             assertThat(Modifier.isPrivate(constructors[0].getModifiers()))
                     .as("the canonical constructor must be private")
                     .isTrue();
-            // program, returnCode, abendCode, timing, reason, sourceDiagnostic, cause.
             assertThat(constructors[0].getParameterCount()).isEqualTo(7);
         }
 
@@ -248,8 +119,6 @@ class AbendExceptionTest {
             assertThat(Modifier.isPrivate(field.getModifiers())).isTrue();
             assertThat(Modifier.isStatic(field.getModifiers())).isTrue();
             assertThat(Modifier.isFinal(field.getModifiers())).isTrue();
-            // Resolved through the serialization runtime rather than by reflecting on the value, so
-            // the assertion proves what a peer JVM would actually agree to read.
             assertThat(ObjectStreamClass.lookup(AbendException.class).getSerialVersionUID())
                     .isEqualTo(1L);
             assertThat(AbendException.standard(STANDARD_SITE_PROGRAM,
@@ -372,13 +241,9 @@ class AbendExceptionTest {
     @Nested
     @DisplayName("The 'ABENDING PROGRAM' display literal")
     class DisplayLiteral {
-
         @Test
         @DisplayName("is byte-exact with the COBOL DISPLAY at app/cbl/CBACT01C.cbl:170")
         void isByteExact() {
-            // DISPLAY 'ABENDING PROGRAM' - identical at all nine sites, verified at CBACT01C:170,
-            // CBACT02C:155, CBACT03C:155, CBACT04C:629, CBCUS01C:155, CBTRN01C:470, CBTRN02C:708,
-            // CBTRN03C:627 and CBSTM03A:922. No punctuation, no casing change, no padding.
             assertThat(AbendException.ABEND_DISPLAY_TEXT).isEqualTo("ABENDING PROGRAM");
             assertThat(AbendException.ABEND_DISPLAY_TEXT).hasSize(16);
             assertThat(AbendException.ABEND_DISPLAY_TEXT).doesNotStartWith(" ");
@@ -420,13 +285,9 @@ class AbendExceptionTest {
     @Nested
     @DisplayName("Return codes - gate G35")
     class ReturnCodes {
-
         @Test
         @DisplayName("the named constants reproduce the complete observed COBOL vocabulary")
         void namedConstantsMatchTheCobolValues() {
-            // 01 APPL-RESULT PIC S9(9) COMP with 88 APPL-AOK VALUE 0 and 88 APPL-EOF VALUE 16
-            // [app/cbl/CBACT01C.cbl:61-63]; 4 from MOVE 4 TO RETURN-CODE [CBTRN02C.cbl:230];
-            // 8 and 12 from the ADD n TO ZERO GIVING APPL-RESULT guards [CBACT01C.cbl:152, 157].
             assertThat(AbendException.RETURN_CODE_OK).isZero();
             assertThat(AbendException.RETURN_CODE_WARNING).isEqualTo(4);
             assertThat(AbendException.RETURN_CODE_ASSUMED_FAILURE).isEqualTo(8);
@@ -471,10 +332,6 @@ class AbendExceptionTest {
         @ValueSource(ints = {1, 3, 20, 99, 2_147_483_647})
         @DisplayName("a value outside the observed set is accepted verbatim rather than rejected")
         void carriesUnobservedReturnCodesVerbatim(int returnCode) {
-            // Deliberate: the class documents the return code as unconstrained. An enumeration or a
-            // range check would reject a value the COBOL could legitimately place in APPL-RESULT,
-            // and rejecting a legitimate value would itself be a behaviour change. So the assertion
-            // here is pass-through, not rejection - there is no guard to drive from the other side.
             assertThat(AbendException.standard(STANDARD_SITE_PROGRAM, returnCode).getReturnCode())
                     .isEqualTo(returnCode);
             assertThat(AbendException.withoutAbendParameters(DIVERGENT_SITE_PROGRAM, returnCode)
@@ -485,9 +342,6 @@ class AbendExceptionTest {
         @ValueSource(ints = {-1, -8, -999_999_999, -2_147_483_648})
         @DisplayName("a negative code is carried verbatim, since APPL-RESULT is PIC S9(9) - signed")
         void carriesNegativeReturnCodesVerbatim(int returnCode) {
-            // No site in the 28 programs ever moves a negative value into APPL-RESULT, but the
-            // PICTURE clause is signed, so a negative is representable in COBOL. The class neither
-            // rejects nor normalises it.
             AbendException abend = AbendException.standard(STANDARD_SITE_PROGRAM, returnCode);
 
             assertThat(abend.getReturnCode()).isEqualTo(returnCode);
@@ -498,11 +352,6 @@ class AbendExceptionTest {
         @Test
         @DisplayName("only the success code is zero, which is what COND=(0,NE) step gating keys on")
         void onlySuccessIsZero() {
-            // app/jcl/CREASTMT.JCL gates its later steps with COND=(0,NE): run only while every
-            // prior step returned zero. This class carries the raw code and exposes no exit-status
-            // helper of its own - translating it into a Spring Batch ExitStatus and a process exit
-            // code belongs to the batch configuration, which owns that assertion. What is asserted
-            // here is the property the gating depends on: exactly one of the observed codes is zero.
             assertThat(AbendException.RETURN_CODE_OK).isZero();
             assertThat(AbendException.RETURN_CODE_WARNING).isNotZero();
             assertThat(AbendException.RETURN_CODE_ASSUMED_FAILURE).isNotZero();
@@ -530,15 +379,12 @@ class AbendExceptionTest {
     @Nested
     @DisplayName("Shape A - the eight sites that set ABCODE 999 and TIMING 0")
     class StandardShape {
-
         @Test
         @DisplayName("carries both CEE3ABD arguments exactly as CBACT01C:171-172 moves them")
         void carriesBothAbendParameters() {
             AbendException abend = AbendException.standard(STANDARD_SITE_PROGRAM,
                     AbendException.RETURN_CODE_IO_ERROR, OPEN_FAILURE_REASON);
 
-            // MOVE 0 TO TIMING [app/cbl/CBACT01C.cbl:171] and MOVE 999 TO ABCODE [:172], the two
-            // statements the eight standard paragraphs share byte for byte.
             assertThat(AbendException.STANDARD_ABEND_CODE).isEqualTo(999);
             assertThat(AbendException.STANDARD_TIMING).isZero();
             assertThat(abend.getAbendCode()).hasValue(999);
@@ -557,7 +403,6 @@ class AbendExceptionTest {
             assertThat(abend.hasTiming()).isTrue();
             assertThat(abend.getAbendCode()).isNotEmpty();
             assertThat(abend.getTiming()).isNotEmpty();
-            // A present zero, not an absent value: getAsInt is reachable and yields 0.
             assertThat(abend.getTiming().getAsInt()).isZero();
             assertThat(abend.getAbendCode().getAsInt()).isEqualTo(999);
         }
@@ -654,9 +499,6 @@ class AbendExceptionTest {
                 "CBTRN01C", "CBTRN02C", "CBTRN03C"})
         @DisplayName("all eight standard sites build this shape, whatever their paragraph is named")
         void allEightStandardSitesBuildThisShape(String program) {
-            // CBCUS01C:154-158 and CBTRN01C:469-473 name the paragraph Z-ABEND-PROGRAM; the other
-            // six name it 9999-ABEND-PROGRAM. The bodies are identical, so the shape is identical -
-            // the naming variance carries no behaviour and no site is missing from this list.
             AbendException abend =
                     AbendException.standard(program, AbendException.RETURN_CODE_IO_ERROR);
 
@@ -669,31 +511,18 @@ class AbendExceptionTest {
     @Nested
     @DisplayName("Shape B - CBSTM03A.CBL:923, the one site that sets neither argument")
     class DivergentShape {
-
         @Test
         @DisplayName("reports both arguments ABSENT and never as a silent zero")
         void reportsBothAbsentRatherThanZero() {
             AbendException abend = AbendException.withoutAbendParameters(DIVERGENT_SITE_PROGRAM,
                     AbendException.RETURN_CODE_IO_ERROR, READ_FAILURE_REASON);
 
-            // This is the single most important assertion in the file.
-            //
-            // app/cbl/CBSTM03A.CBL:921-923 is exactly:
-            //     9999-ABEND-PROGRAM.
-            //         DISPLAY 'ABENDING PROGRAM'
-            //         CALL 'CEE3ABD'.
-            // There is no MOVE 999 TO ABCODE and no MOVE 0 TO TIMING, and the program does not even
-            // declare the two fields in WORKING-STORAGE. Absence must therefore never be modelled
-            // as 0, because 0 is precisely the value the other eight sites genuinely move into
-            // TIMING [app/cbl/CBACT01C.cbl:171]. If the two were conflated this site would be
-            // indistinguishable from those eight and the divergence would be lost silently.
             assertThat(abend.hasAbendCode()).isFalse();
             assertThat(abend.hasTiming()).isFalse();
             assertThat(abend.getAbendCode()).isEmpty();
             assertThat(abend.getTiming()).isEmpty();
             assertThat(abend.getAbendCode().isPresent()).isFalse();
             assertThat(abend.getTiming().isPresent()).isFalse();
-            // Absent, not zero: a sentinel of -1 survives, which a defaulted 0 would have replaced.
             assertThat(abend.getTiming().orElse(-1)).isEqualTo(-1);
             assertThat(abend.getAbendCode().orElse(-1)).isEqualTo(-1);
             assertThat(abend.getTiming()).isNotEqualTo(OptionalInt.of(0));
@@ -781,7 +610,6 @@ class AbendExceptionTest {
     @Nested
     @DisplayName("Telling the two shapes apart")
     class ShapeDistinction {
-
         @Test
         @DisplayName("presence alone separates the eight-site shape from the CBSTM03A shape")
         void presenceSeparatesTheTwoShapes() {
@@ -806,8 +634,6 @@ class AbendExceptionTest {
 
             assertThat(standardShape.getTiming()).hasValue(0);
             assertThat(divergentShape.getTiming()).isEmpty();
-            // The defaulting behaviour is where a conflated model would betray itself: a present
-            // zero keeps the zero, an absent value keeps the caller's own default.
             assertThat(standardShape.getTiming().orElse(-1)).isZero();
             assertThat(divergentShape.getTiming().orElse(-1)).isEqualTo(-1);
             assertThat(standardShape.getTiming()).isNotEqualTo(divergentShape.getTiming());
@@ -816,10 +642,6 @@ class AbendExceptionTest {
         @Test
         @DisplayName("the detail messages differ even when program, code and reason are identical")
         void messagesSeparateTheTwoShapesWithEverythingElseHeldEqual() {
-            // Both instances name CBSTM03A on purpose, so the construction shape is the ONLY
-            // variable. Building the standard shape for CBSTM03A would be the wrong translation of
-            // app/cbl/CBSTM03A.CBL:923 - it is done here solely to prove the two shapes remain
-            // distinguishable when nothing else differs.
             AbendException wrongShapeForComparison = AbendException.standard(DIVERGENT_SITE_PROGRAM,
                     AbendException.RETURN_CODE_IO_ERROR, READ_FAILURE_REASON);
             AbendException faithfulShape = AbendException.withoutAbendParameters(
@@ -835,12 +657,6 @@ class AbendExceptionTest {
         @Test
         @DisplayName("no factory yields a half-present pair, matching the coupled COBOL MOVEs")
         void noFactoryProducesPartialPresence() {
-            // Every paragraph that sets one argument sets both, and the one paragraph that sets
-            // neither sets neither; a half-present pair has no COBOL counterpart anywhere in the
-            // nine sites. The only member that could express one is the private canonical
-            // constructor, which no caller outside the class can reach - see
-            // TypeAndContract.hasOnlyThePrivateCanonicalConstructor. So the contract here is
-            // "forbidden by construction", and this drives all six public factories to prove it.
             List<AbendException> everyFactoryResult = List.of(
                     AbendException.standard(STANDARD_SITE_PROGRAM,
                             AbendException.RETURN_CODE_IO_ERROR),
@@ -870,7 +686,6 @@ class AbendExceptionTest {
     @Nested
     @DisplayName("The abending PROGRAM-ID")
     class ProgramName {
-
         @ParameterizedTest(name = "{0} - abend parameters present: {1}")
         @CsvSource({
             "CBACT01C, true",
@@ -901,9 +716,6 @@ class AbendExceptionTest {
         @Test
         @DisplayName("is returned verbatim: never trimmed and never padded to the PIC X(8) width")
         void isReturnedVerbatim() {
-            // The class documents the name as returned unchanged. Nothing pads a short name out to
-            // eight characters and nothing trims a name that carries surrounding blanks, because
-            // either adjustment would silently rewrite the identity of the abending program.
             assertThat(AbendException.standard("CBACT01C ", AbendException.RETURN_CODE_IO_ERROR)
                     .getProgram()).isEqualTo("CBACT01C ");
             assertThat(AbendException.standard(" CBACT01C", AbendException.RETURN_CODE_IO_ERROR)
@@ -959,9 +771,6 @@ class AbendExceptionTest {
         @ValueSource(strings = {"", " ", "        ", "\t", "\n"})
         @DisplayName("a blank name is rejected by both families, eight blanks included")
         void blankProgramIsRejected(String blankProgram) {
-            // "        " is the all-blanks PIC X(8) field: a COBOL PROGRAM-ID area that was never
-            // filled in. It is rejected rather than defaulted, because a name that identifies no
-            // abend site defeats the only reason the name is carried.
             assertThatIllegalArgumentException()
                     .isThrownBy(() -> AbendException.standard(blankProgram,
                             AbendException.RETURN_CODE_IO_ERROR))
@@ -991,13 +800,9 @@ class AbendExceptionTest {
     @Nested
     @DisplayName("Cause chaining")
     class CauseChaining {
-
         @Test
         @DisplayName("retains the underlying failure on both shapes")
         void retainsTheUnderlyingFailure() {
-            // COBOL has no exception chain, so CALL 'CEE3ABD' carries no cause. The parameter exists
-            // for the Java translation only: when a repository call fails, keeping the original
-            // exception preserves the diagnostic trail without altering any observable behaviour.
             IOException standardCause = new IOException("ACCTFILE unavailable");
             IOException divergentCause = new IOException("TRNXFILE unavailable");
 
@@ -1055,13 +860,9 @@ class AbendExceptionTest {
     @Nested
     @DisplayName("Detail message composition")
     class MessageComposition {
-
         @Test
         @DisplayName("a standard site with detail text composes exactly as documented")
         void standardSiteWithDetailText() {
-            // Pinned exactly, not loosely: the web error mapping preserves this text byte for byte
-            // and the parity harness compares emitted messages, so any change to the layout is a
-            // change to observable output.
             AbendException abend = AbendException.standard(STANDARD_SITE_PROGRAM,
                     AbendException.RETURN_CODE_IO_ERROR, OPEN_FAILURE_REASON);
 
@@ -1104,10 +905,6 @@ class AbendExceptionTest {
         @Test
         @DisplayName("is composed with Locale.ROOT, so a non-ASCII digit locale cannot alter it")
         void isComposedWithLocaleRoot() {
-            // Under ar-EG with the Arabic-Indic numbering system a default-locale %d renders 12 as
-            // two Arabic-Indic digits, which would silently corrupt every abend message on a machine
-            // configured that way. The default is restored in the finally block, so no other test
-            // observes the change.
             Locale original = Locale.getDefault();
             try {
                 Locale.setDefault(ARABIC_INDIC_DIGIT_LOCALE);
@@ -1167,20 +964,9 @@ class AbendExceptionTest {
         }
     }
 
-    /**
-     * The source-authored diagnostic - the area a COBOL paragraph transmits before abending.
-     *
-     * <p>Exactly one paragraph in the estate does: {@code app/cbl/COCRDSLC.cbl:865-869} issues
-     * {@code EXEC CICS SEND FROM(ABEND-DATA)} and only then {@code EXEC CICS ABEND ABCODE('9999')}.
-     * Because that transmission reached a terminal, it is observable behaviour and travels with the
-     * exception; the nine {@code CALL 'CEE3ABD'} sites transmit nothing of the kind, so for them it is
-     * absent and no response member appears at all.
-     */
     @Nested
     @DisplayName("The transmitted diagnostic - COCRDSLC:865-869 only")
     class SourceDiagnostic {
-
-        /** The 134-byte area {@code CSMSG02Y} declares, as a paragraph would leave it. */
         private static final String TRANSMITTED = "9999COCRDSLC"
                 + " ".repeat(SystemMessages.ABEND_REASON_LENGTH)
                 + "UNEXPECTED ABEND OCCURRED."
@@ -1237,8 +1023,6 @@ class AbendExceptionTest {
         @Test
         @DisplayName("the diagnostic is not the reason, and neither becomes the other")
         void theDiagnosticIsNotTheReason() {
-            // reason is Java-side detail for the server log and may quote a dataset; the diagnostic is
-            // source-authored and is published. Keeping them separate is what makes that split possible.
             AbendException abend = AbendException.withoutAbendParameters("COCRDSLC",
                             AbendException.RETURN_CODE_IO_ERROR, OPEN_FAILURE_REASON)
                     .withSourceDiagnostic(TRANSMITTED);
@@ -1263,7 +1047,6 @@ class AbendExceptionTest {
     @Nested
     @DisplayName("Throw and catch")
     class ThrowAndCatch {
-
         @Test
         @DisplayName("every carried value survives being thrown and caught - standard shape")
         void standardShapeSurvivesThrowAndCatch() {
@@ -1307,8 +1090,6 @@ class AbendExceptionTest {
         @Test
         @DisplayName("is catchable as RuntimeException, which keeps every job signature clean")
         void isCatchableAsRuntimeException() {
-            // raiseStandardAbend declares no throws clause, so this test compiling at all is the
-            // practical proof that the exception is unchecked.
             RuntimeException caught = null;
             try {
                 raiseStandardAbend();
@@ -1324,9 +1105,6 @@ class AbendExceptionTest {
         @Test
         @DisplayName("propagates out of a Runnable with no checked-exception plumbing")
         void propagatesOutOfARunnable() {
-            // A Runnable cannot declare a checked exception, so this assignment only compiles
-            // because AbendException is unchecked - exactly the property a Spring Batch tasklet or a
-            // repository callback relies on.
             Runnable abendingStep = AbendExceptionTest::raiseDivergentAbend;
 
             assertThatExceptionOfType(AbendException.class)

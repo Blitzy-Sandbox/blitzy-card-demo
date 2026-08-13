@@ -9,59 +9,17 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 /**
- * Gate <strong>G34</strong>'s census: how many {@code REDEFINES} sites this codebase actually has, where
- * they are, and the arithmetic that keeps the answer honest.
- *
- * <h2>Why a census needs to be executable</h2>
  * The number was written into two files as prose - {@code FieldDiffer} and {@code COCRDLICParityTest} both
- * said 82 - and it was wrong in both. The true count of non-comment {@code REDEFINES} lines is
- * {@value #TOTAL_SITES}: {@value #PROGRAM_SITES} in {@code app/cbl} and {@value #COPYBOOK_SITES} in
- * {@code app/cpy}. A figure quoted in prose drifts because nothing checks it; the same figure written as a
- * per-file table whose parts must sum to the whole cannot be wrong in one place and right in another, and
- * that is the whole purpose of this class.
- *
- * <h2>What is counted</h2>
- * Every line of {@code app/cbl/*.cbl}, {@code app/cbl/*.CBL}, {@code app/cpy/*.cpy} and
- * {@code app/cpy/*.CPY} bearing the {@code REDEFINES} keyword, with commented lines excluded - column 7
- * holding {@code *} or {@code /}, which is how COBOL fixed format marks a comment. Both filename cases are
- * enumerated because this repository mixes them: {@code CBSTM03A.CBL} and {@code CBSTM03B.CBL} are
- * upper-case and every other program is not, and {@code COSTM01.CPY} is upper-case among the copybooks.
- * Counting {@code *.cbl} alone under-reports, which is one of the ways a hand-run count goes wrong.
- *
- * <p>A <em>line</em> rather than a <em>pair</em> is the unit, because that is what is mechanically
- * checkable against the source and because one line can introduce a whole group overlay - the
- * {@code FILLER REDEFINES WS-EDIT-DATE-X} at {@code app/cbl/COACTUPC.cbl:362} is one line and five items.
- * Where a specific overlay's two views matter, a test asserts the round trip directly:
- * {@code COCRDLICParityTest} does it for {@code CVCRD01Y}'s {@code CC-ACCT-ID} pair and
- * {@code AccountUpdateRedefinesCensusTest} for {@code COACTUPC}'s three output-edit overlays.
- *
- * <h2>What the distribution says</h2>
- * The overlays are not spread evenly and it matters where they concentrate. {@code COACTUPC} holds 43 of
- * the 80 program sites - more than half - which follows from its being the program with a staging copy of
- * every field on the densest screen in the system. The four other online card and account programs hold 22
- * between them, and the ten non-CICS programs that have any hold 14 in total - one or two each bar
- * {@code CSUTLDTC}'s three: a batch reader needs an overlay for its {@code FILE STATUS} byte pair and
- * little else. The eleventh non-CICS program, {@code CBSTM03B}, declares none at all.
+ * said 82 - and it was wrong in both.
  */
 @DisplayName("G34: the REDEFINES census - 96 non-comment sites, 80 in app/cbl and 16 in app/cpy")
 class RedefinesCensusTest {
-
-    /** Non-comment {@code REDEFINES} lines in {@code app/cbl}. */
     private static final int PROGRAM_SITES = 80;
 
-    /** Non-comment {@code REDEFINES} lines in {@code app/cpy}. */
     private static final int COPYBOOK_SITES = 16;
 
-    /** The codebase total, and the figure {@code FieldDiffer} quotes. */
     private static final int TOTAL_SITES = PROGRAM_SITES + COPYBOOK_SITES;
 
-    /**
-     * Per-program counts, transcribed from {@code app/cbl} in filename order.
-     *
-     * <p>Every program with at least one site is named. The twelve programs absent from this map have
-     * none, and {@code theProgramsWithNoOverlayAreAccountedFor} says which they are, so "absent" is a
-     * statement rather than an omission.
-     */
     private static final Map<String, Integer> PROGRAM_OVERLAYS = programOverlays();
 
     private static Map<String, Integer> programOverlays() {
@@ -85,7 +43,6 @@ class RedefinesCensusTest {
         return Map.copyOf(counts);
     }
 
-    /** Per-copybook counts, transcribed from {@code app/cpy} in filename order. */
     private static final Map<String, Integer> COPYBOOK_OVERLAYS = Map.of(
             "COADM02Y.cpy", 1,
             "COMEN02Y.cpy", 1,
@@ -93,19 +50,16 @@ class RedefinesCensusTest {
             "CSUTLDWY.cpy", 9,
             "CVCRD01Y.cpy", 3);
 
-    /** The twelve programs of the twenty-eight that declare no overlay at all. */
     private static final java.util.Set<String> PROGRAMS_WITH_NO_OVERLAY = java.util.Set.of(
             "CBSTM03B.CBL", "COADM01C.cbl", "COBIL00C.cbl", "COMEN01C.cbl", "COSGN00C.cbl",
             "COTRN00C.cbl", "COTRN01C.cbl", "COTRN02C.cbl", "COUSR00C.cbl", "COUSR01C.cbl",
             "COUSR02C.cbl", "COUSR03C.cbl");
 
-    /** The twenty-eight programs of {@code app/cbl}, which is what the two sets must partition. */
     private static final int PROGRAM_COUNT = 28;
 
     @Nested
     @DisplayName("The arithmetic - the parts must sum to the whole")
     class TheArithmetic {
-
         @Test
         @DisplayName("the per-program counts sum to 80")
         void theProgramCountsSum() {
@@ -148,7 +102,6 @@ class RedefinesCensusTest {
     @Nested
     @DisplayName("The distribution - where the overlays actually are")
     class TheDistribution {
-
         @Test
         @DisplayName("COACTUPC holds 43 of the 80, more than the other fifteen programs together")
         void coactupcDominates() {
@@ -206,7 +159,6 @@ class RedefinesCensusTest {
     @Nested
     @DisplayName("Completeness - the census partitions all twenty-eight programs")
     class Completeness {
-
         @Test
         @DisplayName("sixteen programs have overlays, twelve have none, and 16 + 12 is 28")
         void theProgramsWithNoOverlayAreAccountedFor() {

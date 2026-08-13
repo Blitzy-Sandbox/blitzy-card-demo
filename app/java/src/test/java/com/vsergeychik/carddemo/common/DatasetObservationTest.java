@@ -11,20 +11,14 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
 /**
- * Unit tests for {@link DatasetObservation}, the labelled quantity that keeps a measurement out of a
- * CICS reason code.
- *
- * <p>The property under test is not arithmetic, it is disclosure and honesty: the number arrives with the
- * name of what was measured, the label cannot forge a log line, and nothing about a record's content can
- * travel through the type at all.
+ * Unit tests for {@link DatasetObservation}, the labelled quantity that keeps a measurement out of a CICS
+ * reason code.
  */
 @DisplayName("DatasetObservation - a measurement, under the name of what was measured")
 class DatasetObservationTest {
-
     @Nested
     @DisplayName("The named quantities")
     class NamedQuantities {
-
         @Test
         @DisplayName("a record width says it is a width, and in bytes")
         void aRecordWidthSaysSo() {
@@ -56,7 +50,6 @@ class DatasetObservationTest {
     @Nested
     @DisplayName("The guards")
     class Guards {
-
         @ParameterizedTest(name = "a value of {0} is refused")
         @ValueSource(longs = { -1L, -150L, Long.MIN_VALUE })
         @DisplayName("a negative value is refused, because a width and a count are not negative")
@@ -90,13 +83,9 @@ class DatasetObservationTest {
     @Nested
     @DisplayName("The rendering cannot forge a log line")
     class Rendering {
-
         @Test
         @DisplayName("a control character in a label is escaped, so one entry cannot become two")
         void aControlCharacterInALabelIsEscaped() {
-            // The labels this module uses are literals, so this cannot arise from within it. The type is
-            // public, the guard is one line, and a diagnostic that can be made to forge a second log
-            // entry is worth more to an attacker than most of what it would disclose.
             DatasetObservation forged =
                     new DatasetObservation("width\r\nFATAL: transfer approved", 1);
 

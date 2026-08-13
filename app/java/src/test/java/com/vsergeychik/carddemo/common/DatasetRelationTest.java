@@ -25,64 +25,30 @@ import org.springframework.dao.DataAccessResourceFailureException;
 
 /**
  * Proves the module's one data-access contract, one obligation at a time.
- *
- * <p>Four things are established here, and every repository in the module depends on all four:
- * <ul>
- *   <li><strong>the dataset-name grammar</strong>, which is what makes it safe to compose an externally
- *       controlled name into a SQL identifier - a position no bind parameter can occupy;</li>
- *   <li><strong>the statement forms</strong>, which is what keeps a browse, a keyed read, a locking read
- *       and a rewrite identical in shape across four repositories that used to compose their own;</li>
- *   <li><strong>the key-as-offset predicate</strong>, which is what confines a keyed match to the key's
- *       own bytes without any dialect-specific substring function;</li>
- *   <li><strong>the diagnostic</strong>, which is what carries the backend's own words to a caller
- *       instead of a status this module synthesised.</li>
- * </ul>
- *
- * <p>The dataset names used below are TEST values throughout. That is deliberate: this suite proves
- * names come from configuration, so putting a production name in it would undermine the very thing
- * being proved.
  */
 @DisplayName("DatasetRelation - the one deployment data-access contract")
 class DatasetRelationTest {
-
-    /** A well-formed stand-in dataset name. */
     private static final String DSNAME = "TEST.CARDDEMO.ACCTDATA.VSAM.KSDS";
 
-    /** The record width the account master declares. */
     private static final int RECORD_LENGTH = 300;
 
-    /** The column name a backend describes. Deliberately not a copybook field name. */
     private static final String COLUMN = "VSAM_RECORD_IMAGE";
 
-    /** {@link #COLUMN} as the delimited identifier a statement carries. */
     private static final String IMAGE = "\"" + COLUMN + "\"";
 
-    /** {@link #DSNAME} as the delimited identifier a statement carries. */
     private static final String RELATION = "\"" + DSNAME + "\"";
 
-    /**
-     * A relation over {@link #DSNAME} whose record-image column has already been discovered.
-     *
-     * @return the relation
-     */
     private static DatasetRelation described() {
         DatasetRelation relation = DatasetRelation.of(DSNAME, RECORD_LENGTH);
         relation.rememberRecordImageColumn(COLUMN);
         return relation;
     }
 
-    // =================================================================================================
-    // The grammar. This is the whole of F20's answer: a name is admitted because the platform permits
-    // its shape, not because it happens to avoid the punctuation someone thought to forbid.
-    // =================================================================================================
-
     @Nested
     @DisplayName("The z/OS dataset-name grammar decides what may reach a SQL identifier")
     class Grammar {
-
         @ParameterizedTest(name = "[{0}] is a well-formed z/OS dataset name")
         @ValueSource(strings = {
-            // Every one of the eight DSNAME values in app/csd/CARDDEMO.CSD.
             "AWS.M2.CARDDEMO.ACCTDATA.VSAM.KSDS",
             "AWS.M2.CARDDEMO.CARDDATA.VSAM.KSDS",
             "AWS.M2.CARDDEMO.CARDDATA.VSAM.AIX.PATH",
@@ -91,17 +57,9 @@ class DatasetRelationTest {
             "AWS.M2.CARDDEMO.CUSTDATA.VSAM.KSDS",
             "AWS.M2.CARDDEMO.TRANSACT.VSAM.KSDS",
             "AWS.M2.CARDDEMO.USRSEC.VSAM.KSDS",
-            // The national characters and the hyphen a qualifier admits, and a single qualifier.
             "A", "#Q.@R.$S", "A-B.C1", "ABCDEFGH.ABCDEFGH",
-            // The generation-data-group forms the configuration uses.
             "AWS.M2.CARDDEMO.DALYREJS(+1)", "AWS.M2.CARDDEMO.TRANREPT(+1)", "A.B(-1)", "A.B(+12)",
-            // Two consecutive hyphens are legal in a qualifier, and they happen to spell SQL's
-            // line-comment marker. That is precisely why the delimited rendering is kept as well as the
-            // grammar: inside a delimited identifier the sequence is text and cannot begin a comment.
             "A.B--C",
-            // The grammar admits either letter case. z/OS itself folds a name to upper case, so a
-            // deployment that supplies it already folded and one that does not must both be accepted -
-            // refusing the lower-case form would reject a name the platform would have taken.
             "Test.M2.acct.ksds", "aB.cD",
         })
         @DisplayName("accepts every name the platform permits, including the eight the CSD declares")
@@ -112,8 +70,6 @@ class DatasetRelationTest {
 
         @ParameterizedTest(name = "[{0}] is refused: {1}")
         @CsvSource(delimiter = '|', value = {
-            // SQL-significant punctuation. None of it is enumerated by the rule - it simply falls
-            // outside the alphabet a z/OS qualifier admits, which is the point of a grammar.
             "A.B'C            | a quotation mark",
             "A.B\"C           | a double quote",
             "A.B;DROP         | a statement separator",
@@ -121,7 +77,6 @@ class DatasetRelationTest {
             "A.B,C            | a comma",
             "A.B/*C           | a block comment",
             "A.B%C            | a wildcard",
-            // Shape violations.
             "''               | an empty name",
             "A..B             | an empty qualifier",
             ".AB              | a leading separator",
@@ -133,9 +88,6 @@ class DatasetRelationTest {
             "A.B(+)           | a relative generation with no number",
             "A.B(+1          | an unterminated suffix",
             "A.B(+1x)         | a non-numeric generation",
-            // The four below are the same rule read at its edges. Each is long enough to get past the
-            // length pre-check, so each is decided by exactly one clause of the suffix rule rather than
-            // by the clause that happens to come first.
             "A.B(*11)         | a suffix whose sign position is neither plus nor minus",
             "A.B(+11          | a suffix long enough to look complete but never closed",
             "A.B(+ 1)         | a generation digit below the digit range",
@@ -179,9 +131,6 @@ class DatasetRelationTest {
         @Test
         @DisplayName("the delimited rendering doubles an embedded quote, for whatever is handed to it")
         void delimitDoublesAnEmbeddedQuote() {
-            // Unreachable for a name that has passed the grammar, and written anyway: this is the
-            // module's only identifier renderer, so it must be correct for its argument rather than
-            // correct only for the arguments one caller happens to supply.
             assertThat(DatasetRelation.delimit("PLAIN")).isEqualTo("\"PLAIN\"");
             assertThat(DatasetRelation.delimit("ODD\"NAME")).isEqualTo("\"ODD\"\"NAME\"");
             assertThatNullPointerException().isThrownBy(() -> DatasetRelation.delimit(null));
@@ -198,14 +147,9 @@ class DatasetRelationTest {
         }
     }
 
-    // =================================================================================================
-    // The record-image column: discovered by position, validated before it reaches a statement.
-    // =================================================================================================
-
     @Nested
     @DisplayName("The record-image column is discovered, never assumed")
     class RecordImageColumn {
-
         @Test
         @DisplayName("its position is the contract, and its name is read from result-set metadata")
         void theNameComesFromMetadataAtTheDeclaredPosition() throws SQLException {
@@ -261,14 +205,9 @@ class DatasetRelationTest {
         }
     }
 
-    // =================================================================================================
-    // The statements. Their exact text is the contract four repositories now share.
-    // =================================================================================================
-
     @Nested
     @DisplayName("Statement composition is identical in form for every dataset")
     class Statements {
-
         @Test
         @DisplayName("the describe names the relation and returns no row")
         void theDescribeTransfersNothing() {
@@ -281,17 +220,9 @@ class DatasetRelationTest {
         void orderingIsStatedForWhatEachReadDependsOn() {
             DatasetRelation relation = described();
 
-            // No order contract at all. Reserved for the one read whose outcome does not depend on the
-            // order rows arrive in - the security-user browse, which selects the least or greatest
-            // admissible key in Java by unsigned byte comparison.
             assertThat(relation.selectAll()).isEqualTo("SELECT * FROM " + RELATION);
-            // A PS file has no key: its records are in the order they were written, so the read is
-            // ordered by the deployment's physical-record ordinal - a record's POSITION, and nothing in
-            // its content. Rendered unquoted, because a pseudo-column cannot be delimited.
             assertThat(relation.selectAllInPhysicalSequence(PhysicalSequence.of("_ROWID_")))
                     .isEqualTo("SELECT * FROM " + RELATION + " ORDER BY _ROWID_ ASC");
-            // A keyed dataset is the opposite case, and the explicit ordering over the record image is
-            // what a browse depends on - never the backend's scan order.
             assertThat(relation.selectAllAscending(COLUMN))
                     .isEqualTo("SELECT * FROM " + RELATION + " ORDER BY " + IMAGE + " ASC");
         }
@@ -343,18 +274,11 @@ class DatasetRelationTest {
         void thePositioningReadsSeeUnreadableRows() {
             DatasetRelation relation = described();
 
-            // A comparison against a null is UNKNOWN, so a row whose record-image column holds nothing
-            // satisfies neither >, >= nor <. Without the disjunct the row is invisible to the predicate and
-            // a browse walks straight past it - silently, which is the one outcome a COBOL sequential read
-            // cannot produce: app/cbl/CBACT02C.cbl:101 moves 12 into APPL-RESULT and :110 displays
-            // ERROR READING CARDFILE for a record that is present and unreadable.
             assertThat(List.of(relation.selectAfterAscending(COLUMN),
                             relation.selectBeforeDescending(COLUMN),
                             relation.selectFromKeyAscending(COLUMN)))
                     .allSatisfy(statement -> assertThat(statement)
                             .contains("OR " + IMAGE + " IS NULL")
-                            // Parenthesised, so the disjunct cannot escape the comparison it belongs to and
-                            // start qualifying the whole statement.
                             .contains(" WHERE (")
                             .contains(") ORDER BY "));
         }
@@ -364,9 +288,6 @@ class DatasetRelationTest {
         void theKeyedOperationsAreNotWidened() {
             DatasetRelation relation = described();
 
-            // A keyed operation names ONE record. Widening its predicate would fail every read of a
-            // relation holding one unreadable row - which VSAM does not do - and widening the REWRITE
-            // would let an UPDATE overwrite the row whose contents nothing can establish.
             assertThat(List.of(relation.selectByKey(COLUMN), relation.selectByKeyForUpdate(COLUMN),
                             relation.rewriteByKey(COLUMN)))
                     .allSatisfy(statement -> assertThat(statement).doesNotContain("IS NULL"));
@@ -408,10 +329,6 @@ class DatasetRelationTest {
         @Test
         @DisplayName("the output-only insert names no column at all, and still delimits the dataset")
         void theOutputOnlyInsertNamesNoColumn() {
-            // An output-only physical-sequential dataset is never described - OPEN OUTPUT issues no
-            // read - so there is no metadata from which a column name could come. The image is bound
-            // positionally instead. What must NOT vary is the identifier: it is delimited by the same
-            // renderer as every other form, so a dotted name stays one object here too.
             assertThat(described().insertRecordImage())
                     .isEqualTo("INSERT INTO " + RELATION + " VALUES (?)");
         }
@@ -449,14 +366,9 @@ class DatasetRelationTest {
         }
     }
 
-    // =================================================================================================
-    // The key as an offset and a length. This is what replaced four repositories' invented key columns.
-    // =================================================================================================
-
     @Nested
     @DisplayName("A key is an offset and a length, expressed as an escaped LIKE")
     class Keys {
-
         @Test
         @DisplayName("a key at offset zero is the key followed by the any-sequence wildcard")
         void aLeadingKeyNeedsNoWildcardPrefix() {
@@ -466,9 +378,6 @@ class DatasetRelationTest {
         @Test
         @DisplayName("a key at an offset is preceded by exactly that many single-character wildcards")
         void anInteriorKeyIsPrecededByItsOffset() {
-            // XREF-ACCT-ID sits at offset 25 of CVACT03Y; CARD-ACCT-ID sits at offset 16 of CVACT02Y.
-            // Both are eleven-byte account ids, and the leading run of wildcards IS what tells them
-            // apart - transposing the two compiles cleanly and reads the wrong records.
             assertThat(new KeySpan(25, 11).pattern("00000000050"))
                     .isEqualTo("_".repeat(25) + "00000000050%");
             assertThat(new KeySpan(16, 11).pattern("00000000050"))
@@ -482,9 +391,6 @@ class DatasetRelationTest {
         })
         @DisplayName("every LIKE metacharacter inside a key is escaped, so it matches only itself")
         void metacharactersAreEscaped(String key, String expectedBody) {
-            // An online RIDFLD is a PIC X field carrying whatever the screen supplied. An unescaped '_'
-            // would match any byte, so the read - and the rewrite that shares the predicate - would
-            // reach records the key does not name.
             assertThat(new KeySpan(0, 11).pattern(key)).isEqualTo(expectedBody + "%");
         }
 
@@ -517,14 +423,9 @@ class DatasetRelationTest {
         }
     }
 
-    // =================================================================================================
-    // The diagnostic. What the driver said, carried rather than replaced.
-    // =================================================================================================
-
     @Nested
     @DisplayName("A refusal is read from the backend, never invented")
     class Diagnostics {
-
         @Test
         @DisplayName("the SQLSTATE, the vendor code and the exception type all survive")
         void theDriversOwnWordsSurvive() {
@@ -535,16 +436,12 @@ class DatasetRelationTest {
             assertThat(diagnostic.sqlState()).isEqualTo("08001");
             assertThat(diagnostic.vendorCode()).isEqualTo(17_002);
             assertThat(diagnostic.exceptionType()).isEqualTo(SQLException.class.getName());
-            // The driver's message is deliberately absent - see theDriversMessageIsNotCarriedAtAll.
             assertThat(diagnostic.toString()).doesNotContain("no route to host");
         }
 
         @Test
         @DisplayName("the SQLSTATE is found through a wrapper chain, and the wrapper's type is kept too")
         void theChainIsWalked() {
-            // A framework's data-access exception is a wrapper: the SQLSTATE and the vendor code live on
-            // the SQLException inside it, so taking the wrapper's type as the diagnosis is what loses
-            // them. The wrapper's type is still worth knowing - it says which layer refused.
             BackendDiagnostic diagnostic = BackendDiagnostic.of(new DataAccessResourceFailureException(
                     "wrapped", new IllegalStateException(new SQLException("deep", "40001", 60))));
 
@@ -570,10 +467,6 @@ class DatasetRelationTest {
         @DisplayName("describe() does not call it a backend refusal when no SQLException was found: "
                 + "nothing was asked of the backend, so the failure arose above the driver")
         void describeDoesNotBlameTheBackendWhenNoSqlExceptionWasFound() {
-            // The line this replaces read "backend refusal: SQLSTATE not reported, vendor code 0" for a
-            // failure the backend was never asked about - which is what an unrepresentable screen value
-            // produces, since the transcoder refuses before any statement is prepared. It sent a reader
-            // looking at the datasource for a fault that is in this module.
             BackendDiagnostic diagnostic =
                     BackendDiagnostic.of(new DataAccessResourceFailureException("no cause at all"));
 
@@ -643,21 +536,12 @@ class DatasetRelationTest {
             assertThat(diagnostic.describe())
                     .isEqualTo("backend refusal: SQLSTATE 22001, vendor code 1400, raised as "
                             + SQLException.class.getName())
-                    // A failing card operation's record carries a primary account number. A log line is
-                    // read by more people, kept for longer and guarded less than the dataset it
-                    // describes, so the record never reaches one.
                     .doesNotContain("4444333322221111");
         }
 
         @Test
         @DisplayName("the driver's message is not carried at all, so nothing can render it")
         void theDriversMessageIsNotCarriedAtAll() {
-            // A driver's message is prose the backend composed AROUND the values it refused, so a
-            // rejected card operation says the card number out loud. Omitting it from describe() was not
-            // enough while the record still had a message component: being a record, its generated
-            // toString published the component the first time anything rendered a refusal, and this
-            // record travels to the caller on every failed ReadResult and WriteResult in the module.
-            // So the text is not carried - there is no component and no accessor to reach for.
             String pan = "4444333322221111";
             BackendDiagnostic diagnostic = BackendDiagnostic.of(
                     new SQLException("value '" + pan + "' rejected", "22001", 1_400));
@@ -673,8 +557,6 @@ class DatasetRelationTest {
         @Test
         @DisplayName("a control character in a driver's message cannot reach a rendering either")
         void aControlCharacterCannotReachARendering() {
-            // CWE-117: had the message survived, a CR or LF inside it would have split a log entry in
-            // two, and whatever composed the message would have chosen the second entry's contents.
             BackendDiagnostic diagnostic = BackendDiagnostic.of(new SQLException(
                     "rejected\r\n2026-01-01 INFO  all datasets verified", "22001", 1));
 

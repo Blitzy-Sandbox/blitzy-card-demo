@@ -14,35 +14,13 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 /**
- * The wire and diagnostic contract of {@link NavigationContext}: how {@code CDEMO-CARD-NUM} is
- * represented in JSON, and what the diagnostic rendering withholds.
- *
- * <h2>The two properties held here</h2>
- * <ul>
- *   <li><strong>A sixteen-digit identifier is transport-safe.</strong> {@code CDEMO-CARD-NUM} is
- *       {@code PIC 9(16)} ({@code app/cpy/COCOM01Y.cpy:41}), and a populated value can exceed
- *       9,007,199,254,740,991 - the largest integer an IEEE-754 double holds exactly. Many JSON
- *       clients parse every number into a double, so as a JSON number a card number can arrive with a
- *       different final digit and no error at all. The wire form is therefore a sixteen-digit decimal
- *       string, and a JSON number is refused rather than accepted leniently.</li>
- *   <li><strong>A diagnostic rendering identifies nobody.</strong> The record's generated
- *       {@code toString} printed the card number, the account and customer identifiers, the three
- *       customer names and the user id - the exact string that reaches a log file or an exception
- *       message. The override redacts those seven and keeps the nine navigation fields that make a
- *       diagnostic useful.</li>
- * </ul>
- *
- * <p>Every case below also asserts the other half of each property: that the numeric value, the JSON
- * payload and the {@value NavigationContext#COMMAREA_LENGTH}-byte image are unchanged. A security fix
- * that quietly altered the parity image would be a worse defect than the one it repaired.
+ * The wire and diagnostic contract of {@link NavigationContext}: how {@code CDEMO-CARD-NUM} is represented
+ * in JSON, and what the diagnostic rendering withholds.
  */
 @DisplayName("NavigationContext - the JSON card-number form and the redacted diagnostics")
 class NavigationContextWireContractTest {
-
-    /** A sixteen-digit card number: 4111111111111111 exceeds the exact-integer range of a double. */
     private static final long PAN = 4_111_111_111_111_111L;
 
-    /** The same value as the wire carries it. */
     private static final String PAN_IMAGE = "4111111111111111";
 
     private final ObjectMapper mapper = new ObjectMapper();
@@ -70,7 +48,6 @@ class NavigationContextWireContractTest {
     @Nested
     @DisplayName("CDEMO-CARD-NUM travels as a 16-digit decimal string")
     class CardNumberOnTheWire {
-
         @Test
         @DisplayName("it serialises as a string, not as a JSON number")
         void serialisesAsString() throws Exception {
@@ -181,7 +158,6 @@ class NavigationContextWireContractTest {
     @Nested
     @DisplayName("cardNumberImage / cardNumberOfImage - the conversion itself")
     class ConversionHelpers {
-
         @Test
         @DisplayName("the image is always sixteen digits")
         void imageIsSixteenDigits() {
@@ -237,17 +213,11 @@ class NavigationContextWireContractTest {
     @Nested
     @DisplayName("toString withholds every identifying value and keeps the navigation state")
     class RedactedDiagnostics {
-
         @Test
         @DisplayName("the card number, both identifiers and the three names are withheld")
         void identifiersAreWithheld() {
             String rendering = populated().toString();
 
-            // Not one identifying value survives the rendering in a form that could be read back: the
-            // card number and the two identifiers are masked to their last four characters at their
-            // full stored width, and the three customer names are reported as widths only. The policy
-            // is the module's single one, in common.SensitiveDiagnostics, so this carrier discloses
-            // exactly as much - and as little - as every model type that renders through it.
             assertThat(rendering).doesNotContain(PAN_IMAGE);
             assertThat(rendering).doesNotContain("4111111111111111");
             assertThat(rendering).doesNotContain("123456789");
@@ -266,8 +236,6 @@ class NavigationContextWireContractTest {
             assertThat(rendering).contains("COMEN1A", "COMEN01");
             assertThat(rendering).contains("pgmContext=1");
 
-            // The copybook name of that field is a published constant, so a reader can line the
-            // rendering up against COCOM01Y even though the rendering keys by member name.
             assertThat(NavigationContext.PGM_CONTEXT_FIELD).isEqualTo("CDEMO-PGM-CONTEXT");
         }
 
@@ -276,9 +244,6 @@ class NavigationContextWireContractTest {
         void withheldFieldsAreNamed() {
             String rendering = populated().toString();
 
-            // Named, and each carries the shape of what it withheld: masking rather than omission is
-            // what lets one rendering be correlated with another - two log lines for the same card
-            // agree on the last four characters - while disclosing nothing that identifies anybody.
             assertThat(rendering).contains("cardNum="
                     + SensitiveDiagnostics.maskPan("4111111111111111"));
             assertThat(rendering).contains("acctId="
@@ -287,8 +252,6 @@ class NavigationContextWireContractTest {
                     + SensitiveDiagnostics.maskIdentifier("123456789"));
             assertThat(rendering).contains("custFname=" + SensitiveDiagnostics.describeText("JOHN"));
 
-            // The user id is navigation state rather than a credential: COSGN00C paints it on every
-            // screen it sends, and it is the password - never rendered anywhere - that is the secret.
             assertThat(rendering).contains("userId=ADMIN001");
         }
 

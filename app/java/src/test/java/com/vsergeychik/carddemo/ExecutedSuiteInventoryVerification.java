@@ -23,99 +23,31 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 /**
- * The build gate's execution proof: it reads what the test runner recorded as <strong>executed</strong>
- * and requires that to be the whole of what this module contains.
- *
- * <h2>The gap this closes</h2>
- * <p>{@link BuildGateSentinelTest} runs <em>inside</em> the test run and can therefore only inspect the
- * build output - the compiled classes. That proves the suite was <strong>compiled</strong>, and
- * compilation is not the claim the gate makes. A suite can compile and never run: a mis-scoped
- * {@code <includes>}, a discovery configuration that silently matches nothing, a class excluded by a
- * filter someone passed on the command line, a fork that died between suites. In every one of those cases
- * the class file is present, the sentinel is satisfied, and the parity gate - stated as "diff count = 0" -
- * reports exactly the number it wants to see because the cases that would have produced a difference
- * never ran.
- *
- * <p>This class is the other half. It runs <strong>after</strong> the main test run, in a second
- * execution of the same already-declared surefire plugin, and it reads
- * {@code target/surefire-reports/TEST-*.xml} - the runner's own record of what it executed, written per
- * suite as each one finishes. Two questions are asked of that record:
- * <ul>
- *   <li><strong>Did every suite this module contains actually run?</strong> Every compiled top-level
- *       {@code *Test} class must appear in the reports with at least one executed test. This is an
- *       equality between the compiled inventory and the executed inventory, not a floor: a floor of any
- *       number can be met while three quarters of the suite sits unexecuted, which is precisely the
- *       failure that a count-based check cannot see.</li>
- *   <li><strong>Did every parity program's gate run?</strong> The required inventory is
- *       <em>generated</em> from the shipped case corpus at {@code src/test/resources/parity/} rather than
- *       hand-listed: every program directory that ships cases must have a matching
- *       {@code <PROGRAM>ParityTest} in the executed reports, running at least its twenty cases. A
- *       hand-maintained list names what somebody remembered; a generated one cannot fall behind the
- *       corpus it is derived from.</li>
- * </ul>
- *
- * <h2>Why this class is not named {@code *Test}</h2>
- * <p>Deliberately, and it is load-bearing. surefire's default {@code <includes>} match
- * {@code **&#47;Test*.java}, {@code **&#47;*Test.java}, {@code **&#47;*Tests.java} and
- * {@code **&#47;*TestCase.java}; this name matches none of them, so the main test execution does not pick
- * it up. That matters because during the main run the reports are still being written - a suite that has
- * not finished has no report yet - so a check running there would compare against a partial record and
- * either fail for a reason nobody can act on or, worse, pass because it happened to run last. The second
- * execution names this class explicitly in its own {@code <includes>}, which is the only way it runs.
- *
- * <p>Nothing here reads the wall clock, opens a network connection or writes a file, and there is no
- * static mutable state: every inventory is recomputed per test method from the build output.
- *
- * @see BuildGateSentinelTest the in-run half, which proves the module CONTAINS its suite
+ * The build gate's execution proof: it reads what the test runner recorded as executed and requires that to
+ * be the whole of what this module contains.
  */
 @DisplayName("Executed suite inventory - every suite this module contains was actually run")
 class ExecutedSuiteInventoryVerification {
-
-    /** The suffix surefire's default includes match on, for a top-level suite. */
     private static final String TEST_CLASS_SUFFIX = "Test.class";
 
-    /** The suffix of a parity gate class, one per migrated COBOL program. */
     private static final String PARITY_TEST_SUFFIX = "ParityTest";
 
-    /** The package the parity gates live in. */
     private static final String PARITY_PACKAGE = "com.vsergeychik.carddemo.parity.";
 
-    /** The classpath resource directory holding one sub-directory of cases per program. */
     private static final String PARITY_RESOURCE_ROOT = "parity";
 
-    /** The cases every program's directory ships, and every program's gate therefore runs. */
     private static final int CASES_PER_PROGRAM = 20;
 
-    /**
-     * This class's own fully qualified name, excluded from every inventory it builds.
-     *
-     * <p>Held as a constant rather than computed inline so the exclusion appears once and reads the same
-     * in the two places it applies: the executed record it parses, and the compiled inventory it compares
-     * that record against.
-     */
     private static final String SELF = ExecutedSuiteInventoryVerification.class.getName();
 
-    /** The report file name shape surefire writes per executed suite. */
     private static final Pattern REPORT_FILE = Pattern.compile("TEST-(.+)\\.xml");
 
-    /** The {@code <testsuite>} attributes carrying the executed counts. */
     private static final Pattern SUITE_ATTRIBUTES = Pattern.compile(
         "<testsuite\\b[^>]*?\\bname=\"([^\"]*)\"[^>]*?\\btests=\"(\\d+)\""
             + "[^>]*?\\berrors=\"(\\d+)\"[^>]*?\\bskipped=\"(\\d+)\"[^>]*?\\bfailures=\"(\\d+)\"",
         Pattern.DOTALL);
 
-    /**
-     * What one executed suite's report records.
-     *
-     * @param name the fully qualified suite class name
-     * @param tests how many tests the runner executed
-     * @param failures how many failed
-     * @param errors how many errored
-     * @param skipped how many were skipped
-     */
     private record ExecutedSuite(String name, int tests, int failures, int errors, int skipped) {
-
-        /** @return how many tests actually ran to a verdict rather than being skipped */
         private int ran() {
             return tests - skipped;
         }
@@ -124,7 +56,6 @@ class ExecutedSuiteInventoryVerification {
     @Nested
     @DisplayName("The executed record itself")
     class TheExecutedRecord {
-
         @Test
         @DisplayName("the runner wrote a report for at least one suite, so there is a record to check")
         void theReportDirectoryIsPopulated() {
@@ -169,7 +100,6 @@ class ExecutedSuiteInventoryVerification {
     @Nested
     @DisplayName("Compiled against executed")
     class CompiledAgainstExecuted {
-
         @Test
         @DisplayName("every compiled suite appears in the executed record, with tests that ran")
         void everyCompiledSuiteWasExecuted() {
@@ -182,10 +112,10 @@ class ExecutedSuiteInventoryVerification {
 
             Assertions.assertThat(neverRan)
                 .as("compiled but absent from the executed record. This is an EQUALITY between what "
-                    + "the module contains and what the runner ran, and it replaces the count-based "
-                    + "floor it used to be: a floor of any number is satisfied while three quarters "
-                    + "of the suite sits unexecuted, which is exactly the failure it was supposed to "
-                    + "catch. %d suites compiled, %d appear in %s.",
+                    + "the module contains and what the runner ran, deliberately rather than a "
+                    + "count-based floor: any floor is satisfied while three quarters of the suite "
+                    + "sits unexecuted, which is the failure this check exists to catch. %d suites "
+                    + "compiled, %d appear in %s.",
                     compiled.size(), executed.size(), reportsDirectory())
                 .isEmpty();
             Assertions.assertThat(compiled)
@@ -216,7 +146,6 @@ class ExecutedSuiteInventoryVerification {
     @Nested
     @DisplayName("The parity gates, generated from the shipped corpus")
     class TheParityGates {
-
         @Test
         @DisplayName("every program that ships cases has an executed gate running at least 20 of them")
         void everyShippedProgramsGateWasExecuted() {
@@ -280,16 +209,6 @@ class ExecutedSuiteInventoryVerification {
         }
     }
 
-    /**
-     * Every suite the runner recorded as executed, keyed by fully qualified class name.
-     *
-     * <p>Parsed from the {@code <testsuite>} element's own attributes rather than by counting
-     * {@code <testcase>} elements, because the attributes are what the runner asserts about its own
-     * execution - including the skipped count, which a {@code <testcase>} tally cannot distinguish from
-     * a test that ran.
-     *
-     * @return the executed suites in file order; empty when no report exists
-     */
     private static Map<String, ExecutedSuite> executedSuites() {
         Path reports = reportsDirectory();
         if (!Files.isDirectory(reports)) {
@@ -301,13 +220,6 @@ class ExecutedSuiteInventoryVerification {
                 .filter(path -> REPORT_FILE.matcher(path.getFileName().toString()).matches())
                 .sorted()
                 .forEach(path -> parseReport(path)
-                    // This class's OWN report is excluded, and the exclusion is load-bearing rather
-                    // than tidy. Its report is written by the execution these methods run in, so on
-                    // the first invocation it is absent and on every later one it carries the
-                    // PREVIOUS invocation's verdict - a stale one. Reading it would mean a run that
-                    // failed once kept failing on the record of having failed, and a run that
-                    // passed could be satisfied by evidence it produced about itself. A check may
-                    // not be its own witness.
                     .filter(suite -> !SELF.equals(suite.name()))
                     .ifPresent(suite -> executed.put(suite.name(), suite)));
         } catch (IOException cause) {
@@ -317,12 +229,6 @@ class ExecutedSuiteInventoryVerification {
         return executed;
     }
 
-    /**
-     * Parses one report's {@code <testsuite>} attributes.
-     *
-     * @param report the report file
-     * @return the executed record, or empty when the file carries no parsable suite element
-     */
     private static java.util.Optional<ExecutedSuite> parseReport(Path report) {
         String xml;
         try {
@@ -341,14 +247,6 @@ class ExecutedSuiteInventoryVerification {
             Integer.parseInt(matcher.group(4))));
     }
 
-    /**
-     * Every compiled top-level {@code *Test} class in the module's test output directory.
-     *
-     * <p>Nested suites compile to {@code Outer$Inner.class} and are excluded, because the top-level
-     * class is the unit surefire discovers and reports on.
-     *
-     * @return the class names, sorted so a failure message reads the same on every machine
-     */
     private static List<String> compiledTestClasses() {
         Path root = testClassesRoot();
         try (Stream<Path> tree = Files.walk(root)) {
@@ -369,11 +267,6 @@ class ExecutedSuiteInventoryVerification {
         }
     }
 
-    /**
-     * Every program that ships a case directory, read from the classpath rather than from a list.
-     *
-     * @return the program names in ascending order
-     */
     private static List<String> programsShippingCases() {
         URL root = ExecutedSuiteInventoryVerification.class.getClassLoader()
             .getResource(PARITY_RESOURCE_ROOT);
@@ -398,21 +291,10 @@ class ExecutedSuiteInventoryVerification {
         }
     }
 
-    /**
-     * The report directory, derived from the module's build directory rather than from the process
-     * working directory, so the check does not care where the build was launched from.
-     *
-     * @return {@code target/surefire-reports}
-     */
     private static Path reportsDirectory() {
         return testClassesRoot().getParent().resolve("surefire-reports");
     }
 
-    /**
-     * The module's test output directory, located from this class's own code source.
-     *
-     * @return the {@code target/test-classes} directory this class was loaded from
-     */
     private static Path testClassesRoot() {
         URL location = ExecutedSuiteInventoryVerification.class.getProtectionDomain()
             .getCodeSource().getLocation();

@@ -13,35 +13,12 @@ import org.junit.jupiter.api.Test;
 
 /**
  * Unit tests for {@link ScreenResponse}, the body envelope every online screen answers with.
- *
- * <h2>What is being pinned</h2>
- *
- * <p>The envelope has to satisfy two requirements that pull against each other, and these tests pin
- * both at once:
- *
- * <ul>
- *   <li><strong>the payload stays a 1:1 projection of the map.</strong> Plan section 0.3.9 requires
- *       one JSON member per {@code DFHMDF} field, so the screen's own members must still serialise at
- *       the top level of the body, unrenamed and unwrapped, and no metadata item may sit beside
- *       them;</li>
- *   <li><strong>the metadata is on the wire.</strong> It reaches the client as exactly one sibling
- *       member, {@code screenMetadata}, on every screen - so a client can place the cursor, repaint a
- *       red field and honour a full-screen clear without screen-specific knowledge of where those
- *       facts hide.</li>
- * </ul>
- *
- * <p>A deliberately trivial stand-in screen is used rather than a production response type: what is
- * being tested is the envelope, and a stand-in makes the expected JSON small enough to assert
- * exhaustively. The production types' own tests assert their field inventories.
  */
 @DisplayName("ScreenResponse - the projected map flattened, with its metadata beside it")
 class ScreenResponseTest {
-
     private final ObjectMapper mapper = new ObjectMapper();
 
-    /** A stand-in for one of the eleven online response types: three members, flat. */
     private record StubScreen(String trnName, String errMsg, NavigationContext navigationContext) {
-
         static StubScreen painted() {
             return new StubScreen("CU02", "Press PF5 to delete", NavigationContext.empty());
         }
@@ -50,7 +27,6 @@ class ScreenResponseTest {
     @Nested
     @DisplayName("The wire shape")
     class TheWireShape {
-
         @Test
         @DisplayName("the screen's members serialise at the top level, unwrapped and unrenamed")
         void theScreenIsFlattened() throws Exception {
@@ -76,7 +52,6 @@ class ScreenResponseTest {
 
             JsonNode body = mapper.valueToTree(ScreenResponse.of(StubScreen.painted(), metadata));
 
-            // Not beside the payload: the three metadata facts are reachable only through the envelope.
             assertThat(body.has("cursorField")).isFalse();
             assertThat(body.has("messageColour")).isFalse();
             assertThat(body.has("resetAllOutputFields")).isFalse();
@@ -104,7 +79,6 @@ class ScreenResponseTest {
     @Nested
     @DisplayName("The two factories and their guards")
     class TheFactories {
-
         @Test
         @DisplayName("of(screen) carries empty metadata rather than none")
         void theSingleArgumentFactoryCarriesEmptyMetadata() {

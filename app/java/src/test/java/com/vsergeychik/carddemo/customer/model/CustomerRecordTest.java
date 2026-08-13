@@ -39,146 +39,25 @@ import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 /**
  * The sole test class for {@link CustomerRecord} - the 500-byte {@code CUSTOMER-RECORD} that
  * {@code app/cpy/CVCUS01Y.cpy} declares, and the one Java type in the migration that models it.
- *
- * <h2>What this class is for</h2>
- * It is an <strong>independent audit</strong> of the copybook, not a restatement of the
- * implementation. Every width, every absolute offset, every field name and every expected value below
- * was transcribed by hand from {@code app/cpy/CVCUS01Y.cpy} and measured by hand off
- * {@code app/data/ASCII/custdata.txt}. None of it is read back out of
- * {@link CustomerRecord#LAYOUT} and compared with itself, and none of it is obtained by cumulatively
- * summing the production span lengths. That distinction is the whole value of the file: an assertion
- * derived from the production table would still pass with the production table wrong, whereas these
- * assertions fail and name the field whose offset moved. A reviewer can read the table in
- * {@code DeclaredGeometry} straight down beside the copybook, line for line.
- *
- * <h2>Provenance of every expected value - statically derived, never captured</h2>
- * The expectations here were derived by reading the sources, <strong>not</strong> by executing the
- * legacy COBOL. COBOL cannot be executed in this environment: there is no z/OS runtime, the available
- * compiler reports {@code indexed file handler : disabled} so the programs using
- * {@code ORGANIZATION INDEXED} will not build, no Language Environment {@code CEE*} services exist,
- * and no CICS emulator is present. That is recorded in the plan as the highest-severity open risk, and
- * the substitute is exactly what this class does: derive the expectation from the copybook's byte
- * layout, the program's own {@code FD} arithmetic, the JCL's cluster definition and the real ASCII
- * fixture, all four of which are mechanical rather than interpretive.
- *
- * <h2>The 500-byte width, corroborated three independent ways</h2>
- * <ol>
- *   <li>{@code app/cpy/CVCUS01Y.cpy}'s own header comment:
- *       {@code Data-structure for Customer entity (RECLN 500)}, and its 19 {@code PICTURE} widths,
- *       which sum to 500 - re-added independently in
- *       {@code DeclaredGeometry#theTranscribedLengthsSumToFiveHundred()}.</li>
- *   <li>{@code app/cbl/CBCUS01C.cbl:38-40}, which splits the same file as
- *       {@code 05 FD-CUST-ID PIC 9(09)} plus {@code 05 FD-CUST-DATA PIC X(491)}: 9 + 491 = 500.</li>
- *   <li>{@code app/jcl/CUSTFILE.jcl}, whose IDCAMS {@code DEFINE CLUSTER} for
- *       {@code AWS.M2.CARDDEMO.CUSTDATA.VSAM.KSDS} declares {@code KEYS(9 0)}
- *       {@code RECORDSIZE(500 500)} {@code INDEXED} - a nine-byte key at offset 0 and a record fixed
- *       at 500 bytes.</li>
- * </ol>
- *
- * <p><strong>A trap deliberately not fallen into.</strong> {@code app/jcl/DEFCUST.jcl} is a stale
- * second definition of a customer file: it declares {@code KEYS(10 0)} over
- * {@code AWS.CUSTDATA.CLUSTER}, and even repeats its step name. Its ten-byte key contradicts
- * {@code CUST-ID PIC 9(09)}, the copybook, and {@code app/cbl/CBCUS01C.cbl:32}'s
- * {@code RECORD KEY IS FD-CUST-ID}. {@code CUSTFILE.jcl} is authoritative because its DSN is the one
- * bound in {@code app/csd/CARDDEMO.CSD}. Where a key width is asserted here it is <strong>9</strong>.
- *
- * <h2>What CVCUS01Y does not declare, so what is not tested</h2>
- * The copybook declares <strong>zero</strong> {@code 88}-level condition names, <strong>zero</strong>
- * {@code REDEFINES}, <strong>zero</strong> {@code OCCURS} and <strong>zero</strong> {@code VALUE}
- * clauses. So there is no condition name to drive from both sides, no 1-based-to-0-based table index
- * to get wrong, and no overlay pair to round-trip. None is invented here. The branch surface that does
- * exist belongs to the record type's own guards - the layout self-check, the two receivers and
- * {@code equals} - and every one of them is driven from both sides in {@code LayoutSelfCheck},
- * {@code AlphanumericReceiver}, {@code NumericReceiver} and {@code ValueSemantics}. The
- * numeric-plus-character-image duality that {@code CustomerRecord} exposes is a Java accessor
- * convenience serving COBOL reference modification, not a copybook {@code REDEFINES}, and is described
- * as such.
- *
- * <p>{@code customer.model} is measured for branch coverage independently of the sibling
- * {@code customer} package, so nothing here leans on another package's tests, and nothing here
- * duplicates them: no repository, no service, no job and no batch contract is exercised.
- *
- * <h2>Rules</h2>
- * No user-specified rules were provided for this project - the rules document consists of the single
- * line stating so. Its absence is not treated as licence to lower the bar; the project's enterprise
- * practices bind instead, and the ones that shape this file are: the closed dependency set (JUnit
- * Jupiter, AssertJ and the JDK only - nothing is added to the build), the read-only legacy trees
- * (every byte of input arrives through the <em>test classpath</em>, never through a filesystem path
- * into {@code app/data}), determinism (no clock, no locale, no randomness, no ordering between tests),
- * explicitness (the {@link Charset} is named at every boundary and there are no wildcard imports), no
- * mutable static state, and hand-written assertions in preference to opaque machinery.
- *
- * @see CustomerRecord
  */
 @DisplayName("CustomerRecord - the 500-byte CUSTOMER-RECORD of CVCUS01Y")
 class CustomerRecordTest {
-
-    // =================================================================================================
-    // Code pages. Always named, never inherited from the platform. Both constants are immutable, so
-    // none of this is mutable static state.
-    // =================================================================================================
-
-    /** The code page of the nine text fixtures under {@code app/data/ASCII}, named explicitly. */
     private static final Charset ASCII = StandardCharsets.US_ASCII;
 
-    /**
-     * The code page of the binary datasets under {@code app/data/EBCDIC}, named explicitly.
-     *
-     * <p>Resolved during class initialisation on purpose: {@code IBM037} ships in the JDK's
-     * {@code jdk.charsets} module, so were it ever absent this class would fail to initialise loudly
-     * and name the missing code page, rather than quietly skipping the tests that prove the charset is
-     * genuinely the caller's choice.
-     */
     private static final Charset EBCDIC = Charset.forName("IBM037");
 
-    /** The ASCII space, {@code 0x20} - what a {@code FILLER} byte must be, and never {@code 0x00}. */
     private static final byte ASCII_SPACE_BYTE = 0x20;
 
-    /** The EBCDIC space, {@code 0x40} - the same {@code FILLER} byte under {@code IBM037}. */
     private static final byte EBCDIC_SPACE_BYTE = 0x40;
 
-    // =================================================================================================
-    // THE HAND-TRANSCRIBED BYTE MAP OF CVCUS01Y.
-    //
-    // Read this beside app/cpy/CVCUS01Y.cpy. Offsets are 0-based Java offsets; the copybook's own
-    // 1-based positions are one greater. Nothing below is computed from CustomerRecord.LAYOUT.
-    //
-    //   #   COBOL field                 PICTURE   1-based    0-based  length
-    //   1   CUST-ID                     9(09)       1-9         0        9
-    //   2   CUST-FIRST-NAME             X(25)      10-34         9       25
-    //   3   CUST-MIDDLE-NAME            X(25)      35-59        34       25
-    //   4   CUST-LAST-NAME              X(25)      60-84        59       25
-    //   5   CUST-ADDR-LINE-1            X(50)      85-134       84       50
-    //   6   CUST-ADDR-LINE-2            X(50)     135-184      134       50
-    //   7   CUST-ADDR-LINE-3            X(50)     185-234      184       50
-    //   8   CUST-ADDR-STATE-CD          X(02)     235-236      234        2
-    //   9   CUST-ADDR-COUNTRY-CD        X(03)     237-239      236        3
-    //  10   CUST-ADDR-ZIP               X(10)     240-249      239       10
-    //  11   CUST-PHONE-NUM-1            X(15)     250-264      249       15
-    //  12   CUST-PHONE-NUM-2            X(15)     265-279      264       15
-    //  13   CUST-SSN                    9(09)     280-288      279        9
-    //  14   CUST-GOVT-ISSUED-ID         X(20)     289-308      288       20
-    //  15   CUST-DOB-YYYY-MM-DD         X(10)     309-318      308       10
-    //  16   CUST-EFT-ACCOUNT-ID         X(10)     319-328      318       10
-    //  17   CUST-PRI-CARD-HOLDER-IND    X(01)     329          328        1
-    //  18   CUST-FICO-CREDIT-SCORE      9(03)     330-332      329        3
-    //  19   FILLER                      X(168)    333-500      332      168
-    //                                                        total     500
-    // =================================================================================================
-
-    /** The declared record width, written out rather than read from the class under test. */
     private static final int DECLARED_RECORD_LENGTH = 500;
 
-    /** The number of {@code 05}-level items {@code CVCUS01Y} declares, {@code FILLER} included. */
     private static final int DECLARED_SPAN_COUNT = 19;
 
-    /** The 18 referable names, {@code FILLER} excluded, since {@code FILLER} is not referable. */
     private static final int REFERABLE_FIELD_COUNT = 18;
 
-    /** The nine-byte primary key width that {@code CUSTFILE.jcl}'s {@code KEYS(9 0)} declares. */
     private static final int PRIMARY_KEY_LENGTH = 9;
 
-    /** Every span name, in copybook declaration order, spelled exactly as the copybook spells it. */
     private static final List<String> SPAN_NAMES = List.of(
             "CUST-ID",
             "CUST-FIRST-NAME",
@@ -200,268 +79,134 @@ class CustomerRecordTest {
             "CUST-FICO-CREDIT-SCORE",
             "FILLER");
 
-    /** Every declared width, in copybook order, read off the {@code PICTURE} clauses by hand. */
     private static final List<Integer> SPAN_LENGTHS = List.of(
             9, 25, 25, 25, 50, 50, 50, 2, 3, 10, 15, 15, 9, 20, 10, 10, 1, 3, 168);
 
-    /**
-     * Every absolute 0-based offset, in copybook order, written out as a literal.
-     *
-     * <p>Deliberately <em>not</em> computed - not from {@link #SPAN_LENGTHS} and certainly not from
-     * the production table. {@code theTranscribedOffsetsAreSelfConsistent()} then checks this literal
-     * list against the running total of {@link #SPAN_LENGTHS}, which is what catches a transcription
-     * slip in either list without either list vouching for itself.
-     */
     private static final List<Integer> SPAN_OFFSETS = List.of(
             0, 9, 34, 59, 84, 134, 184, 234, 236, 239, 249, 264, 279, 288, 308, 318, 328, 329, 332);
 
-    /** The {@code FILLER}'s offset, the value gate G21's space-fill assertions slice at. */
     private static final int FILLER_OFFSET = 332;
 
-    /** The {@code FILLER}'s width: 168 reserved bytes that are part of every stored record. */
     private static final int FILLER_LENGTH = 168;
 
-    // =================================================================================================
-    // The real fixture. Loaded from the TEST CLASSPATH: app/java/src/test/resources/fixtures, which the
-    // build copies to target/test-classes. app/data/ASCII/custdata.txt is never opened by path - it is
-    // part of the read-only parity oracle, and a test that reached into it by relative path would also
-    // depend on the process working directory.
-    // =================================================================================================
-
-    /** The classpath location of the fixture, named in the failure message if it is missing. */
     private static final String FIXTURE_RESOURCE = "fixtures/custdata.txt";
 
-    /** The row count, re-measured for this test: {@code custdata.txt} holds 50 records. */
     private static final int FIXTURE_ROW_COUNT = 50;
 
-    // -------------------------------------------------------------------------------------------------
-    // Expected values, measured by hand at the offsets above. Written out as literals so that a failure
-    // compares against something a reviewer can check against the fixture without running anything.
-    // Trailing spaces are shown by construction (value plus an explicit pad) rather than typed, because
-    // trailing whitespace in source is invisible and this padding is data.
-    // -------------------------------------------------------------------------------------------------
-
-    /** Row 1 {@code CUST-ID}: stored as nine digits, so the leading zeros are the field's content. */
     private static final String ROW_1_CUST_ID_IMAGE = "000000001";
 
-    /** Row 1 {@code CUST-ID} as a value. Nine digits and scale-free, hence {@code int}. */
     private static final int ROW_1_CUST_ID = 1;
 
-    /** Row 1 {@code CUST-FIRST-NAME}, before its 17 characters of right padding. */
     private static final String ROW_1_FIRST_NAME = "Immanuel";
 
-    /** Row 1 {@code CUST-MIDDLE-NAME}, before its 17 characters of right padding. */
     private static final String ROW_1_MIDDLE_NAME = "Madeline";
 
-    /** Row 1 {@code CUST-LAST-NAME}, before its 18 characters of right padding. */
     private static final String ROW_1_LAST_NAME = "Kessler";
 
-    /** Row 1 {@code CUST-ADDR-LINE-1}, before its 33 characters of right padding. */
     private static final String ROW_1_ADDR_LINE_1 = "618 Deshaun Route";
 
-    /** Row 1 {@code CUST-ADDR-LINE-2}, before its 42 characters of right padding. */
     private static final String ROW_1_ADDR_LINE_2 = "Apt. 802";
 
-    /** Row 1 {@code CUST-ADDR-LINE-3} - the city, per {@code app/cbl/COACTVWC.cbl:513}. */
     private static final String ROW_1_ADDR_LINE_3 = "Altenwerthshire";
 
-    /** Row 1 {@code CUST-ADDR-STATE-CD}: exactly two characters, so no padding at all. */
     private static final String ROW_1_STATE_CD = "NC";
 
-    /** Row 1 {@code CUST-ADDR-COUNTRY-CD}: exactly three characters. All 50 rows hold {@code USA}. */
     private static final String ROW_1_COUNTRY_CD = "USA";
 
-    /** Row 1 {@code CUST-ADDR-ZIP}: a five-character zip in a {@code PIC X(10)} span. */
     private static final String ROW_1_ZIP = "12546";
 
-    /** Row 1 {@code CUST-PHONE-NUM-1}: the parentheses and hyphen are content, not formatting. */
     private static final String ROW_1_PHONE_1 = "(908)119-8310";
 
-    /** Row 1 {@code CUST-PHONE-NUM-2}. */
     private static final String ROW_1_PHONE_2 = "(373)693-8684";
 
-    /**
-     * Row 1 {@code CUST-SSN} as stored: nine digits with a significant leading zero.
-     *
-     * <p>This one value is the reason {@code CustomerRecord} exposes a character image beside the
-     * numeric accessor. {@code app/cbl/COACTVWC.cbl:496-504} slices these nine <em>characters</em>.
-     */
     private static final String ROW_1_SSN_IMAGE = "020973888";
 
-    /** Row 1 {@code CUST-SSN} as a value - eight digits once the leading zero is no longer stored. */
     private static final int ROW_1_SSN = 20973888;
 
-    /** Row 1 {@code CUST-GOVT-ISSUED-ID}: {@code PIC X(20)} holding an all-digit value. */
     private static final String ROW_1_GOVT_ISSUED_ID = "00000000000049368437";
 
-    /** Row 1 {@code CUST-DOB-YYYY-MM-DD}: ten characters of text, never a parsed date. */
     private static final String ROW_1_DOB = "1961-06-08";
 
-    /** Row 1 {@code CUST-EFT-ACCOUNT-ID}: {@code PIC X(10)}, leading zero included. */
     private static final String ROW_1_EFT_ACCOUNT_ID = "0053581756";
 
-    /** Row 1 {@code CUST-PRI-CARD-HOLDER-IND}. All 50 rows hold {@code Y}. */
     private static final String ROW_1_PRI_CARD_HOLDER_IND = "Y";
 
-    /** Row 1 {@code CUST-FICO-CREDIT-SCORE}, stored as the three digits {@code 274}. */
     private static final int ROW_1_FICO = 274;
 
-    /** Row 2 {@code CUST-ID} image, proving the key sequence advances by one. */
     private static final String ROW_2_CUST_ID_IMAGE = "000000002";
 
-    /** Row 2 {@code CUST-FIRST-NAME}. */
     private static final String ROW_2_FIRST_NAME = "Enrico";
 
-    /** Row 2 {@code CUST-MIDDLE-NAME}. */
     private static final String ROW_2_MIDDLE_NAME = "April";
 
-    /** Row 2 {@code CUST-LAST-NAME}. */
     private static final String ROW_2_LAST_NAME = "Rosenbaum";
 
-    /** Row 2 {@code CUST-ADDR-LINE-1}. */
     private static final String ROW_2_ADDR_LINE_1 = "4917 Myrna Flats";
 
-    /** Row 2 {@code CUST-ADDR-STATE-CD} - a different state from row 1, of 36 distinct in the file. */
     private static final String ROW_2_STATE_CD = "IN";
 
-    /** Row 2 {@code CUST-ADDR-ZIP}: another five-character zip in the ten-byte span. */
     private static final String ROW_2_ZIP = "22770";
 
-    /** Row 2 {@code CUST-SSN} image - nine digits, no leading zero this time. */
     private static final String ROW_2_SSN_IMAGE = "587518382";
 
-    /** Row 2 {@code CUST-DOB-YYYY-MM-DD}. */
     private static final String ROW_2_DOB = "1961-10-08";
 
-    /** Row 2 {@code CUST-EFT-ACCOUNT-ID}. */
     private static final String ROW_2_EFT_ACCOUNT_ID = "0069194009";
 
-    /** Row 2 {@code CUST-FICO-CREDIT-SCORE}. */
     private static final int ROW_2_FICO = 268;
 
-    /**
-     * Row 26 {@code CUST-FICO-CREDIT-SCORE} as stored: {@code 001}.
-     *
-     * <p>The single best zero-fill proof the fixture offers. {@code String.valueOf(1)} is
-     * {@code "1"}, one character where the span is three, so a record built with hand-rolled number
-     * formatting would emit a 498-byte row and shift every byte after offset 329.
-     */
     private static final String ROW_26_FICO_IMAGE = "001";
 
-    /** Row 26 {@code CUST-FICO-CREDIT-SCORE} as a value: one. */
     private static final int ROW_26_FICO = 1;
 
-    /** Row 26 {@code CUST-ID} image. */
     private static final String ROW_26_CUST_ID_IMAGE = "000000026";
 
-    /** Row 26 {@code CUST-FIRST-NAME}. */
     private static final String ROW_26_FIRST_NAME = "Marjory";
 
-    /** Row 26 {@code CUST-ADDR-LINE-1} - the longest first address line among the sampled rows. */
     private static final String ROW_26_ADDR_LINE_1 = "30161 Bogan Canyon";
 
-    /** Row 50 {@code CUST-ID} image: the last and highest key in the file. */
     private static final String ROW_50_CUST_ID_IMAGE = "000000050";
 
-    /** Row 50 {@code CUST-FIRST-NAME}. */
     private static final String ROW_50_FIRST_NAME = "Aniya";
 
-    /** Row 50 {@code CUST-MIDDLE-NAME}. */
     private static final String ROW_50_MIDDLE_NAME = "Alba";
 
-    /** Row 50 {@code CUST-LAST-NAME}: three characters into a {@code PIC X(25)} span. */
     private static final String ROW_50_LAST_NAME = "Von";
 
-    /** Row 50 {@code CUST-ADDR-LINE-1}. */
     private static final String ROW_50_ADDR_LINE_1 = "1588 Nienow Cape";
 
-    /** Row 50 {@code CUST-ADDR-STATE-CD}. */
     private static final String ROW_50_STATE_CD = "OR";
 
-    /** Row 50 {@code CUST-ADDR-ZIP}: {@code 04257}, whose leading zero survives only as text. */
     private static final String ROW_50_ZIP = "04257";
 
-    /** Row 50 {@code CUST-SSN} image. */
     private static final String ROW_50_SSN_IMAGE = "931248469";
 
-    /** Row 50 {@code CUST-DOB-YYYY-MM-DD} - the earliest date of birth in the sampled rows. */
     private static final String ROW_50_DOB = "1960-12-01";
 
-    /** Row 50 {@code CUST-EFT-ACCOUNT-ID}. */
     private static final String ROW_50_EFT_ACCOUNT_ID = "0074883577";
 
-    /** Row 50 {@code CUST-FICO-CREDIT-SCORE}. */
     private static final int ROW_50_FICO = 623;
 
-    /**
-     * Row 3 {@code CUST-ADDR-ZIP}: a full ZIP+4 that fills the {@code PIC X(10)} span exactly.
-     *
-     * <p>Together with {@link #ROW_1_ZIP} this is the fixture's strongest evidence that a
-     * {@code PIC X} span is not trimmed on read: the same ten bytes hold a padded five-character zip
-     * on 20 rows and an unpadded ten-character ZIP+4 on the other 30.
-     */
     private static final String ROW_3_ZIP = "19852-6716";
 
-    /** Row 5 {@code CUST-ADDR-ZIP}: a second full ZIP+4, this one with a leading zero. */
     private static final String ROW_5_ZIP = "02251-1698";
 
-    /** Row 44 {@code CUST-ADDR-ZIP}: a third full ZIP+4, also leading-zero bearing. */
     private static final String ROW_44_ZIP = "05704-0501";
 
-    /** Row 24 {@code CUST-SSN} image, whose {@code (6:4)} slice {@code 0544} is itself zero-led. */
     private static final String ROW_24_SSN_IMAGE = "017590544";
 
-    // =================================================================================================
-    // Per-instance collaborators. JUnit constructs a fresh test instance for every test method, so
-    // nothing here is shared between tests and no execution order can matter.
-    // =================================================================================================
-
-    /** A codec bound to {@code US-ASCII}, for the overloads that take one rather than a charset. */
     private final FixedWidthCodec asciiCodec = new FixedWidthCodec(ASCII);
 
-    /** A codec bound to {@code IBM037}, used to prove the code page is genuinely the caller's. */
     private final FixedWidthCodec ebcdicCodec = new FixedWidthCodec(EBCDIC);
 
-    // =================================================================================================
-    // Helpers. Each exists to spell out what a test EXPECTS; none reproduces the production move rules,
-    // which are exercised directly through FixedWidthCodec where they are the subject.
-    // =================================================================================================
-
-    /**
-     * Right-pads a value with spaces to a declared width, for stating an expectation.
-     *
-     * <p>Used only to write an expected value, never to produce the value under test. Trailing spaces
-     * typed directly into source are invisible to a reader and easily lost to an editor, so the
-     * padding is composed explicitly instead.
-     *
-     * @param value the content
-     * @param width the receiving span's declared width
-     * @return {@code value} followed by enough spaces to reach {@code width}
-     */
     private static String padded(String value, int width) {
         return value + " ".repeat(width - value.length());
     }
 
-    /**
-     * A run of spaces, for stating an expected blank span.
-     *
-     * @param width how many
-     * @return exactly {@code width} spaces
-     */
     private static String spaces(int width) {
         return " ".repeat(width);
     }
 
-    /**
-     * Reads every row of the fixture from the test classpath, as text.
-     *
-     * <p>A classpath resource, so the lookup is independent of the process working directory and never
-     * touches the read-only tree under {@code app/data}. A missing resource fails with a message
-     * naming what it looked for rather than silently yielding no rows, which would let every
-     * fixture-driven assertion below pass vacuously.
-     *
-     * @return the 500-character rows in file order, line terminators removed, blank lines dropped
-     */
     private static List<String> fixtureRows() {
         List<String> rows = new ArrayList<>();
         try (InputStream stream =
@@ -484,16 +229,6 @@ class CustomerRecordTest {
         return List.copyOf(rows);
     }
 
-    /**
-     * One fixture row by its 1-based record number, as the fixture numbers them.
-     *
-     * <p>{@code custdata.txt} is keyed {@code 000000001} to {@code 000000050} in verified ascending
-     * order, so the 1-based row number and the key agree - which is asserted rather than assumed in
-     * {@code RealFixture}.
-     *
-     * @param recordNumber the 1-based row number, 1 to 50
-     * @return that row's 500-character stored image
-     */
     private static String fixtureRow(int recordNumber) {
         List<String> rows = fixtureRows();
         assertThat(rows)
@@ -503,12 +238,6 @@ class CustomerRecordTest {
         return rows.get(recordNumber - 1);
     }
 
-    /**
-     * Supplies every fixture row to a parameterised test, paired with its 1-based record number so a
-     * failure names the offending row.
-     *
-     * @return one argument pair per fixture row
-     */
     private static List<Arguments> everyFixtureRow() {
         List<String> rows = fixtureRows();
         List<Arguments> arguments = new ArrayList<>(rows.size());
@@ -518,48 +247,28 @@ class CustomerRecordTest {
         return arguments;
     }
 
-    /**
-     * Builds a 500-byte image span by span from field literals, without reading the fixture.
-     *
-     * <p>Two things need this. The width self-check's failing side needs an image that is deliberately
-     * the wrong length, which no fixture row can supply. And the cases the fixture cannot express -
-     * a {@code CUST-PRI-CARD-HOLDER-IND} of {@code 'N'}, a blank field - have to be synthesised,
-     * because all 50 rows carry {@code 'Y'} and no row leaves a named field blank.
-     *
-     * <p>Every append is annotated with the span it fills, so the composition can be read against the
-     * byte map above. The result's length is asserted by the callers that care.
-     *
-     * @param priCardHolderInd the one-character indicator to place at offset 328
-     * @return a 500-character image
-     */
     private static String synthesisedImage(String priCardHolderInd) {
-        return "000000042"                                  // 1  CUST-ID                    [0, 9)
-                + padded("Alice", 25)                       // 2  CUST-FIRST-NAME            [9, 34)
-                + padded("B", 25)                           // 3  CUST-MIDDLE-NAME           [34, 59)
-                + padded("Smith", 25)                       // 4  CUST-LAST-NAME             [59, 84)
-                + padded("1 High Street", 50)               // 5  CUST-ADDR-LINE-1           [84, 134)
-                + spaces(50)                                // 6  CUST-ADDR-LINE-2           [134, 184)
-                + spaces(50)                                // 7  CUST-ADDR-LINE-3           [184, 234)
-                + "WA"                                      // 8  CUST-ADDR-STATE-CD         [234, 236)
-                + "USA"                                     // 9  CUST-ADDR-COUNTRY-CD       [236, 239)
-                + padded("99999", 10)                       // 10 CUST-ADDR-ZIP              [239, 249)
-                + padded("2065550100", 15)                  // 11 CUST-PHONE-NUM-1           [249, 264)
-                + spaces(15)                                // 12 CUST-PHONE-NUM-2           [264, 279)
-                + "020973888"                               // 13 CUST-SSN                   [279, 288)
-                + spaces(20)                                // 14 CUST-GOVT-ISSUED-ID        [288, 308)
-                + "1970-01-01"                              // 15 CUST-DOB-YYYY-MM-DD        [308, 318)
-                + spaces(10)                                // 16 CUST-EFT-ACCOUNT-ID        [318, 328)
-                + priCardHolderInd                          // 17 CUST-PRI-CARD-HOLDER-IND   [328, 329)
-                + "720"                                     // 18 CUST-FICO-CREDIT-SCORE     [329, 332)
-                + spaces(FILLER_LENGTH);                    // 19 FILLER                     [332, 500)
+        return "000000042"
+                + padded("Alice", 25)
+                + padded("B", 25)
+                + padded("Smith", 25)
+                + padded("1 High Street", 50)
+                + spaces(50)
+                + spaces(50)
+                + "WA"
+                + "USA"
+                + padded("99999", 10)
+                + padded("2065550100", 15)
+                + spaces(15)
+                + "020973888"
+                + spaces(20)
+                + "1970-01-01"
+                + spaces(10)
+                + priCardHolderInd
+                + "720"
+                + spaces(FILLER_LENGTH);
     }
 
-    /**
-     * A record carrying row 1's values, built through the setters so each {@code PIC X} value arrives
-     * through the receiver and each numeric through the {@code PIC 9} rule.
-     *
-     * @return the record fixture row 1 denotes
-     */
     private static CustomerRecord row1AsBuilt() {
         CustomerRecord record = new CustomerRecord();
         record.setCustId(ROW_1_CUST_ID);
@@ -583,12 +292,6 @@ class CustomerRecordTest {
         return record;
     }
 
-    /**
-     * Whether a type is a binary floating-point type, in either its primitive or boxed form.
-     *
-     * @param type the type to test
-     * @return {@code true} for {@code double}, {@code float}, {@link Double} and {@link Float}
-     */
     private static boolean isFloatingPoint(Class<?> type) {
         return double.class.equals(type)
                 || float.class.equals(type)
@@ -596,16 +299,6 @@ class CustomerRecordTest {
                 || Float.class.equals(type);
     }
 
-    /**
-     * Whether a type is one this copybook has no business declaring.
-     *
-     * <p>Matched by <em>name</em> rather than by importing the type, so that this file names no scaled
-     * decimal at all - there is none in {@code CVCUS01Y} to name, and importing one here would be the
-     * first step towards inventing a scale.
-     *
-     * @param type the type to test
-     * @return {@code true} for a floating-point type or an arbitrary-precision decimal type
-     */
     private static boolean isForbiddenNumericType(Class<?> type) {
         return isFloatingPoint(type)
                 || "java.math.BigDecimal".equals(type.getName())
@@ -613,18 +306,9 @@ class CustomerRecordTest {
                 || "java.math.RoundingMode".equals(type.getName());
     }
 
-    // =================================================================================================
-    // 1. DECLARED GEOMETRY (gates G8, G19).
-    //
-    //    The copybook's own arithmetic, asserted span by span against hand-written literals, so that a
-    //    regression names the field whose offset moved rather than reporting one width mismatch at the
-    //    end. Nothing in this section reads an expected value out of the production table.
-    // =================================================================================================
-
     @Nested
     @DisplayName("Declared geometry - the 19 spans of CVCUS01Y (G8, G19)")
     class DeclaredGeometry {
-
         @Test
         @DisplayName("The transcribed lengths sum to 500, matching CVCUS01Y's own RECLN 500 header")
         void theTranscribedLengthsSumToFiveHundred() {
@@ -646,9 +330,6 @@ class CustomerRecordTest {
         @Test
         @DisplayName("The transcribed offsets are the running total of the transcribed lengths")
         void theTranscribedOffsetsAreSelfConsistent() {
-            // Neither list vouches for itself: SPAN_OFFSETS was typed out as literals and is checked
-            // here against SPAN_LENGTHS, which was also typed out as literals. A slip in either list
-            // fails this test, and it fails before any assertion about the production table is reached.
             assertThat(SPAN_OFFSETS).hasSize(DECLARED_SPAN_COUNT);
 
             int cursor = 0;
@@ -684,15 +365,6 @@ class CustomerRecordTest {
                     .containsExactlyElementsOf(SPAN_NAMES);
         }
 
-        /**
-         * Every span checked against the hand-written table, one parameterised case per span so that a
-         * failure reports the offending field by name.
-         *
-         * @param index  the span's 0-based position in copybook declaration order
-         * @param name   the copybook item name, verbatim
-         * @param offset the absolute 0-based byte offset
-         * @param length the declared width
-         */
         @ParameterizedTest(name = "[{0}] {1} at [{2}, +{3})")
         @CsvSource({
             "0,  CUST-ID,                    0,   9",
@@ -731,14 +403,6 @@ class CustomerRecordTest {
                     .isFalse();
         }
 
-        /**
-         * The public {@code FieldSpan} constants, audited a second time and in a different shape.
-         *
-         * <p>The parameterised test above walks the layout list by index; this one names each constant
-         * directly, so a constant accidentally left out of {@link CustomerRecord#LAYOUT} - or two
-         * constants transposed within it - is caught by one of the two even though either alone could
-         * be satisfied.
-         */
         @Test
         @DisplayName("Each public FieldSpan constant carries the copybook's name, offset and width")
         void eachPublicSpanConstantMatchesTheCopybook() {
@@ -763,27 +427,12 @@ class CustomerRecordTest {
             assertSpan(CustomerRecord.FILLER, "FILLER", FILLER_OFFSET, FILLER_LENGTH);
         }
 
-        /**
-         * Asserts one descriptor against literal expectations.
-         *
-         * @param span   the descriptor under audit
-         * @param name   the expected copybook name
-         * @param offset the expected absolute 0-based offset
-         * @param length the expected declared width
-         */
         private void assertSpan(FieldSpan span, String name, int offset, int length) {
             assertThat(span.name()).isEqualTo(name);
             assertThat(span.offset()).as("%s offset", name).isEqualTo(offset);
             assertThat(span.length()).as("%s length", name).isEqualTo(length);
         }
 
-        /**
-         * Each span's {@code PICTURE} category, taken from the copybook's clause rather than from the
-         * production descriptor.
-         *
-         * @param name the copybook item name
-         * @param kind the category its {@code PICTURE} clause declares
-         */
         @ParameterizedTest(name = "{0} is {1}")
         @CsvSource({
             "CUST-ID,                    UNSIGNED_NUMERIC",
@@ -862,8 +511,6 @@ class CustomerRecordTest {
         @Test
         @DisplayName("The spans are contiguous from 0 with no gap and no overlap, ending at 500")
         void theSpansAreContiguousFromZeroToFiveHundred() {
-            // Walked here as well as inside the layout's own constructor, because this test states the
-            // property in the test's own terms: every byte from 0 to 499 is declared exactly once.
             int cursor = 0;
             for (FieldSpan span : CustomerRecord.LAYOUT.storageSpans()) {
                 assertThat(span.offset())
@@ -899,11 +546,6 @@ class CustomerRecordTest {
                     .withMessageContaining("FILLER");
         }
 
-        /**
-         * A name the copybook does not declare must not resolve, and the lookup is case-sensitive.
-         *
-         * @param unknown a name that is not one of the 18 referable items
-         */
         @ParameterizedTest(name = "''{0}'' is not a CVCUS01Y field")
         @ValueSource(strings = {
             "cust-id",
@@ -952,10 +594,6 @@ class CustomerRecordTest {
         @Test
         @DisplayName("CUST-ID is the nine-byte key at offset 0 - KEYS(9 0), not DEFCUST's KEYS(10 0)")
         void custIdIsTheNineByteKeyAtOffsetZero() {
-            // app/jcl/CUSTFILE.jcl defines AWS.M2.CARDDEMO.CUSTDATA.VSAM.KSDS with KEYS(9 0) and it is
-            // that DSN which app/csd/CARDDEMO.CSD binds as CUSTDAT. app/jcl/DEFCUST.jcl is a stale
-            // second definition declaring KEYS(10 0) over a different cluster; its ten-byte key
-            // contradicts CUST-ID PIC 9(09) and is not the contract.
             FieldSpan key = CustomerRecord.LAYOUT.span("CUST-ID");
 
             assertThat(key.offset()).as("KEYS(9 0) - the second operand is the key's offset").isZero();
@@ -979,9 +617,6 @@ class CustomerRecordTest {
         @Test
         @DisplayName("CBCUS01C's FD split of 9 + 491 agrees with the copybook's own arithmetic")
         void theProgramsFdSplitAgreesWithTheCopybook() {
-            // app/cbl/CBCUS01C.cbl:38-40 declares 01 FD-CUSTFILE-REC as 05 FD-CUST-ID PIC 9(09) plus
-            // 05 FD-CUST-DATA PIC X(491). The key is the same nine bytes at offset 0, and the data span
-            // is everything after it - which is a third, independent statement of the same 500.
             int keyWidth = CustomerRecord.LAYOUT.span("CUST-ID").length();
             int dataWidth = DECLARED_RECORD_LENGTH - keyWidth;
 
@@ -990,20 +625,9 @@ class CustomerRecordTest {
         }
     }
 
-    // =================================================================================================
-    // 2. THE LAYOUT SELF-CHECK (gates G21, G50).
-    //
-    //    CVCUS01Y declares no 88-level condition name, so the branch surface of this package is the
-    //    record type's own guards, and this is the first of them. RecordLayout's constructor verifies
-    //    the geometry, which means the accepting side runs during CustomerRecord's class initialisation
-    //    and the rejecting side has to be provoked deliberately. Both are driven below, because a check
-    //    never seen to fail is not known to work - and this is the check that catches a dropped FILLER.
-    // =================================================================================================
-
     @Nested
     @DisplayName("The layout self-check accepts CVCUS01Y and rejects every way of breaking it")
     class LayoutSelfCheck {
-
         @Test
         @DisplayName("The passing side: the real 19-span layout builds and declares 500 bytes")
         void theRealLayoutPassesTheSelfCheck() {
@@ -1034,9 +658,6 @@ class CustomerRecordTest {
         @Test
         @DisplayName("Dropping the trailing FILLER is rejected - the G21 tripwire, 168 bytes short")
         void droppingTheTrailingFillerIsRejected() {
-            // The reason gate G21 leans on the total width: a layout that forgets FILLER X(168)
-            // describes 332 bytes, and every record it produced would be 168 bytes short with no field
-            // value visibly wrong. It cannot be built at all.
             assertThatIllegalArgumentException()
                     .isThrownBy(() -> RecordLayout.of(CustomerRecord.RECORD_LENGTH,
                             CustomerRecord.CUST_ID,
@@ -1065,7 +686,6 @@ class CustomerRecordTest {
         @Test
         @DisplayName("A gap between two spans is rejected, naming the span it precedes")
         void aGapBetweenSpansIsRejected() {
-            // CUST-FIRST-NAME moved one byte late, leaving byte 9 undeclared.
             FieldSpan displaced = FieldSpan.alphanumeric("CUST-FIRST-NAME", 10, 25);
 
             assertThatIllegalArgumentException()
@@ -1079,7 +699,6 @@ class CustomerRecordTest {
         @Test
         @DisplayName("An overlap between two spans is rejected, naming the overlapping span")
         void anOverlapBetweenSpansIsRejected() {
-            // CUST-FIRST-NAME moved one byte early, aliasing the last digit of CUST-ID.
             FieldSpan overlapping = FieldSpan.alphanumeric("CUST-FIRST-NAME", 8, 25);
 
             assertThatIllegalArgumentException()
@@ -1141,16 +760,6 @@ class CustomerRecordTest {
                     .isThrownBy(() -> FieldSpan.alphanumeric("CUST-PRI-CARD-HOLDER-IND", 328, 0));
         }
 
-        /**
-         * Any byte count other than the declared 500 is refused.
-         *
-         * <p>The widths chosen are not arbitrary. 499 and 501 bracket the declared width; 332 is what a
-         * record would measure if the trailing {@code FILLER} were dropped; 36 is a {@code cardxref}
-         * row and 300 an {@code acctdata} row, both plausible dataset mix-ups; 0 and 1 are the
-         * degenerate cases.
-         *
-         * @param wrongWidth a byte count that is not the declared record length
-         */
         @ParameterizedTest(name = "{0} bytes is not a CUSTOMER-RECORD")
         @ValueSource(ints = {0, 1, 36, 80, 300, 332, 499, 501, 1000})
         @DisplayName("Decoding any width other than 500 is rejected, naming the declared width")
@@ -1197,26 +806,9 @@ class CustomerRecordTest {
         }
     }
 
-    // =================================================================================================
-    // 3. THE ONE FIELD NAME THAT MUST NEVER BE NORMALISED.
-    //
-    //    Two copybooks under app/cpy declare a 500-byte group called CUSTOMER-RECORD with the same 19
-    //    spans, the same PICTUREs and the same order. Exactly one thing tells them apart: this one
-    //    spells its date of birth CUST-DOB-YYYY-MM-DD, with hyphens, and the statement job's copybook
-    //    spells it without. Field-for-field diffing matches on the field NAME, so that single
-    //    difference is the entire basis on which the two layouts stay distinct.
-    //
-    //    Asserted from this side only. The statement package's type is deliberately not imported: this
-    //    package depends on common and on nothing else in the repository, and importing it to compare
-    //    would be the first edge of a cycle. What is asserted instead is that the hyphenated name is
-    //    present here and the unhyphenated one is absent here - which is what a merge or a rename would
-    //    break, and it is caught without naming the other type at all.
-    // =================================================================================================
-
     @Nested
     @DisplayName("CUST-DOB-YYYY-MM-DD - the hyphens are the field name, not formatting")
     class DateOfBirthFieldName {
-
         @Test
         @DisplayName("The span is named CUST-DOB-YYYY-MM-DD, at offset 308 for 10 bytes")
         void theSpanIsNamedWithHyphens() {
@@ -1233,8 +825,6 @@ class CustomerRecordTest {
         @Test
         @DisplayName("No span is named CUST-DOB-YYYYMMDD - that spelling belongs to another layout")
         void noSpanUsesTheUnhyphenatedSpelling() {
-            // The unhyphenated spelling is owned by statement/model/Stm03CustomerRecord, which models
-            // the statement job's own customer copybook. It is not imported here on purpose.
             assertThat(CustomerRecord.LAYOUT.hasSpan("CUST-DOB-YYYYMMDD")).isFalse();
             assertThat(CustomerRecord.LAYOUT.spans())
                     .extracting(FieldSpan::name)
@@ -1245,10 +835,6 @@ class CustomerRecordTest {
         @Test
         @DisplayName("No member of CustomerRecord uses the unhyphenated spelling either")
         void noMemberUsesTheUnhyphenatedSpelling() {
-            // Checked reflectively and CASE-SENSITIVELY, because case is the whole discriminator: the
-            // hyphenated name becomes custDobYyyyMmDd in Java and the unhyphenated one becomes
-            // custDobYyyymmdd. Lowercasing both would make them identical and this test vacuous, so the
-            // marker matched is the lowercase 'mm'/'dd' run that only the unhyphenated form produces.
             List<String> offenders = new ArrayList<>();
             for (Field field : CustomerRecord.class.getDeclaredFields()) {
                 if (field.getName().contains("Yyyymmdd") || field.getName().contains("YYYYMMDD")) {
@@ -1277,7 +863,6 @@ class CustomerRecordTest {
 
             String dob = record.getCustDobYyyyMmDd();
             assertThat(dob).isEqualTo(ROW_1_DOB).hasSize(10);
-            // 1-based COBOL positions 5 and 8 are 0-based Java indices 4 and 7.
             assertThat(dob.charAt(4)).as("the year-month separator").isEqualTo('-');
             assertThat(dob.charAt(7)).as("the month-day separator").isEqualTo('-');
         }
@@ -1285,10 +870,6 @@ class CustomerRecordTest {
         @Test
         @DisplayName("(1:4) of 1961-06-08 is 1961 - the COACTUPC:3857 slice")
         void theYearSliceIsTheFirstFourCharacters() {
-            // app/cbl/COACTUPC.cbl:3857 performs
-            //   MOVE CUST-DOB-YYYY-MM-DD(1:4) TO ACUP-OLD-CUST-DOB-YEAR
-            // which is only correct while the hyphens sit where they sit. Strip them and (1:4) would
-            // read 1961 out of 19610608 by accident and (6:2) would read the wrong month.
             String dob = CustomerRecord.decode(fixtureRow(1), ASCII).getCustDobYyyyMmDd();
 
             assertThat(dob.substring(0, 4)).isEqualTo("1961");
@@ -1296,16 +877,6 @@ class CustomerRecordTest {
             assertThat(dob.substring(8, 10)).as("(9:2), the day").isEqualTo("08");
         }
 
-        /**
-         * The same three slices over other measured rows, so the positions are not a property of one
-         * row's particular digits.
-         *
-         * @param recordNumber the 1-based fixture row
-         * @param expectedDob  that row's stored ten characters
-         * @param year         the {@code (1:4)} slice
-         * @param month        the {@code (6:2)} slice
-         * @param day          the {@code (9:2)} slice
-         */
         @ParameterizedTest(name = "row {0}: {1} slices to {2}/{3}/{4}")
         @CsvSource({
             "1,  1961-06-08, 1961, 06, 08",
@@ -1337,15 +908,6 @@ class CustomerRecordTest {
                     .isEqualTo(ROW_1_DOB);
         }
 
-        /**
-         * Content the span can hold that no date parser would accept, carried verbatim.
-         *
-         * <p>{@code PIC X(10)} is text. Parsing it into a date and re-rendering it would throw on the
-         * first legacy row holding anything else, and would silently reformat the rest - a behaviour
-         * change in both directions.
-         *
-         * @param stored a ten-character value to store and read back
-         */
         @ParameterizedTest(name = "''{0}'' is carried verbatim")
         @ValueSource(strings = {
             "1961-06-08",
@@ -1379,26 +941,9 @@ class CustomerRecordTest {
         }
     }
 
-    // =================================================================================================
-    // 4. THE CHARACTER IMAGE OF A NUMERIC FIELD.
-    //
-    //    app/cbl/COACTVWC.cbl:496-504 applies COBOL reference modification to CUST-SSN PIC 9(09):
-    //
-    //      STRING CUST-SSN(1:3) '-' CUST-SSN(4:2) '-' CUST-SSN(6:4)
-    //          DELIMITED BY SIZE INTO ACSTSSNO OF CACTVWAO
-    //
-    //    It slices the field's nine CHARACTER bytes. Line 495 - a plain MOVE CUST-SSN TO ACSTSSNO - is
-    //    commented out in the source and stays commented out: it is preserved dead code, not a path.
-    //
-    //    This is not a copybook REDEFINES. CVCUS01Y declares none. It is COBOL's ordinary licence to
-    //    view a PIC 9 field as characters, and CustomerRecord serves it with an image accessor beside
-    //    the typed one.
-    // =================================================================================================
-
     @Nested
     @DisplayName("CUST-SSN's character image - what COACTVWC slices, and why the value will not do")
     class SocialSecurityNumberImage {
-
         @Test
         @DisplayName("Row 1 stores 020973888, whose leading zero the int value cannot carry")
         void theStoredImageKeepsItsLeadingZero() {
@@ -1418,7 +963,6 @@ class CustomerRecordTest {
         void theThreeSlicesAreTakenOverTheImage() {
             String image = CustomerRecord.decode(fixtureRow(1), ASCII).custSsnImage(ASCII);
 
-            // COBOL (start:length) is 1-based; Java substring is 0-based and end-exclusive.
             assertThat(image.substring(0, 3)).as("(1:3)").isEqualTo("020");
             assertThat(image.substring(3, 5)).as("(4:2)").isEqualTo("97");
             assertThat(image.substring(5, 9)).as("(6:4)").isEqualTo("3888");
@@ -1429,8 +973,6 @@ class CustomerRecordTest {
         void theComposedScreenValueIsElevenCharacters() {
             String image = CustomerRecord.decode(fixtureRow(1), ASCII).custSsnImage(ASCII);
 
-            // STRING ... DELIMITED BY SIZE concatenates each operand at its full width, which is what
-            // the codec's own helper does - so the composition is the production rule, not a local one.
             String composed = asciiCodec.concatenateDelimitedBySize(
                     image.substring(0, 3), "-", image.substring(3, 5), "-", image.substring(5, 9));
 
@@ -1453,13 +995,6 @@ class CustomerRecordTest {
             assertThat(wrong).isNotEqualTo("020-97-3888");
         }
 
-        /**
-         * Other measured rows whose stored image carries a leading zero.
-         *
-         * @param recordNumber the 1-based fixture row
-         * @param image        that row's nine stored digits
-         * @param value        the {@code int} the digits denote
-         */
         @ParameterizedTest(name = "row {0}: {1} is the value {2}")
         @CsvSource({
             "1,  020973888, 20973888",
@@ -1492,7 +1027,6 @@ class CustomerRecordTest {
         @Test
         @DisplayName("A row without a leading zero images identically to its value")
         void aRowWithoutALeadingZeroImagesAsItsValue() {
-            // The other side of the same rule: where no fill is needed, none is applied.
             CustomerRecord record = CustomerRecord.decode(fixtureRow(2), ASCII);
 
             assertThat(record.custSsnImage(ASCII)).isEqualTo(ROW_2_SSN_IMAGE);
@@ -1515,27 +1049,14 @@ class CustomerRecordTest {
         }
     }
 
-    // =================================================================================================
-    // 5. PIC X MOVE PARITY - pad on the RIGHT, truncate on the RIGHT, and never trim on read.
-    //
-    //    Fifteen of CVCUS01Y's eighteen named fields are PIC X. A COBOL MOVE into one fills the receiver
-    //    from its leftmost character position, space-pads what is left and discards any sending
-    //    character that does not fit. The field afterwards holds exactly its declared width and no other
-    //    state is reachable, which is why the rule is applied as the value ENTERS rather than at encode
-    //    time: a getter, an equals and an encode can then never describe three different records.
-    // =================================================================================================
-
     @Nested
     @DisplayName("PIC X parity - right-padded, right-truncated, never trimmed")
     class AlphanumericReceiver {
-
         @Test
         @DisplayName("A fresh record holds every PIC X field as its declared width in SPACES")
         void aFreshRecordHoldsSpacesAtEveryDeclaredWidth() {
             CustomerRecord record = new CustomerRecord();
 
-            // An empty string is not a state PIC X(25) can occupy, so a getter reporting one would be
-            // describing a record that cannot exist. This mirrors a COBOL INITIALIZE.
             assertThat(record.getCustFirstName()).isEqualTo(spaces(25));
             assertThat(record.getCustMiddleName()).isEqualTo(spaces(25));
             assertThat(record.getCustLastName()).isEqualTo(spaces(25));
@@ -1603,9 +1124,6 @@ class CustomerRecordTest {
         @Test
         @DisplayName("The getter, equals, hashCode and encode all observe the SAME state")
         void everyObservationAgrees() {
-            // The four observations that a receiver applied late lets disagree: a thirty-character first
-            // name readable as thirty characters, making two records unequal, and then encoding as
-            // twenty-five. Three of those four describe a record that cannot exist.
             CustomerRecord overWide = new CustomerRecord();
             overWide.setCustFirstName("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123");
             CustomerRecord atWidth = new CustomerRecord();
@@ -1617,17 +1135,6 @@ class CustomerRecordTest {
             assertThat(overWide.encode(ASCII)).isEqualTo(atWidth.encode(ASCII));
         }
 
-        /**
-         * Every {@code PIC X} setter, driven at three widths: short, exact and over-wide.
-         *
-         * <p>Parameterised over the fields rather than repeated, and it is what covers the three
-         * setters no other test in this class would otherwise reach - {@code CUST-ADDR-LINE-2},
-         * {@code CUST-ADDR-LINE-3} and {@code CUST-PHONE-NUM-2}, each of which the row-1 vector fills
-         * but whose padding behaviour deserves the same audit as the rest.
-         *
-         * @param field the copybook name, used to look the declared width up and to label a failure
-         * @param width the field's declared width
-         */
         @ParameterizedTest(name = "{0} PIC X({1})")
         @CsvSource({
             "CUST-FIRST-NAME,            25",
@@ -1670,16 +1177,6 @@ class CustomerRecordTest {
                     .isEqualTo(tooLong.substring(0, width));
         }
 
-        /**
-         * Routes a value into one named {@code PIC X} field.
-         *
-         * <p>An explicit dispatch rather than reflection, so the test names the setter it is exercising
-         * and a renamed setter breaks compilation instead of silently skipping a field.
-         *
-         * @param record the record to write into
-         * @param field  the copybook field name
-         * @param value  the value to move in
-         */
         private void setAlphanumeric(CustomerRecord record, String field, String value) {
             switch (field) {
                 case "CUST-FIRST-NAME" -> record.setCustFirstName(value);
@@ -1702,16 +1199,6 @@ class CustomerRecordTest {
             }
         }
 
-        /**
-         * {@code null} is refused for every {@code PIC X} field rather than normalised to spaces.
-         *
-         * <p>COBOL has no null: an empty {@code PIC X} field holds spaces. A caller wanting to blank a
-         * field supplies spaces or an empty string, and both are accepted - which is asserted in
-         * {@code anEmptyStringAndSpacesAreIndistinguishable}. Silently reading {@code null} as spaces
-         * would hide a caller that had lost the value it meant to store.
-         *
-         * @param field the copybook field name whose setter is offered {@code null}
-         */
         @ParameterizedTest(name = "{0} refuses null")
         @CsvSource({
             "CUST-FIRST-NAME,            25",
@@ -1744,9 +1231,6 @@ class CustomerRecordTest {
         @Test
         @DisplayName("CUST-ADDR-ZIP carries both a padded zip and a full ZIP+4 in the same span")
         void theZipSpanCarriesTwoContentWidths() {
-            // The fixture's strongest evidence that a PIC X span is not trimmed on read: 20 of the 50
-            // rows hold a five-character zip left justified with five trailing spaces, and the other 30
-            // hold a ten-character ZIP+4 with no padding at all. Both come out of the same ten bytes.
             CustomerRecord shortZip = CustomerRecord.decode(fixtureRow(1), ASCII);
             CustomerRecord fullZip = CustomerRecord.decode(fixtureRow(3), ASCII);
 
@@ -1762,18 +1246,6 @@ class CustomerRecordTest {
                     .isEqualTo(ROW_3_ZIP);
         }
 
-        /**
-         * The zip span, measured across the rows that give it both shapes.
-         *
-         * <p>The expectation is stated as content plus an explicit pad to ten, never as a literal with
-         * typed trailing spaces: a CSV source trims trailing whitespace, and trailing whitespace in
-         * source is invisible to a reader anyway. Since {@link CustomerRecordTest#padded(String, int)}
-         * adds nothing to a value already at width, one formula serves both shapes - and the assertion
-         * that the composed expectation is ten characters keeps the arithmetic honest.
-         *
-         * @param recordNumber the 1-based fixture row
-         * @param content      the zip content, before any padding
-         */
         @ParameterizedTest(name = "row {0} zip content is ''{1}''")
         @CsvSource({
             "1,  12546",
@@ -1802,9 +1274,6 @@ class CustomerRecordTest {
 
             assertThat(record.getCustGovtIssuedId()).isEqualTo(ROW_1_GOVT_ISSUED_ID).hasSize(20);
             assertThat(record.getCustEftAccountId()).isEqualTo(ROW_1_EFT_ACCOUNT_ID).hasSize(10);
-            // Structural, because the defect being guarded against is a well-meaning change of type: a
-            // numeric accessor here would drop eleven leading zeros from the government identifier and
-            // one from the account identifier, and the copybook says X, not 9.
             assertThat(CustomerRecord.class.getMethod("getCustGovtIssuedId").getReturnType())
                     .isEqualTo(String.class);
             assertThat(CustomerRecord.class.getMethod("getCustEftAccountId").getReturnType())
@@ -1820,8 +1289,6 @@ class CustomerRecordTest {
         @Test
         @DisplayName("The indicator the fixture cannot supply - 'N' - is fully supported")
         void theIndicatorValueTheFixtureLacksIsSupported() {
-            // All 50 fixture rows carry 'Y', so an 'N' record has to be synthesised. That is a property
-            // of the sample data, not of the field, and the field must handle either.
             CustomerRecord notPrimary = CustomerRecord.decode(synthesisedImage("N"), ASCII);
 
             assertThat(notPrimary.getCustPriCardHolderInd()).isEqualTo("N");
@@ -1834,8 +1301,6 @@ class CustomerRecordTest {
         @Test
         @DisplayName("A blank named field - which no fixture row holds - round-trips as spaces")
         void aBlankNamedFieldRoundTrips() {
-            // Every one of the 18 named fields is non-blank in all 50 rows, so this case is synthetic
-            // too. A field the legacy file leaves blank must still load and store as spaces.
             CustomerRecord record = CustomerRecord.decode(synthesisedImage("Y"), ASCII);
 
             assertThat(record.getCustAddrLine2()).isEqualTo(spaces(50));
@@ -1846,20 +1311,9 @@ class CustomerRecordTest {
         }
     }
 
-    // =================================================================================================
-    // 6. PIC 9 MOVE PARITY - zero-fill on the LEFT, truncate on the LEFT.
-    //
-    //    The asymmetry with PIC X is COBOL's, not a choice: a numeric MOVE aligns on the implied decimal
-    //    point, so a value too wide for the receiver loses its HIGH-order digits, silently, unless the
-    //    program asks for ON SIZE ERROR - and no program in this codebase does. A negative value is a
-    //    different matter and is refused: PIC 9(n) declares no sign position, so a negative value has no
-    //    stored representation at all.
-    // =================================================================================================
-
     @Nested
     @DisplayName("PIC 9 parity - left zero-fill, left truncation, no sign position")
     class NumericReceiver {
-
         @Test
         @DisplayName("A fresh record holds zero in all three numeric fields, imaged at full width")
         void aFreshRecordHoldsZeroImagedAtFullWidth() {
@@ -1888,9 +1342,6 @@ class CustomerRecordTest {
         @Test
         @DisplayName("FICO 1 images as 001 - the fixture's own row 26, and the best zero-fill proof")
         void ficoOneImagesAsThreeDigits() {
-            // String.valueOf(1) is "1". A record formatting its own numbers would emit one character
-            // where the span is three and shift every byte after offset 329, which is exactly the class
-            // of defect that only shows up as a wrong record width.
             CustomerRecord fromFixture = CustomerRecord.decode(fixtureRow(26), ASCII);
 
             assertThat(fromFixture.getCustFicoCreditScore()).isEqualTo(ROW_26_FICO);
@@ -1903,13 +1354,6 @@ class CustomerRecordTest {
             assertThat(fromFixture.custIdImage(ASCII)).isEqualTo(ROW_26_CUST_ID_IMAGE);
         }
 
-        /**
-         * The other fixture rows whose stored FICO score carries a leading zero.
-         *
-         * @param recordNumber the 1-based fixture row
-         * @param image        the three stored digits
-         * @param value        the {@code int} they denote
-         */
         @ParameterizedTest(name = "row {0}: {1} is the value {2}")
         @CsvSource({
             "8,  051, 51",
@@ -1929,12 +1373,6 @@ class CustomerRecordTest {
             assertThat(new String(record.encode(ASCII), ASCII).substring(329, 332)).isEqualTo(image);
         }
 
-        /**
-         * An over-wide numeric value loses its leading digits.
-         *
-         * @param supplied the value handed to the setter
-         * @param held     the value the nine-digit field can hold
-         */
         @ParameterizedTest(name = "setCustId({0}) holds {1}")
         @CsvSource({
             "0,            0",
@@ -1980,8 +1418,6 @@ class CustomerRecordTest {
         @Test
         @DisplayName("The two truncation directions genuinely differ, side by side")
         void theTwoTruncationDirectionsDiffer() {
-            // Stated together because getting one of them backwards is the classic parity defect and it
-            // is invisible at a call site that uses plain assignment.
             CustomerRecord record = new CustomerRecord();
 
             record.setCustAddrCountryCd("USAX");
@@ -1995,11 +1431,6 @@ class CustomerRecordTest {
                     .isEqualTo(204);
         }
 
-        /**
-         * A negative value is refused by each of the three numeric setters.
-         *
-         * @param negative a value with no stored representation in an unsigned picture
-         */
         @ParameterizedTest(name = "{0} is refused")
         @ValueSource(ints = {-1, -9, -999999999, Integer.MIN_VALUE})
         @DisplayName("A negative value is refused - PIC 9 declares no sign position")
@@ -2050,9 +1481,6 @@ class CustomerRecordTest {
         @Test
         @DisplayName("The nine-digit fields are int, not long - AAP rule R4")
         void theNineDigitFieldsAreInt() throws NoSuchMethodException {
-            // Asserted structurally, because the point of the rule is the SET of Java values the
-            // accessor appears able to report: a long-typed nine-digit field advertises nineteen digits
-            // of state the field can never hold.
             assertThat(CustomerRecord.class.getMethod("getCustId").getReturnType())
                     .isEqualTo(int.class);
             assertThat(CustomerRecord.class.getMethod("getCustSsn").getReturnType())
@@ -2064,9 +1492,6 @@ class CustomerRecordTest {
         @Test
         @DisplayName("An image carries no grouping separator, so no locale can change it")
         void anImageCarriesNoGroupingSeparator() {
-            // A locale-aware format would render 1234567 as 1,234,567 under one default locale and
-            // 1.234.567 under another, breaking the span in both. The image is digits and nothing else,
-            // which is why this class needs no locale fixture and passes under any default.
             CustomerRecord record = new CustomerRecord();
             record.setCustId(1234567);
             record.setCustFicoCreditScore(123);
@@ -2114,20 +1539,9 @@ class CustomerRecordTest {
         }
     }
 
-    // =================================================================================================
-    // 7. FILLER X(168) IS DATA (gate G21).
-    //
-    //    The trailing 168 bytes are part of every stored record. No program references them, which is
-    //    exactly why they are easy to drop and why dropping them is caught only by the total width - the
-    //    reason gate G21 leans on it. They are asserted on BOTH paths: for a record decoded from a real
-    //    fixture row, where the spaces could merely be echoed back from the input, and for a record
-    //    built from field values, where nothing but the layout can have produced them.
-    // =================================================================================================
-
     @Nested
     @DisplayName("FILLER X(168) is emitted and space-filled on every encode (G21)")
     class FillerSpan {
-
         @Test
         @DisplayName("The FILLER span is declared at [332, 500) as a first-class FILLER descriptor")
         void theFillerSpanIsDeclaredExplicitly() {
@@ -2149,8 +1563,6 @@ class CustomerRecordTest {
         @Test
         @DisplayName("Bytes [332, 500) of a record built from field values are 168 spaces")
         void theFillerIsSpaceFilledOnTheWritePath() {
-            // The write path, which is the one that matters: these 168 spaces cannot have come from any
-            // input, because this record was assembled from field values only.
             String image = new String(row1AsBuilt().encode(ASCII), ASCII);
 
             assertThat(image).hasSize(DECLARED_RECORD_LENGTH);
@@ -2179,9 +1591,6 @@ class CustomerRecordTest {
         @Test
         @DisplayName("Every FILLER byte is 0x20 individually, never 0x00")
         void everyFillerByteIsAnAsciiSpace() {
-            // Asserted byte by byte rather than as a string, because a NUL-filled span decodes to a
-            // ten-character string that merely looks wrong, whereas the byte value is unambiguous - and
-            // an all-zero byte array is what an uninitialised buffer produces.
             byte[] image = row1AsBuilt().encode(ASCII);
 
             for (int offset = FILLER_OFFSET; offset < DECLARED_RECORD_LENGTH; offset++) {
@@ -2194,8 +1603,6 @@ class CustomerRecordTest {
         @Test
         @DisplayName("The FILLER is space-filled under IBM037 too - 0x40, not 0x20 and not 0x00")
         void theFillerIsSpaceFilledInEbcdicToo() {
-            // Proof that the pad byte comes from the code page rather than from a hard-coded 0x20: the
-            // EBCDIC space is 0x40, and a codec that assumed ASCII would write an '&' here.
             byte[] image = row1AsBuilt().encode(EBCDIC);
 
             assertThat(image).hasSize(DECLARED_RECORD_LENGTH);
@@ -2235,19 +1642,9 @@ class CustomerRecordTest {
         }
     }
 
-    // =================================================================================================
-    // 8. THE REAL FIXTURE - 50 rows of 500 bytes, from the test classpath.
-    //
-    //    app/data/ASCII/custdata.txt is one of the eight fixtures that match their copybook exactly, so
-    //    unlike a cardxref row - 36 bytes where its copybook declares 50 - no customer row is ever
-    //    widened before it is decoded. Applying a padding normaliser here would corrupt the expectation
-    //    rather than repair it, and none is applied.
-    // =================================================================================================
-
     @Nested
     @DisplayName("The real fixture - 50 rows of 500 bytes, none needing normalisation")
     class RealFixture {
-
         @Test
         @DisplayName("The fixture is on the test classpath and holds 50 rows of exactly 500 bytes")
         void theFixtureIsFiftyRowsOfFiveHundredBytes() {
@@ -2378,17 +1775,6 @@ class CustomerRecordTest {
             assertThat(record.getCustFicoCreditScore()).isEqualTo(ROW_50_FICO);
         }
 
-        /**
-         * Every row decoded and re-encoded, byte for byte.
-         *
-         * <p>All 50, not a sample: the round trip is where a mis-transcribed offset, a dropped
-         * {@code FILLER} or a lost leading zero surfaces, and the whole file costs milliseconds. 50 of
-         * the {@code CUST-ID} values, 6 of the {@code CUST-SSN} values and 7 of the FICO scores carry a
-         * leading zero, so a naive number rendering fails on every single row.
-         *
-         * @param recordNumber the 1-based row number, so a failure names the offending row
-         * @param row          that row's 500-character stored image
-         */
         @ParameterizedTest(name = "row {0} round-trips byte-identically")
         @MethodSource("com.vsergeychik.carddemo.customer.model.CustomerRecordTest#everyFixtureRow")
         @DisplayName("Every one of the 50 rows survives decode then encode byte-identically")
@@ -2503,20 +1889,9 @@ class CustomerRecordTest {
         }
     }
 
-    // =================================================================================================
-    // 9. THE WHOLE-GROUP IMAGE - what DISPLAY CUSTOMER-RECORD needs.
-    //
-    //    app/cbl/CBCUS01C.cbl displays the raw group twice for every record it reads: once at L96 inside
-    //    1000-CUSTFILE-GET-NEXT on a '00' status, and again at L78 in the main PERFORM UNTIL loop. That
-    //    duplication is a defect of the original program and is preserved, so 50 records produce 100
-    //    lines. Reproducing it byte for byte needs a group-level accessor, which is why one exists
-    //    rather than leaving callers to assemble 18 fields and hope the FILLER comes out right.
-    // =================================================================================================
-
     @Nested
     @DisplayName("The 500-character group image - the DISPLAY CUSTOMER-RECORD surface")
     class GroupImage {
-
         @Test
         @DisplayName("The group image is exactly the encoded bytes, read under the same code page")
         void theGroupImageIsTheEncodedBytes() {
@@ -2541,9 +1916,6 @@ class CustomerRecordTest {
         @Test
         @DisplayName("Two successive DISPLAYs of one record produce identical text")
         void twoSuccessiveDisplaysAreIdentical() {
-            // CBCUS01C:78 and :96 both display the same record area, so the two lines must match. An
-            // accessor that cached its result at decode time and then diverged from the fields after a
-            // setter call would break exactly this, which is why the image is always re-derived.
             CustomerRecord record = CustomerRecord.decode(fixtureRow(1), ASCII);
 
             assertThat(record.recordImage(ASCII)).isEqualTo(record.recordImage(ASCII));
@@ -2583,18 +1955,9 @@ class CustomerRecordTest {
         }
     }
 
-    // =================================================================================================
-    // 10. THE CODE PAGE IS ALWAYS THE CALLER'S.
-    //
-    //     Mainframe data is bytes in a specific code page, so every conversion boundary here takes a
-    //     Charset - or a codec already bound to one - and nothing consults the platform default. The
-    //     proof is not that a charset parameter exists but that changing it changes the bytes.
-    // =================================================================================================
-
     @Nested
     @DisplayName("The code page is always named and always honoured, never a platform default")
     class CodePageIsAlwaysNamed {
-
         @Test
         @DisplayName("IBM037 is available in this JDK, asserted rather than assumed")
         void ebcdicIsAvailable() {
@@ -2636,10 +1999,6 @@ class CustomerRecordTest {
         void readingAnEbcdicImageAsAsciiDoesNotSucceedSilently() {
             byte[] ebcdic = row1AsBuilt().encode(EBCDIC);
 
-            // The EBCDIC digits 0xF0-0xF9 are not US-ASCII at all, so the very first span refuses rather
-            // than substituting a replacement character. The point is that the mismatch is reported and
-            // names the span, not that it produces plausible nonsense - and that the diagnostic
-            // withholds the bytes it could not read, since those are stored customer data.
             assertThatExceptionOfType(IllegalStateException.class)
                     .as("a code-page mix-up must fail rather than decode to plausible-looking values")
                     .isThrownBy(() -> CustomerRecord.decode(ebcdic, ASCII))
@@ -2714,20 +2073,9 @@ class CustomerRecordTest {
         }
     }
 
-    // =================================================================================================
-    // 11. VALUE SEMANTICS - what 9300-CHECK-CHANGE-IN-REC and the parity differ rely on.
-    //
-    //     The update programs do optimistic concurrency by re-reading a record and comparing it against
-    //     the copy the screen was painted from, field by field, before rewriting. That is a genuine
-    //     concurrency check and it is preserved as-is; a version column would be a schema change, which
-    //     is forbidden. Equality over the 18 named values is what makes it expressible, and FILLER takes
-    //     no part because it carries no value - its presence is proved by the layout's width check.
-    // =================================================================================================
-
     @Nested
     @DisplayName("Value semantics - equality over the 18 named fields, FILLER excluded")
     class ValueSemantics {
-
         @Test
         @DisplayName("Two records decoded from the same row are equal and share a hash code")
         void twoRecordsFromTheSameRowAreEqual() {
@@ -2777,8 +2125,6 @@ class CustomerRecordTest {
         @Test
         @DisplayName("Mutating a field changes the hash - which is why an instance is never a map key")
         void mutatingAFieldChangesTheState() {
-            // Recorded rather than hidden: a COBOL record area is mutable, so this type is too, and its
-            // hash therefore follows its state. It is a row-scoped value, not a key to store in a set.
             CustomerRecord record = CustomerRecord.decode(fixtureRow(1), ASCII);
             int before = record.hashCode();
 
@@ -2788,15 +2134,6 @@ class CustomerRecordTest {
             assertThat(record).isNotEqualTo(CustomerRecord.decode(fixtureRow(1), ASCII));
         }
 
-        /**
-         * Differing in any single named field breaks equality.
-         *
-         * <p>All 18, one parameterised case each, because an {@code equals} that omitted one field would
-         * let a genuine concurrent change pass the update programs' re-read-and-compare check
-         * undetected - and it would pass every test that only compared whole records.
-         *
-         * @param field the copybook field name to change
-         */
         @ParameterizedTest(name = "a different {0} breaks equality")
         @ValueSource(strings = {
             "CUST-ID",
@@ -2834,15 +2171,6 @@ class CustomerRecordTest {
                     .isNotEqualTo(unchanged.encode(ASCII));
         }
 
-        /**
-         * Changes exactly one named field to a value row 1 does not hold.
-         *
-         * <p>An explicit dispatch rather than reflection, so a renamed setter breaks compilation instead
-         * of silently leaving a field unexercised.
-         *
-         * @param record the record to change
-         * @param field  the copybook field name
-         */
         private void changeOneField(CustomerRecord record, String field) {
             switch (field) {
                 case "CUST-ID" -> record.setCustId(ROW_1_CUST_ID + 1);
@@ -2885,9 +2213,6 @@ class CustomerRecordTest {
         @Test
         @DisplayName("Two records equal on all 18 fields are equal whatever their FILLER came from")
         void fillerTakesNoPartInEquality() {
-            // FILLER carries no value, so there is no way to make two records differ in it through the
-            // public surface - which is itself the property being recorded. Equality is over values, and
-            // the FILLER's presence is proved by the width check instead.
             CustomerRecord fromFixture = CustomerRecord.decode(fixtureRow(1), ASCII);
             CustomerRecord fromValues = row1AsBuilt();
 
@@ -2907,11 +2232,6 @@ class CustomerRecordTest {
         @Test
         @DisplayName("The no-argument constructor validates nothing, because it receives nothing")
         void theConstructorValidatesNothing() {
-            // Recorded rather than invented: CustomerRecord has a single no-argument constructor and no
-            // factory taking field values, so every PICTURE bound is enforced by the setters and the
-            // decoder - which is where this class drives both sides of each. There is no compact
-            // constructor to reject anything, and asserting one would be asserting a contract that does
-            // not exist.
             assertThat(CustomerRecord.class.getDeclaredConstructors()).hasSize(1);
             assertThatCode(CustomerRecord::new).doesNotThrowAnyException();
             assertThat(new CustomerRecord().encode(ASCII)).hasSize(DECLARED_RECORD_LENGTH);
@@ -2936,11 +2256,6 @@ class CustomerRecordTest {
         @Test
         @DisplayName("The rendering withholds the identity data this record is a dossier of")
         void theRenderingWithholdsTheIdentityData() {
-            // CVCUS01Y is a complete identity dossier - legal name, three address lines, two telephone
-            // numbers, date of birth, social security number, government identifier and an EFT account.
-            // A log line rendering it in full would disclose everything needed to impersonate the
-            // customer. Nothing observable changes: the accessors and encode() still return the real
-            // values, which is what the parity differ compares.
             String rendering = CustomerRecord.decode(fixtureRow(1), ASCII).toString();
 
             assertThat(rendering)
@@ -2989,10 +2304,6 @@ class CustomerRecordTest {
         @Test
         @DisplayName("The rendering stays on one line, so no stored byte can forge a second log entry")
         void theRenderingStaysOnOneLine() {
-            // The three legible character fields are the ones at risk, because they are the ones shown in
-            // full. They are PIC X spans holding whatever bytes the dataset holds, and nothing validates
-            // their content - deliberately, since rejecting a stored value would be a behaviour change.
-            // So a CR or LF among them must be escaped rather than ending the line early (CWE-117).
             CustomerRecord record = new CustomerRecord();
             record.setCustAddrStateCd("A\n");
             record.setCustAddrCountryCd("A\rB");
@@ -3015,27 +2326,9 @@ class CustomerRecordTest {
         }
     }
 
-    // =================================================================================================
-    // 12. STRUCTURAL GUARDS - stated as ABSENCES, because that is what the gates require here.
-    //
-    //     CVCUS01Y declares no signed picture, no V-scaled picture, no COMP-3 and no PACKED-DECIMAL -
-    //     and neither does any other copybook in app/cpy, which is why this record's codec never unpacks
-    //     a nibble. Its complete numeric census is 9(09) twice and 9(03) once, all scale-free. So
-    //     customer/model is the one persisted model package with no decimal type at all: there is no
-    //     scale to hold, nothing to round, and the module's fixed-point helper has no subject here.
-    //
-    //     Where a scaled field DOES exist elsewhere in the codebase it is always S9(p)V99, occupying
-    //     exactly p+2 bytes as zoned DISPLAY with the sign overpunched into the trailing byte; a scan for
-    //     V-scales across app/cbl and app/cpy returns only V99. ROUNDED appears zero times in all 28
-    //     programs, which is why truncation - RoundingMode.DOWN - is the project-wide policy. None of
-    //     that is asserted here, because none of it belongs to this package; it is recorded so that the
-    //     absence below reads as a deliberate finding rather than an oversight.
-    // =================================================================================================
-
     @Nested
     @DisplayName("Structural guards - no floating point, no decimal, no persistence mapping")
     class StructuralGuards {
-
         @Test
         @DisplayName("No declared field is double, float, BigDecimal or BigInteger (G22, G23)")
         void noDeclaredFieldIsAForbiddenNumericType() {
@@ -3085,10 +2378,6 @@ class CustomerRecordTest {
         @Test
         @DisplayName("No rounding mode is reachable, because there is nothing scaled to round (G24)")
         void noRoundingModeIsReachable() {
-            // An absence assertion by construction: RoundingMode is matched by NAME in
-            // isForbiddenNumericType and is deliberately not imported by this test, exactly as
-            // CustomerRecord does not import the module's fixed-point helper. With no V-scaled span there
-            // is no rounding decision to make, so the safest statement is that none can be expressed.
             List<String> offenders = new ArrayList<>();
             for (Method method : CustomerRecord.class.getDeclaredMethods()) {
                 for (Class<?> parameter : method.getParameterTypes()) {
@@ -3147,13 +2436,6 @@ class CustomerRecordTest {
                     .isEmpty();
         }
 
-        /**
-         * Records any annotation drawn from a persistence API.
-         *
-         * @param annotations the annotations to inspect
-         * @param location    a human-readable description of where they were found
-         * @param offenders   the running list of violations
-         */
         private void collectPersistenceAnnotations(Annotation[] annotations, String location,
                                                    List<String> offenders) {
             for (Annotation annotation : annotations) {
@@ -3187,9 +2469,6 @@ class CustomerRecordTest {
         @Test
         @DisplayName("No dataset name is embedded in the type (G46's local half)")
         void noDatasetNameIsEmbedded() {
-            // The DSN AWS.M2.CARDDEMO.CUSTDATA.VSAM.KSDS belongs in configuration, resolved by the
-            // repository that owns the binding. A record layout has no business knowing where its bytes
-            // are stored, and a literal here would be the first place a hard-coded name reappeared.
             List<String> offenders = new ArrayList<>();
             for (Field field : CustomerRecord.class.getDeclaredFields()) {
                 if (!String.class.equals(field.getType()) || !Modifier.isStatic(field.getModifiers())) {
@@ -3263,10 +2542,6 @@ class CustomerRecordTest {
         @Test
         @DisplayName("The type depends on common only - no cycle back through another domain package")
         void theTypeDependsOnCommonOnly() {
-            // Checked over the type's own signature surface, which is where a dependency edge would first
-            // appear. customer.model must not reach into account, card, transaction, statement, user,
-            // admin, billing or config: the record types form an acyclic graph rooted at common, and the
-            // statement package's near-identical customer layout in particular must stay separate.
             List<String> offenders = new ArrayList<>();
             List<Class<?>> referenced = new ArrayList<>();
             for (Field field : CustomerRecord.class.getDeclaredFields()) {

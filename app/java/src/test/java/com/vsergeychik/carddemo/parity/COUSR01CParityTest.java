@@ -52,145 +52,26 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 /**
- * The twenty-case behavioural parity gate for {@code app/cbl/COUSR01C.cbl} - CICS transaction
- * {@code CU01}, "Add a new Regular/Admin user to USRSEC file", projected onto
- * {@code POST /api/users}.
- *
- * <h2>Where the expected values come from, and where they do not</h2>
- *
- * <p><strong>The baseline is statically derived. It was never captured from a running COBOL
- * program.</strong> Executing the twenty-eight legacy programs is impossible in this environment:
- * there is no z/OS runtime, the available compiler reports {@code indexed file handler : disabled}
- * so the seven programs using {@code ORGANIZATION INDEXED} cannot even build, there are no Language
- * Environment {@code CEE*} services, there is no CICS emulator, and {@code DFHAID},
- * {@code DFHBMSCA} and {@code DFHATTR} are absent from the repository altogether. Every expected
- * value in {@code src/test/resources/parity/COUSR01C/} was therefore obtained by reading
- * {@code app/cbl/COUSR01C.cbl} paragraph by paragraph and cross-checking four authoritative
- * sources: {@code app/cpy/CSUSR01Y.cpy} for the record's byte layout,
- * {@code app/cpy-bms/COUSR01.CPY} with {@code app/bms/COUSR01.bms} for the screen's field shapes,
- * {@code app/cpy/COCOM01Y.cpy} for the communication area, and {@code app/jcl/DUSRSECJ.jcl} for the
- * real seed data. That is a substitution of provenance and only of provenance: twenty cases,
- * field-for-field diffing and a required diff count of zero all stand. It is stated here rather
- * than in a commit message because a statically derived expectation can encode a misreading of the
- * COBOL where a captured one cannot, and whoever debugs a failure needs to know which side to
- * doubt.
- *
- * <h2>No HTTP between the assertion and the code</h2>
- *
- * <p>The unit is {@link UserAddController}, constructed through its own constructor as a plain Java
- * object with a fixture-backed {@link SecUserRepository} injected, and
- * {@link UserAddController#mainPara(UserAddRequest, byte, int)} called directly. There is no Mock
- * MVC, no test REST template, no web test client, no servlet container and no job launcher anywhere
- * in this file. That is not a shortcut, it is the requirement: a parity assertion is about
- * arithmetic and byte layout, and putting a dispatcher, a filter chain and a JSON round trip
- * between the assertion and the decision logic can only obscure which of them produced a
- * difference. {@code COUSR01C}'s decisions all live in {@code mainPara}, which mentions no servlet
- * type, so every one of them is reachable this way. The {@code user} package has a separate service
- * class only for {@code COSGN00C}; the other four user programs, this one included, keep their
- * logic in the controller, so {@link UnitKind#CONTROLLER_POJO} is the only way to reach it at all.
- *
- * <h2>Three properties of the legacy design that are asserted, not corrected</h2>
- *
- * <ul>
- *   <li><strong>No case normalisation.</strong> {@code app/cbl/COSGN00C.cbl:132} and {@code :135}
- *       wrap both the user id and the password in {@code FUNCTION UPPER-CASE} before comparing
- *       them. {@code COUSR01C} contains that intrinsic <em>zero</em> times and simply {@code MOVE}s
- *       each field at {@code :154-158}. The inconsistency is real, verified source behaviour, so
- *       {@code case11} asserts that a lower-case id and a mixed-case password are stored exactly as
- *       typed. Do not harmonise the two programs: harmonising them changes behaviour, and this file
- *       is what will notice.</li>
- *   <li><strong>The password is plaintext.</strong> {@code SEC-USR-PWD PIC X(08)} in
- *       {@code app/cpy/CSUSR01Y.cpy} holds the password as typed, and {@code COSGN00C} compares it
- *       as typed. The eighty-byte record images below therefore carry it in the clear, because that
- *       is what the program writes. Hashing it would need Spring Security, which is out of scope,
- *       and would change behaviour, which is forbidden. The characteristic is inherited from the
- *       legacy design and is stated here so it stays visible rather than buried; the seed values
- *       are the 2022-vintage demo password already present in this repository as in-stream JCL
- *       data, and nothing here introduces a credential that guards anything.</li>
- *   <li><strong>{@code DFHATTR} is reproduced from IBM documentation, not from this
- *       repository.</strong> {@code COUSR01C:57} carries {@code *COPY DFHATTR.} - the occurrence is
- *       real but the line is <em>commented out</em>, and the copybook is IBM-supplied and absent
- *       here in any case, as {@code DFHAID} and {@code DFHBMSCA} at {@code :55-56} also are. So
- *       every attribute value this file asserts - {@code DFHGREEN} on the confirmation,
- *       {@code DFHDFCOL} everywhere else - is asserted against {@link BmsAttributes} and
- *       {@link CicsAid}, which reproduce those constants from IBM CICS documentation. No assertion
- *       here traces to a copybook in this checkout, and implying otherwise would misdescribe the
- *       evidence.</li>
- * </ul>
- *
- * <h2>The screens that look interchangeable and are not</h2>
- *
- * <p>{@code COUSR01} has <strong>twelve</strong> named fields including {@code USERID} and
- * {@code PASSWD}. {@code COUSR02} also has twelve but replaces {@code USERID} with
- * {@code USRIDIN}. {@code COUSR03} has <strong>eleven</strong>, because the delete screen
- * deliberately has no password field. The three were measured rather than assumed, and no field
- * list is shared between them.
- *
- * @see UserAddController the translation of {@code app/cbl/COUSR01C.cbl}
- * @see SecUserRecord the eighty-byte {@code SEC-USER-DATA} record of {@code app/cpy/CSUSR01Y.cpy}
- * @see ParityHarness which seeds, invokes and captures
- * @see FieldDiffer which judges, field by field
+ * The twenty-case behavioural parity gate for {@code app/cbl/COUSR01C.cbl} - CICS transaction {@code CU01},
+ * "Add a new Regular/Admin user to USRSEC file", projected onto {@code POST /api/users}.
  */
 final class COUSR01CParityTest {
-
-    // =============================================================================================
-    // Identity. The class stem, the resource directory and the "program" member of all twenty case
-    // files have to agree, so the name is written once.
-    // =============================================================================================
-
-    /** {@code PROGRAM-ID. COUSR01C} - {@code app/cbl/COUSR01C.cbl:23}. */
     private static final String PROGRAM = "COUSR01C";
 
-    /**
-     * The dataset binding key, which is the CICS file name at {@code app/cbl/COUSR01C.cbl:39} and
-     * never a dataset name.
-     *
-     * <p>No {@code AWS.M2.CARDDEMO} literal appears in this file: dataset names live in
-     * {@code application.yml} and are resolved from configuration.
-     */
     private static final String USRSEC = SecUserRepository.CICS_FILE_NAME;
 
-    /**
-     * {@code KEYS(8,0)} - the primary key width {@code app/jcl/DUSRSECJ.jcl} STEP02 defines for
-     * {@code USRSEC}, and the {@code KEYLENGTH} the program passes at
-     * {@code app/cbl/COUSR01C.cbl:245}.
-     */
     private static final int KEY_LENGTH = SecUserRecord.KEY_LENGTH;
 
-    /** The offset of that key within the record - zero, per {@code app/cpy/CSUSR01Y.cpy}. */
     private static final int KEY_OFFSET = SecUserRecord.KEY_OFFSET;
 
-    /**
-     * {@code DFHAID} mnemonic to attention identifier byte.
-     *
-     * <p>A case declares its key as a mnemonic, which is how a reader recognises it; the program
-     * evaluates a byte. {@link CicsAid#mnemonicsByAid()} is the module's single reproduction of the
-     * absent copybook, so the mapping is inverted from that rather than restated - a second table
-     * could disagree with the first, and a case naming {@code DFHPF3} while driving {@code DFHPF4}
-     * would exercise the wrong arm and still pass.
-     *
-     * <p>Unmodifiable, so this introduces no mutable static state.
-     */
     private static final Map<String, Byte> AID_BYTES = aidBytesByMnemonic();
 
-    /**
-     * The byte presented when a case declares no key at all.
-     *
-     * <p>Two of the twenty paths never read {@code EIBAID}: the no-commarea guard at
-     * {@code app/cbl/COUSR01C.cbl:78} and the first-entry paint at {@code :83-87}, both of which
-     * answer before the {@code EVALUATE EIBAID} at {@code :90} is reached. Those cases declare no
-     * AID and are driven with {@code DFHNULL} - the value CICS itself uses for "no attention
-     * identifier", which {@link PfKeyResolver#resolve(byte)} reports as no key.
-     */
     private static final byte NO_AID = CicsAid.DFHNULL;
 
-    /** {@code WS-MESSAGE PIC X(80)} - {@code app/cbl/COUSR01C.cbl:38}. */
     private static final int WS_MESSAGE_LENGTH = UserAddResponse.WS_MESSAGE_LENGTH;
 
-    /** {@code ERRMSGO PIC X(78)} - {@code app/cpy-bms/COUSR01.CPY:90}, two bytes narrower. */
     private static final int ERRMSG_LENGTH = UserAddResponse.ERR_MSG_LENGTH;
 
-    /** The sixteen {@code CARDDEMO-COMMAREA} fields of {@code app/cpy/COCOM01Y.cpy:19-44}. */
     private static final List<String> COMMAREA_FIELDS = List.of(
             NavigationContext.FROM_TRANID_FIELD,
             NavigationContext.FROM_PROGRAM_FIELD,
@@ -209,51 +90,20 @@ final class COUSR01CParityTest {
             NavigationContext.LAST_MAP_FIELD,
             NavigationContext.LAST_MAPSET_FIELD);
 
-    /** The five data items {@code PROCESS-ENTER-KEY} validates and the write consumes. */
     private static final List<String> DATA_FIELDS = List.of(UserAddResponse.F_NAME_FIELD,
             UserAddResponse.L_NAME_FIELD,
             UserAddResponse.USER_ID_FIELD,
             UserAddResponse.PASSWD_FIELD,
             UserAddResponse.USR_TYPE_FIELD);
 
-    /** How many of the twenty cases reach a completed {@code EXEC CICS WRITE}. */
     private static final int SUCCESSFUL_WRITES = 5;
 
-    /**
-     * How many of the twenty end by {@code EXEC CICS XCTL} rather than by {@code RETURN}.
-     *
-     * <p>One: {@code case16} presses {@code DFHPF3} and transfers at {@code :93-95}. The other
-     * transferring path - the no-commarea guard at {@code :78-80} - is driven by
-     * {@code UserAddControllerTest} rather than by a parity case, because a case that carries no
-     * commarea and no map field also carries no record to diff, so the whole of its evidence is the
-     * response, and the controller's own test states that more directly.
-     */
     private static final int TRANSFERS = 1;
 
-    // =============================================================================================
-    // The case set.
-    // =============================================================================================
-
-    /**
-     * The twenty cases, loaded from {@code src/test/resources/parity/COUSR01C/}.
-     *
-     * <p>{@link ParityHarness#casesOf(String)} refuses any set that is not exactly {@code case01}
-     * through {@code case20}, which is the point of routing through it: "the diff count is zero
-     * across all twenty cases" is satisfied vacuously by a set of four, so a short or misnamed set
-     * has to fail loudly rather than quietly become a smaller gate.
-     *
-     * @return the twenty cases in ordinal order
-     */
     static List<ParityCase> cases() {
         return ParityHarness.casesOf(PROGRAM);
     }
 
-    /**
-     * The argument stream, each case labelled by its own identifier so a failure reads as
-     * {@code COUSR01C case07} rather than as an index.
-     *
-     * @return one argument pair per case
-     */
     static List<Arguments> declaredCases() {
         List<ParityCase> loaded = cases();
         List<Arguments> arguments = new ArrayList<>(loaded.size());
@@ -263,23 +113,6 @@ final class COUSR01CParityTest {
         return arguments;
     }
 
-    // =============================================================================================
-    // The gate.
-    // =============================================================================================
-
-    /**
-     * The parity gate: every one of the twenty cases produces a diff count of exactly zero.
-     *
-     * <p>The whole {@link DiffResult} is rendered on failure rather than reduced to a count. The
-     * differ compares record channels as complete sets in both directions, and compares the
-     * navigation context, every screen send's fields and every send's attribute items in both
-     * directions too - so it reports a field the case pinned and the run did not produce
-     * <em>and</em> a field the run produced and the case did not pin. Both are real findings, and
-     * the second is the one a lookup-based judge misses.
-     *
-     * @param caseId     the case identifier, for the test name
-     * @param parityCase the case whose expectations are authoritative
-     */
     @ParameterizedTest(name = "COUSR01C {0}")
     @MethodSource("declaredCases")
     @DisplayName("diff count is zero on all twenty cases")
@@ -300,22 +133,6 @@ final class COUSR01CParityTest {
                 .isTrue();
     }
 
-    // =============================================================================================
-    // How the unit is reached. Everything below constructs COUSR01C's translation and calls it; not
-    // one line of it can see the expectation, because Invocation carries the inputs only.
-    // =============================================================================================
-
-    /**
-     * Constructs {@link UserAddController} and calls {@code MAIN-PARA} once.
-     *
-     * <p>Three inputs and nothing else, exactly as CICS gave the program three: the received map,
-     * the attention identifier, and {@code EIBCALEN}. The clock and the code page come from the
-     * case, so no wall clock and no platform default is ever consulted.
-     *
-     * @param invocation the seeded dataset, the online request, the pinned clock, the codec and the
-     *                   recorder
-     * @return everything the run observably produced
-     */
     private static UnitOutcome invokeUserAdd(Invocation invocation) {
         FixedWidthCodec codec = invocation.codec();
         SeededDataset seeded = invocation.dataset(USRSEC);
@@ -330,33 +147,9 @@ final class COUSR01CParityTest {
         return record(invocation, codec, file, state);
     }
 
-    /**
-     * The {@code USRSEC} dataset behind {@code EXEC CICS WRITE} - {@code COUSR01C:240-248}.
-     *
-     * <p>A stub rather than the real repository, because the real one reaches a data source and this
-     * assertion is about what {@code COUSR01C} does with the answer, not about how the answer is
-     * fetched. The stub is nonetheless a faithful key-sequenced file rather than a constant: a write
-     * whose key already exists is refused with {@code DUPREC}, which is what CICS reports for a
-     * duplicate primary key on a base KSDS, and a write with a new key is inserted in key sequence.
-     * That makes {@code case09}'s duplicate genuine - it collides with {@code ADMIN001}, which
-     * {@code app/jcl/DUSRSECJ.jcl:L35} seeds - rather than stipulated.
-     *
-     * <p>A case may override the outcome through {@code screenRequest.forcedOutcomes.write}, and
-     * three of the twenty need to: {@code DUPKEY} cannot arise from any arrangement of these rows,
-     * since CICS raises it on an alternate index and not on a base KSDS, and neither a not-found nor
-     * a permanent error can. The override is taken only when the write is actually reached, and the
-     * harness refuses a run that declared one and never asked for it.
-     *
-     * @param invocation the invocation, consulted for a forced outcome
-     * @param codec      the code page the record is encoded in
-     * @param file       the in-memory key-sequenced file this write lands in
-     * @return a repository whose {@code add} behaves as described
-     */
     private static SecUserRepository stubbedRepository(Invocation invocation, FixedWidthCodec codec,
                                                       KeySequencedFile file) {
         SecUserRepository repository = mock(SecUserRepository.class);
-        // The controller takes its code page from the dataset it writes through, so the stub reports the
-        // case's own page rather than letting the controller name one.
         when(repository.datasetCharset()).thenReturn(codec.charset());
         when(repository.add(any(SecUserRecord.class))).thenAnswer(call -> {
             SecUserRecord offered = call.getArgument(0);
@@ -367,7 +160,6 @@ final class COUSR01CParityTest {
                 return forced(invocation.forcedOutcome(RepositoryOperation.WRITE));
             }
             if (file.holdsKey(keyOf(image))) {
-                // A duplicate primary key on a base KSDS: RESP is DUPREC, never DUPKEY.
                 return WriteResult.duplicateRecord();
             }
             file.insert(image);
@@ -376,19 +168,6 @@ final class COUSR01CParityTest {
         return repository;
     }
 
-    /**
-     * Translates a case's forced outcome into the {@link WriteResult} the repository would report.
-     *
-     * <p>{@code DUPKEY} and {@code DUPREC} are told apart by the {@code RESP} the case declares,
-     * because they stay distinguishable at the repository boundary and collapse into one action only
-     * inside {@code COUSR01C:260-266}. An {@code OTHER} outcome is the permanent-error shape: the
-     * backend refused outright and reported no response code at all, which cannot be mistaken for
-     * any of the three values the {@code EVALUATE} names.
-     *
-     * @param outcome the outcome the case forces
-     * @return the corresponding write result
-     * @throws IllegalArgumentException if the case forces an outcome a write cannot produce
-     */
     private static WriteResult forced(ForcedOutcome outcome) {
         switch (outcome.outcome()) {
             case OK:
@@ -411,26 +190,6 @@ final class COUSR01CParityTest {
         }
     }
 
-    /**
-     * The received map, as {@code EXEC CICS RECEIVE MAP} at {@code COUSR01C:203-209} delivered it.
-     *
-     * <p>Each of the twelve {@code xxxI} items is taken from the case's declared map fields, and a
-     * field the case omitted is passed as {@code null} - which the controller treats as a field
-     * never typed, that is {@code LOW-VALUES}. That distinction is load-bearing: the blank-field
-     * chain tests {@code = SPACES OR LOW-VALUES}, two comparisons against figurative constants, so
-     * "twenty spaces" and "never typed" reach the same arm by different routes and {@code case06}
-     * exercises the second.
-     *
-     * <p>A case that declares {@code EIBCALEN} of zero with no commarea and no map field is driven
-     * with a {@code null} payload, because that is precisely the shape of a call carrying no body at
-     * all, and the no-commarea guard at {@code :78} is the branch that answers it. The payload's own
-     * {@code aid} member is deliberately left unset: the key is declared once, in the case, and a
-     * second copy could disagree with the first.
-     *
-     * @param invocation the invocation carrying the declared map fields and commarea
-     * @param codec      the code page the commarea image is built in
-     * @return the request, or {@code null} for the body-less call
-     */
     private static UserAddRequest requestOf(Invocation invocation, FixedWidthCodec codec) {
         Map<String, String> fields = invocation.mapFields();
         Map<String, String> commarea = invocation.commarea();
@@ -453,19 +212,6 @@ final class COUSR01CParityTest {
                 null);
     }
 
-    /**
-     * {@code MOVE DFHCOMMAREA(1:EIBCALEN) TO CARDDEMO-COMMAREA} - {@code COUSR01C:82}.
-     *
-     * <p>Built by writing the case's declared field images into a
-     * {@value NavigationContext#COMMAREA_LENGTH}-byte area and decoding it back, so the context the
-     * program adopts is a real communication-area image rather than a hand-assembled object. A field
-     * the case leaves unstated keeps the area's initial state - spaces in a character span, zeros in
-     * a {@code PIC 9} one - which is what {@code WORKING-STORAGE} holds.
-     *
-     * @param commarea the declared {@code CDEMO-} field images
-     * @param codec    the code page
-     * @return the context, or {@code null} when the payload carried none
-     */
     private static NavigationContext commareaOf(Map<String, String> commarea,
                                                 FixedWidthCodec codec) {
         if (commarea.isEmpty()) {
@@ -475,14 +221,6 @@ final class COUSR01CParityTest {
                 codec.serialise(NavigationContext.LAYOUT, commarea));
     }
 
-    /**
-     * Resolves a declared {@code DFHAID} mnemonic to the byte {@code COUSR01C:90} evaluates.
-     *
-     * @param mnemonic the mnemonic the case declared, or {@code null} for a path that never reads
-     *                 {@code EIBAID}
-     * @return the attention identifier byte
-     * @throws IllegalArgumentException if the mnemonic names no reproduced {@code DFHAID} constant
-     */
     private static byte aidByteOf(String mnemonic) {
         if (mnemonic == null) {
             return NO_AID;
@@ -496,11 +234,6 @@ final class COUSR01CParityTest {
         return aid;
     }
 
-    /**
-     * Inverts {@link CicsAid#mnemonicsByAid()} once, at class initialisation.
-     *
-     * @return mnemonic to byte, unmodifiable
-     */
     private static Map<String, Byte> aidBytesByMnemonic() {
         Map<String, Byte> byMnemonic = new LinkedHashMap<>();
         for (Map.Entry<Byte, String> entry : CicsAid.mnemonicsByAid().entrySet()) {
@@ -509,27 +242,6 @@ final class COUSR01CParityTest {
         return Collections.unmodifiableMap(byMnemonic);
     }
 
-    // =============================================================================================
-    // What the run observably produced.
-    // =============================================================================================
-
-    /**
-     * Records the run into the harness's recorder: the record written, the state the dataset was
-     * left in, the online response, the {@code RETURN-CODE} and the two message channels.
-     *
-     * <p>The writes and the final state are recorded separately because they answer different
-     * questions. "Did the program write the right eighty bytes?" is the write channel, and it is
-     * empty on every rejected path. "Is {@code USRSEC} in the right state now?" is the final-state
-     * channel, and it is answered on <em>every</em> path including the two that never open the
-     * dataset - where the honest answer is "exactly as seeded", which is the positive form of the
-     * assertion that nothing was written.
-     *
-     * @param invocation the invocation, for the recorder
-     * @param codec      the code page
-     * @param file       the dataset as the run left it
-     * @param state      the state {@code MAIN-PARA} ended in
-     * @return the recorder's build, which is the last thing this method does
-     */
     private static UnitOutcome record(Invocation invocation, FixedWidthCodec codec,
                                       KeySequencedFile file, ProgramState state) {
         UnitOutcome.Builder recorder = invocation.recorder();
@@ -544,8 +256,6 @@ final class COUSR01CParityTest {
         recorder.finalState(USRSEC, SecUserRecord.LAYOUT, file.rows());
         recorder.response(observed(codec, state));
 
-        // An online transaction sets no RETURN-CODE: COUSR01C has no CALL 'CEE3ABD' and no MOVE to
-        // RETURN-CODE anywhere, so zero is stated as the observation rather than left to a default.
         recorder.returnCode(0);
 
         for (EmittedMessage message : emitted(state)) {
@@ -554,13 +264,6 @@ final class COUSR01CParityTest {
         return recorder.build();
     }
 
-    /**
-     * Projects {@link ProgramState} onto the response the differ judges.
-     *
-     * @param codec the code page the commarea image is rendered in
-     * @param state the state {@code MAIN-PARA} ended in
-     * @return the observation
-     */
     private static ObservedResponse observed(FixedWidthCodec codec, ProgramState state) {
         UserAddResponse response = state.response();
         return new ObservedResponse(response.nextProgram(),
@@ -572,63 +275,15 @@ final class COUSR01CParityTest {
                 terminationOf(state));
     }
 
-    /**
-     * Projects a {@code CDEMO-LAST-MAPSET} or {@code CDEMO-LAST-MAP} image onto the differ's
-     * vocabulary, in which "no map" is an absent member.
-     *
-     * <p>The two are {@code PIC X(07)} [{@code app/cpy/COCOM01Y.cpy}] and COBOL has no null, so the
-     * {@code XCTL} arm at {@code :175-178} - which passes {@code PROGRAM} and {@code COMMAREA} and no
-     * map at all - leaves them holding <strong>seven spaces</strong>, and that is what the response
-     * carries. The fixture cannot pin that image directly: {@link ParityCase.ExpectedResponse} refuses
-     * a blank {@code nextMapset} and directs the author to omit the key, so that a case can never
-     * appear to assert a map reference while asserting nothing. Both sides therefore meet in the same
-     * place - spaces are read as absence - which is exactly how the sibling folders project theirs
-     * ({@code COADM01CParityTest.named}, {@code COACTVWCParityTest.tokenOrAbsent}).
-     *
-     * <p>This is a projection for comparison only and hides nothing: that the wire value is spaces
-     * rather than {@code null} is asserted directly, at the response's declared width, by
-     * {@code UserAddControllerTest} and by {@code UserAddResponseTest}.
-     *
-     * @param image the mapset or map image as the response carries it, possibly {@code null}
-     * @return the trimmed reference, or {@code null} when it names no map
-     */
     private static String mapReferenceOrAbsent(String image) {
         return image == null || image.isBlank() ? null : image.trim();
     }
 
-    /**
-     * The communication area as sixteen named field images.
-     *
-     * <p>Rendered through {@link NavigationContext#LAYOUT} rather than by reading the record's
-     * components, so every value is the image the field actually occupies - {@code CDEMO-CUST-ID} as
-     * nine digits, {@code CDEMO-CARD-NUM} as sixteen - at the copybook's declared width. The layout
-     * totals {@value NavigationContext#COMMAREA_LENGTH} bytes and declares no {@code FILLER}, so all
-     * sixteen fields are addressable and every one of them is compared.
-     *
-     * @param codec    the code page
-     * @param commarea the context the program is carrying forward
-     * @return field name to image, in copybook order
-     */
     private static Map<String, String> navigationOf(FixedWidthCodec codec,
                                                     NavigationContext commarea) {
         return codec.deserialise(NavigationContext.LAYOUT, commarea.toFixedWidth(codec));
     }
 
-    /**
-     * Every {@code EXEC CICS SEND MAP} the run performed, in order.
-     *
-     * <p>{@code COUSR01C} sends <strong>at most once</strong> per invocation, and that is a property
-     * of the source rather than an assumption: every arm that sends is terminal within its branch,
-     * and the two arms that transfer send nothing at all. In particular the five blank-field arms
-     * raise {@code WS-ERR-FLG}, so the guard at {@code :153} is false and the write - the only other
-     * site that could send - is never reached. The invariant is checked rather than trusted, because
-     * a state carrying two sends would mean the field values below are the second send's while the
-     * first send's payload has been lost, and one {@link ProgramState} cannot report both.
-     *
-     * @param state the state {@code MAIN-PARA} ended in
-     * @return zero or one send
-     * @throws IllegalStateException if the run reported more than one send
-     */
     private static List<ObservedSend> sendsOf(ProgramState state) {
         if (state.sendCount() > 1) {
             throw new IllegalStateException("COUSR01C reported " + state.sendCount()
@@ -657,44 +312,18 @@ final class COUSR01CParityTest {
         fields.put(UserAddResponse.USR_TYPE_FIELD, state.usrType());
         fields.put(UserAddResponse.ERR_MSG_FIELD, state.errMsg());
 
-        // ERRMSGC, the one attribute item this program assigns: MOVE DFHGREEN TO ERRMSGC at :254 and
-        // nowhere else, so every other path leaves it at the map's default colour. The mnemonic comes
-        // from BmsAttributes, which reproduces DFHBMSCA from IBM CICS documentation.
         Map<String, String> attributes = Map.of(colourItemOf(UserAddResponse.ERR_MSG_FIELD),
                 BmsAttributes.colourMnemonic(state.errMsgColour()));
 
         return List.of(new ObservedSend(fields, attributes));
     }
 
-    /**
-     * The colour item paired with one symbolic-map output item.
-     *
-     * <p>{@code app/cpy-bms/COUSR01.CPY:91-96} declares the {@code COUSR1AO} redefinition with four
-     * attribute views per field, suffixed {@code C}, {@code P}, {@code H} and {@code V}.
-     * {@link FieldAttributeSetter#COLOUR_ITEM_SUFFIX} is the {@code C} of those, so {@code ERRMSGO}
-     * pairs with {@code ERRMSGC} - derived rather than spelled out, because the suffix rule is the
-     * map's and not this file's.
-     *
-     * @param outputItem an {@code xxxO} name
-     * @return the paired {@code xxxC} name
-     */
     private static String colourItemOf(String outputItem) {
         return outputItem.substring(0, outputItem.length()
                 - FieldAttributeSetter.OUTPUT_ITEM_SUFFIX.length())
                 + FieldAttributeSetter.COLOUR_ITEM_SUFFIX;
     }
 
-    /**
-     * How the transaction ended.
-     *
-     * <p>{@code EXEC CICS XCTL} at {@code :175-178} transfers control and does not come back, so the
-     * {@code EXEC CICS RETURN} at {@code :107-110} that follows it in the source is not reached. The
-     * two are not interchangeable, which is why the differ compares them.
-     *
-     * @param state the state {@code MAIN-PARA} ended in
-     * @return the termination
-     * @throws IllegalStateException if the run ended neither way
-     */
     private static Termination terminationOf(ProgramState state) {
         if (state.transferred()) {
             return Termination.XCTL;
@@ -708,25 +337,6 @@ final class COUSR01CParityTest {
                 + "so a state reporting neither means MAIN-PARA returned early.");
     }
 
-    /**
-     * The message this run put on a terminal, on both of the channels it travels.
-     *
-     * <p>Two lines, and they are deliberately not one. {@code WS-MESSAGE} is declared
-     * {@code PIC X(80)} at {@code :38}; {@code ERRMSGO} is {@code PIC X(78)} in the symbolic map; so
-     * {@code MOVE WS-MESSAGE TO ERRMSGO} at {@code :188} narrows by two bytes, truncating on the
-     * right. Recording both widths is what makes that narrowing comparable - a single line would let
-     * a translation that skipped it, or that truncated on the left, pass unnoticed.
-     *
-     * <p>Nothing is emitted when nothing was sent. {@code ERRMSGO} reaches a terminal only through
-     * {@code EXEC CICS SEND}, so on the two transferring paths the message field holds spaces no
-     * terminal ever saw, and reporting them as emitted lines would assert an event that did not
-     * happen. Note also that this program emits no {@code DISPLAY} line on any path: the
-     * {@code DISPLAY 'RESP:' ... 'REAS:'} at {@code :268} is commented out, unlike the live
-     * equivalents in {@code COUSR00C} and {@code COUSR03C}.
-     *
-     * @param state the state {@code MAIN-PARA} ended in
-     * @return the emitted lines, in order
-     */
     private static List<EmittedMessage> emitted(ProgramState state) {
         if (!state.screenSent()) {
             return List.of();
@@ -735,17 +345,6 @@ final class COUSR01CParityTest {
                 new EmittedMessage(MessageChannel.SCREEN_ERRMSG_78, state.errMsg()));
     }
 
-    // =============================================================================================
-    // Focused assertions. Each states a property of the twenty cases as a SET, which no single case
-    // can state about itself.
-    // =============================================================================================
-
-    /**
-     * Exactly twenty cases, named {@code case01} through {@code case20} in order.
-     *
-     * <p>Asserted separately from the gate, because the gate is parameterised <em>by</em> the case
-     * set: a set of four would run four green tests and report nothing wrong.
-     */
     @Test
     @DisplayName("the case set is exactly case01 through case20")
     void theCaseSetIsExactlyTwenty() {
@@ -786,17 +385,6 @@ final class COUSR01CParityTest {
         });
     }
 
-    /**
-     * Every case seeds {@code USRSEC} from {@code app/jcl/DUSRSECJ.jcl} and declares the pad that
-     * brings those rows to the copybook's width.
-     *
-     * <p>There is no {@code usrsec} fixture in {@code app/data/ASCII} - the nine that exist are for
-     * other datasets - so the ten rows are the JCL's in-stream data, which is fifty-seven characters
-     * per row where {@code app/cpy/CSUSR01Y.cpy} declares eighty. The absent span is
-     * {@code SEC-USR-FILLER PIC X(23)}. The pad has exactly one owner: it is declared here and
-     * applied at seed time by the harness, never at comparison time, so a width disagreement in a
-     * failure is always a real difference and never a missing declaration.
-     */
     @Test
     @DisplayName("USRSEC is seeded from DUSRSECJ.jcl and padded from 57 to 80 exactly once")
     void everyCaseDeclaresTheUsrsecPad() {
@@ -840,15 +428,6 @@ final class COUSR01CParityTest {
         }
     }
 
-    /**
-     * Every record any case expects on the write channel is exactly eighty bytes, with
-     * {@code SEC-USR-FILLER} present and space-filled.
-     *
-     * <p>{@code EXEC CICS WRITE} at {@code :243} sends {@code LENGTH OF SEC-USER-DATA}, which is the
-     * sum of the six spans {@code app/cpy/CSUSR01Y.cpy} declares. {@code SEC-USR-FILLER X(23)} is
-     * assigned by nothing in this program and must still be emitted: omit it and the record is
-     * fifty-seven bytes, which is the very width the seeding deviation would otherwise disguise.
-     */
     @Test
     @DisplayName("every expected write is 80 bytes with SEC-USR-FILLER space-filled")
     void everyExpectedWriteIsEightyBytes() {
@@ -884,15 +463,6 @@ final class COUSR01CParityTest {
                 .isEqualTo(SUCCESSFUL_WRITES);
     }
 
-    /**
-     * The five blank-field messages appear in the twenty cases in the source's own order, and the
-     * several-blanks case answers with the <em>first</em> of them.
-     *
-     * <p>An {@code EVALUATE} is ordered and the first matching {@code WHEN} wins, so the order of
-     * {@code COUSR01C:117-151} is the whole of the contract. This is what makes it falsifiable
-     * across the case set: {@code case02} through {@code case06} pin the five arms in order, and
-     * {@code case07} - four fields blank at once - pins that only the earliest speaks.
-     */
     @Test
     @DisplayName("the blank-field chain keeps source order and the first blank wins")
     void theBlankFieldChainIsOrdered() {
@@ -940,15 +510,6 @@ final class COUSR01CParityTest {
                 .isEqualTo(UserAddController.CURSOR_FNAME);
     }
 
-    /**
-     * {@code DUPKEY} and {@code DUPREC} reach one arm, and the arm is byte-identical for both.
-     *
-     * <p>{@code COUSR01C:260} and {@code :261} are two consecutive {@code WHEN} clauses with no
-     * statements between them. {@code case08} forces {@code RESP} 15 and {@code case09} collides on
-     * a real seeded key to obtain {@code RESP} 14, and both must produce the same message, the same
-     * cursor and the same untouched dataset. Splitting them into separate arms with separate texts
-     * would pass one of the two cases and fail the other, never both.
-     */
     @Test
     @DisplayName("DUPKEY and DUPREC share one arm, byte for byte")
     void theTwoDuplicateResponsesShareOneArm() {
@@ -993,15 +554,6 @@ final class COUSR01CParityTest {
                 .isEqualTo(UserAddController.CURSOR_FNAME);
     }
 
-    /**
-     * The confirmation carries {@code DFHGREEN} and every other send carries the default colour.
-     *
-     * <p>{@code MOVE DFHGREEN TO ERRMSGC} at {@code :254} is the only attribute assignment anywhere
-     * in {@code COUSR01C}, so a green message means the record was written and nothing else does.
-     * The value is {@link BmsAttributes#DFHGREEN}, reproduced from IBM CICS documentation because
-     * {@code DFHBMSCA} is absent from this repository; it is not read from any file in this
-     * checkout.
-     */
     @Test
     @DisplayName("DFHGREEN marks the confirmation and nothing else sets a colour")
     void onlyTheConfirmationIsGreen() {
@@ -1044,15 +596,6 @@ final class COUSR01CParityTest {
                 .isEqualTo(SUCCESSFUL_WRITES);
     }
 
-    /**
-     * On every sending path {@code ERRMSGO} is the first seventy-eight characters of the eighty-byte
-     * {@code WS-MESSAGE}, and on every transferring path nothing is emitted at all.
-     *
-     * <p>This is the {@code MOVE WS-MESSAGE TO ERRMSGO} of {@code :188} stated as an invariant over
-     * the whole case set rather than as a single case, because the narrowing happens at every send
-     * and a translation that truncated on the left, or padded instead, would break all of them at
-     * once.
-     */
     @Test
     @DisplayName("ERRMSGO is WS-MESSAGE truncated on the right, from 80 to 78")
     void theMessageNarrowsFromEightyToSeventyEight() {
@@ -1096,17 +639,6 @@ final class COUSR01CParityTest {
         }
     }
 
-    /**
-     * Nothing is upper-cased, and the assertion is stated three ways so it cannot be satisfied by
-     * accident.
-     *
-     * <p>{@code case11} types a lower-case id, a mixed-case password, lower-case names and a
-     * lower-case type. If an upper-casing "tidy-up" were ever added to match
-     * {@code app/cbl/COSGN00C.cbl:132,135}, three independent things would change: the eighty-byte
-     * record image, the confirmation text - which {@code :256} reads back from the stored id - and
-     * the row's position in the key-sequenced final state, because {@code 'n'} is {@code x'6E'} and
-     * sorts after every seeded key while {@code 'N'} is {@code x'4E'} and sorts into the middle.
-     */
     @Test
     @DisplayName("no case normalisation: a lower-case id is stored, echoed and sorted as typed")
     void nothingIsUpperCased() {
@@ -1144,16 +676,6 @@ final class COUSR01CParityTest {
                 .isEqualTo(typedId);
     }
 
-    /**
-     * {@code STRING ... DELIMITED BY SPACE} cuts the id at its first space, so a short id leaves no
-     * padding gap in the confirmation.
-     *
-     * <p>{@code :256} contributes {@code SEC-USR-ID DELIMITED BY SPACE}. {@code case12} stores
-     * {@code 'AB'} in an eight-character field and the message must read
-     * {@code 'User AB has been added ...'}. Concatenating the padded field instead - the classic
-     * defect at this site, and invisible at the call site - would read
-     * {@code 'User AB       has been added ...'}.
-     */
     @Test
     @DisplayName("the confirmation cuts the id at its first space, not at its declared width")
     void theConfirmationIsDelimitedBySpace() {
@@ -1175,20 +697,6 @@ final class COUSR01CParityTest {
                 .isEqualTo("AB      ");
     }
 
-    /**
-     * Conversation state travels in the payload, and a transferring path names a program and no map.
-     *
-     * <p>All sixteen {@code CARDDEMO-COMMAREA} fields are pinned on every case, at their declared
-     * widths and totalling {@value NavigationContext#COMMAREA_LENGTH} bytes, because the differ
-     * compares the navigation context in both directions - a field the case says nothing about is a
-     * field nobody has checked, and the commarea is what the next transaction is handed. On the
-     * {@code XCTL} paths {@code nextProgram} carries the target while {@code nextMapset} and
-     * {@code nextMap} are absent <em>in the fixture</em>, because {@code :175-178} passes
-     * {@code PROGRAM} and {@code COMMAREA} and no map at all; on the wire that same "no map" is seven
-     * spaces at the declared width, and the two meet through
-     * {@link #mapReferenceOrAbsent(String)}. On every sending path the conversation stays on
-     * {@code COUSR01}/{@code COUSR1A}.
-     */
     @Test
     @DisplayName("all sixteen commarea fields travel in the payload; XCTL names no map")
     void conversationStateTravelsInThePayload() {
@@ -1260,29 +768,6 @@ final class COUSR01CParityTest {
                 .isNotEmpty();
     }
 
-    /**
-     * The four attention identifiers this program distinguishes, driven four different ways.
-     *
-     * <p>{@code EVALUATE EIBAID} at {@code :90-103} has <strong>four</strong> arms -
-     * {@code DFHENTER}, {@code DFHPF3}, {@code DFHPF4} and {@code WHEN OTHER} - and {@code DFHPF4}
-     * is the one usually lost in summaries of this program. The default arm is reached two genuinely
-     * different ways: {@code case17} presses {@code DFHPA3}, which {@code app/cpy/CSSTRPFY.cpy}
-     * does not test at all even though it tests {@code DFHPA1} and {@code DFHPA2}, so
-     * {@link PfKeyResolver} returns no key whatsoever; and {@code case18} presses {@code DFHPF12},
-     * which it resolves to {@code PFK12} but which this program does not name. A resolver rewritten
-     * to return a default key instead of nothing would pass one and fail the other.
-     *
-     * <p>The {@code DFHPF13} fold is checked here too, because it is the trap in the middle: the
-     * copybook does <em>not</em> stop at PF12 - it folds {@code DFHPF13} through {@code DFHPF24}
-     * back onto {@code PFK01} through {@code PFK12}, so {@code DFHPF13} resolves to {@code PFK01}
-     * and is a third route to {@code WHEN OTHER}. Assuming it resolved to nothing would be wrong
-     * about the resolver while still reaching the right arm, which is exactly the kind of wrong that
-     * survives a parity run.
-     *
-     * <p>{@code EIBAID} is tested inline here - {@code COUSR01C} is one of the twelve programs that
-     * do not {@code COPY CSSTRPFY} - so the single shared resolver has to reproduce those inline
-     * tests as identical boolean outcomes.
-     */
     @Test
     @DisplayName("all four EIBAID arms are driven, and WHEN OTHER two different ways")
     void everyAidArmIsDriven() {
@@ -1342,17 +827,6 @@ final class COUSR01CParityTest {
         }
     }
 
-    /**
-     * The first entry paints {@code LOW-VALUES} into the five data fields; {@code PF4} paints
-     * {@code SPACES} into the same five. They are different observables.
-     *
-     * <p>{@code MOVE LOW-VALUES TO COUSR1AO} at {@code :85} blanks the whole output map with
-     * {@code x'00'}, and {@code SEND-USRADD-SCREEN} then repopulates the six header fields and
-     * {@code ERRMSGO} - so only the five data fields are still {@code LOW-VALUES} when the map goes
-     * out. {@code INITIALIZE-ALL-FIELDS} at {@code :290-294} writes {@code SPACES} into those same
-     * five. A translation that used one figurative constant for both would pass one of these two
-     * cases and fail the other.
-     */
     @Test
     @DisplayName("ENTER paints LOW-VALUES and PF4 paints SPACES into the same five fields")
     void enterAndReenterPaintDifferentBlanks() {
@@ -1410,18 +884,6 @@ final class COUSR01CParityTest {
         }
     }
 
-    /**
-     * The header is always repainted, never echoed back from the received map.
-     *
-     * <p>{@code case20}'s payload arrives carrying deliberate rubbish in all six header fields and
-     * in {@code ERRMSGI}. {@code RECEIVE} at {@code :89} genuinely overlays the whole map, and
-     * {@code POPULATE-HEADER-INFO} at {@code :214-233} then overwrites all six - so what goes out is
-     * {@code 'CU01'}, the two {@code COTTL01Y} titles, {@code 'COUSR01C'}, and the pinned clock as
-     * {@code mm/dd/yy} and {@code hh:mm:ss}. The same case carries the other half of the contract:
-     * the user, customer, account and card fields of the commarea travel through byte for byte,
-     * because {@code COUSR01C} writes only {@code CDEMO-PGM-CONTEXT} and the three
-     * {@code RETURN-TO-PREV-SCREEN} fields.
-     */
     @Test
     @DisplayName("the header is repainted from POPULATE-HEADER-INFO, never echoed")
     void theHeaderIsRepaintedNotEchoed() {
@@ -1470,15 +932,6 @@ final class COUSR01CParityTest {
         }
     }
 
-    /**
-     * The twelve payload fields are this screen's twelve, at this screen's widths.
-     *
-     * <p>{@code COUSR01} has twelve named {@code DFHMDF} fields including {@code USERID} and
-     * {@code PASSWD}; {@code COUSR02} has twelve but replaces {@code USERID} with {@code USRIDIN};
-     * {@code COUSR03} has eleven, because the delete screen deliberately has no password field. The
-     * three look interchangeable and are not, so every send is checked against
-     * {@code app/cpy-bms/COUSR01.CPY}'s own {@code xxxO} names and its own {@code PICTURE} widths.
-     */
     @Test
     @DisplayName("every send carries this screen's twelve fields at this screen's widths")
     void everySendCarriesTwelveFieldsAtTheirDeclaredWidths() {
@@ -1510,15 +963,6 @@ final class COUSR01CParityTest {
         }
     }
 
-    // =============================================================================================
-    // Helpers for the focused assertions.
-    // =============================================================================================
-
-    /**
-     * The twenty cases by identifier, so an assertion about one case names it rather than indexing.
-     *
-     * @return case identifier to case
-     */
     private static Map<String, ParityCase> casesById() {
         Map<String, ParityCase> byId = new LinkedHashMap<>();
         for (ParityCase parityCase : cases()) {
@@ -1527,14 +971,6 @@ final class COUSR01CParityTest {
         return byId;
     }
 
-    /**
-     * The text a case expects on one message channel.
-     *
-     * @param parityCase the case
-     * @param channel    the channel
-     * @return the expected text
-     * @throws IllegalArgumentException if the case expects no line on that channel
-     */
     private static String messageOn(ParityCase parityCase, MessageChannel channel) {
         for (EmittedMessage message : parityCase.expectedMessages()) {
             if (message.channel() == channel) {
@@ -1546,67 +982,27 @@ final class COUSR01CParityTest {
                 + "assertion about that channel's text has nothing to read.");
     }
 
-    /**
-     * {@code MOVE '<literal>' TO WS-MESSAGE} - the receiver is {@code PIC X(80)}, so a shorter
-     * literal is padded on the right.
-     *
-     * @param literal the sending literal
-     * @return the literal at exactly eighty characters
-     */
     private static String padded(String literal) {
         return literal + " ".repeat(WS_MESSAGE_LENGTH - literal.length());
     }
 
-    /**
-     * The primary key of one record image - {@code SEC-USR-ID}, the {@code RIDFLD} of
-     * {@code COUSR01C:244}.
-     *
-     * @param image an eighty-byte record image
-     * @return its eight-character key
-     */
     private static String keyOf(String image) {
         return image.substring(KEY_OFFSET, KEY_OFFSET + KEY_LENGTH);
     }
 
-    // =============================================================================================
-    // The in-memory USRSEC.
-    // =============================================================================================
-
     /**
-     * {@code USRSEC} as a key-sequenced file, which is what {@code app/jcl/DUSRSECJ.jcl} STEP02
-     * defines it as: {@code KEYS(8,0) RECORDSIZE(80,80) INDEXED}.
-     *
-     * <p>Ordered by key rather than by arrival, because that is what a KSDS is and because the
-     * ordering is observable: {@code case11}'s lower-case id sorts after every seeded key and
-     * {@code case12}'s two-character id sorts before all of them, so the position a row lands in is
-     * itself an assertion about what the program stored.
-     *
-     * <p>Per-invocation state, created inside one {@code ParityUnit} call and reachable from nowhere
-     * else, so no two cases can see each other's rows. There is no static mutable state here.
+     * {@code USRSEC} as a key-sequenced file, which is what {@code app/jcl/DUSRSECJ.jcl} STEP02 defines it
+     * as: {@code KEYS(8,0) RECORDSIZE(80,80) INDEXED}.
      */
     private static final class KeySequencedFile {
-
-        /** The rows the file holds, in key sequence. Never shared outside one invocation. */
         private final List<String> rows;
 
-        /**
-         * Opens the file on the seeded rows, which the harness has already brought to the copybook's
-         * eighty bytes.
-         *
-         * @param seeded the seeded rows, in the order the case declared them
-         */
         KeySequencedFile(List<String> seeded) {
             this.rows = new ArrayList<>(Objects.requireNonNull(seeded,
                     "The seeded rows are required; a dataset holding no row is an empty list"));
             this.rows.sort(COUSR01CParityTest::byKey);
         }
 
-        /**
-         * Whether a record with this key already exists, which is what makes a write collide.
-         *
-         * @param key the eight-character primary key
-         * @return {@code true} when the key is present
-         */
         boolean holdsKey(String key) {
             for (String row : rows) {
                 if (row.regionMatches(KEY_OFFSET, key, 0, KEY_LENGTH)) {
@@ -1616,33 +1012,16 @@ final class COUSR01CParityTest {
             return false;
         }
 
-        /**
-         * Inserts a record in key sequence.
-         *
-         * @param image the eighty-byte record image
-         */
         void insert(String image) {
             rows.add(image);
             rows.sort(COUSR01CParityTest::byKey);
         }
 
-        /**
-         * The rows the file holds now.
-         *
-         * @return a snapshot in key sequence
-         */
         List<String> rows() {
             return List.copyOf(rows);
         }
     }
 
-    /**
-     * Compares two record images by their eight-character primary key.
-     *
-     * @param left  one record image
-     * @param right the other
-     * @return the key ordering
-     */
     private static int byKey(String left, String right) {
         return keyOf(left).compareTo(keyOf(right));
     }

@@ -16,17 +16,9 @@ import org.junit.jupiter.api.Timeout;
 /**
  * The negative controls for {@link ConcurrentTasks}: proof that it detects each failure mode it exists to
  * detect, rather than merely being quieter about them.
- *
- * <h2>Why a harness needs its own tests</h2>
- * The three concurrency tests this harness replaced all passed, every time, for as long as the code they
- * exercised was correct. What made them worth changing was how they behaved when it was not: one dropped a
- * result to a data race, one hung the build, and all three lost a task's exception. A replacement that made
- * those same claims and had never been shown to fail would be no better founded than what it replaced - so
- * each of the four claims is exercised here against a task that deliberately breaks it.
  */
 @DisplayName("ConcurrentTasks - the bounded, result-returning, exception-preserving task runner")
 class ConcurrentTasksTest {
-
     @Test
     @DisplayName("results come back in submission order, one per task, with no shared sink")
     @Timeout(value = 60, unit = TimeUnit.SECONDS)
@@ -44,9 +36,6 @@ class ConcurrentTasksTest {
     @DisplayName("tasks really do run at once: a rendezvous between them completes")
     @Timeout(value = 60, unit = TimeUnit.SECONDS)
     void tasksRunConcurrently() {
-        // The claim that matters for a statelessness test. If the runner executed tasks one after
-        // another, this barrier would never be satisfied and the task would time out - so a passing
-        // assertion here is what licenses the callers to say their two turns overlapped.
         CyclicBarrier bothArrived = new CyclicBarrier(2);
         AtomicInteger arrived = new AtomicInteger();
 
@@ -96,11 +85,6 @@ class ConcurrentTasksTest {
     @DisplayName("a task that never finishes fails as a timeout naming the task, and does not hang")
     @Timeout(value = 120, unit = TimeUnit.SECONDS)
     void aHangingTaskFailsRatherThanHangs() {
-        // A barrier of two with only one arrival: the task blocks forever, which is what a deadlock in
-        // the code under test looks like from here. Under the old unbounded join this hung the build and
-        // no surefire report was written for the suite at all, so the run lost the suite as well as the
-        // time. The wait is bounded, so it fails - and the failure names which task and how long it was
-        // given.
         CyclicBarrier nobodyElseIsComing = new CyclicBarrier(2);
 
         long startedAt = System.nanoTime();
@@ -122,10 +106,6 @@ class ConcurrentTasksTest {
     @DisplayName("the pool is always shut down, so a task cannot outlive the test that started it")
     @Timeout(value = 60, unit = TimeUnit.SECONDS)
     void thePoolIsShutDownOnEveryPath() {
-        // Proven by the interrupt reaching a task that is still running when the runner gives up: an
-        // interrupted task can only observe that if shutdownNow ran, and shutdownNow only runs in the
-        // finally block. Asserted on the success path too, since a leaked pool from a passing test is
-        // just as capable of interfering with the next one.
         AtomicInteger interrupted = new AtomicInteger();
         CyclicBarrier nobodyElseIsComing = new CyclicBarrier(2);
 

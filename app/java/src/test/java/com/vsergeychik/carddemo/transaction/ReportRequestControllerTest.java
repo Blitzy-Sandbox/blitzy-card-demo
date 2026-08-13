@@ -70,7 +70,6 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
-import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.junit.jupiter.params.provider.CsvSource;
@@ -88,67 +87,19 @@ import org.junit.jupiter.api.Timeout;
 import com.vsergeychik.carddemo.testsupport.ConcurrentTasks;
 
 /**
- * Proves {@link ReportRequestController} against {@code app/cbl/CORPT00C.cbl}, the 649-line CICS
- * program behind transaction {@code CR00}.
- *
- * <p>Three properties of that program shape every test here, and none of them is obvious from the
- * Java alone:
- * <ul>
- *   <li>{@code SEND-TRNRPT-SCREEN} ends {@code GO TO RETURN-TO-CICS} at line 580, so every
- *       {@code PERFORM SEND-TRNRPT-SCREEN} <strong>ends the task</strong>. A test that asserts on a
- *       message is therefore asserting on the last thing the program did, not on an intermediate
- *       state.</li>
- *   <li>The program writes an eighty-byte JCL stream to transient data queue {@code JOBS}. Its shape
- *       is not derived at run time - it is seventeen literal {@code PIC X(80)} items at lines 83 to
- *       125 with four date substitution points - so the stream is asserted <strong>byte for
- *       byte</strong>, 17 x 80 = 1,360 bytes, and line 15 is additionally asserted to parse through
- *       {@link DateParmReader}'s published layout, because it <em>is</em> that reader's record.</li>
- *   <li>Every date the program derives comes from {@code FUNCTION CURRENT-DATE}. The controller reads
- *       an injected {@link Clock} instead, so every date case here pins the clock and the expected
- *       bytes are exact rather than approximate.</li>
- * </ul>
- *
- * <p>The expected values are <strong>statically derived</strong> from the COBOL, the copybooks and the
- * JCL rather than captured from a legacy run, because the legacy programs cannot be executed in this
- * environment. That is the deviation recorded as risk R-A.
+ * Proves {@link ReportRequestController} against {@code app/cbl/CORPT00C.cbl}, the 649-line CICS program
+ * behind transaction {@code CR00}.
  */
 @DisplayName("ReportRequestController - CORPT00C, transaction CR00, POST /api/reports")
 class ReportRequestControllerTest {
-
-
-    /**
-     * The code page {@code application-test.yml} names under {@code carddemo.charset.dataset}, which is
-     * what {@code CobolCharsetConfig} publishes as the active dataset charset under this profile.
-     *
-     * <p>Stated here, and passed to the production customizer, because the inbound screen-text boundary
-     * judges every value against the page in force rather than against a page of its own choosing: a
-     * mapper built for a test has to name the same one the profile does or it is not the production
-     * mapper.
-     */
     private static final Charset TEST_PROFILE_CHARSET = StandardCharsets.US_ASCII;
 
-    /**
-     * The code page every test wires, which is the one {@code charset.dataset} declares.
-     *
-     * <p>{@code IBM037} rather than {@code US-ASCII} deliberately: the program's images and the
-     * eighty-byte queue records are encoded in the region's own code page, and this class asserts on the
-     * bytes that reach the destination, so it must use the code page a deployment uses.
-     */
     private static final Charset DATASET_CHARSET = Charset.forName("IBM037");
 
-    /**
-     * The payload image of {@code DFHENTER}, which is what {@code EVALUATE EIBAID} branches on first.
-     *
-     * <p>One character, whose code point <em>is</em> the byte - not the five-character {@code CCARD-AID}
-     * token, which folds {@code PF13}-{@code PF24} onto {@code PF1}-{@code PF12} and which
-     * {@code CORPT00C} never sees, because it does not copy {@code CSSTRPFY}.
-     */
     private static final String ENTER = PfKeyResolver.aidImage(CicsAid.DFHENTER);
 
-    /** {@code 2026-08-09T14:05:06Z} - a fixed instant, so {@code CURDATE} and {@code CURTIME} are exact. */
     private static final String FIXED_INSTANT = "2026-08-09T14:05:06Z";
 
-    /** Midnight on the same day, for the cases that assert on dates rather than on the time header. */
     private static final String FIXED_MIDNIGHT = "2026-08-09T00:00:00Z";
 
     private final DateUtilityJob dateUtility = new DateUtilityJob();
@@ -159,11 +110,6 @@ class ReportRequestControllerTest {
         return new ReportRequestController(dateUtility, port,
                 Clock.fixed(Instant.parse(instant), ZoneOffset.UTC), DATASET_CHARSET);
     }
-
-    // =================================================================================================
-    // Shared builders. A request either carries a communication area whose CDEMO-PGM-CONTEXT is REENTER
-    // - which is every request after the first - or carries none at all, which is EIBCALEN = 0.
-    // =================================================================================================
 
     private static ReportRequestRequest reenter() {
         return ReportRequestRequest.empty()
@@ -183,19 +129,13 @@ class ReportRequestControllerTest {
                 "UNBLOCKED", "MOD", root.toString(), destination.toString());
     }
 
-    /** Right-space-pads to the eighty bytes every skeleton record occupies. */
     private static String pad(String text) {
         return text + " ".repeat(ReportRequestController.JCL_RECORD_LENGTH - text.length());
     }
 
-    // =================================================================================================
-    // The seventeen-line skeleton - app/cbl/CORPT00C.cbl:83-125
-    // =================================================================================================
-
     @Nested
     @DisplayName("the seventeen eighty-byte skeleton records and their four substitution points")
     class TheSkeleton {
-
         @Test
         @DisplayName("the template is seventeen records of exactly eighty bytes")
         void theTemplateGeometryIsTheCopybookGeometry() {
@@ -222,15 +162,11 @@ class ReportRequestControllerTest {
             List<String> lines = controllerAt(FIXED_MIDNIGHT).jobLines(state);
 
             assertThat(lines).hasSize(17).allSatisfy(record -> assertThat(record).hasSize(80));
-            // FILLER-1: X(18) prefix, X(10) date, then X(52) whose first byte is the closing quote.
             assertThat(lines.get(10)).isEqualTo(pad("PARM-START-DATE,C'2026-08-01'"));
             assertThat(lines.get(10).charAt(28)).isEqualTo('\'');
-            // FILLER-2: X(16) prefix, X(10) date, then X(54) whose first byte is the closing quote.
             assertThat(lines.get(11)).isEqualTo(pad("PARM-END-DATE,C'2026-08-31'"));
             assertThat(lines.get(11).charAt(26)).isEqualTo('\'');
-            // FILLER-3: X(10) + one space + X(10) + fifty-nine spaces.
             assertThat(lines.get(14)).isEqualTo(pad("2026-08-01 2026-08-31"));
-            // The two SYMNAMES offsets are emitted as literals, matching app/jcl/TRANREPT.jcl.
             assertThat(lines.get(8)).isEqualTo(pad("TRAN-CARD-NUM,263,16,ZD"));
             assertThat(lines.get(9)).isEqualTo(pad("TRAN-PROC-DT,305,10,CH"));
             assertThat(lines.get(3)).contains("AWS.M2.CARDDEMO.PROC");
@@ -304,14 +240,9 @@ class ReportRequestControllerTest {
         }
     }
 
-    // =================================================================================================
-    // FUNCTION INTEGER-OF-DATE and FUNCTION DATE-OF-INTEGER - app/cbl/CORPT00C.cbl:229
-    // =================================================================================================
-
     @Nested
     @DisplayName("the two date intrinsics, hand-implemented as a day count from 1600-12-31")
     class TheDateIntrinsics {
-
         @Test
         @DisplayName("known day counts, both directions, and the undefined results")
         void theAnchorsAndTheUndefinedResults() {
@@ -320,8 +251,6 @@ class ReportRequestControllerTest {
             assertThat(ReportRequestController.integerOfDate(19000101)).isEqualTo(109208);
             assertThat(ReportRequestController.integerOfDate(20000101)).isEqualTo(145732);
 
-            // Outside 1601-01-01..9999-12-31, or not a real date, the intrinsic is undefined and the
-            // implementation reports zero rather than guessing.
             assertThat(ReportRequestController.integerOfDate(16001231)).isZero();
             assertThat(ReportRequestController.integerOfDate(100000101)).isZero();
             assertThat(ReportRequestController.integerOfDate(20260231)).isZero();
@@ -364,14 +293,9 @@ class ReportRequestControllerTest {
         }
     }
 
-    // =================================================================================================
-    // FUNCTION NUMVAL-C and the normalise-in-place edit - app/cbl/CORPT00C.cbl:305-325
-    // =================================================================================================
-
     @Nested
     @DisplayName("FUNCTION NUMVAL-C, and the normalise-then-revalidate order the source uses")
     class TheNumvalCIntrinsic {
-
         @ParameterizedTest(name = "NUMVAL-C(\"{0}\") = {1}")
         @CsvSource(quoteCharacter = '`', value = {
             "`07`, 7", "` 7`, 7", "`7 `, 7", "`+7`, 7", "`-7`, -7", "`7-`, -7",
@@ -410,9 +334,7 @@ class ReportRequestControllerTest {
 
             assertThat(controller.computeIntoPic99(" 7")).isEqualTo("07");
             assertThat(controller.computeIntoPic99("7 ")).isEqualTo("07");
-            // The receiver is unsigned, so the sign is dropped rather than stored.
             assertThat(controller.computeIntoPic99("-5")).isEqualTo("05");
-            // A value too wide for PIC 99 keeps its low-order digits, which is what a COBOL store does.
             assertThat(controller.computeIntoPic99("123")).isEqualTo("23");
             assertThat(controller.computeIntoPic99("ab")).isEqualTo("00");
             assertThat(controller.computeIntoPic99("13")).isEqualTo("13");
@@ -494,14 +416,9 @@ class ReportRequestControllerTest {
         }
     }
 
-    // =================================================================================================
-    // MAIN-PARA - app/cbl/CORPT00C.cbl:162-199
-    // =================================================================================================
-
     @Nested
     @DisplayName("MAIN-PARA - the cold start, the first entry, and EVALUATE EIBAID in source order")
     class MainPara {
-
         @Test
         @DisplayName("EIBCALEN = 0 transfers to COSGN00C without sending a screen")
         void theColdStart() {
@@ -550,8 +467,6 @@ class ReportRequestControllerTest {
             assertThat(other.cursorRequestedOn(ReportRequestRequest.ScreenField.MONTHLY)).isTrue();
             assertThat(other.submittedRecords()).isEmpty();
 
-            // The PF3 arm places no cursor - it transfers instead of sending - so the metadata names no
-            // field. Reporting a field the program never asked for would be worse than reporting none.
             assertThat(pf3.screenMetadata().cursorField()).isNull();
             assertThat(other.screenMetadata().cursorField()).isEqualTo("MONTHLY");
         }
@@ -559,9 +474,6 @@ class ReportRequestControllerTest {
         @Test
         @DisplayName("a raw PF15 byte is an invalid key, where the folded token took the PF3 transfer")
         void aRawUpperKeyIsNotItsFoldedPartner() {
-            // CORPT00C compares EIBAID inline at lines 184 to 195 and names only DFHENTER and DFHPF3, so
-            // on the terminal PF15 paints the invalid-key message. CSSTRPFY folds PF15 onto 'PFK03', so a
-            // request that could only send the token had to take the PF3 transfer to COMEN01C instead.
             assertThat(PfKeyResolver.resolve(CicsAid.DFHPF15)).contains(PfKeyResolver.AidKey.PFK03);
 
             ProgramState state = controllerAt(FIXED_MIDNIGHT)
@@ -637,17 +549,10 @@ class ReportRequestControllerTest {
                     .startsWith("Invalid key pressed");
         }
 
-        /**
-         * A re-entry whose {@code CCARD-AID} member states no key, so the raw byte is the only statement.
-         *
-         * <p>{@code withAid(null)} normalises to the five spaces {@code RECEIVE MAP} leaves in an
-         * unpainted field, which is what a client sending the byte instead of the token sends.
-         */
         private static ReportRequestRequest noKeyStated() {
             return reenter().withAid(null);
         }
 
-        /** A {@link CicsAid} function-key constant by number, so the copybook name is the source. */
         private static byte functionKey(int pfNumber) {
             try {
                 return CicsAid.class.getDeclaredField("DFHPF" + pfNumber).getByte(null);
@@ -669,8 +574,6 @@ class ReportRequestControllerTest {
         @Test
         @DisplayName("RETURN-TO-PREV-SCREEN defaults an empty target to COSGN00C")
         void theEmptyTargetDefault() {
-            // The PF3 path never reaches this arm, because MAIN-PARA moves 'COMEN01C' first. Entering
-            // the paragraph cold is what lines 542 to 544 actually guard against.
             ProgramState state = new ProgramState();
             assertThat(ReportRequestResponse.isSpacesOrLowValues(state.commarea().toProgram())).isTrue();
 
@@ -681,9 +584,6 @@ class ReportRequestControllerTest {
             assertThat(state.commarea().toProgram()).isEqualTo("COSGN00C");
             assertThat(state.commarea().isEnter()).isTrue();
             assertThat(state.response().getNextProgram()).isEqualTo("COSGN00C");
-            // An XCTL states no map: which map COSGN00C paints is its decision, made after this program
-            // has ended, and CORPT00C names none in the XCTL at :548-551. Publishing CORPT00 / CORPT0A
-            // here would tell the client to repaint the screen it is leaving.
             assertThat(state.response().getNextMapset()).isBlank()
                     .hasSize(NavigationContext.LAST_MAPSET_LENGTH);
             assertThat(state.response().getNextMap()).isBlank()
@@ -704,14 +604,9 @@ class ReportRequestControllerTest {
         }
     }
 
-    // =================================================================================================
-    // PROCESS-ENTER-KEY - app/cbl/CORPT00C.cbl:203-441
-    // =================================================================================================
-
     @Nested
     @DisplayName("PROCESS-ENTER-KEY - the three report arms, in the source's order")
     class TheReportArms {
-
         @Test
         @DisplayName("Monthly emits seventeen records, the last of them '/*EOF'")
         void theMonthlyArm() {
@@ -762,8 +657,6 @@ class ReportRequestControllerTest {
             assertThat(port.records).hasSize(17);
             assertThat(port.records.get(14)).isEqualTo(pad("2026-07-04 2026-07-06"));
             assertThat(state.csutldtcResult().severityCode()).isEqualTo("0000");
-            // INITIALIZE-ALL-FIELDS runs after a successful submission, so the normalised values are
-            // cleared again before the screen is sent.
             assertThat(state.response().getSdtmmo()).isEqualTo("  ");
             assertThat(state.response().getCustomo()).isEqualTo(" ");
         }
@@ -771,8 +664,6 @@ class ReportRequestControllerTest {
         @Test
         @DisplayName("the six edits write their normalised values back into the map")
         void theNormalisationIsVisibleOnTheScreen() {
-            // A blank CONFIRMI stops the flow inside SUBMIT-JOB-TO-INTRDR - after the six edits have
-            // stored their results and before INITIALIZE-ALL-FIELDS could clear them.
             ProgramState state = controllerAt(FIXED_MIDNIGHT)
                     .mainPara(reenter().withCustom("Y").withSdtmm(" 7").withSdtdd("4")
                             .withSdtyyyy("2026").withEdtmm("7").withEdtdd(" 6")
@@ -824,8 +715,6 @@ class ReportRequestControllerTest {
         @Test
         @DisplayName("CSUTLDTC message number 2513 is tolerated, as both call sites tolerate it")
         void theToleratedSeverity() {
-            // A date before the Lillian epoch is FC-UNSUPP-RANGE: severe, but message number 2513,
-            // which lines 396 and 416 accept.
             DateValidationResult probe = dateUtility.validateDate("1500-01-01", "YYYY-MM-DD");
             assertThat(probe.severityCode()).isEqualTo("0003");
             assertThat(probe.messageNumber())
@@ -876,14 +765,9 @@ class ReportRequestControllerTest {
         }
     }
 
-    // =================================================================================================
-    // SUBMIT-JOB-TO-INTRDR and WIRTE-JOBSUB-TDQ - app/cbl/CORPT00C.cbl:462-535
-    // =================================================================================================
-
     @Nested
     @DisplayName("SUBMIT-JOB-TO-INTRDR - the confirmation, the emit loop, and the queue write")
     class SubmitJobToIntrdr {
-
         @Test
         @DisplayName("a blank confirmation asks for one, using DELIMITED BY SPACE")
         void theBlankConfirmation() {
@@ -921,8 +805,29 @@ class ReportRequestControllerTest {
         }
 
         @Test
-        @DisplayName("a failed write stops the loop and leaves what was already appended")
+        @DisplayName("a failed write stops the loop, keeps what was appended and counts nothing more")
         void aFailedWriteIsNotRolledBack() {
+            // The queue is TDQUEUE(JOBS), DISPOSITION(MOD) with ERROROPTION(IGNORE)
+            // (app/csd/CARDDEMO.CSD:499-505), and this case holds the two halves of that apart.
+            //
+            // MOD is about the records that came BEFORE a failure: they are not truncated away by it, so
+            // records 1 and 2 stand and nothing is unwound. IGNORE is about how the failure is delivered:
+            // the condition is reported to the program through RESP rather than thrown at it. Neither
+            // attribute makes the record that failed a record that was written - ignoring an error is not
+            // performing the write - so record 3 appears in neither the queue nor the program's own count.
+            //
+            // submittedRecords() therefore has to agree with the port exactly. It is what a caller reads
+            // to learn what the queue holds, and counting an attempt there would tell that caller the
+            // queue holds a record it does not hold.
+            CapturingPort accepting = new CapturingPort();
+            ProgramState complete = new ReportRequestController(dateUtility, accepting,
+                    Clock.fixed(Instant.parse(FIXED_MIDNIGHT), ZoneOffset.UTC), DATASET_CHARSET)
+                    .mainPara(reenter().withMonthly("Y").withConfirm("Y"));
+            assertThat(complete.submittedRecords())
+                    .as("the control run, so the refused record below is derived rather than transcribed")
+                    .hasSize(ReportRequestController.JOB_LINE_COUNT);
+            String refusedRecord = accepting.records.get(2);
+
             CapturingPort failing = new CapturingPort();
             failing.failFrom = 3;
 
@@ -930,13 +835,50 @@ class ReportRequestControllerTest {
                     Clock.fixed(Instant.parse(FIXED_MIDNIGHT), ZoneOffset.UTC), DATASET_CHARSET)
                     .mainPara(reenter().withMonthly("Y").withConfirm("Y"));
 
-            assertThat(failing.records).hasSize(2);
-            assertThat(state.submittedRecords()).hasSize(3);
+            assertThat(failing.records)
+                    .as("the two records the queue accepted before the refusal stand - DISPOSITION(MOD), "
+                            + "no rollback")
+                    .containsExactlyElementsOf(accepting.records.subList(0, 2));
+            assertThat(state.submittedRecords())
+                    .as("and the program's own count is the same list: the refused hand-off appended "
+                            + "nothing, so it is not counted")
+                    .containsExactlyElementsOf(failing.records)
+                    .hasSize(2)
+                    .doesNotContain(refusedRecord);
             assertThat(state.message().trim()).isEqualTo("Unable to Write TDQ (JOBS)...");
             assertThat(state.respCd()).isEqualTo(FileStatus.NOTOPEN);
             assertThat(state.cursorRequestedOn(ReportRequestRequest.ScreenField.MONTHLY)).isTrue();
             assertThat(state.displayLines())
                     .anySatisfy(line -> assertThat(line).startsWith("RESP:"));
+        }
+
+        @Test
+        @DisplayName("a refusal on the very first write leaves the queue holding nothing at all")
+        void aFirstWriteRefusalAppendsNothing() {
+            // The shape CORPT00C/case20 pins. With the refusal on hand-off one there is no earlier record
+            // for DISPOSITION(MOD) to preserve, so the correct expectation is an empty queue and an empty
+            // count - not a queue of one. A translation that recorded the hand-off before evaluating
+            // WS-RESP-CD would report one submitted record here and the case would agree with it, which is
+            // why both the program's count and the port are asserted.
+            CapturingPort failing = new CapturingPort();
+            failing.failFrom = 1;
+
+            ProgramState state = new ReportRequestController(dateUtility, failing,
+                    Clock.fixed(Instant.parse(FIXED_MIDNIGHT), ZoneOffset.UTC), DATASET_CHARSET)
+                    .mainPara(reenter().withMonthly("Y").withConfirm("Y"));
+
+            assertThat(failing.records)
+                    .as("the queue was never appended to")
+                    .isEmpty();
+            assertThat(state.submittedRecords())
+                    .as("so the program counted nothing either")
+                    .isEmpty();
+            assertThat(state.message().trim()).isEqualTo("Unable to Write TDQ (JOBS)...");
+            assertThat(state.errFlagOn())
+                    .as("L530 raises WS-ERR-FLG, which is what stops the loop at :499")
+                    .isTrue();
+            assertThat(state.respCd()).isEqualTo(FileStatus.NOTOPEN);
+            assertThat(state.cursorRequestedOn(ReportRequestRequest.ScreenField.MONTHLY)).isTrue();
         }
 
         @Test
@@ -1030,7 +972,6 @@ class ReportRequestControllerTest {
             assertThat(state.dateHeader()).isNull();
             assertThat(state.csutldtcResult()).isNull();
             assertThat(state.jclRecord()).hasSize(80);
-            // The FILLER separators of WS-START-DATE and WS-END-DATE carry '-', never a space.
             assertThat(state.startDate()).isEqualTo("    -  -  ");
             assertThat(state.endDate()).isEqualTo("    -  -  ");
 
@@ -1039,14 +980,9 @@ class ReportRequestControllerTest {
         }
     }
 
-    // =================================================================================================
-    // The job-submission port - app/csd/CARDDEMO.CSD:499-505
-    // =================================================================================================
-
     @Nested
     @DisplayName("the job-submission port - TDQUEUE(JOBS), RECORDSIZE(80), FIXED, UNBLOCKED, MOD")
     class TheJobSubmissionPort {
-
         @Test
         @DisplayName("records are appended as exactly eighty bytes each")
         void theAppendSemantics(@TempDir Path root) throws IOException {
@@ -1068,14 +1004,6 @@ class ReportRequestControllerTest {
             assertThat(WriteQueueOutcome.notOpen().fileStatus()).isEqualTo(FileStatus.Outcome.OTHER);
         }
 
-        // -----------------------------------------------------------------------------------------
-        // Inter-process record integrity. The instance monitor orders this JVM's threads and nothing
-        // else, and an internal reader is a queue because several writers feed it. A write that landed
-        // in two pieces with another writer's bytes between them is not one damaged record of a
-        // RECORDFORMAT(FIXED) BLOCKFORMAT(UNBLOCKED) queue - it is two, and every record after them
-        // shifted. So the drain loop is held under an exclusive FileLock over the destination.
-        // -----------------------------------------------------------------------------------------
-
         @Test
         @DisplayName("the append takes an exclusive lock on the destination and releases it after")
         void theAppendIsHeldUnderAnExclusiveFileLock(@TempDir Path root) throws IOException {
@@ -1085,11 +1013,6 @@ class ReportRequestControllerTest {
 
             assertThat(submitter.writeQueueTd(ReportRequestController.JOB_LINE_01).normal()).isTrue();
 
-            // Released: a second, independent channel can take the same exclusive lock afterwards. A lock
-            // left held would make the next writer - this application's next request included - block or
-            // fail for ever, so releasing it is as much of the contract as taking it. Within one JVM an
-            // overlapping request raises OverlappingFileLockException rather than blocking, so this
-            // succeeding is precisely the evidence that nothing is still held.
             try (FileChannel probe = FileChannel.open(destination, StandardOpenOption.WRITE);
                     FileLock taken = probe.lock()) {
                 assertThat(taken.isValid())
@@ -1097,12 +1020,6 @@ class ReportRequestControllerTest {
                         .isTrue();
             }
 
-            // And exclusive rather than shared - proved structurally rather than by inspecting the port's
-            // own lock, which is not observable from out here. The port opens the destination for WRITE and
-            // APPEND and never for READ, and a shared lock over a channel that cannot be read is refused by
-            // the platform. So the only lock the port is able to take over that channel is an exclusive
-            // one: a downgrade to lock(0, Long.MAX_VALUE, true) would not weaken the guarantee quietly, it
-            // would fail every append outright.
             try (FileChannel asThePortOpensIt = FileChannel.open(destination,
                     StandardOpenOption.CREATE,
                     StandardOpenOption.WRITE,
@@ -1128,12 +1045,6 @@ class ReportRequestControllerTest {
         @DisplayName("two ports over one destination never tear a record: each write lands whole or is "
                 + "refused whole")
         void twoPortInstancesContendingNeverTearARecord(@TempDir Path root) throws Exception {
-            // The monitor orders one port's threads. Two ports have two monitors, so the monitor orders
-            // nothing between them - which is the configuration the finding is about, and the one the file
-            // lock is here for. Under it every write must be all-or-nothing: the queue may end up short of
-            // records, and the refusals say so, but it must never contain a fragment of one, because a
-            // RECORDFORMAT(FIXED) reader takes eighty bytes at a time and a fragment shifts every record
-            // after it.
             Path destination = root.resolve("inreader").resolve("JOBS");
             JobSubmissionProperties properties = properties(root, destination);
             InternalReaderJobSubmissionPort first =
@@ -1167,8 +1078,6 @@ class ReportRequestControllerTest {
                     future.get(ConcurrentTasks.TIMEOUT_SECONDS, TimeUnit.SECONDS);
                 }
             } finally {
-                // In a finally, and shutdownNow rather than shutdown: if a future.get above throws, the
-                // pool would otherwise leak its threads into the next test in this JVM fork.
                 pool.shutdownNow();
             }
             assertThat(pool.awaitTermination(ConcurrentTasks.TIMEOUT_SECONDS, TimeUnit.SECONDS))
@@ -1180,8 +1089,6 @@ class ReportRequestControllerTest {
             assertThat(queue)
                     .as("exactly the accepted writes are on the queue - a refusal wrote nothing at all")
                     .hasSize(accepted.get() * 80);
-            // Decoded in the configured code page, which is the one these ports were given - the records on
-            // the queue are EBCDIC bytes, not ASCII ones.
             for (int offset = 0; offset < queue.length; offset += 80) {
                 assertThat(new String(queue, offset, 80, DATASET_CHARSET))
                         .as("every eighty-byte slot is one port's whole record, never a splice of two")
@@ -1195,13 +1102,8 @@ class ReportRequestControllerTest {
             Path destination = root.resolve("inreader").resolve("JOBS");
             InternalReaderJobSubmissionPort submitter =
                     new InternalReaderJobSubmissionPort(properties(root, destination), DATASET_CHARSET);
-            // Seed one record so the file exists and holds a known, whole record before the contention.
             assertThat(submitter.writeQueueTd(ReportRequestController.JOB_LINE_01).normal()).isTrue();
 
-            // A lock this JVM already holds. FileLock is owned by the JVM rather than by a thread, so an
-            // overlapping request raises OverlappingFileLockException - which stands in here for the
-            // condition a genuinely separate process produces, and is the one the port must not let
-            // escape as an unchecked exception out of a WRITEQ TD.
             try (FileChannel holder = FileChannel.open(destination, StandardOpenOption.WRITE);
                     FileLock held = holder.lock()) {
                 assertThat(held.isValid()).isTrue();
@@ -1221,10 +1123,6 @@ class ReportRequestControllerTest {
         @Test
         @DisplayName("a lock that is no longer held refuses the write rather than running it unprotected")
         void aReleasedLockRefusesTheWrite(@TempDir Path root) throws Exception {
-            // assertHeld is what makes the lock a named participant in the drain loop rather than an
-            // object created and forgotten. Its failure arm cannot be reached from outside - nothing can
-            // invalidate this JVM's lock mid-loop - so it is reached directly here. An assertion that has
-            // never once executed is indistinguishable from a broken one.
             Path destination = root.resolve("inreader").resolve("JOBS");
             Files.createDirectories(destination.getParent());
             Files.createFile(destination);
@@ -1254,8 +1152,6 @@ class ReportRequestControllerTest {
         @Test
         @DisplayName("a lock that is held lets the write proceed, so the guard is not simply always on")
         void aHeldLockPermitsTheWrite(@TempDir Path root) throws Exception {
-            // The other arm. A guard that refused everything would pass the test above and break every
-            // append, so the arm the port actually takes is exercised too.
             Path destination = root.resolve("inreader").resolve("JOBS");
             Files.createDirectories(destination.getParent());
             Files.createFile(destination);
@@ -1298,19 +1194,12 @@ class ReportRequestControllerTest {
             assertThat(submitter.writeQueueTd("too short").resp()).isEqualTo(FileStatus.LENGERR);
             assertThat(submitter.writeQueueTd(" ".repeat(81)).resp()).isEqualTo(FileStatus.LENGERR);
 
-            // The premise is asserted rather than assumed, because the port's code page now comes from
-            // configuration: if a future binding could represent this character, the refusal below
-            // would stop being a refusal and this case would silently stop testing anything.
             assertThat(DATASET_CHARSET.newEncoder().canEncode('\u20ac'))
                     .as("%s cannot represent U+20AC, which is what makes the record unwritable",
                             DATASET_CHARSET.name())
                     .isFalse();
             assertThat(submitter.writeQueueTd("\u20ac".repeat(80)).resp()).isEqualTo(FileStatus.INVREQ);
 
-            // A fixed-width record area is addressed by absolute byte offset, so a code page that
-            // encodes one character to more than one byte cannot carry it: INVREQ, never a 160-byte
-            // "eighty-byte" record. U+00E9 is deliberately a character IBM037 does carry in one byte,
-            // so what this case isolates is the WIDTH, not the representability tested above.
             assertThat(DATASET_CHARSET.newEncoder().canEncode('\u00e9')).isTrue();
             InternalReaderJobSubmissionPort utf8 = new InternalReaderJobSubmissionPort(
                     properties(root, destination), StandardCharsets.UTF_8);
@@ -1324,10 +1213,6 @@ class ReportRequestControllerTest {
             InternalReaderJobSubmissionPort submitter =
                     new InternalReaderJobSubmissionPort(properties(root, destination), DATASET_CHARSET);
 
-            // Gate G42 requires the emitted records to be byte-identical to the source's 80-byte
-            // skeleton records. Under a configured code page that means every character of every
-            // skeleton line must encode to exactly one byte in it - so all seventeen are written, and
-            // the resulting file is asserted to be exactly seventeen eighty-byte records.
             List<String> skeleton = List.of(ReportRequestController.JOB_LINE_01,
                     ReportRequestController.JOB_LINE_02, ReportRequestController.JOB_LINE_03,
                     ReportRequestController.JOB_LINE_04, ReportRequestController.JOB_LINE_05,
@@ -1368,11 +1253,6 @@ class ReportRequestControllerTest {
         @Test
         @DisplayName("a symbolic link at the destination itself is refused, not followed")
         void aLinkedDestinationIsRefused(@TempDir Path root) throws IOException {
-            // The whole point of DISPOSITION(MOD): a wrong target does not fail, it succeeds against
-            // the wrong file. A link planted at the destination satisfies every lexical check the
-            // startup validation can make - it is absolute, has no '..' segment, names no reference
-            // tree and lies inside the approved root - while sending every 80-byte record to whatever
-            // it points at (CWE-59).
             Path elsewhere = Files.createDirectories(root.resolve("elsewhere"));
             Path stolen = elsewhere.resolve("STOLEN");
             Path inreader = Files.createDirectories(root.resolve("inreader"));
@@ -1390,8 +1270,6 @@ class ReportRequestControllerTest {
         @Test
         @DisplayName("a symbolic link on the way to the destination is refused too")
         void aLinkedDirectoryComponentIsRefused(@TempDir Path root) throws IOException {
-            // The link need not be the leaf. A link where a directory is expected redirects everything
-            // beneath it, and no amount of path algebra performed at start-up can see it.
             Path elsewhere = Files.createDirectories(root.resolve("elsewhere"));
             Files.createSymbolicLink(root.resolve("inreader"), elsewhere);
             Path destination = root.resolve("inreader").resolve("JOBS");
@@ -1407,9 +1285,6 @@ class ReportRequestControllerTest {
         @Test
         @DisplayName("an approved root that does not exist is a deployment fault, reported as NOTOPEN")
         void anAbsentApprovedRootIsRefused(@TempDir Path root) {
-            // The root is operator-provisioned on purpose: it is the boundary every write is checked
-            // against, and a port that created its own boundary would be checking its own work. Its
-            // absence is therefore reported rather than repaired.
             Path missing = root.resolve("never-provisioned");
             InternalReaderJobSubmissionPort submitter = new InternalReaderJobSubmissionPort(
                     properties(missing, missing.resolve("inreader").resolve("JOBS")));
@@ -1431,14 +1306,6 @@ class ReportRequestControllerTest {
             assertThat(Files.readAllBytes(destination)).hasSize(80);
         }
 
-        /**
-         * The write-time containment re-check, driven directly.
-         *
-         * <p>It exists to catch a directory being substituted <em>after</em> the descent inspected it and
-         * <em>before</em> the leaf is opened. That race cannot be staged reliably from a single-threaded
-         * test, but the two states it would produce can be handed to the check as inputs, which is what
-         * makes the guard known to work rather than assumed to.
-         */
         @Test
         @DisplayName("a directory that resolves elsewhere than itself is refused before the open")
         void aSubstitutedParentIsRefused(@TempDir Path root) throws IOException {
@@ -1450,7 +1317,6 @@ class ReportRequestControllerTest {
                             .requireParentStillWithinRoot(substituted, root.toRealPath()))
                     .withMessageContaining("resolves elsewhere");
 
-            // And the honest case passes: a real directory below the root resolves to itself.
             InternalReaderJobSubmissionPort.requireParentStillWithinRoot(real.toRealPath(),
                     root.toRealPath());
         }
@@ -1479,9 +1345,6 @@ class ReportRequestControllerTest {
         @Test
         @DisplayName("the code page comes from the configuration, not from a hard-wired default")
         void theCodePageIsTheConfiguredOne(@TempDir Path root) throws IOException {
-            // An internal reader consumes EBCDIC. A port that hard-wired US-ASCII would append eighty
-            // bytes of the wrong code page and report NORMAL for each, which is the failure mode this
-            // property exists to remove: the bytes look like the right length and are the wrong text.
             Path destination = root.resolve("inreader").resolve("JOBS");
             JobSubmissionProperties ebcdic = new JobSubmissionProperties("JOBS", "INREADER", "IBM037",
                     80, "FIXED", "UNBLOCKED", "MOD", root.toString(), destination.toString());
@@ -1493,13 +1356,10 @@ class ReportRequestControllerTest {
 
             byte[] written = Files.readAllBytes(destination);
             assertThat(written).hasSize(80);
-            // Byte-for-byte the EBCDIC encoding of the record, and demonstrably NOT the ASCII one -
-            // which is the whole distinction the finding was about (gate G42).
             assertThat(written).isEqualTo(
                     ReportRequestController.JOB_LINE_01.getBytes(Charset.forName("IBM037")));
             assertThat(written).isNotEqualTo(
                     ReportRequestController.JOB_LINE_01.getBytes(StandardCharsets.US_ASCII));
-            // The text is recoverable, so the record is the record CORPT00C composed and not mojibake.
             assertThat(new String(written, Charset.forName("IBM037")))
                     .isEqualTo(ReportRequestController.JOB_LINE_01);
         }
@@ -1507,9 +1367,6 @@ class ReportRequestControllerTest {
         @Test
         @DisplayName("a destination that is a symbolic link is refused rather than followed")
         void aSymbolicLinkDestinationIsRefused(@TempDir Path root) throws IOException {
-            // CWE-59. The destination's path is in a configuration file, so it is knowable; if it is
-            // replaced by a link before the first write, an unhardened append lands on the link's
-            // target instead - job text naming datasets and users, written wherever somebody else chose.
             Path outside = Files.createFile(root.resolve("elsewhere"));
             Path directory = Files.createDirectories(root.resolve("inreader"));
             Path destination = directory.resolve("JOBS");
@@ -1520,8 +1377,6 @@ class ReportRequestControllerTest {
 
             assertThat(submitter.writeQueueTd(ReportRequestController.JOB_LINE_01).resp())
                     .isEqualTo(FileStatus.NOTOPEN);
-            // The link's target is untouched: the refusal happened at the open, not after a partial
-            // write.
             assertThat(Files.readAllBytes(outside)).isEmpty();
         }
 
@@ -1544,10 +1399,6 @@ class ReportRequestControllerTest {
         @DisplayName("a directory that resolves outside the approved root once links are followed is "
                 + "refused")
         void anEscapingRealPathIsRefused(@TempDir Path parent) throws IOException {
-            // JobSubmissionProperties.validate() proved containment over the configured STRINGS, and
-            // deliberately touched no filesystem - so what it cannot see is a link that leaves the tree.
-            // The writer therefore re-establishes containment against real paths immediately before the
-            // open, which is also why it is re-checked per write rather than once at start-up.
             Path root = Files.createDirectories(parent.resolve("approved"));
             Path escape = Files.createDirectories(parent.resolve("outside").resolve("inreader"));
             Path linked = root.resolve("inreader");
@@ -1564,10 +1415,6 @@ class ReportRequestControllerTest {
         @Test
         @DisplayName("the destination and every directory this port creates are owner-only")
         void theCreatedPathIsOwnerOnly(@TempDir Path root) throws IOException {
-            // CWE-377. The previous default put the destination beneath the shared temporary directory,
-            // where a world-writable predictable path could be pre-created or read by any local account.
-            // The root moved out of it, and creation is owner-only so a wider-permissioned deployment
-            // directory does not re-open the same exposure through inheritance.
             Path destination = root.resolve("inreader").resolve("deep").resolve("JOBS");
             InternalReaderJobSubmissionPort submitter =
                     new InternalReaderJobSubmissionPort(properties(root, destination));
@@ -1589,8 +1436,6 @@ class ReportRequestControllerTest {
         @Test
         @DisplayName("an existing directory tree is appended to rather than re-created or refused")
         void anExistingTreeIsAppendedTo(@TempDir Path root) throws IOException {
-            // The hardened creation must not have made the ordinary case - a deployment whose directory
-            // already exists, with whatever permissions the deployment chose - into a failure.
             Path directory = Files.createDirectories(root.resolve("inreader"));
             Path destination = directory.resolve("JOBS");
             Files.write(destination, "existing".getBytes(StandardCharsets.US_ASCII));
@@ -1600,24 +1445,12 @@ class ReportRequestControllerTest {
 
             assertThat(submitter.writeQueueTd(ReportRequestController.JOB_LINE_01).normal()).isTrue();
 
-            // DISPOSITION(MOD): the eight bytes already there survive and the record follows them.
             assertThat(Files.readAllBytes(destination)).hasSize(88);
             assertThat(new String(Files.readAllBytes(destination), StandardCharsets.US_ASCII))
                     .startsWith("existing")
                     .endsWith(ReportRequestController.JOB_LINE_01);
         }
 
-        /**
-         * Creates a symbolic link, skipping the calling test where the filesystem will not have one.
-         *
-         * <p>Every hardening these tests assert is about links, so a filesystem without them - a Windows
-         * volume without the privilege, for instance - has nothing to assert rather than something
-         * broken. Skipped rather than passed vacuously, so a run that could not exercise the hardening
-         * says so.
-         *
-         * @param link the link to create
-         * @throws IOException if the link cannot be created for a reason other than lack of support
-         */
         private void assumeSymbolicLinksSupported(LinkCreation link) throws IOException {
             try {
                 link.create();
@@ -1627,26 +1460,14 @@ class ReportRequestControllerTest {
             }
         }
 
-        /** A symbolic-link creation that may not be supported. */
         @FunctionalInterface
         private interface LinkCreation {
-
-            /**
-             * Creates the link.
-             *
-             * @throws IOException if it cannot be created
-             */
             void create() throws IOException;
         }
-
-        // ----------------------------------------------------- the code page the records actually carry
 
         @Test
         @DisplayName("the injected code page is the one the records are encoded in, EBCDIC included")
         void theInjectedCodePageIsWhatTheRecordsCarry(@TempDir Path root) throws IOException {
-            // A region whose internal reader expects EBCDIC gets EBCDIC. Under IBM037 a '/' is 0x61, so
-            // the two leading slashes of every JCL record are observable in the destination's bytes - and
-            // they are NOT 0x2F, which is what US-ASCII would have written.
             Charset ebcdic = Charset.forName("IBM037");
             Path destination = root.resolve("inreader").resolve("JOBS");
             InternalReaderJobSubmissionPort submitter = new InternalReaderJobSubmissionPort(
@@ -1665,14 +1486,6 @@ class ReportRequestControllerTest {
         @DisplayName("Spring selects the constructor that reads carddemo.job-submission.charset, and no "
                 + "code page arrives on this port by qualifier")
         void theInjectedConstructorIsTheOneSpringSelects() throws Exception {
-            // The queue's code page and the datasets' code page are two independent settings, and under
-            // the shipped configuration they disagree: carddemo.job-submission.charset defaults to IBM037
-            // because an internal reader consumes EBCDIC, carddemo.charset.dataset to US-ASCII in the test
-            // profile because the fixtures are ASCII. @Autowired sat on the two-argument constructor with
-            // @Qualifier(DATASET_CHARSET_BEAN_NAME), so Spring built the port with the DATASET code page
-            // and the configured queue code page reached nothing at all. The annotation belongs on the
-            // constructor that reads the property, and the explicit overload must carry no qualifier -
-            // otherwise the same mistake is one annotation away from returning.
             Constructor<?> fromProperties = InternalReaderJobSubmissionPort.class.getConstructor(
                     JobSubmissionProperties.class);
             Constructor<?> explicit = InternalReaderJobSubmissionPort.class.getConstructor(
@@ -1694,16 +1507,11 @@ class ReportRequestControllerTest {
                     .as("exactly one injection point, so which constructor Spring picks is not a guess")
                     .isEqualTo(1);
 
-            // Same wiring on the controller, whose working-storage images are rendered the same way.
             Constructor<?> controller = ReportRequestController.class.getConstructor(
                     DateUtilityJob.class, JobSubmissionPort.class, Clock.class, Charset.class);
             assertThat(controller.isAnnotationPresent(Autowired.class)).isTrue();
             assertThat(controller.getParameters()[3].getAnnotation(Qualifier.class).value())
                     .isEqualTo(CobolCharsetConfig.DATASET_CHARSET_BEAN_NAME);
-            // Stronger than "the three-argument constructor is not the injection point": there IS no
-            // three-argument constructor any more. A convenience overload that defaulted the code page
-            // was the path by which US-ASCII reached a region configured for IBM037, so it was removed
-            // rather than merely left unannotated - nothing can default the code page now.
             assertThat(ReportRequestController.class.getConstructors())
                     .as("one constructor, and it takes the code page")
                     .hasSize(1);
@@ -1716,11 +1524,6 @@ class ReportRequestControllerTest {
         @DisplayName("in a context where the two code pages differ, the queue's records are written in "
                 + "the QUEUE's code page")
         void theQueueCodePageWinsOverTheDatasetCodePage(@TempDir Path root) throws IOException {
-            // The wiring assertion above says which constructor Spring picks. This says what that means
-            // in bytes, in a real context, with the two settings deliberately set to different values -
-            // which is the only arrangement in which the defect was visible at all. The dataset page is
-            // US-ASCII and the queue page is IBM037, so a '/' is 0x2F if the port took the dataset bean
-            // and 0x61 if it took the configured queue page.
             Path destination = root.resolve("inreader").resolve("JOBS");
 
             new ApplicationContextRunner()
@@ -1762,30 +1565,15 @@ class ReportRequestControllerTest {
                     });
         }
 
-        /**
-         * Binds {@code carddemo.job-submission} so the port can be constructed the way Spring constructs
-         * it - from the property record rather than from a hand-built instance.
-         */
         @Configuration
         @EnableConfigurationProperties(JobSubmissionProperties.class)
         static class BoundJobSubmission {
         }
 
-        // --------------------------------------------------- one complete record per write, in order
-
         @Test
         @Timeout(value = 120, unit = TimeUnit.SECONDS)
         @DisplayName("concurrent writes each land as one whole 80-byte record, none interleaved")
         void concurrentWritesAreWholeRecords(@TempDir Path root) throws Exception {
-            // RECORDFORMAT(FIXED) BLOCKFORMAT(UNBLOCKED) means the reader takes the destination eighty
-            // bytes at a time. A write that landed in two pieces with another request's bytes between
-            // them would not corrupt one record, it would corrupt two and shift every record after them.
-            //
-            // What this test proves, stated plainly: the invariant holds under contention. It does not
-            // prove the lock is what holds it here, because a POSIX provider's O_APPEND already writes
-            // eighty bytes indivisibly and this test cannot make it do otherwise. The lock is what makes
-            // the invariant independent of the provider - java.nio.file promises nothing about it - and
-            // what makes the containment check and the open one indivisible step.
             Path destination = root.resolve("inreader").resolve("JOBS");
             InternalReaderJobSubmissionPort submitter =
                     new InternalReaderJobSubmissionPort(properties(root, destination));
@@ -1810,8 +1598,6 @@ class ReportRequestControllerTest {
                     future.get(ConcurrentTasks.TIMEOUT_SECONDS, TimeUnit.SECONDS);
                 }
             } finally {
-                // In a finally, and shutdownNow rather than shutdown: if a future.get above throws, the
-                // pool would otherwise leak its threads into the next test in this JVM fork.
                 pool.shutdownNow();
             }
             assertThat(pool.awaitTermination(ConcurrentTasks.TIMEOUT_SECONDS, TimeUnit.SECONDS))
@@ -1820,7 +1606,6 @@ class ReportRequestControllerTest {
 
             byte[] written = Files.readAllBytes(destination);
             assertThat(written).hasSize(writers * perWriter * 80);
-            // Every 80-byte slot must be exactly one writer's record - not a splice of two.
             Map<String, Integer> counts = new LinkedHashMap<>();
             for (int offset = 0; offset < written.length; offset += 80) {
                 String slot = new String(written, offset, 80, StandardCharsets.US_ASCII);
@@ -1831,13 +1616,9 @@ class ReportRequestControllerTest {
             assertThat(counts.values()).allMatch(count -> count == perWriter);
         }
 
-        // ------------------------------------------------------------- CWE-59 and CWE-367 containment
-
         @Test
         @DisplayName("a symlinked approved root cannot redirect the append")
         void aSymlinkedRootIsRefused(@TempDir Path scratch) throws IOException {
-            // The plainest form of the redirection: /tmp/carddemo is a link to somewhere else. Lexical
-            // containment cannot see it, because both configured paths still read as contained.
             Path elsewhere = Files.createDirectories(scratch.resolve("elsewhere"));
             Path root = scratch.resolve("approved");
             assumeSymlinksSupported(() -> Files.createSymbolicLink(root, elsewhere));
@@ -1845,8 +1626,6 @@ class ReportRequestControllerTest {
             InternalReaderJobSubmissionPort submitter =
                     new InternalReaderJobSubmissionPort(properties(root, destination));
 
-            // The write is refused rather than redirected, and NOTOPEN is what an extrapartition queue
-            // whose dataset cannot be opened reports.
             assertThat(submitter.writeQueueTd(ReportRequestController.JOB_LINE_01).resp())
                     .isEqualTo(FileStatus.NOTOPEN);
             assertThat(Files.exists(elsewhere.resolve("JOBS")))
@@ -1857,8 +1636,6 @@ class ReportRequestControllerTest {
         @Test
         @DisplayName("a symlinked destination file cannot redirect the append - NOFOLLOW_LINKS")
         void aSymlinkedDestinationIsRefused(@TempDir Path root) throws IOException {
-            // The one a containment check cannot reach: the final component is where checking stops and
-            // opening begins, so it is the open that has to refuse. O_NOFOLLOW leaves no window at all.
             Path outside = Files.createFile(root.resolve("outside.txt"));
             Path directory = Files.createDirectories(root.resolve("inreader"));
             Path destination = directory.resolve("JOBS");
@@ -1892,10 +1669,6 @@ class ReportRequestControllerTest {
         @Test
         @DisplayName("containment is revalidated per write, so a root swapped mid-run stops the appends")
         void containmentIsRevalidatedPerWrite(@TempDir Path scratch) throws IOException {
-            // The time-of-check window (CWE-367). The first write establishes a legitimate destination;
-            // the root is then replaced by a link, as an attacker who wins the race would arrange. The
-            // second write must refuse, which it can only do if it checks again rather than trusting what
-            // the first write established.
             Path root = Files.createDirectories(scratch.resolve("approved"));
             Path elsewhere = Files.createDirectories(scratch.resolve("elsewhere"));
             Path destination = root.resolve("inreader").resolve("JOBS");
@@ -1914,11 +1687,6 @@ class ReportRequestControllerTest {
             assertThat(Files.exists(elsewhere.resolve("inreader"))).isFalse();
         }
 
-        /**
-         * Creates a symbolic link, skipping the test where the filesystem will not have one.
-         *
-         * @param link the link to create
-         */
         private void assumeSymlinksSupported(SymlinkCreation link) {
             try {
                 link.create();
@@ -1929,20 +1697,14 @@ class ReportRequestControllerTest {
             }
         }
 
-        /** A symbolic-link creation that may not be supported. */
         private interface SymlinkCreation {
             void create() throws IOException;
         }
     }
 
-    // =================================================================================================
-    // The HTTP surface
-    // =================================================================================================
-
     @Nested
     @DisplayName("the HTTP surface - a thin adapter over MAIN-PARA, and the symbolic map contract")
     class TheHttpSurface {
-
         @Test
         @DisplayName("the adapter adds nothing to MAIN-PARA, and carries the metadata beside it")
         void theAdapterIsThin() {
@@ -1953,8 +1715,6 @@ class ReportRequestControllerTest {
             assertThat(response.getNextProgram()).isEqualTo("CORPT00C");
             assertThat(response.getTrnnameo()).isEqualTo("CR00");
             assertThat(ReportRequestController.REPORTS_PATH).isEqualTo("/api/reports");
-            // The cursor request and all seventeen attribute quads are metadata by declaration, so they
-            // travel beside the screen rather than not travelling at all.
             assertThat(answer.screenMetadata().fields())
                     .hasSize(ReportRequestResponse.ScreenField.values().length);
             assertThat(answer.screenMetadata().cursorField()).isEqualTo("MONTHLY");
@@ -2008,16 +1768,9 @@ class ReportRequestControllerTest {
         }
     }
 
-    // =================================================================================================
-    // Test doubles
-    // =================================================================================================
-
-    /** Captures what the program would have written to transient data queue {@code JOBS}. */
     private static final class CapturingPort implements JobSubmissionPort {
-
         private final List<String> records = new ArrayList<>();
 
-        /** The one-based ordinal from which every write reports NOTOPEN. */
         private int failFrom = Integer.MAX_VALUE;
 
         @Override
@@ -2032,11 +1785,10 @@ class ReportRequestControllerTest {
 
     /**
      * Returns a non-numeric year from one of the two {@code PIC 9999} stores, which is the only way to
-     * reach the source's {@code IS NOT NUMERIC} year arms: the store itself always yields four digits,
-     * so in the composed flow those arms cannot fire. They are preserved rather than removed.
+     * reach the source's {@code IS NOT NUMERIC} year arms: the store itself always yields four digits, so
+     * in the composed flow those arms cannot fire.
      */
     private static final class NonNumericYearController extends ReportRequestController {
-
         private final int failOnCall;
 
         private int calls;
@@ -2054,9 +1806,7 @@ class ReportRequestControllerTest {
         }
     }
 
-    /** A one-record skeleton whose only record is blank, for the loop's SPACES sentinel. */
     private static final class BlankSkeletonController extends ReportRequestController {
-
         BlankSkeletonController(DateUtilityJob dateUtilityJob, JobSubmissionPort submissionPort,
                                 Clock clock) {
             super(dateUtilityJob, submissionPort, clock, DATASET_CHARSET);
@@ -2068,9 +1818,7 @@ class ReportRequestControllerTest {
         }
     }
 
-    /** A skeleton with no sentinel anywhere, so only the {@code OCCURS} bound can end the loop. */
     private static final class SentinellessSkeletonController extends ReportRequestController {
-
         SentinellessSkeletonController(DateUtilityJob dateUtilityJob, JobSubmissionPort submissionPort,
                                        Clock clock) {
             super(dateUtilityJob, submissionPort, clock, DATASET_CHARSET);
@@ -2083,11 +1831,10 @@ class ReportRequestControllerTest {
     }
 
     /**
-     * Raises {@code ERR-FLG-ON} without ending the paragraph, which is the only way to observe the
-     * source's defensive guard at line 434 declining to submit.
+     * Raises {@code ERR-FLG-ON} without ending the paragraph, which is the only way to observe the source's
+     * defensive guard at line 434 declining to submit.
      */
     private static final class FlagRaisingController extends ReportRequestController {
-
         FlagRaisingController(DateUtilityJob dateUtilityJob, JobSubmissionPort submissionPort,
                               Clock clock) {
             super(dateUtilityJob, submissionPort, clock, DATASET_CHARSET);

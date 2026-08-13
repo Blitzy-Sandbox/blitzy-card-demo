@@ -48,80 +48,13 @@ import org.junit.jupiter.params.provider.ValueSource;
 /**
  * The contract of {@link AccountViewRequest}, asserted against the two files that define it:
  * {@code app/cpy-bms/COACTVW.CPY} and {@code app/bms/COACTVW.bms}.
- *
- * <h2>No user rules were provided for this project</h2>
- * {@code review_rules} returns exactly one line - "No user rules provided." - and that single line is the
- * <em>entire</em> rules document, not a truncated read of a longer one. Recorded here explicitly because
- * the absence of project rules is itself a fact a reviewer needs, and because it is emphatically
- * <strong>not</strong> licence to hold this file to a lower standard. No rule has been invented to fill
- * the gap. What governs instead is enterprise-standard best practice in the specific, citable form of the
- * Agent Action Plan's &sect;0.10.2 substitutes, each of which is named at the place it applies:
- *
- * <ul>
- *   <li><strong>B1</strong> - only coordinates {@code app/java/pom.xml} already resolves: JUnit Jupiter,
- *       AssertJ, Jackson and {@code jakarta.validation-api}, every version managed by the
- *       {@code spring-boot-starter-parent} BOM. Not one new dependency is introduced, and no Lombok,
- *       MapStruct, springdoc, Testcontainers or {@code spring-security-test}.</li>
- *   <li><strong>B3</strong> - the six defining sources are read-only and are <em>never</em> opened at test
- *       runtime. Every expected width, offset, line number and literal below is inlined as a Java
- *       constant, so this suite needs no file system and cannot drift with one.</li>
- *   <li><strong>B4</strong> - where this folder's brief disagrees with the source, the source wins and the
- *       disagreement is named rather than quietly resolved. Both such cases are asserted in
- *       {@link SourceContractCorrections}.</li>
- *   <li><strong>B6</strong> - no Spring Security anywhere: no mock user, no filter chain, no
- *       authentication. This is a plain payload test.</li>
- *   <li><strong>B7</strong> - deterministic and non-interactive: no sleep, no randomness and no
- *       wall-clock read, so a failure here is always reproducible.</li>
- *   <li><strong>B8</strong> - explicit over implicit: no wildcard import anywhere (gate
- *       <strong>G52</strong>), and every codec is constructed over a {@link Charset} named outright so no
- *       call can fall back to a platform default.</li>
- *   <li><strong>B9</strong> - no mutable static state (gate <strong>G53</strong>). The transcription
- *       tables below are immutable {@link List}s rather than arrays, because a {@code static final} array
- *       is a mutable object behind a final reference and one test mutating an element would silently
- *       corrupt every other. The codecs are per-instance, rebuilt for each test method.</li>
- *   <li><strong>B12</strong> - provenance on every asserted number. No COBOL execution baseline is
- *       obtainable in this environment (risk <strong>R-A</strong>), so every expectation here is derived
- *       statically - and a statically derived expectation is only reviewable if it says where it came
- *       from. Hence the {@code file:line} citation beside each one.</li>
- * </ul>
- *
- * <h2>Gates this file owns</h2>
- * <strong>G9</strong> every payload field traces to a {@code DFHMDF} entry and every width to an
- * {@code xxxI} {@code PICTURE}; <strong>G22</strong>/<strong>G23</strong>/<strong>G24</strong> as
- * negatives - no {@code double}, no {@code float}, no rounding mode other than {@code DOWN};
- * <strong>G37</strong> no server-side session state; <strong>G49</strong> this package carries its own
- * branch-coverage ratio and cannot be covered from the parent test package, so
- * {@link AccountViewRequest}'s branches are driven here directly; <strong>G50</strong> both states of
- * every condition name; <strong>G52</strong> and <strong>G53</strong> as above.
- *
- * <p>The width, line-number, screen-position and data-offset tables below are an <em>independent second
- * transcription</em> of those two sources. They are deliberately written out as literals rather than read
- * from the class under test, because a test that asks the implementation what it believes and then agrees
- * with it proves nothing. Where a number here disagrees with the class, one of the two transcriptions is
- * wrong and the build says so.
- *
- * <p>Nothing here needs a Spring context, a servlet container or a running application - which is itself
- * part of the contract (practice <strong>B10</strong>): {@code parity/ParityHarness} builds this type the
- * same way these tests do.
  */
 @DisplayName("AccountViewRequest - COACTVW CACTVWAI, the CAVW inbound payload")
 class AccountViewRequestTest {
-
-    /** The code page of the ASCII fixtures, named explicitly - never a platform default. */
     private static final Charset ASCII = StandardCharsets.US_ASCII;
 
-    /** The code page of the EBCDIC datasets, named explicitly. */
     private static final Charset EBCDIC = Charset.forName("IBM037");
 
-    /**
-     * The 37 {@code DFHMDF} labels, in {@code app/bms/COACTVW.bms} declaration order.
-     *
-     * <p>An immutable {@link List} rather than a {@code String[]}, and so for every table that follows:
-     * a {@code static final} array is a <em>mutable</em> object reached through a final reference, which
-     * is exactly the shared-mutable-state practice <strong>B9</strong> and gate <strong>G53</strong>
-     * forbid. {@link List#of} yields a genuinely unmodifiable table, so no test can reach into it and
-     * change what every other test is asserting against.
-     */
     private static final List<String> LABELS = List.of(
             "TRNNAME", "TITLE01", "CURDATE", "PGMNAME", "TITLE02", "CURTIME", "ACCTSID", "ACSTTUS",
             "ADTOPEN", "ACRDLIM", "AEXPDT", "ACSHLIM", "AREISDT", "ACURBAL", "ACRCYCR", "AADDGRP",
@@ -129,28 +62,23 @@ class AccountViewRequestTest {
             "ACSADL1", "ACSSTTE", "ACSADL2", "ACSZIPC", "ACSCITY", "ACSCTRY", "ACSPHN1", "ACSGOVT",
             "ACSPHN2", "ACSEFTC", "ACSPFLG", "INFOMSG", "ERRMSG");
 
-    /** The 37 declared widths, from the {@code xxxI PICTURE} clauses. They sum to 684. */
     private static final List<Integer> WIDTHS = List.of(4, 40, 8, 8, 40, 8, 11, 1, 10, 15, 10, 15, 10,
             15, 15, 10, 15, 9, 12, 10, 3, 25, 25, 25, 50, 2, 50, 5, 50, 3, 13, 20, 13, 10, 1, 45, 78);
 
-    /** The 37 {@code PICTURE} clauses as the copybook writes them - note field 7. */
     private static final List<String> PICTURES = List.of(
             "X(4)", "X(40)", "X(8)", "X(8)", "X(40)", "X(8)", "99999999999", "X(1)", "X(10)", "X(15)",
             "X(10)", "X(15)", "X(10)", "X(15)", "X(15)", "X(10)", "X(15)", "X(9)", "X(12)", "X(10)",
             "X(3)", "X(25)", "X(25)", "X(25)", "X(50)", "X(2)", "X(50)", "X(5)", "X(50)", "X(3)",
             "X(13)", "X(20)", "X(13)", "X(10)", "X(1)", "X(45)", "X(78)");
 
-    /** The {@code app/cpy-bms/COACTVW.CPY} line of each {@code xxxI} item. */
     private static final List<Integer> CPY_LINES = List.of(24, 30, 36, 42, 48, 54, 60, 66, 72, 78, 84,
             90, 96, 102, 108, 114, 120, 126, 132, 138, 144, 150, 156, 162, 168, 174, 180, 186, 192, 198,
             204, 210, 216, 222, 228, 234, 240);
 
-    /** The {@code app/bms/COACTVW.bms} line opening each {@code DFHMDF} entry. */
     private static final List<Integer> BMS_LINES = List.of(34, 38, 47, 57, 61, 70, 84, 97, 107, 117, 128,
             138, 149, 159, 171, 182, 192, 207, 216, 225, 234, 251, 256, 261, 268, 277, 282, 291, 301,
             310, 319, 326, 335, 342, 351, 356, 365);
 
-    /** Each field's {@code POS=(row,column)}, as an immutable table of immutable pairs. */
     private static final List<List<Integer>> POSITIONS = List.of(
             List.of(1, 7), List.of(1, 21), List.of(1, 71), List.of(2, 7), List.of(2, 21), List.of(2, 71),
             List.of(5, 38), List.of(5, 70), List.of(6, 17), List.of(6, 61), List.of(7, 17),
@@ -161,43 +89,20 @@ class AccountViewRequestTest {
             List.of(19, 58), List.of(20, 10), List.of(20, 41), List.of(20, 78), List.of(22, 23),
             List.of(23, 1));
 
-    /** Where each field's data begins in the 955-byte group image. */
     private static final List<Integer> DATA_OFFSETS = List.of(19, 30, 77, 92, 107, 154, 169, 187, 195,
             212, 234, 251, 273, 290, 312, 334, 351, 373, 389, 408, 425, 435, 467, 499, 531, 588, 597,
             654, 666, 723, 733, 753, 780, 800, 817, 825, 877);
 
-    /**
-     * A codec over {@link #ASCII}, rebuilt for every test method.
-     *
-     * <p>An instance field rather than a {@code static} one, so that practice <strong>B9</strong> holds
-     * without an argument about whether the type happens to be immutable: nothing static here is
-     * reachable for mutation, and no test can be influenced by the order it ran in.
-     */
     private FixedWidthCodec asciiCodec;
 
-    /** A codec over {@link #EBCDIC}, to prove nothing here assumes ASCII byte values. */
     private FixedWidthCodec ebcdicCodec;
 
-    /**
-     * Builds both codecs fresh for each test method (practice <strong>B9</strong>).
-     *
-     * <p>{@link FixedWidthCodec} takes its {@link Charset} as a constructor argument and holds nothing
-     * else, so constructing one per test costs nothing and buys complete isolation.
-     */
     @BeforeEach
     void buildCodecs() {
         asciiCodec = new FixedWidthCodec(ASCII);
         ebcdicCodec = new FixedWidthCodec(EBCDIC);
     }
 
-    /**
-     * The 37 named setters, in {@link ScreenField} order.
-     *
-     * <p>Named rather than reached through {@link AccountViewRequest#setValue(ScreenField, String)}, so
-     * that the two routes are proven to agree instead of one being tested twice.
-     *
-     * @return one setter per field, never {@code null}
-     */
     private static List<BiConsumer<AccountViewRequest, String>> namedSetters() {
         List<BiConsumer<AccountViewRequest, String>> setters = new ArrayList<>();
         setters.add(AccountViewRequest::setTrnname);
@@ -240,11 +145,6 @@ class AccountViewRequestTest {
         return setters;
     }
 
-    /**
-     * The 37 named getters, in {@link ScreenField} order.
-     *
-     * @return one getter per field, never {@code null}
-     */
     private static List<Function<AccountViewRequest, String>> namedGetters() {
         List<Function<AccountViewRequest, String>> getters = new ArrayList<>();
         getters.add(AccountViewRequest::getTrnname);
@@ -287,17 +187,6 @@ class AccountViewRequestTest {
         return getters;
     }
 
-    /**
-     * A request whose 37 fields each hold a distinct, recognisable value at exactly the declared width, so
-     * that a round trip cannot pass by accident and a mixed-up pair of fields is visible by name.
-     *
-     * <p>Takes the codec as a parameter rather than reading a field, so the helper stays {@code static}
-     * while the codecs stay per-instance (practice <strong>B9</strong>), and so the charset the values are
-     * shaped under is stated at every call site rather than assumed (practice <strong>B8</strong>).
-     *
-     * @param codec the codec whose {@code PIC X} move rule brings each value to its declared width
-     * @return a fully populated request, never {@code null}
-     */
     private static AccountViewRequest populated(FixedWidthCodec codec) {
         AccountViewRequest request = new AccountViewRequest();
         List<BiConsumer<AccountViewRequest, String>> setters = namedSetters();
@@ -311,7 +200,6 @@ class AccountViewRequestTest {
     @Nested
     @DisplayName("The width contract - 37 fields summing to 684 in a 955-byte group")
     class WidthContract {
-
         @Test
         @DisplayName("the 37 width constants are the 37 xxxI PICTURE widths")
         void widthConstantsMatchThePictureClauses() {
@@ -395,7 +283,6 @@ class AccountViewRequestTest {
     @Nested
     @DisplayName("ScreenField - the 37 name-labelled DFHMDF entries of 100")
     class Fields {
-
         @Test
         @DisplayName("37 constants, in mapset declaration order, each with its full provenance")
         void theThirtySevenConstantsCarryTheirProvenance() {
@@ -501,7 +388,6 @@ class AccountViewRequestTest {
     @Nested
     @DisplayName("Construction - a freshly initialised map area, with no null anywhere")
     class Construction {
-
         @Test
         @DisplayName("every field is spaces at its declared width, and no commarea has travelled yet")
         void freshRequestIsAnInitialisedMapArea() {
@@ -625,7 +511,6 @@ class AccountViewRequestTest {
     @Nested
     @DisplayName("Accessors - 37 pairs that store verbatim and never trim")
     class Accessors {
-
         @Test
         @DisplayName("every named setter round-trips through its named getter")
         void namedPairsRoundTrip() {
@@ -685,31 +570,6 @@ class AccountViewRequestTest {
         @Test
         @DisplayName("ACCTSID has a numeric PICTURE but must be an 11-character String")
         void acctsidIsCarriedAsCharactersDespiteItsNumericPicture() {
-            // THE ASYMMETRY, and the single most consequential typing decision on this map.
-            //
-            // app/cpy-bms/COACTVW.CPY:60 declares "02 ACCTSIDI PIC 99999999999" - NUMERIC, eleven nines,
-            // and the only non-X input item on the whole map. It reads that way because
-            // app/bms/COACTVW.bms:84 declares the field PICIN='99999999999' with VALIDN=(MUSTFILL); BMS
-            // propagates PICIN into the generated symbolic map, so the PICTURE is a consequence of the
-            // mapset's input validation rather than of how the program uses the value.
-            //
-            // And the program uses it as characters. app/cbl/COACTVWC.cbl:628-632:
-            //
-            //     IF  ACCTSIDI OF CACTVWAI = '*'
-            //     OR  ACCTSIDI OF CACTVWAI = SPACES
-            //         MOVE LOW-VALUES           TO  CC-ACCT-ID
-            //     ELSE
-            //         MOVE ACCTSIDI OF CACTVWAI TO  CC-ACCT-ID
-            //     END-IF
-            //
-            // Neither '*' nor SPACES is representable in an int, a long or a BigDecimal, so typing this
-            // field numerically would make the :628-630 arm UNREACHABLE and silently delete the
-            // "no criterion" behaviour of the screen. Hence: an 11-character String.
-            //
-            // INTER-MAPSET ASYMMETRY, worth stating because it looks like an inconsistency and is not:
-            // app/cpy-bms/COACTUP.CPY:60 declares the SAME-NAMED field as plain "PIC X(11)", because
-            // COACTUP's mapset entry carries no PICIN. Two mapsets, one field name, two PICTUREs - the
-            // sibling AccountUpdateRequestTest asserts it from the other side.
             AccountViewRequest request = new AccountViewRequest();
 
             assertThat(request.getAcctsid()).isInstanceOf(String.class);
@@ -721,7 +581,6 @@ class AccountViewRequestTest {
                     .isFalse();
             assertThat(ScreenField.ACCTSID.length()).isEqualTo(11);
 
-            // The declared getter is String-typed, not a numeric type.
             assertThatNoException().isThrownBy(
                     () -> AccountViewRequest.class.getDeclaredMethod("getAcctsid"));
             Method accessor = Arrays.stream(AccountViewRequest.class.getDeclaredMethods())
@@ -737,12 +596,6 @@ class AccountViewRequestTest {
         @Test
         @DisplayName("ACCTSID round-trips LOW-VALUES - binary zeros, not spaces and not null")
         void acctsidRoundTripsLowValues() {
-            // app/cbl/COACTVWC.cbl:630 - "MOVE LOW-VALUES TO CC-ACCT-ID". LOW-VALUES is the lowest
-            // character of the collating sequence, which is binary 0x00 on every code page, and it is
-            // DISTINCT from all three of: spaces, an empty string, and Java null.
-            //
-            // Driven here at the field's full declared width so the distinction is provable rather than
-            // asserted, and so nothing along the way silently substitutes spaces for it.
             String lowValues = "\u0000".repeat(11);
             AccountViewRequest request = new AccountViewRequest();
             request.setAcctsid(lowValues);
@@ -755,8 +608,6 @@ class AccountViewRequestTest {
                     .isNotEmpty();
             assertThat(request.getAcctsid().charAt(0)).isEqualTo('\u0000');
 
-            // It survives the group image under both code pages: 0x00 is 0x00 either way, which is what
-            // makes LOW-VALUES code-page independent in the first place.
             for (FixedWidthCodec codec : List.of(asciiCodec, ebcdicCodec)) {
                 byte[] group = request.toGroupImage(codec);
                 for (int offset = 0; offset < 11; offset++) {
@@ -768,8 +619,6 @@ class AccountViewRequestTest {
                         .isEqualTo(lowValues);
             }
 
-            // The three values :628-:630 treats as "no criterion" or as a real key are each distinct
-            // stored values, so both arms of that IF are reachable from this type.
             AccountViewRequest wildcard = new AccountViewRequest();
             wildcard.setAcctsid("*");
             AccountViewRequest blank = new AccountViewRequest();
@@ -784,9 +633,6 @@ class AccountViewRequestTest {
         @Test
         @DisplayName("a null ACCTSID becomes spaces, because a COBOL record has no null")
         void acctsidNullBecomesSpaces() {
-            // The one substitution a setter performs. COACTVWC.cbl:629 tests "= SPACES", and a null here
-            // would both make that test impossible to reproduce and put a NullPointerException between
-            // the request and the first edit.
             AccountViewRequest request = new AccountViewRequest();
             request.setAcctsid(null);
             assertThat(request.getAcctsid())
@@ -821,7 +667,6 @@ class AccountViewRequestTest {
     @Nested
     @DisplayName("Addressing a field by its enumeration constant")
     class EnumAddressing {
-
         @Test
         @DisplayName("value and setValue agree with all 37 named pairs, both ways")
         void enumAccessAgreesWithNamedAccess() {
@@ -887,7 +732,6 @@ class AccountViewRequestTest {
     @Nested
     @DisplayName("ScreenFieldMetadata - the xxxL halfword and the xxxA attribute byte")
     class MetadataHolder {
-
         @Test
         @DisplayName("the declared PIC S9(4) range is the constraint, not the halfword's capacity")
         void theDeclaredRangeIsTheConstraint() {
@@ -991,7 +835,6 @@ class AccountViewRequestTest {
     @Nested
     @DisplayName("Conversation state travels in the payload, never in a session")
     class ConversationState {
-
         @Test
         @DisplayName("an absent commarea is EIBCALEN 0 and satisfies neither ENTER nor REENTER")
         void anAbsentCommareaSatisfiesNeitherCondition() {
@@ -1061,7 +904,6 @@ class AccountViewRequestTest {
     @Nested
     @DisplayName("Fixed-width rendering - the move rule lives in FixedWidthCodec and nowhere else")
     class GroupImage {
-
         @Test
         @DisplayName("image pads a short value on the right and truncates a long one on the right")
         void imageAppliesTheAlphanumericMoveRule() {
@@ -1153,15 +995,11 @@ class AccountViewRequestTest {
             byte[] ascii = request.toGroupImage(asciiCodec);
             byte[] ebcdic = request.toGroupImage(ebcdicCodec);
 
-            // 'C' is 0x43 in US-ASCII and 0xC3 in IBM037; 'A' is 0x41 and 0xC1. Same characters, same
-            // offsets, different bytes - which is the whole point of naming the code page.
             assertThat(ascii[ScreenField.TRNNAME.dataOffset()]).isEqualTo((byte) 0x43);
             assertThat(ebcdic[ScreenField.TRNNAME.dataOffset()]).isEqualTo((byte) 0xC3);
             assertThat(ascii[ScreenField.TRNNAME.dataOffset() + 1]).isEqualTo((byte) 0x41);
             assertThat(ebcdic[ScreenField.TRNNAME.dataOffset() + 1]).isEqualTo((byte) 0xC1);
 
-            // And the pad character too: a space is 0x20 in US-ASCII and 0x40 in IBM037, in the field
-            // data and in the TIOAPFX prefix alike.
             assertThat(ascii[ScreenField.INFOMSG.dataOffset()]).isEqualTo((byte) 0x20);
             assertThat(ebcdic[ScreenField.INFOMSG.dataOffset()]).isEqualTo((byte) 0x40);
             assertThat(ascii[0]).isEqualTo((byte) 0x20);
@@ -1171,11 +1009,6 @@ class AccountViewRequestTest {
         @Test
         @DisplayName("a multi-byte code page fails loudly instead of overflowing the declared width")
         void aMultiByteCodePageFailsLoudly() {
-            // UTF-8 encodes every digit, sign overpunch and the space in one byte, so the codec accepts
-            // it and an all-spaces group renders - but an accented character takes two, which would
-            // overflow the declared width and shift every offset after it. The diagnostic comes from the
-            // FixedWidthCodec seam, which is where the one-byte-per-character rule is enforced, and it
-            // names the offending field so the failure is traceable to one DFHMDF entry.
             FixedWidthCodec utf8 = new FixedWidthCodec(StandardCharsets.UTF_8);
             assertThatNoException().isThrownBy(() -> new AccountViewRequest().toGroupImage(utf8));
 
@@ -1285,7 +1118,6 @@ class AccountViewRequestTest {
     @Nested
     @DisplayName("Value semantics over 37 fields, both carriers and 37 metadata holders")
     class ValueSemantics {
-
         @Test
         @DisplayName("a request equals itself, an equal request, and nothing else")
         void equalityIsReflexiveAndTyped() {
@@ -1339,10 +1171,6 @@ class AccountViewRequestTest {
         @DisplayName("the rendering names every field by its DFHMDF label and discloses none of the "
                 + "sensitive ones")
         void theRenderingNamesEveryFieldAndDisclosesNothingSensitive() {
-            // The payload is the parity surface and it is untouched - the accessors below still answer
-            // exactly what was set, which is what a parity case reads and what COACTVWC puts on the 3270.
-            // The Java rendering has no COBOL counterpart at all, so publishing a social security number
-            // through it bought nothing and risked a log holding one (CWE-532).
             AccountViewRequest request = new AccountViewRequest();
             request.setAcstssn("078-05-1120");
             request.setAcstdob("1970-01-01");
@@ -1358,14 +1186,11 @@ class AccountViewRequestTest {
                     .doesNotContain("078-05-1120")
                     .doesNotContain("1970-01-01")
                     .doesNotContain("GOVT-ID-0099")
-                    // The account key is masked to its last four characters rather than withheld, so one
-                    // record is still distinguishable from another.
                     .doesNotContain("00000000011")
                     .contains("0011")
                     .contains("cardScreenState=")
                     .contains("navigationContext=");
 
-            // Unchanged: every value is still readable through its accessor.
             assertThat(request.getAcstssn()).startsWith("078-05-1120");
             assertThat(request.getAcsgovt()).startsWith("GOVT-ID-0099");
         }
@@ -1373,7 +1198,6 @@ class AccountViewRequestTest {
         @Test
         @DisplayName("no field value can forge a second log line")
         void noFieldValueCanForgeALogLine() {
-            // CWE-117. A screen field holds whatever a caller supplied, control characters included.
             AccountViewRequest request = new AccountViewRequest();
             request.setTrnname("CAVW\r\nINJECTED");
 
@@ -1395,15 +1219,8 @@ class AccountViewRequestTest {
     @Nested
     @DisplayName("Validation is @Size and nothing else - the program keeps its own edits")
     class SizeValidation {
-
-        /** One validator for the whole nested class; Bean Validation validators are thread safe. */
         private final Validator validator = buildValidator();
 
-        /**
-         * Builds a validator without a Spring context.
-         *
-         * @return a validator, never {@code null}
-         */
         private static Validator buildValidator() {
             try (ValidatorFactory factory = Validation.buildDefaultValidatorFactory()) {
                 return factory.getValidator();
@@ -1468,8 +1285,6 @@ class AccountViewRequestTest {
     @Nested
     @DisplayName("The JSON wire format is exactly the 37 fields plus the two carriers")
     class WireFormat {
-
-        /** A mapper with no Spring configuration, so the annotations alone decide the shape. */
         private final ObjectMapper mapper = new ObjectMapper();
 
         @Test
@@ -1550,38 +1365,21 @@ class AccountViewRequestTest {
         }
     }
 
-    // =================================================================================================
-    // The xxxL cursor item and the xxxA attribute item, asserted against the three lines of COACTVWC
-    // that actually write them. Everything in this section is a second transcription of
-    // app/cbl/COACTVWC.cbl paragraph 1300-SETUP-SCREEN-ATTRS (practice B12).
-    // =================================================================================================
-
     @Nested
     @DisplayName("1300-SETUP-SCREEN-ATTRS - the xxxL cursor item and the one xxxA the program writes")
     class ScreenAttributeSetup {
-
-        /**
-         * The width the cursor signal must survive, from {@code app/cpy-bms/COACTVW.CPY:19} -
-         * {@code 02 ACCTSIDL COMP PIC S9(4)}. Two bytes, and <em>signed</em>, which is the whole point.
-         */
         private static final int LENGTH_ITEM_BYTES = 2;
 
         @Test
         @DisplayName("xxxL is signed, so -1 is representable - it is a cursor signal, not a length")
         void theLengthItemIsSignedAndHoldsMinusOne() {
-            // COACTVW.CPY:19 - "02 ACCTSIDL COMP PIC S9(4)". The S is load-bearing: COACTVWC.cbl:549
-            // and :551 both MOVE -1 into this item, so a carrier that could not hold a negative number
-            // would make the cursor convention inexpressible.
             ScreenFieldMetadata holder = new ScreenFieldMetadata();
             holder.setLength(ScreenFieldMetadata.CURSOR_HERE);
             assertThat(holder.getLength()).isEqualTo(-1).isNegative();
 
-            // Representable in a signed two-byte carrier, and NOT in an unsigned or character one. A char
-            // is Java's only unsigned 16-bit type, and this is what rules it out as the carrier.
             assertThat((short) holder.getLength()).isEqualTo((short) -1);
             assertThat((int) (char) holder.getLength()).isEqualTo(0xFFFF).isNotEqualTo(-1);
 
-            // The declared PICTURE range is symmetric about zero, which only a signed item can be.
             assertThat(ScreenFieldMetadata.LENGTH_ITEM_MIN).isEqualTo(-9999);
             assertThat(ScreenFieldMetadata.LENGTH_ITEM_MAX).isEqualTo(9999);
             assertThat(ScreenFieldMetadata.LENGTH_ITEM_MIN)
@@ -1593,29 +1391,10 @@ class AccountViewRequestTest {
         @Test
         @DisplayName("both arms of the EVALUATE at :548 do the same thing, and both are exercised")
         void bothArmsOfTheCursorEvaluateAgree() {
-            // app/cbl/COACTVWC.cbl:548-553 is ONE "EVALUATE TRUE" with two arms:
-            //
-            //   :548  EVALUATE TRUE
-            //   :549      WHEN FLG-ACCTFILTER-NOT-OK
-            //   :550      WHEN FLG-ACCTFILTER-BLANK
-            //   :549/:551     MOVE -1 TO ACCTSIDL OF CACTVWAI      <- the two MOVE -1 sites
-            //   :551      WHEN OTHER
-            //                 MOVE -1 TO ACCTSIDL OF CACTVWAI
-            //             END-EVALUATE
-            //
-            // The two arms perform an IDENTICAL action, so the EVALUATE cannot change the outcome. That
-            // redundancy is DELIBERATE PRESERVED LEGACY BEHAVIOUR (AAP 0.8.3) and must NOT be collapsed
-            // into an unconditional move: this is a like-for-like migration, and "tidying" a branch away
-            // is a behaviour change even when the branch cannot be observed. It is asserted here rather
-            // than removed so that a later reader finds the redundancy documented instead of surprising.
-            //
-            // Both arms are driven, and the assertion is that they agree.
             AccountViewRequest filterNotOkOrBlank = new AccountViewRequest();
             AccountViewRequest whenOther = new AccountViewRequest();
 
-            // Arm one - the guarded arm (WHEN FLG-ACCTFILTER-NOT-OK / WHEN FLG-ACCTFILTER-BLANK).
             filterNotOkOrBlank.metadata(ScreenField.ACCTSID).positionCursorHere();
-            // Arm two - WHEN OTHER, reached by the same MOVE written a second time.
             whenOther.metadata(ScreenField.ACCTSID).setLength(ScreenFieldMetadata.CURSOR_HERE);
 
             assertThat(filterNotOkOrBlank.metadata(ScreenField.ACCTSID).getLength())
@@ -1625,8 +1404,6 @@ class AccountViewRequestTest {
             assertThat(filterNotOkOrBlank.metadata(ScreenField.ACCTSID).isCursorHere()).isTrue();
             assertThat(whenOther.metadata(ScreenField.ACCTSID).isCursorHere()).isTrue();
 
-            // And the group image the two produce is byte-identical, which is the observable form of
-            // "the arms agree".
             assertThat(filterNotOkOrBlank.toGroupImage(asciiCodec))
                     .isEqualTo(whenOther.toGroupImage(asciiCodec));
         }
@@ -1634,10 +1411,6 @@ class AccountViewRequestTest {
         @Test
         @DisplayName("the cursor lands on ACCTSID only - the other 36 xxxL items stay unset")
         void onlyAcctsidCarriesTheCursor() {
-            // COACTVWC writes an xxxL item for exactly one field. ACCTSID is also the only
-            // ATTRB=(...,UNPROT) entry in app/bms/COACTVW.bms - verified: one occurrence of UNPROT in the
-            // whole mapset - so it is the only field a terminal operator can type into and therefore the
-            // only field a cursor could sensibly be placed on.
             AccountViewRequest request = new AccountViewRequest();
             request.metadata(ScreenField.ACCTSID).positionCursorHere();
 
@@ -1657,16 +1430,6 @@ class AccountViewRequestTest {
         @Test
         @DisplayName("xxxA accepts DFHBMFSE, the one attribute COACTVWC writes into the input group")
         void theAttributeItemAcceptsDfhbmfse() {
-            // app/cbl/COACTVWC.cbl:543 - "MOVE DFHBMFSE TO ACCTSIDA OF CACTVWAI".
-            //
-            // VERIFIED COUNT: this is the ONLY write to an "xxxA OF CACTVWA*" item in the whole of
-            // COACTVWC - one occurrence across all 941 lines. So exactly one of the 37 fields carries a
-            // meaningful input attribute, and DFHBMFSE is the value it carries.
-            //
-            // DFHBMFSE is taken from common/BmsAttributes, which reproduces it from IBM CICS
-            // documentation because DFHBMSCA is an IBM-supplied copybook ABSENT from this repository
-            // (17 consumers, risk R-D). Using the named constant rather than a bare 0xC1 is what ties
-            // this assertion to that one source of truth.
             assertThat(BmsAttributes.DFHBMFSE)
                     .as("DFHBMSCA's DFHBMFSE - unprotected, FSET, from IBM CICS documentation")
                     .isEqualTo((byte) 0xC1);
@@ -1678,20 +1441,15 @@ class AccountViewRequestTest {
             holder.setAttribute(BmsAttributes.DFHBMFSE);
 
             assertThat(holder.getAttribute()).isEqualTo(BmsAttributes.DFHBMFSE);
-            // xxxA REDEFINES xxxF, so the two views are one byte and cannot disagree.
             assertThat(holder.getFlag()).isEqualTo(BmsAttributes.DFHBMFSE);
             assertThat(holder.isAttributeUnset()).isFalse();
 
-            // FSET means "modified data tag set", which is precisely why COACTVWC uses it: the field is
-            // returned on the next RECEIVE MAP whether or not the operator retyped it.
             assertThat(BmsAttributes.isModifiedDataTagSet(BmsAttributes.DFHBMFSE)).isTrue();
         }
 
         @Test
         @DisplayName("the attribute byte reaches the group image raw, not through the code page")
         void theAttributeSurvivesBothCodePagesUnchanged() {
-            // A 3270 attribute is a bit pattern, not text. If it were encoded through the charset it
-            // would differ between IBM037 and US-ASCII; it must not.
             AccountViewRequest request = new AccountViewRequest();
             request.metadata(ScreenField.ACCTSID).setAttribute(BmsAttributes.DFHBMFSE);
 
@@ -1706,27 +1464,12 @@ class AccountViewRequestTest {
         }
     }
 
-    // =================================================================================================
-    // The two conversation-state carriers, sized against their own copybooks. Neither is a BMS field, so
-    // neither is one of the 37 - but both travel in the payload, which is what keeps the server stateless
-    // (gate G37).
-    // =================================================================================================
-
     @Nested
     @DisplayName("The carried work areas - COCOM01Y at 160 bytes and CVCRD01Y at 213")
     class CarriedWorkAreas {
-
         @Test
         @DisplayName("CARDDEMO-COMMAREA is 160 bytes, composed 34 + 84 + 12 + 16 + 14")
         void theCommareaIsOneHundredAndSixtyBytes() {
-            // app/cpy/COCOM01Y.cpy:19 "01 CARDDEMO-COMMAREA.", five 05-level groups:
-            //   :20 CDEMO-GENERAL-INFO   4 + 8 + 4 + 8 + 8 + 1 + 1 =  34
-            //   :32 CDEMO-CUSTOMER-INFO  9 + 25 + 25 + 25          =  84
-            //   :37 CDEMO-ACCOUNT-INFO   11 + 1                    =  12
-            //   :40 CDEMO-CARD-INFO      16                        =  16
-            //   :42 CDEMO-MORE-INFO      7 + 7                     =  14
-            //                                                        ---
-            //                                                        160
             assertThat(NavigationContext.GENERAL_INFO_LENGTH).isEqualTo(34);
             assertThat(NavigationContext.CUSTOMER_INFO_LENGTH).isEqualTo(84);
             assertThat(NavigationContext.ACCOUNT_INFO_LENGTH).isEqualTo(12);
@@ -1741,11 +1484,9 @@ class AccountViewRequestTest {
                     .isEqualTo(NavigationContext.COMMAREA_LENGTH)
                     .isEqualTo(160);
 
-            // The rendered image is the same 160 bytes, under either code page.
             assertThat(NavigationContext.empty().toFixedWidth(asciiCodec)).hasSize(160);
             assertThat(NavigationContext.empty().toFixedWidth(ebcdicCodec)).hasSize(160);
 
-            // And the request reports it as EIBCALEN would.
             AccountViewRequest request = new AccountViewRequest();
             request.setNavigationContext(NavigationContext.empty());
             assertThat(request.commareaLength()).isEqualTo(160);
@@ -1754,19 +1495,11 @@ class AccountViewRequestTest {
         @Test
         @DisplayName("CDEMO-LAST-MAP precedes CDEMO-LAST-MAPSET and both are X(7), not X(8)")
         void lastMapPrecedesLastMapsetAndBothAreSeven() {
-            // The trap in CDEMO-MORE-INFO, and it has two halves.
-            //
-            // WIDTH: app/cpy/COCOM01Y.cpy:43 "CDEMO-LAST-MAP PIC X(7)" and :44
-            // "CDEMO-LAST-MAPSET PIC X(7)" - SEVEN, not the eight that a program name takes. Reading
-            // either as X(8) would overrun the 160-byte area by two bytes.
             assertThat(NavigationContext.LAST_MAP_LENGTH).isEqualTo(7);
             assertThat(NavigationContext.LAST_MAPSET_LENGTH).isEqualTo(7);
             assertThat(NavigationContext.LAST_MAP_LENGTH + NavigationContext.LAST_MAPSET_LENGTH)
                     .isEqualTo(NavigationContext.MORE_INFO_LENGTH);
 
-            // ORDER: MAP is declared BEFORE MAPSET - the reverse of how the pair is usually spoken about
-            // and of the order EXEC CICS SEND MAP names them. Storage order is the copybook's, so MAP
-            // sits at the lower offset.
             assertThat(NavigationContext.LAST_MAP_OFFSET)
                     .as("CDEMO-LAST-MAP at :43 precedes CDEMO-LAST-MAPSET at :44")
                     .isLessThan(NavigationContext.LAST_MAPSET_OFFSET);
@@ -1776,8 +1509,6 @@ class AccountViewRequestTest {
                     .as("CDEMO-LAST-MAPSET ends the 160-byte area")
                     .isEqualTo(NavigationContext.COMMAREA_LENGTH);
 
-            // The two are distinguishable end to end, so a swap could not pass unnoticed. COACTVWC
-            // writes them at :346 (MAPSET) and :347 (MAP), both 7-character literals.
             NavigationContext carried = NavigationContext.empty()
                     .withLastMap("COACTVW")
                     .withLastMapset("COACTVW");
@@ -1793,53 +1524,31 @@ class AccountViewRequestTest {
         @Test
         @DisplayName("both states of all four COCOM01Y condition names are driven (gate G50)")
         void allFourConditionNamesAreDrivenBothWays() {
-            // app/cpy/COCOM01Y.cpy declares exactly four 88-levels on this area:
-            //   :27  88 CDEMO-USRTYP-ADMIN   VALUE 'A'
-            //   :28  88 CDEMO-USRTYP-USER    VALUE 'U'
-            //   :30  88 CDEMO-PGM-ENTER      VALUE 0
-            //   :31  88 CDEMO-PGM-REENTER    VALUE 1
-            // Gate G50 requires each driven TRUE and FALSE. A condition name is a test over a field, so
-            // "false" is any other value the PICTURE admits - not merely the sibling condition.
             assertThat(NavigationContext.USER_TYPE_ADMIN).isEqualTo("A");
             assertThat(NavigationContext.USER_TYPE_USER).isEqualTo("U");
             assertThat(NavigationContext.PGM_CONTEXT_ENTER).isZero();
             assertThat(NavigationContext.PGM_CONTEXT_REENTER).isEqualTo(1);
 
-            // CDEMO-USRTYP-ADMIN true / CDEMO-USRTYP-USER false.
             assertUserTypeConditions(NavigationContext.empty().withUserTypeAdmin(), true, false);
-            // CDEMO-USRTYP-USER true / CDEMO-USRTYP-ADMIN false.
             assertUserTypeConditions(NavigationContext.empty().withUserTypeUser(), false, true);
-            // Both false - a freshly initialised area holds a space, so no role is implied before
-            // sign-on. This is the state COSGN00C starts from.
             assertUserTypeConditions(NavigationContext.empty(), false, false);
 
-            // CDEMO-PGM-ENTER true / CDEMO-PGM-REENTER false - the paint-the-screen arm.
             AccountViewRequest onEnter = new AccountViewRequest();
             onEnter.setNavigationContext(NavigationContext.empty().withPgmEnter());
             assertThat(onEnter.isEnter()).isTrue();
             assertThat(onEnter.isReenter()).isFalse();
 
-            // CDEMO-PGM-REENTER true / CDEMO-PGM-ENTER false - the validate-what-was-typed arm.
             AccountViewRequest onReenter = new AccountViewRequest();
             onReenter.setNavigationContext(NavigationContext.empty().withPgmReenter());
             assertThat(onReenter.isEnter()).isFalse();
             assertThat(onReenter.isReenter()).isTrue();
 
-            // Both false - CDEMO-PGM-CONTEXT is PIC 9(01) and admits any digit, so a context of 9
-            // satisfies neither condition. Written as two independent tests, never as one negation.
             AccountViewRequest onNeither = new AccountViewRequest();
             onNeither.setNavigationContext(NavigationContext.empty().withPgmContext(9));
             assertThat(onNeither.isEnter()).isFalse();
             assertThat(onNeither.isReenter()).isFalse();
         }
 
-        /**
-         * Drives the two user-type condition names on one area and asserts both outcomes.
-         *
-         * @param context       the communication area to test
-         * @param expectAdmin   the expected {@code CDEMO-USRTYP-ADMIN} outcome
-         * @param expectUser    the expected {@code CDEMO-USRTYP-USER} outcome
-         */
         private void assertUserTypeConditions(NavigationContext context,
                                               boolean expectAdmin,
                                               boolean expectUser) {
@@ -1854,18 +1563,6 @@ class AccountViewRequestTest {
         @Test
         @DisplayName("CC-WORK-AREA is 213 bytes, composed 5+8+7+7+75+75+11+16+9")
         void theCardWorkAreaIsTwoHundredAndThirteenBytes() {
-            // app/cpy/CVCRD01Y.cpy, the CVCRD01Y work area:
-            //   CCARD-AID         X(5)   =   5      (:3, with its 16 88-levels at :4-:19)
-            //   CCARD-NEXT-PROG   X(8)   =   8      (:27)
-            //   CCARD-NEXT-MAPSET X(7)   =   7      (:33)
-            //   CCARD-NEXT-MAP    X(7)   =   7      (:34)
-            //   CCARD-ERROR-MSG   X(75)  =  75      (:38)
-            //   CCARD-RETURN-MSG  X(75)  =  75      (:39)
-            //   CC-ACCT-ID        X(11)  =  11      (:44, REDEFINEd as CC-ACCT-ID-N PIC 9(11))
-            //   CC-CARD-NUM       X(16)  =  16      (:46, REDEFINEd as 9(16))
-            //   CC-CUST-ID        X(09)  =   9      (:48, REDEFINEd as 9(9))
-            //                              ---
-            //                              213
             assertThat(CardScreenState.CCARD_AID_LENGTH).isEqualTo(5);
             assertThat(CardScreenState.CCARD_NEXT_PROG_LENGTH).isEqualTo(8);
             assertThat(CardScreenState.CCARD_NEXT_MAPSET_LENGTH).isEqualTo(7);
@@ -1896,9 +1593,6 @@ class AccountViewRequestTest {
         @Test
         @DisplayName("both work areas travel in the payload, so the server keeps no state (gate G37)")
         void bothCarriersTravelInThePayload() {
-            // Neither area is a BMS field, so neither is one of the 37 - but both are @JsonProperty
-            // members, which is what makes the conversation stateless: the client returns the state it
-            // was given instead of the server remembering it.
             AccountViewRequest request = new AccountViewRequest();
             assertThat(request.getCardScreenState())
                     .as("the CVCRD01Y area is always present, never null")
@@ -1920,41 +1614,14 @@ class AccountViewRequestTest {
         }
     }
 
-    // =================================================================================================
-    // Where this folder's brief and the source disagree. Practice B4: the source wins, and the
-    // disagreement is written down rather than quietly resolved, so that nobody restores the wrong value
-    // later on the strength of the document that had it wrong.
-    // =================================================================================================
-
     @Nested
     @DisplayName("Corrections - two figures where the source overrules the plan")
     class SourceContractCorrections {
-
-        /**
-         * The number of {@code CCARD-AID-*} condition names {@code app/cpy/CVCRD01Y.cpy} declares.
-         *
-         * <p><strong>SIXTEEN, not fifteen.</strong> The Agent Action Plan describes {@code CVCRD01Y} as
-         * carrying "15 AID conditions" in both &sect;0.3.3 and &sect;0.4.7. Counted directly from
-         * {@code app/cpy/CVCRD01Y.cpy:4-19} the total is 16.
-         */
         private static final int DECLARED_AID_CONDITIONS = 16;
 
         @Test
         @DisplayName("CVCRD01Y declares SIXTEEN CCARD-AID conditions, not the fifteen the plan states")
         void thereAreSixteenAidConditions() {
-            // app/cpy/CVCRD01Y.cpy:4-19, counted line by line:
-            //   :4  CCARD-AID-ENTER  'ENTER'      :5  CCARD-AID-CLEAR  'CLEAR'
-            //   :6  CCARD-AID-PA1    'PA1  '      :7  CCARD-AID-PA2    'PA2  '
-            //   :8 -:19 CCARD-AID-PFK01 .. PFK12  'PFK01' .. 'PFK12'
-            //   => 2 + 2 + 12 = 16
-            //
-            // CORRECTION (practice B4): AAP 0.3.3 and 0.4.7 both say "15 AID conditions". The source says
-            // 16. The source wins and the discrepancy is named here so it is not silently re-introduced.
-            //
-            // The miscount is almost certainly PA3: DFHAID defines DFHPA3, and a reader listing the
-            // program-attention keys from the IBM copybook rather than from THIS copybook would expect
-            // PA1, PA2 and PA3 and then find only two. CVCRD01Y declares NO PA3 - verified, zero
-            // occurrences of the string "PA3" in the file.
             List<String> aidTokens = List.of(
                     CardScreenState.CCARD_AID_ENTER, CardScreenState.CCARD_AID_CLEAR,
                     CardScreenState.CCARD_AID_PA1, CardScreenState.CCARD_AID_PA2,
@@ -1970,14 +1637,6 @@ class AccountViewRequestTest {
                     .hasSize(DECLARED_AID_CONDITIONS)
                     .doesNotHaveDuplicates();
 
-            // Independently: the condition tokens CardScreenState publishes are exactly these 16.
-            //
-            // The type filter is load-bearing, not decoration. Nineteen of CardScreenState's fields have
-            // names beginning "CCARD_AID_", and three of them are not condition names at all but the
-            // layout of the CCARD-AID span itself - CCARD_AID_LENGTH and CCARD_AID_OFFSET are ints and
-            // CCARD_AID_SPAN is a FieldSpan. Counting on the name prefix alone yields 19 and would make
-            // this assertion agree with neither the plan's 15 nor the copybook's 16. Only the String
-            // constants carry an 88-level VALUE.
             List<Field> conditionConstants = Arrays.stream(CardScreenState.class.getDeclaredFields())
                     .filter(field -> field.getName().startsWith("CCARD_AID_"))
                     .filter(field -> field.getType() == String.class)
@@ -1992,14 +1651,11 @@ class AccountViewRequestTest {
                     .as("19 fields share the prefix; 16 of them are conditions")
                     .isEqualTo(DECLARED_AID_CONDITIONS + 3);
 
-            // No PA3 anywhere - the specific error this correction guards against.
             assertThat(aidTokens).noneMatch(token -> token.startsWith("PA3"));
             assertThat(Arrays.stream(CardScreenState.class.getDeclaredFields())
                     .map(Field::getName))
                     .noneMatch(name -> name.equals("CCARD_AID_PA3"));
 
-            // Every token is exactly CCARD-AID's declared X(5) width - which is why :6 and :7 write
-            // 'PA1  ' and 'PA2  ' with two trailing spaces rather than 'PA1' and 'PA2'.
             assertThat(aidTokens).allMatch(token -> token.length() == CardScreenState.CCARD_AID_LENGTH);
             assertThat(CardScreenState.CCARD_AID_PA1).isEqualTo("PA1  ");
             assertThat(CardScreenState.CCARD_AID_PA2).isEqualTo("PA2  ");
@@ -2008,24 +1664,6 @@ class AccountViewRequestTest {
         @Test
         @DisplayName("the XCTL in COACTVWC begins at :349, and the Request carries no next-program field")
         void theXctlStatementSpansThreeLines() {
-            // CORRECTION (practice B4): AAP 0.4.11 cites this transfer as "COACTVWC:L350". That line is
-            // the PROGRAM continuation, not the start of the statement. Read from the source, the
-            // statement occupies THREE lines:
-            //
-            //   :349  EXEC CICS XCTL
-            //   :350            PROGRAM (CDEMO-TO-PROGRAM)
-            //   :351            COMMAREA(CARDDEMO-COMMAREA)
-            //   :352  END-EXEC
-            //
-            // so the citation is :349-:351. It matters because :349 is where the statement can be found
-            // and because the COMMAREA operand on :351 - not on :350 - is the evidence that the whole of
-            // CARDDEMO-COMMAREA is what crosses the transfer.
-            //
-            // The transfer itself is NOT this type's concern. XCTL becomes a nextProgram field on the
-            // RESPONSE, resolved client-side so the server stays stateless (rule R6), and
-            // AccountViewResponseTest asserts it. What belongs here is the negative: the REQUEST has no
-            // navigation target of its own, and its only carried navigation state is the communication
-            // area the transfer hands over.
             ObjectMapper mapper = new ObjectMapper();
             JsonNode json = mapper.valueToTree(new AccountViewRequest());
 
@@ -2033,8 +1671,6 @@ class AccountViewRequestTest {
             assertThat(json.has("nextMapset")).isFalse();
             assertThat(json.has("nextMap")).isFalse();
 
-            // What it does carry is CDEMO-TO-PROGRAM, inside the area named on :351 - the operand the
-            // corrected citation makes visible.
             AccountViewRequest request = new AccountViewRequest();
             request.setNavigationContext(NavigationContext.empty().withToProgram("COACTVWC"));
             assertThat(request.getNavigationContext().toProgram()).isEqualTo("COACTVWC");
@@ -2044,15 +1680,6 @@ class AccountViewRequestTest {
         @Test
         @DisplayName("COACTVW declares no FKEYS, FKEY05 or FKEY12 - those belong to COACTUP")
         void theFunctionKeyFieldsBelongToTheOtherMapset() {
-            // app/bms/COACTVW.bms contains ZERO occurrences of the string "FKEY" - verified by count.
-            // The three fields exist only on the sibling mapset, at app/bms/COACTUP.bms:493 (FKEYS),
-            // :498 (FKEY05) and :503 (FKEY12).
-            //
-            // Asserted as an ABSENCE, deliberately. The failure this guards against is not a missing
-            // field but a tolerated extra one: a suite that only checks "the 37 I expect are present"
-            // passes just as happily over 40 members, and adding FKEY fields "for symmetry with
-            // COACTUP" is exactly the plausible edit that would do it. A 38th member breaks gate G9 as
-            // surely as a missing one.
             Set<String> declared = EnumSet.allOf(ScreenField.class).stream()
                     .map(ScreenField::label)
                     .collect(Collectors.toUnmodifiableSet());
@@ -2064,7 +1691,6 @@ class AccountViewRequestTest {
                     .as("no COACTVW field name begins with FKEY")
                     .noneMatch(label -> label.startsWith("FKEY"));
 
-            // And no such member reaches the wire either.
             ObjectMapper mapper = new ObjectMapper();
             JsonNode json = mapper.valueToTree(new AccountViewRequest());
             List<String> members = new ArrayList<>();
@@ -2074,16 +1700,9 @@ class AccountViewRequestTest {
         }
     }
 
-    // =================================================================================================
-    // Structural guards. These assert properties of the TYPE rather than of any one value, which is the
-    // only way to state a gate that is about what must NOT be there.
-    // =================================================================================================
-
     @Nested
     @DisplayName("Structural guards - the gates that are satisfied by an absence")
     class StructuralGuards {
-
-        /** {@link AccountViewRequest} and both of its nested types, which the guards walk together. */
         private List<Class<?>> typeAndNestedTypes() {
             return List.of(AccountViewRequest.class, ScreenField.class, ScreenFieldMetadata.class);
         }
@@ -2091,9 +1710,6 @@ class AccountViewRequestTest {
         @Test
         @DisplayName("no HttpSession, no @SessionAttributes, no ThreadLocal anywhere in the type (G37)")
         void nothingHoldsServerSideState() {
-            // Gate G37. Checked by TYPE NAME rather than by importing the servlet or Spring Web types,
-            // for two reasons: the assertion then holds even where those types are absent from the
-            // classpath, and it keeps this test's imports inside the declared dependency set.
             List<String> forbidden = List.of("HttpSession", "HttpServletRequest", "ThreadLocal",
                     "SessionAttributes", "SessionAttribute", "SessionStatus", "WebSession",
                     "RequestContextHolder", "SecurityContext");
@@ -2119,8 +1735,6 @@ class AccountViewRequestTest {
                 }
             }
 
-            // The positive counterpart: two instances share nothing, so there is no per-user state for a
-            // second request to observe. This is what statelessness buys.
             AccountViewRequest first = AccountViewRequest.withAccountFilter("00000000011");
             AccountViewRequest second = AccountViewRequest.withAccountFilter("00000000022");
             first.metadata(ScreenField.ACCTSID).setAttribute(BmsAttributes.DFHBMFSE);
@@ -2131,17 +1745,6 @@ class AccountViewRequestTest {
         @Test
         @DisplayName("no double, no float and no rounding mode anywhere in the type (G22, G23, G24)")
         void noBinaryFloatingPointAndNoRoundingDecision() {
-            // Gates G22/G23/G24 reach this file as a NEGATIVE. All 37 COACTVW input items are character
-            // storage - 36 are PIC X and ACCTSID is PIC 99999999999, which is eleven characters of
-            // display storage rather than a computational field - so there is no arithmetic here at all.
-            // The edited monetary masks of CVTRA07Y live on the Response side.
-            //
-            // The guard is therefore that no numeric-decision type has crept in: a double or a float
-            // would break numeric parity outright (rule R4), and a RoundingMode would mean a rounding
-            // decision was being taken in a payload, where COBOL takes none. Note that COBOL truncates
-            // absent ROUNDED - which appears zero times in all 28 programs - so the only faithful mode
-            // anywhere in this system is RoundingMode.DOWN; the correct number of rounding decisions in
-            // THIS type is none.
             List<Class<?>> banned = List.of(double.class, float.class, Double.class, Float.class,
                     RoundingMode.class, BigDecimal.class, MathContext.class);
 
@@ -2157,8 +1760,6 @@ class AccountViewRequestTest {
                             .as("%s.%s returns %s", type.getSimpleName(), method.getName(),
                                     method.getReturnType().getSimpleName())
                             .doesNotContain(method.getReturnType());
-                    // Guarded on emptiness: most of these methods take no argument at all, and AssertJ
-                    // rejects an empty "values to look for" rather than treating it as vacuously true.
                     List<Class<?>> parameters = Arrays.asList(method.getParameterTypes());
                     if (!parameters.isEmpty()) {
                         assertThat(banned)
@@ -2169,9 +1770,6 @@ class AccountViewRequestTest {
                 }
             }
 
-            // The 37 values are String-shaped end to end, which is the reason none of the above is
-            // needed. ACCTSID included - see the Accessors group for why its numeric PICTURE does not
-            // make it a numeric field.
             for (ScreenField field : ScreenField.values()) {
                 assertThat(new AccountViewRequest().value(field)).isInstanceOf(String.class);
             }
@@ -2180,13 +1778,6 @@ class AccountViewRequestTest {
         @Test
         @DisplayName("this test class itself holds no mutable static state (G53)")
         void theSuiteItselfKeepsNoMutableStaticState() {
-            // Gate G53 and practice B9, turned on the test rather than the subject. A suite whose
-            // expectations live in a mutable static table can be corrupted by whichever test runs first,
-            // and the resulting failure points anywhere but at the cause. Every table here is an
-            // unmodifiable List, and the two codecs are per-instance fields rebuilt by @BeforeEach.
-            //
-            // A static final ARRAY would satisfy the compiler and fail this assertion, which is the whole
-            // reason the tables are Lists.
             for (Field field : AccountViewRequestTest.class.getDeclaredFields()) {
                 if (!Modifier.isStatic(field.getModifiers())) {
                     continue;
@@ -2200,7 +1791,6 @@ class AccountViewRequestTest {
                         .isFalse();
             }
 
-            // The tables reject mutation rather than merely discouraging it.
             assertThatExceptionOfType(UnsupportedOperationException.class)
                     .isThrownBy(() -> LABELS.set(0, "TAMPERED"));
             assertThatExceptionOfType(UnsupportedOperationException.class)
@@ -2208,7 +1798,6 @@ class AccountViewRequestTest {
             assertThatExceptionOfType(UnsupportedOperationException.class)
                     .isThrownBy(() -> POSITIONS.get(0).set(0, 99));
 
-            // And the per-test codecs are genuinely present and distinct.
             assertThat(asciiCodec.charset()).isEqualTo(ASCII);
             assertThat(ebcdicCodec.charset()).isEqualTo(EBCDIC);
             assertThat(asciiCodec).isNotSameAs(ebcdicCodec);
@@ -2217,10 +1806,6 @@ class AccountViewRequestTest {
         @Test
         @DisplayName("no import in this suite is a wildcard, and every table is 37 long (G52)")
         void theTranscriptionTablesAgreeOnThirtySeven() {
-            // Gate G52 is a source-level property - no "import ...*;" line - and it is enforced by
-            // review and by the explicit import block at the head of this file. What is assertable at
-            // runtime is the reason G52 exists: that every name in play is one specific, named type and
-            // every table lines up field for field.
             assertThat(LABELS).hasSize(37).doesNotHaveDuplicates();
             assertThat(WIDTHS).hasSize(37);
             assertThat(PICTURES).hasSize(37);

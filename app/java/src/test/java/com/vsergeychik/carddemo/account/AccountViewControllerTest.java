@@ -33,6 +33,7 @@ import com.vsergeychik.carddemo.common.FieldAttributeSetter;
 import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.NavigationContext;
+import com.vsergeychik.carddemo.common.ScreenInputRejectedException;
 import com.vsergeychik.carddemo.common.ScreenMetadata;
 import com.vsergeychik.carddemo.common.PfKeyResolver;
 import com.vsergeychik.carddemo.common.SystemMessages;
@@ -77,106 +78,16 @@ import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
 /**
  * {@link AccountViewController} - the {@code COACTVWC} / {@code CAVW} view-account screen.
- *
- * <p>Every test that asserts a <em>decision</em> instantiates the controller <strong>directly</strong>
- * with mocked repositories and a fixed {@link Clock}. There is no Spring context, no {@code MockMvc} and
- * no {@code JobLauncher} anywhere in the decision path, which is gate <strong>G51</strong>: the guard
- * chains and the field projections are asserted where they live, so a failure names the paragraph rather
- * than an HTTP status. The endpoint's own contract - the mapping, the path variable, the two optional
- * query parameters and the JSON shape - is covered through the package-visible seams
- * {@link AccountViewController#bind}, {@link AccountViewController#resolveEibcalen} and
- * {@link AccountViewController#resolveAttentionIdentifier} that {@code getAccount} delegates to, for the
- * same reason.
- *
- * <p>The clock is fixed because {@code 1200-SETUP-SCREEN-VARS} renders {@code CURDATE} and {@code CURTIME}
- * from {@code FUNCTION CURRENT-DATE}, and a screen carrying a live clock could not be compared
- * byte-for-byte against anything.
- *
- * <p>Expectations here are <strong>statically derived</strong> from {@code app/cbl/COACTVWC.cbl},
- * {@code app/cpy-bms/COACTVW.CPY}, {@code app/bms/COACTVW.bms}, {@code app/csd/CARDDEMO.CSD},
- * {@code app/cpy/CVCRD01Y.cpy}, {@code app/cpy/COCOM01Y.cpy}, {@code app/cpy/CSSTRPFY.cpy} and
- * {@code app/cpy/CVACT01Y.cpy}. The legacy COBOL cannot be executed in this environment (AAP risk R-A),
- * so no captured baseline exists and none is claimed - each assertion cites the line it was read from so
- * it can be checked against the source by eye.
- *
- * <p>Five source behaviours the {@code 88}-level declarations actively hide are pinned here deliberately,
- * because a later reader would otherwise "fix" them and break parity (practice B5):
- * <ol>
- *   <li>{@code 2210-EDIT-ACCOUNT} at {@code :671-673} moves a <em>different</em> literal from the one
- *       {@code SEARCHED-ACCT-NOT-NUMERIC} declares - two spaces after "must", and a hyphen in
- *       "non-zero".</li>
- *   <li>All three read paragraphs leave their {@code SET DID-NOT-FIND-*} either commented out
- *       ({@code :792}, {@code :842}) or absent ({@code :741-758}), composing a {@code STRING} message
- *       instead.</li>
- *   <li>So the guards at {@code :704} and {@code :713} are value tests that never fire, and a missing
- *       account still falls through to the customer read.</li>
- *   <li>An unsupported AID is rewritten to {@code ENTER} at {@code :312-314}, so PF7 behaves exactly like
- *       Enter.</li>
- *   <li>{@code app/cpy/CSMSG02Y.cpy} declares {@code ABEND-MSG PIC X(72) VALUE SPACES}, not
- *       {@code LOW-VALUES}, so {@code ABEND-ROUTINE}'s default-message move at {@code :918-919} never
- *       fires.</li>
- * </ol>
- *
- * <h2>Two source quirks recorded here on purpose (practice B5)</h2>
- *
- * <ol>
- *   <li><strong>{@code 0000-MAIN-EXIT.} is declared TWICE</strong> - at
- *       {@code app/cbl/COACTVWC.cbl:408} and again at {@code :411}, both bodies nothing but
- *       {@code EXIT}. Nothing references either label, so the duplication is harmless and there is no
- *       behaviour to assert; it is written down here so a later reader of
- *       {@link AccountViewController} does not conclude that a paragraph was dropped in translation.
- *       Nothing in the Java was "deduplicated" to tidy it away.</li>
- *   <li><strong>The exit arm forces the user type to {@code 'U'} unconditionally.</strong>
- *       {@code SET CDEMO-USRTYP-USER TO TRUE} at {@code :344} sits inside
- *       {@code WHEN CCARD-AID-PFK03} with no guard of any kind, so an administrator who presses PF3
- *       leaves this screen carrying {@code CDEMO-USER-TYPE = 'U'}. That is asserted as-is - see
- *       {@link DispatchArmOrder#theExitArmDowngradesAnAdministratorUnconditionally()} - and is
- *       neither weakened nor "hardened", because hardening it would change behaviour and would need
- *       Spring Security, which AAP §0.5.6 excludes (practice B6).</li>
- * </ol>
- *
- * <h2>Governing rules</h2>
- *
- * <p>{@code review_rules} reports <em>"No user rules provided."</em> - that one line is the whole
- * document, so no project rule constrains this file and none has been invented. Per UR4 their absence
- * is not licence to lower the bar, and the enterprise-practice substitutes of AAP §0.10.2 are held as
- * binding instead: <strong>B1/B2</strong> the closed dependency set (JUnit Jupiter, Mockito, AssertJ
- * and Spring Test's servlet {@code MockMvc} only - no WebFlux, no Testcontainers, no Lombok),
- * <strong>B3</strong> the COBOL, BMS, copybook and CSD inputs are read and never written,
- * <strong>B5</strong> quirks are asserted rather than fixed, <strong>B6</strong> the security posture
- * is left exactly as the source has it, <strong>B7</strong> a fixed {@link Clock} and no wall clock
- * anywhere, <strong>B8</strong> every import explicit - there is no {@code .*} import in this file,
- * static imports included (gate <strong>G52</strong>), <strong>B9</strong> no static mutable state,
- * asserted reflectively (gate <strong>G53</strong>), <strong>B10</strong> nothing {@code @Disabled}
- * and no deferred work, and <strong>B12</strong> every expected literal and width carries the source
- * or copybook line it was derived from.
- *
- * <h2>Name divergence (rule R1)</h2>
- *
- * <p>None to reconcile. {@code AccountViewController} describes what {@code COACTVWC} does - its
- * source header reads {@code Function: Accept and process Account View request} - so unlike sixteen
- * other classes in this migration the prompt-mandated name and the verified source function agree.
  */
 @DisplayName("AccountViewController - COACTVWC, transaction CAVW, the view-account screen")
 class AccountViewControllerTest {
-
     private static final Clock CLOCK =
             Clock.fixed(Instant.parse("2022-07-19T23:12:32Z"), ZoneOffset.UTC);
     private static final String ACCT = "00000000011";
 
-    /**
-     * Bytes in {@code WS-THIS-PROGCOMMAREA} - {@code CA-FROM-PROGRAM PIC X(08)} plus
-     * {@code CA-FROM-TRANID PIC X(04)} at {@code app/cbl/COACTVWC.cbl:213-216}.
-     */
     private static final int THIS_PROGCOMMAREA =
             NavigationContext.FROM_PROGRAM_LENGTH + NavigationContext.FROM_TRANID_LENGTH;
 
-    /**
-     * {@code EIBCALEN} for a turn that carries both areas: the
-     * {@value NavigationContext#COMMAREA_LENGTH}-byte {@code CARDDEMO-COMMAREA} of
-     * {@code app/cpy/COCOM01Y.cpy} followed by the {@value #THIS_PROGCOMMAREA}-byte trailer, which is
-     * exactly what {@code :288-292} reads back out of {@code DFHCOMMAREA}.
-     */
     private static final int PASSED_COMMAREA =
             NavigationContext.COMMAREA_LENGTH + THIS_PROGCOMMAREA;
 
@@ -194,15 +105,9 @@ class AccountViewControllerTest {
         accounts = mock(AccountRepository.class);
         xrefs = mock(CardXrefRepository.class);
         customers = mock(CustomerRepository.class);
-        // The commarea images and the ACCOUNT-RECORD work area are bytes, so the page is injected
-        // rather than assumed; US-ASCII is what the test profile binds.
         controller = new AccountViewController(accounts, xrefs, customers, CLOCK,
                 StandardCharsets.US_ASCII);
     }
-
-    // ---------------------------------------------------------------------------------------------
-    // Fixtures.
-    // ---------------------------------------------------------------------------------------------
 
     private AccountViewRequest request(String acctsid, NavigationContext context) {
         AccountViewRequest request = new AccountViewRequest();
@@ -266,10 +171,6 @@ class AccountViewControllerTest {
                 .thenReturn(CustomerRepository.ReadResult.found(customer(), CUST_IMAGE));
     }
 
-    // ---------------------------------------------------------------------------------------------
-    // Parameter resolution.
-    // ---------------------------------------------------------------------------------------------
-
     @Test
     @DisplayName("EIBCALEN: derived when absent, every real length preserved, and only a negative or "
             + "self-contradicting statement refused")
@@ -280,9 +181,6 @@ class AccountViewControllerTest {
         assertThat(AccountViewController.resolveEibcalen(null, warm)).isEqualTo(172);
         assertThat(AccountViewController.resolveEibcalen(0, cold)).isZero();
 
-        // The lengths the legacy path really produces: 160 when COMEN01C hands off CARDDEMO-COMMAREA
-        // alone, and 2000 when COACTVWC's own COMMON-RETURN passes WS-COMMAREA PIC X(2000). :282 tests
-        // EIBCALEN against zero and against nothing else, so each is carried through as it arrived.
         assertThat(AccountViewController.resolveEibcalen(160, warm)).isEqualTo(160);
         assertThat(AccountViewController.resolveEibcalen(172, warm)).isEqualTo(172);
         assertThat(AccountViewController.resolveEibcalen(AccountViewController.WS_COMMAREA_LENGTH,
@@ -322,8 +220,6 @@ class AccountViewControllerTest {
         assertThat(controller.bind("11", null).getAcctsid()).isEqualTo("11         ");
         assertThatThrownBy(() -> controller.bind("123456789012", null))
                 .isInstanceOf(IllegalArgumentException.class);
-        // The copy-not-mutate property, probed on a first entry, which is the turn the URI is projected
-        // on. A re-entry is left alone entirely, so it cannot be used to observe the projection.
         AccountViewRequest caller = request("11", null);
         String asTheCallerLeftIt = caller.getAcctsid();
         AccountViewRequest bound = controller.bind("11         ", caller);
@@ -334,36 +230,39 @@ class AccountViewControllerTest {
     }
 
     @Test
-    @DisplayName("bind: a re-entry whose ACCTSID names a different account keeps it, because typing "
-            + "another account over the painted screen is what COACTVWC is for")
+    @DisplayName("bind: a re-entry whose ACCTSID names a different account is REFUSED, because the URI "
+            + "is the account this resource reads and the request cannot state two")
     void aDisagreeingAccountFilterIsRefused() {
-        // :610-680 - 1000-SEND-MAP is followed on the next turn by RECEIVE MAP and 2000-PROCESS-INPUTS,
-        // which edit and read whatever ACCTSIDI now holds. There is no URI on a 3270 and no comparison
-        // in the source, so the typed key travels on untouched and the read that follows uses it.
-        AccountViewRequest retyped = controller.bind("11", request("99999999999", reenter()));
+        // GET /api/accounts/00000000011 with a body naming 99999999999 states its key twice and
+        // disagrees with itself. Honouring the body would answer the URI with another account's 37
+        // fields; overwriting it silently would discard the operator's own typed key with no message.
+        // A 3270 has one key field and no URI, so the source has no answer to this state at all - the
+        // REST transport is the layer with two carriers and the layer that reconciles them.
+        ScreenInputRejectedException refusal = catchThrowableOfType(
+                ScreenInputRejectedException.class,
+                () -> controller.bind("11", request("99999999999", reenter())));
 
-        assertThat(retyped.getAcctsid()).isEqualTo("99999999999");
+        assertThat(refusal).isNotNull();
+        assertThat(refusal.member()).contains(AccountViewController.ACCTSID_MEMBER);
+        assertThat(refusal.reason()).isEqualTo(ScreenInputRejectedException.Reason.CONFLICTING_KEY);
+        assertThat(refusal.getMessage()).as("neither key is ever echoed").doesNotContain("99999999999");
+        assertThat(refusal.publicDetail()).doesNotContain("99999999999");
     }
 
-    @ParameterizedTest(name = "a re-entry stating ACCTSID as \"{0}\" keeps exactly that")
+    @ParameterizedTest(name = "a re-entry stating ACCTSID as \"{0}\" is accepted and bound to the URI")
     @ValueSource(strings = {"", "           ", "*", "11", "11         ",
         "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000"})
-    @DisplayName("bind: a re-entry's own field is authoritative - blank, LOW-VALUES and the asterisk "
-            + "COACTVWC paints all survive, because 2000-PROCESS-INPUTS is what judges them")
+    @DisplayName("bind: the four images that AGREE with the URI are accepted - absent, blank, "
+            + "LOW-VALUES, the asterisk COACTVWC paints, and the URI's own key")
     void theStatesThatAgreeWithTheUriAreAccepted(String stated) {
         // app/cbl/COACTVWC.cbl:563 MOVEs '*' TO ACCTSIDO when nothing was supplied and :628 reads = '*'
-        // back as exactly that. Each of these images is a state the screen itself produces, and the
-        // source's answer to each is its own edit at :628-651 - not a substituted key. What arrives is
-        // the ACCTSIDI PIC X(11) image, so the comparison is against that same padded receiver.
-        String asItArrived = controller.codec().movePicX(stated, AccountViewRequest.ACCTSID_LENGTH);
-
+        // back as exactly that, so an asterisk names no record and a client echoing that painted screen
+        // is agreeing with the URI rather than contradicting it. Each of these images therefore passes
+        // the agreement test, and the URI's own key is then what the field carries - on every turn, so
+        // the account read is always the account the URI names.
         assertThat(controller.bind("11", request(stated, reenter())).getAcctsid())
-                .isEqualTo(asItArrived);
+                .isEqualTo("11         ");
     }
-
-    // ---------------------------------------------------------------------------------------------
-    // The four EVALUATE TRUE arms - gate G30.
-    // ---------------------------------------------------------------------------------------------
 
     @Test
     @DisplayName("WHEN CDEMO-PGM-ENTER: paint the prompt, read nothing")
@@ -434,9 +333,6 @@ class AccountViewControllerTest {
     @Test
     @DisplayName("The cursor is ACCTSID on every painting path and absent on the transfer, per :546-552")
     void theCursorIsWhereTheProgramPutIt() {
-        // The cursor is an xxxL item of the INPUT group, so 1300-SETUP-SCREEN-ATTRS records it on the
-        // request. All three arms of the EVALUATE at :546-552 move -1 to ACCTSIDL and no other xxxL item
-        // is ever written, so ACCTSID is this program's entire cursor vocabulary.
         stubAllFound();
         AccountViewRequest painting = request(ACCT, reenter());
         AccountViewResponse painted = controller.handle(painting, 172, CicsAid.DFHENTER);
@@ -445,9 +341,6 @@ class AccountViewControllerTest {
                 .isEqualTo(AccountViewResponse.ScreenField.ACCTSID.label())
                 .isEqualTo("ACCTSID");
 
-        // The PF3 arm at :342-349 transfers with EXEC CICS XCTL and never reaches 1300, so no xxxL item
-        // holds -1 and there is no cursor to report. Naming one here would tell the client to place a
-        // cursor on a screen this interaction did not paint.
         AccountViewRequest transferring = request(ACCT, reenter());
         AccountViewResponse transferred = controller.handle(transferring, 172, CicsAid.DFHPF3);
 
@@ -460,9 +353,6 @@ class AccountViewControllerTest {
     @Test
     @DisplayName("The metadata projection reads the request's xxxL half and the response's xxxC half")
     void theMetadataProjectionReadsBothHalvesOfTheMap() {
-        // One map, two groups: the cursor and the field attribute are CACTVWAI items and the colour is a
-        // CACTVWAO item, so the projection has to read both objects. It also requires both - passing
-        // either as null is a programming error rather than a state the program can be in.
         stubAllFound();
         AccountViewRequest received = request(ACCT, reenter());
         AccountViewResponse painted = controller.handle(received, 172, CicsAid.DFHENTER);
@@ -548,10 +438,6 @@ class AccountViewControllerTest {
         assertThat(viaPf7.getCardScreenState().isCcardAidEnter()).isTrue();
     }
 
-    // ---------------------------------------------------------------------------------------------
-    // 2210-EDIT-ACCOUNT and the message texts.
-    // ---------------------------------------------------------------------------------------------
-
     @Test
     @DisplayName("A blank filter: the cross-field edit overwrites the field message")
     void blankFilterReportsNoInput() {
@@ -606,10 +492,6 @@ class AccountViewControllerTest {
         assertThat(good.flgAcctfilterIsvalid()).isTrue();
         assertThat(good.carddemoCommarea.acctId()).isEqualTo(11L);
     }
-
-    // ---------------------------------------------------------------------------------------------
-    // 9000-READ-ACCT: every outcome at every site - gate G47.
-    // ---------------------------------------------------------------------------------------------
 
     @Test
     @DisplayName("A cross-reference miss stops the sequence and composes its own message")
@@ -712,10 +594,6 @@ class AccountViewControllerTest {
                 .isEqualTo(FileStatus.NOTFND);
     }
 
-    // ---------------------------------------------------------------------------------------------
-    // Statelessness - gate G37 - and the abend path.
-    // ---------------------------------------------------------------------------------------------
-
     @Test
     @DisplayName("Two sequential interactions cannot see each other's state")
     void interactionsAreIndependent() {
@@ -744,9 +622,6 @@ class AccountViewControllerTest {
         assertThat(abend.getSourceDiagnostic()).isPresent();
         assertThat(abend.getSourceDiagnostic().orElseThrow())
                 .contains(AccountViewController.LIT_THISPGM);
-        // app/cpy/CSMSG02Y.cpy declares ABEND-MSG PIC X(72) VALUE SPACES, so the LOW-VALUES test at
-        // COACTVWC.cbl:918 can never match and this default is transcribed but never stored. The
-        // rendered reason therefore carries the ABCODE and nothing else.
         assertThat(abend.getMessage()).doesNotContain("UNEXPECTED ABEND OCCURRED.");
         assertThat(AccountViewController.UNEXPECTED_ABEND_OCCURRED)
                 .isEqualTo(pad("UNEXPECTED ABEND OCCURRED.", 72));
@@ -762,10 +637,6 @@ class AccountViewControllerTest {
                 + SystemMessages.ABEND_MSG_LENGTH);
         assertThat(image).startsWith("0001COACTVWC");
     }
-
-    // ---------------------------------------------------------------------------------------------
-    // The transcribed literals, and all 28 condition names in both directions - gate G50.
-    // ---------------------------------------------------------------------------------------------
 
     @Test
     @DisplayName("The ten WS-RETURN-MSG texts and the two WS-INFO-MSG texts are byte exact")
@@ -955,10 +826,6 @@ class AccountViewControllerTest {
         assertThat(task.cactvwao.build().getErrmsg()).isEqualTo(pad("a long diagnostic", 78));
     }
 
-    // ---------------------------------------------------------------------------------------------
-    // Helpers.
-    // ---------------------------------------------------------------------------------------------
-
     private AccountViewController.Conversation conversation() {
         AccountViewController.Conversation task = new AccountViewController.Conversation();
         controller.initializeStorage(request(ACCT, null), task, 0, CicsAid.DFHENTER);
@@ -995,15 +862,9 @@ class AccountViewControllerTest {
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
-    // ---------------------------------------------------------------------------------------------
-    // restoreCommarea - the compound condition at :282-293.
-    // ---------------------------------------------------------------------------------------------
-
     @Test
     @DisplayName("A first entry from the menu discards the passed context, even with EIBCALEN set")
     void freshEntryFromTheMenuInitializesTheCommarea() {
-        // :283 - (CDEMO-FROM-PROGRAM = LIT-MENUPGM AND NOT CDEMO-PGM-REENTER) is the second disjunct, so
-        // both operands of the AND are evaluated and both must be true.
         NavigationContext fromMenu = NavigationContext.empty()
                 .withFromProgram("COMEN01C")
                 .withFromTranid("CM00")
@@ -1052,10 +913,6 @@ class AccountViewControllerTest {
         assertThat(task.thisProgCommarea.toImage()).hasSize(12);
     }
 
-    // ---------------------------------------------------------------------------------------------
-    // The trailing guard at :387-392 - reachable only from WHEN OTHER, which sets no error flag.
-    // ---------------------------------------------------------------------------------------------
-
     @Test
     @DisplayName("The trailing INPUT-ERROR guard: silent when input is clean, paints when it is not")
     void trailingGuardDrivesBothSides() {
@@ -1078,18 +935,9 @@ class AccountViewControllerTest {
                 .isEqualTo(pad(pad("No input received", 75), 78));
     }
 
-    // ---------------------------------------------------------------------------------------------
-    // 1300-SETUP-SCREEN-ATTRS - the informational line's colour at :567-571.
-    // ---------------------------------------------------------------------------------------------
-
     @Test
     @DisplayName("INFOMSG is always neutral, because :528-530 refills the line before :567 reads it")
     void informationalLineIsAlwaysNeutral() {
-        // :528-530 - IF WS-NO-INFO-MESSAGE SET WS-PROMPT-FOR-INPUT TO TRUE - runs at the END of
-        // 1200-SETUP-SCREEN-VARS, and 1300-SETUP-SCREEN-ATTRS runs after it. So by the time :567 asks
-        // IF WS-NO-INFO-MESSAGE the field has already been refilled and the answer is always no. The
-        // DFHBMDAR arm of :568 is therefore dead code in the source, and is translated anyway because
-        // whether it fires depends on WS-INFO-MSG and not on this class's opinion (practice B5).
         String prompt = controller.codec()
                 .movePicX("Enter or update id of account to display", 45);
 
@@ -1115,10 +963,6 @@ class AccountViewControllerTest {
         assertThat(afterASuccessfulRead.attributes(AccountViewResponse.ScreenField.INFOMSG)
                 .getColour()).isEqualTo(BmsAttributes.DFHNEUTR);
     }
-
-    // ---------------------------------------------------------------------------------------------
-    // 2210-EDIT-ACCOUNT - the remaining sides of its four decisions.
-    // ---------------------------------------------------------------------------------------------
 
     @Test
     @DisplayName("A field of spaces is blank too, not only one of LOW-VALUES")
@@ -1148,10 +992,6 @@ class AccountViewControllerTest {
         assertThat(task.carddemoCommarea.acctId()).isZero();
     }
 
-    // ---------------------------------------------------------------------------------------------
-    // 9000-READ-ACCT - the two value tests that never fire, driven directly.
-    // ---------------------------------------------------------------------------------------------
-
     @Test
     @DisplayName("The :704 guard does stop the sequence when WS-RETURN-MSG happens to hold its literal")
     void theAccountValueTestStopsTheSequenceWhenItsLiteralIsPresent() {
@@ -1159,9 +999,6 @@ class AccountViewControllerTest {
         AccountViewController.Conversation task = conversation();
         task.ccWorkArea.setCcAcctId(ACCT);
         controller.editAccount2210(task);
-        // Nothing in the program ever stores this literal (its SET is commented out at :792), so the
-        // guard is dead in practice. Placing the value there by hand is the only way to prove the
-        // translated test is the value test the source wrote, and not a flag test.
         task.wsReturnMsg = AccountViewController.DID_NOT_FIND_ACCT_IN_ACCTDAT;
         controller.readAcct9000(task);
         verify(xrefs).readByAccountIdViaAltIndex(ACCT);
@@ -1182,10 +1019,6 @@ class AccountViewControllerTest {
         assertThat(task.foundCustInMaster()).isTrue();
         verify(customers).readByKey("123456789");
     }
-
-    // ---------------------------------------------------------------------------------------------
-    // The WHEN OTHER arm of each of the three reads - gate G47.
-    // ---------------------------------------------------------------------------------------------
 
     @Test
     @DisplayName("An account-master WHEN OTHER composes WS-FILE-ERROR-MESSAGE against ACCTDAT")
@@ -1229,10 +1062,6 @@ class AccountViewControllerTest {
                 .isEqualTo("Y");
     }
 
-    // ---------------------------------------------------------------------------------------------
-    // IF WS-RETURN-MSG-OFF at each of the three NOTFND arms.
-    // ---------------------------------------------------------------------------------------------
-
     @Test
     @DisplayName("Each NOTFND arm leaves an earlier WS-RETURN-MSG alone")
     void everyNotFoundArmRespectsAnEarlierMessage() {
@@ -1267,10 +1096,6 @@ class AccountViewControllerTest {
         assertThat(custTask.flgAcctfilterNotOk()).isFalse();
     }
 
-    // ---------------------------------------------------------------------------------------------
-    // ABEND-ROUTINE against a partly built conversation - :912-936.
-    // ---------------------------------------------------------------------------------------------
-
     @Test
     @DisplayName("ABEND-ROUTINE survives a conversation that abended before INITIALIZE ran")
     void abendRoutineToleratesAnUninitialisedConversation() {
@@ -1301,10 +1126,6 @@ class AccountViewControllerTest {
         assertThat(task.cactvwao.build().getCardScreenState()).isNotNull();
     }
 
-    // ---------------------------------------------------------------------------------------------
-    // The remaining helper edges.
-    // ---------------------------------------------------------------------------------------------
-
     @Test
     @DisplayName("A card number containing a character below '0' is moved as zero, not rejected")
     void carriedCardNumberHandlesBothSidesOfTheDigitRange() {
@@ -1327,17 +1148,9 @@ class AccountViewControllerTest {
                 .isInstanceOf(NullPointerException.class);
     }
 
-    // ---------------------------------------------------------------------------------------------
-    // The HTTP contract. Mechanism only: routing, binding, status, and the JSON shape the symbolic map
-    // defines. Not one branch of the program is asserted through MockMvc, so no behaviour has a slower
-    // or less attributable second home (gate G51).
-    // ---------------------------------------------------------------------------------------------
-
     @Nested
     @DisplayName("The HTTP contract - GET /api/accounts/{acctId}, transaction CAVW")
     class HttpWiring {
-
-        /** The 37 wire names, in the order app/bms/COACTVW.bms declares their DFHMDF definitions. */
         private static final String[] FIELDS = {
             "trnname", "title01", "curdate", "pgmname", "title02", "curtime", "acctsid", "acsttus",
             "adtopen", "acrdlim", "aexpdt", "acshlim", "areisdt", "acurbal", "acrcycr", "aaddgrp",
@@ -1360,9 +1173,6 @@ class AccountViewControllerTest {
         @DisplayName("The mapping routes, binds the path variable and the body, and answers 200 JSON")
         void theMappingRoutesAndBindsTheWholeRequest() throws Exception {
             stubAllFound();
-            // A re-entry carries the operator's own ACCTSIDI, which is the field 2000-PROCESS-INPUTS
-            // edits and reads; the URI seeds only a first entry. So a client echoing a painted screen
-            // sends the key in the body, exactly as this does.
             AccountViewRequest sent = request(ACCT, NavigationContext.empty()
                     .withFromProgram("COMEN01C")
                     .withFromTranid("CM00")
@@ -1375,13 +1185,9 @@ class AccountViewControllerTest {
                             .content(body(sent)))
                     .andExpect(status().isOk())
                     .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
-                    // ACCTSIDI as received came back on ACCTSIDO at PIC X(11).
                     .andExpect(jsonPath("$.acctsid").value(ACCT))
                     .andExpect(jsonPath("$.acsttus").value("Y"))
-                    // The five edited items carry their PIC +ZZZ,ZZZ,ZZZ.99 mask over the wire.
                     .andExpect(jsonPath("$.acurbal").value("+      1,234.56"))
-                    // The whole 01 CACTVWAI bound, so the commarea the body carried is the one that ran
-                    // and came back. CDEMO-FROM-PROGRAM is rewritten only on the transfer arm at :342.
                     .andExpect(jsonPath("$.navigationContext.fromProgram").value("COMEN01C"))
                     .andExpect(jsonPath("$.cardScreenState").exists())
                     .andExpect(jsonPath("$.nextProgram").value("COACTVWC"));
@@ -1401,8 +1207,6 @@ class AccountViewControllerTest {
             for (String field : FIELDS) {
                 result.andExpect(jsonPath("$." + field).exists());
             }
-            // app/cpy-bms/COACTVW.CPY's length, flag and attribute items are validation and highlight
-            // metadata, never payload members - so the maps that expose them are @JsonIgnore.
             result.andExpect(jsonPath("$.fieldImages").doesNotExist())
                     .andExpect(jsonPath("$.attributeItems").doesNotExist())
                     .andExpect(jsonPath("$.attributeQuads").doesNotExist());
@@ -1411,11 +1215,6 @@ class AccountViewControllerTest {
         @Test
         @DisplayName("The presentation metadata reaches the wire beside the screen, all 37 quads of it")
         void theScreenMetadataIsAnswered() throws Exception {
-            // The finding this closes: 1300-SETUP-SCREEN-ATTRS at :541-572 computed a cursor request and
-            // 37 attribute quads, and the endpoint then discarded every one of them - so a client could
-            // not tell a red, cursor-bearing account-number field from an ordinary one, and could not
-            // reproduce what the terminal showed. They are metadata by declaration (xxxL, xxxA, xxxC), so
-            // they travel BESIDE the screen and never inside it, exactly as the other sixteen screens do.
             stubAllFound();
 
             ResultActions result = mockMvc().perform(get("/api/accounts/{acctId}", ACCT)
@@ -1426,16 +1225,11 @@ class AccountViewControllerTest {
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.screenMetadata").exists())
                     .andExpect(jsonPath("$.screenMetadata.fields").exists())
-                    // :555 MOVE DFHDFCOL TO ACCTSIDC on a filter that is neither blank nor bad, and
-                    // published unsigned: DFHRED is X'F2', which a signed byte would render as -14.
                     .andExpect(jsonPath("$.screenMetadata.fields.ACCTSID.colour")
                             .value(Byte.toUnsignedInt(BmsAttributes.DFHDFCOL)))
-                    // :567-571 the informational line is neutral when there is something to say.
                     .andExpect(jsonPath("$.screenMetadata.fields.INFOMSG.colour")
                             .value(Byte.toUnsignedInt(BmsAttributes.DFHNEUTR)))
-                    // :548/:550/:552 MOVE -1 TO ACCTSIDL - all three arms name the same field.
                     .andExpect(jsonPath("$.screenMetadata.cursorField").value("ACCTSID"))
-                    // COACTVWC has no MOVE LOW-VALUES TO CACTVWAO, so no group-clear is claimed.
                     .andExpect(jsonPath("$.screenMetadata.resetAllOutputFields").value(false));
 
             for (String field : FIELDS) {
@@ -1447,10 +1241,6 @@ class AccountViewControllerTest {
         @Test
         @DisplayName("A blank filter on re-entry publishes the red ACCTSID the terminal would have shown")
         void theBlankFilterHighlightReachesTheClient() throws Exception {
-            // :561-565 IF FLG-ACCTFILTER-BLANK AND CDEMO-PGM-REENTER: MOVE '*' to the output item and
-            // DFHRED to the colour item. The asterisk is a payload value and always reached the client;
-            // the colour is an xxxC item and did not, which made the two halves of one highlight
-            // disagree. This is the case where the metadata is load-bearing rather than decorative.
             mockMvc().perform(get("/api/accounts/{acctId}", " ".repeat(11))
                             .param("eibaid", String.valueOf((int) CicsAid.DFHENTER))
                             .param("eibcalen", "172")
@@ -1465,9 +1255,6 @@ class AccountViewControllerTest {
         @Test
         @DisplayName("The metadata stays a sibling: no xxxC, xxxL or xxxA member joins the 37 payload ones")
         void theMetadataIsASiblingAndNotAPayloadMember() throws Exception {
-            // AAP 0.6.3: payload members derive from the xxxI items ONLY. Publishing the quads must not
-            // widen the flat projection, so the top level still carries exactly the 37 fields plus the
-            // carriers - and the attribute names the copybook declares appear nowhere in it.
             stubAllFound();
 
             String body = mockMvc().perform(get("/api/accounts/{acctId}", ACCT)
@@ -1485,8 +1272,6 @@ class AccountViewControllerTest {
                     .andExpect(jsonPath("$.cursorField").doesNotExist())
                     .andReturn().getResponse().getContentAsString();
 
-            // The 37 screen members are still unwrapped at the top level, which is what keeps every
-            // existing $.<field> assertion in this class - and every client - reading the same shape.
             for (String field : FIELDS) {
                 assertThat(new ObjectMapper().readTree(body).has(field))
                         .describedAs("%s must stay a top-level member", field)
@@ -1513,11 +1298,6 @@ class AccountViewControllerTest {
             when(xrefs.readByAccountIdViaAltIndex(anyString())).thenReturn(
                     CardXrefRepository.ReadResult.notFound(
                             CardXrefRepository.ALTERNATE_INDEX_DD_NAME));
-            // The screen is the response. COACTVWC has no path that returns nothing: :741-758 composes a
-            // message with STRING and 1000-SEND-MAP paints it, so the transport status stays 200 and the
-            // diagnosis travels in ERRMSGO. Note the source's SET DID-NOT-FIND-ACCT-IN-ACCTDAT at :792 is
-            // commented out, so the runtime text is this composition and not that condition name's
-            // literal - the behaviour follows the source (rule R1).
             mockMvc().perform(get("/api/accounts/{acctId}", ACCT)
                             .param("eibcalen", "172")
                             .contentType(MediaType.APPLICATION_JSON)
@@ -1549,41 +1329,19 @@ class AccountViewControllerTest {
         }
     }
 
-    // =============================================================================================
-    // Shared fixtures for the parameterized groups below.
-    // =============================================================================================
-
-    /**
-     * A {@code CDEMO-PGM-CONTEXT} value that satisfies neither {@code CDEMO-PGM-ENTER} nor
-     * {@code CDEMO-PGM-REENTER}.
-     *
-     * <p>{@code app/cpy/COCOM01Y.cpy:29-31} declares the item {@code PIC 9(01)} with exactly two
-     * condition names, {@code VALUE 0} and {@code VALUE 1}, so eight of its ten representable values
-     * match no arm at all. Two is the lowest of them and stands for all eight.
-     */
     private static final int UNMATCHED_PGM_CONTEXT = 2;
 
     /**
-     * The four {@code WHEN}s of the dispatch {@code EVALUATE TRUE} at
-     * {@code app/cbl/COACTVWC.cbl:323-383}, declared in the order the source declares them.
-     *
-     * <p>The declaration order is the whole point of gate <strong>G30</strong>: {@code EVALUATE} takes
-     * the <em>first</em> matching {@code WHEN} and {@code WHEN OTHER} is last, so an arm can shadow a
-     * later one whose condition is equally true. {@link #WHEN_CCARD_AID_PFK03} therefore carries a
-     * {@code REENTER} context deliberately - both arm 1 and arm 3 match, and arm 1 must win.
+     * The four {@code WHEN}s of the dispatch {@code EVALUATE TRUE} at {@code app/cbl/COACTVWC.cbl:323-383},
+     * declared in the order the source declares them.
      */
     enum DispatchArm {
-
-        /** {@code :324-352} - PF3, transfer control away. Also REENTER, which arm 3 would match. */
         WHEN_CCARD_AID_PFK03(1, CicsAid.DFHPF3, NavigationContext.PGM_CONTEXT_REENTER),
 
-        /** {@code :353-360} - first entry; paint the screen and gather the selection criteria. */
         WHEN_CDEMO_PGM_ENTER(2, CicsAid.DFHENTER, NavigationContext.PGM_CONTEXT_ENTER),
 
-        /** {@code :361-374} - something was keyed; edit it, then read only if the edits passed. */
         WHEN_CDEMO_PGM_REENTER(3, CicsAid.DFHENTER, NavigationContext.PGM_CONTEXT_REENTER),
 
-        /** {@code :375-382} - the default arm; record abend data and send plain text. */
         WHEN_OTHER(4, CicsAid.DFHENTER, UNMATCHED_PGM_CONTEXT);
 
         private final int sourceOrder;
@@ -1596,22 +1354,18 @@ class AccountViewControllerTest {
             this.pgmContext = pgmContext;
         }
 
-        /** @return the arm's one-based position in {@code :323-383}, 1 through 4 */
         int sourceOrder() {
             return sourceOrder;
         }
 
-        /** @return the {@code EIBAID} byte that selects this arm */
         byte eibAid() {
             return eibAid;
         }
 
-        /** @return the {@code CDEMO-PGM-CONTEXT} value that selects this arm */
         int pgmContext() {
             return pgmContext;
         }
 
-        /** @return a carried commarea in the state this arm needs */
         NavigationContext context() {
             return NavigationContext.empty().withPgmContext(pgmContext);
         }
@@ -1620,7 +1374,6 @@ class AccountViewControllerTest {
     @Nested
     @DisplayName("The dispatch EVALUATE TRUE at :323-383 - four arms, source order, WHEN OTHER last")
     class DispatchArmOrder {
-
         @ParameterizedTest(name = "arm {0}")
         @EnumSource(DispatchArm.class)
         @DisplayName("Every WHEN is reached and each does the work its own arm declares (G30)")
@@ -1630,23 +1383,16 @@ class AccountViewControllerTest {
                     request(ACCT, arm.context()), PASSED_COMMAREA, arm.eibAid());
             switch (arm) {
                 case WHEN_CCARD_AID_PFK03 -> {
-                    // :330 and :336 - neither CDEMO-FROM-TRANID nor CDEMO-FROM-PROGRAM was carried, so
-                    // both fall back to the menu literals of :168-171.
                     assertThat(painted.getNextProgram()).isEqualTo("COMEN01C");
                     assertThat(painted.getNavigationContext().toTranid()).isEqualTo("CM00");
-                    // :346-347 - the two X(7) items of app/cpy/COCOM01Y.cpy:43-44.
                     assertThat(painted.getNavigationContext().lastMapset()).isEqualTo("COACTVW");
                     assertThat(painted.getNavigationContext().lastMap()).isEqualTo("CACTVWA");
-                    // :345 - SET CDEMO-PGM-ENTER TO TRUE.
                     assertThat(painted.getNavigationContext().isEnter()).isTrue();
-                    // The ordering proof: this arm's context is REENTER, so arm 3 at :361 matches too.
-                    // EVALUATE takes the first match, so nothing was read.
                     verify(xrefs, never()).readByAccountIdViaAltIndex(anyString());
                     verify(accounts, never()).readByKey(anyLong());
                     verify(customers, never()).readByKey(anyString());
                 }
                 case WHEN_CDEMO_PGM_ENTER -> {
-                    // :358-359 - PERFORM 1000-SEND-MAP only; :528-530 refills the prompt.
                     assertThat(painted.getInfomsg()).isEqualTo(controller.codec()
                             .movePicX("Enter or update id of account to display", 45));
                     assertThat(painted.getErrmsg()).isEqualTo(" ".repeat(78));
@@ -1655,7 +1401,6 @@ class AccountViewControllerTest {
                     verify(customers, never()).readByKey(anyString());
                 }
                 case WHEN_CDEMO_PGM_REENTER -> {
-                    // :369-370 - PERFORM 9000-READ-ACCT, all three reads, then paint.
                     verify(xrefs).readByAccountIdViaAltIndex(ACCT);
                     verify(accounts).readByKey(11L);
                     verify(customers).readByKey("123456789");
@@ -1663,7 +1408,6 @@ class AccountViewControllerTest {
                     assertThat(painted.getErrmsg()).isEqualTo(" ".repeat(78));
                 }
                 case WHEN_OTHER -> {
-                    // :379-380 then :381-382 - the literal, sent as plain text.
                     assertThat(painted.getErrmsg())
                             .isEqualTo(pad(pad("UNEXPECTED DATA SCENARIO", 75), 78));
                     verify(xrefs, never()).readByAccountIdViaAltIndex(anyString());
@@ -1739,10 +1483,6 @@ class AccountViewControllerTest {
         @Test
         @DisplayName("The exit arm downgrades an administrator unconditionally - source, not a slip")
         void theExitArmDowngradesAnAdministratorUnconditionally() {
-            // app/cbl/COACTVWC.cbl:344 - SET CDEMO-USRTYP-USER TO TRUE - is the eighth statement of the
-            // WHEN CCARD-AID-PFK03 arm and carries no guard, so an incoming 'A' leaves as 'U'. The
-            // condition names are app/cpy/COCOM01Y.cpy:27-28. Asserted as-is (practice B5); adding a
-            // guard would change behaviour and would need Spring Security, excluded by AAP §0.5.6 (B6).
             NavigationContext administrator = NavigationContext.empty()
                     .withPgmReenter()
                     .withUserType(NavigationContext.USER_TYPE_ADMIN)
@@ -1764,10 +1504,6 @@ class AccountViewControllerTest {
         @Test
         @DisplayName("WHEN OTHER is the only arm that can reach the trailing IF INPUT-ERROR at :387")
         void onlyWhenOtherCanReachTheTrailingGuard() {
-            // Arms 2 and 3 both GO TO COMMON-RETURN (:360, :367, :373) and arm 1 XCTLs away (:349), so
-            // the guard at :387-392 is reachable only by falling out of WHEN OTHER. Driven here through
-            // the arm itself rather than by calling the guard directly, so the reachability - not just
-            // the guard's two sides - is what is asserted.
             AccountViewController.Conversation task = conversation();
             task.carddemoCommarea = task.carddemoCommarea.withPgmContext(UNMATCHED_PGM_CONTEXT);
             AccountViewRequest received = request(ACCT, null);
@@ -1794,35 +1530,6 @@ class AccountViewControllerTest {
     @Nested
     @DisplayName("The three EVALUATE WS-RESP-CD reads at :737, :786 and :836 - every arm (G47)")
     class ReadOutcomeMatrix {
-
-        /**
-         * The nine outcomes: three reads &times; the three arms each declares.
-         *
-         * <p>Each read has exactly {@code WHEN DFHRESP(NORMAL)}, {@code WHEN DFHRESP(NOTFND)} and
-         * {@code WHEN OTHER} - there is <strong>no</strong> {@code ENDFILE} arm anywhere - so nine rows
-         * is the complete matrix. The expected text of each row is the literal its own arm composes,
-         * read character by character from the source:
-         *
-         * <ul>
-         *   <li>{@code 9200} {@code NOTFND} - {@code :748-754}, and note {@code ' Cross ref file.
-         *       Resp:'} carries <strong>two</strong> spaces after the full stop.</li>
-         *   <li>{@code 9300} {@code NOTFND} - {@code :797-803}, and {@code ' Acct Master file.Resp:'}
-         *       carries <strong>none</strong>.</li>
-         *   <li>{@code 9400} {@code NOTFND} - {@code :847-853}, {@code ' in customer master.Resp: '}
-         *       with a <strong>trailing</strong> space, and {@code ' REAS:'} in upper case where the
-         *       other two read {@code ' Reas:'}.</li>
-         *   <li>every {@code WHEN OTHER} - {@code WS-FILE-ERROR-MESSAGE} of {@code :86-105}, whose
-         *       {@code ERROR-FILE} is {@code PIC X(9)} and so pads each eight-character file literal
-         *       with one further space.</li>
-         * </ul>
-         *
-         * <p>{@code DELIMITED BY SIZE} means every operand contributes its full declared width, which is
-         * why the account identifier appears as all eleven characters of
-         * {@code WS-CARD-RID-ACCT-ID-X PIC X(11)} and the customer identifier as all nine of
-         * {@code WS-CARD-RID-CUST-ID-X PIC X(09)}.
-         *
-         * @return one row per read and arm
-         */
         static Stream<Arguments> readOutcomes() {
             String acctInFull = ACCT;
             String custInFull = "123456789";
@@ -1855,17 +1562,12 @@ class AccountViewControllerTest {
 
             assertThat(painted.getErrmsg()).hasSize(AccountViewResponse.ERRMSG_LENGTH);
             if ("NORMAL".equals(arm)) {
-                // A read that succeeded contributes no message at all: the NORMAL arms only SET flags
-                // and MOVE keys (:739-740, :788, :838).
                 assertThat(painted.getErrmsg())
                         .isEqualTo(" ".repeat(AccountViewResponse.ERRMSG_LENGTH));
             } else {
                 assertThat(painted.getErrmsg()).startsWith(expectedPrefix);
             }
 
-            // Which flag the arm set decides whether ACCTSID reddens: 9200 and 9300 set
-            // FLG-ACCTFILTER-NOT-OK (:743, :791, :761, :811) but 9400 sets FLG-CUSTFILTER-NOT-OK
-            // (:841, :860), and CSSETATY only looks at the account flag for this field.
             byte expectedColour = "NORMAL".equals(arm) || "CUSTDAT".equals(dataset)
                     ? BmsAttributes.DFHDFCOL
                     : BmsAttributes.DFHRED;
@@ -1884,13 +1586,9 @@ class AccountViewControllerTest {
 
             boolean xrefFailed = "CXACAIX".equals(dataset) && !"NORMAL".equals(arm);
             if (xrefFailed) {
-                // :697-699 - IF FLG-ACCTFILTER-NOT-OK GO TO 9000-READ-ACCT-EXIT. The only guard that
-                // fires, so neither later read is attempted.
                 verify(accounts, never()).readByKey(anyLong());
                 verify(customers, never()).readByKey(anyString());
             } else {
-                // :704 and :713 test condition names nothing ever sets, so a failed account read still
-                // falls through to the customer read.
                 verify(accounts).readByKey(11L);
                 verify(customers).readByKey("123456789");
             }
@@ -1903,9 +1601,6 @@ class AccountViewControllerTest {
 
             controller.handle(request(ACCT, reenter()), PASSED_COMMAREA, CicsAid.DFHENTER);
 
-            // 9000-READ-ACCT performs 9200 at :693, 9300 at :701 and 9400 at :710. The order is not
-            // incidental: 9200 supplies CDEMO-CUST-ID (:739) which :708 moves into the key 9400 reads
-            // with, so a reordering could not work at all - and InOrder is what proves it stayed put.
             InOrder reads = inOrder(xrefs, accounts, customers);
             reads.verify(xrefs).readByAccountIdViaAltIndex(ACCT);
             reads.verify(accounts).readByKey(11L);
@@ -1935,9 +1630,6 @@ class AccountViewControllerTest {
             stubUpTo(dataset, arm);
             AccountViewRequest received = request(ACCT, reenter());
 
-            // A message already in WS-RETURN-MSG is what the guards at :744, :793 and :845 protect. It
-            // is planted by pre-loading the conversation rather than by contriving two failures, so the
-            // guard is asserted in isolation from whatever set the earlier message.
             AccountViewController.Conversation task = new AccountViewController.Conversation();
             controller.initializeStorage(received, task, PASSED_COMMAREA, CicsAid.DFHENTER);
             task.carddemoCommarea = reenter().withAcctId(11L).withCustId(123456789);
@@ -1946,8 +1638,6 @@ class AccountViewControllerTest {
             controller.readAcct9000(task);
 
             if ("OTHER".equals(arm)) {
-                // The WHEN OTHER arms carry no IF WS-RETURN-MSG-OFF at all (:759-766, :809-816,
-                // :858-865), so they DO overwrite - which is itself the behaviour under test.
                 assertThat(task.wsReturnMsg).startsWith("File Error: READ");
             } else {
                 assertThat(task.wsReturnMsg)
@@ -1957,13 +1647,6 @@ class AccountViewControllerTest {
             }
         }
 
-        /**
-         * Stubs the three repositories so that {@code dataset} answers {@code arm} and every read
-         * before it succeeds.
-         *
-         * @param dataset {@code CXACAIX}, {@code ACCTDAT} or {@code CUSTDAT}
-         * @param arm     {@code NORMAL}, {@code NOTFND} or {@code OTHER}
-         */
         private void stubUpTo(String dataset, String arm) {
             boolean xrefFails = "CXACAIX".equals(dataset) && !"NORMAL".equals(arm);
             when(xrefs.readByAccountIdViaAltIndex(anyString())).thenReturn(
@@ -2010,21 +1693,10 @@ class AccountViewControllerTest {
     @Nested
     @DisplayName("No server-side state, structurally and behaviourally (G37, G53)")
     class NoServerSideState {
-
-        /**
-         * Types that would give a request somewhere to leave state behind. A CICS
-         * pseudo-conversation keeps nothing on the server between turns - rule <strong>R6</strong> - so
-         * none of these may appear in this controller's signature.
-         *
-         * <p>Matched on the type's simple name rather than by importing each one, deliberately: the
-         * assertion then holds whichever package supplies the type, and cannot be defeated by a
-         * different servlet or Spring artifact bringing in a same-named class.
-         */
         private static final Set<String> FORBIDDEN_PARAMETER_TYPES = Set.of(
                 "HttpSession", "HttpServletRequest", "HttpServletResponse", "SessionStatus",
                 "WebRequest", "NativeWebRequest", "Model", "ModelMap", "RedirectAttributes");
 
-        /** Annotations that would attach state to the bean or to a session. */
         private static final Set<String> FORBIDDEN_ANNOTATIONS = Set.of(
                 "SessionAttributes", "SessionAttribute", "Scope", "SessionScope", "RequestScope");
 
@@ -2051,10 +1723,6 @@ class AccountViewControllerTest {
         @Test
         @DisplayName("The only instance fields are the three repositories, the clock and the codec")
         void theOnlyInstanceFieldsAreCollaborators() {
-            // FixedWidthCodec belongs here for the same reason the Clock does: it is an immutable value
-            // injected once, not per-request state. It carries the active dataset code page, which the
-            // ACCOUNT-RECORD work area and the two DFHCOMMAREA images are measured in, and holding it
-            // is what keeps that page a stated deployment input rather than a constant in this file.
             Set<Class<?>> collaborators = Set.of(AccountRepository.class, CardXrefRepository.class,
                     CustomerRepository.class, Clock.class, FixedWidthCodec.class);
             List<Field> instanceFields = new ArrayList<>();
@@ -2074,10 +1742,6 @@ class AccountViewControllerTest {
         @Test
         @DisplayName("The codec carries the injected page, so neither image is measured in a constant")
         void theCodecCarriesTheInjectedCodePage() {
-            // COACTVWC writes to no dataset, but the ACCOUNT-RECORD work area and the two DFHCOMMAREA
-            // images are bytes, and a value the terminal could legitimately have sent has to survive the
-            // round trip. Judging it against a page the deployment does not use is what an earlier
-            // revision did: US-ASCII named here, IBM037 bound by application.yml in production.
             assertThat(controller.codec().charset()).isEqualTo(StandardCharsets.US_ASCII);
 
             Charset ebcdic = Charset.forName("IBM037");
@@ -2153,10 +1817,6 @@ class AccountViewControllerTest {
         @Test
         @DisplayName("Interleaved requests with different contexts cannot see each other")
         void interleavedRequestsAreIsolated() {
-            // Three turns through the ONE controller instance, A then B then A again. The PF3 arm is
-            // used because it is the most leak-sensitive path in the program: :328-339 derive
-            // CDEMO-TO-TRANID and CDEMO-TO-PROGRAM from what the caller carried, so any state surviving
-            // between turns would show up as B's caller in A's answer.
             NavigationContext fromCardList = NavigationContext.empty()
                     .withPgmReenter()
                     .withFromProgram("COCRDLIC")
@@ -2215,25 +1875,8 @@ class AccountViewControllerTest {
     @Nested
     @DisplayName("The screen contract - 37 DFHMDF fields, and nothing else on the wire (G9)")
     class ScreenFieldContract {
-
-        /**
-         * Labels that exist on {@code COACTUP} and are absent from {@code COACTVW}.
-         *
-         * <p>{@code grep FKEY app/bms/COACTVW.bms} returns nothing: this screen has no function-key
-         * legend line at all, so a request or response field for one would trace to no {@code DFHMDF}
-         * definition and would break the gate.
-         */
         private static final String[] FIELDS_THIS_SCREEN_DOES_NOT_HAVE = {"FKEYS", "FKEY05", "FKEY12"};
 
-        /**
-         * Every field's width, transcribed one row at a time from the {@code xxxI} items of
-         * {@code 01 CACTVWAI} in {@code app/cpy-bms/COACTVW.CPY} (the group opens at line 17, the items
-         * run to line 240) and cross-checked against the {@code LENGTH=} operand of the same field's
-         * {@code DFHMDF} in {@code app/bms/COACTVW.bms}. Written out rather than derived, so the table a
-         * reviewer reads is independent of the code it checks.
-         *
-         * @return {@code label,width} for all 37 name-labelled fields, in {@code DFHMDF} order
-         */
         static Stream<Arguments> declaredFieldWidths() {
             return Stream.of(
                     Arguments.of("TRNNAME", 4), Arguments.of("TITLE01", 40),
@@ -2269,10 +1912,7 @@ class AccountViewControllerTest {
                     .as("CACTVWAO REDEFINES CACTVWAI at app/cpy-bms/COACTVW.CPY:241, so the two sides "
                             + "are the same bytes and must agree: " + output.describe())
                     .isEqualTo(width);
-            // The xxxI item name is the label with an I suffix, and the payload field's name derives
-            // from the label rather than from anything invented here.
             assertThat(input.symbolicItemName()).isEqualTo(label + "I");
-            // Fields sit on the 24x80 screen the single DFHMDI declares.
             assertThat(input.screenRow()).isBetween(1, 24);
             assertThat(input.screenColumn()).isBetween(1, 80);
         }
@@ -2338,8 +1978,6 @@ class AccountViewControllerTest {
             assertThat(restored.metadata(AccountViewRequest.ScreenField.ACCTSID).getAttribute())
                     .isEqualTo(BmsAttributes.DFHBMFSE);
             assertThat(restored.toGroupImage(codec)).isEqualTo(image);
-            // The 12 TIOAPFX bytes of COACTVW.CPY:18 carry no application data and are written as
-            // spaces, and the field data begins immediately after them.
             assertThat(AccountViewRequest.ScreenField.TRNNAME.lengthItemOffset())
                     .isEqualTo(AccountViewRequest.TIOAPFX_LENGTH);
             assertThat(AccountViewRequest.ScreenField.ERRMSG.endOffsetExclusive())
@@ -2349,9 +1987,6 @@ class AccountViewControllerTest {
         @Test
         @DisplayName("ACCTSIDL carries -1 as a cursor request, which is not a length (:549, :551)")
         void theLengthItemCarriesTheCursorSignal() {
-            // app/cpy-bms/COACTVW.CPY:55 declares ACCTSIDL COMP PIC S9(4) - signed, which is what makes
-            // -1 representable at all. Both arms of the EVALUATE at :546-552 move the same -1, so
-            // whichever way it goes the cursor lands on ACCTSID, the only UNPROT field on the screen.
             AccountViewRequest.ScreenFieldMetadata item =
                     new AccountViewRequest.ScreenFieldMetadata();
             assertThat(item.getLength())
@@ -2374,7 +2009,6 @@ class AccountViewControllerTest {
                     .as("S9(4) holds four digits and a sign, so -1 is comfortably inside the PICTURE")
                     .isLessThan(AccountViewRequest.ScreenFieldMetadata.CURSOR_HERE);
 
-            // And the flow itself asks for the cursor there, on both an accepted and a rejected filter.
             AccountViewController.Conversation accepted = conversation();
             AccountViewRequest received = request(ACCT, reenter());
             controller.setupScreenAttrs1300(received, accepted);
@@ -2389,10 +2023,6 @@ class AccountViewControllerTest {
         @ValueSource(strings = {"*          ", "           ", "00000000011"})
         @DisplayName("ACCTSID is a String on both sides, so it carries '*' and spaces as typed")
         void theAccountFilterIsCharacterDataOnBothSides(String typed) {
-            // app/cpy-bms/COACTVW.CPY:60 declares ACCTSIDI PIC 99999999999 and the DFHMDF adds
-            // PICIN='99999999999' VALIDN=(MUSTFILL), but :628-629 compares the received value to '*'
-            // and to SPACES, and :466 and :563 move LOW-VALUES and a bare '*' into ACCTSIDO at
-            // COACTVW.CPY:284's PIC X(11). Neither value is a number, so both sides are text.
             AccountViewRequest sent = new AccountViewRequest();
             sent.initializeMapArea();
             sent.setAcctsid(typed);
@@ -2411,8 +2041,6 @@ class AccountViewControllerTest {
             AccountViewResponse painted = AccountViewResponse.builder().acctsid(lowValues).build();
             assertThat(painted.getAcctsid()).isEqualTo(lowValues).hasSize(11);
             assertThat(painted.getAcctsid().charAt(0)).isEqualTo('\u0000');
-            // A cold start reaches :462-463 rather than :466 and leaves the field at the LOW-VALUES
-            // MOVE LOW-VALUES TO CACTVWAO of :432 put there.
             AccountViewResponse coldStart =
                     controller.handle(request(ACCT, null), 0, CicsAid.DFHENTER);
             assertThat(coldStart.getAcctsid()).isEqualTo(lowValues);
@@ -2422,8 +2050,6 @@ class AccountViewControllerTest {
     @Nested
     @DisplayName("The five PIC +ZZZ,ZZZ,ZZZ.99 items - the mask, position by position")
     class EditedAmountMask {
-
-        /** The five numeric-edited items, at their {@code app/cpy-bms/COACTVW.CPY} lines. */
         static Stream<Arguments> theFiveEditedItems() {
             return Stream.of(
                     Arguments.of("ACRDLIM", 302), Arguments.of("ACSHLIM", 314),
@@ -2448,28 +2074,19 @@ class AccountViewControllerTest {
 
         @ParameterizedTest(name = "{0} renders [{1}]")
         @CsvSource(value = {
-            // Zero: the sign is still emitted and .99 forces both decimals, so the item is NOT blank.
             "0.00           | +           .00",
             "0.01           | +           .01",
             "-0.01          | -           .01",
-            // Z suppression runs to the decimal point, and the comma left of a wholly suppressed group
-            // is suppressed with it.
             "123.45         | +        123.45",
             "1234.56        | +      1,234.56",
             "1234567.89     | +  1,234,567.89",
             "999999999.99   | +999,999,999.99",
             "-999999999.99  | -999,999,999.99",
             "-250.00        | -        250.00",
-            // Ten integer digits into nine positions: the leftmost digit is discarded, and nothing
-            // overflows into the fixed sign position.
             "1234567890.12  | +234,567,890.12",
             "-1234567890.12 | -234,567,890.12",
-            // Once the tenth digit is gone the remainder is all zeros, so suppression blanks the whole
-            // integer part and this renders identically to 0.00 - except for the sign.
             "1000000000.00  | +           .00",
             "-1000000000.00 | -           .00",
-            // A third decimal digit is truncated, never rounded: ROUNDED appears zero times in all 28
-            // programs, so RoundingMode.DOWN is the only faithful choice (rule R2, gate G24).
             "1.239          | +          1.23",
             "1.231          | +          1.23",
             "-1.239         | -          1.23",
@@ -2490,9 +2107,6 @@ class AccountViewControllerTest {
         @Test
         @DisplayName("The separators are literal, so a non-US default Locale changes nothing")
         void theSeparatorsAreLiteralAndLocaleIndependent() {
-            // Germany writes 1.234,56 for what the US writes 1,234.56. A DecimalFormat or a
-            // String.format("%,.2f") would follow the Locale and produce the wrong bytes; the
-            // hand-written formatter (practice B11) appends ',' and '.' literally, so it does not.
             Locale original = Locale.getDefault();
             try {
                 Locale.setDefault(Locale.GERMANY);
@@ -2519,9 +2133,6 @@ class AccountViewControllerTest {
         @Test
         @DisplayName("A money item the program never wrote stays LOW-VALUES rather than rendering zero")
         void anUnwrittenMoneyItemIsNotRenderedAsZero() {
-            // :471-491 project the account's amounts only when FOUND-ACCT-IN-MASTER or
-            // FOUND-CUST-IN-MASTER, and :432 left LOW-VALUES behind. So a screen painted before any read
-            // carries LOW-VALUES, which is an image and not a number - editAmount is never called for it.
             AccountViewResponse coldStart =
                     controller.handle(request(ACCT, null), 0, CicsAid.DFHENTER);
             assertThat(coldStart.getAcurbal())
@@ -2534,12 +2145,9 @@ class AccountViewControllerTest {
     @Nested
     @DisplayName("The carried conversation - COMMAREA, AID, OCCURS and REDEFINES")
     class CarriedConversationState {
-
         @Test
         @DisplayName("CARDDEMO-COMMAREA is 160 bytes and its last two items are X(7), not X(8)")
         void theCommareaIsOneHundredAndSixtyBytes() {
-            // app/cpy/COCOM01Y.cpy: 05 CDEMO-GENERAL-INFO 34, CDEMO-CUSTOMER-INFO 84,
-            // CDEMO-ACCOUNT-INFO 12, CDEMO-CARD-INFO 16, CDEMO-MORE-INFO 14 = 160.
             assertThat(NavigationContext.GENERAL_INFO_LENGTH).isEqualTo(34);
             assertThat(NavigationContext.CUSTOMER_INFO_LENGTH).isEqualTo(84);
             assertThat(NavigationContext.ACCOUNT_INFO_LENGTH).isEqualTo(12);
@@ -2552,8 +2160,6 @@ class AccountViewControllerTest {
                             + NavigationContext.CARD_INFO_LENGTH
                             + NavigationContext.MORE_INFO_LENGTH)
                     .isEqualTo(160);
-            // COCOM01Y.cpy:43-44 - CDEMO-LAST-MAP and CDEMO-LAST-MAPSET are both PIC X(7). An X(8)
-            // assumption would shift the tail of the area and put both items in the wrong place.
             assertThat(NavigationContext.LAST_MAP_LENGTH).isEqualTo(7);
             assertThat(NavigationContext.LAST_MAPSET_LENGTH).isEqualTo(7);
             assertThat(NavigationContext.LAST_MAPSET_OFFSET)
@@ -2573,9 +2179,6 @@ class AccountViewControllerTest {
         @CsvSource({"A, true, false", "U, false, true", "' ', false, false"})
         @DisplayName("Both 88s of CDEMO-USER-TYPE answer both ways (G50)")
         void theUserTypeConditionNamesAnswerBothWays(String userType, boolean admin, boolean user) {
-            // app/cpy/COCOM01Y.cpy:27-28 - 88 CDEMO-USRTYP-ADMIN VALUE 'A', 88 CDEMO-USRTYP-USER
-            // VALUE 'U'. A value that is neither leaves both false, which is a state the area can hold
-            // because CDEMO-USER-TYPE is PIC X(01) with no VALUE clause.
             NavigationContext context = NavigationContext.empty().withUserType(userType);
             assertThat(context.isAdmin()).isEqualTo(admin);
             assertThat(context.isUser()).isEqualTo(user);
@@ -2586,7 +2189,6 @@ class AccountViewControllerTest {
         @DisplayName("Both 88s of CDEMO-PGM-CONTEXT answer both ways (G50)")
         void theProgramContextConditionNamesAnswerBothWays(int pgmContext, boolean enter,
                 boolean reenterState) {
-            // app/cpy/COCOM01Y.cpy:30-31 - 88 CDEMO-PGM-ENTER VALUE 0, 88 CDEMO-PGM-REENTER VALUE 1.
             NavigationContext context = NavigationContext.empty().withPgmContext(pgmContext);
             assertThat(context.isEnter()).isEqualTo(enter);
             assertThat(context.isReenter()).isEqualTo(reenterState);
@@ -2597,12 +2199,6 @@ class AccountViewControllerTest {
         @Test
         @DisplayName("The DFHCOMMAREA span of :258-259: first and last byte, 1-based against 0-based")
         void theVariableLengthSpanIsIndexedCorrectly() {
-            // app/cbl/COACTVWC.cbl:257-259 declares
-            //     01 DFHCOMMAREA.
-            //        05 FILLER PIC X(1) OCCURS 1 TO 32767 TIMES DEPENDING ON EIBCALEN.
-            // and :288-292 read it by reference modification: DFHCOMMAREA(1:160) is CARDDEMO-COMMAREA and
-            // DFHCOMMAREA(161:12) is WS-THIS-PROGCOMMAREA. COBOL counts from 1 and Java from 0, so
-            // element 1 is index 0 and element 172 is index 171 - the off-by-one this asserts.
             AccountViewController.Conversation task = conversation();
             task.eibcalen = PASSED_COMMAREA;
             task.carddemoCommarea = reenter()
@@ -2637,7 +2233,6 @@ class AccountViewControllerTest {
                     .as("WS-COMMAREA is PIC X(2000) and the rest of it stays blank")
                     .isEqualTo(" ".repeat(2000 - PASSED_COMMAREA));
 
-            // And the same span read back the other way: what commonReturn wrote, restoreCommarea reads.
             AccountViewController.Conversation next = conversation();
             next.eibcalen = PASSED_COMMAREA;
             next.carddemoCommarea = task.carddemoCommarea;
@@ -2650,8 +2245,6 @@ class AccountViewControllerTest {
         @Test
         @DisplayName("WS-CARD-RID-ACCT-ID-X REDEFINES at :79 - one span, two typed views")
         void theAccountKeyRedefinitionRoundTrips() {
-            // :78-80 declare WS-CARD-RID-ACCT-ID PIC 9(11) and WS-CARD-RID-ACCT-ID-X PIC X(11) over the
-            // same eleven bytes. :691 writes through the numeric view and :729 reads the character view.
             AccountViewController.Conversation task = conversation();
 
             task.wsCardRidAcctId = ACCT;
@@ -2670,8 +2263,6 @@ class AccountViewControllerTest {
         @Test
         @DisplayName("WS-CARD-RID-CUST-ID-X REDEFINES at :76 - one span, two typed views")
         void theCustomerKeyRedefinitionRoundTrips() {
-            // :75-77 declare WS-CARD-RID-CUST-ID PIC 9(09) and WS-CARD-RID-CUST-ID-X PIC X(09). :708
-            // writes through the numeric view and :828 reads the character view.
             AccountViewController.Conversation task = conversation();
 
             task.wsCardRidCustId = "123456789";
@@ -2702,8 +2293,6 @@ class AccountViewControllerTest {
         @Test
         @DisplayName("The PA1 and PA2 tokens keep their two trailing spaces")
         void theProgramAccessTokensAreSpacePadded() {
-            // app/cpy/CVCRD01Y.cpy declares 88 CCARD-AID-PA1 VALUE 'PA1  ' - the field is PIC X(5), so
-            // the literal is padded and a trimmed value would be the wrong width on the wire.
             assertThat(PfKeyResolver.resolve(CicsAid.DFHPA1)).contains(PfKeyResolver.AidKey.PA1);
             assertThat(PfKeyResolver.AidKey.PA1.token()).isEqualTo("PA1  ").hasSize(5);
             assertThat(PfKeyResolver.resolve(CicsAid.DFHPA2)).contains(PfKeyResolver.AidKey.PA2);
@@ -2713,9 +2302,6 @@ class AccountViewControllerTest {
         @Test
         @DisplayName("PF3 and PF15 both reach the exit arm, because :58-59 folds PF15 onto PFK03")
         void bothPf3AndPf15TakeTheExitArm() {
-            // app/cpy/CSSTRPFY.cpy:34-35 SET CCARD-AID-PFK03 for DFHPF3 and :58-59 SET the same
-            // condition for DFHPF15. COACTVWC only ever asks CCARD-AID-PFK03, so the two keys are
-            // indistinguishable to it - and both must leave the screen.
             assertThat(PfKeyResolver.resolve(CicsAid.DFHPF3))
                     .isEqualTo(PfKeyResolver.resolve(CicsAid.DFHPF15))
                     .contains(PfKeyResolver.AidKey.PFK03);
@@ -2736,9 +2322,6 @@ class AccountViewControllerTest {
         @CsvSource({"6B", "7E", "E6", "40"})
         @DisplayName("The EVALUATE has no WHEN OTHER, so an unmapped AID has a no-match outcome")
         void anUnmappedAidHasAnExplicitNoMatchOutcome(String eibAidHex) {
-            // app/cpy/CSSTRPFY.cpy:21-78 is 26 WHENs with no WHEN OTHER and no DFHPA3 branch, and it does
-            // not clear CCARD-AID first. So an AID it has no arm for leaves the field exactly as it was -
-            // represented here as an empty Optional, which cannot be mistaken for a seventeenth token.
             byte unmapped = (byte) Integer.parseInt(eibAidHex, 16);
             assertThat(PfKeyResolver.resolve(unmapped)).isEmpty();
             assertThat(PfKeyResolver.storePfKey(unmapped, Optional.of(PfKeyResolver.AidKey.PFK03)))
@@ -2746,8 +2329,6 @@ class AccountViewControllerTest {
                     .contains(PfKeyResolver.AidKey.PFK03);
             assertThat(PfKeyResolver.storePfKey(unmapped, Optional.empty())).isEmpty();
 
-            // COACTVWC then rewrites it: :306-314 SET PFK-INVALID, and an AID that is neither ENTER nor
-            // PFK03 is turned into ENTER, so this screen answers rather than rejecting.
             AccountViewResponse painted =
                     controller.handle(request(ACCT, null), 0, unmapped);
             assertThat(painted.getCardScreenState().isCcardAidEnter()).isTrue();
@@ -2759,16 +2340,12 @@ class AccountViewControllerTest {
     @Nested
     @DisplayName("CSSETATY highlighting - red and asterisk, and only when REENTER (G38)")
     class ErrorHighlighting {
-
         @ParameterizedTest(name = "notOk={0} blank={1} reenter={2}")
         @CsvSource({
-            // app/cpy/CSSETATY.cpy:18-27 - IF (NOT-OK OR BLANK) AND CDEMO-PGM-REENTER, MOVE DFHRED into
-            // the xxxC colour item; and nested inside that, only IF BLANK, MOVE '*' into the xxxO item.
             "true,  false, true,  true,  false",
             "false, true,  true,  true,  true",
             "true,  true,  true,  true,  true",
             "false, false, true,  false, false",
-            // ENTER never highlights, whatever the field flag says: the AND at :20 fails first.
             "true,  false, false, false, false",
             "false, true,  false, false, false",
             "true,  true,  false, false, false",
@@ -2798,8 +2375,6 @@ class AccountViewControllerTest {
                 assertThatThrownBy(highlight::outputItemValue)
                         .isInstanceOf(IllegalStateException.class);
             }
-            // The resolver agrees with the flag-pair form, which is the same decision reached the other
-            // way round: FLG-xxx-NOT-OK and FLG-xxx-BLANK are two 88s over one PIC X(1).
             assertThat(FieldAttributeSetter.resolve(
                     FieldAttributeSetter.FieldValidationState.of(notOk, blank), reenterState,
                     "ACCTSID", "CACTVWA"))
@@ -2822,8 +2397,6 @@ class AccountViewControllerTest {
         @Test
         @DisplayName("A blank field in ENTER is neither red nor marked, because :562 requires REENTER")
         void aBlankFieldInEnterIsNeitherRedNorMarked() {
-            // The cold start is the ENTER path: :462-463 sets the prompt and no edit has run, so the
-            // account filter is blank - and still not highlighted, because the AND at :562 fails.
             AccountViewResponse painted =
                     controller.handle(request("", null), 0, CicsAid.DFHENTER);
             assertThat(painted.attributes(AccountViewResponse.ScreenField.ACCTSID).getColour())
@@ -2841,8 +2414,6 @@ class AccountViewControllerTest {
         @Test
         @DisplayName("An ENTER-state screen carries no DFHRED even when a filter would fail an edit")
         void enterStateNeverHighlightsEvenWithAnUnusableFilter() {
-            // Same unusable value as the REENTER case above - a bare asterisk - but delivered on the
-            // ENTER path, where 2200-EDIT-MAP-INPUTS is never performed at all (:353-360).
             AccountViewResponse painted = controller.handle(
                     request("*", NavigationContext.empty().withPgmContext(
                             NavigationContext.PGM_CONTEXT_ENTER)),
@@ -2855,7 +2426,6 @@ class AccountViewControllerTest {
     @Nested
     @DisplayName("ACCOUNT-RECORD of app/cpy/CVACT01Y.cpy - 300 bytes, FILLER included (G19, G21)")
     class AccountRecordImage {
-
         @Test
         @DisplayName("The record serialises to 300 bytes with FILLER X(178) written as spaces")
         void theRecordIsThreeHundredBytesWithItsFillerWritten() {
@@ -2878,9 +2448,6 @@ class AccountViewControllerTest {
         @Test
         @DisplayName("The copybook's misspelled ACCT-EXPIRAION-DATE keeps its name")
         void theMisspelledFieldNameIsPreserved() {
-            // app/cpy/CVACT01Y.cpy spells it ACCT-EXPIRAION-DATE, and app/cbl/COACTVWC.cbl:488 moves
-            // that item to AEXPDTO. Correcting the spelling would break field-for-field diffing, so the
-            // Java accessor carries the typo too (implicit requirement I1).
             AccountRecord record = account();
             assertThat(record.getAcctExpiraionDate()).isEqualTo("2025-01-14");
 
@@ -2909,14 +2476,12 @@ class AccountViewControllerTest {
             AccountViewResponse painted =
                     controller.handle(request(ACCT, reenter()), PASSED_COMMAREA, CicsAid.DFHENTER);
 
-            // :487-490 - the four dates and the group identifier, each at the screen field's own width.
             assertThat(painted.getAdtopen()).isEqualTo("2020-01-15");
             assertThat(painted.getAexpdt())
                     .as(":488 MOVE ACCT-EXPIRAION-DATE TO AEXPDTO")
                     .isEqualTo("2025-01-14");
             assertThat(painted.getAreisdt()).isEqualTo("2022-06-30");
             assertThat(painted.getAaddgrp()).isEqualTo(pad("ZEROPCT", 10));
-            // The FILLER is not a screen field: none of the 37 payload items maps to it.
             Map<String, String> images = painted.fieldImages();
             assertThat(images).hasSize(AccountViewResponse.FIELD_COUNT);
             for (String name : images.keySet()) {

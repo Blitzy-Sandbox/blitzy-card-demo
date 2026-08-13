@@ -12,7 +12,7 @@ import com.vsergeychik.carddemo.card.dto.CardUpdateRequest.DetailGroup;
 import com.vsergeychik.carddemo.card.model.CardRecord;
 import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
-import com.vsergeychik.carddemo.config.DatasetUnitOfWork;
+import com.vsergeychik.carddemo.common.DatasetUnitOfWork;
 
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -57,104 +57,21 @@ import static org.mockito.Mockito.when;
  * {@code COCRDUPC}'s write path, and with them its optimistic-concurrency control:
  * {@code 9200-WRITE-PROCESSING} at {@code :1420-1494} and {@code 9300-CHECK-CHANGE-IN-REC} at
  * {@code :1498-1521}.
- *
- * <p>The COBOL is the only oracle. This is a like-for-like migration, so where the program does
- * something odd the assertion below asserts the odd thing rather than the reasonable thing: a
- * case-only name difference is not a concurrent change, a separator-only date difference is not a
- * concurrent change, the CVV comparison is on character images and not on numbers, and every
- * successful update stages a blank CVV.
- *
- * <h2>No user rules govern this file</h2>
- * <p>{@code review_rules} returns exactly one line - "No user rules provided." - and that single line
- * is the whole document, so <strong>no user-specified rule applies here and none has been
- * invented</strong>. Their absence is not licence to lower the bar: the binding standard is
- * enterprise best practice as the migration plan codifies it in its practices B1-B12, and in
- * particular B1/B2 (only the closed test stack this module's {@code pom.xml} already declares -
- * JUnit Jupiter, Mockito, AssertJ - with no new dependency and no version literal), B3 (the COBOL and
- * the copybooks are cited as the contract and never read at runtime), B5 (behaviour is preserved
- * including its defects), B6 (the security posture is changed in neither direction - the CVV and the
- * card number are compared and asserted in the clear, exactly as the program does, and nothing is
- * masked in a failure message either), B7 (deterministic under
- * {@code mvn -f app/java/pom.xml -B clean verify}), B8 (explicit code page, no wildcard imports), B9
- * (no static mutable state, collaborators constructor-injected) and B11 (explicit byte and field
- * assertions, never reflective deep equality).
- *
- * <h2>The gates this class is answerable for</h2>
- * <ul>
- *   <li><strong>G43</strong> - the optimistic concurrency reproduces {@code 9300-CHECK-CHANGE-IN-REC}
- *       field for field: six comparisons, in the source's order, with <strong>no version column</strong>
- *       anywhere. {@link ConcurrencyMechanism} states that negatively and provably;</li>
- *   <li><strong>G44</strong> - no schema artefact of any kind participates: no DDL, no entity
- *       annotation, no generated key, no timestamp column;</li>
- *   <li><strong>G51</strong> - the business logic is asserted <em>at the service</em>. There is no
- *       servlet-mocking harness here, no Spring Boot test-context annotation, no web-layer slice
- *       annotation, no HTTP transport and no batch job launcher anywhere in the path of any test,
- *       which is what lets an audit for those tokens come back empty;</li>
- *   <li><strong>G50</strong> - both states of every {@code 88}-level the paragraphs touch:
- *       {@code WS-RETURN-MSG-OFF} on and off, the change-detected condition set and clear, and each of
- *       the three outcome conditions against its absence;</li>
- *   <li><strong>G19/G21</strong> - the rewrite image is exactly {@value CardUpdateRecord#RECORD_LENGTH}
- *       bytes with the {@code FILLER PIC X(59)} span space-filled, asserted span by span at its
- *       declared offset;</li>
- *   <li><strong>G47</strong> - each {@code FileStatus} outcome is driven at each repository call site,
- *       the read-for-update and the rewrite alike;</li>
- *   <li><strong>G49</strong> - branch coverage at or above 0.90 for {@code com.vsergeychik.carddemo.card};
- *       this module's JaCoCo configuration applies that ratio per package as well as per bundle, so the
- *       package cannot hide behind another's coverage;</li>
- *   <li><strong>G52</strong> - every import is explicit; <strong>G53</strong> - no static mutable
- *       state; <strong>G54</strong> - the suite runs non-interactively with no watch mode.</li>
- * </ul>
- *
- * <h2>How the subject is built</h2>
- * <p>{@code new CardUpdateService(mock(CardRepository.class), unitOfWork)} and nothing else. The
- * repository is a Mockito stub; the unit of work is a real {@link DatasetUnitOfWork} over a real
- * transaction manager, because the lock surviving from the read to the rewrite is the whole point of
- * the paragraph and a stand-in that merely ran the body would let the arrangement pass while proving
- * nothing. Neither collaborator brings a Spring application context with it.
- *
- * <h2>Declared widths, so a reviewer need not open the copybook</h2>
- * <p>{@code CARD-UPDATE-RECORD} ({@code app/cbl/COCRDUPC.cbl:314-321}) is
- * {@code X(16) + 9(11) + 9(03) + X(50) + X(10) + X(01) + FILLER X(59)}, and
- * {@code 16 + 11 + 3 + 50 + 10 + 1 + 59 = 150} - byte for byte the {@code CARD-RECORD} of
- * {@code app/cpy/CVACT02Y.cpy}, which is why the rewrite is always full width and never a 91-byte
- * partial one. {@code CCUP-OLD-DETAILS} and {@code CCUP-NEW-DETAILS} ({@code :290-313}) are
- * {@code X(11) + X(16) + X(3) + X(50) + X(4) + X(2) + X(2) + X(1)}, and
- * {@code 11 + 16 + 3 + 50 + 4 + 2 + 2 + 1 = 89} each, so the whole
- * {@code WS-THIS-PROGCOMMAREA} is {@code 1 + 89 + 89 + 150 = 329}.
- *
- * <h2>The code page is named, never defaulted</h2>
- * <p>{@code US-ASCII} throughout, and that is a choice rather than a default: the one place the code
- * page can change an answer is the zoned CVV decode, and the space character that the running program
- * actually feeds it has a low-order nibble of zero in {@code US-ASCII} and in {@code IBM037} alike, so
- * the assertions below hold under either. The one case where the two code pages genuinely diverge - a
- * letter whose low nibble exceeds nine - is called out where it is exercised.
- *
- * @see CardUpdateService#writeProcessing(CardScreenState, CardDetails, CardDetails, String,
- *      FixedWidthCodec)
- * @see CardUpdateService#checkChangeInRec(CardRecord, CardDetails, FixedWidthCodec)
  */
 @DisplayName("CardUpdateService - COCRDUPC 9200-WRITE-PROCESSING and 9300-CHECK-CHANGE-IN-REC")
 class CardUpdateServiceTest {
-
-    /** The card number the fixtures use; {@code CARD-NUM PIC X(16)}, so exactly sixteen digits. */
     private static final String CARD_NUMBER = "4111111111111111";
 
-    /** {@code CARD-ACCT-ID PIC 9(11)}. */
     private static final long ACCOUNT_ID = 12_345_678_901L;
 
-    /** {@code CARD-CVV-CD PIC 9(03)}. */
     private static final int CVV = 747;
 
-    /** {@code CARD-EMBOSSED-NAME PIC X(50)}, given here unpadded. */
     private static final String EMBOSSED_NAME = "JOHN Q PUBLIC";
 
-    /** {@code CARD-EXPIRAION-DATE PIC X(10)} - the copybook's misspelling, kept. */
     private static final String EXPIRY = "2027-03-09";
 
-    /** {@code CARD-ACTIVE-STATUS PIC X(01)}. */
     private static final String ACTIVE_STATUS = "Y";
 
-    /** A message already sitting in {@code WS-RETURN-MSG}, to drive the {@code :1445} guard. */
     private static final String EARLIER_MESSAGE = "Card expiry month must be between 1 and 12";
 
     private CardRepository cardRepository;
@@ -170,17 +87,6 @@ class CardUpdateServiceTest {
         codec = new FixedWidthCodec(StandardCharsets.US_ASCII);
     }
 
-    /**
-     * A unit of work over a real transaction manager and a real single connection.
-     *
-     * <p>Deliberately not a stand-in. The whole point of {@code 9200-WRITE-PROCESSING} is that the lock
-     * the read takes survives to the rewrite, and only a real transaction can be observed doing that; a
-     * stand-in that simply ran the body would let the arrangement pass while proving nothing. An
-     * in-memory database is used because the subject is the boundary, which is the framework's
-     * behaviour rather than the deployment driver's.
-     *
-     * @return a unit of work whose {@code execute} opens a genuine transaction
-     */
     private static DatasetUnitOfWork realUnitOfWork() {
         SingleConnectionDataSource source = new SingleConnectionDataSource(
                 "jdbc:h2:mem:card-update-" + System.nanoTime()
@@ -191,26 +97,10 @@ class CardUpdateServiceTest {
         return new DatasetUnitOfWork(new JdbcTransactionManager(dataSource));
     }
 
-    // =================================================================================================
-    // Fixtures
-    // =================================================================================================
-
-    /**
-     * The record the repository hands back under the lock.
-     *
-     * @return the stored record
-     */
     private CardRecord storedRecord() {
         return new CardRecord(CARD_NUMBER, ACCOUNT_ID, CVV, EMBOSSED_NAME, EXPIRY, ACTIVE_STATUS);
     }
 
-    /**
-     * A {@code CCUP-OLD-DETAILS} snapshot that agrees with {@code record} on all six compared items,
-     * so {@code 9300-CHECK-CHANGE-IN-REC} finds nothing changed.
-     *
-     * @param record the stored record to mirror
-     * @return the matching snapshot
-     */
     private CardDetails matchingOldDetails(CardRecord record) {
         return new CardDetails(DetailGroup.OLD,
                 record.cardAcctIdImage(codec),
@@ -223,13 +113,6 @@ class CardUpdateServiceTest {
                 record.cardActiveStatus());
     }
 
-    /**
-     * A {@code CCUP-NEW-DETAILS} snapshot carrying what the user typed. Its CVV is three spaces,
-     * because {@code CCUP-NEW-CVV-CD} is never assigned anywhere in {@code COCRDUPC} and
-     * {@code :586} initialises it on every pass.
-     *
-     * @return the new-details snapshot
-     */
     private CardDetails typedNewDetails() {
         return new CardDetails(DetailGroup.NEW,
                 codec.movePic9(ACCOUNT_ID, CardDetails.ACCTID_LENGTH),
@@ -242,11 +125,6 @@ class CardUpdateServiceTest {
                 "N");
     }
 
-    /**
-     * The {@code CVCRD01Y} work area {@code 9200-WRITE-PROCESSING} reads its key and account from.
-     *
-     * @return the work area
-     */
     private CardScreenState workArea() {
         CardScreenState state = new CardScreenState();
         state.setCcCardNum(CARD_NUMBER);
@@ -254,46 +132,18 @@ class CardUpdateServiceTest {
         return state;
     }
 
-    /**
-     * Runs the write path with the supplied snapshots and message.
-     *
-     * @param oldDetails    {@code CCUP-OLD-DETAILS}
-     * @param returnMessage {@code WS-RETURN-MSG}, or {@code null} for the cleared state
-     * @return the outcome
-     */
     private WriteResult write(CardDetails oldDetails, String returnMessage) {
         return service.writeProcessing(workArea(), oldDetails, typedNewDetails(), returnMessage,
                 codec);
     }
 
-    /**
-     * One declared span of a serialized record image, read back as characters.
-     *
-     * <p>Positional rather than field-wise on purpose: a field accessor would prove the value round
-     * trips through the same code that wrote it, whereas reading the bytes at an absolute offset proves
-     * the value is <em>where the copybook says it is</em>. Every offset supplied by the callers below is
-     * a named constant of the layout, never a bare number, so the assertion and the declaration cannot
-     * drift apart.
-     *
-     * <p>The code page is stated explicitly (practice B8); the caller's codec carries the same one.
-     *
-     * @param image  the serialized record
-     * @param offset the span's absolute 0-based offset
-     * @param length the span's declared width
-     * @return exactly {@code length} characters
-     */
     private String spanOf(byte[] image, int offset, int length) {
         return new String(image, offset, length, StandardCharsets.US_ASCII);
     }
 
-    // =================================================================================================
-    // Step 3, :1441-1449 - the lock arm, and the nesting inside it.
-    // =================================================================================================
-
     @Nested
     @DisplayName("step 3, :1441-1449 - could we lock the record")
     class LockArm {
-
         @Test
         @DisplayName("a non-normal read with the message off sets the could-not-lock message")
         void nonNormalReadWithMessageOffSetsTheLockMessage() {
@@ -381,10 +231,6 @@ class CardUpdateServiceTest {
         @DisplayName("gate G47: a duplicate-key read returns a record, yet :1441 still refuses it - "
                 + "the record's presence is not the test")
         void aDuplicateKeyReadIsStillNotNormal() {
-            // The subtlety worth a test of its own: this arm hands back a CARD-RECORD, so an
-            // implementation tempted to branch on "did we get a record?" rather than on "was the
-            // response NORMAL?" would sail past the guard, compare against a record CICS never
-            // committed to, and rewrite it. app/cbl/COCRDUPC.cbl:1441 tests the response.
             when(cardRepository.readForUpdateByCardNumber(anyString()))
                     .thenReturn(cardReadDuplicate(storedRecord()));
 
@@ -418,14 +264,9 @@ class CardUpdateServiceTest {
         }
     }
 
-    // =================================================================================================
-    // Steps 4 to 7 - the check, the staging and the rewrite.
-    // =================================================================================================
-
     @Nested
     @DisplayName("steps 4 to 7 - check, stage and rewrite")
     class WriteArms {
-
         @BeforeEach
         void lockSucceeds() {
             when(cardRepository.readForUpdateByCardNumber(anyString()))
@@ -518,10 +359,6 @@ class CardUpdateServiceTest {
                     .isEqualTo(WriteOutcome.CHANGES_OKAYED_AND_DONE);
             verify(cardRepository).rewrite(any());
 
-            // :1499-1501 acts on the record area in place, so the record the comparison and the
-            // write-back both see carries the FOLDED name - the conversion is not a temporary computed
-            // for the comparison and thrown away. CardRecord is immutable, so "in place" surfaces as
-            // the folded copy the check reports, while the instance the test handed in is untouched.
             ChangeCheck check = service.checkChangeInRec(lowerCased, upperCasedSnapshot, codec);
             Assertions.assertThat(check.foldedRecord().cardEmbossedName())
                     .as("the record the comparison examined carries the upper-cased name")
@@ -661,8 +498,6 @@ class CardUpdateServiceTest {
             write(CardUpdateServiceTest.this.matchingOldDetails(
                     CardUpdateServiceTest.this.storedRecord()), null);
 
-            // The bytes the repository was actually handed, not the bytes the service says it staged:
-            // the rewrite at :1477-1483 is what reaches the dataset, so it is what must be asserted.
             ArgumentCaptor<CardRecord> written = ArgumentCaptor.forClass(CardRecord.class);
             verify(cardRepository).rewrite(written.capture());
             byte[] image = written.getValue().encode(codec);
@@ -671,37 +506,26 @@ class CardUpdateServiceTest {
                     .as("LENGTH OF CARD-UPDATE-RECORD, so 16+11+3+50+10+1+59 = 150 (gate G19)")
                     .hasSize(CardUpdateRecord.RECORD_LENGTH);
 
-            // :1462 MOVE CCUP-NEW-CARDID TO CARD-UPDATE-NUM - PIC X(16) at offset 0.
             Assertions.assertThat(spanOf(image, CardUpdateRecord.CARD_UPDATE_NUM_OFFSET,
                             CardUpdateRecord.CARD_UPDATE_NUM_LENGTH))
                     .as(":1462 CARD-UPDATE-NUM PIC X(16) at offset 0")
                     .isEqualTo(CARD_NUMBER);
-            // :1463 MOVE CC-ACCT-ID-N TO CARD-UPDATE-ACCT-ID - PIC 9(11) at 16, so zero-filled from
-            // the left. The account is 12345678901, which is already eleven digits; the zero fill is
-            // proved by the shorter account in stagesAShortAccountZeroFilled below.
             Assertions.assertThat(spanOf(image, CardUpdateRecord.CARD_UPDATE_ACCT_ID_OFFSET,
                             CardUpdateRecord.CARD_UPDATE_ACCT_ID_LENGTH))
                     .as(":1463 CARD-UPDATE-ACCT-ID PIC 9(11) at offset 16, taken from CC-ACCT-ID-N")
                     .isEqualTo("12345678901")
                     .hasSize(CardUpdateRecord.CARD_UPDATE_ACCT_ID_LENGTH);
-            // :1464-1465 the REDEFINES round trip - PIC 9(03) at 27. CCUP-NEW-CVV-CD is never assigned
-            // anywhere in COCRDUPC, so the three characters that travel are spaces and the PIC 9(03)
-            // span they land in reads as zero (Finding 2, asserted in its own test below).
             Assertions.assertThat(spanOf(image, CardUpdateRecord.CARD_UPDATE_CVV_CD_OFFSET,
                             CardUpdateRecord.CARD_UPDATE_CVV_CD_LENGTH))
                     .as(":1464-1465 CARD-UPDATE-CVV-CD PIC 9(03) at offset 27, having travelled "
                             + "CARD-CVV-CD-X then CARD-CVV-CD-N")
                     .isEqualTo("000");
-            // :1466 MOVE CCUP-NEW-CRDNAME TO CARD-UPDATE-EMBOSSED-NAME - PIC X(50) at 30, so the
-            // fourteen typed characters are space-padded on the RIGHT to fifty.
             Assertions.assertThat(spanOf(image, CardUpdateRecord.CARD_UPDATE_EMBOSSED_NAME_OFFSET,
                             CardUpdateRecord.CARD_UPDATE_EMBOSSED_NAME_LENGTH))
                     .as(":1466 CARD-UPDATE-EMBOSSED-NAME PIC X(50) at offset 30, space-padded right")
                     .isEqualTo("JANE R CITIZEN" + " ".repeat(
                             CardUpdateRecord.CARD_UPDATE_EMBOSSED_NAME_LENGTH
                                     - "JANE R CITIZEN".length()));
-            // :1467-1474 STRING ... DELIMITED BY SIZE - PIC X(10) at 80, with the two literal '-'
-            // separators at 1-based characters 5 and 8, which are Java indices 4 and 7.
             String expiry = spanOf(image, CardUpdateRecord.CARD_UPDATE_EXPIRAION_DATE_OFFSET,
                     CardUpdateRecord.CARD_UPDATE_EXPIRAION_DATE_LENGTH);
             Assertions.assertThat(expiry)
@@ -713,12 +537,10 @@ class CardUpdateServiceTest {
             Assertions.assertThat(expiry.charAt(CardUpdateRecord.EXPIRAION_MONTH_END_INDEX))
                     .as("the literal '-' the STRING supplies, at 1-based character 8")
                     .isEqualTo('-');
-            // :1475 MOVE CCUP-NEW-CRDSTCD TO CARD-UPDATE-ACTIVE-STATUS - PIC X(01) at 90.
             Assertions.assertThat(spanOf(image, CardUpdateRecord.CARD_UPDATE_ACTIVE_STATUS_OFFSET,
                             CardUpdateRecord.CARD_UPDATE_ACTIVE_STATUS_LENGTH))
                     .as(":1475 CARD-UPDATE-ACTIVE-STATUS PIC X(01) at offset 90")
                     .isEqualTo("N");
-            // :321 FILLER PIC X(59) at 91 - never moved to, so INITIALIZE leaves it spaces (gate G21).
             Assertions.assertThat(spanOf(image, CardUpdateRecord.FILLER_OFFSET,
                             CardUpdateRecord.FILLER_LENGTH))
                     .as(":321 FILLER PIC X(59) at offset 91, space-filled (gate G21)")
@@ -731,7 +553,6 @@ class CardUpdateServiceTest {
         void stagesAShortAccountZeroFilled() {
             when(cardRepository.rewrite(any())).thenReturn(CardWriteResult.normal());
             CardScreenState area = CardUpdateServiceTest.this.workArea();
-            // The account of the first row of app/data/ASCII/carddata.txt, which is 00000000005.
             area.setCcAcctIdN(5L);
 
             service.writeProcessing(area,
@@ -756,12 +577,8 @@ class CardUpdateServiceTest {
             CardDetails snapshot = CardUpdateServiceTest.this.matchingOldDetails(
                     CardUpdateServiceTest.this.storedRecord());
 
-            // First pass: the long typed name and the 2029-11-30 expiry.
             WriteResult first = write(snapshot, null);
 
-            // Second pass, deliberately every value shorter or different, so residue from the first
-            // pass would be visible as trailing characters of the previous value rather than as the
-            // spaces and zeros INITIALIZE leaves.
             CardDetails shorter = CardUpdateServiceTest.this.typedNewDetails()
                     .withCrdname("AL")
                     .withExpyear("2031")
@@ -839,12 +656,6 @@ class CardUpdateServiceTest {
         }
     }
 
-    /**
-     * One stale {@code CCUP-OLD-DETAILS} snapshot per compared item, each differing from the stored
-     * record in that item and only that item.
-     *
-     * @return label, snapshot and the field name the check must name
-     */
     static Stream<Arguments> singleItemDifferences() {
         CardUpdateServiceTest fixture = new CardUpdateServiceTest();
         fixture.codec = new FixedWidthCodec(StandardCharsets.US_ASCII);
@@ -864,19 +675,9 @@ class CardUpdateServiceTest {
                         "CARD-ACTIVE-STATUS"));
     }
 
-    // =================================================================================================
-    // The order of the two dataset statements, and the mutual exclusivity of the four arms.
-    // =================================================================================================
-
-    /**
-     * The two things about {@code 9200-WRITE-PROCESSING} that are structural rather than
-     * value-carrying: the read-for-update always precedes the rewrite, and exactly one outcome is
-     * signalled per pass.
-     */
     @Nested
     @DisplayName("statement order and outcome exclusivity")
     class OrderingAndExclusivity {
-
         @Test
         @DisplayName("the read-for-update strictly precedes the rewrite - the lock is never taken "
                 + "after the write it exists to protect")
@@ -887,9 +688,6 @@ class CardUpdateServiceTest {
 
             write(matchingOldDetails(storedRecord()), null);
 
-            // :1427 comes before :1477 in the paragraph, and the order is behaviour rather than style:
-            // reading first is what makes 9300-CHECK-CHANGE-IN-REC's comparison mean anything, and the
-            // UPDATE option on the read is what stops the record moving in between.
             InOrder statements = inOrder(cardRepository);
             statements.verify(cardRepository).readForUpdateByCardNumber(CARD_NUMBER);
             statements.verify(cardRepository).rewrite(any(CardRecord.class));
@@ -911,7 +709,6 @@ class CardUpdateServiceTest {
                     .isEqualTo(WriteOutcome.COULD_NOT_LOCK_FOR_UPDATE);
             Assertions.assertThat(changed.outcome())
                     .isEqualTo(WriteOutcome.DATA_WAS_CHANGED_BEFORE_UPDATE);
-            // Two passes, two reads, zero rewrites: :1448 and :1456 both leave before :1477.
             verify(cardRepository, times(2)).readForUpdateByCardNumber(anyString());
             verify(cardRepository, never()).rewrite(any());
         }
@@ -967,33 +764,18 @@ class CardUpdateServiceTest {
                     .isEqualTo(WriteOutcome.values().length);
         }
 
-        /**
-         * The {@code :1441-1449} arm: the read did not take the lock.
-         *
-         * @return the outcome
-         */
         private WriteResult lockRefused() {
             when(cardRepository.readForUpdateByCardNumber(anyString()))
                     .thenReturn(CardReadResult.notFound());
             return write(matchingOldDetails(storedRecord()), null);
         }
 
-        /**
-         * The {@code :1453-1457} arm: the record changed while the screen was being filled in.
-         *
-         * @return the outcome
-         */
         private WriteResult changeDetected() {
             when(cardRepository.readForUpdateByCardNumber(anyString()))
                     .thenReturn(cardRead(storedRecord()));
             return write(matchingOldDetails(storedRecord()).withCvvCd("999"), null);
         }
 
-        /**
-         * The {@code :1488-1492} arm: the lock held, the comparison passed, the rewrite failed.
-         *
-         * @return the outcome
-         */
         private WriteResult rewriteRefused() {
             when(cardRepository.readForUpdateByCardNumber(anyString()))
                     .thenReturn(cardRead(storedRecord()));
@@ -1001,11 +783,6 @@ class CardUpdateServiceTest {
             return write(matchingOldDetails(storedRecord()), null);
         }
 
-        /**
-         * The {@code WHEN OTHER} arm: the record was rewritten and no condition was set.
-         *
-         * @return the outcome
-         */
         private WriteResult updateDone() {
             when(cardRepository.readForUpdateByCardNumber(anyString()))
                     .thenReturn(cardRead(storedRecord()));
@@ -1013,25 +790,14 @@ class CardUpdateServiceTest {
             return write(matchingOldDetails(storedRecord()), null);
         }
 
-        /**
-         * A {@code WS-RETURN-MSG} literal at the field's declared {@code PIC X(75)} width.
-         *
-         * @param literal the {@code 88}-level literal
-         * @return the literal right-padded to {@link CardUpdateService#RETURN_MESSAGE_LENGTH}
-         */
         private String atReturnMessageWidth(String literal) {
             return literal + " ".repeat(CardUpdateService.RETURN_MESSAGE_LENGTH - literal.length());
         }
     }
 
-    // =================================================================================================
-    // 9300-CHECK-CHANGE-IN-REC in isolation.
-    // =================================================================================================
-
     @Nested
     @DisplayName("9300-CHECK-CHANGE-IN-REC, :1498-1523")
     class CheckChangeInRec {
-
         @Test
         @DisplayName("all six matching reports no change and hands the snapshot back untouched")
         void allSixMatching() {
@@ -1085,16 +851,6 @@ class CardUpdateServiceTest {
         @DisplayName("the CVV comparison is on CHARACTER IMAGES, so '007' and '7  ' differ - "
                 + "CCUP-OLD-CVV-CD is PIC X(3) and CARD-CVV-CD is PIC 9(03)")
         void theCvvComparisonIsOnCharacterImagesAndNotOnNumbers() {
-            // app/cbl/COCRDUPC.cbl:1503 compares CARD-CVV-CD, declared PIC 9(03) at
-            // app/cpy/CVACT02Y.cpy:7, against CCUP-OLD-CVV-CD, declared PIC X(3) at
-            // app/cbl/COCRDUPC.cbl:294. A comparison between a numeric item and an alphanumeric one
-            // is an alphanumeric comparison in COBOL, so the record's zoned image is what is examined,
-            // character by character. The record holds CVV 7, whose PIC 9(03) image is left-zero-filled
-            // to "007"; a screen that carried "7  " - the PIC X(3) form of the same digit, filled from
-            // the left and space-padded - is therefore a DIFFERENT three characters and trips the
-            // check. An implementation that parsed both sides to int and compared numerically would
-            // find 7 equal to 7 and let the update through, which is the single subtlest way to lose
-            // parity in this paragraph.
             CardRecord stored = storedRecord().withCardCvvCd(7);
             Assertions.assertThat(stored.cardCvvCdImage(codec))
                     .as("PIC 9(03) fills from the RIGHT and pads with zeros")
@@ -1112,8 +868,6 @@ class CardUpdateServiceTest {
                     .as(":1512 writes the record's own image back, so the repainted screen shows it")
                     .isEqualTo("007");
 
-            // The positive control, so the test cannot pass by comparing everything as unequal: the
-            // same record against the same image matches.
             CardDetails zeroFilled = matchingOldDetails(stored).withCvvCd("007");
             ChangeCheck matches = service.checkChangeInRec(stored, zeroFilled, codec);
 
@@ -1159,27 +913,9 @@ class CardUpdateServiceTest {
         }
     }
 
-    // =================================================================================================
-    // Gates G43 and G44 stated negatively: what the concurrency control is NOT built out of.
-    // =================================================================================================
-
-    /**
-     * The concurrency control is the re-read-and-compare of {@code 9300-CHECK-CHANGE-IN-REC} and
-     * nothing else.
-     *
-     * <p>A version column is the textbook Java answer to a lost update and it is forbidden twice over.
-     * Gate G44 forbids DDL, entity annotations and generated schema outright - adding a column to
-     * {@code AWS.M2.CARDDEMO.CARDDATA.VSAM.KSDS} would be a schema change, which the migration plan
-     * excludes in its scope boundary. Gate G43 requires <em>this</em> comparison, on <em>these</em> six
-     * fields, in <em>this</em> order. So the tests below assert the absence positively rather than
-     * leaving it to a comment: nothing is stamped onto the record on its way out, nothing is bumped on
-     * its way in, no item of either layout names a version or a timestamp, and the record has no spare
-     * byte one could live in even if someone wanted it to.
-     */
     @Nested
     @DisplayName("gates G43 and G44 - the mechanism is a re-read-and-compare, with no version column")
     class ConcurrencyMechanism {
-
         @Test
         @DisplayName("neither layout declares a version, timestamp, row-version or ETag item")
         void noLayoutDeclaresAVersionItem() {
@@ -1291,12 +1027,6 @@ class CardUpdateServiceTest {
                     .isFalse();
         }
 
-        /**
-         * Whether an item name would betray a bookkeeping column smuggled into either layout.
-         *
-         * @param itemName the verbatim COBOL item name
-         * @return {@code true} when the name reads as a concurrency token rather than card data
-         */
         private boolean namesAConcurrencyToken(String itemName) {
             String upper = itemName.toUpperCase(Locale.ROOT);
             return upper.contains("VERSION")
@@ -1309,14 +1039,9 @@ class CardUpdateServiceTest {
         }
     }
 
-    // =================================================================================================
-    // The primitives.
-    // =================================================================================================
-
     @Nested
     @DisplayName("INSPECT ... CONVERTING LIT-LOWER TO LIT-UPPER, :1499-1501")
     class Converting {
-
         @Test
         @DisplayName("converts all twenty-six pairs and nothing else")
         void convertsAllTwentySixPairs() {
@@ -1384,7 +1109,6 @@ class CardUpdateServiceTest {
     @Nested
     @DisplayName("88 WS-RETURN-MSG-OFF VALUE SPACES, :174")
     class ReturnMessageOff {
-
         @Test
         @DisplayName("null is the cleared state :384 establishes")
         void nullIsCleared() {
@@ -1430,7 +1154,6 @@ class CardUpdateServiceTest {
     @Nested
     @DisplayName("the CVV REDEFINES round-trip, :1464-1465")
     class CvvRoundTrip {
-
         @Test
         @DisplayName("three digits survive the round trip unchanged")
         void digitsRoundTrip() {
@@ -1490,7 +1213,6 @@ class CardUpdateServiceTest {
     @Nested
     @DisplayName("staging, :1461-1475")
     class Staging {
-
         @Test
         @DisplayName("an OLD snapshot is refused, because the paragraph stages from NEW")
         void refusesTheOldGroup() {
@@ -1532,14 +1254,9 @@ class CardUpdateServiceTest {
         }
     }
 
-    // =================================================================================================
-    // The outcome contract, app/cbl/COCRDUPC.cbl:992-1001.
-    // =================================================================================================
-
     @Nested
     @DisplayName("the outcome contract, :992-1001")
     class OutcomeContract {
-
         @Test
         @DisplayName("gate G30: the constants are declared in the caller's EVALUATE order, with "
                 + "WHEN OTHER last")
@@ -1596,7 +1313,6 @@ class CardUpdateServiceTest {
     @Nested
     @DisplayName("the result carriers refuse states the source cannot represent")
     class ResultInvariants {
-
         @Test
         @DisplayName("ChangeCheck refuses flags that contradict its verdict")
         void changeCheckRefusesContradictions() {
@@ -1702,7 +1418,6 @@ class CardUpdateServiceTest {
     @Nested
     @DisplayName("construction and argument checking")
     class Construction {
-
         @Test
         @DisplayName("the repository and the unit of work are both required")
         void theRepositoryIsRequired() {
@@ -1742,11 +1457,7 @@ class CardUpdateServiceTest {
                     matchingOldDetails(stored), typedNewDetails(), null, codec);
 
             Assertions.assertThat(result.outcome()).isEqualTo(WriteOutcome.CHANGES_OKAYED_AND_DONE);
-            // Both statements ran inside the boundary. Without it CardRepository refuses the read
-            // outright, and a lenient repository would release the lock before the rewrite - leaving
-            // 9300-CHECK-CHANGE-IN-REC passing while protecting nothing.
             Assertions.assertThat(insideAUnitOfWork).containsExactly(true, true);
-            // COCRDUPC issues no SYNCPOINT ROLLBACK anywhere, so the boundary commits.
             Assertions.assertThat(completion)
                     .containsExactly(TransactionSynchronization.STATUS_COMMITTED);
             Assertions.assertThat(DatasetUnitOfWork.active())
@@ -1800,8 +1511,6 @@ class CardUpdateServiceTest {
                             .asGroup(DetailGroup.OLD), null, codec))
                     .withMessageContaining("CCUP-NEW-DETAILS");
             verify(cardRepository, never()).readForUpdateByCardNumber(anyString());
-            // Each argument was refused before any boundary opened: an argument defect is the caller's,
-            // and opening a transaction to reject one would take a connection to accomplish nothing.
             Assertions.assertThat(DatasetUnitOfWork.active()).isFalse();
         }
 
@@ -1826,30 +1535,10 @@ class CardUpdateServiceTest {
         }
     }
 
-    // =================================================================================================
-    // Synthesised read outcomes. A CardReadResult carries the decoded record AND the bytes it was
-    // decoded from, because DISPLAY CARD-RECORD (app/cbl/CBACT02C.cbl:78) writes the record area and the
-    // area's FILLER X(59) holds whatever the row held. A test constructing an outcome has no row, so the
-    // image it supplies is the one a row of exactly this record would carry - which is what these two
-    // helpers state, once, rather than at every call site.
-    // =================================================================================================
-
-    /**
-     * The normal arm over a synthesised row of this record.
-     *
-     * @param record the record the row would carry
-     * @return the outcome, carrying the record and the image a row of it would hold
-     */
     private static CardReadResult cardRead(CardRecord record) {
         return CardReadResult.normal(record, record.encodeToImage(StandardCharsets.US_ASCII));
     }
 
-    /**
-     * The duplicate-key arm over a synthesised row of this record.
-     *
-     * @param record the first record sharing the alternate key
-     * @return the outcome, carrying the record and the image a row of it would hold
-     */
     private static CardReadResult cardReadDuplicate(CardRecord record) {
         return CardReadResult.duplicateKey(record, record.encodeToImage(StandardCharsets.US_ASCII));
     }

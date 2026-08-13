@@ -1,11 +1,11 @@
 package com.vsergeychik.carddemo.transaction;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.assertThatIllegalStateException;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
+import static org.assertj.core.api.Assertions.catchThrowableOfType;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -17,6 +17,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.vsergeychik.carddemo.common.BmsAttributes;
 import com.vsergeychik.carddemo.common.CicsAid;
+import com.vsergeychik.carddemo.common.ScreenInputRejectedException;
 import com.vsergeychik.carddemo.common.ScreenMetadata;
 import com.vsergeychik.carddemo.common.ScreenResponse;
 import com.vsergeychik.carddemo.common.FileStatus;
@@ -27,7 +28,7 @@ import com.vsergeychik.carddemo.common.PfKeyResolver;
 import com.vsergeychik.carddemo.common.PfKeyResolver.AidKey;
 import com.vsergeychik.carddemo.common.ScreenTitles;
 import com.vsergeychik.carddemo.common.SystemMessages;
-import com.vsergeychik.carddemo.config.DatasetUnitOfWork;
+import com.vsergeychik.carddemo.common.DatasetUnitOfWork;
 import com.vsergeychik.carddemo.config.WebConfig;
 import com.vsergeychik.carddemo.transaction.TransactionAddController.ProgramState;
 import com.vsergeychik.carddemo.transaction.TransactionRepository.ReadResult;
@@ -66,75 +67,20 @@ import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 /**
- * Proves {@link TransactionAddController} against {@code app/cbl/COTRN01C.cbl}, the 330-line CICS
- * program behind transaction {@code CT01}.
- *
- * <h2>Risk R-B, and the rule that settles it</h2>
- *
- * <p>The class under test is called {@code TransactionAddController} and the program it was migrated
- * from <strong>views</strong> a transaction - {@code app/cbl/COTRN01C.cbl:5} reads
- * "{@code Function    : View a Transaction from TRANSACT file}", the program's only file access is
- * the {@code EXEC CICS READ} at {@code :269}, and {@code README.md:213-231} independently documents
- * {@code CT01} as "Transaction View" and {@code CT02} as "Transaction Add". That is the migration
- * plan's risk <strong>R-B</strong>, and it is settled by rule <strong>R1 - the name comes from the
- * build prompt, the behaviour comes from the source</strong>: this suite therefore holds the class to
- * its prompt-given name <em>and</em> to read-only behaviour, and deliberately resolves the ambiguity
- * in neither direction. The other half of the swap lives in
- * {@code TransactionViewControllerTest}, whose subject is named "View" and whose program
- * {@code COTRN02C} adds.
- *
- * <p><strong>No user rules were provided for this project</strong> - {@code review_rules} returns the
- * single line "No user rules provided" - so nothing here is written to satisfy a project rule. The
- * governing standards are the migration plan's own enterprise-practice substitutes, named where they
- * apply: <strong>B4</strong> (document a conflict, never silently correct it), <strong>B7</strong>
- * (a pinned {@link Clock}, never the wall clock), <strong>B8</strong> (no wildcard imports, the
- * charset always named), <strong>B9</strong> (no static mutable state) and <strong>B5</strong>
- * (preserve behaviour, defects included).
- *
- * <p>Three properties of that program shape every test here.
- *
- * <ul>
- *   <li><strong>It views; it does not add.</strong> The class name is the build prompt's and the
- *       behaviour is the source's - risk R-B, resolved by rule R1 as set out above. One test in
- *       {@link RiskRB} reads the controller's own source and asserts the divergence is still recorded
- *       there, another asserts that no read path ever calls a write, and a third reads
- *       {@code app/bms/COTRN01.bms} and shows the screen is a lookup-then-display map rather than a
- *       data-entry form. Those three are the guard rail that stops a future reader "fixing" the name
- *       or the behaviour.</li>
- *   <li><strong>{@code SEND-TRNVIEW-SCREEN} is not terminal.</strong> It ends with no {@code GO TO},
- *       so control returns to the statement after the {@code PERFORM}. That is why the first-entry arm
- *       with a selection sends the screen <em>twice</em> and why {@code PROCESS-ENTER-KEY} tests
- *       {@code IF NOT ERR-FLG-ON} a second time rather than using an {@code ELSE}.</li>
- *   <li><strong>{@code COTRN1AO REDEFINES COTRN1AI}.</strong> Each field's {@code xxxI} and
- *       {@code xxxO} items are the same bytes, so a value the program moves "into the input field" is
- *       read back off the response.</li>
- * </ul>
- *
- * <p>Every expectation is derived statically from the source, the copybooks and the BMS mapset - the
- * legacy programs cannot be executed in this environment (risk R-A) - so each assertion names the line
- * it came from.
+ * Proves {@link TransactionAddController} against {@code app/cbl/COTRN01C.cbl}, the 330-line CICS program
+ * behind transaction {@code CT01}.
  */
 @DisplayName("TransactionAddController - COTRN01C, transaction CT01, and it VIEWS")
 class TransactionAddControllerTest {
-
-    /** A pinned instant, so the two header images can be compared byte for byte. */
     private static final Instant FIXED_INSTANT = Instant.parse("2022-07-19T23:12:34Z");
 
-    /** The {@code MM/DD/YY} image {@link #FIXED_INSTANT} produces at UTC. */
     private static final String EXPECTED_CURDATE = "07/19/22";
 
-    /** The {@code HH:MM:SS} image {@link #FIXED_INSTANT} produces at UTC. */
     private static final String EXPECTED_CURTIME = "23:12:34";
 
-    /** A transaction id that exists in the stubbed dataset. */
     private static final String KNOWN_TRAN_ID = "0000000000000001";
 
-    /** The dataset name a stubbed outcome reports; only its presence matters here. */
     private static final String DD_NAME = TransactionRepository.INPUT_DD_NAME;
-
-    // ---------------------------------------------------------------------------------------------
-    // Fixtures
-    // ---------------------------------------------------------------------------------------------
 
     private static Clock pinnedClock() {
         return Clock.fixed(FIXED_INSTANT, ZoneOffset.UTC);
@@ -144,17 +90,6 @@ class TransactionAddControllerTest {
         return new TransactionAddController(repository, pinnedClock(), realUnitOfWork());
     }
 
-    /**
-     * A unit of work over a real transaction manager and a real single connection.
-     *
-     * <p>Deliberately not a stub. {@code :275} states the {@code UPDATE} option, so the read takes a
-     * row lock and {@link TransactionRepository#readForUpdateByTranId(String)} refuses to issue one
-     * with no transaction open; a double that merely ran the body would hide whether the boundary is
-     * really there. An in-memory database is used because the subject is the boundary itself, which is
-     * the framework's behaviour rather than the deployment driver's.
-     *
-     * @return a unit of work whose {@code execute} opens a genuine transaction
-     */
     private static DatasetUnitOfWork realUnitOfWork() {
         SingleConnectionDataSource source = new SingleConnectionDataSource(
                 "jdbc:h2:mem:cotrn01c-" + System.nanoTime()
@@ -165,20 +100,10 @@ class TransactionAddControllerTest {
         return new DatasetUnitOfWork(new JdbcTransactionManager(dataSource));
     }
 
-    /** A repository that is never expected to be reached. */
     private static TransactionRepository unusedRepository() {
         return mock(TransactionRepository.class);
     }
 
-    /**
-     * A repository whose keyed read-for-update reports {@code outcome} for any key.
-     *
-     * <p>{@code readForUpdateByTranId}, not {@code readByTranId}: {@code :275} states the
-     * {@code UPDATE} option and the translation issues the form the source states.
-     *
-     * @param outcome what the locking read reports
-     * @return the stubbed repository
-     */
     private static TransactionRepository repositoryReturning(ReadResult outcome) {
         TransactionRepository repository = mock(TransactionRepository.class);
         when(repository.readForUpdateByTranId(org.mockito.ArgumentMatchers.anyString()))
@@ -186,19 +111,16 @@ class TransactionAddControllerTest {
         return repository;
     }
 
-    /** {@code EIBCALEN = 0}: a request carrying no communication area at all - {@code :94}. */
     private static TransactionAddRequest coldStart() {
         return new TransactionAddRequest();
     }
 
-    /** A first entry: {@code CDEMO-PGM-CONTEXT} zero, so {@code :99} takes the paint branch. */
     private static TransactionAddRequest firstEntry() {
         TransactionAddRequest request = new TransactionAddRequest();
         request.setNavigationContext(NavigationContext.empty());
         return request;
     }
 
-    /** A re-entry with the given raw {@code EIBAID} byte - {@code :110-112}. */
     private static TransactionAddRequest reentry(byte eibAid) {
         TransactionAddRequest request = new TransactionAddRequest();
         request.setNavigationContext(NavigationContext.empty().withPgmReenter());
@@ -206,14 +128,12 @@ class TransactionAddControllerTest {
         return request;
     }
 
-    /** A 350-byte {@code TRAN-RECORD} with every field distinguishable. */
     private static TranRecord tranRecord(String tranId, BigDecimal amount) {
         TranRecord record = new TranRecord(StandardCharsets.US_ASCII);
         record.moveTranId(tranId);
         record.moveTranTypeCd("01");
         record.moveTranCatCd(5);
         record.moveTranSource("POS TERM");
-        // 100 characters, so the move into TDESCO PIC X(60) has 40 to lose on the right.
         record.moveTranDesc("A".repeat(60) + "B".repeat(40));
         record.moveTranAmt(amount);
         record.moveTranMerchantId(800000001L);
@@ -226,7 +146,6 @@ class TransactionAddControllerTest {
         return record;
     }
 
-    /** Resolves a repository-relative path from wherever the suite is launched. */
     private static Path repositoryFile(String relativePath) {
         Path candidate = Path.of("").toAbsolutePath();
         while (candidate != null) {
@@ -240,16 +159,6 @@ class TransactionAddControllerTest {
                 + Path.of("").toAbsolutePath());
     }
 
-    /**
-     * The distinct method names actually invoked on a mocked repository, in first-call order.
-     *
-     * <p>Stronger than a list of {@code verify(..., never())} calls, which can only rule out the
-     * methods it happens to name: this rules out every method the interface has, named or not, so a
-     * mutating call added to the program in future is caught even if this test is never updated.
-     *
-     * @param repository the mock to interrogate; must not be {@code null}
-     * @return the distinct invoked method names, never {@code null}
-     */
     private static List<String> onlyRepositoryCalls(TransactionRepository repository) {
         return org.mockito.Mockito.mockingDetails(repository).getInvocations().stream()
                 .map(invocation -> invocation.getMethod().getName())
@@ -257,16 +166,6 @@ class TransactionAddControllerTest {
                 .toList();
     }
 
-    /**
-     * Reads a named {@code DFHAID} constant off {@link CicsAid} by its copybook name.
-     *
-     * <p>Used only to drive {@code DFHPF13} through {@code DFHPF24} from a parameterised source
-     * without writing twelve near-identical tests. The values themselves are asserted against IBM's
-     * published table by the {@code common} package's own suite; here they are simply looked up.
-     *
-     * @param name the {@code DFHAID} constant name, for example {@code DFHPF13}
-     * @return the AID byte that constant declares
-     */
     private static byte aidConstant(String name) {
         try {
             return (byte) CicsAid.class.getField(name).get(null);
@@ -276,7 +175,6 @@ class TransactionAddControllerTest {
         }
     }
 
-    /** The names of the {@code DFHMDF} fields a BMS mapset labels - the ones the symbolic map has. */
     private static List<String> namedFieldsOf(String mapsetSource) {
         return mapsetSource.lines()
                 .map(line -> line.split("\\s+", 3))
@@ -286,44 +184,27 @@ class TransactionAddControllerTest {
                 .toList();
     }
 
-    /** The Java accessor name a symbolic-map item's base name yields, for example {@code Trnidin}. */
     private static String accessorStem(TransactionAddResponse.ScreenField field) {
         String lower = field.baseName().toLowerCase(java.util.Locale.ROOT);
         return Character.toUpperCase(lower.charAt(0)) + lower.substring(1);
     }
 
-    /** The request setter that writes a field's {@code xxxI} view of the redefined span. */
     private static java.lang.reflect.Method inputSetterFor(
             TransactionAddResponse.ScreenField field) throws NoSuchMethodException {
         return TransactionAddRequest.class.getMethod("set" + accessorStem(field), String.class);
     }
 
-    /** The response getter that reads a field's {@code xxxO} view of the same span. */
     private static java.lang.reflect.Method outputGetterFor(
             TransactionAddResponse.ScreenField field) throws NoSuchMethodException {
         return TransactionAddResponse.class.getMethod("get" + accessorStem(field) + "o");
     }
 
-    /** Writes {@code width} copies of {@code filler} at {@code offset} of a record image. */
     private static void fill(StringBuilder image, int offset, int width, char filler) {
         for (int position = offset; position < offset + width; position++) {
             image.setCharAt(position, filler);
         }
     }
 
-    /**
-     * The value a screen item receives when a {@code MOVE} lands the record's span in it.
-     *
-     * <p>The sending span starts at the copybook's declared offset; the receiving item's declared
-     * width decides how much of it survives. A narrower receiver keeps the leading characters and
-     * discards the rest - COBOL truncates an alphanumeric {@code MOVE} on the right - and a wider one
-     * is space-padded on the right.
-     *
-     * @param recordImage the whole record image
-     * @param offset      the sending field's offset, from the copybook
-     * @param receiver    the receiving screen item
-     * @return exactly what the receiving item should hold
-     */
     private static String span(String recordImage, int offset,
                                TransactionAddResponse.ScreenField receiver) {
         int width = receiver.payloadLength();
@@ -333,7 +214,6 @@ class TransactionAddControllerTest {
                 : sending + " ".repeat(width - sending.length());
     }
 
-    /** How many times a token appears in a source file; used for the BMS attribute census. */
     private static int occurrencesOf(String source, String token) {
         int count = 0;
         int at = source.indexOf(token);
@@ -344,27 +224,20 @@ class TransactionAddControllerTest {
         return count;
     }
 
-    // =============================================================================================
-
     @Nested
-    @DisplayName("Risk R-B - the name says Add, the program views, and both stay that way")
-    class RiskRB {
-
+    @DisplayName("The name says Add, the program views, and both stay that way")
+    class NameVersusBehaviour {
         @Test
-        @DisplayName("the class documentation records R-B, quotes the source header and cites README")
+        @DisplayName("the class documentation quotes the source header and names the swapped sibling")
         void classDocumentationRecordsTheDivergence() throws IOException {
             String source = Files.readString(repositoryFile("app/java/src/main/java/com/vsergeychik/"
                     + "carddemo/transaction/TransactionAddController.java"), StandardCharsets.UTF_8);
 
             assertThat(source)
-                    .as("the R-B risk identifier must be named, or a reader has no thread to pull")
-                    .contains("R-B")
                     .as("the source Function header is the primary evidence and must be quoted")
                     .contains("View a Transaction from TRANSACT file")
-                    .as("README.md's own inventory independently contradicts the prompt's mapping")
-                    .contains("README.md:213-231")
-                    .as("the mechanical grep result is the proof that nothing is written")
-                    .contains("no matches")
+                    .as("the reader must be told this controller writes nothing")
+                    .contains("writes nothing")
                     .as("the sibling that actually adds must be named so the pair is findable")
                     .contains("TransactionViewController");
         }
@@ -399,19 +272,12 @@ class TransactionAddControllerTest {
 
             verify(repository, never()).write(org.mockito.ArgumentMatchers.any());
             verify(repository, never()).openOutput();
-            // The plain read is never used either: :275 states UPDATE, so the locking form is the one
-            // the translation issues - which is a read, not a write, and leaves this claim intact.
             verify(repository, never()).readByTranId(org.mockito.ArgumentMatchers.anyString());
         }
 
         @Test
         @DisplayName("a submitted-form request shape still only reads: the keyed read is the sole call")
         void aSubmittedFormShapeStillOnlyReads() {
-            // The shape a "TransactionAddController" would be expected to persist: every one of the 21
-            // items filled in, ENTER pressed, as though an operator had typed a whole transaction and
-            // submitted it. COTRN01C has no WRITE, so the twenty output-only items are simply
-            // overwritten by what the read paints - and nothing is stored. This is the request shape
-            // most likely to tempt a future change, which is why it is asserted explicitly.
             TranRecord record = tranRecord(KNOWN_TRAN_ID, new BigDecimal("504.77"));
             TransactionRepository repository = repositoryReturning(ReadResult.found(DD_NAME, record));
 
@@ -441,8 +307,6 @@ class TransactionAddControllerTest {
             TransactionAddResponse painted =
                     controllerOver(repository).mainPara(submitted).response();
 
-            // What the operator typed into the detail items was discarded and replaced by the record,
-            // which is what :159-171 then :178-190 do. Nothing travelled the other way.
             assertThat(painted.getTrnido()).isEqualTo(KNOWN_TRAN_ID).isNotEqualTo("0000000000000777");
             assertThat(painted.getCardnumo()).isEqualTo("4111111111111111");
             assertThat(onlyRepositoryCalls(repository))
@@ -453,9 +317,6 @@ class TransactionAddControllerTest {
         @Test
         @DisplayName("the repository declares no rewrite and no delete for this program to reach")
         void theRepositoryDeclaresNoRewriteOrDelete() {
-            // Belt and braces for the never() assertions above: those can only prove that a method was
-            // not called. This proves the mutating methods a "add" screen would need are not even
-            // declared, so no future edit can reach one by accident on the TRANSACT dataset.
             List<String> mutators = java.util.Arrays.stream(TransactionRepository.class.getMethods())
                     .map(java.lang.reflect.Method::getName)
                     .filter(name -> name.startsWith("rewrite") || name.startsWith("delete")
@@ -470,9 +331,6 @@ class TransactionAddControllerTest {
         @Test
         @DisplayName("the COTRN01 map is a lookup-then-display screen, not a data-entry form")
         void theMapProvesTheScreenIsALookup() throws IOException {
-            // The mechanical shape of the map is the third independent line of R-B evidence, and the
-            // one that needs no reading of COBOL logic at all: a form to type a transaction into would
-            // have to leave its detail fields unprotected, and this one does not.
             String cotrn01 = Files.readString(repositoryFile("app/bms/COTRN01.bms"),
                     StandardCharsets.UTF_8);
             String cotrn02 = Files.readString(repositoryFile("app/bms/COTRN02.bms"),
@@ -492,7 +350,6 @@ class TransactionAddControllerTest {
                     .as("no confirmation field: there is nothing to confirm on a read")
                     .isZero();
 
-            // The contrast is the point. COTRN02 - the program that actually adds - is a form.
             assertThat(namedFieldsOf(cotrn02))
                     .hasSize(TransactionAddResponse.PAYLOAD_FIELD_COUNT);
             assertThat(occurrencesOf(cotrn02, "UNPROT"))
@@ -505,7 +362,6 @@ class TransactionAddControllerTest {
     @Nested
     @DisplayName("MAIN-PARA :86-139 - the three entry arms")
     class MainPara {
-
         @Test
         @DisplayName(":88-92 every execution starts with the flags off and the message blank")
         void everyExecutionStartsClean() {
@@ -565,8 +421,6 @@ class TransactionAddControllerTest {
                     .isEqualTo(TransactionAddResponse.MAPSET_NAME);
             assertThat(state.response().getNextMap()).isEqualTo(TransactionAddResponse.MAP_NAME);
 
-            // :101 MOVE LOW-VALUES TO COTRN1AO left the detail fields as nulls; the header and the
-            // message line were written over them afterwards.
             assertThat(state.response().getTrnido())
                     .isEqualTo(TransactionAddController.lowValues(ScreenField.TRNIDO.payloadLength()));
             assertThat(state.response().getMzipo())
@@ -611,8 +465,6 @@ class TransactionAddControllerTest {
                     repositoryReturning(ReadResult.notFound(DD_NAME));
             TransactionAddRequest request = firstEntry();
             Ct01Info info = new Ct01Info();
-            // Neither all spaces nor all low-values, so COBOL treats it as a value. Ct01Info's own
-            // hasSelection() disagrees for exactly this shape, which is why it is not consulted.
             info.setTrnSelected("        " + "\u0000".repeat(8));
             request.setCt01Info(info);
             assertThat(info.hasSelection())
@@ -667,10 +519,6 @@ class TransactionAddControllerTest {
         @ValueSource(strings = {"SPACES", "LOW-VALUES"})
         @DisplayName(":116 the fallback test is `= SPACES OR LOW-VALUES`, so both are driven")
         void pf3FallsBackForEitherFigurativeConstant(String figurativeConstant) {
-            // Two separate whole-item comparisons joined by OR at :116. A translation that tested only
-            // one - say, only the blank case - would send a LOW-VALUES caller back to a program named
-            // by sixteen null bytes, and the defect would never show on a screen reached from the menu,
-            // because the menu writes a real name. Both are therefore driven from the top.
             String fromProgram = "SPACES".equals(figurativeConstant)
                     ? " ".repeat(NavigationContext.FROM_PROGRAM_LENGTH)
                     : "\u0000".repeat(NavigationContext.FROM_PROGRAM_LENGTH);
@@ -760,10 +608,6 @@ class TransactionAddControllerTest {
         @Test
         @DisplayName(":112-132 PF7 and PF8 are COTRN00C's keys, not this program's - both are rejected")
         void thePagingKeysOfTheSiblingScreenAreRejectedHere() {
-            // This is the single most likely way to get this suite wrong: COTRN00C - the transaction
-            // LIST - dispatches on PF3/PF7/PF8, because it pages. COTRN01C shows one transaction, has
-            // nothing to page, and dispatches on PF3/PF4/PF5. Copying the sibling's branch set would
-            // make PF7 and PF8 look handled here; the source says they are invalid keys.
             for (byte pagingKey : new byte[] {CicsAid.DFHPF7, CicsAid.DFHPF8}) {
                 ProgramState state = controllerOver(unusedRepository()).mainPara(reentry(pagingKey));
 
@@ -778,8 +622,6 @@ class TransactionAddControllerTest {
                 assertThat(state.screensSent()).isEqualTo(1);
             }
 
-            // And the keys this program really does name are all distinct from those two, so the four
-            // named arms and the paging keys cannot be confused for one another.
             assertThat(List.of(CicsAid.DFHENTER, CicsAid.DFHPF3, CicsAid.DFHPF4, CicsAid.DFHPF5))
                     .doesNotContain(CicsAid.DFHPF7, CicsAid.DFHPF8);
             assertThat(PfKeyResolver.isPf7(CicsAid.DFHPF7))
@@ -790,9 +632,6 @@ class TransactionAddControllerTest {
 
         @ParameterizedTest(name = "{0} in {1} state")
         @CsvSource({
-            // The five arms of :112-132 crossed with the two CDEMO-PGM-CONTEXT levels of :99. In
-            // ENTER state the AID is never consulted - :99 takes the paint branch before the EVALUATE
-            // is reached - so every key behaves identically there, which is itself the assertion.
             "7D, ENTER,   SEND",
             "F3, ENTER,   SEND",
             "F4, ENTER,   SEND",
@@ -813,8 +652,6 @@ class TransactionAddControllerTest {
             NavigationContext commarea = NavigationContext.empty();
             request.setNavigationContext(reenter ? commarea.withPgmReenter() : commarea);
             request.setAid(String.valueOf((char) (eibAid & 0xFF)));
-            // A lookup key that resolves, so the matrix isolates the dispatch: an empty key would send
-            // the ENTER arm down :147's rejection and confuse "which arm ran" with "what it found".
             request.setTrnidin(KNOWN_TRAN_ID);
 
             TranRecord record = tranRecord(KNOWN_TRAN_ID, new BigDecimal("504.77"));
@@ -844,9 +681,6 @@ class TransactionAddControllerTest {
                 default -> throw new IllegalStateException("Unknown expected outcome " + outcome);
             }
 
-            // Both 88-level states of CDEMO-PGM-CONTEXT are reachable and each is driven here (gate
-            // G50): :100 sets CDEMO-PGM-REENTER on the way in, and :204 moves it back to ZEROS on the
-            // way out - but only on an arm that transfers.
             assertThat(state.commarea().isEnter())
                     .as(":204 MOVE ZEROS TO CDEMO-PGM-CONTEXT runs only on a transferring arm")
                     .isEqualTo(state.transferred());
@@ -856,12 +690,6 @@ class TransactionAddControllerTest {
         @Test
         @DisplayName(":112-132 the five arms are tested in the source's order, WHEN OTHER last (G30)")
         void theArmsAreTestedInTheSourcesOrder() throws IOException {
-            // Rule R7 asks for the EVALUATE's ORDERING to be asserted, not only its outcomes - and the
-            // outcomes alone cannot show it, because EIBAID is one byte and no two arms can match the
-            // same value. The ordering is therefore asserted where it is actually expressed: the guard
-            // chain in the translation, whose order must be :113, :115, :123, :125, then the default.
-            // Reordering it would keep every test above green while silently diverging from a source
-            // whose arms a later change could make overlap.
             String controller = Files.readString(repositoryFile("app/java/src/main/java/com/"
                     + "vsergeychik/carddemo/transaction/TransactionAddController.java"),
                     StandardCharsets.UTF_8);
@@ -884,8 +712,6 @@ class TransactionAddControllerTest {
                     .as(":128 WHEN OTHER is the default arm and comes after all four named ones")
                     .isGreaterThan(pf5);
 
-            // And no arm this program does not have has crept in. PF7/PF8 belong to COTRN00C; if a
-            // guard for either appeared here, the invalid-key arm would stop being reachable for them.
             assertThat(body)
                     .doesNotContain("PfKeyResolver.isPf7(")
                     .doesNotContain("PfKeyResolver.isPf8(");
@@ -916,14 +742,10 @@ class TransactionAddControllerTest {
     @Nested
     @DisplayName("PROCESS-ENTER-KEY :144-192 and READ-TRANSACT-FILE :267-296")
     class EnterKey {
-
         @ParameterizedTest(name = "a lookup key of [{0}] is rejected as empty")
         @ValueSource(strings = {
             "",
             "                ",
-            // Sixteen nulls: a whole field of LOW-VALUES. It has to be the whole field, because
-            // RECEIVE reshapes a shorter value to the field's declared width by padding it with
-            // SPACES - and a field of nulls followed by spaces equals neither figurative constant.
             "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000"
                 + "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000"})
         @DisplayName(":147-152 a blank transaction id is rejected before any read")
@@ -995,37 +817,33 @@ class TransactionAddControllerTest {
 
             TransactionAddResponse response = controllerOver(repository).mainPara(request).response();
 
-            assertThat(response.getTrnido()).isEqualTo(KNOWN_TRAN_ID);                    // :178
-            assertThat(response.getCardnumo()).isEqualTo("4111111111111111");             // :179
-            assertThat(response.getTtypcdo()).isEqualTo("01");                            // :180
+            assertThat(response.getTrnido()).isEqualTo(KNOWN_TRAN_ID);
+            assertThat(response.getCardnumo()).isEqualTo("4111111111111111");
+            assertThat(response.getTtypcdo()).isEqualTo("01");
             assertThat(response.getTcatcdo())
                     .as(":181 TRAN-CAT-CD is PIC 9(04): the stored digits move")
                     .isEqualTo("0005");
-            assertThat(response.getTrnsrco()).isEqualTo("POS TERM  ");                    // :182
-            assertThat(response.getTrnamto()).isEqualTo("+00000504.77");                  // :183
+            assertThat(response.getTrnsrco()).isEqualTo("POS TERM  ");
+            assertThat(response.getTrnamto()).isEqualTo("+00000504.77");
             assertThat(response.getTdesco())
                     .as(":184 PIC X(100) into PIC X(60): 40 characters lost on the RIGHT")
                     .isEqualTo("A".repeat(60));
             assertThat(response.getTorigdto())
                     .as(":185 PIC X(26) into PIC X(10): the date survives, the time is cut")
                     .isEqualTo("2022-07-19");
-            assertThat(response.getTprocdto()).isEqualTo("2022-07-20");                    // :186
+            assertThat(response.getTprocdto()).isEqualTo("2022-07-20");
             assertThat(response.getMido())
                     .as(":187 TRAN-MERCHANT-ID is PIC 9(09)")
                     .isEqualTo("800000001");
-            assertThat(response.getMnameo()).isEqualTo("M".repeat(30));                    // :188
-            assertThat(response.getMcityo()).isEqualTo("C".repeat(25));                    // :189
-            assertThat(response.getMzipo()).isEqualTo("12345-6789");                       // :190
+            assertThat(response.getMnameo()).isEqualTo("M".repeat(30));
+            assertThat(response.getMcityo()).isEqualTo("C".repeat(25));
+            assertThat(response.getMzipo()).isEqualTo("12345-6789");
             assertThat(response.getErrmsgo()).isBlank();
         }
 
         @Test
         @DisplayName(":178-190 every painted field is taken from its declared CVTRA05Y span")
         void everyPaintedFieldComesFromItsCopybookOffset() {
-            // Values asserted by name prove the right accessor was called; values asserted by OFFSET
-            // prove the accessor reads the right bytes. A record image is built with a distinct
-            // character in every declared span, so a field read one byte early or one span across
-            // cannot possibly match. Offsets are app/cpy/CVTRA05Y.cpy's, verified in TranRecord.
             StringBuilder image = new StringBuilder("?".repeat(TranRecord.RECORD_LENGTH));
             fill(image, TranRecord.TRAN_ID_OFFSET, TranRecord.TRAN_ID_LENGTH, 'A');
             fill(image, TranRecord.TRAN_TYPE_CD_OFFSET, TranRecord.TRAN_TYPE_CD_LENGTH, 'B');
@@ -1056,30 +874,27 @@ class TransactionAddControllerTest {
 
             TransactionAddResponse painted = controllerOver(repository).mainPara(request).response();
 
-            // Each expectation is the substring of the record image at the copybook's own offset,
-            // shortened on the RIGHT where the receiving screen item is narrower - the alphanumeric
-            // MOVE rule, which is why TDESC keeps 60 of 100 and TORIGDT keeps 10 of 26.
             assertThat(painted.getTrnido())
-                    .isEqualTo(span(raw, TranRecord.TRAN_ID_OFFSET, ScreenField.TRNIDO));      // @0
+                    .isEqualTo(span(raw, TranRecord.TRAN_ID_OFFSET, ScreenField.TRNIDO));
             assertThat(painted.getTtypcdo())
-                    .isEqualTo(span(raw, TranRecord.TRAN_TYPE_CD_OFFSET, ScreenField.TTYPCDO)); // @16
+                    .isEqualTo(span(raw, TranRecord.TRAN_TYPE_CD_OFFSET, ScreenField.TTYPCDO));
             assertThat(painted.getTcatcdo())
-                    .isEqualTo(span(raw, TranRecord.TRAN_CAT_CD_OFFSET, ScreenField.TCATCDO));  // @18
+                    .isEqualTo(span(raw, TranRecord.TRAN_CAT_CD_OFFSET, ScreenField.TCATCDO));
             assertThat(painted.getTrnsrco())
-                    .isEqualTo(span(raw, TranRecord.TRAN_SOURCE_OFFSET, ScreenField.TRNSRCO));  // @22
+                    .isEqualTo(span(raw, TranRecord.TRAN_SOURCE_OFFSET, ScreenField.TRNSRCO));
             assertThat(painted.getTdesco())
-                    .isEqualTo(span(raw, TranRecord.TRAN_DESC_OFFSET, ScreenField.TDESCO));     // @32
+                    .isEqualTo(span(raw, TranRecord.TRAN_DESC_OFFSET, ScreenField.TDESCO));
             assertThat(painted.getTrnamto())
                     .as("@132, eleven zoned bytes read as S9(09)V99 and edited into +99999999.99")
                     .isEqualTo("+00000009.50");
             assertThat(painted.getMido())
-                    .isEqualTo(span(raw, TranRecord.TRAN_MERCHANT_ID_OFFSET, ScreenField.MIDO)); // @143
+                    .isEqualTo(span(raw, TranRecord.TRAN_MERCHANT_ID_OFFSET, ScreenField.MIDO));
             assertThat(painted.getMnameo())
                     .isEqualTo(span(raw, TranRecord.TRAN_MERCHANT_NAME_OFFSET,
-                            ScreenField.MNAMEO));                                               // @152
+                            ScreenField.MNAMEO));
             assertThat(painted.getMcityo())
                     .isEqualTo(span(raw, TranRecord.TRAN_MERCHANT_CITY_OFFSET,
-                            ScreenField.MCITYO));                                               // @202
+                            ScreenField.MCITYO));
             assertThat(painted.getMzipo())
                     .isEqualTo(span(raw, TranRecord.TRAN_MERCHANT_ZIP_OFFSET, ScreenField.MZIPO));
             assertThat(painted.getCardnumo())
@@ -1089,8 +904,6 @@ class TransactionAddControllerTest {
             assertThat(painted.getTprocdto())
                     .isEqualTo(span(raw, TranRecord.TRAN_PROC_TS_OFFSET, ScreenField.TPROCDTO));
 
-            // The offsets themselves are the copybook's, restated here so a change to either side is
-            // a visible disagreement rather than a silent one.
             assertThat(new int[] {TranRecord.TRAN_ID_OFFSET, TranRecord.TRAN_TYPE_CD_OFFSET,
                 TranRecord.TRAN_CAT_CD_OFFSET, TranRecord.TRAN_SOURCE_OFFSET,
                 TranRecord.TRAN_DESC_OFFSET, TranRecord.TRAN_AMT_OFFSET,
@@ -1104,9 +917,6 @@ class TransactionAddControllerTest {
         @Test
         @DisplayName(":179 and :187 the card number and merchant id are shown in full, unmasked")
         void theCardNumberAndMerchantIdAreNotMasked() {
-            // COTRN01C moves TRAN-CARD-NUM and TRAN-MERCHANT-ID straight onto the screen. Masking them
-            // would be a behaviour change and a parity failure, however defensible it looks in
-            // isolation - practice B4, and gate G6's "behaviour from the source" in the small.
             TranRecord record = tranRecord(KNOWN_TRAN_ID, new BigDecimal("504.77"));
             TransactionRepository repository = repositoryReturning(ReadResult.found(DD_NAME, record));
             TransactionAddRequest request = reentry(CicsAid.DFHENTER);
@@ -1129,11 +939,6 @@ class TransactionAddControllerTest {
         @Test
         @DisplayName(":147 a key shorter than sixteen characters is padded and read, never rejected")
         void aShortKeyIsPaddedAndReadBecauseTheSourceHasNoLengthTest() {
-            // Worth stating plainly, because it is the one place a reasonable expectation and the
-            // source disagree: COTRN01C tests only `TRNIDINI = SPACES OR LOW-VALUES` at :147. There is
-            // no length edit anywhere in the program, so a four-character id is not an error - RECEIVE
-            // reshapes it to PIC X(16) by padding with spaces, :172 moves that into TRAN-ID, and the
-            // read happens. Adding a length check would invent a rejection the screen cannot produce.
             TransactionRepository repository = repositoryReturning(ReadResult.notFound(DD_NAME));
             TransactionAddRequest request = reentry(CicsAid.DFHENTER);
             request.setTrnidin("0001");
@@ -1206,18 +1011,12 @@ class TransactionAddControllerTest {
 
             ProgramState state = controllerOver(repository).mainPara(request);
 
-            // WS-RESP-CD's VALUE ZEROS state is indistinguishable from a reported DFHRESP(NORMAL),
-            // because zero IS NORMAL. Leaving the item there for an outcome that reported no response at
-            // all made :290 emit RESP:000000000 - a line that says the read succeeded, on the arm reached
-            // only because it did not. The sentinel cannot collide with any DFHRESP value.
             assertThat(state.respCd())
                     .as("a reported NORMAL and an unreported response must not share one value")
                     .isEqualTo(FileStatus.RESP_NOT_REPORTED)
                     .isNotEqualTo(FileStatus.NORMAL);
             assertThat(FileStatus.respReported(state.respCd())).isFalse();
 
-            // The rendered line keeps its shape - DISPLAY concatenates its operands at their declared
-            // widths - and the response operand is unmistakably not a response code.
             assertThat(state.displays()).containsExactly("RESP:*********REAS:000000000");
             assertThat(state.displays().get(0))
                     .doesNotContain("RESP:000000000")
@@ -1229,8 +1028,6 @@ class TransactionAddControllerTest {
         @Test
         @DisplayName(":290 a condition that DOES report a RESP still renders that exact value")
         void aReportedResponseStillRendersAsItsNumber() {
-            // The other side of the sentinel: it must not be applied to an outcome that reported a
-            // response. ENDFILE is a real DFHRESP value and reaches WHEN OTHER on a keyed read.
             TransactionRepository repository = repositoryReturning(ReadResult.endOfFile(DD_NAME));
             TransactionAddRequest request = reentry(CicsAid.DFHENTER);
             request.setTrnidin(KNOWN_TRAN_ID);
@@ -1276,7 +1073,6 @@ class TransactionAddControllerTest {
     @Nested
     @DisplayName("POPULATE-HEADER-INFO :243-262 and SEND-TRNVIEW-SCREEN :213-225")
     class HeaderAndSend {
-
         @Test
         @DisplayName(":247-262 the six header fields come from the copybooks and the injected Clock")
         void theHeaderIsBuiltFromTheCopybooksAndThePinnedClock() {
@@ -1285,19 +1081,16 @@ class TransactionAddControllerTest {
 
             assertThat(response.getTitle01o())
                     .isEqualTo(ScreenTitles.CCDA_TITLE01)
-                    .hasSize(ScreenTitles.TITLE_LENGTH);                                   // :247
-            assertThat(response.getTitle02o()).isEqualTo(ScreenTitles.CCDA_TITLE02);        // :248
+                    .hasSize(ScreenTitles.TITLE_LENGTH);
+            assertThat(response.getTitle02o()).isEqualTo(ScreenTitles.CCDA_TITLE02);
             assertThat(response.getTrnnameo())
-                    .isEqualTo(TransactionAddController.TRANSACTION_ID);                    // :249
+                    .isEqualTo(TransactionAddController.TRANSACTION_ID);
             assertThat(response.getPgmnameo())
-                    .isEqualTo(TransactionAddController.PROGRAM_NAME);                      // :250
-            assertThat(response.getCurdateo()).isEqualTo(EXPECTED_CURDATE);                 // :256
-            assertThat(response.getCurtimeo()).isEqualTo(EXPECTED_CURTIME);                 // :262
+                    .isEqualTo(TransactionAddController.PROGRAM_NAME);
+            assertThat(response.getCurdateo()).isEqualTo(EXPECTED_CURDATE);
+            assertThat(response.getCurtimeo()).isEqualTo(EXPECTED_CURTIME);
             assertThat(state.dateHeader()).isPresent();
 
-            // :245 MOVE FUNCTION CURRENT-DATE TO WS-CURDATE-DATA is read through the injected Clock
-            // (practice B7), so the two header items are exactly what CSDAT01Y's own carrier renders
-            // for that instant - not what the wall clock happens to say when the suite runs.
             DateHeader captured = state.dateHeader().orElseThrow();
             assertThat(captured.wsCurdateMmDdYy())
                     .isEqualTo(response.getCurdateo())
@@ -1341,8 +1134,6 @@ class TransactionAddControllerTest {
         @Test
         @DisplayName(":199-200 RETURN-TO-PREV-SCREEN defaults a blank target to COSGN00C")
         void aBlankTransferTargetDefaultsToSignOn() {
-            // Unreachable through MAIN-PARA - every arm that transfers has already named a target -
-            // so the source's own defensive default is driven directly.
             ProgramState state = new ProgramState(
                     new com.vsergeychik.carddemo.common.FixedWidthCodec(StandardCharsets.US_ASCII));
             assertThat(state.commarea().toProgram()).isBlank();
@@ -1390,7 +1181,6 @@ class TransactionAddControllerTest {
     @Nested
     @DisplayName("The edited amount - WS-TRAN-AMT PIC +99999999.99 at :49, :177 and :183")
     class EditedAmount {
-
         @ParameterizedTest(name = "{0} renders {1}")
         @CsvSource({
             "504.77,        +00000504.77",
@@ -1463,13 +1253,9 @@ class TransactionAddControllerTest {
     @Nested
     @DisplayName("Figurative constants, the AID cast and the CSSETATY decision")
     class Helpers {
-
         @Test
         @DisplayName(":116, :147, :199 and the negation at :103 - the exact COBOL relation")
         void theFigurativeConstantRelationIsWholeItemEquality() {
-            // Equal to SPACES, or equal to LOW-VALUES: the two whole-item comparisons the source joins
-            // with OR. Written out rather than parameterised, because a null byte cannot survive a CSV
-            // source's own quoting and trimming rules intact.
             assertThat(TransactionAddController.isSpacesOrLowValues(null)).isTrue();
             assertThat(TransactionAddController.isSpacesOrLowValues("")).isTrue();
             assertThat(TransactionAddController.isSpacesOrLowValues(" ")).isTrue();
@@ -1531,11 +1317,6 @@ class TransactionAddControllerTest {
                             + (char) Integer.parseInt(hex.substring(4), 16)
                     : String.valueOf((char) Integer.parseInt(hex, 16));
 
-            // The guard applies to the byte form, which is the only form that IS a byte. A
-            // surrogate-shaped value - two characters, the only way a String carries a code point above
-            // U+FFFF - is read as a CCARD-AID token instead, matches none of the sixteen, and so
-            // resolves to DFHNULL and takes WHEN OTHER. Either way it cannot reach the PF3 arm, which is
-            // what this test exists to prove, and neither way narrows anything.
             if (aid.length() > TransactionAddRequest.AID_LENGTH) {
                 assertThat(TransactionAddController.eibAidOf(aid)).isEqualTo(CicsAid.DFHNULL);
                 assertThat(PfKeyResolver.resolve(TransactionAddController.eibAidOf(aid))).isEmpty();
@@ -1549,12 +1330,9 @@ class TransactionAddControllerTest {
         @Test
         @DisplayName("U+01F3 would have narrowed onto DFHPF3, the key this program transfers on")
         void theAliasThisGuardCloses() {
-            // The whole point of the guard: (byte) '\u01F3' is 0xF3, which IS DFHPF3. Without it a
-            // caller could reach the PF3 arm at :115 without ever presenting PF3.
             assertThat((byte) '\u01F3').isEqualTo(CicsAid.DFHPF3);
             assertThatIllegalArgumentException()
                     .isThrownBy(() -> TransactionAddController.eibAidOf("\u01F3"));
-            // And the AID it aliases is still accepted on its own, so nothing legitimate was lost.
             assertThat(TransactionAddController.eibAidOf("\u00F3")).isEqualTo(CicsAid.DFHPF3);
             assertThat(TransactionAddController.MAX_AID_CODE_POINT).isEqualTo((char) 0x00FF);
         }
@@ -1563,10 +1341,6 @@ class TransactionAddControllerTest {
         @DisplayName("two to five characters is the CCARD-AID token form, which is not a byte and so "
                 + "names no key: DFHNULL, and WHEN OTHER")
         void theTokenFormResolvesToItsByte() {
-            // The token form is what every response of this module publishes, and it stays an output only.
-            // CSSTRPFY folds PF13-PF24 onto PFK01-PFK12, so 'PFK03' stands for DFHPF3 AND DFHPF15;
-            // decoding it had to choose, and choosing PF3 transferred control at :115 for a PF15 press the
-            // source answers with the invalid-key message at :130-134. COTRN01C does not copy CSSTRPFY.
             assertThat(TransactionAddController.eibAidOf("ENTER")).isEqualTo(CicsAid.DFHNULL);
             assertThat(TransactionAddController.eibAidOf("PFK03")).isEqualTo(CicsAid.DFHNULL);
             assertThat(TransactionAddController.eibAidOf("PA1")).isEqualTo(CicsAid.DFHNULL);
@@ -1575,8 +1349,6 @@ class TransactionAddControllerTest {
             assertThat(TransactionAddController.eibAidOf("     ")).isEqualTo(CicsAid.DFHNULL);
             assertThat(TransactionAddController.eibAidOf("\u0000".repeat(5)))
                     .isEqualTo(CicsAid.DFHNULL);
-            // AID_LENGTH is the width of EIBAID itself; AID_TOKEN_LENGTH is the widest value the member
-            // accepts, so a token-shaped value is answered for what it says rather than refused on width.
             assertThat(TransactionAddRequest.AID_LENGTH).isEqualTo(1);
             assertThat(TransactionAddRequest.AID_TOKEN_LENGTH)
                     .isEqualTo(PfKeyResolver.AID_TOKEN_LENGTH);
@@ -1586,9 +1358,6 @@ class TransactionAddControllerTest {
         @EnumSource(PfKeyResolver.AidKey.class)
         @DisplayName("every key a response can name is readable back as its own byte, unfolded")
         void everyTokenRoundTripsThroughTheResolver(PfKeyResolver.AidKey key) {
-            // For each of the sixteen condition names, take a byte that produces it and prove the payload
-            // image of that byte reads back as that byte - so a client echoing a key it was given is
-            // understood as the key that produced it, and not as its folded twin.
             byte source = someByteResolvingTo(key);
 
             assertThat(TransactionAddController.eibAidOf(PfKeyResolver.aidImage(source)))
@@ -1596,15 +1365,6 @@ class TransactionAddControllerTest {
             assertThat(PfKeyResolver.resolve(source)).contains(key);
         }
 
-        /**
-         * A raw byte the shared resolver maps onto the given condition name.
-         *
-         * <p>Found by search over the whole one-byte space rather than by a second table, so this helper
-         * cannot disagree with {@link PfKeyResolver#resolve(byte)} about which bytes produce which name.
-         *
-         * @param key the condition name
-         * @return a byte that resolves to it
-         */
         private byte someByteResolvingTo(PfKeyResolver.AidKey key) {
             for (int unsigned = 0; unsigned <= 0xFF; unsigned++) {
                 if (PfKeyResolver.resolve((byte) unsigned).filter(key::equals).isPresent()) {
@@ -1653,9 +1413,6 @@ class TransactionAddControllerTest {
         @Test
         @DisplayName("the resolver has no WHEN OTHER and no DFHPA3 arm, so an unmapped AID is absent")
         void theResolverHasNoDefaultArm() {
-            // app/cpy/CSSTRPFY.cpy ends at END-EVALUATE with no WHEN OTHER and never tests DFHPA3, so
-            // an unmatched AID sets nothing at all. That absence is what has to travel into Java: a
-            // substitute token here would silently give this program's EVALUATE something to match.
             assertThat(PfKeyResolver.resolve(CicsAid.DFHPA3))
                     .as("DFHPA3 is not one of the copybook's tested AIDs")
                     .isEmpty();
@@ -1666,8 +1423,6 @@ class TransactionAddControllerTest {
                     .contains(AidKey.PA1);
             assertThat(PfKeyResolver.resolve(CicsAid.DFHPA2)).contains(AidKey.PA2);
 
-            // And an AID the resolver cannot name reaches this program's WHEN OTHER, which is the arm
-            // that matters: :112 dispatches on the raw byte, so an absent token is not consulted.
             ProgramState state = controllerOver(unusedRepository()).mainPara(reentry(CicsAid.DFHPA3));
 
             assertThat(state.resolvedAid()).isEmpty();
@@ -1679,9 +1434,6 @@ class TransactionAddControllerTest {
         @Test
         @DisplayName("a folded upper key still reaches WHEN OTHER, because :112 compares raw bytes")
         void aFoldedUpperKeyIsStillAnInvalidKeyHere() {
-            // DFHPF16 folds to PFK04 in CSSTRPFY, and this program's third arm is DFHPF4 - so a
-            // translation that dispatched on the resolved token rather than on EIBAID would clear the
-            // screen when PF16 was pressed. The source compares EIBAID, so PF16 is an invalid key.
             assertThat(PfKeyResolver.resolve(CicsAid.DFHPF16)).contains(AidKey.PFK04);
             assertThat(PfKeyResolver.resolve(CicsAid.DFHPF4)).contains(AidKey.PFK04);
 
@@ -1731,12 +1483,6 @@ class TransactionAddControllerTest {
         @Test
         @DisplayName("CSSETATY's highlight is real and REENTER-only, and this screen still never uses it")
         void theCssetatyHighlightIsRealAndReenterOnly() {
-            // Gate G38 has two halves and both matter. First half: the highlight CSSETATY describes -
-            // DFHRED into the xxxC item and '*' into the xxxO item - exists, is gated on
-            // CDEMO-PGM-REENTER, and lands on the field when applied. Note the copybook's nesting:
-            // :18-22 assigns the colour whenever (NOT-OK OR BLANK) AND REENTER, and only the inner
-            // test at :23 - FLG-<field>-BLANK - adds the asterisk. So a field that is wrong but not
-            // empty goes red without one.
             FieldAttributeSetter.FieldHighlight blankOnReentry =
                     FieldAttributeSetter.resolveFromFlags(true, true, true);
             assertThat(blankOnReentry.untouched()).isFalse();
@@ -1776,9 +1522,6 @@ class TransactionAddControllerTest {
                     .hasSize(ScreenField.TRNIDINO.payloadLength())
                     .startsWith(FieldAttributeSetter.ASTERISK);
 
-            // Second half: COTRN01C does not COPY CSSETATY, so this screen produces the untouched
-            // decision in BOTH states - including first entry with a blank lookup field, which is the
-            // shape most likely to be "improved" into a highlight it never had.
             assertThat(TransactionAddController.lookupFieldHighlight(true).untouched()).isTrue();
             assertThat(TransactionAddController.lookupFieldHighlight(false).untouched()).isTrue();
             assertThat(TransactionAddController.lookupFieldHighlight(true))
@@ -1851,7 +1594,6 @@ class TransactionAddControllerTest {
     @Nested
     @DisplayName("The screen contract - 21 DFHMDF fields, and only those (gate G9)")
     class ScreenContract {
-
         @Test
         @DisplayName("both projections declare exactly the 21 verified names and widths")
         void theTwentyOneFieldsAndWidthsAreTheCopybookSown() {
@@ -1892,7 +1634,6 @@ class TransactionAddControllerTest {
                     controllerOver(repository).mainPara(request).response());
 
             for (ScreenField field : ScreenField.values()) {
-                // The wire name is the xxxI item in lower case, with no direction suffix (AAP 0.6.3).
                 String base = field.baseName().toLowerCase(java.util.Locale.ROOT);
                 assertThat(json).contains("\"" + base + "\"");
                 for (String suffix : List.of("l", "f", "a", "c", "p", "h", "v")) {
@@ -1934,11 +1675,6 @@ class TransactionAddControllerTest {
         @Test
         @DisplayName("all 21 REDEFINES pairs round-trip through both views of one backing span")
         void everyRedefinedPairRoundTripsThroughBothViews() throws Exception {
-            // app/cpy-bms/COTRN01.CPY:145 `01 COTRN1AO REDEFINES COTRN1AI` makes xxxI and xxxO the same
-            // bytes. Gate G34: for each of the 21 fields, write through the xxxI view and read back
-            // through the xxxO view, and confirm the two views report the same declared offset and the
-            // same declared width. A field wired to its own private storage would pass the first half
-            // and fail the second, which is why both are asserted.
             ProgramState state = new ProgramState(
                     new com.vsergeychik.carddemo.common.FixedWidthCodec(StandardCharsets.US_ASCII));
             TransactionAddRequest inbound = new TransactionAddRequest();
@@ -1946,8 +1682,6 @@ class TransactionAddControllerTest {
             ScreenField[] fields = ScreenField.values();
             List<String> written = new ArrayList<>();
             for (int index = 0; index < fields.length; index++) {
-                // A value unique to the field and exactly its declared width, so a value landing in a
-                // neighbouring span is detectable rather than merely improbable.
                 char marker = (char) ('a' + index);
                 String value = String.valueOf(marker).repeat(fields[index].payloadLength());
                 written.add(value);
@@ -2002,8 +1736,6 @@ class TransactionAddControllerTest {
                         .hasSize(Ct01Info.NEXT_PAGE_FLG_LENGTH);
             }
 
-            // The two conditions are not each other's negation in general - the item is PIC X(01) and
-            // can hold any character - so a third value satisfies neither, exactly as in COBOL.
             Ct01Info neither = new Ct01Info();
             neither.setNextPageFlg("?");
             assertThat(neither.isNextPageYes()).isFalse();
@@ -2014,7 +1746,6 @@ class TransactionAddControllerTest {
     @Nested
     @DisplayName("ProgramState - the WORKING-STORAGE carrier")
     class WorkingStorage {
-
         private ProgramState freshState() {
             return new ProgramState(
                     new com.vsergeychik.carddemo.common.FixedWidthCodec(StandardCharsets.US_ASCII));
@@ -2153,7 +1884,6 @@ class TransactionAddControllerTest {
     @Nested
     @DisplayName("Wiring and the HTTP adapter")
     class Wiring {
-
         @Test
         @DisplayName("all three collaborators are required, and the code page is never the default")
         void bothCollaboratorsAreRequired() {
@@ -2199,11 +1929,7 @@ class TransactionAddControllerTest {
             ProgramState state = controllerOver(repository).mainPara(request);
 
             assertThat(state.tranRecord()).isPresent();
-            // The real repository refuses FOR UPDATE with no transaction open, so this is what makes
-            // the option the source states reproducible at all rather than only nominally issued.
             assertThat(insideAUnitOfWork).containsExactly(true);
-            // The program writes nothing, so the boundary commits - which is the task's implicit
-            // syncpoint at EXEC CICS RETURN, and there is no ROLLBACK anywhere in COTRN01C.
             assertThat(completion).containsExactly(TransactionSynchronization.STATUS_COMMITTED);
             assertThat(DatasetUnitOfWork.active())
                     .as("the boundary closes when the task returns")
@@ -2324,9 +2050,6 @@ class TransactionAddControllerTest {
                     .setMessageConverters(new MappingJackson2HttpMessageConverter(mapper))
                     .build();
 
-            // A re-entry carries the operator's own TRNIDIN, which is the field :147 and :217-224 read;
-            // the URI seeds only a first entry. So a client echoing a painted screen sends the key in
-            // the body, exactly as this does.
             TransactionAddRequest request = reentry(CicsAid.DFHENTER);
             request.setTrnidin(KNOWN_TRAN_ID);
 
@@ -2338,8 +2061,6 @@ class TransactionAddControllerTest {
                     .andExpect(jsonPath("$.trnamt").value("+00000504.77"))
                     .andExpect(jsonPath("$.nextProgram").value("COTRN01C"))
                     .andExpect(jsonPath("$.pgmname").value("COTRN01C"))
-                    // The 21 screen items stay flat at the top level; the metadata joins them as one
-                    // sibling member rather than being dropped or mixed into the projection.
                     .andExpect(jsonPath("$.screenMetadata.cursorField").value("TRNIDIN"))
                     .andExpect(jsonPath("$.screenMetadata.fields.ERRMSG.colour").exists())
                     .andExpect(jsonPath("$.cursorField").doesNotExist());
@@ -2348,8 +2069,6 @@ class TransactionAddControllerTest {
         @Test
         @DisplayName("over HTTP, an extension naming another transaction cannot make the URI read it")
         void theUriIsTheOnlyIdentityOverHttp() throws Exception {
-            // Only reachable through the HTTP binder: /api/transactions/A with CDEMO-CT01-TRN-SELECTED
-            // naming B used to read B on the first-entry arm.
             TranRecord record = tranRecord(KNOWN_TRAN_ID, new BigDecimal("504.77"));
             TransactionRepository repository = repositoryReturning(ReadResult.found(DD_NAME, record));
             ObjectMapper mapper = new ObjectMapper();
@@ -2405,8 +2124,6 @@ class TransactionAddControllerTest {
                     .andReturn()
                     .getResponse();
 
-            // The client resolves the transfer, so nothing here may resolve it server-side: no 3xx, no
-            // Location header, no forwarded or redirected URL. That is what makes the screen stateless.
             assertThat(answered.getStatus()).isEqualTo(200);
             assertThat(answered.getHeader("Location")).isNull();
             assertThat(answered.getForwardedUrl()).isNull();
@@ -2416,8 +2133,6 @@ class TransactionAddControllerTest {
         @Test
         @DisplayName("gate G40 - a screen-sending arm names this mapset and map for the client to paint")
         void aSendingArmNamesTheMapsetAndMap() throws Exception {
-            // The binder projects the path into CDEMO-CT01-TRN-SELECTED, so first entry performs the
-            // lookup at :107 - the repository has to answer.
             TranRecord record = tranRecord(KNOWN_TRAN_ID, new BigDecimal("504.77"));
             ObjectMapper mapper = new ObjectMapper();
             MockMvc mockMvc = MockMvcBuilders
@@ -2430,7 +2145,6 @@ class TransactionAddControllerTest {
                             .contentType(MediaType.APPLICATION_JSON)
                             .content(mapper.writeValueAsString(firstEntry())))
                     .andExpect(status().isOk())
-                    // :219-225 SEND MAP('COTRN1A') MAPSET('COTRN01') - carried, not performed.
                     .andExpect(jsonPath("$.nextProgram").value("COTRN01C"))
                     .andExpect(jsonPath("$.nextMapset").value("COTRN01"))
                     .andExpect(jsonPath("$.nextMap").value("COTRN1A"));
@@ -2471,7 +2185,6 @@ class TransactionAddControllerTest {
                         .isEmpty();
             }
 
-            // The cold start too: it is the one arm that runs before any communication area exists.
             var coldStart = mockMvc.perform(get("/api/transactions/{tranId}", KNOWN_TRAN_ID))
                     .andExpect(status().isOk())
                     .andReturn();
@@ -2492,8 +2205,6 @@ class TransactionAddControllerTest {
             second.setTrnidin(KNOWN_TRAN_ID);
             assertThat(second).isEqualTo(first);
 
-            // Identical in, identical out - which can only hold if the clock is injected and nothing is
-            // carried over. An un-pinned FUNCTION CURRENT-DATE alone would break this on the second.
             String firstScreen = mapper.writeValueAsString(controller.mainPara(first).response());
             String secondScreen = mapper.writeValueAsString(controller.mainPara(second).response());
 
@@ -2507,11 +2218,6 @@ class TransactionAddControllerTest {
         @Test
         @DisplayName("an over-width path id is answered 400 by WebConfig's handler, echoing no value")
         void anOverWidePathIdIsAnsweredBadRequest() throws Exception {
-            // The boundary refusal in bind() is only half a contract: what a caller sees is decided by
-            // the advice that translates it. Registering the real WebConfig.CobolErrorHandler proves the
-            // refusal becomes a 400 rather than a 500, and that the rejected value is not reflected back
-            // into the response - a URI naming a seventeen-digit transaction gets no confirmation that
-            // sixteen of those digits were meaningful.
             String tooWide = "9".repeat(TransactionAddRequest.TRNIDIN_LENGTH + 1);
             MockMvc mockMvc = MockMvcBuilders
                     .standaloneSetup(controllerOver(unusedRepository()))
@@ -2533,9 +2239,6 @@ class TransactionAddControllerTest {
         @Test
         @DisplayName("gate G44 - no DDL, no entity mapping and no version column anywhere in the graph")
         void noSchemaArtefactExistsInTheTranslation() throws IOException {
-            // The prompt forbids schema change, so the translation must not have acquired an entity
-            // model, a migration or an optimistic-locking column on its way to Java. Checked over the
-            // whole read path this screen depends on, by reading the sources.
             List<String> graph = List.of(
                     "app/java/src/main/java/com/vsergeychik/carddemo/transaction/"
                             + "TransactionAddController.java",
@@ -2590,14 +2293,10 @@ class TransactionAddControllerTest {
                     .isNotEqualTo(KNOWN_TRAN_ID);
         }
     }
-    // =============================================================================================
-    // The route binding: the URI's identity, and the metadata the envelope carries
-    // =============================================================================================
 
     @Nested
     @DisplayName("bind - the URI names the transaction, in every carrier of that identity")
     class RouteBinding {
-
         private final TransactionAddController controller = controllerOver(unusedRepository());
 
         @Test
@@ -2610,24 +2309,23 @@ class TransactionAddControllerTest {
         }
 
         @Test
-        @DisplayName("on a re-entry the operator's own TRNIDIN is the identity, because :110-111 "
-                + "receives the map and :147 and :217-224 read that field")
+        @DisplayName("on a re-entry the URI is still the identity: :110-111 receives the map and :147 "
+                + "and :217-224 read TRNIDIN, so TRNIDIN carries the key the URI names")
         void aReentryKeepsTheTypedIdentity() {
-            TransactionAddRequest typed = reentry(CicsAid.DFHENTER);
-            typed.setTrnidin("0000000000000099");
+            TransactionAddRequest agreeing = reentry(CicsAid.DFHENTER);
+            agreeing.setTrnidin(KNOWN_TRAN_ID);
 
-            TransactionAddRequest bound = controller.bind(KNOWN_TRAN_ID, typed);
+            TransactionAddRequest bound = controller.bind(KNOWN_TRAN_ID, agreeing);
 
-            assertThat(bound.getTrnidin()).isEqualTo("0000000000000099");
+            assertThat(bound.getTrnidin()).isEqualTo(KNOWN_TRAN_ID);
             assertThat(bound.getCt01Info().getTrnSelected())
-                    .as("the extension is the list program's carrier and is not rewritten either")
-                    .isEqualTo(typed.getCt01Info().getTrnSelected());
+                    .as("both carriers of the identity are bound from the URI")
+                    .isEqualTo(KNOWN_TRAN_ID);
         }
 
         @Test
         @DisplayName("it fills CDEMO-CT01-TRN-SELECTED too, which is what first entry reads")
         void thePathVariableAlsoFillsTheExtension() {
-            // app/cbl/COTRN01C.cbl:103-106 reads the extension, not the typed field, on first entry.
             TransactionAddRequest bound = controller.bind(KNOWN_TRAN_ID, firstEntry());
 
             assertThat(bound.getCt01Info().getTrnSelected()).isEqualTo(KNOWN_TRAN_ID)
@@ -2654,29 +2352,28 @@ class TransactionAddControllerTest {
         }
 
         @Test
-        @DisplayName("a body whose TRNIDIN names a different transaction is answered by the source's "
-                + "own PROCESS-ENTER-KEY, not by a boundary refusal")
+        @DisplayName("a body whose TRNIDIN names a different transaction is REFUSED before the "
+                + "locking read, because the URI is the transaction this resource reads")
         void aDisagreeingScreenFieldIsRefused() {
-            // COTRN01C is a view screen: :110-111 receives the map and PROCESS-ENTER-KEY at :146-173
-            // edits TRNIDINI and reads on it, so typing another transaction id over the painted screen
-            // is how an operator looks up the next one. The source has no URI to compare against and no
-            // mismatch message, so the typed identity travels on and its own 'Tran ID can NOT be
-            // empty...' and 'Transaction ID NOT found...' messages remain the only answers.
             TransactionAddRequest stating = reentry(CicsAid.DFHENTER);
             stating.setTrnidin("0000000000000099");
 
-            assertThatCode(() -> controller.bind(KNOWN_TRAN_ID, stating)).doesNotThrowAnyException();
-            assertThat(controller.bind(KNOWN_TRAN_ID, stating).getTrnidin())
-                    .isEqualTo("0000000000000099");
+            ScreenInputRejectedException refusal = catchThrowableOfType(
+                    ScreenInputRejectedException.class, () -> controller.bind(KNOWN_TRAN_ID, stating));
+
+            assertThat(refusal).isNotNull();
+            assertThat(refusal.member()).contains("trnidin");
+            assertThat(refusal.reason())
+                    .isEqualTo(ScreenInputRejectedException.Reason.CONFLICTING_KEY);
+            assertThat(refusal.getMessage()).as("neither identifier is ever echoed")
+                    .doesNotContain("0000000000000099");
+            assertThat(refusal.publicDetail()).doesNotContain("0000000000000099");
         }
 
         @Test
-        @DisplayName("the extension is projected on a first entry - its writer is the list program - "
-                + "and left alone on a re-entry")
+        @DisplayName("the extension is PROJECTED rather than judged, on every turn - its writer is the "
+                + "list program, so a value there is not a second statement of the operator's key")
         void theExtensionIsStillProjected() {
-            // CDEMO-CT01-TRN-SELECTED is a communication-area carrier the transaction-list program
-            // writes when a row is marked, not a screen field. :103-106 is the only place the program
-            // reads it, and that is the first-entry arm, so that is the arm the URI projects onto.
             TransactionAddRequest arriving = firstEntry();
             arriving.getCt01Info().setTrnSelected("0000000000000098");
 
@@ -2686,35 +2383,36 @@ class TransactionAddControllerTest {
             assertThat(bound.getCt01Info().getTrnSelected()).isEqualTo(KNOWN_TRAN_ID);
 
             TransactionAddRequest onReentry = reentry(CicsAid.DFHENTER);
+            onReentry.setTrnidin(KNOWN_TRAN_ID);
             onReentry.getCt01Info().setTrnSelected("0000000000000098");
 
             assertThat(controller.bind(KNOWN_TRAN_ID, onReentry).getCt01Info().getTrnSelected())
-                    .isEqualTo("0000000000000098");
+                    .isEqualTo(KNOWN_TRAN_ID);
         }
 
-        @ParameterizedTest(name = "a re-entry stating TRNIDIN as \"{0}\" keeps exactly that")
+        @ParameterizedTest(name = "a re-entry stating TRNIDIN as \"{0}\" agrees with the URI")
         @ValueSource(strings = {"", "   ", "0000000000000001", "0000000000000001    "})
-        @DisplayName("every image a re-entry can carry survives to PROCESS-ENTER-KEY, which is what "
-                + "judges it - an empty field included, because :148-152 has a message for it")
+        @DisplayName("the images that AGREE with the URI are accepted - absent, blank, the URI's key, "
+                + "and the URI's key space-padded - and the field then carries the URI's key")
         void theStatesThatAgreeAreAccepted(String stated) {
             TransactionAddRequest stating = reentry(CicsAid.DFHENTER);
             stating.setTrnidin(stated);
 
-            assertThat(controller.bind(KNOWN_TRAN_ID, stating).getTrnidin()).isEqualTo(stated);
+            assertThat(controller.bind(KNOWN_TRAN_ID, stating).getTrnidin()).isEqualTo(KNOWN_TRAN_ID);
         }
 
         @Test
-        @DisplayName("a LOW-VALUES key field survives a re-entry too: that is what an unmodified BMS "
-                + "field carries, and the source's empty-field message is its answer")
+        @DisplayName("a LOW-VALUES key field agrees with any URI: that is what an unmodified BMS field "
+                + "carries, so it states no key at all")
         void aLowValuesKeyFieldAgrees() {
             String lowValues = "\u0000".repeat(TransactionAddRequest.TRNIDIN_LENGTH);
             TransactionAddRequest stating = reentry(CicsAid.DFHENTER);
             stating.setTrnidin(lowValues);
 
-            assertThat(controller.bind(KNOWN_TRAN_ID, stating).getTrnidin()).isEqualTo(lowValues);
+            assertThat(controller.bind(KNOWN_TRAN_ID, stating).getTrnidin()).isEqualTo(KNOWN_TRAN_ID);
 
             assertThat(controller.bind(KNOWN_TRAN_ID, firstEntry()).getTrnidin())
-                    .as("a first entry is the arm the URI projects onto")
+                    .as("a first entry is bound from the URI in exactly the same way")
                     .isEqualTo(KNOWN_TRAN_ID);
         }
 
@@ -2745,37 +2443,35 @@ class TransactionAddControllerTest {
         }
 
         @Test
-        @DisplayName("a body that agrees, space-padded or not, is accepted")
+        @DisplayName("a body that agrees, space-padded or not, is accepted, and the PIC X MOVE pads")
         void anAgreeingBodyIsAccepted() {
             TransactionAddRequest padded = reentry(CicsAid.DFHENTER);
             padded.setTrnidin(KNOWN_TRAN_ID);
             assertThat(controller.bind(KNOWN_TRAN_ID, padded).getTrnidin()).isEqualTo(KNOWN_TRAN_ID);
 
-            // A short image is not padded here, because a re-entry is carried through untouched; the
-            // PIC X(16) receiver's padding happens where the source applies it, in
-            // RECEIVE-TRNVIEW-SCREEN's projection through toFieldImages.
+            String padTo16 = "1" + " ".repeat(TransactionAddRequest.TRNIDIN_LENGTH - 1);
             TransactionAddRequest shortForm = reentry(CicsAid.DFHENTER);
             shortForm.setTrnidin("1");
-            assertThat(controller.bind("1", shortForm).getTrnidin()).isEqualTo("1");
+            assertThat(controller.bind("1", shortForm).getTrnidin()).isEqualTo(padTo16);
 
-            // On a first entry the path's own MOVE pads it, as a PIC X MOVE pads.
-            assertThat(controller.bind("1", firstEntry()).getTrnidin())
-                    .isEqualTo("1" + " ".repeat(TransactionAddRequest.TRNIDIN_LENGTH - 1));
+            assertThat(controller.bind("1", firstEntry()).getTrnidin()).isEqualTo(padTo16);
         }
 
         @Test
-        @DisplayName("a blank or LOW-VALUES field on a FIRST entry is what the path fills, and on a "
-                + "re-entry it is the operator having blanked the field")
+        @DisplayName("a blank or LOW-VALUES field states nothing, on a first entry and on a re-entry "
+                + "alike, so the path is what fills it on both")
         void aBlankBodyFieldStatesNothing() {
+            String spaces = " ".repeat(TransactionAddRequest.TRNIDIN_LENGTH);
+
             TransactionAddRequest coldSpaces = firstEntry();
-            coldSpaces.setTrnidin(" ".repeat(TransactionAddRequest.TRNIDIN_LENGTH));
+            coldSpaces.setTrnidin(spaces);
             assertThat(controller.bind(KNOWN_TRAN_ID, coldSpaces).getTrnidin())
                     .isEqualTo(KNOWN_TRAN_ID);
 
-            String spaces = " ".repeat(TransactionAddRequest.TRNIDIN_LENGTH);
             TransactionAddRequest warmSpaces = reentry(CicsAid.DFHENTER);
             warmSpaces.setTrnidin(spaces);
-            assertThat(controller.bind(KNOWN_TRAN_ID, warmSpaces).getTrnidin()).isEqualTo(spaces);
+            assertThat(controller.bind(KNOWN_TRAN_ID, warmSpaces).getTrnidin())
+                    .isEqualTo(KNOWN_TRAN_ID);
         }
 
         @Test
@@ -2858,17 +2554,11 @@ class TransactionAddControllerTest {
                     new com.vsergeychik.carddemo.common.FixedWidthCodec(StandardCharsets.US_ASCII),
                     pinnedClock());
 
-            // Both controllers in one dispatcher, which is what production has. If GET
-            // /api/transactions/{tranId} could be read as the collection route, or the other way round,
-            // Spring would refuse to start or would answer the wrong handler - and this would fail.
             MockMvc both = MockMvcBuilders
                     .standaloneSetup(controllerOver(shared), list)
                     .setMessageConverters(new MappingJackson2HttpMessageConverter(new ObjectMapper()))
                     .build();
 
-            // The two screens are told apart by a member only one of them declares: COTRN00's paging
-            // field, and COTRN01's edited amount. Which handler answered is therefore unambiguous
-            // without depending on what either one painted.
             both.perform(get("/api/transactions"))
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.pagenum").exists())

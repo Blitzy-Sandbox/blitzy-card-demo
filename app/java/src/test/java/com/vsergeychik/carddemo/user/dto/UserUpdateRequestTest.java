@@ -52,253 +52,33 @@ import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException
 
 /**
  * Unit tests for {@link UserUpdateRequest} - the inbound payload of
- * {@code PUT /api/users/{userId}}, CICS transaction {@code CU02}, program
+ * {@code PUT /api/users/&#123;userId&#125;}, CICS transaction {@code CU02}, program
  * {@code app/cbl/COUSR02C.cbl}, map {@code COUSR2A} of mapset {@code COUSR02}.
- *
- * <p>Three properties define this screen and separate it from every sibling in the package, and each
- * has an instrument of its own below:
- *
- * <ol>
- *   <li>the identifier is spelled {@code USRIDIN} and is declared <em>before</em> the two name
- *       fields - the exact inverse of {@code COUSR01}, which spells it {@code USERID} and declares
- *       it after them;</li>
- *   <li>the program appends a 34-byte {@code CDEMO-CU02-INFO} group to the communication area,
- *       widening the area it hands back from 160 bytes to 194;</li>
- *   <li>four members, and exactly four, are what the change-detection block compares against the
- *       stored record.</li>
- * </ol>
- *
- * <h2>Project rules</h2>
- *
- * {@code review_rules} reports <strong>"No user rules provided."</strong> - that single line is the
- * whole document, confirmed by reading it to the end. No rule is invented here, and the absence of
- * rules is <em>not</em> treated as licence to assert less. The binding constraints are instead the
- * enterprise best-practice substitutes {@code B1}-{@code B12} recorded in the plan, each named below
- * with the one thing it requires of this file. The plan holds the full text of each practice; only
- * the ruling is restated.
- *
- * <ul>
- *   <li><strong>B1</strong> - imports are confined to the JDK, JUnit Jupiter, AssertJ,
- *       {@code jakarta.validation} and the Jackson already on the test classpath. No new coordinate
- *       and nothing from the plan's exclusion list. Mockito is available and deliberately unused:
- *       this payload has no collaborator to stand in for.</li>
- *   <li><strong>B2</strong> - JUnit 5 Jupiter API only, even where a later line is published.</li>
- *   <li><strong>B3</strong> - the reference tree is neither written nor <em>read</em>. Every
- *       expectation below is a {@code private static final} constant carrying the file and line it
- *       was transcribed from, so this suite is hermetic and cannot be affected by the working
- *       directory a run happens to start in.</li>
- *   <li><strong>B4</strong> - conflicts are documented rather than resolved. Two are inherent to
- *       this screen and are recorded rather than harmonised: the field order and identifier name are
- *       the inverse of {@code COUSR01}'s, and this is the only screen in the package whose
- *       <em>response</em> carries a password as well as its request. A third set - the divergences
- *       between this file's brief and the declared type - is listed at the end of these notes.</li>
- *   <li><strong>B5</strong> - the map-derived member count is exactly twelve. Nothing is asserted
- *       into existence for symmetry with {@code COUSR03}, which has eleven because it declares no
- *       {@code PASSWD} field, and nothing is asserted out of existence either. The paging members of
- *       {@link UserUpdateRequest.Cu02Info} are carried on a screen that does not page, and that
- *       oddity is preserved rather than pruned.</li>
- *   <li><strong>B6</strong> - the security posture is neither weakened nor strengthened. The
- *       password stays a plaintext {@code X(8)} member; see {@link SecurityPosture}.</li>
- *   <li><strong>B7</strong> - nothing here reads a wall clock, draws a random value or depends on
- *       another test having run. The two time-derived expectations are driven from
- *       {@link Clock#fixed(Instant, java.time.ZoneId)}.</li>
- *   <li><strong>B8</strong> - every codec call names its {@link Charset} explicitly; no overload that
- *       omits one is used and no platform default is relied on. Every import is written out
- *       individually - there is no wildcard import in this file - and no dataset name appears in
- *       it.</li>
- *   <li><strong>B9</strong> - every field of this class is {@code static final} and immutable. No
- *       state is shared between test methods; JUnit's default per-method lifecycle does the
- *       isolating.</li>
- *   <li><strong>B10</strong> - this suite ships in the same phase as the type it measures rather
- *       than being added afterwards, which is what makes a drift from the mapset traceable to the
- *       decision that caused it.</li>
- *   <li><strong>B11</strong> - fixed-width and truncation work goes through {@link FixedWidthCodec}
- *       and {@link FixedWidthRecord}. No third-party copybook parser is used, and no assertion
- *       substitutes {@link String#substring(int, int)} for a COBOL {@code MOVE}.</li>
- *   <li><strong>B12</strong> - the environmental limit is stated rather than absorbed. See the
- *       provenance note immediately below.</li>
- * </ul>
- *
- * <h2>Provenance of every expected value (B12)</h2>
- *
- * COBOL cannot be executed in this environment - eight independently verified blockers are recorded
- * in the plan as risk {@code R-A}, among them a disabled indexed-file handler, absent Language
- * Environment services and the absence of any CICS emulator. Every expectation below is therefore
- * <strong>statically derived</strong> by reading the source, never captured from a run. The lines
- * used are:
- *
- * <ul>
- *   <li>{@code app/cpy-bms/COUSR02.CPY:17-90} - the group {@code 01 COUSR2AI}, its 12-byte
- *       {@code TIOAPFX} prefix at line 18, the twelve {@code xxxI} items at lines 24, 30, 36, 42,
- *       48, 54, 60, 66, 72, 78, 84 and 90 with the widths this file declares, and the twelve
- *       per-field {@code REDEFINES} overlays at lines 21, 27, 33, 39, 45, 51, 57, 63, 69, 75, 81 and
- *       87. The group-level {@code 01 COUSR2AO REDEFINES COUSR2AI} at line 91 belongs to
- *       {@code UserUpdateResponseTest} and is not asserted here.</li>
- *   <li>{@code app/bms/COUSR02.bms} - {@code COUSR02 DFHMSD} at line 19, {@code COUSR2A DFHMDI} at
- *       lines 26-28 with {@code SIZE=(24,80)}, and the twelve name-labelled {@code DFHMDF}
- *       definitions at lines 34, 38, 47, 57, 61, 70, 85, 103, 116, 130, 145 and 155 with their
- *       {@code LENGTH=} operands. {@code PASSWD} carries {@code ATTRB=(DRK,FSET,UNPROT)} at line
- *       130.</li>
- *   <li>{@code app/cbl/COUSR02C.cbl} - {@code WS-PGMNAME} at 36, {@code WS-TRANID} at 37,
- *       {@code WS-MESSAGE PIC X(80)} at 38, {@code COPY COCOM01Y} at 49 and the
- *       {@code 05 CDEMO-CU02-INFO} group at 50-58 with its two {@code 88}-levels at 55-56, the
- *       {@code EIBCALEN} guard at 90-94, the entry test at 95, the ordered blank-field chain at
- *       179-213, the key move at 216, the four independent change tests at 219-234, the unmodified
- *       arm at 236-243, the narrowing move at 270, {@code MAP}/{@code MAPSET} at 273-274 and 286-287,
- *       the header moves at 300-315 and {@code INITIALIZE-ALL-FIELDS} at 403-411.</li>
- *   <li>{@code app/cpy/CSUSR01Y.cpy:17-23} - {@code SEC-USER-DATA}, whose five data items are the
- *       widths five members of this payload carry.</li>
- *   <li>{@code app/cpy/COCOM01Y.cpy:19-44} - the 160-byte {@code CARDDEMO-COMMAREA}, its
- *       {@code CDEMO-PGM-CONTEXT PIC 9(01)} at 29 with {@code 88 CDEMO-PGM-ENTER VALUE 0} at 30 and
- *       {@code 88 CDEMO-PGM-REENTER VALUE 1} at 31, and {@code CDEMO-LAST-MAP} and
- *       {@code CDEMO-LAST-MAPSET} at 43-44, both {@code PIC X(7)}.</li>
- *   <li>{@code app/csd/CARDDEMO.CSD:469-470} - {@code DEFINE TRANSACTION(CU02) GROUP(CARDDEMO)}
- *       bound to {@code PROGRAM(COUSR02C)}.</li>
- *   <li>The three sibling mapsets this file contrasts against, read once and inlined:
- *       {@code app/cpy-bms/COUSR01.CPY:60-72} and {@code app/bms/COUSR01.bms:84-111} for the
- *       names-before-identifier order and the {@code USERIDI} spelling,
- *       {@code app/bms/COUSR03.bms:85-140} for the eleven-field {@code USRIDIN} screen with no
- *       password, and {@code app/cpy-bms/COSGN00.CPY:54} for the only {@code CURTIMEI PIC X(9)} in
- *       the application.</li>
- * </ul>
- *
- * <h2>Scope: this is a plain-object suite</h2>
- *
- * No Spring context, no {@code @SpringBootTest}, no {@code @WebMvcTest}, no {@code MockMvc}, no
- * {@code JobLauncher}, and no reference to a controller, service or repository.
- * {@link UserUpdateRequest} is a value type, so every decision it makes is reachable by
- * construction. {@code user.UserUpdateControllerTest} already owns the HTTP projection, the ordered
- * guard chain's message selection, the PF3-saves-before-exit behaviour, the four change-detection
- * outcomes and the {@code readForUpdate}/{@code rewrite} sequence; restating any of them here would
- * be duplication rather than thoroughness. What this file owns is the <strong>field
- * contract</strong>: the twelve-member projection, the widths, the metadata that must never reach
- * the wire, the {@code REDEFINES} overlays, the constraint set, the extension group and the round
- * trip.
- *
- * <h2>Why this package is measured on its own</h2>
- *
- * The coverage gate applies a {@code BRANCH} minimum at package granularity as well as at bundle
- * granularity, so {@code user}, {@code user.model} and {@code user.dto} are three separately
- * measured packages and none of them can shelter behind another. {@code user.dto} is not
- * branch-free: the constraint set, the presence and context predicates, the extension group's
- * normalisation and range checks, and the {@code 'Y'}/{@code 'N'} paging flag all branch. This file
- * is the instrument that addresses those branches directly.
- *
- * <h2>Seven divergences between this file's brief and the declared type (B4)</h2>
- *
- * The declared members are ground truth. Where the brief and the class disagree, the class is
- * asserted as it stands and the disagreement is recorded here rather than edited away:
- *
- * <ol>
- *   <li><strong>Fifteen components, not twelve.</strong> The brief counts the twelve map members.
- *       The record declares those twelve plus {@link UserUpdateRequest#navigationContext()},
- *       {@link UserUpdateRequest#aid()} and {@link UserUpdateRequest#cu02Info()} - the three
- *       explicitly mandated exceptions, which are conversation state rather than screen fields.</li>
- *   <li><strong>The extension member spellings are the COBOL abbreviations.</strong> The brief
- *       names them {@code pageNumber}, {@code nextPageFlag} and {@code usrSelFlag}; the declared
- *       record spells them {@link UserUpdateRequest.Cu02Info#pageNum()},
- *       {@link UserUpdateRequest.Cu02Info#nextPageFlg()} and
- *       {@link UserUpdateRequest.Cu02Info#usrSelFlg()}, matching
- *       {@code CDEMO-CU02-PAGE-NUM}, {@code -NEXT-PAGE-FLG} and {@code -USR-SEL-FLG}. The declared
- *       names are what is asserted.</li>
- *   <li><strong>The enter/re-enter flag is not a member of its own.</strong> The brief describes it
- *       as a payload member. The type instead reads through to {@link NavigationContext#isEnter()}
- *       and {@link NavigationContext#isReenter()}, so {@code CDEMO-PGM-CONTEXT} has exactly one home
- *       and two copies cannot drift apart. The read-through is what is asserted, in both states, in
- *       {@link ConversationState}.</li>
- *   <li><strong>The {@code xxxF} and {@code xxxA} items are not members either</strong>, which is
- *       precisely what {@link MetadataStaysOffTheWire} proves. The twelve overlay pairs are
- *       therefore round-tripped through the storage they actually describe - a
- *       {@link FixedWidthRecord.RecordLayout} built here from the copybook's own geometry - which is
- *       the same property the gate asks for, two typed accessors over one backing span, asserted
- *       against the real byte instead of against an invented member.</li>
- *   <li><strong>{@code UserUpdateRequest.MAP_FIELD_COUNT}'s own note says "fourteen components in
- *       total"</strong> while the record declares fifteen; the extension group was the last
- *       component added. The constant itself, twelve, is correct and is what the contract depends
- *       on. Recorded, not corrected - editing prose in the type under test is outside this file's
- *       scope.</li>
- *   <li><strong>The 80-to-78 narrowing is not performed by this type.</strong> The brief asks for it
- *       to be driven through {@link FixedWidthCodec#movePicX(String, int)}, and that is exactly what
- *       {@link WidthTraps#theEightyByteMessageLosesItsLastTwoCharacters()} does. The type declares
- *       the receiving width only; the move itself belongs to the controller, so that the direction
- *       of the loss stays visible at the one place it happens.</li>
- *   <li><strong>{@link UserUpdateRequest.Cu02Info} publishes no {@code 88}-level predicate.</strong>
- *       The brief speaks of {@code NEXT-PAGE-YES} and {@code NEXT-PAGE-NO} as predicates; the record
- *       publishes the two literals and the caller compares. Both conditions are still driven in both
- *       directions, plus a value that satisfies neither, exactly as the gate requires.</li>
- * </ol>
  */
 @DisplayName("UserUpdateRequest - the COUSR02 (CU02) update-user inbound payload")
 class UserUpdateRequestTest {
-
-    // =================================================================================================
-    // TRANSCRIBED EXPECTATIONS (B3, B12).
-    //
-    // Every constant below was read off a named line of the reference tree and written out here. None
-    // is computed from the type under test, because a constant derived from the subject would agree
-    // with it by construction and prove nothing. Nothing in this file opens a file at run time.
-    // =================================================================================================
-
-    /**
-     * The code page every fixed-width operation in this file names explicitly (B8).
-     *
-     * <p>{@code US-ASCII} rather than {@code IBM037}, because the authoritative fixtures in
-     * {@code app/data/ASCII} are ASCII and because it is the code page
-     * {@code UserUpdateRequest.Cu02Info} renders its own items through. Naming it is the point: the
-     * platform default is the pitfall the plan calls out by name.
-     */
     private static final Charset MAP_CHARSET = StandardCharsets.US_ASCII;
 
-    /** {@code COUSR2A DFHMDI}, {@code app/bms/COUSR02.bms:26}; {@code MAP('COUSR2A')} at cbl 273. */
     private static final String MAP_NAME = "COUSR2A";
 
-    /** {@code COUSR02 DFHMSD}, {@code app/bms/COUSR02.bms:19}; {@code MAPSET('COUSR02')} at cbl 274. */
     private static final String MAPSET_NAME = "COUSR02";
 
-    /** The input view of the symbolic map: {@code 01 COUSR2AI}, {@code COUSR02.CPY:17}. */
     private static final String SYMBOLIC_MAP_INPUT = "COUSR2AI";
 
-    /**
-     * The output view: {@code 01 COUSR2AO REDEFINES COUSR2AI}, {@code COUSR02.CPY:91}.
-     *
-     * <p>Named here only so the group-level redefinition can be asserted <em>absent</em> from this
-     * payload. It is {@code UserUpdateResponse}'s projection, not this one's.
-     */
     private static final String SYMBOLIC_MAP_OUTPUT = "COUSR2AO";
 
-    /** {@code WS-TRANID PIC X(04) VALUE 'CU02'}, {@code COUSR02C.cbl:37}; CSD line 469. */
     private static final String TRANSACTION_ID = "CU02";
 
-    /** {@code WS-PGMNAME PIC X(08) VALUE 'COUSR02C'}, {@code COUSR02C.cbl:36}; CSD line 470. */
     private static final String PROGRAM_NAME = "COUSR02C";
 
-    /** {@code SIZE=(24,80)} rows, {@code app/bms/COUSR02.bms:28}. */
     private static final int SCREEN_ROWS = 24;
 
-    /** {@code SIZE=(24,80)} columns, {@code app/bms/COUSR02.bms:28}. */
     private static final int SCREEN_COLUMNS = 80;
 
-    /**
-     * Every {@code DFHMDF} definition in the mapset: <strong>twenty-nine</strong>.
-     *
-     * <p>Seventeen of them carry no name and therefore have no symbolic-map item at all - they are
-     * the literal furniture {@code 'Tran:'}, {@code 'Date:'}, {@code 'Prog:'}, {@code 'Time:'},
-     * {@code 'Update User'}, {@code 'Enter User ID:'}, the rule of asterisks, {@code 'First Name:'},
-     * {@code 'Last Name:'}, {@code 'Password:'}, {@code '(8 Char)'}, {@code 'User Type: '},
-     * {@code '(A=Admin, U=User)'}, the three zero-length skip stops and the key legend. A definition
-     * with no name cannot be sent or received, so none of the seventeen is a payload member.
-     */
     private static final int DFHMDF_TOTAL = 29;
 
-    /** The name-labelled {@code DFHMDF} definitions, and so the payload members: twelve. */
     private static final int DFHMDF_NAMED = 12;
 
-    /**
-     * The twelve Java member names in the map's own declaration order.
-     *
-     * <p>Note position seven. {@code usrIdIn} precedes {@code fName} and {@code lName}; on
-     * {@code COUSR01} the identifier is ninth, after both. This list follows this mapset.
-     */
     private static final List<String> MAP_MEMBERS = List.of("trnName",
             "title01",
             "curDate",
@@ -312,33 +92,14 @@ class UserUpdateRequestTest {
             "usrType",
             "errMsg");
 
-    /**
-     * A member's name <strong>on the wire</strong>.
-     *
-     * <p>A screen field answers to its {@code xxxI} item in lower case - that is what
-     * {@code @JsonProperty} pins on the subject and what AAP 0.6.3 requires, "payload field names and
-     * lengths derive from the xxxI items only". A carrier traces to no {@code DFHMDF} field, so no such
-     * rule governs it and it keeps its own component name. Keeping the two apart is the point: a single
-     * list serving both roles would silently assert that the Java identifier and the wire name coincide.
-     *
-     * @param member the Java member name
-     * @return the JSON property name it is published under
-     */
     private static String wireNameOf(String member) {
         return MAP_MEMBERS.contains(member) ? member.toLowerCase(Locale.ROOT) : member;
     }
 
-    /**
-     * {@link #wireNameOf(String)} over a list, preserving order.
-     *
-     * @param members the Java member names
-     * @return their JSON property names
-     */
     private static List<String> wireNamesOf(List<String> members) {
         return members.stream().map(UserUpdateRequestTest::wireNameOf).toList();
     }
 
-    /** The twelve {@code xxxI} items of {@code 01 COUSR2AI}, in declaration order. */
     private static final List<String> SYMBOLIC_MAP_ITEMS = List.of("TRNNAMEI",
             "TITLE01I",
             "CURDATEI",
@@ -352,7 +113,6 @@ class UserUpdateRequestTest {
             "USRTYPEI",
             "ERRMSGI");
 
-    /** The twelve name-labelled {@code DFHMDF} names - each {@code xxxI} item less its suffix. */
     private static final List<String> SCREEN_FIELDS = List.of("TRNNAME",
             "TITLE01",
             "CURDATE",
@@ -366,16 +126,9 @@ class UserUpdateRequestTest {
             "USRTYPE",
             "ERRMSG");
 
-    /**
-     * The twelve widths, transcribed from the {@code xxxI} {@code PICTURE} clauses.
-     *
-     * <p>{@code CURTIME} is eight here, not the nine of {@code COSGN00}, and {@code ERRMSG} is
-     * seventy-eight although the message that fills it is eighty.
-     */
     private static final List<Integer> DECLARED_WIDTHS =
             List.of(4, 40, 8, 8, 40, 8, 8, 20, 20, 8, 1, 78);
 
-    /** The same twelve widths as the type publishes them, for a two-source comparison. */
     private static final List<Integer> PUBLISHED_WIDTHS = List.of(UserUpdateRequest.TRNNAME_LENGTH,
             UserUpdateRequest.TITLE01_LENGTH,
             UserUpdateRequest.CURDATE_LENGTH,
@@ -389,121 +142,62 @@ class UserUpdateRequestTest {
             UserUpdateRequest.USRTYPE_LENGTH,
             UserUpdateRequest.ERRMSG_LENGTH);
 
-    /** {@code app/cpy-bms/COUSR02.CPY} lines the twelve {@code xxxI} items are declared on. */
     private static final List<Integer> COPYBOOK_LINES =
             List.of(24, 30, 36, 42, 48, 54, 60, 66, 72, 78, 84, 90);
 
-    /** {@code app/bms/COUSR02.bms} lines the twelve name-labelled {@code DFHMDF}s begin on. */
     private static final List<Integer> MAPSET_LINES =
             List.of(34, 38, 47, 57, 61, 70, 85, 103, 116, 130, 145, 155);
 
-    /**
-     * {@code app/cpy-bms/COUSR02.CPY} lines the twelve per-field {@code REDEFINES} overlays begin on.
-     *
-     * <p>Twelve, not thirteen: the group-level {@code 01 COUSR2AO REDEFINES COUSR2AI} at line 91 is
-     * the response's and is deliberately excluded.
-     */
     private static final List<Integer> PER_FIELD_REDEFINES_LINES =
             List.of(21, 27, 33, 39, 45, 51, 57, 63, 69, 75, 81, 87);
 
-    /** Every {@code REDEFINES} in the copybook: the twelve per-field overlays plus the group view. */
     private static final int COPYBOOK_REDEFINES_TOTAL = 13;
 
-    /**
-     * Every {@code REDEFINES} in the five symbolic maps this package projects: <strong>110</strong>.
-     *
-     * <p>{@code COSGN00} 12, {@code COUSR00} 60, {@code COUSR01} 13, {@code COUSR02} 13 and
-     * {@code COUSR03} 12. The five programs themselves declare <strong>none</strong> - a
-     * {@code REDEFINES} count of zero in each of {@code COSGN00C}, {@code COUSR00C},
-     * {@code COUSR01C}, {@code COUSR02C} and {@code COUSR03C} - so the symbolic maps are the only
-     * place the redefinition gate has a subject in this package at all. That is why the overlay cases
-     * in {@link RedefinesOverlays} exist here rather than in a program-level suite.
-     */
     private static final int PACKAGE_REDEFINES_TOTAL = 110;
 
-    /** {@code COUSR00}'s share of that total: sixty, one per field of a ten-row list screen. */
     private static final int COUSR00_REDEFINES_TOTAL = 60;
 
-    /**
-     * The three components that are not screen fields, in declaration order.
-     *
-     * <p>The explicitly mandated exception: CICS supplied all three from the communication area and
-     * the exec interface block rather than from the map, so without them the program's branches are
-     * unreachable.
-     */
     private static final List<String> STATE_MEMBERS =
             List.of("navigationContext", "aid", "cu02Info");
 
-    /** Twelve map members plus the three state carriers. */
     private static final int COMPONENT_COUNT = DFHMDF_NAMED + 3;
 
-    /** {@code 02 FILLER PIC X(12)} at {@code COUSR02.CPY:18} - the {@code TIOAPFX=YES} prefix. */
     private static final int TIOAPFX_PREFIX_LENGTH = 12;
 
-    /** {@code 02 xxxL COMP PIC S9(4)} - a binary halfword, two bytes. */
     private static final int LENGTH_ITEM_LENGTH = 2;
 
-    /** {@code 02 xxxF PICTURE X} and its {@code xxxA} overlay - one byte, shared. */
     private static final int ATTRIBUTE_ITEM_LENGTH = 1;
 
-    /** {@code 02 FILLER PICTURE X(4)} between each attribute byte and its data item. */
     private static final int ATTRIBUTE_FILLER_LENGTH = 4;
 
-    /** Per field: {@code xxxL} 2 + {@code xxxF} 1 + {@code FILLER X(4)} = seven bytes. */
     private static final int FIELD_PREFIX_LENGTH =
             LENGTH_ITEM_LENGTH + ATTRIBUTE_ITEM_LENGTH + ATTRIBUTE_FILLER_LENGTH;
 
-    /** The twelve declared widths added together: 4+40+8+8+40+8+8+20+20+8+1+78. */
     private static final int PAYLOAD_WIDTH_TOTAL = 243;
 
-    /** {@code 01 COUSR2AI} in full: 12 + 12 x 7 + 243 = 339 bytes. */
     private static final int SYMBOLIC_MAP_LENGTH = 339;
 
-    /** {@code 05 WS-MESSAGE PIC X(80) VALUE SPACES}, {@code COUSR02C.cbl:38}. */
     private static final int WS_MESSAGE_LENGTH = 80;
 
-    /** {@code 05 SEC-USR-ID PIC X(08)}, {@code app/cpy/CSUSR01Y.cpy:18}. */
     private static final int SEC_USR_ID_LENGTH = 8;
 
-    /** {@code 05 SEC-USR-FNAME PIC X(20)}, {@code app/cpy/CSUSR01Y.cpy:19}. */
     private static final int SEC_USR_FNAME_LENGTH = 20;
 
-    /** {@code 05 SEC-USR-LNAME PIC X(20)}, {@code app/cpy/CSUSR01Y.cpy:20}. */
     private static final int SEC_USR_LNAME_LENGTH = 20;
 
-    /** {@code 05 SEC-USR-PWD PIC X(08)}, {@code app/cpy/CSUSR01Y.cpy:21}. Plaintext. */
     private static final int SEC_USR_PWD_LENGTH = 8;
 
-    /** {@code 05 SEC-USR-TYPE PIC X(01)}, {@code app/cpy/CSUSR01Y.cpy:22}. */
     private static final int SEC_USR_TYPE_LENGTH = 1;
 
-    /**
-     * The four members {@code UPDATE-USER-INFO} compares against the stored record, in source order.
-     *
-     * <p>{@code COUSR02C.cbl:219}, {@code :223}, {@code :227} and {@code :231} - four separate
-     * {@code IF ... NOT = ... END-IF} statements, each independently setting
-     * {@code USR-MODIFIED-YES}. {@code usrIdIn} is deliberately absent: line 216 moves it into
-     * {@code SEC-USR-ID} to re-read the record, so it is the key and is never compared for change.
-     */
     private static final List<String> CHANGE_DETECTED_MEMBERS =
             List.of("fName", "lName", "passwd", "usrType");
 
-    /** The widths of those four, from {@code CSUSR01Y}: 20, 20, 8, 1. */
     private static final List<Integer> CHANGE_DETECTED_WIDTHS = List.of(SEC_USR_FNAME_LENGTH,
             SEC_USR_LNAME_LENGTH, SEC_USR_PWD_LENGTH, SEC_USR_TYPE_LENGTH);
 
-    /**
-     * The five members the blank-field chain guards, in the order {@code COUSR02C} tests them.
-     *
-     * <p>{@code app/cbl/COUSR02C.cbl:180}, {@code :186}, {@code :192}, {@code :198}, {@code :204}.
-     * The identifier is <strong>first</strong>. On {@code COUSR01} the same chain tests the names
-     * first, which is why a screen blank in both the identifier and the first name produces a
-     * different message on each of the two programs.
-     */
     private static final List<String> BLANK_GUARD_ORDER =
             List.of("usrIdIn", "fName", "lName", "passwd", "usrType");
 
-    /** The five message texts, byte for byte, from the same five {@code WHEN} arms. */
     private static final List<String> BLANK_GUARD_MESSAGES =
             List.of("User ID can NOT be empty...",
                     "First Name can NOT be empty...",
@@ -511,14 +205,6 @@ class UserUpdateRequestTest {
                     "Password can NOT be empty...",
                     "User Type can NOT be empty...");
 
-    /**
-     * {@code COUSR01}'s field order, for the contrast only: names before the identifier.
-     *
-     * <p>{@code app/cpy-bms/COUSR01.CPY:60}, {@code :66} and {@code :72} declare {@code FNAMEI},
-     * {@code LNAMEI} then {@code USERIDI}; {@code app/bms/COUSR01.bms:84}, {@code :97} and
-     * {@code :111} declare {@code FNAME}, {@code LNAME} then {@code USERID}. Both the order and the
-     * spelling differ from this screen, and neither is harmonised.
-     */
     private static final List<String> COUSR01_ITEM_ORDER = List.of("TRNNAMEI",
             "TITLE01I",
             "CURDATEI",
@@ -532,16 +218,12 @@ class UserUpdateRequestTest {
             "USRTYPEI",
             "ERRMSGI");
 
-    /** {@code COUSR01}'s identifier item: {@code USERIDI}, {@code app/cpy-bms/COUSR01.CPY:72}. */
     private static final String COUSR01_ID_ITEM = "USERIDI";
 
-    /** {@code COSGN00}'s time width: nine, {@code app/cpy-bms/COSGN00.CPY:54}. The only nine. */
     private static final int COSGN00_CURTIME_LENGTH = 9;
 
-    /** {@code COUSR03} declares eleven named fields, having no {@code PASSWD}. */
     private static final int COUSR03_DFHMDF_NAMED = 11;
 
-    /** The six items of {@code 05 CDEMO-CU02-INFO}, {@code COUSR02C.cbl:51-58}, in order. */
     private static final List<String> CU02_ITEM_NAMES = List.of("CDEMO-CU02-USRID-FIRST",
             "CDEMO-CU02-USRID-LAST",
             "CDEMO-CU02-PAGE-NUM",
@@ -549,100 +231,49 @@ class UserUpdateRequestTest {
             "CDEMO-CU02-USR-SEL-FLG",
             "CDEMO-CU02-USR-SELECTED");
 
-    /** The six declared widths: {@code X(08)}, {@code X(08)}, {@code 9(08)}, {@code X(01)} twice, {@code X(08)}. */
     private static final List<Integer> CU02_ITEM_WIDTHS = List.of(8, 8, 8, 1, 1, 8);
 
-    /** 8 + 8 + 8 + 1 + 1 + 8 = thirty-four bytes. */
     private static final int CU02_INFO_LENGTH = 34;
 
-    /** The 160-byte {@code CARDDEMO-COMMAREA} of {@code app/cpy/COCOM01Y.cpy:19-44}. */
     private static final int COMMAREA_LENGTH = 160;
 
-    /** What {@code COUSR02C.cbl:94} restores and {@code :137} hands back: 160 + 34 = 194 bytes. */
     private static final int CU02_COMMAREA_LENGTH = COMMAREA_LENGTH + CU02_INFO_LENGTH;
 
-    /** {@code 88 NEXT-PAGE-YES VALUE 'Y'}, {@code COUSR02C.cbl:55}. */
     private static final String NEXT_PAGE_YES = "Y";
 
-    /** {@code 88 NEXT-PAGE-NO VALUE 'N'}, {@code COUSR02C.cbl:56}, and the field's own {@code VALUE}. */
     private static final String NEXT_PAGE_NO = "N";
 
-    /** One space: a {@code PIC X(01)} value that satisfies neither {@code 88}-level. */
     private static final String NEITHER_PAGE_FLAG = " ";
 
-    /**
-     * A fixed instant, so the two time-derived expectations in this suite are exact (B7).
-     *
-     * <p>The value is the timestamp in the version footer of {@code app/cbl/COUSR02C.cbl:413}, which
-     * makes it traceable rather than arbitrary. Read through
-     * {@link Clock#fixed(Instant, java.time.ZoneId)} at {@link ZoneOffset#UTC}, so the header renders
-     * identically on every run, on every machine, in any order.
-     */
     private static final Instant FIXED_INSTANT = Instant.parse("2022-07-19T23:12:34Z");
 
-    /** {@code WS-CURDATE-MM-DD-YY} for {@link #FIXED_INSTANT} - what cbl 309 would move. */
     private static final String FIXED_CURDATE = "07/19/22";
 
-    /** {@code WS-CURTIME-HH-MM-SS} for {@link #FIXED_INSTANT} - what cbl 315 would move. */
     private static final String FIXED_CURTIME = "23:12:34";
 
-    /** An eight-character stand-in for a keyed password. Not a credential: no system accepts it. */
     private static final String NOT_A_REAL_PASSWORD = "NOTAREAL";
 
-    /** A second stand-in, so value semantics can be asserted without repeating the first. */
     private static final String OTHER_NOT_A_REAL_PASSWORD = "ALSOFAKE";
 
-    /**
-     * The layout of {@code 01 COUSR2AI}, rebuilt from the copybook's own geometry.
-     *
-     * <p>The {@code xxxF} and {@code xxxA} items are metadata and deliberately absent from the
-     * payload, so the {@code REDEFINES} property has to be asserted against the storage it actually
-     * describes rather than against a member. {@link FixedWidthRecord.RecordLayout} refuses a gap, an
-     * unintended overlap and any total other than its declared length, so merely constructing this
-     * field proves the transcribed geometry closes - and it does so at class initialisation, which
-     * makes a single wrong constant a class-initialisation failure rather than a quietly shifted
-     * offset. Immutable, so publishing it introduces no shared mutable state (B9).
-     */
     private static final FixedWidthRecord.RecordLayout SYMBOLIC_MAP_LAYOUT = symbolicMapLayout();
 
-    /** The complete set of JSON member names this payload may emit: the twelve plus the three. */
     private static final Set<String> EXPECTED_JSON_MEMBERS = expectedJsonMembers();
 
-    // =================================================================================================
-    // Construction of the two derived constants above. Static, side-effect free, called once each.
-    // =================================================================================================
-
-    /**
-     * Rebuilds {@code 01 COUSR2AI} span by span, exactly as {@code app/cpy-bms/COUSR02.CPY:17-90}
-     * declares it: the {@code TIOAPFX} prefix, then twelve repetitions of
-     * {@code xxxL} / {@code xxxF} / {@code xxxA} overlay / {@code FILLER X(4)} / {@code xxxI}.
-     *
-     * <p>The declared total is passed to {@link FixedWidthRecord.RecordLayout#of}, never the cursor
-     * this loop happened to reach. Passing the cursor would make the layout self-consistent with
-     * whatever the constants add up to and would catch nothing; passing {@link #SYMBOLIC_MAP_LENGTH}
-     * makes the layout's own self-check compare the transcribed geometry against the transcribed
-     * total.
-     */
     private static FixedWidthRecord.RecordLayout symbolicMapLayout() {
         List<FixedWidthRecord.FieldSpan> spans = new ArrayList<>();
-        // 02 FILLER PIC X(12) - COUSR02.CPY:18, the TIOAPFX=YES prefix DFHMSD requests at line 19.
         spans.add(FixedWidthRecord.FieldSpan.filler(0, TIOAPFX_PREFIX_LENGTH));
         int cursor = TIOAPFX_PREFIX_LENGTH;
         for (int index = 0; index < DFHMDF_NAMED; index++) {
             String field = SCREEN_FIELDS.get(index);
-            // 02 xxxL COMP PIC S9(4) - a binary halfword. Metadata, so it is reserved storage here.
             spans.add(FixedWidthRecord.FieldSpan.filler(cursor, LENGTH_ITEM_LENGTH));
             cursor += LENGTH_ITEM_LENGTH;
-            // 02 xxxF PICTURE X, then 02 FILLER REDEFINES xxxF / 03 xxxA PICTURE X over that one byte.
             FixedWidthRecord.FieldSpan flag = FixedWidthRecord.FieldSpan.alphanumeric(
                     field + "F", cursor, ATTRIBUTE_ITEM_LENGTH);
             spans.add(flag);
             spans.add(flag.redefinedAs(field + "A", FixedWidthRecord.PictureKind.ALPHANUMERIC));
             cursor += ATTRIBUTE_ITEM_LENGTH;
-            // 02 FILLER PICTURE X(4).
             spans.add(FixedWidthRecord.FieldSpan.filler(cursor, ATTRIBUTE_FILLER_LENGTH));
             cursor += ATTRIBUTE_FILLER_LENGTH;
-            // 02 xxxI PIC X(n) - the only item of the four that becomes a payload member.
             spans.add(FixedWidthRecord.FieldSpan.alphanumeric(
                     SYMBOLIC_MAP_ITEMS.get(index), cursor, DECLARED_WIDTHS.get(index)));
             cursor += DECLARED_WIDTHS.get(index);
@@ -657,37 +288,10 @@ class UserUpdateRequestTest {
         return Set.copyOf(members);
     }
 
-    // =================================================================================================
-    // Shared, stateless helpers. Every one returns a fresh value; none caches, mutates or memoises.
-    // =================================================================================================
-
-    /**
-     * A codec over the explicitly named code page (B8). A fresh instance per call: the codec is cheap
-     * and sharing one would be shared state for no benefit.
-     */
     private static FixedWidthCodec codec() {
         return new FixedWidthCodec(MAP_CHARSET);
     }
 
-    /**
-     * An {@link ObjectMapper} configured exactly as {@code config.WebConfig} configures the
-     * application's shared one, and for the reasons that class documents.
-     *
-     * <p>A default mapper would be the wrong instrument and would make this suite assert the wrong
-     * thing. Three settings matter and all three are stated rather than inherited:
-     * {@code USE_BIG_DECIMAL_FOR_FLOATS} and {@code WRITE_BIGDECIMAL_AS_PLAIN} are enabled so no
-     * numeric value could route through a binary floating-point type or serialise in exponent
-     * notation, and {@code ACCEPT_EMPTY_STRING_AS_NULL_OBJECT} is <em>disabled</em> so an empty or
-     * all-spaces {@code PIC X(n)} value stays the real screen data it is instead of becoming
-     * {@code null}. Coercing it would silently defeat every blank-value assertion in
-     * {@link ValidationConstraints}, because the guards at {@code COUSR02C.cbl:180-204} treat
-     * {@code SPACES} and {@code LOW-VALUES} as one condition and this payload has to be able to carry
-     * both. No naming strategy is applied, so each property name still traces one-to-one to an
-     * {@code xxxI} item; no inclusion filter is applied, so an absent member is emitted rather than
-     * dropped; and no trimming converter is registered, so trailing padding survives - which it must,
-     * because the change tests at {@code COUSR02C.cbl:219-234} compare against space-padded stored
-     * values.
-     */
     private static ObjectMapper webConfigEquivalentMapper() {
         ObjectMapper mapper = new ObjectMapper();
         mapper.enable(DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS);
@@ -696,7 +300,6 @@ class UserUpdateRequestTest {
         return mapper;
     }
 
-    /** Builds a request from the twelve map values in component order, plus the three state members. */
     private static UserUpdateRequest requestOf(List<String> mapValues, NavigationContext context,
             String aid, UserUpdateRequest.Cu02Info cu02Info) {
         return new UserUpdateRequest(mapValues.get(0), mapValues.get(1), mapValues.get(2),
@@ -705,7 +308,6 @@ class UserUpdateRequestTest {
                 mapValues.get(11), context, aid, cu02Info);
     }
 
-    /** The twelve map members of a request, in component order. Permits {@code null} entries. */
     private static List<String> mapValuesOf(UserUpdateRequest request) {
         return Arrays.asList(request.trnName(), request.title01(), request.curDate(),
                 request.pgmName(), request.title02(), request.curTime(), request.usrIdIn(),
@@ -713,7 +315,6 @@ class UserUpdateRequestTest {
                 request.errMsg());
     }
 
-    /** Twelve empty strings - the payload a client sends having keyed nothing at all. */
     private static List<String> blankMapValues() {
         List<String> values = new ArrayList<>(DFHMDF_NAMED);
         for (int index = 0; index < DFHMDF_NAMED; index++) {
@@ -722,18 +323,10 @@ class UserUpdateRequestTest {
         return values;
     }
 
-    /**
-     * Twelve {@code null}s - the {@code LOW-VALUES} shape, distinct from the {@code SPACES} shape and
-     * equally something the guards at {@code COUSR02C.cbl:180-204} treat as blank.
-     */
     private static List<String> nullMapValues() {
         return Arrays.asList(new String[DFHMDF_NAMED]);
     }
 
-    /**
-     * Twelve runs of spaces, each exactly its declared width - the {@code MOVE SPACES} shape
-     * {@code INITIALIZE-ALL-FIELDS} produces at {@code COUSR02C.cbl:406-411}.
-     */
     private static List<String> spaceFilledMapValues() {
         List<String> values = new ArrayList<>(DFHMDF_NAMED);
         for (int index = 0; index < DFHMDF_NAMED; index++) {
@@ -742,14 +335,6 @@ class UserUpdateRequestTest {
         return values;
     }
 
-    /**
-     * A fully populated request: every map member exactly its declared width, so the instance is a
-     * faithful image of a painted screen rather than a convenient shorthand.
-     *
-     * <p>The header values come from {@link #header()} and therefore from the fixed clock (B7). The
-     * password is {@link #NOT_A_REAL_PASSWORD}: eight characters, which is what makes the width
-     * assertions meaningful, and not a credential any system accepts.
-     */
     private static UserUpdateRequest populatedRequest() {
         return requestOf(populatedMapValues(),
                 populatedContext(),
@@ -757,7 +342,6 @@ class UserUpdateRequestTest {
                 populatedCu02Info());
     }
 
-    /** The twelve map values {@link #populatedRequest()} carries, each at its declared width. */
     private static List<String> populatedMapValues() {
         return Arrays.asList(TRANSACTION_ID,
                 ScreenTitles.CCDA_TITLE01,
@@ -773,7 +357,6 @@ class UserUpdateRequestTest {
                 codec().movePicX("", UserUpdateRequest.ERRMSG_LENGTH));
     }
 
-    /** The communication area a re-entry carries: the previous screen handed it back. */
     private static NavigationContext populatedContext() {
         return NavigationContext.empty()
                 .withFromTranid("CU00")
@@ -787,24 +370,15 @@ class UserUpdateRequestTest {
                 .withPgmReenter();
     }
 
-    /**
-     * The extension group as {@code COUSR00C} would have filled it before transferring here: a
-     * selected user identifier, a page number and the paging flag in its declared {@code 'N'} state.
-     */
     private static UserUpdateRequest.Cu02Info populatedCu02Info() {
         return new UserUpdateRequest.Cu02Info("USER0001", "USER0050", 1, NEXT_PAGE_NO, "U",
                 "USER0001");
     }
 
-    /**
-     * The date and time header, captured from the fixed clock so the two header values are exact and
-     * reproducible (B7).
-     */
     private static DateHeader header() {
         return DateHeader.from(codec(), Clock.fixed(FIXED_INSTANT, ZoneOffset.UTC));
     }
 
-    /** Runs Bean Validation over one instance, closing the factory it opened. */
     private static Set<ConstraintViolation<UserUpdateRequest>> validate(UserUpdateRequest request) {
         try (ValidatorFactory factory = Validation.buildDefaultValidatorFactory()) {
             Validator validator = factory.getValidator();
@@ -812,7 +386,6 @@ class UserUpdateRequestTest {
         }
     }
 
-    /** Serialises through the configured mapper, translating the checked failure. */
     private static String serialise(UserUpdateRequest request) {
         try {
             return webConfigEquivalentMapper().writeValueAsString(request);
@@ -821,7 +394,6 @@ class UserUpdateRequestTest {
         }
     }
 
-    /** Deserialises through the configured mapper, translating the checked failure. */
     private static UserUpdateRequest deserialise(String json) {
         try {
             return webConfigEquivalentMapper().readValue(json, UserUpdateRequest.class);
@@ -830,7 +402,6 @@ class UserUpdateRequestTest {
         }
     }
 
-    /** The two lists joined, so a component census can be stated as one expected sequence. */
     private static List<String> concat(List<String> first, List<String> second) {
         List<String> joined = new ArrayList<>(first.size() + second.size());
         joined.addAll(first);
@@ -838,12 +409,6 @@ class UserUpdateRequestTest {
         return List.copyOf(joined);
     }
 
-    /**
-     * A copy of {@link #populatedRequest()} with one map member replaced.
-     *
-     * <p>Named rather than positional so a case reads as the screen field it is about, and so a
-     * member added to the record cannot silently shift an index.
-     */
     private static UserUpdateRequest withMapValue(String member, String value) {
         int index = MAP_MEMBERS.indexOf(member);
         if (index < 0) {
@@ -856,7 +421,6 @@ class UserUpdateRequestTest {
                 populatedCu02Info());
     }
 
-    /** The twelve {@code xxxI} names the type publishes, read one constant at a time. */
     private static List<String> publishedFieldNames() {
         return List.of(UserUpdateRequest.TRNNAME_FIELD,
                 UserUpdateRequest.TITLE01_FIELD,
@@ -872,7 +436,6 @@ class UserUpdateRequestTest {
                 UserUpdateRequest.ERRMSG_FIELD);
     }
 
-    /** The declared type of one component of a record, by name. */
     private static Class<?> componentType(Class<?> recordType, String component) {
         for (RecordComponent candidate : recordType.getRecordComponents()) {
             if (candidate.getName().equals(component)) {
@@ -883,13 +446,6 @@ class UserUpdateRequestTest {
                 + component);
     }
 
-    /**
-     * Every type this payload exposes: its own component types, the extension group's, and the return
-     * and parameter types of every method either declares.
-     *
-     * <p>Used by the floating-point sweep (gate G22) and by the security-framework sweep (gate G41),
-     * both of which have to reason about what is reachable rather than only about what is declared.
-     */
     private static List<Class<?>> reachableTypes() {
         List<Class<?>> types = new ArrayList<>();
         for (Class<?> owner : List.of(UserUpdateRequest.class, UserUpdateRequest.Cu02Info.class)) {
@@ -907,7 +463,6 @@ class UserUpdateRequestTest {
         return List.copyOf(types);
     }
 
-    /** The member names actually present in a serialised payload. */
     private static Set<String> jsonMembersOf(UserUpdateRequest request) {
         try {
             Map<String, Object> tree = webConfigEquivalentMapper()
@@ -919,17 +474,9 @@ class UserUpdateRequestTest {
         }
     }
 
-    // =================================================================================================
-    // 1. THE PROJECTION OF 01 COUSR2AI.
-    //
-    // Twelve map members and three state carriers, in the copybook's own order, each map member
-    // traceable to one name-labelled DFHMDF definition (gate G9).
-    // =================================================================================================
-
     @Nested
     @DisplayName("Projection of 01 COUSR2AI - twelve map members, in copybook order")
     class MapProjection {
-
         @Test
         @DisplayName("fifteen components: the twelve map members then the three state carriers")
         void componentCensus() {
@@ -966,10 +513,6 @@ class UserUpdateRequestTest {
         @Test
         @DisplayName("no component is a binary floating-point type, at any depth (gate G22)")
         void noComponentIsFloatingPoint() {
-            // PIC 9(08) is scale-free and PIC X(n) is characters, so nothing on this payload has any
-            // business being a double or a float. CDEMO-CU02-PAGE-NUM is the one numeric item and it
-            // is checked explicitly, because an int that later becomes a double is exactly the defect
-            // the gate exists to catch.
             for (Class<?> type : reachableTypes()) {
                 assertThat(type)
                         .isNotEqualTo(double.class)
@@ -1119,8 +662,6 @@ class UserUpdateRequestTest {
                     .isEqualTo(NavigationContext.USER_TYPE_USER)
                     .hasSize(UserUpdateRequest.USRTYPE_LENGTH);
 
-            // COUSR02C tests USRTYPEI for blankness at :204 and for change at :231 and nowhere
-            // compares it with either literal, so a third value is carried, not rejected.
             UserUpdateRequest odd = withMapValue("usrType", "Z");
             assertThat(odd.usrType()).isEqualTo("Z");
             assertThat(validate(odd)).isEmpty();
@@ -1144,17 +685,9 @@ class UserUpdateRequestTest {
         }
     }
 
-    // =================================================================================================
-    // 2. THE CROSS-SCREEN INVERSIONS.
-    //
-    // COUSR01 and COUSR02 look like the same screen and are not. A reviewer who assumes they are
-    // symmetrical introduces a silent G9 violation, so each difference gets a named case of its own.
-    // =================================================================================================
-
     @Nested
     @DisplayName("Cross-screen inversions - USRIDIN not USERID, and the identifier comes first")
     class CrossScreenInversions {
-
         @Test
         @DisplayName("the identifier member is named for USRIDIN, and not for COUSR01's USERID")
         void theIdentifierIsNamedUsrIdIn() {
@@ -1189,7 +722,6 @@ class UserUpdateRequestTest {
             assertThat(identifier).isLessThan(firstName).isLessThan(lastName);
             assertThat(firstName).isLessThan(lastName);
 
-            // And the sibling, for contrast: FNAMEI, LNAMEI, then USERIDI.
             assertThat(COUSR01_ITEM_ORDER.indexOf(COUSR01_ID_ITEM))
                     .as("COUSR01 puts its identifier ninth, after both names")
                     .isEqualTo(8)
@@ -1203,12 +735,6 @@ class UserUpdateRequestTest {
         @Test
         @DisplayName("that order is what makes the blank-field message deterministic")
         void theOrderDecidesWhichBlankMessageIsProduced() {
-            // COUSR02C.cbl:179-213 is an EVALUATE TRUE: the FIRST matching WHEN wins and the rest are
-            // never evaluated. Its arms are ordered USRIDINI, FNAMEI, LNAMEI, PASSWDI, USRTYPEI, so a
-            // screen blank in both the identifier and the first name yields the User ID message.
-            // COUSR01C's arms are ordered the other way round and would yield the First Name message
-            // from the same payload. The selection itself is UserUpdateControllerTest's subject; what
-            // this case pins is the field order that makes it decidable at all.
             assertThat(BLANK_GUARD_ORDER)
                     .as("the five guarded members, in the order the EVALUATE tests them")
                     .containsExactly("usrIdIn", "fName", "lName", "passwd", "usrType");
@@ -1222,7 +748,6 @@ class UserUpdateRequestTest {
                         .isGreaterThan(MAP_MEMBERS.indexOf(BLANK_GUARD_ORDER.get(0)));
             }
 
-            // A payload blank in both is carried as-is: the type decides nothing and rejects nothing.
             UserUpdateRequest bothBlank = requestOf(blankMapValues(), populatedContext(),
                     PfKeyResolver.AidKey.PFK05.token(), null);
             assertThat(bothBlank.usrIdIn()).isEmpty();
@@ -1263,18 +788,9 @@ class UserUpdateRequestTest {
         }
     }
 
-    // =================================================================================================
-    // 3. WIDTH TRAPS.
-    //
-    // Two widths on this screen are not what a sibling would lead you to expect, and one of them loses
-    // data on every send. MOVE is the dominant parity risk in this migration, so the narrowing is
-    // driven through the codec rather than described.
-    // =================================================================================================
-
     @Nested
     @DisplayName("Width traps - eight not nine, and seventy-eight not eighty")
     class WidthTraps {
-
         @Test
         @DisplayName("curTime is eight characters here; only COSGN00 widens its time field to nine")
         void curTimeIsEightNotNine() {
@@ -1313,12 +829,6 @@ class UserUpdateRequestTest {
         @Test
         @DisplayName("errMsg is 78 while WS-MESSAGE is 80, so the move discards two characters")
         void theEightyByteMessageLosesItsLastTwoCharacters() {
-            // COUSR02C.cbl:38 declares WS-MESSAGE PIC X(80); :270 does
-            //     MOVE WS-MESSAGE TO ERRMSGO OF COUSR2AO
-            // and ERRMSG is X(78), so COBOL fills the receiver from the left and discards the two
-            // characters that do not fit. The loss is driven here through the alphanumeric MOVE rule
-            // (B11) rather than being described, and the sending value's last two characters are
-            // deliberately non-space so their disappearance is observable.
             String head = codec().movePicX("Please modify to update ...",
                     UserUpdateRequest.ERRMSG_LENGTH);
             String eighty = head + "#!";
@@ -1342,7 +852,6 @@ class UserUpdateRequestTest {
                     .as("two characters, on every send, unconditionally")
                     .isEqualTo(2);
 
-            // And the payload carries the narrowed image without narrowing it again.
             assertThat(withMapValue("errMsg", narrowed).errMsg())
                     .isEqualTo(narrowed)
                     .hasSize(UserUpdateRequest.ERRMSG_LENGTH);
@@ -1351,9 +860,6 @@ class UserUpdateRequestTest {
         @Test
         @DisplayName("truncation is on the RIGHT, which is the direction a PIC X receiver uses")
         void theMoveTruncatesOnTheRight() {
-            // Keeping the trailing characters instead of the leading ones is the classic defect: it
-            // looks plausible and produces a different byte in every diff. PIC 9 is the opposite
-            // direction, and both are asserted so the asymmetry is on the record.
             assertThat(codec().movePicX("ABCDEF", UserUpdateRequest.TRNNAME_LENGTH))
                     .isEqualTo("ABCD")
                     .isNotEqualTo("CDEF");
@@ -1400,11 +906,6 @@ class UserUpdateRequestTest {
         @Test
         @DisplayName("the two thank-you literals are different texts of different widths")
         void theThankYouLiteralsAreNotInterchangeable() {
-            // A trap worth naming: ScreenTitles.CCDA_THANK_YOU is a 40-character title-line literal
-            // from COTTL01Y and SystemMessages.CCDA_MSG_THANK_YOU is a 50-character message literal
-            // from CSMSG01Y. Different text, different width, different owner. Substituting one for
-            // the other would put the wrong bytes in a 40-wide title field or the wrong bytes in a
-            // message, and neither would look obviously wrong.
             assertThat(ScreenTitles.CCDA_THANK_YOU)
                     .hasSize(ScreenTitles.TITLE_LENGTH)
                     .hasSize(UserUpdateRequest.TITLE01_LENGTH)
@@ -1461,8 +962,6 @@ class UserUpdateRequestTest {
                     .as("FILLER X(23) is emitted, or every downstream offset is wrong")
                     .isEqualTo(SecUserRecord.RECORD_LENGTH);
 
-            // A payload value at its declared width needs neither padding nor truncation to become the
-            // stored field, which is what makes the comparison at :227 a plain equality of equals.
             byte[] stored = SecUserRecord.encode(SecUserRecord.of("USER0001",
                     codec().movePicX("LAWRENCE", SEC_USR_FNAME_LENGTH),
                     codec().movePicX("THOMAS", SEC_USR_LNAME_LENGTH),
@@ -1477,19 +976,9 @@ class UserUpdateRequestTest {
         }
     }
 
-    // =================================================================================================
-    // 4. METADATA IS NOT PAYLOAD.
-    //
-    // Each screen field contributes four items to the symbolic map and only one of them is data. xxxL
-    // is the length CICS reports and the cursor carrier - COUSR02C.cbl:184, :190, :196, :202 and :208
-    // each MOVE -1 into one - xxxF is the flag byte and xxxA is its attribute view. None of the three
-    // is a payload member, and neither is any FILLER.
-    // =================================================================================================
-
     @Nested
     @DisplayName("Metadata - xxxL, xxxF, xxxA and every FILLER stay off the wire")
     class MetadataStaysOffTheWire {
-
         @Test
         @DisplayName("the serialised payload carries exactly the fifteen expected member names")
         void theWireCarriesOnlyTheDeclaredMembers() {
@@ -1521,10 +1010,6 @@ class UserUpdateRequestTest {
         @ValueSource(strings = {"C", "P", "H", "V", "O"})
         @DisplayName("nothing from the group-level COUSR2AO redefinition reaches this payload")
         void noOutputViewItemIsAMember(String suffix) {
-            // COUSR02.CPY:91 declares 01 COUSR2AO REDEFINES COUSR2AI, whose per-field items are
-            // xxxC colour, xxxP programmed symbols, xxxH highlight, xxxV validation and xxxO data.
-            // They are UserUpdateResponse's projection, not this one's - which is also why the
-            // group-level REDEFINES is excluded from SYMBOLIC_MAP_LAYOUT.
             String payload = serialise(populatedRequest());
             for (String screenField : SCREEN_FIELDS) {
                 assertThat(payload).doesNotContain(screenField + suffix);
@@ -1572,11 +1057,6 @@ class UserUpdateRequestTest {
         @Test
         @DisplayName("the error highlight is metadata too, and applies only in the re-enter state")
         void theErrorHighlightIsMetadataAndReenterOnly() {
-            // app/cpy/CSSETATY.cpy moves DFHRED and an asterisk onto a failed field, but only when
-            // the program is in REENTER state. That is a presentation decision about the xxxC and
-            // xxxO items of the OUTPUT view, so nothing about it belongs on this payload - which is
-            // why the assertion below is that the highlight exists, is driven by the context flag,
-            // and never appears as a member.
             FieldAttributeSetter.FieldHighlight onFirstEntry =
                     FieldAttributeSetter.resolveFromFlags(true, true, false);
             FieldAttributeSetter.FieldHighlight onReentry =
@@ -1596,19 +1076,9 @@ class UserUpdateRequestTest {
         }
     }
 
-    // =================================================================================================
-    // 5. VALIDATION STOPS AT LENGTH.
-    //
-    // COUSR02C answers a blank field with a specific message and re-sends the screen; it never refuses
-    // the interaction. A presence constraint here would replace five distinct messages with one generic
-    // failure and would skip the MOVE -1 cursor placement that accompanies each, so no such constraint
-    // may exist on any member.
-    // =================================================================================================
-
     @Nested
     @DisplayName("Validation - @Size maxima only, never a presence or format constraint")
     class ValidationConstraints {
-
         @Test
         @DisplayName("carries thirteen @Size constraints and no other constraint at all")
         void carriesOnlySizeConstraints() {
@@ -1750,11 +1220,6 @@ class UserUpdateRequestTest {
         @Test
         @DisplayName("SPACES and LOW-VALUES are both carried, distinctly, and neither is coerced")
         void spacesAndLowValuesAreBothCarried() {
-            // COUSR02C's five guards all read `= SPACES OR LOW-VALUES` - one condition over two
-            // representations. A field the terminal never transmitted arrives as LOW-VALUES, which
-            // null models; one transmitted empty arrives as SPACES, which a run of spaces models. The
-            // program treats them identically, so this payload must carry both and reject neither -
-            // and must not silently turn one into the other.
             UserUpdateRequest spaces = requestOf(spaceFilledMapValues(), NavigationContext.empty(),
                     PfKeyResolver.AidKey.ENTER.token(), null);
             UserUpdateRequest lowValues = requestOf(nullMapValues(), NavigationContext.empty(),
@@ -1775,8 +1240,6 @@ class UserUpdateRequestTest {
             }
             assertThat(spaces).isNotEqualTo(lowValues);
 
-            // A LOW-VALUES field is genuinely low values, not spaces: a NUL-filled value of the
-            // declared width is carried verbatim as well, because the terminal can send one.
             String nulFilled = "\u0000".repeat(UserUpdateRequest.USRIDIN_LENGTH);
             UserUpdateRequest nulKeyed = withMapValue("usrIdIn", nulFilled);
             assertThat(nulKeyed.usrIdIn())
@@ -1789,10 +1252,6 @@ class UserUpdateRequestTest {
         @Test
         @DisplayName("the constructor validates nothing, so @Size at the boundary stays reachable")
         void theConstructorIsTotal() {
-            // Throwing from the canonical constructor would abort deserialisation before Bean
-            // Validation ever ran, which would make every @Size above unreachable and would replace a
-            // well-formed constraint violation with a deserialisation failure. The one thing the
-            // constructor does is substitute the extension group's initial image for a null.
             List<String> tooWide = new ArrayList<>(populatedMapValues());
             tooWide.set(MAP_MEMBERS.indexOf("trnName"), "OVERWIDE");
 
@@ -1807,20 +1266,9 @@ class UserUpdateRequestTest {
         }
     }
 
-    // =================================================================================================
-    // 6. THE CHANGE-DETECTION SURFACE.
-    //
-    // COUSR02C.cbl:219-234 is four SEPARATE IF ... NOT = ... END-IF statements, each independently
-    // setting USR-MODIFIED-YES. It is not an EVALUATE chain and not one combined condition, so any
-    // subset of the four may fire and each of the four values has to be individually carried and
-    // individually comparable. Which outcome each subset produces is UserUpdateControllerTest's
-    // subject; that the four are separable at all is this file's.
-    // =================================================================================================
-
     @Nested
     @DisplayName("Change detection - four independent comparisons, and no concurrency token")
     class ChangeDetectionSurface {
-
         @Test
         @DisplayName("exactly four members are compared, at the SEC-USER-DATA widths 20, 20, 8 and 1")
         void theFourComparedMembers() {
@@ -1859,11 +1307,6 @@ class UserUpdateRequestTest {
         @Test
         @DisplayName("the four are independent: every subset of them is separately observable")
         void theFourComparisonsAreIndependentNotAChain() {
-            // Sixteen payloads, one per subset of the four fields, each differing from the stored
-            // record in exactly the members of its subset. If the four had been collapsed into a
-            // single "changes" value, a first-match chain or a bit set, the subsets could not be told
-            // apart - and modelling them as a chain would be a behaviour change, because COBOL runs
-            // all four tests and performs the MOVE that follows each one that fires.
             SecUserRecord stored = SecUserRecord.of("USER0001", "LAWRENCE", "THOMAS",
                     NOT_A_REAL_PASSWORD, UserUpdateRequest.USER_TYPE_USER, MAP_CHARSET);
 
@@ -1917,10 +1360,6 @@ class UserUpdateRequestTest {
         @Test
         @DisplayName("the comparison is untrimmed, so trailing padding is significant")
         void theComparisonIsUntrimmed() {
-            // SEC-USR-FNAME is X(20) and the screen field is X(20), so the stored value is
-            // space-padded and the keyed value has to be too. A payload that trimmed would compare
-            // "THOMAS" against "THOMAS              " and mark an unchanged record modified on every
-            // save, which is a behaviour change with no error to show for it.
             SecUserRecord stored = SecUserRecord.of("USER0001", "LAWRENCE", "THOMAS",
                     NOT_A_REAL_PASSWORD, UserUpdateRequest.USER_TYPE_USER, MAP_CHARSET);
 
@@ -1940,18 +1379,6 @@ class UserUpdateRequestTest {
         @Test
         @DisplayName("no version, entity tag, revision or timestamp member exists (gate G43 is N/A)")
         void noConcurrencyTokenExists() {
-            // COUSR02C has NO 9300-CHECK-CHANGE-IN-REC paragraph. Its update sequence is a keyed
-            // READ ... UPDATE at :322-331 followed by REWRITE at :360-366, and the four comparisons at
-            // :219-234 are change detection - they decide whether a rewrite is needed at all and
-            // produce 'Please modify to update ...' at :239 when it is not. They are not a stale-read
-            // check: they compare the screen against the freshly re-read record, not the freshly
-            // re-read record against the one the screen was painted from.
-            //
-            // Gate G43 is therefore scoped to AccountUpdateService and CardUpdateService, whose
-            // programs COACTUPC and COCRDUPC do contain that paragraph. It does not apply to this
-            // package, and adding a version column here would additionally be a schema change, which
-            // the plan forbids outright. This case exists so no later reader "adds the missing
-            // optimistic concurrency".
             List<String> forbidden = List.of("version", "etag", "revision", "timestamp", "updatedat",
                     "lastmodified", "sequence", "generation", "rowversion", "concurrency");
 
@@ -1977,19 +1404,9 @@ class UserUpdateRequestTest {
         }
     }
 
-    // =================================================================================================
-    // 7. CDEMO-CU02-INFO - THE 34-BYTE EXTENSION.
-    //
-    // COUSR02C.cbl:50-58 appends six items to CARDDEMO-COMMAREA, widening the area line 94 restores
-    // and line 137 hands back from 160 bytes to 194. The group is NOT in app/cpy/COCOM01Y.cpy: it
-    // belongs to this program alone, which is why it is a member of this payload rather than a widening
-    // of NavigationContext - that type is shared by all seventeen controllers and must stay at 160.
-    // =================================================================================================
-
     @Nested
     @DisplayName("CDEMO-CU02-INFO - six items, 34 bytes, and a 194-byte communication area")
     class Cu02InfoExtension {
-
         @Test
         @DisplayName("the six items are declared with the COBOL names COUSR02C.cbl:51-58 spells")
         void theSixItemsAreDeclared() {
@@ -2025,7 +1442,6 @@ class UserUpdateRequestTest {
                     .isEqualTo(CU02_INFO_LENGTH)
                     .isEqualTo(CU02_ITEM_WIDTHS.stream().mapToInt(Integer::intValue).sum());
 
-            // The image the group occupies is those 34 characters, and no more.
             String image = String.join("", populatedCu02Info().fieldImages().values());
             assertThat(image).hasSize(CU02_INFO_LENGTH);
             assertThat(codec().encodeImage(image, "CDEMO-CU02-INFO"))
@@ -2202,10 +1618,6 @@ class UserUpdateRequestTest {
         @CsvSource({"Y, true, false", "N, false, true", "' ', false, false", "A, false, false"})
         @DisplayName("both 88-levels are driven in both directions, plus a value that is neither")
         void bothPagingStatesAreDriven(String flag, boolean yes, boolean no) {
-            // 88 NEXT-PAGE-YES VALUE 'Y' at COUSR02C.cbl:55 and 88 NEXT-PAGE-NO VALUE 'N' at :56.
-            // The source declares no third condition over CDEMO-CU02-NEXT-PAGE-FLG, so a value that
-            // is neither satisfies neither - the two are not each other's negation, and a reader who
-            // treats "not YES" as "NO" has changed the meaning of a blank flag.
             UserUpdateRequest.Cu02Info info =
                     new UserUpdateRequest.Cu02Info("", "", 0, flag, "", "");
 
@@ -2236,19 +1648,6 @@ class UserUpdateRequestTest {
         @Test
         @DisplayName("the selection flag and the selected identifier are carried, paging members and all")
         void theSelectionItemsAreCarried() {
-            // This is the one item the program reads: COUSR02C.cbl:99-100 tests
-            // CDEMO-CU02-USR-SELECTED for SPACES AND LOW-VALUES and :101-102 moves it into USRIDINI.
-            // The other five are restored at :94 and handed back unchanged, which is behaviour: the
-            // area COUSR00C filled - its own CDEMO-CU00-INFO over the same 34 bytes - has to survive
-            // the round trip.
-            //
-            // The hand-over is explicit in the list program. COUSR00C.cbl:187-188 guards on both
-            // CDEMO-CU00-USR-SEL-FLG and CDEMO-CU00-USR-SELECTED being non-blank, :189-191 evaluates
-            // the flag and accepts either 'U' or 'u', and :192-199 moves 'COUSR02C' into
-            // CDEMO-TO-PROGRAM and transfers with COMMAREA(CARDDEMO-COMMAREA) - the area that carries
-            // these 34 bytes. That is why an update screen carries paging members it never pages with:
-            // they belong to the list screen that filled them. The oddity is preserved, not pruned
-            // (B5).
             UserUpdateRequest.Cu02Info handedOver = populatedCu02Info();
 
             assertThat(handedOver.usrSelFlg())
@@ -2263,18 +1662,12 @@ class UserUpdateRequestTest {
             assertThat(handedOver.usridLast()).isEqualTo("USER0050");
             assertThat(handedOver.pageNum()).isEqualTo(1);
 
-            // A blank selection is the other state of that test, and is equally carried.
             assertThat(UserUpdateRequest.Cu02Info.initial().usrSelected()).isBlank();
         }
 
         @Test
         @DisplayName("the group is CDEMO-CU02 prefixed, so it is not the CU00 or CU03 group")
         void theGroupIsThisProgramsOwn() {
-            // COUSR00C.cbl:67-75 declares CDEMO-CU00-INFO and COUSR03C.cbl:50-58 declares
-            // CDEMO-CU03-INFO over the same 34 bytes with the same six shapes. They are three
-            // separate declarations of one span, not one shared type, which is why each program models
-            // its own and why the names differ program by program. COSGN00C and COUSR01C declare no
-            // such group at all.
             assertThat(UserUpdateRequest.Cu02Info.class.getSimpleName()).isEqualTo("Cu02Info");
             assertThat(UserUpdateRequest.Cu02Info.class.getEnclosingClass())
                     .as("declared on the payload that owns it, not on a shared type")
@@ -2290,19 +1683,9 @@ class UserUpdateRequestTest {
         }
     }
 
-    // =================================================================================================
-    // 8. CONVERSATION STATE TRAVELS IN THE PAYLOAD, NEVER IN A SESSION (gate G37, rule R6).
-    //
-    // CICS is pseudo-conversational: COUSR02C ends after painting a screen and is re-entered from
-    // MAIN-PARA on the next key press, so the only state that survives a turn is what it handed back.
-    // The Java form keeps that shape exactly - the communication area, the resolved key indication and
-    // the extension group are payload members - which is what makes the endpoint stateless.
-    // =================================================================================================
-
     @Nested
     @DisplayName("Conversation state - the commarea, the AID and the extension travel in the payload")
     class ConversationState {
-
         @Test
         @DisplayName("all three state carriers are payload members, so no session is ever needed")
         void theStateCarriersArePayloadMembers() {
@@ -2367,11 +1750,6 @@ class UserUpdateRequestTest {
         @CsvSource({"0, true, false", "1, false, true", "2, false, false", "9, false, false"})
         @DisplayName("both 88-level states are driven, in both directions, plus digits that are neither")
         void bothContextStatesAreDriven(int pgmContext, boolean enter, boolean reenter) {
-            // 88 CDEMO-PGM-ENTER VALUE 0 and 88 CDEMO-PGM-REENTER VALUE 1 over
-            // CDEMO-PGM-CONTEXT PIC 9(01), COCOM01Y.cpy:29-31. The field can hold any digit, so the
-            // two conditions are not each other's negation - which matters, because
-            // COUSR02C.cbl:95 is written as IF NOT CDEMO-PGM-REENTER and takes its first-entry arm
-            // for a context of 9 while neither 88-level holds.
             UserUpdateRequest request = requestOf(populatedMapValues(),
                     NavigationContext.empty().withPgmContext(pgmContext),
                     PfKeyResolver.AidKey.ENTER.token(), populatedCu02Info());
@@ -2407,12 +1785,6 @@ class UserUpdateRequestTest {
             "PFK12"})
         @DisplayName("the AID arrives as a resolved five-character token, carried verbatim")
         void theAidIsCarriedAsAResolvedToken(String token) {
-            // COUSR02C.cbl:108-131 dispatches on EIBAID: ENTER fetches the user, PF5 saves, PF3 saves
-            // and then exits, PF4 clears, PF12 cancels and anything else is an invalid key. Both of
-            // this screen's saving paths therefore turn on the AID, which is why it has to travel in
-            // the payload - the paths themselves are UserUpdateControllerTest's subject. It is carried
-            // as the resolved token rather than as a raw EIBAID byte, so the wire form stays a plain
-            // string of the width CCARD-AID PIC X(5) declares.
             UserUpdateRequest request = requestOf(populatedMapValues(), populatedContext(), token,
                     populatedCu02Info());
 
@@ -2457,10 +1829,6 @@ class UserUpdateRequestTest {
         @Test
         @DisplayName("an unresolvable key is an empty result, and the payload can still carry nothing")
         void anUnresolvableKeyIsCarriedAsAbsent() {
-            // WHEN OTHER at COUSR02C.cbl:127-130 answers an unmapped key with CCDA-MSG-INVALID-KEY.
-            // The resolver reports the absence as an empty Optional rather than as a seventeenth
-            // token, and the payload carries a null AID for it, which is a state the constructor
-            // accepts.
             assertThat(PfKeyResolver.resolve(CicsAid.DFHPA3))
                     .as("PA3 is not among the sixteen conditions CSSTRPFY declares")
                     .isEmpty();
@@ -2475,26 +1843,12 @@ class UserUpdateRequestTest {
         }
     }
 
-    // =================================================================================================
-    // 9. THE TWELVE REDEFINES OVERLAYS (gate G34).
-    //
-    // COUSR02.CPY declares thirteen REDEFINES: twelve per-field overlays, each
-    // "02 FILLER REDEFINES xxxF / 03 xxxA PICTURE X", plus the group-level COUSR2AO at line 91. The
-    // twelve are this file's subject. Because xxxF and xxxA are metadata and deliberately not payload
-    // members, the property is asserted against the storage they describe - two typed accessors over
-    // one backing span - rather than against an invented member.
-    // =================================================================================================
-
     @Nested
     @DisplayName("REDEFINES - twelve attribute overlays, each over one shared byte")
     class RedefinesOverlays {
-
         @Test
         @DisplayName("the layout tiles 339 bytes exactly: 12 + 12 x 7 + 243")
         void theGeometryIsTheCopybooks() {
-            // Constructing SYMBOLIC_MAP_LAYOUT already proved this - RecordLayout refuses a gap, an
-            // unintended overlap and any total other than its declared length - so this case states
-            // the arithmetic a reader needs rather than discovering it.
             assertThat(FIELD_PREFIX_LENGTH)
                     .as("xxxL 2 + xxxF 1 + FILLER X(4) = 7 per field")
                     .isEqualTo(7);
@@ -2517,10 +1871,6 @@ class UserUpdateRequestTest {
         @Test
         @DisplayName("this package's redefinitions live entirely in its maps, never in its programs")
         void theRedefinitionsAreTheMapsAndNotThePrograms() {
-            // 12 + 60 + 13 + 13 + 12 = 110 across COSGN00, COUSR00, COUSR01, COUSR02 and COUSR03,
-            // while COSGN00C, COUSR00C, COUSR01C, COUSR02C and COUSR03C declare a REDEFINES between
-            // them exactly zero times. So the symbolic maps are the only place the redefinition gate
-            // has a subject in this package, and COUSR02's thirteen are 13 of that 110.
             assertThat(COPYBOOK_REDEFINES_TOTAL)
                     .as("COUSR02.CPY: twelve per-field overlays plus the group view at line 91")
                     .isEqualTo(PER_FIELD_REDEFINES_LINES.size() + 1);
@@ -2568,17 +1918,14 @@ class UserUpdateRequestTest {
             FixedWidthRecord.FieldSpan attribute = SYMBOLIC_MAP_LAYOUT.span(screenField + "A");
             byte[] before = record.toByteArray();
 
-            // Write through the flag view, read the identical byte through the attribute view.
             record.writeSpan(flag, "A");
             assertThat(record.readSpan(attribute)).isEqualTo("A");
             assertThat(record.readSpanBytes(attribute)).isEqualTo(record.readSpanBytes(flag));
 
-            // And back the other way: one storage byte, two names for it.
             record.writeSpan(attribute, "Z");
             assertThat(record.readSpan(flag)).isEqualTo("Z");
             assertThat(record.readSpanBytes(flag)).isEqualTo(record.readSpanBytes(attribute));
 
-            // The overlay addresses exactly one byte, so exactly one byte of the image may differ.
             byte[] after = record.toByteArray();
             assertThat(after).hasSize(before.length).hasSize(SYMBOLIC_MAP_LENGTH);
             int differing = 0;
@@ -2619,10 +1966,6 @@ class UserUpdateRequestTest {
         @Test
         @DisplayName("a real attribute value goes through the overlay, and the data is still readable")
         void aRealAttributeValueGoesThroughTheOverlay() {
-            // DFHBMDAR is the mnemonic PASSWD's ATTRB=(DRK,...) corresponds to, and DFHRED is what
-            // CSSETATY moves onto a failed field. Both are single bytes of the absent-but-reproduced
-            // DFHBMSCA and DFHATTR copybooks, and both are written through the xxxA view - which is
-            // exactly why xxxA exists and why neither is a payload member.
             FixedWidthRecord record = FixedWidthRecord.forLayout(SYMBOLIC_MAP_LAYOUT, MAP_CHARSET);
             FixedWidthRecord.FieldSpan errorFlag = SYMBOLIC_MAP_LAYOUT.span("ERRMSGF");
             FixedWidthRecord.FieldSpan errorAttribute = SYMBOLIC_MAP_LAYOUT.span("ERRMSGA");
@@ -2645,19 +1988,9 @@ class UserUpdateRequestTest {
         }
     }
 
-    // =================================================================================================
-    // 10. SERIALISATION.
-    //
-    // Names are the member names, untransformed; nothing is renamed, nothing is excluded when null or
-    // empty, and no value is trimmed. Trimming would be actively wrong: the change tests at
-    // COUSR02C.cbl:219-234 compare a screen value against a space-padded stored value, so trailing
-    // spaces are semantically significant and a round trip has to preserve them byte for byte.
-    // =================================================================================================
-
     @Nested
     @DisplayName("Serialisation - padding survives, names are untransformed")
     class Serialisation {
-
         @Test
         @DisplayName("the mapper this suite uses carries the three settings the module configures")
         void theMapperMatchesTheModuleConfiguration() {
@@ -2816,20 +2149,9 @@ class UserUpdateRequestTest {
         }
     }
 
-    // =================================================================================================
-    // 11. SECURITY POSTURE (gate G41, practice B6).
-    //
-    // COUSR02C.cbl:227 compares PASSWDI against SEC-USR-PWD PIC X(08) byte for byte, :228 stores it
-    // verbatim and :169 moves the stored value straight back onto the screen. Plaintext credential
-    // handling is an inherited property of the legacy design and an explicit non-goal of this
-    // migration: a digest would change observable behaviour and would pull in a framework that is out
-    // of scope. It is documented here so it stays visible instead of being buried in generated code.
-    // =================================================================================================
-
     @Nested
     @DisplayName("Security posture - plaintext as the program compares it, and no more")
     class SecurityPosture {
-
         @Test
         @DisplayName("passwd is a plaintext String of the width CSUSR01Y declares")
         void thePasswordIsAPlaintextStringOfEight() {
@@ -2864,9 +2186,6 @@ class UserUpdateRequestTest {
         @Test
         @DisplayName("the payload does not hash, encode, upper-case or otherwise normalise the value")
         void thePayloadIsAPassiveCarrier() {
-            // COSGN00C.cbl:132-137 upper-cases both the identifier and the password before comparing;
-            // COUSR02C does no such thing - it compares what the screen sent. A payload that folded
-            // case here would make two different keyed values compare alike.
             String mixedCase = "aBcDeFgH";
 
             UserUpdateRequest request = withMapValue("passwd", mixedCase);
@@ -2916,10 +2235,6 @@ class UserUpdateRequestTest {
         @Test
         @DisplayName("the DRK attribute on PASSWD is presentation masking, never storage masking")
         void theDarkAttributeIsPresentationOnly() {
-            // app/bms/COUSR02.bms:130 declares PASSWD as ATTRB=(DRK,FSET,UNPROT) with
-            // HILIGHT=UNDERLINE. DRK is terminal non-display: it stops the 3270 rendering the
-            // characters. It says nothing about how the value is stored, transmitted or compared, and
-            // mistaking it for hashing would be a security claim the legacy design never made.
             assertThat(BmsAttributes.isNonDisplay(BmsAttributes.DFHBMDAR))
                     .as("non-display, which is what DRK means")
                     .isTrue();
@@ -2939,19 +2254,6 @@ class UserUpdateRequestTest {
         @Test
         @DisplayName("the credential is bidirectional on this screen: :227 compares it and :169 echoes it")
         void theCredentialTravelsInBothDirections() {
-            // Worth recording, because it is the property that pairs this file with its response twin.
-            // COUSR02C.cbl:169 executes
-            //     MOVE SEC-USR-PWD TO PASSWDI OF COUSR2AI
-            // which places the STORED plaintext back on the screen, so the response half of this
-            // screen carries a password as well - unlike the sign-on screen, whose response carries
-            // none because COSGN00C never echoes what it compared. UserUpdateResponseTest asserts that
-            // half; this case asserts the half that is this file's, and the note keeps the two
-            // consistent. The assertion is deliberately confined to this payload rather than reaching
-            // into a sibling type, so this suite depends only on what it was given.
-            //
-            // The consequence for THIS payload is that the same field is both an input the operator
-            // keys and an output the program paints, which is why it must round trip byte for byte in
-            // both directions and why no transformation may be applied in either.
             assertThat(MAP_MEMBERS)
                     .as("PASSWDI is a member of the INPUT view 01 COUSR2AI, COUSR02.CPY:78, so the "
                             + "operator keys it")
@@ -2972,10 +2274,6 @@ class UserUpdateRequestTest {
         @Test
         @DisplayName("the diagnostic rendering withholds the password and the two names")
         void theDiagnosticRenderingWithholdsTheSensitiveFields() {
-            // Carrying the credential in the clear is required for parity; broadcasting it into a log
-            // line, an exception message or a debugger view is not, and the two concerns separate
-            // cleanly. Every non-personal component is still reported, because a diagnostic that hid
-            // everything would be useless.
             UserUpdateRequest request = populatedRequest();
             String rendered = request.toString();
 
@@ -3003,11 +2301,6 @@ class UserUpdateRequestTest {
         @Test
         @DisplayName("the password rendering reveals neither the value nor its length")
         void theRenderedPasswordRevealsNothing() {
-            // The strongest available statement of the policy, and one that needs no reference to the
-            // marker itself: two payloads that differ ONLY in their password - and by length as well as
-            // by content - must render identically. If either the value or its length leaked, the two
-            // renderings would differ. A payload with a third, absent password must then differ from
-            // both, because presence is not content and is diagnostically necessary.
             String eight = withMapValue("passwd", NOT_A_REAL_PASSWORD).toString();
             String alsoEight = withMapValue("passwd", OTHER_NOT_A_REAL_PASSWORD).toString();
             String two = withMapValue("passwd", "AB").toString();
@@ -3026,11 +2319,6 @@ class UserUpdateRequestTest {
         @Test
         @DisplayName("a name's shape is reported, so equal lengths render alike and unequal ones do not")
         void theRenderedNamesDiscloseShapeOnly() {
-            // The names are free-text personal data: the content is dropped entirely and only the shape
-            // is reported, because a name has no useful prefix to reveal. So two different names of the
-            // same width render identically, while a name of a different width does not - which is the
-            // one thing the diagnostic does disclose, deliberately, since a width mismatch is exactly
-            // what a fixed-width parity failure looks like.
             String lawrence = withMapValue("fName",
                     codec().movePicX("LAWRENCE", UserUpdateRequest.FNAME_LENGTH)).toString();
             String hermione = withMapValue("fName",
@@ -3049,10 +2337,6 @@ class UserUpdateRequestTest {
         @Test
         @DisplayName("an absent password is reported as absent, because presence is not content")
         void anAbsentPasswordIsReportedAsAbsent() {
-            // null models the LOW-VALUES a field the terminal never transmitted arrives as, and
-            // telling that apart from a transmitted value is what makes the guard at
-            // COUSR02C.cbl:198 and the change test at :227 traceable. Presence is disclosed;
-            // content never is.
             String absent = withMapValue("passwd", null).toString();
 
             assertThat(absent).contains("passwd=null");

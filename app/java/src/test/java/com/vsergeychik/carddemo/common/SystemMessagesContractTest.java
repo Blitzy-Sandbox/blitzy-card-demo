@@ -14,22 +14,14 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 
 /**
- * Tests for {@link SystemMessages}, the byte-exact message literals of {@code app/cpy/CSMSG01Y.cpy}
- * and the {@code ABEND-DATA} structure of {@code app/cpy/CSMSG02Y.cpy}.
- *
- * <p>Message text is an observable output of this migration, so the literals are asserted for exact
- * content <em>and</em> exact width: a message of the right words and the wrong width still renders
- * the wrong bytes into a {@code PIC X(50)} field. The {@code AbendData} tests drive every guard in
- * the record, because {@code CSMSG02Y} declares each field {@code VALUE SPACES} and therefore has no
- * concept of a null - absence is a run of spaces.
+ * Tests for {@link SystemMessages}, the byte-exact message literals of {@code app/cpy/CSMSG01Y.cpy} and the
+ * {@code ABEND-DATA} structure of {@code app/cpy/CSMSG02Y.cpy}.
  */
 @DisplayName("SystemMessages - CSMSG01Y message literals and the CSMSG02Y ABEND-DATA record")
 class SystemMessagesContractTest {
-
     @Nested
     @DisplayName("Message literals and declared widths")
     class Literals {
-
         @Test
         @DisplayName("the message field is PIC X(50)")
         void messageLengthIsFifty() {
@@ -73,7 +65,6 @@ class SystemMessagesContractTest {
     @Nested
     @DisplayName("AbendData - the CSMSG02Y record, where absence is spaces and never null")
     class AbendDataRecord {
-
         @Test
         @DisplayName("spaces() yields every field space-filled at its declared width")
         void spacesFactoryFillsDeclaredWidths() {
@@ -98,8 +89,6 @@ class SystemMessagesContractTest {
         @CsvSource({"abendCode", "abendCulprit", "abendReason", "abendMsg"})
         @DisplayName("every field rejects null, because CSMSG02Y declares VALUE SPACES")
         void everyFieldRejectsNull(String fieldName) {
-            // Each of the four guards in the canonical constructor is driven individually, so a
-            // guard that was accidentally testing the wrong parameter would be caught.
             String code = "abendCode".equals(fieldName) ? null : "0999";
             String culprit = "abendCulprit".equals(fieldName) ? null : "CBACT01C";
             String reason = "abendReason".equals(fieldName) ? null : "reason";
@@ -123,8 +112,6 @@ class SystemMessagesContractTest {
         @Test
         @DisplayName("toDeclaredWidths() truncates every over-long field on the right")
         void toDeclaredWidthsTruncatesLongValues() {
-            // COBOL MOVE truncates alphanumeric fields on the right; that direction is asserted, not
-            // merely the resulting length.
             AbendData truncated = new AbendData("123456", "CBACT01CXX", "r".repeat(60),
                     "m".repeat(80)).toDeclaredWidths();
             assertThat(truncated.abendCode()).isEqualTo("1234");
@@ -206,14 +193,11 @@ class SystemMessagesContractTest {
     @Nested
     @DisplayName("Class shape")
     class ClassShape {
-
         @Test
         @DisplayName("the holder is not instantiable")
         void notInstantiable() throws ReflectiveOperationException {
             Constructor<SystemMessages> constructor = SystemMessages.class.getDeclaredConstructor();
             constructor.setAccessible(true);
-            // This holder's constructor is empty rather than throwing, so the assertion is that the
-            // constructor is private and unreachable without reflection - not that it explodes.
             assertThat(constructor.canAccess(null)).isTrue();
             assertThatExceptionOfType(IllegalArgumentException.class)
                     .isThrownBy(() -> constructor.newInstance("unexpected"));
@@ -224,15 +208,11 @@ class SystemMessagesContractTest {
     @Nested
     @DisplayName("Guard coverage for the shared PIC X helper")
     class SharedGuard {
-
         @Test
         @DisplayName("all three PIC X paths - exact, short and long - are reachable per field")
         void allThreePicXPathsAreReachable() throws InvocationTargetException {
-            // Exact
             assertThat(AbendData.spaces().withAbendCode("1234").abendCode()).isEqualTo("1234");
-            // Short
             assertThat(AbendData.spaces().withAbendCode("1").abendCode()).isEqualTo("1   ");
-            // Long
             assertThat(AbendData.spaces().withAbendCode("123456").abendCode()).isEqualTo("1234");
         }
     }

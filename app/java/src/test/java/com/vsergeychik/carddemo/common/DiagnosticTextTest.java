@@ -17,28 +17,14 @@ import org.junit.jupiter.params.provider.ValueSource;
 /**
  * Tests for {@link DiagnosticText}, the module's single policy for rendering a value into a diagnostic
  * without disclosing it.
- *
- * <p>The policy is one sentence - a diagnostic identifies a record and describes its shape, it does not
- * disclose its contents - and these tests exist because that sentence is only as good as the three
- * operations that implement it. Two of them have an edge that would be easy to get subtly wrong and
- * impossible to notice: a masked value short enough that the visible allowance covers all of it, and an
- * escaped value whose escape is itself ambiguous.
- *
- * <p>{@link DiagnosticText#screenField(String, String)} gets the most attention, because it decides from
- * a field's own {@code DFHMDF} label and the estate spells those labels several ways. Its cases are read
- * off {@code app/cpy-bms/*.CPY} rather than invented, and they deliberately include the two labels that
- * a naive substring rule gets wrong.
  */
 @DisplayName("DiagnosticText - identify a record, describe its shape, disclose nothing")
 class DiagnosticTextTest {
-
-    /** A card number shaped like a real one. */
     private static final String PAN = "4111111111111111";
 
     @Nested
     @DisplayName("masked - the identifiers a diagnostic correlates on")
     class Masking {
-
         @Test
         @DisplayName("It leaves exactly the last four characters legible")
         void itLeavesTheLastFourLegible() {
@@ -56,8 +42,6 @@ class DiagnosticTextTest {
         @ValueSource(strings = {"1", "12", "123", "1234"})
         @DisplayName("A value no longer than the allowance is masked entirely")
         void aShortValueIsMaskedEntirely(final String shortValue) {
-            // Showing four of four characters would disclose the whole of a short identifier while
-            // looking as though it had been masked, which is worse than either alternative.
             assertThat(DiagnosticText.masked(shortValue))
                     .isEqualTo("*".repeat(shortValue.length()))
                     .doesNotContain(shortValue);
@@ -85,8 +69,6 @@ class DiagnosticTextTest {
         @Test
         @DisplayName("A numeric identifier is zero-padded first, so its rendering never varies")
         void aNumericIdentifierIsZeroPaddedFirst() {
-            // Two account identifiers of very different magnitude render identically shaped, so the
-            // mask width discloses nothing about the value either.
             assertThat(DiagnosticText.masked(11L, 11)).isEqualTo("*******0011");
             assertThat(DiagnosticText.masked(98765432101L, 11)).isEqualTo("*******2101");
             assertThat(DiagnosticText.masked(11L, 11))
@@ -118,7 +100,6 @@ class DiagnosticTextTest {
     @Nested
     @DisplayName("omitted - everything a person or a balance supplied")
     class Withholding {
-
         @Test
         @DisplayName("It reports the width and nothing else")
         void itReportsTheWidthAndNothingElse() {
@@ -131,8 +112,6 @@ class DiagnosticTextTest {
         @Test
         @DisplayName("An absent value is named rather than reported as zero width")
         void anAbsentValueIsNamed() {
-            // Zero width and absent are different facts, and a fixed-width diagnostic that conflated
-            // them would send a reader looking for the wrong defect.
             assertThat(DiagnosticText.omitted(null)).isEqualTo(DiagnosticText.ABSENT);
             assertThat(DiagnosticText.omitted(null)).isNotEqualTo(DiagnosticText.omitted(""));
         }
@@ -147,8 +126,6 @@ class DiagnosticTextTest {
         @Test
         @DisplayName("The marker is the one SecUserRecord already uses for a withheld password")
         void theMarkerMatchesTheEstablishedOne() {
-            // One marker across the module, so a reader who has seen one withheld field recognises
-            // every other one.
             assertThat(DiagnosticText.OMITTED).isEqualTo("<omitted>");
         }
     }
@@ -156,7 +133,6 @@ class DiagnosticTextTest {
     @Nested
     @DisplayName("singleLine - a log line the caller cannot forge")
     class Escaping {
-
         @Test
         @DisplayName("Text with nothing to escape is returned unchanged and unallocated")
         void textWithNothingToEscapeIsUnchanged() {
@@ -183,7 +159,6 @@ class DiagnosticTextTest {
 
             assertThat(escaped).doesNotContain("\r").doesNotContain("\n");
             assertThat(escaped.lines()).hasSize(1);
-            // Lossless: the diagnostic still says exactly what arrived.
             assertThat(escaped).contains("X'0D'").contains("X'0A'")
                     .contains("Everything is fine");
         }
@@ -204,11 +179,9 @@ class DiagnosticTextTest {
         @Test
         @DisplayName("DEL and the C1 range are escaped too, not only the C0 range")
         void delAndTheC1RangeAreEscaped() {
-            // A value decoded from IBM037 can land in C1, and several terminal emulators act on it.
             assertThat(DiagnosticText.singleLine("a\u007Fb")).isEqualTo("aX'7F'b");
             assertThat(DiagnosticText.singleLine("a\u0085b")).isEqualTo("aX'85'b");
             assertThat(DiagnosticText.singleLine("a\u009Fb")).isEqualTo("aX'9F'b");
-            // The character immediately above the C1 range is printable and is left alone.
             assertThat(DiagnosticText.singleLine("a\u00A0b")).isEqualTo("a\u00A0b");
         }
 
@@ -222,7 +195,6 @@ class DiagnosticTextTest {
     @Nested
     @DisplayName("screenField - the decision taken from the DFHMDF label")
     class ScreenFieldClassification {
-
         @ParameterizedTest(name = "{0} is masked")
         @ValueSource(strings = {
             "ACCTNO1O", "ACCTNO7I", "ACCTSIDO", "ACCTSIDI", "ACCTID",
@@ -264,9 +236,6 @@ class DiagnosticTextTest {
         @Test
         @DisplayName("PGMNAME and TRNNAME are the cases a substring rule gets wrong")
         void programAndTransactionNamesAreNotPersonalNames() {
-            // "PGMNAME" contains "MNAME" and "TRNNAME" contains "NAME". Both are copybook constants
-            // naming a program and a transaction; withholding either would have made the rendering
-            // useless for the thing it is most often read for.
             assertThat("PGMNAMEO").contains("MNAME");
             assertThat(DiagnosticText.screenField("PGMNAMEO", "COCRDLIC")).isEqualTo("COCRDLIC");
             assertThat(DiagnosticText.screenField("TRNNAMEI", "CCLI")).isEqualTo("CCLI");
@@ -282,9 +251,6 @@ class DiagnosticTextTest {
         @Test
         @DisplayName("Every symbolic-map suffix of one field reaches the same decision")
         void everySuffixOfOneFieldReachesTheSameDecision() {
-            // I, O, L, F, A, C, H, P and V all describe one field, so all nine must classify alike -
-            // otherwise a renderer that walks the output items would mask while one walking the input
-            // items would not.
             for (String suffix : new String[] {"I", "O", "L", "F", "A", "C", "H", "P", "V"}) {
                 assertThat(DiagnosticText.screenField("ACCTNO1" + suffix, PAN))
                         .as("ACCTNO1%s", suffix)
@@ -295,8 +261,6 @@ class DiagnosticTextTest {
         @Test
         @DisplayName("A base label ending in a suffix letter keeps its last character")
         void aBaseLabelEndingInASuffixLetterIsUnharmed() {
-            // Only one trailing letter is dropped, so CRDNAME keeps its E and ACCTID its D. Were the
-            // stripping greedy, "CRDNAME" would reduce to "CRDN" and be masked as a card number.
             assertThat(DiagnosticText.screenField("CRDNAME", "SMITH"))
                     .isEqualTo(DiagnosticText.OMITTED + ":5");
             assertThat(DiagnosticText.screenField("ACCTID", "00000000011"))
@@ -306,9 +270,6 @@ class DiagnosticTextTest {
         @Test
         @DisplayName("A single-character label is not stripped away to nothing")
         void aSingleCharacterLabelIsNotStrippedAway() {
-            // The stripping guards on length so a one-character label survives to be classified
-            // rather than reducing to the empty string, which would prefix-match the first entry in
-            // either list and mask or withhold every such field.
             assertThat(DiagnosticText.screenField("O", "value")).isEqualTo("value");
             assertThat(DiagnosticText.screenField("1", "value")).isEqualTo("value");
         }
@@ -316,13 +277,9 @@ class DiagnosticTextTest {
         @Test
         @DisplayName("A repeating field's row digits are dropped however many there are")
         void rowDigitsAreDropped() {
-            // LNAME10I is row ten, so two digits come off, and it must classify as the same field as
-            // LNAME01I rather than falling through to being rendered in full.
             assertThat(DiagnosticText.screenField("LNAME10I", "SMITH"))
                     .isEqualTo(DiagnosticText.screenField("LNAME01I", "SMITH"))
                     .isEqualTo(DiagnosticText.OMITTED + ":5");
-            // And a label that is all digits after the suffix is dropped keeps its last digit rather
-            // than vanishing.
             assertThat(DiagnosticText.screenField("12345I", "value")).isEqualTo("value");
         }
 
@@ -348,7 +305,6 @@ class DiagnosticTextTest {
     @Nested
     @DisplayName("Structure - a policy, not a value, and no state to share")
     class Structure {
-
         @Test
         @DisplayName("It cannot be instantiated, even reflectively")
         void itCannotBeInstantiated() throws ReflectiveOperationException {

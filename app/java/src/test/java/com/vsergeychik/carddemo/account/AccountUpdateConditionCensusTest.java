@@ -15,6 +15,7 @@ import com.vsergeychik.carddemo.common.CicsAid;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.NavigationContext;
 import com.vsergeychik.carddemo.customer.CustomerRepository;
+import com.vsergeychik.carddemo.testsupport.ConversationStateSealFixture;
 import com.vsergeychik.carddemo.util.DateUtilityJob;
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
@@ -33,81 +34,26 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
 
 /**
- * Gate <strong>G50</strong> for {@code COACTUPC}'s {@code WS-NON-KEY-FLAGS}: every one of its
- * {@value #ELEMENTARY_FLAG_COUNT} one-byte flags and all {@value #CONDITION_COUNT} of the
- * {@code 88}-level condition names declared over them, driven in <em>both</em> states.
- *
- * <h2>Why this class exists</h2>
  * {@code app/cbl/COACTUPC.cbl:191-355} declares a one-character flag per screen field, each carrying a
- * three-name condition set - {@code FLG-<field>-ISVALID}, {@code -NOT-OK} and {@code -BLANK}. The Java
- * translation collapses the per-field triples into one shape: {@code WS-NON-KEY-FLAGS} became a map keyed
- * by {@link ScreenField}, read through
- * {@link AccountUpdateController.Conversation#flagIsvalid(ScreenField) flagIsvalid},
- * {@link AccountUpdateController.Conversation#flagNotOk(ScreenField) flagNotOk} and
- * {@link AccountUpdateController.Conversation#flagBlank(ScreenField) flagBlank}, and
- * {@code FieldValidationState} documents its three constants with the generic
- * {@code FLG-<field>-NOT-OK} form.
- *
- * <p>That collapse is right - 36 near-identical Java triples would be the JOBOL anti-pattern - but it had
- * a consequence for verification that went unnoticed: <strong>not one of the 108 per-field condition names
- * appeared anywhere in the test tree</strong>. Driving one field's blank arm exercised the same Java code
- * as driving any other's, so nothing recorded which of the 36 fields had actually had each of its three
- * arms reached, and the answer turned out to be "a handful". A review counted the gap; this class closes
- * it, and closes it in a form that cannot silently reopen.
- *
- * <h2>How each condition is driven</h2>
- * Through the real edit path, never through a synthetic predicate. Each case builds a warm conversation,
- * stages a complete, genuinely valid screen, changes <strong>one</strong> field, and calls
- * {@link AccountUpdateController#editMapInputs1200} - the whole edit driver,
- * {@code app/cbl/COACTUPC.cbl:1429-1676}. The flag is then read back through the same predicates the
- * program itself reads, and {@code 3300-SETUP-SCREEN-ATTRS} is run so the {@code CSSETATY} consequence is
- * asserted too: the field reddens for {@code -BLANK} and {@code -NOT-OK} and is left untouched for
- * {@code -ISVALID}. Driving one arm therefore also drives the other two in their false state, which is
- * what "both states" requires.
- *
- * <h2>The three arms no input can reach, and why they are not excused</h2>
- * Three of the 108 conditions cannot be the published verdict of any screen, and each is a property of
- * the COBOL rather than of this translation:
- * <ul>
- *   <li>{@code FLG-ADDRESS-LINE-1-NOT-OK}. {@code 1215-EDIT-MANDATORY} sets {@code FLG-MANDATORY-NOT-OK}
- *       as its <em>opening</em> statement and then reaches either {@code -BLANK} or {@code -ISVALID}
- *       before it exits, so {@code NOT-OK} is a transient initial state and never a verdict.</li>
- *   <li>{@code FLG-MIDDLE-NAME-BLANK}. The middle name goes through {@code 1235-EDIT-ALPHA-OPT}, whose
- *       whole point is that a blank optional field is <em>valid</em>: it sets {@code FLG-ALPHA-ISVALID}
- *       and returns.</li>
- *   <li>All three of {@code WS-EDIT-ADDRESS-LINE-2-FLGS}. {@code 1200-EDIT-MAP-INPUTS} never edits
- *       address line 2 at all - the flag keeps {@code INITIALIZED_FLAG} for the whole conversation.</li>
- * </ul>
- * These are asserted through the storage predicate instead: the flag character is written and every
- * predicate over it is checked, both the one that must hold and the two that must not. That proves the
- * condition is <em>modelled</em> without inventing an edit path the source does not have, which is the
- * only honest way to cover a preserved-dead condition. What it deliberately does not do is quietly drop
- * them from the census.
+ * three-name condition set - {@code FLG-<field>-ISVALID}, {@code -NOT-OK} and {@code -BLANK}.
  */
 @DisplayName("G50: COACTUPC's WS-NON-KEY-FLAGS - all 36 flags, all 108 conditions, both states")
 class AccountUpdateConditionCensusTest {
-
-    /** Elementary one-byte flags declared under {@code WS-NON-KEY-FLAGS} - {@code :191-355}. */
     private static final int ELEMENTARY_FLAG_COUNT = 36;
 
-    /** Generic staging flags the eleven shared edits write - {@code :56-146}. */
     private static final int GENERIC_FLAG_COUNT = 11;
 
-    /** Three {@code 88}-level names over every flag, published and staging alike. */
     private static final int CONDITION_COUNT = (ELEMENTARY_FLAG_COUNT + GENERIC_FLAG_COUNT) * 3;
 
-    /** Fixed so the date-of-birth "not in the future" test is deterministic: 2022-07-19. */
     private static final Clock CLOCK =
             Clock.fixed(Instant.parse("2022-07-19T23:12:32Z"), ZoneOffset.UTC);
 
     private static final String ACCT = "00000000011";
 
-    /** A social security number all three parts of {@code 1265-EDIT-US-SSN} accept. */
     private static final String VALID_SSN = "123456789";
 
     private static final int CUST_ID = 123456789;
 
-    /** The {@code PIC X(15)} width of {@code WS-EDIT-SIGNED-NUMBER-9V2-X}. */
     private static final int SIGNED_STAGING_WIDTH =
             AccountUpdateController.WS_EDIT_SIGNED_NUMBER_LENGTH;
 
@@ -115,41 +61,33 @@ class AccountUpdateConditionCensusTest {
 
     @BeforeEach
     void setUp() {
-        // The date validator and the area-code table are real, not mocked: they are pure functions of
-        // CSUTLDPY/CSUTLDWY and CSLKPCDY, and a stub would assert this file's reading of the copybook
-        // rather than the copybook. Everything that touches a dataset is mocked, because no case here
-        // reads one - 1200-EDIT-MAP-INPUTS is pure with respect to the files.
         controller = new AccountUpdateController(mock(AccountRepository.class),
                 mock(CardXrefRepository.class), mock(CustomerRepository.class),
                 mock(AccountUpdateService.class),
                 new AccountDateValidator(new FixedWidthCodec(StandardCharsets.US_ASCII),
                         new DateUtilityJob(), CLOCK),
                 new AreaCodeLookup(new FixedWidthCodec(StandardCharsets.US_ASCII)), CLOCK,
-                StandardCharsets.US_ASCII);
+                ConversationStateSealFixture.seal(), StandardCharsets.US_ASCII);
     }
 
     /**
      * One elementary flag of {@code WS-NON-KEY-FLAGS} and everything needed to drive its three arms.
      *
-     * @param field         the screen field the flag governs, and the key {@code WS-NON-KEY-FLAGS} uses
+     * @param field the screen field the flag governs, and the key {@code WS-NON-KEY-FLAGS} uses
      * @param cobolDataName the flag's own COBOL data name
-     * @param isvalid       the {@code 88} name of its valid state
-     * @param notOk         the {@code 88} name of its rejected state
-     * @param blank         the {@code 88} name of its not-supplied state
-     * @param declLine      the line of {@code app/cbl/COACTUPC.cbl} declaring the flag
+     * @param isvalid the {@code 88} name of its valid state
+     * @param notOk the {@code 88} name of its rejected state
+     * @param blank the {@code 88} name of its not-supplied state
+     * @param declLine the line of {@code app/cbl/COACTUPC.cbl} declaring the flag
      * @param firstCondLine the line declaring the first of its three conditions
-     * @param validInput    an input the edit accepts, or {@code null} when the field is never edited
-     * @param blankInput    an input that reaches {@code -BLANK}, or {@code null} when unreachable
-     * @param badInput      an input that reaches {@code -NOT-OK}, or {@code null} when unreachable
-     * @param isvalidImage  the flag character the valid state holds. {@code LOW-VALUES} for most, but the
-     *                      two yes/no fields declare {@code VALUES 'Y', 'N'}, so their valid state is the
-     *                      typed character itself
+     * @param validInput an input the edit accepts, or {@code null} when the field is never edited
+     * @param blankInput an input that reaches {@code -BLANK}, or {@code null} when unreachable
+     * @param badInput an input that reaches {@code -NOT-OK}, or {@code null} when unreachable
+     * @param isvalidImage the flag character the valid state holds
      */
     private record Flag(ScreenField field, String cobolDataName, String isvalid, String notOk,
                         String blank, int declLine, int firstCondLine, String validInput,
                         String blankInput, String badInput, String isvalidImage) {
-
-        /** @return whether {@code 1200-EDIT-MAP-INPUTS} edits this field at all. */
         boolean isEdited() {
             return validInput != null;
         }
@@ -160,13 +98,6 @@ class AccountUpdateConditionCensusTest {
         }
     }
 
-    /**
-     * The census, transcribed from {@code app/cbl/COACTUPC.cbl:191-355} in declaration order.
-     *
-     * <p>Order, names and line numbers are the source's. The inputs were established against the real
-     * edit path rather than assumed, and {@code theTableIsInternallyConsistent} refuses a row whose
-     * reachability claims contradict its inputs.
-     */
     private static final List<Flag> FLAGS = List.of(
             new Flag(ScreenField.ACSTTUS, "WS-EDIT-ACCT-STATUS", "FLG-ACCT-STATUS-ISVALID", "FLG-ACCT-STATUS-NOT-OK",
                     "FLG-ACCT-STATUS-BLANK", 192, 193, "Y", "", "Q", "Y"),
@@ -241,56 +172,16 @@ class AccountUpdateConditionCensusTest {
             new Flag(ScreenField.ACSPFLG, "WS-EDIT-PRI-CARDHOLDER", "FLG-PRI-CARDHOLDER-ISVALID", "FLG-PRI-CARDHOLDER-NOT-OK",
                     "FLG-PRI-CARDHOLDER-BLANK", 349, 350, "Y", "", "Q", "Y"));
 
-    /**
-     * One of the generic edit paragraphs' own staging flags, and how to reach its three arms.
-     *
-     * <p>{@code 1200-EDIT-MAP-INPUTS} does not give each field its own edit. It reuses eleven generic
-     * edits - {@code 1220-EDIT-YESNO}, {@code 1225-EDIT-ALPHA-REQD}, {@code 1245-EDIT-NUM-REQD},
-     * {@code 1250-EDIT-SIGNED-9V2}, {@code EDIT-US-PHONE} and the rest - each of which writes its verdict
-     * into its <em>own</em> flag, and then copies that flag into {@code WS-NON-KEY-FLAGS} under the field
-     * it was editing. So these are the flags the edits actually set, and the 36 in {@link #FLAGS} are
-     * copies of them.
-     *
-     * <p>Two consequences. First, a generic flag is overwritten by every later field that uses the same
-     * edit, so {@link #drivenBy} names the <strong>last</strong> field of {@code 1200}'s sequence that
-     * writes it - reading it after any earlier field would read a value a later edit had replaced.
-     * Second, the three SSN part flags are the only ones whose copy target is not itself declared in
-     * {@code WS-NON-KEY-FLAGS}: {@code ACTSSN1}, {@code ACTSSN2} and {@code ACTSSN3} are republished into
-     * the Java flag map so that {@code 3300-SETUP-SCREEN-ATTRS} can redden them, which is why
-     * {@link #republishedAs} exists and why those three rows assert both the generic flag and its copy.
-     *
-     * @param cobolDataName  the staging flag's own COBOL data name
-     * @param isvalid        the {@code 88} name of its valid state
-     * @param notOk          the {@code 88} name of its rejected state
-     * @param blank          the {@code 88} name of its not-supplied state
-     * @param declLine       the line of {@code app/cbl/COACTUPC.cbl} declaring it
-     * @param read           reads it back off the conversation
-     * @param drivenBy       the last field of {@code 1200}'s sequence whose edit writes it
-     * @param republishedAs  the flag-map entry it is copied into, or {@code null} when that entry is one
-     *                       of the 36 already covered by {@link #FLAGS}
-     * @param validInput     an input the edit accepts
-     * @param blankInput     an input reaching {@code -BLANK}, or {@code null} when unreachable
-     * @param badInput       an input reaching {@code -NOT-OK}, or {@code null} when unreachable
-     * @param isvalidImage   the character its valid state holds
-     */
     private record Generic(String cobolDataName, String isvalid, String notOk, String blank,
                            int declLine, Function<AccountUpdateController.Conversation, String> read,
                            ScreenField drivenBy, ScreenField republishedAs, String validInput,
                            String blankInput, String badInput, String isvalidImage) {
-
         @Override
         public String toString() {
             return cobolDataName + " (via " + drivenBy.label() + ", :" + declLine + ")";
         }
     }
 
-    /**
-     * The eleven generic staging flags of {@code app/cbl/COACTUPC.cbl:56-146}, in declaration order.
-     *
-     * <p>Together with {@link #FLAGS} this accounts for every {@code 88}-level condition the edit path
-     * writes: {@value #ELEMENTARY_FLAG_COUNT} published flags plus {@value #GENERIC_FLAG_COUNT} staging
-     * flags, three conditions each.
-     */
     private static final List<Generic> GENERIC_FLAGS = List.of(
             new Generic("WS-FLG-SIGNED-NUMBER-EDIT", "FLG-SIGNED-NUMBER-ISVALID",
                     "FLG-SIGNED-NUMBER-NOT-OK", "FLG-SIGNED-NUMBER-BLANK", 56,
@@ -363,11 +254,6 @@ class AccountUpdateConditionCensusTest {
                 || flag.blankInput() == null || flag.badInput() == null);
     }
 
-    // ---------------------------------------------------------------------------------------------
-    // Driving the real edit path.
-    // ---------------------------------------------------------------------------------------------
-
-    /** A conversation mid-flight: the details have been fetched and the screen is being re-read. */
     private AccountUpdateController.Conversation warm() {
         AccountUpdateRequest received = AccountUpdateRequest.initial()
                 .withValue(AccountUpdateRequest.ScreenField.ACCTSID,
@@ -385,19 +271,6 @@ class AccountUpdateConditionCensusTest {
         return task;
     }
 
-    /**
-     * Writes one field's value into the staging item {@code 1200-EDIT-MAP-INPUTS} reads for it.
-     *
-     * <p>The five money fields are the ones worth naming: the driver passes the {@code PIC X(15)} copy
-     * {@code 1100-RECEIVE-MAP} left - {@code ACUP-NEW-*-X} - not the twelve-character work-area span, so
-     * writing the span instead leaves the edit seeing spaces and reporting {@code -BLANK} for a value that
-     * was supplied. The three date fields and the two telephone numbers are each staged whole, because the
-     * source edits them whole and publishes a three-character flag group.
-     *
-     * @param task  the conversation to stage into
-     * @param field the field being staged
-     * @param value the value to stage
-     */
     private void stage(AccountUpdateController.Conversation task, ScreenField field, String value) {
         switch (field) {
             case ACSTTUS -> task.acupNewAcct.activeStatus = value;
@@ -430,40 +303,20 @@ class AccountUpdateConditionCensusTest {
         }
     }
 
-    /** Right-pads to the {@code PIC X(15)} width the signed-number edit is handed. */
     private static String signed(String value) {
         return value + " ".repeat(Math.max(0, SIGNED_STAGING_WIDTH - value.length()));
     }
 
-    /**
-     * Stages a complete, genuinely valid screen - every edited field holding a value its edit accepts.
-     *
-     * <p>Valid all the way through, not merely well-formed: {@code editsWithNoErrorOnAValidScreen} asserts
-     * {@code INPUT-OK} still holds afterwards, so a case that changes one field is changing the only thing
-     * that can be wrong.
-     *
-     * @param task the conversation to stage into
-     */
     private void stageValidScreen(AccountUpdateController.Conversation task) {
         for (Flag flag : FLAGS) {
             if (flag.isEdited()) {
                 stage(task, flag.field(), flag.validInput());
             }
         }
-        // Edited by 1200 and flagged, but declared outside WS-NON-KEY-FLAGS, so no row above stages
-        // it - see GENERIC_FLAGS, which covers the SSN's three flags and their republication.
         stage(task, ScreenField.ACTSSN1, VALID_SSN);
-        // Not edited by 1200 and carrying no flag, but part of a complete screen.
         task.acupNewCust.govtIssuedId = "GOVT123";
     }
 
-    /**
-     * Runs the whole edit driver over a valid screen with one field replaced.
-     *
-     * @param field    the one field to change, or {@code null} to leave the screen wholly valid
-     * @param replaced the value to put in it
-     * @return the conversation, its flags set
-     */
     private AccountUpdateController.Conversation editWith(ScreenField field, String replaced) {
         AccountUpdateController.Conversation task = warm();
         stageValidScreen(task);
@@ -474,22 +327,12 @@ class AccountUpdateConditionCensusTest {
         return task;
     }
 
-    /**
-     * Asserts exactly one of a flag's three conditions holds, naming all three in the failure.
-     *
-     * @param task     the conversation carrying the flag
-     * @param flag     the flag under test
-     * @param expected the character of the state that must hold
-     */
     private static void assertOnlyStateHolding(AccountUpdateController.Conversation task, Flag flag,
                                                String expected) {
         assertThat(task.flag(flag.field()))
                 .as("%s must hold %s", flag, nameOfState(flag, expected))
                 .isEqualTo(expected);
 
-        // The other two conditions, in their FALSE state. A COBOL 88-level is a predicate over one byte,
-        // so a byte holding one state necessarily fails the other two - asserting it is what records that
-        // THIS field reached THIS arm, rather than some other field having reached it.
         assertThat(task.flagIsvalid(flag.field()))
                 .as("%s: %s", flag, flag.isvalid()).isEqualTo(FLG_ISVALID.equals(expected));
         assertThat(task.flagNotOk(flag.field()))
@@ -508,13 +351,6 @@ class AccountUpdateConditionCensusTest {
         return flag.isvalid();
     }
 
-    /**
-     * Runs {@code 3300-SETUP-SCREEN-ATTRS} and returns the colour {@code CSSETATY} left on a field.
-     *
-     * @param task  the conversation, its flags already set
-     * @param field the field to read
-     * @return the attribute byte
-     */
     private byte colourAfterAttrs(AccountUpdateController.Conversation task, ScreenField field) {
         task.wsEditAcctFlag = AccountUpdateController.FLG_FILTER_ISVALID;
         controller.screenInit3100(task);
@@ -522,12 +358,9 @@ class AccountUpdateConditionCensusTest {
         return task.cactupao.attributes(field).getColour();
     }
 
-    // ---------------------------------------------------------------------------------------------
-
     @Nested
     @DisplayName("The census itself - it cannot shrink, and it cannot lie about what it covers")
     class TheCensusItself {
-
         @Test
         @DisplayName("47 flags, 141 distinct condition names, one row per flag")
         void theTableCoversEveryDeclaredFlagAndCondition() {
@@ -618,8 +451,6 @@ class AccountUpdateConditionCensusTest {
                 }
             }
 
-            // Exactly the three arms documented on this class, named here so a fourth cannot appear
-            // without this assertion failing.
             assertThat(unreachableArms().map(Flag::cobolDataName).toList())
                     .as("only three arms are unreachable through the edit path, and each is a property "
                             + "of the COBOL - see this class's documentation")
@@ -642,7 +473,6 @@ class AccountUpdateConditionCensusTest {
     @Nested
     @DisplayName("Driven through 1200-EDIT-MAP-INPUTS - the real edit path")
     class DrivenThroughTheEditPath {
-
         @ParameterizedTest(name = "{0} reaches its ISVALID state")
         @MethodSource("com.vsergeychik.carddemo.account."
                 + "AccountUpdateConditionCensusTest#editedFlags")
@@ -687,16 +517,11 @@ class AccountUpdateConditionCensusTest {
     @Nested
     @DisplayName("Preserved-dead arms - modelled and asserted, never excused")
     class PreservedDeadArms {
-
         @ParameterizedTest(name = "{0}: every condition over it is a real predicate")
         @MethodSource("com.vsergeychik.carddemo.account."
                 + "AccountUpdateConditionCensusTest#unreachableArms")
         @DisplayName("the storage predicate answers correctly for all three states")
         void theStoragePredicateAnswersForEveryState(Flag flag) {
-            // No edit path reaches these, so the flag character is written directly and every predicate
-            // over it is checked. This proves the condition is modelled - a predicate that answered
-            // wrongly here would answer wrongly anywhere - without inventing behaviour the COBOL has not
-            // got. Each of the three states is exercised in both its true and its false form.
             for (String state : List.of(FLG_ISVALID, FLG_NOT_OK, FLG_BLANK)) {
                 AccountUpdateController.Conversation task = warm();
                 task.setFlag(flag.field(), state);
@@ -755,7 +580,6 @@ class AccountUpdateConditionCensusTest {
     @Nested
     @DisplayName("The generic edits' own staging flags - the flags 1200 actually sets")
     class TheGenericStagingFlags {
-
         @ParameterizedTest(name = "{0} reaches its ISVALID state")
         @MethodSource("com.vsergeychik.carddemo.account."
                 + "AccountUpdateConditionCensusTest#genericFlags")
@@ -793,10 +617,6 @@ class AccountUpdateConditionCensusTest {
         @Test
         @DisplayName("FLG-MANDATORY-NOT-OK is set, then always superseded before the paragraph exits")
         void mandatoryNotOkIsAnOpeningStateAndNeverAVerdict() {
-            // 1215-EDIT-MANDATORY's first statement is SET FLG-MANDATORY-NOT-OK TO TRUE, so the
-            // condition is genuinely reached on every call - and then the paragraph always reaches
-            // -BLANK or -ISVALID before it exits. Both outcomes are asserted here, which is what makes
-            // the claim "never a verdict" an assertion rather than a comment.
             assertThat(editWith(ScreenField.ACSADL1, "").wsEditMandatoryFlags)
                     .as("a missing mandatory field ends BLANK").isEqualTo(FLG_BLANK);
             assertThat(editWith(ScreenField.ACSADL1, "1 MAIN STREET").wsEditMandatoryFlags)
@@ -825,13 +645,6 @@ class AccountUpdateConditionCensusTest {
             }
         }
 
-        /**
-         * Asserts a generic staging flag holds one state and neither of the other two.
-         *
-         * @param task     the conversation
-         * @param generic  the staging flag under test
-         * @param expected the character of the state that must hold
-         */
         private void assertGenericState(AccountUpdateController.Conversation task, Generic generic,
                                         String expected) {
             String actual = generic.read().apply(task);
@@ -852,17 +665,6 @@ class AccountUpdateConditionCensusTest {
     @Nested
     @DisplayName("The group conditions over the three-character flag groups, and the four dead literals")
     class TheGroupAndDeadConditions {
-
-        /**
-         * One {@code 88}-level declared over a three-character flag <em>group</em> rather than one byte.
-         *
-         * @param name       the condition name
-         * @param declLine   the line of {@code app/cbl/COACTUPC.cbl} declaring it
-         * @param value      the three-character value it tests for
-         * @param parts      the three fields whose flags make up the group, in declaration order
-         * @param drivingInput an input that puts the whole group into {@code value}
-         * @param partStaged the field {@link #stage} writes that input through
-         */
         private record GroupCondition(String name, int declLine, String value, List<ScreenField> parts,
                                       String drivingInput, ScreenField partStaged) {
             @Override
@@ -871,7 +673,6 @@ class AccountUpdateConditionCensusTest {
             }
         }
 
-        /** All eight group conditions of {@code COACTUPC}, in declaration order. */
         private List<GroupCondition> groupConditions() {
             String allRejected = FLG_NOT_OK.repeat(3);
             String allValid = FLG_ISVALID.repeat(3);
@@ -905,7 +706,6 @@ class AccountUpdateConditionCensusTest {
                             VALID_SSN, ScreenField.ACTSSN1));
         }
 
-        /** @return the three part flags concatenated, which is what the group condition tests. */
         private String groupImage(AccountUpdateController.Conversation task, GroupCondition group) {
             StringBuilder image = new StringBuilder(3);
             for (ScreenField part : group.parts()) {
@@ -917,10 +717,6 @@ class AccountUpdateConditionCensusTest {
         @Test
         @DisplayName("each group condition holds when its whole group reaches its value, and not otherwise")
         void everyGroupConditionHoldsAndFails() {
-            // A group condition is a predicate over three bytes at once - VALUE '000' means all three
-            // parts were rejected, VALUE LOW-VALUES means all three passed. Neither can be reached by
-            // failing one part, which is exactly why they need their own cases: driving DOBMON to NOT-OK
-            // leaves WS-EDIT-DT-OF-BIRTH-INVALID false.
             for (GroupCondition group : groupConditions()) {
                 AccountUpdateController.Conversation holding =
                         editWith(group.partStaged(), group.drivingInput());
@@ -928,8 +724,6 @@ class AccountUpdateConditionCensusTest {
                         .as("%s must hold when every part of its group reaches that state", group)
                         .isEqualTo(group.value());
 
-                // The false state, and reached the way it actually happens: one part differing is
-                // enough, because the condition is over all three characters.
                 AccountUpdateController.Conversation notHolding = editWith(null, null);
                 assertThat(groupImage(notHolding, group))
                         .as("%s must not hold on a screen its group passed cleanly - unless it is the "
@@ -959,11 +753,6 @@ class AccountUpdateConditionCensusTest {
         @Test
         @DisplayName("the four dead WS-RETURN-MSG literals are transcribed character for character")
         void theFourDeadReturnMessageLiteralsAreTranscribed() {
-            // Declared at :485-486, :503-504, :509-510 and :511-512 and referenced nowhere in
-            // COACTUPC - each name appears exactly once in the file, at its own declaration. They are
-            // preserved rather than dropped, and asserted here so a transcription error cannot hide
-            // behind their disuse. Both states of each condition are covered: the literal satisfies its
-            // own 88-level and no other's.
             List<String> literals = List.of(
                     AccountUpdateController.MSG_PROMPT_FOR_LASTNAME,
                     AccountUpdateController.MSG_ACCT_STATUS_MUST_BE_YES_NO,
@@ -996,10 +785,6 @@ class AccountUpdateConditionCensusTest {
         @Test
         @DisplayName("none of the four is ever actually set - that is what makes them dead")
         void noneOfTheFourIsEverSet() {
-            // Their false state, asserted where it matters: over a screen that reaches every message
-            // path this program has, none of the four appears. A future edit that started setting one
-            // would break this, which is the point - the claim "declared and never referenced" becomes
-            // an assertion rather than a comment.
             for (Flag flag : FLAGS) {
                 if (flag.badInput() == null) {
                     continue;

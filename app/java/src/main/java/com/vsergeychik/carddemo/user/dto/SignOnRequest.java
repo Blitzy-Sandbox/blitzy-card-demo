@@ -9,241 +9,38 @@ import com.vsergeychik.carddemo.common.SensitiveDiagnostics;
 import jakarta.validation.constraints.Size;
 
 /**
- * The inbound payload of {@code POST /api/signon} - CICS transaction {@code CC00}, program
- * {@code COSGN00C} - as an immutable value.
+ * The inbound payload of {@code POST /api/signon} - CICS transaction {@code CC00}, program {@code COSGN00C}
+ * - as an immutable value.
  *
- * <p>This type is a <strong>field-for-field projection of the {@code xxxI} items of
- * {@code 01 COSGN0AI}</strong> in {@code app/cpy-bms/COSGN00.CPY}. It is a transcription of a screen
- * contract, not an API design: every payload member traces to one name-labelled {@code DFHMDF}
- * definition in {@code app/bms/COSGN00.bms}, and every width is the one the symbolic map declares.
+ * <p>{@code app/bms/COSGN00.bms} contains 37 {@code DFHMDF} definitions of which exactly
+ * {@value #MAP_FIELD_COUNT} are name-labelled; the other 26 are literal {@code INITIAL} screen furniture -
+ * captions and box characters - and are deliberately absent here.
  *
- * <h2>The eleven screen fields, and nothing else</h2>
- *
- * {@code app/bms/COSGN00.bms} contains 37 {@code DFHMDF} definitions of which exactly
- * {@value #MAP_FIELD_COUNT} are name-labelled; the other 26 are literal {@code INITIAL} screen
- * furniture - captions and box characters - and are deliberately absent here. The {@code xxxI} count,
- * the {@code xxxO} count and the name-labelled {@code DFHMDF} count all equal
- * {@value #MAP_FIELD_COUNT}, so the map is internally consistent and any deviation in this class
- * would be an error in this class.
- *
- * <table border="1">
- *   <caption>The screen contract, measured from both authorities and cross-checked</caption>
- *   <tr><th>#</th><th>{@code DFHMDF}</th><th>{@code xxxI} item</th><th>Width</th>
- *       <th>{@code POS}</th><th>Component</th></tr>
- *   <tr><td>1</td><td>{@code TRNNAME}</td><td>{@code TRNNAMEI}</td><td>{@code X(4)}</td>
- *       <td>(1,8)</td><td>{@link #trnName()}</td></tr>
- *   <tr><td>2</td><td>{@code TITLE01}</td><td>{@code TITLE01I}</td><td>{@code X(40)}</td>
- *       <td>(1,21)</td><td>{@link #title01()}</td></tr>
- *   <tr><td>3</td><td>{@code CURDATE}</td><td>{@code CURDATEI}</td><td>{@code X(8)}</td>
- *       <td>(1,71)</td><td>{@link #curDate()}</td></tr>
- *   <tr><td>4</td><td>{@code PGMNAME}</td><td>{@code PGMNAMEI}</td><td>{@code X(8)}</td>
- *       <td>(2,8)</td><td>{@link #pgmName()}</td></tr>
- *   <tr><td>5</td><td>{@code TITLE02}</td><td>{@code TITLE02I}</td><td>{@code X(40)}</td>
- *       <td>(2,21)</td><td>{@link #title02()}</td></tr>
- *   <tr><td>6</td><td>{@code CURTIME}</td><td>{@code CURTIMEI}</td><td><strong>{@code X(9)}</strong></td>
- *       <td>(2,71)</td><td>{@link #curTime()}</td></tr>
- *   <tr><td>7</td><td>{@code APPLID}</td><td>{@code APPLIDI}</td><td>{@code X(8)}</td>
- *       <td>(3,8)</td><td>{@link #applId()}</td></tr>
- *   <tr><td>8</td><td>{@code SYSID}</td><td>{@code SYSIDI}</td><td>{@code X(8)}</td>
- *       <td>(3,71)</td><td>{@link #sysId()}</td></tr>
- *   <tr><td>9</td><td>{@code USERID}</td><td>{@code USERIDI}</td><td>{@code X(8)}</td>
- *       <td>(19,43)</td><td>{@link #userId()}</td></tr>
- *   <tr><td>10</td><td>{@code PASSWD}</td><td>{@code PASSWDI}</td><td>{@code X(8)}</td>
- *       <td>(20,43)</td><td>{@link #passwd()}</td></tr>
- *   <tr><td>11</td><td>{@code ERRMSG}</td><td>{@code ERRMSGI}</td><td><strong>{@code X(78)}</strong></td>
- *       <td>(23,1)</td><td>{@link #errMsg()}</td></tr>
- * </table>
- *
- * Every width above was read from {@code app/cpy-bms/COSGN00.CPY} and independently from the
- * {@code LENGTH=} operand of the matching {@code DFHMDF} in {@code app/bms/COSGN00.bms}. The two
- * authorities agree field for field, which is why no width here is inferred, defaulted or computed.
- *
- * <h2>Two widths look wrong and are not</h2>
- *
- * <ul>
- *   <li><strong>{@code CURTIME} is nine characters, not eight.</strong>
- *       {@code app/cpy-bms/COSGN00.CPY:54} declares {@code CURTIMEI PIC X(9)} and
- *       {@code app/bms/COSGN00.bms} declares {@code LENGTH=9}. {@code COSGN00} is the only one of the
- *       five user screens whose time field is nine wide; the other four use eight. Normalising this
- *       to eight "for consistency" would silently shorten the rendered time, so the divergence is
- *       preserved exactly as declared.</li>
- *   <li><strong>{@code ERRMSG} is 78 characters, not 80.</strong> {@code COSGN00.CPY:84} declares
- *       {@code ERRMSGI PIC X(78)} while {@code app/cbl/COSGN00C.cbl:38} declares
- *       {@code WS-MESSAGE PIC X(80)}, and {@code COSGN00C.cbl:149} moves the one into the other with
- *       {@code MOVE WS-MESSAGE TO ERRMSGO OF COSGN0AO} - an 80-to-78 truncation on the right. That
- *       truncation belongs to the controller and is performed by
- *       {@code common.FixedWidthCodec.movePicX}. <strong>This class only declares the width as
- *       78</strong>; it neither declares 80 nor truncates anything itself.</li>
- * </ul>
- *
- * <h2>What is deliberately not here</h2>
- *
- * The symbolic map surrounds each {@code xxxI} item with metadata, and none of it is a payload
- * member:
- *
- * <ul>
- *   <li>{@code xxxL} is {@code COMP PIC S9(4)}, the input length CICS reports, and it doubles as the
- *       cursor signal - {@code COSGN00C.cbl:121} and {@code :250} do {@code MOVE -1 TO USERIDL} and
- *       {@code :126} and {@code :244} do {@code MOVE -1 TO PASSWDL} to place the cursor on the field
- *       at fault.</li>
- *   <li>{@code xxxF} is the attribute and flag byte, and {@code xxxA} is its {@code REDEFINES}
- *       view.</li>
- *   <li>{@code xxxC} is the colour byte, the target of {@code MOVE DFHRED}, and {@code xxxP},
- *       {@code xxxH} and {@code xxxV} are the remaining output attribute bytes of
- *       {@code 01 COSGN0AO REDEFINES COSGN0AI}.</li>
- *   <li>The 12-byte {@code TIOAPFX} prefix at {@code COSGN00.CPY:18} and every intervening
- *       {@code FILLER X(4)} span are reserved storage and are not exposed.</li>
- * </ul>
- *
- * Field highlighting and cursor placement belong to {@code user.SignOnController} together with
- * {@code common.FieldAttributeSetter}, which is where the attribute bytes are set. Keeping them out
- * of the payload is what stops a client from asserting its own screen attributes.
- *
- * <h2>Conversation state travels in the payload, never in a session</h2>
- *
- * CICS is pseudo-conversational: the transaction ends after painting the screen and is re-entered
- * from the beginning on the next key press, so the only state that survives is what the program
- * handed back. That shape is preserved exactly. Beyond the {@value #MAP_FIELD_COUNT} map fields this
- * payload carries {@link #navigationContext()} - the 160-byte {@code CARDDEMO-COMMAREA} of
- * {@code app/cpy/COCOM01Y.cpy}, which every one of the seventeen online programs copies - and
- * {@link #aid()}, the resolved key indication that {@code COSGN00C} reads from {@code EIBAID}.
- *
- * <p>Those two members are the <em>only</em> ones with no {@code DFHMDF} behind them. They are
- * mandated precisely so that no server-side state is required, and this class is correspondingly free
- * of every mechanism that would reintroduce one: no servlet session handle, no session-scoped
- * attribute or bean, no thread-local carrier, no static cache and no mutable static field. A static
- * holder would be a session by another name and would break request isolation.
- *
- * <p>The enter-versus-re-enter flag is <strong>not</strong> duplicated here. It is
- * {@code CDEMO-PGM-CONTEXT PIC 9(01)} inside the communication area, with
- * {@code 88 CDEMO-PGM-ENTER VALUE 0} and {@code 88 CDEMO-PGM-REENTER VALUE 1} at
- * {@code COCOM01Y.cpy:30-31}; {@link #inEnterState()} and {@link #inReenterState()} read through to
- * it so the flag has exactly one home and cannot drift.
- *
- * <h2>Credentials travel in the clear, deliberately</h2>
- *
- * {@link #passwd()} is a plaintext {@code X(8)} member matching {@code SEC-USR-PWD PIC X(08)} of
- * {@code app/cpy/CSUSR01Y.cpy:21}, because {@code app/cbl/COSGN00C.cbl:223} compares the two
- * directly with {@code IF SEC-USR-PWD = WS-USER-PWD}. No hashing, no password encoder, no encoding
- * and no authentication framework is applied: this is a like-for-like migration, so strengthening
- * the comparison would change observable behaviour, and weakening or removing the field would delete
- * a real screen input. Plaintext credentials are an <strong>inherited property of the legacy
- * design</strong> and an <strong>explicit non-goal</strong> of this migration; the characteristic is
- * documented here so it stays visible rather than buried in generated code. The one concession is
- * diagnostic hygiene: {@link #toString()} never reproduces the value - see its own notes.
- *
- * <p>{@code app/bms/COSGN00.bms} declares {@code PASSWD} with {@code ATTRB=(DRK,FSET,UNPROT)}, and
- * {@code DRK} is terminal non-display. That is how the legacy design masked the field on the 3270,
- * and it is a presentation attribute - metadata - not a reason to alter, encode or omit the payload
- * member.
- *
- * <h2>This class holds no logic</h2>
- *
- * It is a payload contract and nothing more: no validation method, no normalisation, no comparison.
- * All decision logic lives in {@code user.SignOnService}, which owns the ordered blank checks of
- * {@code COSGN00C.cbl:117-130}, the {@code FUNCTION UPPER-CASE} normalisation of both identifier and
- * password at {@code :132-136}, the plaintext compare at {@code :223} and the {@code RESP}
- * 0/13/other split at {@code :221-257}.
- *
- * <p>Consequently the eleven screen fields are carried <strong>exactly as they arrive</strong> -
- * untrimmed, unpadded, not coerced between {@code null} and empty, and not upper-cased. The service
- * has to distinguish {@code SPACES} from {@code LOW-VALUES} at {@code COSGN00C.cbl:118} and
- * {@code :123}, so it must see what the client actually sent; padding a short value to its declared
- * width here would fabricate data and pre-empt that very test.
- *
- * <h2>Validation is bounded by what the program does</h2>
- *
- * Each screen member carries {@link Size} at its symbolic-map width, which is the enforcement point
- * for the field widths CICS used to enforce for free. <strong>Nothing further is asserted.</strong> In
- * particular no presence or non-blank constraint is placed on any screen input, because
- * {@code COSGN00C} <strong>accepts</strong> blank input and answers it with a specific per-field
- * message - {@code 'Please enter User ID ...'} at {@code :120} and
- * {@code 'Please enter Password ...'} at {@code :125}. Rejecting the request with a 400 instead
- * would replace that message with a different observable behaviour, which a like-for-like migration
- * may not do. {@link Size} is satisfied by a {@code null} value, so it constrains width without ever
- * making a field mandatory. No pattern, format or bespoke constraint is applied either: the program
- * performs no such check, so neither does this contract.
- *
- * <h2>Serialisation</h2>
- *
- * The module's web configuration owns Jackson policy - it declines trimming, empty-string-to-null
- * coercion and null exclusion so that space-padded {@code PIC X(n)} values survive a round trip. What
- * this class declares is one {@code @JsonProperty} per screen field, pinning each wire name to its
- * {@code xxxI} item in lower case. That is the presentation contract AAP 0.6.3 fixes - "payload field
- * names and lengths derive from the xxxI items only" - and declaring it here rather than leaning on the
- * Java identifier is what keeps the wire name stable when the identifier is camel case for Java's own
- * conventions, and immune to a naming strategy configured later. Nothing else is declared: no naming
- * strategy, no inclusion filter, no ignore and no custom serialiser.
- *
- * <p>{@link #inEnterState()} and {@link #inReenterState()} are named so that they are not bean
- * getters. That is intentional: they are <em>derived</em> from the communication area rather than
- * stored beside it, so emitting them would put properties on the wire that the canonical constructor
- * cannot accept back, breaking a serialise-then-deserialise round trip.
- *
- * <h2>Usage</h2>
- *
- * <pre>
- * // A first entry: the client sends the credentials and a freshly initialised communication area.
- * SignOnRequest request = new SignOnRequest(
- *         "CC00", title01, curDate, "COSGN00C", title02, curTime, applId, sysId,
- *         "ADMIN001", keyedPassword, null, NavigationContext.empty(), "ENTER");
- *
- * // The service decides; the payload only carries. Blank is a valid value, not a rejection.
- * if (request.inReenterState()) {
- *     // validate what was typed, and highlight the field at fault
- * }
- * </pre>
- *
- * @param trnName  {@code TRNNAMEI PIC X(4)}, {@code COSGN00.CPY:24}: the transaction identifier,
- *                 {@code 'CC00'} per {@code COSGN00C.cbl:37}
- * @param title01  {@code TITLE01I PIC X(40)}, {@code COSGN00.CPY:30}: the first title line, supplied
- *                 from {@code common.ScreenTitles}
- * @param curDate  {@code CURDATEI PIC X(8)}, {@code COSGN00.CPY:36}: the current date as
- *                 {@code MM/DD/YY}, assembled at {@code COSGN00C.cbl:186-190}
- * @param pgmName  {@code PGMNAMEI PIC X(8)}, {@code COSGN00.CPY:42}: the program name,
- *                 {@code 'COSGN00C'} per {@code COSGN00C.cbl:36}
- * @param title02  {@code TITLE02I PIC X(40)}, {@code COSGN00.CPY:48}: the second title line, supplied
- *                 from {@code common.ScreenTitles}
- * @param curTime  {@code CURTIMEI PIC X(9)}, {@code COSGN00.CPY:54}: the current time as
- *                 {@code HH:MM:SS}, assembled at {@code COSGN00C.cbl:192-196}. Nine wide, not eight
- * @param applId   {@code APPLIDI PIC X(8)}, {@code COSGN00.CPY:60}: the CICS application identifier
- *                 from {@code EXEC CICS ASSIGN APPLID} at {@code COSGN00C.cbl:198-200}. Only this
- *                 screen carries it
- * @param sysId    {@code SYSIDI PIC X(8)}, {@code COSGN00.CPY:66}: the CICS system identifier from
- *                 {@code EXEC CICS ASSIGN SYSID} at {@code COSGN00C.cbl:202-204}. Only this screen
- *                 carries it
- * @param userId   {@code USERIDI PIC X(8)}, {@code COSGN00.CPY:72}: the identifier keyed by the user,
- *                 matching {@code SEC-USR-ID PIC X(08)} of {@code CSUSR01Y.cpy:18}. May be blank -
- *                 {@code COSGN00C.cbl:118} tests for {@code SPACES OR LOW-VALUES} and answers with a
- *                 message
- * @param passwd   {@code PASSWDI PIC X(8)}, {@code COSGN00.CPY:78}: the password keyed by the user,
- *                 matching {@code SEC-USR-PWD PIC X(08)} of {@code CSUSR01Y.cpy:21}. Carried in the
- *                 clear, deliberately - see the class notes. May be blank
- * @param errMsg   {@code ERRMSGI PIC X(78)}, {@code COSGN00.CPY:84}: the error line. 78 wide against
- *                 an 80-byte {@code WS-MESSAGE}; the narrowing move is the controller's
- * @param navigationContext the 160-byte {@code CARDDEMO-COMMAREA} of {@code app/cpy/COCOM01Y.cpy}.
- *                 <strong>Not a map field</strong> - one of the two mandated exceptions that make a
- *                 server-side session unnecessary. Never widened: it is exactly 160 bytes and is
- *                 shared by all seventeen controllers, so an extra field would break every other
- *                 screen's byte image. {@code null} is <strong>meaningful</strong> and is preserved:
- *                 it is the {@code EIBCALEN = 0} cold start of {@code COSGN00C.cbl:80-95}, which
- *                 {@link #hasNavigationContext()} reports
- * @param aid      the resolved key indication, the {@code EIBAID} that {@code COSGN00C} tests inline,
- *                 as the token produced by {@code common.PfKeyResolver} - {@code 'ENTER'},
- *                 {@code 'PFK03'} and so on. <strong>Not a map field</strong> - the second mandated
- *                 exception. {@code null} means no key has been resolved, mirroring the empty result
- *                 that key resolution returns for an unrecognised {@code EIBAID}
- *
- * <h2>Members this request tolerates without declaring</h2>
- *
- * <p>The {@code @JsonIgnoreProperties} below names the members the paired response carries that this
- * request does not declare. They are tolerated so a client can send the body it was just handed straight
- * back: rule R6 and gate G37 put the whole conversation in the payload, which makes the next request the
- * previous response. {@code ignoreUnknown} stays at its default of {@code false}, so every <em>other</em>
- * unrecognised name is still refused with the offending field named in the error envelope. Each tolerated
- * member is recomputed by the server on every path, so the value that arrives here is discarded and
- * cannot steer a branch. The names live in {@link com.vsergeychik.carddemo.common.ResponseOnlyMembers},
- * which explains each one.
+ * @param trnName {@code TRNNAMEI PIC X(4)}, {@code COSGN00.CPY:24}: the transaction identifier,
+ *     {@code 'CC00'} per {@code COSGN00C.cbl:37}
+ * @param title01 {@code TITLE01I PIC X(40)}, {@code COSGN00.CPY:30}: the first title line, supplied from
+ *     {@code common.ScreenTitles}
+ * @param curDate {@code CURDATEI PIC X(8)}, {@code COSGN00.CPY:36}: the current date as {@code MM/DD/YY},
+ *     assembled at {@code COSGN00C.cbl:186-190}
+ * @param pgmName {@code PGMNAMEI PIC X(8)}, {@code COSGN00.CPY:42}: the program name, {@code 'COSGN00C'}
+ *     per {@code COSGN00C.cbl:36}
+ * @param title02 {@code TITLE02I PIC X(40)}, {@code COSGN00.CPY:48}: the second title line, supplied from
+ *     {@code common.ScreenTitles}
+ * @param curTime {@code CURTIMEI PIC X(9)}, {@code COSGN00.CPY:54}: the current time as {@code HH:MM:SS},
+ *     assembled at {@code COSGN00C.cbl:192-196}
+ * @param applId {@code APPLIDI PIC X(8)}, {@code COSGN00.CPY:60}: the CICS application identifier from
+ *     {@code EXEC CICS ASSIGN APPLID} at {@code COSGN00C.cbl:198-200}
+ * @param sysId {@code SYSIDI PIC X(8)}, {@code COSGN00.CPY:66}: the CICS system identifier from
+ *     {@code EXEC CICS ASSIGN SYSID} at {@code COSGN00C.cbl:202-204}
+ * @param userId {@code USERIDI PIC X(8)}, {@code COSGN00.CPY:72}: the identifier keyed by the user,
+ *     matching {@code SEC-USR-ID PIC X(08)} of {@code CSUSR01Y.cpy:18}
+ * @param passwd {@code PASSWDI PIC X(8)}, {@code COSGN00.CPY:78}: the password keyed by the user, matching
+ *     {@code SEC-USR-PWD PIC X(08)} of {@code CSUSR01Y.cpy:21}
+ * @param errMsg {@code ERRMSGI PIC X(78)}, {@code COSGN00.CPY:84}: the error line. 78 wide against an
+ *     80-byte {@code WS-MESSAGE}; the narrowing move is the controller's
+ * @param navigationContext the 160-byte {@code CARDDEMO-COMMAREA} of {@code app/cpy/COCOM01Y.cpy}
+ * @param aid the resolved key indication, the {@code EIBAID} that {@code COSGN00C} tests inline, as the
+ *     token produced by {@code common.PfKeyResolver} - {@code 'ENTER'}, {@code 'PFK03'} and so on
  */
 @JsonIgnoreProperties({
         ResponseOnlyMembers.NEXT_PROGRAM,
@@ -265,154 +62,83 @@ public record SignOnRequest(@Size(max = TRNNAME_LENGTH) @JsonProperty("trnname")
                             @Size(max = ERRMSG_LENGTH) @JsonProperty("errmsg") String errMsg,
                             NavigationContext navigationContext,
                             @Size(max = AID_LENGTH) String aid) {
-
-    // =================================================================================================
-    // The declared widths. Each one is a literal read from the xxxI PICTURE clause of
-    // app/cpy-bms/COSGN00.CPY and confirmed against the LENGTH= operand of the matching DFHMDF in
-    // app/bms/COSGN00.bms. No width is derived from another, so a mistyped value cannot propagate.
-    // They are declared once here and referenced by the @Size annotations above, which keeps the
-    // number that a reviewer checks and the number the validator enforces provably the same one.
-    // =================================================================================================
-
-    /** {@code TRNNAMEI PIC X(4)}, {@code COSGN00.CPY:24}; {@code TRNNAME DFHMDF LENGTH=4}. */
+    /**
+     * {@code TRNNAMEI PIC X(4)}, {@code COSGN00.CPY:24}; {@code TRNNAME DFHMDF LENGTH=4}.
+     */
     public static final int TRNNAME_LENGTH = 4;
 
-    /** {@code TITLE01I PIC X(40)}, {@code COSGN00.CPY:30}; {@code TITLE01 DFHMDF LENGTH=40}. */
+    /**
+     * {@code TITLE01I PIC X(40)}, {@code COSGN00.CPY:30}; {@code TITLE01 DFHMDF LENGTH=40}.
+     */
     public static final int TITLE01_LENGTH = 40;
 
-    /** {@code CURDATEI PIC X(8)}, {@code COSGN00.CPY:36}; {@code CURDATE DFHMDF LENGTH=8}. */
+    /**
+     * {@code CURDATEI PIC X(8)}, {@code COSGN00.CPY:36}; {@code CURDATE DFHMDF LENGTH=8}.
+     */
     public static final int CURDATE_LENGTH = 8;
 
-    /** {@code PGMNAMEI PIC X(8)}, {@code COSGN00.CPY:42}; {@code PGMNAME DFHMDF LENGTH=8}. */
+    /**
+     * {@code PGMNAMEI PIC X(8)}, {@code COSGN00.CPY:42}; {@code PGMNAME DFHMDF LENGTH=8}.
+     */
     public static final int PGMNAME_LENGTH = 8;
 
-    /** {@code TITLE02I PIC X(40)}, {@code COSGN00.CPY:48}; {@code TITLE02 DFHMDF LENGTH=40}. */
+    /**
+     * {@code TITLE02I PIC X(40)}, {@code COSGN00.CPY:48}; {@code TITLE02 DFHMDF LENGTH=40}.
+     */
     public static final int TITLE02_LENGTH = 40;
 
     /**
      * {@code CURTIMEI PIC X(9)}, {@code COSGN00.CPY:54}; {@code CURTIME DFHMDF LENGTH=9}.
-     *
-     * <p><strong>Nine, not eight.</strong> {@code COSGN00} is the only one of the five user screens
-     * whose time field is nine characters wide. The value is preserved as declared rather than
-     * harmonised with its four siblings.
      */
     public static final int CURTIME_LENGTH = 9;
 
-    /** {@code APPLIDI PIC X(8)}, {@code COSGN00.CPY:60}; {@code APPLID DFHMDF LENGTH=8}. */
+    /**
+     * {@code APPLIDI PIC X(8)}, {@code COSGN00.CPY:60}; {@code APPLID DFHMDF LENGTH=8}.
+     */
     public static final int APPLID_LENGTH = 8;
 
-    /** {@code SYSIDI PIC X(8)}, {@code COSGN00.CPY:66}; {@code SYSID DFHMDF LENGTH=8}. */
+    /**
+     * {@code SYSIDI PIC X(8)}, {@code COSGN00.CPY:66}; {@code SYSID DFHMDF LENGTH=8}.
+     */
     public static final int SYSID_LENGTH = 8;
 
     /**
      * {@code USERIDI PIC X(8)}, {@code COSGN00.CPY:72}; {@code USERID DFHMDF LENGTH=8}.
-     *
-     * <p>Equal to {@code SEC-USR-ID PIC X(08)} of {@code app/cpy/CSUSR01Y.cpy:18}, which is what makes
-     * the keyed value usable directly as the {@code USRSEC} record key at
-     * {@code app/cbl/COSGN00C.cbl:215-216}. The field is named {@code USERID} on this screen;
-     * {@code COUSR02} and {@code COUSR03} name their equivalent {@code USRIDIN}, and that difference
-     * is left alone rather than harmonised.
      */
     public static final int USERID_LENGTH = 8;
 
     /**
      * {@code PASSWDI PIC X(8)}, {@code COSGN00.CPY:78}; {@code PASSWD DFHMDF LENGTH=8}.
-     *
-     * <p>Equal to {@code SEC-USR-PWD PIC X(08)} of {@code app/cpy/CSUSR01Y.cpy:21}, the field that
-     * {@code app/cbl/COSGN00C.cbl:223} compares in plaintext.
      */
     public static final int PASSWD_LENGTH = 8;
 
     /**
-     * {@code ERRMSGI PIC X(78)}, {@code COSGN00.CPY:84}; {@code ERRMSG DFHMDF LENGTH=78}.
-     *
-     * <p><strong>78, not 80.</strong> {@code app/cbl/COSGN00C.cbl:38} declares
-     * {@code WS-MESSAGE PIC X(80)} and {@code :149} moves it into the 78-character output item,
-     * truncating two characters on the right. This constant is the receiving width; the narrowing
-     * move itself is performed by the controller through {@code common.FixedWidthCodec.movePicX}.
+     * {@code ERRMSGI PIC X(78)}, {@code COSGN00.CPY:84}; {@code ERRMSG DFHMDF LENGTH=78}. 78, not 80.
      */
     public static final int ERRMSG_LENGTH = 78;
 
     /**
-     * The width of the resolved key token, {@code CCARD-AID PIC X(5)} of
-     * {@code app/cpy/CVCRD01Y.cpy}.
-     *
-     * <p>This is the width of the tokens {@code common.PfKeyResolver} produces - {@code 'ENTER'},
-     * {@code 'CLEAR'}, {@code 'PFK01'} through {@code 'PFK12'} - not a screen field width, because
-     * the key indication is not a screen field.
+     * The width of the resolved key token, {@code CCARD-AID PIC X(5)} of {@code app/cpy/CVCRD01Y.cpy}.
      */
     public static final int AID_LENGTH = 5;
 
     /**
      * The number of payload members that project a name-labelled {@code DFHMDF} field:
      * {@value #MAP_FIELD_COUNT}.
-     *
-     * <p>Stated as a constant so the screen contract is assertable rather than merely described.
-     * {@code app/bms/COSGN00.bms} holds 37 {@code DFHMDF} definitions of which exactly this many are
-     * name-labelled, and {@code app/cpy-bms/COSGN00.CPY} declares exactly this many {@code xxxI}
-     * items and exactly this many {@code xxxO} items. The record has two further components -
-     * {@link #navigationContext()} and {@link #aid()} - which carry conversation state and are the
-     * only mandated exceptions to the one-member-per-{@code DFHMDF} rule.
      */
     public static final int MAP_FIELD_COUNT = 11;
 
-    /**
-     * The fixed replacement {@link #toString()} prints in place of the password.
-     *
-     * <p>It is a constant rather than a value-derived mask on purpose: because it never varies, a
-     * diagnostic string cannot disclose the password, its length, or whether one was supplied at all.
-     */
-    /**
-     * The password's rendering, delegated to {@link SensitiveDiagnostics#REDACTED} so that this file,
-     * {@code UserAddRequest} and {@code UserUpdateRequest} agree. They previously used three different
-     * markers - {@code [REDACTED]}, {@code ********} and {@code [masked]} - which is what one policy
-     * spread across three files turns into.
-     */
     private static final String PASSWD_REDACTED = SensitiveDiagnostics.REDACTED;
 
     /**
-     * Carries every component exactly as it arrives, including an <strong>absent</strong>
-     * communication area.
-     *
-     * <p><strong>Why the absence is preserved rather than completed.</strong>
-     * An earlier form of this constructor replaced a {@code null} {@link #navigationContext()} with
-     * {@link NavigationContext#empty()}. That looked harmless - the empty area is the initialised
-     * 160-byte state, spaces and zeros - but it erased a distinction the program makes before it does
-     * anything else. {@code app/cbl/COSGN00C.cbl:80-95} tests {@code EIBCALEN}, the length CICS
-     * reports for the area actually passed:
-     *
-     * <ul>
-     *   <li>{@code EIBCALEN = 0} means <strong>no communication area was passed at all</strong> - a
-     *       cold start, the transaction entered from a clear screen. The program paints the sign-on
-     *       map and returns.</li>
-     *   <li>{@code EIBCALEN} non-zero means an area <em>was</em> passed, and the program reads
-     *       {@code CDEMO-PGM-CONTEXT} out of it to decide between painting and validating.</li>
-     * </ul>
-     *
-     * <p>A freshly initialised area is the <em>second</em> case, not the first: it has a length. Once
-     * the {@code null} was replaced there was no longer any way to express the first, so the cold-start
-     * branch became unreachable through the API. The member is therefore left {@code null} when it is
-     * absent, {@link #hasNavigationContext()} reports which case this is, and
-     * {@link #commareaLength()} gives the {@code EIBCALEN} the request corresponds to.
-     *
-     * <p>The eleven screen fields are deliberately <strong>not</strong> touched either. They are
-     * carried exactly as they arrive, including {@code null} and including a value shorter than its
-     * declared width, because {@code user.SignOnService} has to distinguish {@code SPACES} from
-     * {@code LOW-VALUES} at {@code app/cbl/COSGN00C.cbl:118} and {@code :123}. Padding or trimming
-     * them here would pre-empt that test and change the message the user sees.
+     * Carries every component exactly as it arrives, including an absent communication area.
      */
     public SignOnRequest {
-        // Intentionally empty: every component is carried verbatim, and an absent communication area
-        // is a state this payload must be able to express rather than one to fill in.
     }
 
     /**
-     * Whether a communication area travelled with this request - the Java reading of {@code EIBCALEN}
-     * being non-zero at {@code app/cbl/COSGN00C.cbl:80-95}.
-     *
-     * <p>Not a JSON property: it is derived from {@link #navigationContext()}, which is already on the
-     * wire as {@code null} or as an object. Emitting it as well would let a payload assert a presence
-     * that contradicts the member it travels with.
+     * Whether a communication area travelled with this request - the Java reading of {@code EIBCALEN} being
+     * non-zero at {@code app/cbl/COSGN00C.cbl:80-95}.
      *
      * @return {@code true} when {@link #navigationContext()} is present
      */
@@ -422,12 +148,11 @@ public record SignOnRequest(@Size(max = TRNNAME_LENGTH) @JsonProperty("trnname")
     }
 
     /**
-     * The length CICS would report in {@code EIBCALEN}:
-     * {@value NavigationContext#COMMAREA_LENGTH} when a communication area travelled with this
-     * request, and {@code 0} when none did.
+     * The length CICS would report in {@code EIBCALEN}: {@value NavigationContext#COMMAREA_LENGTH} when a
+     * communication area travelled with this request, and {@code 0} when none did.
      *
-     * <p>{@code COSGN00C} passes no extension behind {@code CARDDEMO-COMMAREA}, so the non-zero case
-     * is always exactly the commarea's own width.
+     * <p>{@code COSGN00C} passes no extension behind {@code CARDDEMO-COMMAREA}, so the non-zero case is
+     * always exactly the commarea's own width.
      *
      * @return {@value NavigationContext#COMMAREA_LENGTH} or {@code 0}
      */
@@ -438,17 +163,7 @@ public record SignOnRequest(@Size(max = TRNNAME_LENGTH) @JsonProperty("trnname")
 
     /**
      * Whether this request is a first entry - {@code CDEMO-PGM-CONTEXT} holding
-     * {@code 88 CDEMO-PGM-ENTER VALUE 0}, {@code app/cpy/COCOM01Y.cpy:30}. Paint the screen; validate
-     * nothing.
-     *
-     * <p>A read-through to {@link NavigationContext#isEnter()} rather than a second copy of the flag,
-     * so the context byte has exactly one home and the two cannot disagree.
-     *
-     * <p>{@code false} when no communication area travelled at all. That is not the same statement as
-     * "not first entry": with {@code EIBCALEN = 0} there is no {@code CDEMO-PGM-CONTEXT} byte to be in
-     * either state, and {@code COSGN00C} does not read one - it takes the cold-start path.
-     * {@link #hasNavigationContext()} is the predicate that distinguishes that case, and a controller
-     * reproducing the program must test it first.
+     * {@code 88 CDEMO-PGM-ENTER VALUE 0}, {@code app/cpy/COCOM01Y.cpy:30}.
      *
      * @return {@code true} when a communication area travelled and it is in the enter state
      */
@@ -458,17 +173,11 @@ public record SignOnRequest(@Size(max = TRNNAME_LENGTH) @JsonProperty("trnname")
 
     /**
      * Whether this request is a re-entry - {@code CDEMO-PGM-CONTEXT} holding
-     * {@code 88 CDEMO-PGM-REENTER VALUE 1}, {@code app/cpy/COCOM01Y.cpy:31}. Validate what was typed,
-     * and let {@code common.FieldAttributeSetter} apply the error highlight, which is gated on this
-     * state.
+     * {@code 88 CDEMO-PGM-REENTER VALUE 1}, {@code app/cpy/COCOM01Y.cpy:31}.
      *
-     * <p>Also a read-through, and deliberately <strong>not</strong> written as the negation of
-     * {@link #inEnterState()}: {@code CDEMO-PGM-CONTEXT} is {@code PIC 9(01)} and may hold any digit,
-     * so for a value such as {@code 9} both predicates are correctly {@code false}. Defining either as
-     * the other's complement would invent a state the copybook does not describe.
-     *
-     * <p>{@code false} when no communication area travelled, for the same reason
-     * {@link #inEnterState()} is.
+     * <p>Also a read-through, and deliberately not written as the negation of {@link #inEnterState()}:
+     * {@code CDEMO-PGM-CONTEXT} is {@code PIC 9(01)} and may hold any digit, so for a value such as
+     * {@code 9} both predicates are correctly {@code false}.
      *
      * @return {@code true} when a communication area travelled and it is in the re-enter state
      */
@@ -480,14 +189,8 @@ public record SignOnRequest(@Size(max = TRNNAME_LENGTH) @JsonProperty("trnname")
      * A diagnostic rendering that reports every component except the password, which is replaced by
      * {@link SensitiveDiagnostics#REDACTED}.
      *
-     * <p>The override exists solely for that substitution. A record's generated {@code toString}
-     * includes every component, so inheriting it would reproduce the plaintext password in any log
-     * line, exception message or debugger view that rendered this object. Carrying the credential in
-     * the clear is required for parity with {@code app/cbl/COSGN00C.cbl:223}; broadcasting it is not,
-     * and the two concerns are separable.
-     *
-     * <p>{@code equals} and {@code hashCode} remain as the record generates them, including the
-     * password: they are value semantics and disclose nothing.
+     * <p>Carrying the credential in the clear is required for parity with {@code app/cbl/COSGN00C.cbl:223};
+     * broadcasting it is not, and the two concerns are separable.
      *
      * @return a rendering safe to log, never {@code null}
      */

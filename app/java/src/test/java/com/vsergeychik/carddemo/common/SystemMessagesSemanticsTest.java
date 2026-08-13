@@ -9,24 +9,14 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 /**
- * Tests for {@link SystemMessages}, which merges {@code app/cpy/CSMSG01Y.cpy}'s two message literals
- * with {@code app/cpy/CSMSG02Y.cpy}'s {@code ABEND-DATA} work area.
- *
- * <p>Two traps are asserted against directly. First, both message fields are declared
- * {@code PIC X(50)} while the source literals are only 49 characters, so COBOL pads one further
- * space - transcribing the literal verbatim yields a value one byte short, and every length assertion
- * below therefore checks <strong>50</strong>. Second, {@code CSMSG01Y}'s thank-you text
- * ({@code PIC X(50)}, "CardDemo application") is a different string from {@code COTTL01Y}'s
- * ({@code PIC X(40)}, "CCDA application") which the sibling {@code ScreenTitles} owns; pasting the
- * wrong one produces output that reads perfectly and fails field-for-field diffing.
+ * Tests for {@link SystemMessages}, which merges {@code app/cpy/CSMSG01Y.cpy}'s two message literals with
+ * {@code app/cpy/CSMSG02Y.cpy}'s {@code ABEND-DATA} work area.
  */
 @DisplayName("SystemMessages - CSMSG01Y message literals and the CSMSG02Y ABEND-DATA area")
 class SystemMessagesSemanticsTest {
-
     @Nested
     @DisplayName("CSMSG01Y - the two PIC X(50) messages")
     class Messages {
-
         @Test
         @DisplayName("both messages are 50 bytes, not the 49 the source literal shows")
         void bothMessagesAreFiftyBytes() {
@@ -47,10 +37,6 @@ class SystemMessagesSemanticsTest {
             assertThat(SystemMessages.CCDA_MSG_INVALID_KEY).endsWith(" ");
         }
 
-        /**
-         * The guard against pasting {@code COTTL01Y}'s 40-byte "CCDA application" thank-you into this
-         * 50-byte "CardDemo application" field.
-         */
         @Test
         @DisplayName("this thank-you says CardDemo, never CCDA application")
         void theThankYouIsTheCardDemoOneNotTheScreenTitlesOne() {
@@ -63,7 +49,6 @@ class SystemMessagesSemanticsTest {
     @Nested
     @DisplayName("CSMSG02Y ABEND-DATA - 4 + 8 + 50 + 72 = 134 bytes, all VALUE SPACES")
     class AbendDataArea {
-
         @Test
         @DisplayName("the declared widths sum to 134")
         void theWidthsSumToOneHundredAndThirtyFour() {

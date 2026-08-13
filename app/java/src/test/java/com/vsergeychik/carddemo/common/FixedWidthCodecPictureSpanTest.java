@@ -19,41 +19,17 @@ import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 /**
- * Tests for {@link FixedWidthCodec} - the layer that gives a positioned byte span its
- * {@code PICTURE} meaning.
- *
- * <p>The three rules this class exists to get right, and that these tests pin down, are: an
- * alphanumeric {@code MOVE} truncates on the <em>right</em>; a numeric {@code MOVE} truncates on the
- * <em>left</em>; and a signed zoned field carries its sign as an overpunch in its trailing byte,
- * consuming no byte of its own. Each is asserted in both directions, because a helper that got the
- * direction wrong would still produce a plausible-looking record.
- *
- * <p>Every test names its charset explicitly. Nothing here consults a platform default, and the
- * EBCDIC cases exist precisely to prove that the pad bytes follow the code page rather than a
- * hard-coded {@code 0x20}.
- *
- * <p>{@code review_rules} returns exactly one line - "No user rules provided." - so no user rule
- * governs this file.
+ * Tests for {@link FixedWidthCodec} - the layer that gives a positioned byte span its {@code PICTURE}
+ * meaning.
  */
 @DisplayName("FixedWidthCodec - PICTURE semantics over a positioned byte span")
 class FixedWidthCodecPictureSpanTest {
-
-    /** The authoritative code page for this migration's fixtures. */
     private static final Charset ASCII = StandardCharsets.US_ASCII;
 
-    /** The EBCDIC code page of the binary reference datasets. */
     private static final Charset EBCDIC = Charset.forName("IBM037");
 
-    /** The codec under test, over the ASCII code page. */
     private final FixedWidthCodec codec = new FixedWidthCodec(ASCII);
 
-    /**
-     * A three-span layout exercising all three {@link PictureKind}s that carry data, plus a
-     * {@code FILLER}: {@code NAME X(5)}, {@code COUNT 9(3)}, {@code AMOUNT S9(3)V99} and a
-     * two-byte {@code FILLER}.
-     *
-     * @return the layout, 15 bytes in total
-     */
     private static RecordLayout mixedLayout() {
         return RecordLayout.of(15,
                 FieldSpan.alphanumeric("NAME", 0, 5),
@@ -65,7 +41,6 @@ class FixedWidthCodecPictureSpanTest {
     @Nested
     @DisplayName("Construction names its charset and rejects a multi-byte one")
     class Construction {
-
         @Test
         @DisplayName("A single-byte charset is accepted and exposed")
         void aSingleByteCharsetIsAccepted() {
@@ -91,7 +66,6 @@ class FixedWidthCodecPictureSpanTest {
     @Nested
     @DisplayName("PIC X(n) - left justified, padded and truncated on the RIGHT")
     class Alphanumeric {
-
         @ParameterizedTest
         @CsvSource({
             "ABCD,   4, ABCD",
@@ -106,11 +80,6 @@ class FixedWidthCodecPictureSpanTest {
             assertThat(this.outer().movePicX(source, targetLength)).isEqualTo(expected);
         }
 
-        /**
-         * The enclosing test's codec.
-         *
-         * @return the codec under test
-         */
         private FixedWidthCodec outer() {
             return FixedWidthCodecPictureSpanTest.this.codec;
         }
@@ -175,7 +144,6 @@ class FixedWidthCodecPictureSpanTest {
     @Nested
     @DisplayName("PIC 9(n) - right justified, zero padded and truncated on the LEFT")
     class UnsignedNumeric {
-
         @ParameterizedTest
         @CsvSource({
             "1234, 4, 1234",
@@ -301,7 +269,6 @@ class FixedWidthCodecPictureSpanTest {
     @Nested
     @DisplayName("PIC S9(p)V(s) - the sign is an overpunch in the trailing byte")
     class SignedScaled {
-
         @ParameterizedTest
         @CsvSource({
             "0.00,     '00000{'",
@@ -311,7 +278,6 @@ class FixedWidthCodecPictureSpanTest {
             "-0.01,    '00000J'",
             "999.99,   '09999I'",
             "-999.99,  '09999R'",
-            // Exactly p + s significant digits, so no leading zero pad is added at all.
             "9999.99,  '99999I'",
             "-9999.99, '99999R'"
         })
@@ -484,7 +450,6 @@ class FixedWidthCodecPictureSpanTest {
     @Nested
     @DisplayName("A declared VALUE is emitted; otherwise the kind's pad byte is")
     class DeclaredValues {
-
         @Test
         @DisplayName("A FILLER carrying a literal emits the literal, not spaces")
         void aFillerWithALiteralEmitsIt() {
@@ -529,7 +494,6 @@ class FixedWidthCodecPictureSpanTest {
     @Nested
     @DisplayName("Padding a short row - the cardxref 36-to-50 case (gate G16)")
     class Padding {
-
         @Test
         @DisplayName("A short byte row is widened with the code page's own space byte")
         void aShortByteRowIsWidened() {
@@ -602,7 +566,6 @@ class FixedWidthCodecPictureSpanTest {
     @Nested
     @DisplayName("STRING ... DELIMITED BY SIZE")
     class StringDelimitedBySize {
-
         @Test
         @DisplayName("Every operand contributes its full declared width, padding included")
         void everyOperandContributesItsFullWidth() {
@@ -684,7 +647,6 @@ class FixedWidthCodecPictureSpanTest {
     @Nested
     @DisplayName("Whole-record serialise, rewrite and deserialise")
     class WholeRecord {
-
         @Test
         @DisplayName("newRecord initialises every span from the layout, FILLER included")
         void newRecordInitialisesEverySpan() {
@@ -798,7 +760,6 @@ class FixedWidthCodecPictureSpanTest {
     @Nested
     @DisplayName("Wrapping stored bytes")
     class Wrapping {
-
         @Test
         @DisplayName("Bytes of exactly the declared width wrap")
         void bytesOfTheDeclaredWidthWrap() {
@@ -844,7 +805,6 @@ class FixedWidthCodecPictureSpanTest {
     @Nested
     @DisplayName("A signed image supplied as text is padded and validated, never truncated")
     class SignedImagePadding {
-
         @Test
         @DisplayName("A short signed image is zero padded on the left")
         void aShortSignedImageIsZeroPadded() {
@@ -893,7 +853,6 @@ class FixedWidthCodecPictureSpanTest {
     @Nested
     @DisplayName("The charset is honoured, not assumed")
     class CharsetIsHonoured {
-
         @Test
         @DisplayName("The same layout yields different pad bytes under the two code pages")
         void theSameLayoutYieldsDifferentPadBytes() {

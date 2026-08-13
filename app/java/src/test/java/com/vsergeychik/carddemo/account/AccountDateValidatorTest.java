@@ -45,193 +45,62 @@ import org.springframework.stereotype.Component;
 /**
  * Parity tests for {@link AccountDateValidator}, the translation of {@code app/cpy/CSUTLDPY.cpy} and
  * {@code app/cpy/CSUTLDWY.cpy}.
- *
- * <p>This engine is almost entirely branches: 21 {@code 88}-level condition names, eleven guarded
- * rejection paths, a leap-year division with two divisors, and one deliberately preserved
- * fall-through defect. The suite is organised around what can actually go wrong:
- *
- * <ol>
- *   <li>{@link Provenance} re-reads the two copybooks and {@code app/cbl/CSUTLDTC.cbl} at test time
- *       and proves the things the translation asserts about them: every message literal verbatim, the
- *       eighty-byte span arithmetic, the linkage widths that justify the 8&rarr;10 widening, the
- *       absence of {@code ROUNDED}, and - the important one - the physical order of the guards in
- *       {@code EDIT-MONTH} and {@code EDIT-DAY}, which are the reverse of each other.</li>
- *   <li>{@link FallThrough} pins the L323/L327 defect. If a future change "tidies" it, this fails.</li>
- *   <li>{@link EditYear}, {@link EditMonth}, {@link EditDay} and {@link DayMonthYear} drive every
- *       guard of every paragraph from both sides, including the guard-order asymmetry that makes
- *       {@code MM = '5 '} a rejection and {@code DD = '5 '} an acceptance.</li>
- *   <li>{@link LanguageEnvironment} drives the {@code CSUTLDTC} call and asserts the eighty-byte
- *       result through this class's own offsets, which is what proves the two declarations of that
- *       area agree.</li>
- *   <li>{@link DateOfBirth} pins the strict comparison - today is rejected - and the
- *       {@code INTEGER-OF-DATE} epoch.</li>
- *   <li>{@link Chain} drives the whole range the way {@code COACTUPC} does and pins the two things a
- *       naive per-paragraph suite cannot see: that a year error does <em>not</em> suppress the month
- *       and day edits, and that a failure before {@code EDIT-DAY-MONTH-YEAR}'s gate means
- *       {@code CSUTLDTC} is never called at all.</li>
- *   <li>{@link Arithmetic} gives every arithmetic site of the copybook its own assertion, and
- *       {@link Redefines} round-trips all nine {@code REDEFINES} pairs of {@code CSUTLDWY}.</li>
- *   <li>{@link FlagModel}, {@link Intrinsics} and {@link Contracts} cover the state model, the
- *       hand-written COBOL intrinsics and the null and wiring contracts.</li>
- * </ol>
- *
- * <h2>Provenance of the expectations</h2>
- *
- * <p>No COBOL execution baseline exists in this environment - eight blockers are recorded in the plan
- * and independently corroborated - so <strong>every expectation below is derived statically</strong>
- * from {@code app/cpy/CSUTLDPY.cpy}, {@code app/cpy/CSUTLDWY.cpy}, {@code app/cbl/COACTUPC.cbl} and
- * {@code app/cbl/CSUTLDTC.cbl}. Each block cites the line it came from, and {@link Provenance} re-reads
- * those four files at test time so a citation cannot rot silently. The four reference files are read
- * only; nothing in this suite writes to {@code app/cpy} or {@code app/cbl}.
- *
- * <h2>Two corrections to the plan, documented rather than quietly followed</h2>
- *
- * <ol>
- *   <li><strong>There is a fifth {@code CALL 'CSUTLDTC'} site, and it is this one.</strong> The plan's
- *       call-site census lists four, all in programs: {@code COTRN02C:L393} and {@code L413}, and
- *       {@code CORPT00C:L392} and {@code L412}. It misses
- *       {@code app/cpy/CSUTLDPY.cpy:L293}, because that census scanned {@code app/cbl} and the fifth
- *       site lives in a <em>copybook</em>. {@code CSUTLDPY}'s only consumer is {@code COACTUPC}, which
- *       is why {@link AccountDateValidator} injects {@link DateUtilityJob} at all - and why the
- *       collaborator is mocked here rather than ignored. {@link Provenance} asserts the line number.</li>
- *   <li><strong>The "zero {@code DIVIDE} verbs" census is a {@code app/cbl}-only census.</strong> The
- *       plan records no {@code DIVIDE} anywhere, and that holds for the twenty-eight programs: the one
- *       apparent match, {@code COACTUPC:L154}, is the field name {@code WS-DIVIDEND}. But
- *       {@code CSUTLDPY:L251-L254} contains a genuine
- *       {@code DIVIDE ... GIVING ... REMAINDER} - the leap-year test - and copybook-resident arithmetic
- *       was never scanned. That statement, plus two {@code COMPUTE ... FUNCTION INTEGER-OF-DATE} and
- *       two {@code COMPUTE ... FUNCTION NUMVAL}, are five arithmetic sites belonging to this file, and
- *       {@link Arithmetic} asserts each one. The correction is recorded here rather than absorbed.</li>
- * </ol>
- *
- * <h2>Governing rules</h2>
- *
- * <p><strong>No user-specified rules were provided for this project</strong> - the rules document is
- * the single line "No user rules provided." Their absence is not licence to lower the bar, so this
- * suite is held to the plan's enterprise-practice substitutes instead: an exact and closed test
- * dependency set (JUnit Jupiter, Mockito and AssertJ only, with no Spring container anywhere in this
- * file), behaviour preserved including the {@link FallThrough} defect, determinism through an injected
- * fixed {@link Clock} rather than the wall clock, no wildcard imports, no mutable static state, nothing
- * disabled or deferred, and a copybook citation on every expectation.
  */
 @DisplayName("AccountDateValidator - CSUTLDPY/CSUTLDWY date-edit engine")
 class AccountDateValidatorTest {
-
-    /** The procedure copybook this class translates. */
     private static final String PROCEDURE_COPYBOOK = "app/cpy/CSUTLDPY.cpy";
 
-    /** The working-storage copybook this class models. */
     private static final String WORKING_COPYBOOK = "app/cpy/CSUTLDWY.cpy";
 
-    /** The subprogram {@code EDIT-DATE-LE} calls, whose linkage widths differ from the arguments. */
     private static final String CALLED_SUBPROGRAM = "app/cbl/CSUTLDTC.cbl";
 
-    /** The only program that copies either copybook, and therefore the only caller of this engine. */
     private static final String CONSUMING_PROGRAM = "app/cbl/COACTUPC.cbl";
 
-    /** A fixed instant so that {@code FUNCTION CURRENT-DATE} is assertable: 19 July 2022, 10:15:30. */
     private static final Instant FIXED_INSTANT = Instant.parse("2022-07-19T10:15:30Z");
 
-    /** The clock every date-of-birth test reads. */
     private static final Clock FIXED_CLOCK = Clock.fixed(FIXED_INSTANT, ZoneOffset.UTC);
 
-    /** Today, as the fixed clock reports it, in {@code 9(8)} form. */
     private static final String TODAY = "20220719";
 
-    /** Eight {@code LOW-VALUE} bytes: what CICS delivers for a map field never transmitted. */
     private static final String EIGHT_LOW_VALUES = "\u0000".repeat(8);
 
-    /** Eight spaces: what a cleared screen field delivers. */
     private static final String EIGHT_SPACES = " ".repeat(8);
 
-    /** The four labels {@code COACTUPC} moves into {@code WS-EDIT-VARIABLE-NAME} before this range. */
     private static final String OPEN_DATE = "Open Date";
 
-    /** {@code app/cbl/COACTUPC.cbl:L1490}. */
     private static final String EXPIRY_DATE = "Expiry Date";
 
-    /** {@code app/cbl/COACTUPC.cbl:L1503}. */
     private static final String REISSUE_DATE = "Reissue Date";
 
-    /** {@code app/cbl/COACTUPC.cbl:L1533}. */
     private static final String DATE_OF_BIRTH = "Date of Birth";
 
-    /** A date every earlier edit accepts, so the range reaches {@code EDIT-DATE-LE}. */
     private static final String GOOD_DATE = "20220719";
 
-    /**
-     * 32 July 2022 - a genuine {@code CEEDAYS} {@code FC-BAD-DATE-VALUE}: severity 3, message 2508.
-     * Used to obtain a real eighty-byte rejection from the real service.
-     */
     private static final String BAD_DATE_VALUE_DATE = "20220732";
 
-    /**
-     * 18 July 1500 precedes the Lillian epoch of 15 October 1582, so {@code CEEDAYS} reports
-     * {@code FC-UNSUPP-RANGE}: severity 3, <strong>message 2513</strong>.
-     */
     private static final String UNSUPPORTED_RANGE_DATE = "15000718";
 
-    /** The message number {@code COTRN02C} and {@code CORPT00C} tolerate and {@code CSUTLDPY} does not. */
     private static final String TOLERATED_ELSEWHERE_MESSAGE_NUMBER = "2513";
 
-    // The four reference files, read once and held immutably. They are static and FINAL, and the lists
-    // are unmodifiable copies, because "no mutable static state" (practice B9) binds this suite as much
-    // as it binds the code under test: a @BeforeAll that assigned a mutable static field would let one
-    // test perturb what every later test reads its expectations from.
-
-    /** {@code app/cpy/CSUTLDPY.cpy}, the procedure copybook this class translates. */
     private static final List<String> PROCEDURE_LINES = readReference(PROCEDURE_COPYBOOK);
 
-    /** {@code app/cpy/CSUTLDWY.cpy}, the working-storage copybook it models. */
     private static final List<String> WORKING_LINES = readReference(WORKING_COPYBOOK);
 
-    /** {@code app/cbl/CSUTLDTC.cbl}, the subprogram {@code EDIT-DATE-LE} calls. */
     private static final List<String> SUBPROGRAM_LINES = readReference(CALLED_SUBPROGRAM);
 
-    /** {@code app/cbl/COACTUPC.cbl}, the sole consumer. */
     private static final List<String> CONSUMER_LINES = readReference(CONSUMING_PROGRAM);
 
-    /**
-     * This suite's own source, so the practices that govern it can be asserted rather than trusted.
-     * Read exactly like the four reference files, and equally immutable.
-     */
     private static final List<String> SUITE_LINES = readReference(
             "app/java/src/test/java/com/vsergeychik/carddemo/account/AccountDateValidatorTest.java");
 
-    /**
-     * The {@code CSUTLDTC} collaborator, mocked.
-     *
-     * <p>A mock rather than the real service for two reasons the suite depends on. First, the
-     * {@code CALL} at {@code CSUTLDPY:L293} has to be <em>observable</em>: {@link Chain} proves that a
-     * year, month, day or combination failure means the call never happens at all, and only a recorded
-     * interaction can prove a negative. Second, {@code EDIT-DATE-LE} exists precisely for "some one
-     * [who] managed to enter a bad date that passsed all the edits above" (L286-L287), a case the
-     * earlier edits make unreachable from a screen - so the rejection arm can only be driven by
-     * stubbing the collaborator.
-     *
-     * <p>Its default answer delegates to a real {@link DateUtilityJob}, so unless a test says otherwise
-     * the genuine eighty bytes flow through and the byte-level assertions in {@link LanguageEnvironment}
-     * are assertions about real data rather than about a fixture.
-     */
     private DateUtilityJob dateUtility;
 
-    /** The unit under test, with the mocked {@code CSUTLDTC} and the fixed clock. */
     private AccountDateValidator validator;
 
-    /**
-     * Reads one reference file, relative to the repository root, as an unmodifiable list of lines.
-     *
-     * @param repositoryRelativePath the file's path from the repository root
-     * @return its lines, in order, immutable
-     */
     private static List<String> readReference(String repositoryRelativePath) {
         return List.copyOf(readLines(repositoryRoot().resolve(repositoryRelativePath)));
     }
 
-    /**
-     * Builds a fresh mock and a fresh subject for every test, so no state and no recorded interaction
-     * can leak between them.
-     */
     @BeforeEach
     void createValidator() {
         dateUtility = Mockito.mock(DateUtilityJob.class);
@@ -242,41 +111,19 @@ class AccountDateValidatorTest {
                 dateUtility, FIXED_CLOCK);
     }
 
-    /**
-     * @return a real {@code CSUTLDTC}, constructed per call so the suite holds no shared state
-     */
     private static DateUtilityJob realService() {
         return new DateUtilityJob();
     }
 
-    /**
-     * A genuine {@code CSUTLDTC} outcome, produced by the real service rather than assembled by hand,
-     * so its eighty bytes, severity, message number and result text are all real.
-     *
-     * @param lsDate the date to hand the service
-     * @return the outcome it reports
-     */
     private static DateValidationResult outcomeFor(String lsDate) {
         return realService().validateDate(lsDate, AccountDateValidator.WS_DATE_FORMAT_VALUE);
     }
 
-    /**
-     * Stubs the mocked {@code CSUTLDTC} to report one outcome whatever date it is handed - the only way
-     * to reach {@code EDIT-DATE-LE}'s rejection arm, which no screen input can reach.
-     *
-     * @param outcome the outcome to report
-     */
     private void stubCsutldtc(DateValidationResult outcome) {
         Mockito.when(dateUtility.validateDate(Mockito.anyString(), Mockito.anyString()))
                 .thenReturn(outcome);
     }
 
-    /**
-     * Locates the repository root by walking up from the working directory until the procedure
-     * copybook is found, so the suite runs from the module directory, the repository root or an IDE.
-     *
-     * @return the repository root
-     */
     private static Path repositoryRoot() {
         Path candidate = Path.of("").toAbsolutePath();
         while (candidate != null) {
@@ -290,10 +137,6 @@ class AccountDateValidatorTest {
                 + "; the reference copybooks are the only oracle these tests have");
     }
 
-    /**
-     * @param path the file to read
-     * @return its lines, in order
-     */
     private static List<String> readLines(Path path) {
         try {
             return Files.readAllLines(path, StandardCharsets.UTF_8);
@@ -302,20 +145,10 @@ class AccountDateValidatorTest {
         }
     }
 
-    /**
-     * @param source     the file's lines
-     * @param lineNumber the one-based COBOL line number
-     * @return that line
-     */
     private static String line(List<String> source, int lineNumber) {
         return source.get(lineNumber - 1);
     }
 
-    /**
-     * @param source   the file's lines
-     * @param fragment the text to find
-     * @return the one-based number of the first line containing it
-     */
     private static int lineNumberOf(List<String> source, String fragment) {
         for (int index = 0; index < source.size(); index++) {
             if (source.get(index).contains(fragment)) {
@@ -325,16 +158,6 @@ class AccountDateValidatorTest {
         throw new IllegalStateException("No line of the copybook contains '" + fragment + "'");
     }
 
-    /**
-     * Builds a state ready for the range perform, exactly as a {@code COACTUPC} call site does: the
-     * field name first ({@code MOVE '<label>' TO WS-EDIT-VARIABLE-NAME}), then the eight date
-     * characters ({@code MOVE ACUP-NEW-<x>-DATE TO WS-EDIT-DATE-CCYYMMDD}) - see
-     * {@code app/cbl/COACTUPC.cbl:L1478-L1479}.
-     *
-     * @param date      the eight characters to validate
-     * @param fieldName the value of {@code WS-EDIT-VARIABLE-NAME}
-     * @return the prepared state
-     */
     private EditDateState given(String date, String fieldName) {
         EditDateState state = validator.newState();
         state.setEditVariableName(fieldName);
@@ -342,36 +165,19 @@ class AccountDateValidatorTest {
         return state;
     }
 
-    /**
-     * Runs the whole paragraph range over a date, under the field name {@code 'Open Date'}.
-     *
-     * @param date the eight characters to validate
-     * @return the state after the range
-     */
     private EditDateState validate(String date) {
         EditDateState state = given(date, OPEN_DATE);
         validator.editDateCcyymmddThruExit(state);
         return state;
     }
 
-    /**
-     * The three flag bytes with {@code LOW-VALUE} rendered visibly, for readable assertions.
-     *
-     * @param state the state to render
-     * @return the flag group as {@code _}, {@code 0} and {@code B}
-     */
     private static String flags(EditDateState state) {
         return state.flagsImage().replace('\u0000', '_');
     }
 
-    // =============================================================================================
-    // 1. Provenance: what the translation asserts about the copybooks, re-verified from the files.
-    // =============================================================================================
-
     @Nested
     @DisplayName("Provenance - re-read from app/cpy and app/cbl at test time")
     class Provenance {
-
         @Test
         @DisplayName("every message literal is byte-for-byte a literal of CSUTLDPY")
         void messageLiteralsAreVerbatim() {
@@ -392,10 +198,6 @@ class AccountDateValidatorTest {
             assertLiteralDeclaredAt(AccountDateValidator.MSG_CANNOT_BE_IN_THE_FUTURE, 363);
         }
 
-        /**
-         * @param literal    the Java constant
-         * @param lineNumber the copybook line that must declare it, single-quoted
-         */
         private void assertLiteralDeclaredAt(String literal, int lineNumber) {
             assertThat(line(PROCEDURE_LINES, lineNumber).trim())
                     .as("app/cpy/CSUTLDPY.cpy:L%d must declare '%s' exactly", lineNumber, literal)
@@ -516,11 +318,6 @@ class AccountDateValidatorTest {
                     .contains("FUNCTION FIND-DURATION");
         }
 
-        /**
-         * The census correction recorded in the class comment, asserted rather than asserted-about.
-         * The plan counts four {@code CALL 'CSUTLDTC'} sites, all in {@code app/cbl}; this is the
-         * fifth, and it is the reason {@link AccountDateValidator} has a {@link DateUtilityJob} at all.
-         */
         @Test
         @DisplayName("L293 is a fifth CALL 'CSUTLDTC' site, in a copybook, that the plan's census misses")
         void theCopybookHoldsAFifthCallSite() {
@@ -539,10 +336,6 @@ class AccountDateValidatorTest {
                     .isOne();
         }
 
-        /**
-         * The genuine {@code DIVIDE} verb of the second census correction. The plan reports none in the
-         * codebase; none appears in the twenty-eight programs, but this copybook has one.
-         */
         @Test
         @DisplayName("L251-L254 is a real DIVIDE ... GIVING ... REMAINDER, which the plan's census omits")
         void theCopybookHoldsTheOnlyDivideVerb() {
@@ -555,12 +348,6 @@ class AccountDateValidatorTest {
                     .contains("IF WS-REMAINDER = ZEROES");
         }
 
-        /**
-         * The four labels a caller supplies, and the five performs that consume them. Note that the
-         * fifth perform is written {@code PERFORM  EDIT-DATE-OF-BIRTH} with two spaces, so a search for
-         * {@code 'PERFORM EDIT-DATE'} finds only four of the five - which is why the line numbers are
-         * asserted individually here.
-         */
         @Test
         @DisplayName("COACTUPC supplies exactly these four labels, and performs the range five times")
         void theConsumerSuppliesFourLabelsAndFivePerforms() {
@@ -589,14 +376,6 @@ class AccountDateValidatorTest {
                     .isEqualTo("THRU  EDIT-DATE-OF-BIRTH-EXIT");
         }
 
-        /**
-         * The two {@code COPY} statements that bring this engine into its only consumer - and a trap
-         * worth pinning. {@code COPY} appears in <strong>both</strong> the quoted and the bare form in
-         * this codebase, and it appears in both forms for these two copybooks specifically:
-         * {@code COPY 'CSUTLDWY'.} at {@code COACTUPC:L166} is quoted, while {@code COPY CSUTLDPY} at
-         * {@code L4232} is not. A scan that handles only one form under-reports the consumer set, which
-         * is the same class of mistake as the two census gaps in the class comment.
-         */
         @Test
         @DisplayName("COACTUPC is the only consumer of either copybook, and copies them in both forms")
         void theConsumerIsTheOnlyOne() {
@@ -628,22 +407,9 @@ class AccountDateValidatorTest {
         }
     }
 
-    // =============================================================================================
-    // 2. The L323/L327 fall-through. This is the highest-value test in the suite.
-    // =============================================================================================
-
     @Nested
     @DisplayName("The L323/L327 fall-through - preserved, not corrected")
     class FallThrough {
-
-        /**
-         * {@code EDIT-DATE-LE-EXIT} (app/cpy/CSUTLDPY.cpy L323-L328) holds a no-op {@code EXIT} and
-         * then, as a separate sentence at L327, {@code SET WS-EDIT-DATE-IS-VALID TO TRUE}. Because
-         * the caller performs the paragraph <em>range</em>
-         * ({@code COACTUPC:L1480-L1481}), that set runs on every path into the paragraph - the
-         * {@code GO TO EDIT-DATE-LE-EXIT} at L315 included. So a date the Language Environment
-         * rejects comes back with all three flags reading {@code ISVALID}.
-         */
         @Test
         @DisplayName("a rejected date comes back with all three flags ISVALID - the defect")
         void theGroupSetAtL327DiscardsTheNotOkFlags() {
@@ -697,14 +463,9 @@ class AccountDateValidatorTest {
         }
     }
 
-    // =============================================================================================
-    // 3. The flag model - CSUTLDWY L43-L57 and COACTUPC L170-L174.
-    // =============================================================================================
-
     @Nested
     @DisplayName("The flag model - EditFlag, InputFlag and the two group conditions")
     class FlagModel {
-
         @Test
         @DisplayName("each flag state carries the byte its 88 level declares")
         void theFlagBytesAreTheDeclaredValues() {
@@ -869,14 +630,9 @@ class AccountDateValidatorTest {
         }
     }
 
-    // =============================================================================================
-    // 4. EDIT-YEAR-CCYY - app/cpy/CSUTLDPY.cpy L25-L87.
-    // =============================================================================================
-
     @Nested
     @DisplayName("EDIT-YEAR-CCYY - L25-L87")
     class EditYear {
-
         @Test
         @DisplayName("L30: LOW-VALUES is not supplied, and the flag is BLANK rather than NOT-OK")
         void lowValuesIsBlank() {
@@ -981,14 +737,9 @@ class AccountDateValidatorTest {
         }
     }
 
-    // =============================================================================================
-    // 5. EDIT-MONTH - app/cpy/CSUTLDPY.cpy L91-L144. Range before numeric.
-    // =============================================================================================
-
     @Nested
     @DisplayName("EDIT-MONTH - L91-L144, range test first")
     class EditMonth {
-
         @Test
         @DisplayName("L94: a blank month is BLANK, not NOT-OK")
         void aBlankMonthIsBlank() {
@@ -1043,9 +794,6 @@ class AccountDateValidatorTest {
         @Test
         @DisplayName("L126: a month that passes the range but not TEST-NUMVAL is still rejected")
         void theNumericTestCatchesWhatTheRangeTestLetThrough() {
-            // '0a' reads as zoned 01 - the low nibble of 'a' (0x61) is 1 - so the range test at L111
-            // passes, and only FUNCTION TEST-NUMVAL at L126 rejects it. Both paths carry the same
-            // literal, which is why the message alone cannot tell them apart.
             EditDateState state = given("20220a15", OPEN_DATE);
             assertThat(state.wsValidMonth()).isTrue();
 
@@ -1113,14 +861,9 @@ class AccountDateValidatorTest {
         }
     }
 
-    // =============================================================================================
-    // 6. EDIT-DAY - app/cpy/CSUTLDPY.cpy L150-L204. Numeric before range - the reverse of EDIT-MONTH.
-    // =============================================================================================
-
     @Nested
     @DisplayName("EDIT-DAY - L150-L204, numeric test first")
     class EditDay {
-
         @Test
         @DisplayName("L152: the paragraph opens ISVALID, unlike the year and month edits")
         void theParagraphOpensValid() {
@@ -1259,14 +1002,9 @@ class AccountDateValidatorTest {
         }
     }
 
-    // =============================================================================================
-    // 7. EDIT-DAY-MONTH-YEAR - app/cpy/CSUTLDPY.cpy L209-L279.
-    // =============================================================================================
-
     @Nested
     @DisplayName("EDIT-DAY-MONTH-YEAR - L209-L279, the combination checks")
     class DayMonthYear {
-
         @ParameterizedTest
         @ValueSource(strings = {"01", "03", "05", "07", "08", "10", "12"})
         @DisplayName("L213: the seven 31-day months accept day 31")
@@ -1403,14 +1141,9 @@ class AccountDateValidatorTest {
         }
     }
 
-    // =============================================================================================
-    // 8. EDIT-DATE-LE - app/cpy/CSUTLDPY.cpy L284-L321, and the 80-byte shared area.
-    // =============================================================================================
-
     @Nested
     @DisplayName("EDIT-DATE-LE - L284-L321, the CSUTLDTC call")
     class LanguageEnvironment {
-
         @Test
         @DisplayName("L290-L291: INITIALIZE blanks the named fields and keeps the three literals")
         void initializeLeavesTheFillersInPlace() {
@@ -1533,15 +1266,6 @@ class AccountDateValidatorTest {
                             + " ".repeat(75)).substring(0, 75));
         }
 
-        /**
-         * Message 2513, {@code FC-UNSUPP-RANGE}, is the one error the <em>program</em> callers wave
-         * through: {@code COTRN02C:L400} and {@code L420} and {@code CORPT00C:L399} and {@code L419} all
-         * read {@code IF CSUTLDTC-RESULT-MSG-NUM NOT = '2513'} before rejecting. This copybook does no
-         * such thing - {@code CSUTLDPY:L298} is {@code IF WS-SEVERITY-N = 0}, a numeric test of the
-         * severity that knows nothing about message numbers - so 2513 is rejected here exactly like any
-         * other error. The two consumer families genuinely disagree, and the disagreement is preserved:
-         * adding the 2513 exception to this engine would be a behaviour change in {@code COACTUPC}.
-         */
         @Test
         @DisplayName("L298: message 2513 is rejected here, even though COTRN02C and CORPT00C accept it")
         void messageTwoFiveOneThreeIsRejectedByTheCopybookCallSite() {
@@ -1631,31 +1355,12 @@ class AccountDateValidatorTest {
         }
     }
 
-    // =============================================================================================
-    // 8b. The range as a whole. A per-paragraph suite cannot see either of these two properties,
-    //     and getting the early-exit granularity wrong is the likeliest way to produce a Java form
-    //     that passes a naive test and fails parity.
-    // =============================================================================================
-
     @Nested
     @DisplayName("The range perform - fall-through granularity and the skipped CSUTLDTC call")
     class Chain {
-
-        /**
-         * {@code GO TO EDIT-YEAR-CCYY-EXIT} (L42, L58, L83) targets a paragraph whose only statement is
-         * a bare {@code EXIT}, which IBM COBOL treats as {@code CONTINUE}. Under a <em>range</em>
-         * perform that is not a return: control falls out of {@code EDIT-YEAR-CCYY-EXIT} straight into
-         * {@code EDIT-MONTH} at L91. So a bad year costs the year flag and nothing else - the month and
-         * day are still edited, and their verdicts still reach the caller.
-         */
         @Test
         @DisplayName("a year error does NOT suppress the month and day edits - they both still run")
         void aYearErrorLeavesTheMonthAndDayEditsToRun() {
-            // Year blank, month 13 (out of range), day 45 (out of range): if the year error stopped the
-            // range, the month and day flags would still read '0' from L19's SET WS-EDIT-DATE-IS-INVALID
-            // and nothing would distinguish "not edited" from "edited and rejected". The message does:
-            // it is the year's, which proves the year ran first, and the flags below prove the other two
-            // ran after it.
             EditDateState state = validate("    1345");
 
             assertThat(state.yearFlag())
@@ -1701,14 +1406,6 @@ class AccountDateValidatorTest {
                     .isEqualTo("Open Date : Month must be supplied.");
         }
 
-        /**
-         * {@code EDIT-DAY-MONTH-YEAR} ends at L274 with
-         * {@code IF WS-EDIT-DATE-IS-VALID CONTINUE ELSE GO TO EDIT-DATE-CCYYMMDD-EXIT}, a group test
-         * over all three flag bytes. Any earlier stage that left a {@code '0'} or a {@code 'B'} leaves
-         * the range there, so {@code EDIT-DATE-LE} - and therefore the {@code CALL 'CSUTLDTC'} at L293 -
-         * never runs. Only a recorded interaction can prove that negative, which is the reason the
-         * collaborator is a mock.
-         */
         @ParameterizedTest
         @CsvSource(delimiter = '|', value = {
             "'    0715'|a blank year|B__",
@@ -1768,8 +1465,6 @@ class AccountDateValidatorTest {
         @Test
         @DisplayName("first error wins across paragraphs: a date failing twice carries one message")
         void theFirstErrorClaimsTheMessageSlot() {
-            // The year is blank AND the month is out of range. Both guards run and both set their flag,
-            // but IF WS-RETURN-MSG-OFF is only true for the first, so exactly one text lands.
             EditDateState state = validate("    1315");
 
             assertThat(flags(state)).isEqualTo("B0_");
@@ -1798,31 +1493,9 @@ class AccountDateValidatorTest {
         }
     }
 
-    // =============================================================================================
-    // 8c. Every arithmetic site of the two copybooks, one assertion each.
-    //
-    //     The plan's arithmetic census reports zero DIVIDE verbs. That is true of app/cbl - the one
-    //     apparent match, COACTUPC:L154, is the field name WS-DIVIDEND - but the census never scanned
-    //     app/cpy, and CSUTLDPY:L251-L254 holds a genuine DIVIDE ... GIVING ... REMAINDER. With the
-    //     two COMPUTE ... FUNCTION INTEGER-OF-DATE at L345-L348 and the two
-    //     COMPUTE ... FUNCTION NUMVAL at L127-L129 and L171-L173, this file owns five arithmetic
-    //     sites. Each is asserted below. The correction is documented, not quietly absorbed.
-    // =============================================================================================
-
     @Nested
     @DisplayName("Arithmetic - the DIVIDE the census missed, and the four COMPUTEs")
     class Arithmetic {
-
-        /**
-         * Site 1 of 5: {@code DIVIDE WS-EDIT-DATE-CCYY-N BY WS-DIV-BY GIVING WS-DIVIDEND REMAINDER
-         * WS-REMAINDER} - CSUTLDPY L251-L254, reached only from L243 when the month is February and the
-         * day is 29.
-         *
-         * <p>All three operands are {@code COACTUPC}'s {@code PIC S9(4) COMP-3} work variables, at
-         * L151, L154 and L157. Both results are asserted, not just the remainder the verdict reads,
-         * because a quotient that is wrong while the remainder happens to be right is a real defect that
-         * only shows up on a different year.
-         */
         @ParameterizedTest
         @CsvSource({"2000, 400, 5, 0, true", "1900, 400, 4, 300, false", "2024, 4, 506, 0, true",
                 "2023, 4, 505, 3, false", "1996, 4, 499, 0, true", "1999, 4, 499, 3, false",
@@ -1858,8 +1531,6 @@ class AccountDateValidatorTest {
         @Test
         @DisplayName("L251: the division is integer division of COMP-3 operands, so nothing rounds")
         void theDivideIsExactAndNeverRounds() {
-            // 1900 / 400 is 4.75. A rounding division would give 5 and a remainder of 0, which would
-            // make 1900 a leap year. It is not, and the assertion below is the reason.
             EditDateState state = given("19000229", OPEN_DATE);
 
             validator.editDateCcyymmdd(state);
@@ -1874,11 +1545,6 @@ class AccountDateValidatorTest {
             assertThat(state.remainder()).isEqualTo(300);
         }
 
-        /**
-         * Site 2 of 5: {@code COMPUTE WS-EDIT-DATE-MM-N = FUNCTION NUMVAL (WS-EDIT-DATE-MM)} - CSUTLDPY
-         * L127-L129. The receiver is unsigned {@code PIC 9(2)} with no fractional digits and the
-         * statement carries no {@code ROUNDED} phrase, so a fraction truncates and a sign is dropped.
-         */
         @ParameterizedTest
         @CsvSource(delimiter = '|', value = {"' 5'|05", "' 1'|01", "'12'|12", "'09'|09"})
         @DisplayName("L127: COMPUTE MM-N = NUMVAL(MM) rewrites the span as zero-filled digits")
@@ -1892,11 +1558,6 @@ class AccountDateValidatorTest {
             assertThat(state.monthFlag()).isSameAs(EditFlag.ISVALID);
         }
 
-        /**
-         * Site 3 of 5: {@code COMPUTE WS-EDIT-DATE-DD-N = FUNCTION NUMVAL (WS-EDIT-DATE-DD)} - CSUTLDPY
-         * L171-L173. Same store rules, and reachable with more argument shapes than the month's because
-         * {@code TEST-NUMVAL} runs before the range test here.
-         */
         @ParameterizedTest
         @CsvSource(delimiter = '|', value = {"'5 '|05|true", "' 5'|05|true", "'-1'|01|true",
                 "'+7'|07|true", "'.5'|00|false", "'1.9'|01|true", "'-0'|00|false"})
@@ -1916,12 +1577,6 @@ class AccountDateValidatorTest {
                     .isSameAs(accepted ? EditFlag.ISVALID : EditFlag.NOT_OK);
         }
 
-        /**
-         * Sites 4 and 5 of 5: the two {@code COMPUTE ... FUNCTION INTEGER-OF-DATE} at CSUTLDPY L345-L346
-         * and L347-L348. Both receivers are {@code PIC S9(9) BINARY}, and the whole birth-date verdict
-         * is a comparison of their two results, so an epoch that is off by one silently changes the
-         * answer for a birth date of exactly yesterday.
-         */
         @Test
         @DisplayName("L345-L348: both INTEGER-OF-DATE computes land, and their difference is the verdict")
         void bothIntegerOfDateComputesLand() {
@@ -1946,9 +1601,6 @@ class AccountDateValidatorTest {
         @Test
         @DisplayName("no arithmetic site anywhere in this engine uses a binary floating-point type")
         void noArithmeticUsesFloatingPoint() {
-            // FUNCTION NUMVAL is the only site whose result can carry a fraction, and it returns a
-            // BigDecimal so that the fraction is exact. 0.1 + 0.2 is the canonical demonstration that a
-            // double could not have carried it.
             assertThat(AccountDateValidator.numval("0.1").add(AccountDateValidator.numval("0.2")))
                     .isEqualByComparingTo("0.3");
             assertThat(AccountDateValidator.numval("1.005"))
@@ -1958,14 +1610,9 @@ class AccountDateValidatorTest {
         }
     }
 
-    // =============================================================================================
-    // 8d. The nine REDEFINES pairs of app/cpy/CSUTLDWY.cpy: one storage area seen two ways.
-    // =============================================================================================
-
     @Nested
     @DisplayName("REDEFINES - all nine overlays of CSUTLDWY, round-tripped both ways")
     class Redefines {
-
         @Test
         @DisplayName("CSUTLDWY declares exactly nine REDEFINES, and every one is modelled")
         void thereAreExactlyNineOverlays() {
@@ -1991,19 +1638,11 @@ class AccountDateValidatorTest {
             assertThat(line(WORKING_LINES, 67)).contains("WS-MSG-NO-N").contains("REDEFINES");
         }
 
-        /**
-         * Overlays 1 to 6, over the eight bytes of {@code WS-EDIT-DATE-CCYYMMDD}: write through the
-         * alphanumeric view and read the number, then write through the numeric view and read the
-         * characters back. The two views are one storage area, so each direction has to be visible from
-         * the other; and the nested overlays have to agree, because {@code CC} and {@code YY} together
-         * are the same four bytes {@code CCYY} covers.
-         */
         @Test
         @DisplayName("overlays 1-6: the eight-byte area writes through either view and reads through both")
         void theEightByteAreaIsOneStorageAreaSeenTwoWays() {
             EditDateState state = validator.newState();
 
-            // Alphanumeric in, numeric out.
             state.setEditDateCcyymmdd("19850312");
             assertThat(state.ccN()).as("overlay 1, WS-EDIT-DATE-CC-N").isEqualTo(19);
             assertThat(state.yyN()).as("overlay 2, WS-EDIT-DATE-YY-N").isEqualTo(85);
@@ -2013,12 +1652,10 @@ class AccountDateValidatorTest {
             assertThat(state.ccyymmddN()).as("overlay 6, WS-EDIT-DATE-CCYYMMDD-N")
                     .isEqualTo(19850312);
 
-            // The nested overlays view the same four bytes as the wider one.
             assertThat(state.ccN() * 100 + state.yyN()).isEqualTo(state.ccyyN());
             assertThat(state.ccyyN() * 10000L + state.mmN() * 100L + state.ddN())
                     .isEqualTo(state.ccyymmddN());
 
-            // Numeric in, alphanumeric out - through the two overlays that have setters.
             state.setMmN(7);
             state.setDdN(4);
             assertThat(state.mm()).isEqualTo("07");
@@ -2028,7 +1665,6 @@ class AccountDateValidatorTest {
                     .isEqualTo("19850704");
             assertThat(state.ccyymmddN()).isEqualTo(19850704);
 
-            // Character in through a narrower view, and the wider views follow.
             state.setCc("20");
             state.setYy("22");
             assertThat(state.ccyy()).isEqualTo("2022");
@@ -2042,12 +1678,6 @@ class AccountDateValidatorTest {
             assertThat(state.yyN()).isEqualTo(99);
         }
 
-        /**
-         * The case the whole overlay design exists to serve. {@code IS NOT NUMERIC} at L48 tests the
-         * <em>alphanumeric</em> view for digits, while every {@code 88} level is declared on the
-         * <em>numeric</em> view - so a non-numeric span has to be readable through both without
-         * exploding, and the two readings genuinely differ.
-         */
         @Test
         @DisplayName("a non-numeric span reads as characters and as a zoned number, and never throws")
         void anOverlayToleratesNonNumericBytes() {
@@ -2082,10 +1712,6 @@ class AccountDateValidatorTest {
                     .isFalse();
         }
 
-        /**
-         * Overlay 7: {@code WS-CURRENT-DATE-YYYYMMDD-N REDEFINES WS-CURRENT-DATE-YYYYMMDD} - CSUTLDWY
-         * L40-L41. Written as twenty-one characters by L343 and read as a number by L348.
-         */
         @Test
         @DisplayName("overlay 7: the current-date span is written as text and read as a number")
         void theCurrentDateOverlayRoundTrips() {
@@ -2101,13 +1727,6 @@ class AccountDateValidatorTest {
             assertThat(state.currentDateYyyymmdd()).isEqualTo("16010101");
         }
 
-        /**
-         * Overlays 8 and 9: {@code WS-SEVERITY-N REDEFINES WS-SEVERITY} (L62-L63) and
-         * {@code WS-MSG-NO-N REDEFINES WS-MSG-NO} (L67-L68). {@code CSUTLDTC} writes both through the
-         * numeric view (its L123-L124) and this copybook reads the severity through the numeric view at
-         * L298 and the message number through the character view at L311 - so the same four bytes are
-         * genuinely read both ways within one statement's reach of each other.
-         */
         @Test
         @DisplayName("overlays 8-9: severity and message number are read as text and as numbers")
         void theSeverityAndMessageNumberOverlaysRoundTrip() {
@@ -2122,8 +1741,6 @@ class AccountDateValidatorTest {
                     .isEqualTo("2513");
             assertThat(state.wsMsgNoN()).as("overlay 9, numeric view").isEqualTo(2513);
 
-            // The character views are the source of the message text, and the numeric views are the
-            // source of the verdict, so both readings of both spans have to be right at once.
             assertThat(state.returnMessage().trim())
                     .endsWith("Sev code: " + state.wsSeverity()
                             + " Message code: " + state.wsMsgNo());
@@ -2149,14 +1766,9 @@ class AccountDateValidatorTest {
         }
     }
 
-    // =============================================================================================
-    // 9. EDIT-DATE-OF-BIRTH - app/cpy/CSUTLDPY.cpy L341-L368.
-    // =============================================================================================
-
     @Nested
     @DisplayName("EDIT-DATE-OF-BIRTH - L341-L368, the strict comparison")
     class DateOfBirth {
-
         @Test
         @DisplayName("yesterday is accepted")
         void yesterdayIsAccepted() {
@@ -2258,13 +1870,6 @@ class AccountDateValidatorTest {
                     .isFalse();
         }
 
-        /**
-         * Runs the whole range and then, exactly as {@code COACTUPC:L1536-L1543} does, the birth-date
-         * check when and only when the flag group came back {@code ISVALID}.
-         *
-         * @param date the eight characters to validate
-         * @return the state after both performs
-         */
         private EditDateState birthDate(String date) {
             EditDateState state = given(date, DATE_OF_BIRTH);
             validator.editDateCcyymmddThruExit(state);
@@ -2275,14 +1880,9 @@ class AccountDateValidatorTest {
         }
     }
 
-    // =============================================================================================
-    // 10. The hand-written COBOL intrinsics.
-    // =============================================================================================
-
     @Nested
     @DisplayName("The COBOL intrinsics - TRIM, TEST-NUMVAL, NUMVAL, INTEGER-OF-DATE, class tests")
     class Intrinsics {
-
         @ParameterizedTest
         @CsvSource(delimiter = '|', value = {"'Open Date  '|Open Date", "'  Open Date'|Open Date",
                 "'  Open Date  '|Open Date", "'Open Date'|Open Date", "'   '|", "''|",
@@ -2439,14 +2039,9 @@ class AccountDateValidatorTest {
         }
     }
 
-    // =============================================================================================
-    // 11. Contracts: wiring, nulls, moves and the state's remaining accessors.
-    // =============================================================================================
-
     @Nested
     @DisplayName("Contracts - wiring, null handling and the PICTURE move rules")
     class Contracts {
-
         @Test
         @DisplayName("the class is a final @Component whose container constructor is @Autowired")
         void theWiringIsWhatTheContainerNeeds() throws NoSuchMethodException {
@@ -2463,10 +2058,6 @@ class AccountDateValidatorTest {
                             + "exactly one to be marked")
                     .singleElement()
                     .satisfies(annotated -> {
-                        // The marked one must be the Charset form. The DateUtilityJob-only form builds
-                        // a US-ASCII codec, so if the marker ever migrated back to it the container
-                        // would silently stop honouring carddemo.charset.dataset - which is the whole
-                        // defect this asserts against.
                         assertThat(annotated.getParameterTypes())
                                 .containsExactly(Charset.class, DateUtilityJob.class);
                         Qualifier onValidator =
@@ -2475,12 +2066,6 @@ class AccountDateValidatorTest {
                                 .as("three Charset beans exist and none is primary, so the "
                                         + "injection point must name one")
                                 .isNotNull();
-                        // And it must name the SAME bean CSUTLDTC's own injection point names.
-                        // WS-DATE-VALIDATION-RESULT and CSUTLDTC's WS-MESSAGE are one eighty-byte
-                        // area declared twice; if the two components resolved different Charset
-                        // beans, one would write bytes the other could not position. Asserting the
-                        // agreement rather than the literal bean name keeps this test inside its
-                        // declared dependencies and makes it a check on the property that matters.
                         assertThat(onValidator.value())
                                 .isEqualTo(DateUtilityJob.class
                                         .getConstructor(Charset.class)
@@ -2491,14 +2076,6 @@ class AccountDateValidatorTest {
                     });
         }
 
-        /**
-         * Practice B9 - no mutable static state - binds <strong>this suite as well as the code under
-         * test</strong>, so the test class and every one of its nested classes are inspected too. A
-         * {@code @BeforeAll} that assigned a mutable static field would let one test perturb the very
-         * data every later test reads its expectations from, which is why the four reference-file
-         * fields are {@code static final} immutable copies rather than fields filled in a lifecycle
-         * hook.
-         */
         @Test
         @DisplayName("no class in either file holds mutable static state - the suite included")
         void thereIsNoStaticMutableState() {
@@ -2556,10 +2133,6 @@ class AccountDateValidatorTest {
                             .containsAnyOf("carddemo.account.AccountDateValidator",
                                     "carddemo.common.FixedWidth",
                                     "carddemo.util.DateUtilityJob"));
-            // The needles are assembled from fragments rather than written as whole literals, because
-            // this test reads its own source: a literal "@Dis"+"abled" written out in full would be
-            // found by the very scan that looks for it, and the test would report itself. The first
-            // run of this assertion did exactly that, which is a reassuring sign that the scan works.
             String disabledAnnotation = "@Dis" + "abled";
             String deferredMarker = "TO" + "DO";
             String defectMarker = "FIX" + "ME";
@@ -2612,9 +2185,6 @@ class AccountDateValidatorTest {
             assertThatNullPointerException()
                     .isThrownBy(() -> new AccountDateValidator((FixedWidthCodec) null,
                             new DateUtilityJob()));
-            // The container's constructor takes a Charset, so a bare null is ambiguous between the two
-            // two-argument forms and each null path is asserted on its own. The Charset form refuses
-            // before it can build a codec, naming why the injection point is qualified.
             assertThatNullPointerException()
                     .isThrownBy(() -> new AccountDateValidator((Charset) null, new DateUtilityJob()))
                     .withMessageContaining("selected by qualifier");
@@ -2845,31 +2415,11 @@ class AccountDateValidatorTest {
         }
     }
 
-    // =============================================================================================
-    // 12. The injected code page. The container's constructor takes a Charset, so the code page is
-    //     exercised by calling that constructor directly - no Spring context is started anywhere in
-    //     this file, and the annotations the container reads are asserted reflectively in Contracts.
-    // =============================================================================================
-
     @Nested
     @DisplayName("The injected code page - the work area follows the Charset the constructor is given")
     class CodePage {
-
-        /** The EBCDIC code page a deployment whose datasets are EBCDIC selects. */
         private static final String EBCDIC_NAME = "IBM037";
 
-        /**
-         * Builds the validator through the constructor the container uses - the {@link Charset} form -
-         * so the code page under test travels the same path a deployment's would, and hands it a
-         * {@code CSUTLDTC} built on the <em>same</em> code page, because that is what the container
-         * does: {@link DateUtilityJob#DateUtilityJob(Charset)} is also qualified on the dataset
-         * charset bean. The two have to agree, since
-         * {@code WS-DATE-VALIDATION-RESULT} and {@code CSUTLDTC}'s {@code WS-MESSAGE} are one
-         * eighty-byte area declared twice.
-         *
-         * @param charsetName the code page to inject into both collaborators
-         * @return the validator, with a real {@code CSUTLDTC} so the eighty bytes are genuine
-         */
         private AccountDateValidator validatorFor(String charsetName) {
             Charset charset = Charset.forName(charsetName);
             return new AccountDateValidator(charset, new DateUtilityJob(charset));
@@ -2885,10 +2435,6 @@ class AccountDateValidatorTest {
 
             ebcdicValidator.editDateLe(state);
 
-            // WS-DATE-VALIDATION-RESULT and CSUTLDTC's WS-MESSAGE are one eighty-byte area declared
-            // twice, so the whole chain - validator area, injected codec and the CSUTLDTC result it
-            // accepts - has to agree on the code page. The bytes are asserted rather than the decoded
-            // string, because the string reads the same either way and so proves nothing.
             byte[] area = state.dateValidationResultBytes();
             Charset ebcdic = Charset.forName(EBCDIC_NAME);
 
@@ -2903,8 +2449,6 @@ class AccountDateValidatorTest {
                     .as("WS-SEVERITY PIC 9(4) zero is x'F0' four times in IBM037")
                     .containsExactly((byte) 0xF0, (byte) 0xF0, (byte) 0xF0, (byte) 0xF0);
 
-            // And the character views still read correctly, which is what proves the code page was
-            // applied consistently rather than the bytes merely being different.
             assertThat(state.wsSeverity()).isEqualTo("0000");
             assertThat(state.wsResult()).isEqualTo("Date is valid  ");
         }
@@ -2932,9 +2476,6 @@ class AccountDateValidatorTest {
         void theInjectedCodePageReachesNewState() {
             EditDateState state = validatorFor(EBCDIC_NAME).newState();
 
-            // The 'Mesg Code:' FILLER is written by the state's own initialiser, so its stored bytes
-            // are the shortest proof that newState() shares the validator's injected code page rather
-            // than building a codec of its own.
             assertThat(Arrays.copyOfRange(state.dateValidationResultBytes(), 4, 6))
                     .as("the area is initialised through the injected codec")
                     .isEqualTo("Me".getBytes(Charset.forName(EBCDIC_NAME)));

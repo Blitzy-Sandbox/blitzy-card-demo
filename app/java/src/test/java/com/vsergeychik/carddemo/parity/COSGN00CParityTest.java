@@ -54,213 +54,43 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 /**
- * The twenty-case behavioural parity gate for {@code app/cbl/COSGN00C.cbl} - CICS transaction
- * {@code CC00}, "Signon Screen for the CardDemo Application", projected onto
- * {@code POST /api/signon}.
- *
- * <h2>Where the expected values come from, and where they do not</h2>
- *
- * <p><strong>The baseline is statically derived. It was never captured from a running COBOL
- * program.</strong> Executing the twenty-eight legacy programs is impossible in this environment:
- * there is no z/OS runtime and no CICS emulator, the available compiler reports
- * {@code indexed file handler : disabled} so the programs using {@code ORGANIZATION INDEXED} cannot
- * even build, there are no Language Environment {@code CEE*} services, and {@code DFHAID},
- * {@code DFHBMSCA} and {@code DFHATTR} are absent from this repository altogether. Every expected
- * value in {@code src/test/resources/parity/COSGN00C/} was therefore obtained by reading
- * {@code app/cbl/COSGN00C.cbl} paragraph by paragraph and cross-checking five authoritative
- * sources: {@code app/cpy/CSUSR01Y.cpy} for the record's byte layout,
- * {@code app/cpy-bms/COSGN00.CPY} with {@code app/bms/COSGN00.bms} for the screen's field shapes,
- * {@code app/cpy/COCOM01Y.cpy} for the communication area, {@code app/csd/CARDDEMO.CSD} for the
- * transaction definition, and {@code app/jcl/DUSRSECJ.jcl} for the real seed data. That is a
- * substitution of provenance and only of provenance: twenty cases, field-for-field diffing and a
- * required diff count of zero all stand. It is stated here rather than only in a commit message
- * because a statically derived expectation can encode a misreading of the COBOL where a captured
- * one cannot, and whoever debugs a failure needs to know which side to doubt.
- *
- * <h2>The password is compared in plaintext, and that is asserted rather than corrected</h2>
- *
- * <p>{@code SEC-USR-PWD PIC X(08)} in {@code app/cpy/CSUSR01Y.cpy} holds the password as typed, and
- * {@code app/cbl/COSGN00C.cbl:223} is {@code IF SEC-USR-PWD = WS-USER-PWD} - a plain alphanumeric
- * comparison across all eight characters, with no hash, no salt and no encoder anywhere in the
- * program. This gate asserts that comparison as it stands. Hashing it would require Spring
- * Security, which is out of scope, and would change observable behaviour, which is forbidden: a
- * password that hashes differently would sign on differently. <strong>The plaintext-credential
- * characteristic is an inherited property of the legacy design and an explicit non-goal of this
- * migration</strong>, recorded here so that it stays visible rather than buried in generated code.
- * The values involved are the 2022-vintage demo strings already present in this repository as
- * in-stream JCL data at {@code app/jcl/DUSRSECJ.jcl:35-44}; nothing here introduces a credential
- * that guards anything, and no {@code PasswordEncoder}, {@code BCrypt}, token or filter chain is
- * named in this file.
- *
- * <h2>Role routing is a response field, not an {@code XCTL}</h2>
- *
- * <p>{@code app/cbl/COSGN00C.cbl:230-240} is the program's only transfer of control:
- * {@code EXEC CICS XCTL PROGRAM('COADM01C')} at {@code :232} when {@code 88 CDEMO-USRTYP-ADMIN}
- * holds, and {@code PROGRAM('COMEN01C')} at {@code :237} otherwise. In a stateless translation
- * there is no server-side forward: the sign-on response carries the role and the target program,
- * and the client issues the follow-on call. So the cases below pin {@code nextProgram} rather than
- * observing a dispatch, and they pin it to the administrator target for {@code 'A'} and to the
- * regular-user target for {@code 'U'}. No servlet forward, redirect, session or session-scoped bean
- * exists anywhere in the path - the whole communication area travels in the payload, which
- * {@link #theNavigationContextTravelsInThePayload()} asserts at its declared
- * {@value NavigationContext#COMMAREA_LENGTH} bytes.
- *
- * <h2>No HTTP between the assertion and the code</h2>
- *
- * <p>The unit is {@link SignOnService}, the real {@code @Service}, constructed through its own
- * constructor with a fixture-backed {@link SecUserRepository} injected. The eleven-field screen
- * projection is produced by the real {@link SignOnController}, constructed as a plain Java object
- * and called through {@link SignOnController#signOn(SignOnRequest)} as any other method would be.
- * There is no Mock MVC, no test REST template, no web test client, no servlet container and no job
- * launcher anywhere in this file: a parity assertion is about arithmetic and byte layout, and
- * putting a dispatcher, a filter chain and a JSON round trip between the assertion and the decision
- * logic can only obscure which of them produced a difference.
- *
- * <p>The service is invoked <strong>exactly once</strong> per case. {@link RecordingSignOnService}
- * is a subclass that delegates to {@code super.handle} and keeps the outcome, so the controller
- * drives the real decision and this file still sees the whole of {@link SignOnOutcome} - the
- * eighty-byte {@code WS-MESSAGE}, the {@code WS-ERR-FLG} state, the {@code RESP} classification and
- * the termination - none of which survives the projection onto ten screen fields.
- *
- * @see SignOnService the translation of {@code app/cbl/COSGN00C.cbl}
- * @see SignOnController the eleven-field projection of mapset {@code COSGN00}
- * @see SecUserRecord the eighty-byte {@code SEC-USER-DATA} record of {@code app/cpy/CSUSR01Y.cpy}
- * @see ParityHarness which seeds, invokes and captures
- * @see FieldDiffer which judges, field by field
+ * The twenty-case behavioural parity gate for {@code app/cbl/COSGN00C.cbl} - CICS transaction {@code CC00},
+ * "Signon Screen for the CardDemo Application", projected onto {@code POST /api/signon}.
  */
 final class COSGN00CParityTest {
-
-    // =============================================================================================
-    // Identity. The class stem, the resource directory and the "program" member of all twenty case
-    // files have to agree, so the name is written once.
-    // =============================================================================================
-
-    /** {@code PROGRAM-ID. COSGN00C} - {@code app/cbl/COSGN00C.cbl:23}. */
     private static final String PROGRAM = "COSGN00C";
 
-    /**
-     * The dataset binding key, which is the CICS file name of
-     * {@code WS-USRSEC-FILE PIC X(08) VALUE 'USRSEC  '} at {@code app/cbl/COSGN00C.cbl:39}.
-     *
-     * <p>No {@code AWS.M2.CARDDEMO} literal appears in this file: dataset names live in
-     * {@code application.yml} and are resolved from configuration, never from Java source.
-     */
     private static final String USRSEC = SecUserRepository.CICS_FILE_NAME;
 
-    /**
-     * {@code KEYS(8,0)} - the primary key width {@code app/jcl/DUSRSECJ.jcl} STEP02 defines for
-     * {@code USRSEC}, and the {@code KEYLENGTH(LENGTH OF WS-USER-ID)} the program passes at
-     * {@code app/cbl/COSGN00C.cbl:216}.
-     */
     private static final int KEY_LENGTH = SecUserRecord.KEY_LENGTH;
 
-    /**
-     * The width the ten in-stream seed rows of {@code app/jcl/DUSRSECJ.jcl:35-44} are carried at.
-     *
-     * <p>Derived rather than typed: it is {@code CSUSR01Y}'s eighty less the twenty-three bytes of
-     * {@code SEC-USR-FILLER}, which is the span the JCL omits. It comes to fifty-seven, and
-     * {@link #everyCaseDeclaresTheUsrsecPad()} asserts that arithmetic so a reader never has to take
-     * the number on trust.
-     */
     private static final int SEED_ROW_WIDTH =
             SecUserRecord.RECORD_LENGTH - SecUserRecord.SEC_USR_FILLER_LENGTH;
 
-    /** Ten rows: five {@code ADMIN00n} and five {@code USER000n} - {@code DUSRSECJ.jcl:35-44}. */
     private static final int SEED_ROW_COUNT = 10;
 
-    /** How many of the ten seeded users carry {@code SEC-USR-TYPE} {@code 'A'}. */
     private static final int SEED_ADMIN_COUNT = 5;
 
-    /**
-     * The {@code APPLID} standing in for {@code EXEC CICS ASSIGN APPLID} at
-     * {@code app/cbl/COSGN00C.cbl:198-200}.
-     *
-     * <p>A documented substitution rather than a derivation: there is no CICS region here to ask. The
-     * same pair is now pinned in {@code application-test.yml} under {@code carddemo.cics.applid} and
-     * {@code carddemo.cics.sysid}, so a controller Spring wires under the {@code test} profile paints
-     * exactly what these twenty cases compare - which is the point of stating it in both places rather
-     * than only here. {@code application.yml} carries the deployment placeholders instead, and requires
-     * them. Stated at the map's declared width so the projection can be compared byte for byte.
-     */
     private static final String APPLID = "CICSAWS1";
 
-    /**
-     * The {@code SYSID} standing in for {@code EXEC CICS ASSIGN SYSID} at
-     * {@code app/cbl/COSGN00C.cbl:202-204} - the same documented substitution as {@link #APPLID}.
-     */
     private static final String SYSID = "AWS1";
 
-    /**
-     * {@code WS-MESSAGE PIC X(80)} - {@code app/cbl/COSGN00C.cbl:38}.
-     */
     private static final int WS_MESSAGE_LENGTH = SignOnService.MESSAGE_LENGTH;
 
-    /** {@code ERRMSGO PIC X(78)} - {@code app/cpy-bms/COSGN00.CPY:152}, two bytes narrower. */
     private static final int ERRMSG_LENGTH = SignOnResponse.ERRMSG_LENGTH;
 
-    /**
-     * The suffix that turns a {@code DFHMDF} label into its symbolic-map length item.
-     *
-     * <p>{@link ScreenMetadata} reports the cursor by the field's {@code DFHMDF} label -
-     * {@code USERID}, {@code PASSWD} - while a {@link ParityCase} pins the {@code xxxL} item that
-     * received the {@code MOVE -1}, because that is what COBOL actually writes to. The two spellings
-     * are tied together by {@link #CURSOR_ITEMS} rather than by a literal here.
-     */
     private static final String LENGTH_ITEM_SUFFIX = "L";
 
-    /**
-     * The {@code LOW-VALUES} character a symbolic-map field holds when nothing has been moved into
-     * it - {@code X'00'}, and emphatically not a space.
-     */
     private static final char LOW_VALUE = '\u0000';
 
-    /** The space character {@code MOVE SPACES} writes, named so no bare literal is needed. */
     private static final char SPACE = ' ';
 
-    /**
-     * {@code DFHAID} mnemonic to attention identifier byte.
-     *
-     * <p>A case declares its key as a mnemonic, which is how a reader recognises it;
-     * {@code app/cbl/COSGN00C.cbl:85} evaluates a byte. {@link CicsAid#mnemonicsByAid()} is the
-     * module's single reproduction of the absent IBM copybook, so the mapping is inverted from that
-     * rather than restated - a second table could disagree with the first, and a case naming
-     * {@code DFHPF3} while driving {@code DFHPF4} would exercise the wrong arm of the
-     * {@code EVALUATE} and still pass.
-     *
-     * <p>Unmodifiable, so this introduces no mutable static state.
-     */
     private static final Map<String, Byte> AID_BYTES = aidBytesByMnemonic();
 
-    /**
-     * The byte presented when a case declares no key at all.
-     *
-     * <p>One of the twenty paths never reads {@code EIBAID}: the {@code IF EIBCALEN = 0} guard at
-     * {@code app/cbl/COSGN00C.cbl:80}, which answers before the {@code EVALUATE EIBAID} at
-     * {@code :85} is reached. That case declares no AID and is driven with {@code DFHNULL} - the
-     * value CICS itself uses for "no attention identifier", which
-     * {@link PfKeyResolver#resolve(byte)} reports as no key.
-     */
     private static final byte NO_AID = CicsAid.DFHNULL;
 
-    /**
-     * {@code DFHMDF} label to the symbolic-map length item that receives {@code MOVE -1}.
-     *
-     * <p>Built from both production spellings at once - {@link SignOnController}'s cursor labels and
-     * {@link CursorField#lengthItemName()} - so the two cannot drift apart without this table
-     * failing to build. {@code app/cbl/COSGN00C.cbl} positions the cursor at four sites: {@code :82}
-     * and {@code :121} and {@code :250} and {@code :255} onto {@code USERIDL}, and {@code :126} and
-     * {@code :244} onto {@code PASSWDL}.
-     */
     private static final Map<String, String> CURSOR_ITEMS = cursorItemsByLabel();
 
-    /**
-     * The sixteen {@code CARDDEMO-COMMAREA} fields of {@code app/cpy/COCOM01Y.cpy:19-44}, in
-     * copybook order.
-     *
-     * <p>{@code COSGN00C} copies the area at {@code :48} and hands it back at {@code :100} on every
-     * path, so all sixteen are compared on every case even though the program writes only five of
-     * them, at {@code :224-228}.
-     */
     private static final List<String> COMMAREA_FIELDS = List.of(
             NavigationContext.FROM_TRANID_FIELD,
             NavigationContext.FROM_PROGRAM_FIELD,
@@ -279,120 +109,26 @@ final class COSGN00CParityTest {
             NavigationContext.LAST_MAP_FIELD,
             NavigationContext.LAST_MAPSET_FIELD);
 
-    /**
-     * The symbolic-map input item behind {@code USERIDI OF COSGN0AI}, tested at
-     * {@code app/cbl/COSGN00C.cbl:118} and normalised at {@code :132}.
-     */
     private static final String USERID_INPUT_ITEM = "USERIDI";
 
-    /**
-     * The symbolic-map input item behind {@code PASSWDI OF COSGN0AI}, tested at
-     * {@code app/cbl/COSGN00C.cbl:123} and normalised at {@code :135}.
-     */
     private static final String PASSWD_INPUT_ITEM = "PASSWDI";
 
-    /**
-     * {@code PASSWDO}, the eleventh named item of mapset {@code COSGN00}.
-     *
-     * <p>{@link SignOnResponse} projects it, and has to: {@code app/cpy-bms/COSGN00.CPY:85} declares
-     * {@code 01 COSGN0AO REDEFINES COSGN0AI}, so {@code PASSWDI} and {@code PASSWDO} are one span and
-     * whatever {@code RECEIVE MAP} put there is what {@code SEND MAP ... FROM(COSGN0AO)} transmits. The
-     * differ therefore reads the item off the payload like any other, rather than reconstructing it.
-     */
     private static final String PASSWD_OUTPUT_ITEM = SignOnResponse.PASSWD_FIELD;
 
-    /**
-     * The eleven named output items of mapset {@code COSGN00}, in symbolic-map order.
-     *
-     * <p>Ten come from {@link SignOnResponse#MAP_FIELDS} and the eleventh is
-     * {@link #PASSWD_OUTPUT_ITEM}, inserted at the position {@code app/cpy-bms/COSGN00.CPY:141-146}
-     * gives it - between {@code USERIDO} and {@code ERRMSGO}. Composed rather than typed out, so the
-     * eleven-versus-ten discrepancy is expressed once and cannot be half-fixed.
-     */
     private static final List<String> SCREEN_ITEMS = screenItems();
 
-    /** {@code TRNNAMEO} through {@code ERRMSGO}: eleven items - {@code COSGN00.CPY:86-152}. */
     private static final int SCREEN_ITEM_COUNT = SignOnResponse.MAPSET_NAMED_FIELD_COUNT;
 
-    /**
-     * How many of the twenty cases sign on successfully and therefore leave by
-     * {@code EXEC CICS XCTL} at {@code app/cbl/COSGN00C.cbl:231-239}.
-     *
-     * <p>Stated as a property of the case set so that a case which quietly stopped signing on -
-     * because a seed row changed, or a password expectation was edited - cannot pass unnoticed.
-     * Changing it is therefore a deliberate act, and the three changes made to it are recorded here.
-     * {@code case14} exercises the {@code ELSE} at {@code :241-246} rather than the {@code XCTL},
-     * so that the wrong-password arm is asserted with a fully populated communication area carried
-     * across it. {@code case15} does the same from the other side of the {@code PIC X} comparison:
-     * it types a password shorter than {@code PASSWDI PIC X(08)}, which is right space padded to
-     * eight bytes and so fails {@code :223} by padding rather than by content. {@code case09}
-     * likewise no longer signs on: it was moved onto the {@code OR LOW-VALUES} half of the second
-     * blank-field arm at {@code :123-127}, which is a rejecting path. Between them the count fell
-     * from seven to five. The administrator target stays driven by {@code case02}, so both arms of
-     * {@code :230} remain reached and {@link #theRoleFieldReplacesTheXctl()} still finds its admin
-     * transfer, and {@code case03}, {@code case10}, {@code case16} and {@code case20} keep the
-     * regular-user target driven.
-     *
-     * <p>Then six rather than five, which is the fourth deliberate change. {@code case19} became the
-     * folder's byte-complete decode of an 80-byte {@code CSUSR01Y} record, and a record can only be
-     * decoded in full on a path that actually reads one - so it moved off the {@code WHEN OTHER}
-     * invalid-key arm, where {@code PROCESS-ENTER-KEY} is never performed and {@code USRSEC} is
-     * never opened, and onto the successful administrator sign-on that {@code case18} is the failing
-     * counterpart of. It signs on with {@code ADMIN005}, so the administrator target is now driven by
-     * {@code case02} and {@code case19} together and {@link #SCREEN_SENDS} fell by the same one this
-     * rose by.
-     */
     private static final int SUCCESSFUL_SIGN_ONS = 6;
 
-    /**
-     * How many of the twenty reach {@code SEND-SIGNON-SCREEN} at {@code :145-157} and transmit the
-     * map - every case that neither signs on nor presses {@code DFHPF3}.
-     *
-     * <p>Fourteen rather than twelve because {@code case09} and {@code case15} paint the screen
-     * instead of transferring: {@code case09} drives the {@code LOW-VALUES} term of {@code :123} and
-     * so leaves through {@code :127}, and {@code case15} is refused by the padded comparison at
-     * {@code :223}. Thirteen rather than fourteen because {@code case19} then stopped painting
-     * altogether: it moved from the {@code WHEN OTHER} invalid-key arm onto a successful
-     * administrator sign-on, so it leaves by {@code XCTL} at {@code :230-232} and
-     * {@code SEND-SIGNON-SCREEN} is not performed on its path at all. This number and
-     * {@link #SUCCESSFUL_SIGN_ONS} move together - the two plus
-     * {@link #PLAIN_TEXT_SENDS} must always total
-     * {@value ParityHarness#CASES_PER_PROGRAM}, which
-     * {@link #theThreeExitsPartitionTheCaseSet()} asserts.
-     */
     private static final int SCREEN_SENDS = 13;
 
-    /**
-     * How many of the twenty reach {@code SEND-PLAIN-TEXT} at {@code :162-172} - exactly one, the
-     * {@code DFHPF3} arm at {@code :88-90}.
-     */
     private static final int PLAIN_TEXT_SENDS = 1;
 
-    // =============================================================================================
-    // The case set.
-    // =============================================================================================
-
-    /**
-     * The twenty cases, loaded from {@code src/test/resources/parity/COSGN00C/}.
-     *
-     * <p>{@link ParityHarness#casesOf(String)} refuses any set that is not exactly {@code case01}
-     * through {@code case20}, and refuses a stray file in the directory too. That is the point of
-     * routing through it: "the diff count is zero across all twenty cases" is satisfied vacuously by
-     * a set of four, so a short or misnamed set has to fail loudly rather than quietly become a
-     * smaller gate.
-     *
-     * @return the twenty cases in ordinal order
-     */
     static List<ParityCase> cases() {
         return ParityHarness.casesOf(PROGRAM);
     }
 
-    /**
-     * The argument stream, each case labelled by its own identifier so a failure reads as
-     * {@code COSGN00C case07} rather than as an index.
-     *
-     * @return one argument pair per case, in ordinal order
-     */
     static List<Arguments> declaredCases() {
         List<ParityCase> loaded = cases();
         List<Arguments> arguments = new ArrayList<>(loaded.size());
@@ -402,7 +138,6 @@ final class COSGN00CParityTest {
         return arguments;
     }
 
-    /** @return the twenty cases keyed by identifier, for the set-level assertions below */
     private static Map<String, ParityCase> casesById() {
         Map<String, ParityCase> byId = new LinkedHashMap<>();
         for (ParityCase parityCase : cases()) {
@@ -411,23 +146,6 @@ final class COSGN00CParityTest {
         return byId;
     }
 
-    // =============================================================================================
-    // The gate.
-    // =============================================================================================
-
-    /**
-     * The parity gate: every one of the twenty cases produces a diff count of exactly zero.
-     *
-     * <p>The whole {@link DiffResult} is rendered on failure rather than reduced to a count. The
-     * differ compares record channels as complete sets in both directions, and compares the
-     * navigation context, every screen send's fields and every send's attribute items in both
-     * directions too - so it reports a field the case pinned and the run did not produce
-     * <em>and</em> a field the run produced and the case did not pin. Both are real findings, and
-     * the second is the one a lookup-based judge misses.
-     *
-     * @param caseId     the case identifier, for the test name
-     * @param parityCase the case whose expectations are authoritative
-     */
     @ParameterizedTest(name = "COSGN00C {0}")
     @MethodSource("declaredCases")
     @DisplayName("diff count is zero on all twenty cases")
@@ -448,27 +166,6 @@ final class COSGN00CParityTest {
                 .isTrue();
     }
 
-    // =============================================================================================
-    // How the unit is reached. Everything below constructs COSGN00C's translation and calls it; not
-    // one line of it can see the expectation, because Invocation carries the inputs only.
-    // =============================================================================================
-
-    /**
-     * Constructs {@link SignOnService}, runs {@code MAIN-PARA} once, and projects the screen through
-     * {@link SignOnController}.
-     *
-     * <p>Two independent triples are built and run, and their outcomes are required to be equal.
-     * That is the statelessness assertion stated per case rather than once: {@code COSGN00C} is a
-     * pseudo-conversational transaction whose whole conversation state - the communication area, the
-     * attention identifier and the two typed fields - arrives in the payload, so two independently
-     * constructed instances handed the same payload must agree in every component. If either class
-     * ever cached a user, a role or a screen between requests, the second run would differ and this
-     * would say so.
-     *
-     * @param invocation the seeded dataset, the online request, the pinned clock, the codec and the
-     *                   recorder
-     * @return {@code null}, meaning the recorder holds the observation
-     */
     private static UnitOutcome invokeSignOn(Invocation invocation) {
         SignOnRequest request = requestOf(invocation);
 
@@ -491,31 +188,9 @@ final class COSGN00CParityTest {
         return record(invocation, first);
     }
 
-    /**
-     * One construction of the unit and one call through it.
-     *
-     * @param outcome the {@link SignOnOutcome} {@code MAIN-PARA} produced - the whole of it,
-     *                including the eighty-byte {@code WS-MESSAGE} and the {@code WS-ERR-FLG} state
-     *                that the ten-field screen projection cannot carry
-     * @param screen  what {@link SignOnController} projected that outcome onto
-     * @param reads   how many times {@code EXEC CICS READ} at {@code :211-219} was issued
-     */
     private record Run(SignOnOutcome outcome, ScreenResponse<SignOnResponse> screen, int reads) {
     }
 
-    /**
-     * Builds a repository, a service and a controller, and calls the controller once.
-     *
-     * <p>The service is invoked exactly once, by the controller, through
-     * {@link RecordingSignOnService} - which delegates to {@code super.handle} and keeps the answer.
-     * Calling {@code handle} here as well and then calling the controller would run the decision
-     * twice, and a decision run twice is a decision this file could no longer describe as "what
-     * COSGN00C did".
-     *
-     * @param invocation the invocation
-     * @param request    the received map, built once and shared by both runs
-     * @return the outcome, the projection and the read count
-     */
     private static Run run(Invocation invocation, SignOnRequest request) {
         int[] reads = new int[1];
         RecordingSignOnService service =
@@ -528,26 +203,9 @@ final class COSGN00CParityTest {
         return new Run(service.requireOutcome(), screen, reads[0]);
     }
 
-    /**
-     * {@link SignOnService} with a one-line override that keeps the outcome on its way out.
-     *
-     * <p>Not a mock and not a stub: {@code super.handle} <em>is</em> the unit under test, and every
-     * decision it makes is made here. The override exists only because
-     * {@link SignOnController#signOn(SignOnRequest)} returns the projection and discards the
-     * outcome, while this gate has to compare both.
-     *
-     * <p>The captured field is an instance field of a throwaway per-run object, never static, so it
-     * introduces no shared mutable state - and {@link #run(Invocation, SignOnRequest)} builds a
-     * fresh one for each of its two runs.
-     */
     private static final class RecordingSignOnService extends SignOnService {
-
-        /** What {@code super.handle} answered, or {@code null} until it has been called. */
         private SignOnOutcome captured;
 
-        /**
-         * @param secUserRepository the fixture-backed {@code USRSEC}
-         */
         RecordingSignOnService(SecUserRepository secUserRepository) {
             super(secUserRepository);
         }
@@ -559,11 +217,6 @@ final class COSGN00CParityTest {
             return outcome;
         }
 
-        /**
-         * @return the outcome of the single call
-         * @throws IllegalStateException if the controller never delegated, which would mean the
-         *                               projection describes a run that did not happen
-         */
         SignOnOutcome requireOutcome() {
             if (captured == null) {
                 throw new IllegalStateException("SignOnController.performSignOn calls "
@@ -576,33 +229,6 @@ final class COSGN00CParityTest {
         }
     }
 
-    // =============================================================================================
-    // USRSEC. A stub rather than the real repository, because the real one reaches a data source and
-    // this assertion is about what COSGN00C does with the answer, not about how the answer is
-    // fetched.
-    // =============================================================================================
-
-    /**
-     * The {@code USRSEC} dataset behind {@code EXEC CICS READ} - {@code COSGN00C:211-219}.
-     *
-     * <p>A faithful key-sequenced read rather than a constant: the key offered is matched against the
-     * eight-byte {@code SEC-USR-ID} span of the seeded rows exactly, at the full
-     * {@value SecUserRecord#KEY_LENGTH} the program passes as {@code KEYLENGTH}, so a key that is one
-     * character short finds nothing and a key that differs in case finds nothing. Both are real
-     * {@code DFHRESP(NOTFND)} outcomes, and both are exercised below - which is what makes the
-     * {@code WHEN 13} arm at {@code :247} genuine rather than stipulated.
-     *
-     * <p>A case may override the outcome through {@code screenRequest.forcedOutcomes.read}, and one
-     * of the twenty needs to: no arrangement of ten well-formed rows can make a keyed read report
-     * anything other than {@code NORMAL} or {@code NOTFND}, so the {@code WHEN OTHER} arm at
-     * {@code :252} is unreachable from the data alone. The override is taken only when the read is
-     * actually reached, and the harness refuses a run that declared one and never asked for it.
-     *
-     * @param invocation the invocation, consulted for the seed and for a forced outcome
-     * @param reads      a one-element counter incremented on each read, so the four paths that must
-     *                   not read the file can be held to it
-     * @return a repository whose {@code read} behaves as described
-     */
     private static SecUserRepository stubbedRepository(Invocation invocation, int[] reads) {
         SeededDataset seeded = invocation.dataset(USRSEC);
         FixedWidthCodec codec = invocation.codec();
@@ -620,14 +246,6 @@ final class COSGN00CParityTest {
         return repository;
     }
 
-    /**
-     * The ordinary keyed read: an exact match on {@code SEC-USR-ID}, or {@code NOTFND}.
-     *
-     * @param seeded the ten rows, already padded to the copybook's width by the harness
-     * @param codec  the code page the rows are encoded in
-     * @param ridfld {@code WS-USER-ID}, which {@code :132-133} has already upper-cased
-     * @return the outcome the program's {@code EVALUATE WS-RESP-CD} branches on
-     */
     private static ReadResult readByKey(SeededDataset seeded, FixedWidthCodec codec, String ridfld) {
         String key = codec.movePicX(ridfld, KEY_LENGTH);
         for (String row : seeded.rows()) {
@@ -640,23 +258,6 @@ final class COSGN00CParityTest {
         return ReadResult.notFound();
     }
 
-    /**
-     * Translates a case's forced outcome into the {@link ReadResult} the repository would report.
-     *
-     * <p>Only three of the five {@link FileStatus.Outcome} constants can come back from
-     * {@code EXEC CICS READ} against a base KSDS with no {@code UPDATE} option. End-of-file belongs
-     * to a browse, and {@code DUPKEY} is raised on an alternate index - {@code USRSEC} has none, as
-     * {@code app/csd/CARDDEMO.CSD} shows by defining no path over it. Forcing either would describe a
-     * response CICS cannot produce here, so both are refused rather than quietly mapped.
-     *
-     * @param outcome the outcome the case forces
-     * @param seeded  the seeded rows, so a forced {@code OK} still returns the real record
-     * @param codec   the code page
-     * @param ridfld  the key offered
-     * @return the corresponding read result
-     * @throws IllegalArgumentException if the case forces an outcome a keyed read cannot produce, or
-     *                                  states a {@code RESP} that contradicts the outcome it names
-     */
     private static ReadResult forced(ForcedOutcome outcome, SeededDataset seeded,
                                      FixedWidthCodec codec, String ridfld) {
         switch (outcome.outcome()) {
@@ -667,9 +268,6 @@ final class COSGN00CParityTest {
                 requireForcedResp(outcome, SignOnService.RESP_NOTFND);
                 return ReadResult.notFound();
             case OTHER:
-                // The WHEN OTHER arm at :252 is "every response the source did not enumerate", so a
-                // forced OTHER reports no RESP at all rather than some particular other number: a
-                // stated value would suggest the arm distinguishes them, and :252-256 does not.
                 requireNoForcedResp(outcome);
                 return ReadResult.of(SecUserRepository.PERMANENT_ERROR_STATUS, CicsResponse.none());
             case END_OF_FILE:
@@ -683,18 +281,6 @@ final class COSGN00CParityTest {
         }
     }
 
-    /**
-     * Requires a forced outcome's declared {@code RESP}, if it states one, to be the value
-     * {@code EVALUATE WS-RESP-CD} names for that arm.
-     *
-     * <p>{@code app/cbl/COSGN00C.cbl:221-257} branches on raw numeric literals - {@code WHEN 0} and
-     * {@code WHEN 13} - so a case that named a different number while claiming that arm would be
-     * describing a different program.
-     *
-     * @param outcome  the forced outcome
-     * @param expected the {@code RESP} the arm is written against
-     * @throws IllegalArgumentException if the case states a contradictory {@code RESP}
-     */
     private static void requireForcedResp(ForcedOutcome outcome, int expected) {
         if (outcome.resp() != null && outcome.resp() != expected) {
             throw new IllegalArgumentException("A case forces " + outcome.outcome()
@@ -704,12 +290,6 @@ final class COSGN00CParityTest {
         }
     }
 
-    /**
-     * Requires a forced {@code OTHER} to state no {@code RESP}.
-     *
-     * @param outcome the forced outcome
-     * @throws IllegalArgumentException if the case states a {@code RESP}
-     */
     private static void requireNoForcedResp(ForcedOutcome outcome) {
         if (outcome.resp() != null) {
             throw new IllegalArgumentException("A case forces OTHER on the read against " + USRSEC
@@ -720,29 +300,6 @@ final class COSGN00CParityTest {
         }
     }
 
-    // =============================================================================================
-    // The received map and the communication area, as CICS delivered them.
-    // =============================================================================================
-
-    /**
-     * The payload, as {@code EXEC CICS RECEIVE MAP} at {@code COSGN00C:110-115} and the
-     * {@code DFHCOMMAREA} at {@code :65-67} together delivered it.
-     *
-     * <p>Each of the eleven {@code xxxI} items is taken from the case's declared map fields, and a
-     * field the case omitted is passed as {@code null} - which the service treats as a field never
-     * transmitted, that is {@code LOW-VALUES}. That distinction is load-bearing: the blank-field
-     * chain at {@code :118} and {@code :123} tests {@code = SPACES OR LOW-VALUES}, two comparisons
-     * against figurative constants, so "eight spaces" and "never typed" reach the same arm by
-     * different routes and both are exercised below.
-     *
-     * <p>A case declaring {@code eibcalen} of zero is given a {@code null} communication area, which
-     * is precisely what {@code EIBCALEN = 0} means at {@code :80}; the ten seeded rows are still
-     * present, because a dataset the program never opens is a dataset whose unchanged state is the
-     * assertion.
-     *
-     * @param invocation the invocation carrying the declared map fields, commarea and key
-     * @return the request; never {@code null}
-     */
     private static SignOnRequest requestOf(Invocation invocation) {
         Map<String, String> fields = invocation.mapFields();
         return new SignOnRequest(fields.get("TRNNAMEI"),
@@ -760,19 +317,6 @@ final class COSGN00CParityTest {
                 aidImageOf(invocation.aid()));
     }
 
-    /**
-     * {@code MOVE DFHCOMMAREA(1:EIBCALEN) TO CARDDEMO-COMMAREA} - the area {@code :80} measures and
-     * {@code :100} hands back.
-     *
-     * <p>Built by writing the case's declared field images into a
-     * {@value NavigationContext#COMMAREA_LENGTH}-byte area and decoding it back, so the context the
-     * program adopts is a real communication-area image rather than a hand-assembled object. A field
-     * the case leaves unstated keeps the area's initial state - spaces in a character span, zeros in a
-     * {@code PIC 9} one - which is what {@code WORKING-STORAGE} holds.
-     *
-     * @param invocation the invocation
-     * @return the context, or {@code null} when {@code EIBCALEN} is zero
-     */
     private static NavigationContext commareaOf(Invocation invocation) {
         if (invocation.eibcalen() == 0) {
             return null;
@@ -782,26 +326,6 @@ final class COSGN00CParityTest {
                 codec.serialise(NavigationContext.LAYOUT, invocation.commarea()));
     }
 
-    /**
-     * Resolves a declared {@code DFHAID} mnemonic to the one-character {@code EIBAID} image the payload
-     * carries.
-     *
-     * <p>The case names the key the way {@code app/cbl/COSGN00C.cbl:85-91} names it, as a
-     * {@code DFHAID} mnemonic; the JSON payload carries the byte as the one character whose code point
-     * <em>is</em> that byte, because a raw byte is not a JSON value. {@link #assertRunInvariants(
-     * Invocation, SignOnRequest, Run)} then requires the byte the controller read back out of that
-     * character to be the one the case declared - so the round trip is proved rather than assumed.
-     *
-     * <p>Not the five-character {@code CCARD-AID} token: {@code CSSTRPFY} folds
-     * {@code DFHPF13}-{@code DFHPF24} onto {@code 'PFK01'}-{@code 'PFK12'}, so a token cannot say which
-     * key of a folded pair was pressed, and {@code COSGN00C} does not copy {@code CSSTRPFY} - it compares
-     * {@code EIBAID} itself. Carrying the byte also lets a case name a key {@code CSSTRPFY} maps to
-     * nothing at all, such as {@code DFHPA3}, which the token form could not carry.
-     *
-     * @param mnemonic the mnemonic the case declared, or {@code null} for the path that never reads
-     *                 {@code EIBAID}
-     * @return the one-character image, or {@code null} for that path
-     */
     private static String aidImageOf(String mnemonic) {
         if (mnemonic == null) {
             return null;
@@ -809,13 +333,6 @@ final class COSGN00CParityTest {
         return String.valueOf((char) (aidByteOf(mnemonic) & 0xFF));
     }
 
-    /**
-     * Resolves a declared {@code DFHAID} mnemonic to the byte {@code COSGN00C:85} evaluates.
-     *
-     * @param mnemonic the mnemonic the case declared, or {@code null}
-     * @return the attention identifier byte
-     * @throws IllegalArgumentException if the mnemonic names no reproduced {@code DFHAID} constant
-     */
     private static byte aidByteOf(String mnemonic) {
         if (mnemonic == null) {
             return NO_AID;
@@ -829,31 +346,6 @@ final class COSGN00CParityTest {
         return aid;
     }
 
-    // =============================================================================================
-    // What the run observably produced.
-    // =============================================================================================
-
-    /**
-     * Records the run into the harness's recorder: the state {@code USRSEC} was left in, the online
-     * response, the {@code RETURN-CODE} and - on one path only - the line a terminal received.
-     *
-     * <p>Nothing is recorded on the write channel, and that is an assertion rather than an omission:
-     * {@code app/cbl/COSGN00C.cbl} contains no {@code WRITE}, no {@code REWRITE} and no
-     * {@code DELETE} at all. The final-state channel is answered on <em>every</em> path including the
-     * four that never open the dataset, where the honest answer is "exactly as seeded" - which is the
-     * positive form of the assertion that nothing was written.
-     *
-     * <p>The message channels are used on the {@code DFHPF3} path alone. That path is the program's
-     * only {@code EXEC CICS SEND TEXT}, at {@code :164-169}, and it transmits
-     * {@code FROM(WS-MESSAGE) LENGTH(LENGTH OF WS-MESSAGE)} - eighty bytes of unformatted text, which
-     * is a line a terminal received and therefore a message. Every other path transmits through
-     * {@code SEND MAP}, whose payload is the map's fields and is recorded as a screen send; there is
-     * no {@code DISPLAY} anywhere in the program, so nothing else is ever emitted.
-     *
-     * @param invocation the invocation, for the recorder and the seed
-     * @param run        the run to record
-     * @return the recorder's build, which is the last thing this method does
-     */
     private static UnitOutcome record(Invocation invocation, Run run) {
         UnitOutcome.Builder recorder = invocation.recorder();
 
@@ -866,19 +358,10 @@ final class COSGN00CParityTest {
             recorder.response(observed(invocation, run));
         }
 
-        // An online transaction sets no RETURN-CODE: COSGN00C has no CALL 'CEE3ABD' and no MOVE to
-        // RETURN-CODE anywhere, so zero is stated as the observation rather than left to a default.
         recorder.returnCode(0);
         return recorder.build();
     }
 
-    /**
-     * Projects the run onto the response the differ judges.
-     *
-     * @param invocation the invocation, for the codec and the received map
-     * @param run        the run
-     * @return the observation
-     */
     private static ObservedResponse observed(Invocation invocation, Run run) {
         SignOnResponse screen = run.screen().screen();
         return new ObservedResponse(named(screen.nextProgram()),
@@ -890,79 +373,18 @@ final class COSGN00CParityTest {
                 terminationOf(run.outcome()));
     }
 
-    /**
-     * The communication area as sixteen named field images.
-     *
-     * <p>Rendered through {@link NavigationContext#LAYOUT} rather than by reading the record's
-     * components, so every value is the image the field actually occupies - {@code CDEMO-CUST-ID} as
-     * nine digits, {@code CDEMO-CARD-NUM} as sixteen - at the copybook's declared width. The layout
-     * totals {@value NavigationContext#COMMAREA_LENGTH} bytes and declares no {@code FILLER}, so all
-     * sixteen fields are addressable and every one of them is compared.
-     *
-     * @param codec    the code page
-     * @param commarea the context the program is carrying forward
-     * @return field name to image, in copybook order
-     */
     private static Map<String, String> navigationOf(FixedWidthCodec codec,
                                                     NavigationContext commarea) {
         return codec.deserialise(NavigationContext.LAYOUT, commarea.toFixedWidth(codec));
     }
 
-    /**
-     * Every {@code EXEC CICS SEND MAP} the run performed, in order.
-     *
-     * <p>{@code COSGN00C} sends the map <strong>at most once</strong> per invocation, and that is a
-     * property of the source rather than an assumption: {@code SEND-SIGNON-SCREEN} is performed from
-     * exactly one site on each of the paths that reach it - {@code :83}, {@code :94}, {@code :122},
-     * {@code :127}, {@code :245}, {@code :251} and {@code :256} - and each of those sites is terminal
-     * within its branch, while the two paths that transfer or send text reach none of them.
-     *
-     * @param invocation the invocation, for the received credential-entry items
-     * @param run        the run
-     * @return zero or one send
-     */
     private static List<ObservedSend> sendsOf(Invocation invocation, Run run) {
         if (!run.outcome().screenPainted()) {
             return List.of();
         }
-        // attributes is empty, and deliberately so. COSGN00C copies neither CSSETATY - whose only
-        // consumer is COACTUPC - nor, in effect, DFHATTR: app/cbl/COSGN00C.cbl:59 is *COPY DFHATTR.
-        // with the asterisk in column 7, which makes it a comment. The program assigns no xxxC, xxxP,
-        // xxxH or xxxV item anywhere, so no runtime attribute is observable. See
-        // theRedEmphasisIsAStaticMapProperty().
         return List.of(ObservedSend.ofFields(screenFieldsOf(invocation, run)));
     }
 
-    /**
-     * The eleven named output items of mapset {@code COSGN00}, in symbolic-map order.
-     *
-     * <p>Nine come straight from the projection. The two that do not are {@code USERIDO} and
-     * {@code PASSWDO}, and the reason is the map's own storage model:
-     * {@code app/cpy-bms/COSGN00.CPY:85} declares {@code 01 COSGN0AO REDEFINES COSGN0AI}, and within
-     * each field the input view spends {@code xxxL} plus {@code xxxF} plus a four-byte {@code FILLER}
-     * - seven bytes - exactly where the output view spends a three-byte {@code FILLER} plus
-     * {@code xxxC}, {@code xxxP}, {@code xxxH} and {@code xxxV}. The two views therefore place
-     * {@code xxxI} and {@code xxxO} on the same bytes at the same width. No paragraph of
-     * {@code COSGN00C} moves anything into {@code USERIDO} or {@code PASSWDO} - the program reads
-     * {@code USERIDI} at {@code :118} and {@code :132} and {@code PASSWDI} at {@code :123} and
-     * {@code :135}, and repositions the cursor through the length items - so what those two output
-     * items hold at {@code SEND} time is whatever last occupied that storage.
-     *
-     * <p>Which is one of two things, and only two. After {@code MOVE LOW-VALUES TO COSGN0AO} at
-     * {@code :81} both are {@code X'00'} eight times over; otherwise both hold what
-     * {@code RECEIVE MAP} left there, which is the transmitted image, or {@code LOW-VALUES} again for
-     * a field the terminal did not transmit.
-     *
-     * <p>{@link SignOnResponse} projects both items, so both are read off the payload here like every
-     * other field. An earlier revision of the projection omitted {@code PASSWDO} and left
-     * {@code USERIDO} unpainted, and this differ compensated by reconstructing the two images from the
-     * received map - which meant the harness, not the projection, was being asserted. Reading them off
-     * the payload is what puts the overlay under the diff.
-     *
-     * @param invocation the invocation, retained for the interface every field extractor here shares
-     * @param run        the run
-     * @return item name to image, in symbolic-map order
-     */
     private static Map<String, String> screenFieldsOf(Invocation invocation, Run run) {
         SignOnResponse screen = run.screen().screen();
 
@@ -981,23 +403,6 @@ final class COSGN00CParityTest {
         return fields;
     }
 
-    /**
-     * The image one overlay item is expected to hold when the map is sent - the oracle side of the
-     * {@code REDEFINES}, independent of what the projection produced.
-     *
-     * <p>{@code app/cpy-bms/COSGN00.CPY:85} makes {@code xxxI} and {@code xxxO} one span, so the
-     * expectation is derived from the case's own received map: the transmitted image where the terminal
-     * sent one, {@code LOW-VALUES} where it sent none, and {@code LOW-VALUES} throughout on the path
-     * where {@code MOVE LOW-VALUES TO COSGN0AO} at {@code :81} cleared the area first. It is what
-     * {@link #assertOverlayItemsCarryTheReceivedImages(Invocation, Run)} compares the payload against,
-     * and it is deliberately computed here rather than read from the payload, so the two are independent.
-     *
-     * @param invocation the invocation, for the received map
-     * @param inputItem  the paired {@code xxxI} item, which shares the storage
-     * @param reset      whether {@code MOVE LOW-VALUES TO COSGN0AO} at {@code :81} ran
-     * @param width      the item's declared {@code PICTURE} width
-     * @return the eight-character image
-     */
     private static String credentialItemImage(Invocation invocation, String inputItem, boolean reset,
                                               int width) {
         if (reset) {
@@ -1009,27 +414,10 @@ final class COSGN00CParityTest {
                 : invocation.codec().movePicX(received, width);
     }
 
-    /**
-     * Asserts that the two overlay items the payload carries are the images the {@code REDEFINES}
-     * requires - and that neither is carried on a path that sends no map.
-     *
-     * <p>This is the assertion the earlier projection made impossible. {@code USERIDO} and
-     * {@code PASSWDO} have no {@code MOVE} anywhere in {@code app/cbl/COSGN00C.cbl}, so nothing but the
-     * group {@code REDEFINES} at {@code app/cpy-bms/COSGN00.CPY:85} can put a value in them: the
-     * {@code RECEIVE MAP} at {@code :110-115} writes the spans and the {@code SEND MAP ...
-     * FROM(COSGN0AO)} at {@code :151-157} transmits them. So a repaint that followed a receive must echo
-     * what was typed, verbatim - {@code MOVE FUNCTION UPPER-CASE} at {@code :132-137} writes
-     * {@code WS-USER-ID} and {@code WS-USER-PWD}, never the spans - and the two exits that send no map
-     * at all must carry neither image.
-     *
-     * @param invocation the invocation, for the received map
-     * @param run        the run
-     */
     private static void assertOverlayItemsCarryTheReceivedImages(Invocation invocation, Run run) {
         SignOnResponse screen = run.screen().screen();
         boolean mapSent = !screen.nextMap().isBlank();
         if (!mapSent) {
-            // :162-172 SEND TEXT and :231-239 XCTL both transmit no map, so no item is painted.
             assertThat(screen.userId())
                     .as("no map was sent, so USERIDO carries nothing")
                     .isEqualTo(lowValues(SignOnResponse.USERID_LENGTH));
@@ -1049,14 +437,6 @@ final class COSGN00CParityTest {
                         SignOnRequest.PASSWD_LENGTH));
     }
 
-    /**
-     * Maps the {@code DFHMDF} label {@link ScreenMetadata} reports onto the symbolic-map length item
-     * that received the {@code MOVE -1}.
-     *
-     * @param label the label, or {@code null} on a path that positions no cursor
-     * @return the {@code xxxL} item name, or {@code null}
-     * @throws IllegalStateException if the projection named a field that is not a cursor target
-     */
     private static String cursorItemOf(String label) {
         if (label == null) {
             return null;
@@ -1071,18 +451,6 @@ final class COSGN00CParityTest {
         return item;
     }
 
-    /**
-     * How the transaction ended, in the two forms a {@link ParityCase} can pin.
-     *
-     * <p>{@code EXEC CICS XCTL} at {@code :231-239} transfers control and does not come back, so the
-     * {@code EXEC CICS RETURN TRANSID} at {@code :98-102} that follows it in the source is not
-     * reached. The two are not interchangeable, which is why the differ compares them.
-     *
-     * @param outcome the outcome
-     * @return the termination
-     * @throws IllegalStateException if the run ended by the bare {@code RETURN} at {@code :171},
-     *                               which has no response to carry a termination on
-     */
     private static Termination terminationOf(SignOnOutcome outcome) {
         switch (outcome.termination()) {
             case XCTL:
@@ -1099,22 +467,6 @@ final class COSGN00CParityTest {
         }
     }
 
-    // =============================================================================================
-    // Per-run assertions. These state what the differ cannot see, because the differ compares the
-    // observation against the case and these compare the observation against itself.
-    // =============================================================================================
-
-    /**
-     * Everything one run must be internally consistent about, whatever arm it took.
-     *
-     * <p>An {@link AssertionError} raised here is an {@code Error} rather than an {@code Exception},
-     * so {@link ParityHarness#run} lets it through untouched and the failure reads at its own call
-     * site rather than as "the case raised something that is not an abend".
-     *
-     * @param invocation the invocation
-     * @param request    the payload the run was driven with
-     * @param run        the run
-     */
     private static void assertRunInvariants(Invocation invocation, SignOnRequest request, Run run) {
         SignOnOutcome outcome = run.outcome();
         SignOnResponse screen = run.screen().screen();
@@ -1131,35 +483,14 @@ final class COSGN00CParityTest {
         assertTheErrorFlagFollowsTheSourceExactly(caseId, outcome);
     }
 
-    /**
-     * {@code WS-ERR-FLG} is raised on exactly the paths that raise it in the source - and the
-     * wrong-password path is <strong>not</strong> one of them.
-     *
-     * <p>This is the program's most easily "corrected" quirk. Five paths move {@code 'Y'} into
-     * {@code WS-ERR-FLG}: the invalid-key arm at {@code :92}, the blank user id at {@code :119}, the
-     * blank password at {@code :124}, the not-found arm at {@code :248} and the unexpected-response
-     * arm at {@code :253}. The wrong-password arm at {@code :241-246} moves the message, moves the
-     * cursor and paints the screen - and sets no flag. Nothing downstream reads the flag by then,
-     * because {@code :138} has already been evaluated, so the omission changes no outcome and is
-     * invisible to every other assertion in this gate. That is exactly why it is asserted here: an
-     * invisible inconsistency is the kind a translation harmonises for tidiness, and preserving
-     * legacy behaviour means preserving it including its defects.
-     *
-     * <p>The expected flag is derived from the eighty-byte {@code WS-MESSAGE}, which identifies the
-     * path uniquely, so the two are cross-checked rather than restated: nine message states partition
-     * the program's paths, and each one fixes the flag.
-     *
-     * @param caseId  the case identifier
-     * @param outcome the outcome, carrying both the message and the flag
-     */
     private static void assertTheErrorFlagFollowsTheSourceExactly(String caseId,
                                                                   SignOnOutcome outcome) {
         String message = outcome.message();
-        boolean raisedBySource = message.equals(padded(SignOnService.MSG_ENTER_USER_ID))      // :119
-                || message.equals(padded(SignOnService.MSG_ENTER_PASSWORD))                   // :124
-                || message.equals(padded(SignOnService.MSG_USER_NOT_FOUND))                   // :248
-                || message.equals(padded(SignOnService.MSG_UNABLE_TO_VERIFY))                 // :253
-                || message.equals(padded(SystemMessages.CCDA_MSG_INVALID_KEY));               // :92
+        boolean raisedBySource = message.equals(padded(SignOnService.MSG_ENTER_USER_ID))
+                || message.equals(padded(SignOnService.MSG_ENTER_PASSWORD))
+                || message.equals(padded(SignOnService.MSG_USER_NOT_FOUND))
+                || message.equals(padded(SignOnService.MSG_UNABLE_TO_VERIFY))
+                || message.equals(padded(SystemMessages.CCDA_MSG_INVALID_KEY));
 
         if (message.equals(padded(SignOnService.MSG_WRONG_PASSWORD))) {
             assertThat(outcome.errorFlag())
@@ -1187,20 +518,6 @@ final class COSGN00CParityTest {
                 .isEqualTo(raisedBySource ? SignOnService.ERR_FLG_ON : SignOnService.ERR_FLG_OFF);
     }
 
-    /**
-     * The byte the controller resolved is the byte the case declared.
-     *
-     * <p>{@code app/cbl/COSGN00C.cbl:85} is {@code EVALUATE EIBAID} over the raw byte, while a JSON
-     * payload can only carry the {@code CCARD-AID} token. {@code app/cpy/CSSTRPFY.cpy} folds
-     * {@code PF13} through {@code PF24} onto {@code PF1} through {@code PF12}, so a token round trip
-     * is lossy for a folded key and would silently drive {@code DFHPF3} for a case that named
-     * {@code DFHPF15}. Requiring the resolved token to be the one the declared byte resolves to is
-     * what proves no fold happened.
-     *
-     * @param invocation the invocation carrying the declared mnemonic
-     * @param request    the payload built from it
-     * @param outcome    the outcome, which carries the token the service resolved
-     */
     private static void assertAttentionIdentifierSurvivedTheRoundTrip(Invocation invocation,
                                                                      SignOnRequest request,
                                                                      SignOnOutcome outcome) {
@@ -1213,17 +530,6 @@ final class COSGN00CParityTest {
                 .isEqualTo(PfKeyResolver.resolve(aidByteOf(invocation.aid())));
     }
 
-    /**
-     * Exactly one of the three exits happened.
-     *
-     * <p>{@code MAIN-PARA} reaches a terminal action on every path and never two of them: the map
-     * send at {@code :151-157}, the unformatted text at {@code :164-169} or the transfer at
-     * {@code :231-239}. A run reporting two would mean the field values recorded below belong to one
-     * of them while the other's payload has been lost.
-     *
-     * @param caseId  the case identifier
-     * @param outcome the outcome
-     */
     private static void assertExactlyOneExit(String caseId, SignOnOutcome outcome) {
         int exits = (outcome.screenPainted() ? 1 : 0)
                 + (outcome.plainTextSent() ? 1 : 0)
@@ -1234,17 +540,6 @@ final class COSGN00CParityTest {
                 .isOne();
     }
 
-    /**
-     * Gate {@code G40}: the role and the transfer target agree, and no forward happens.
-     *
-     * <p>{@code :230} tests {@code 88 CDEMO-USRTYP-ADMIN} and nothing else, so the target is a
-     * function of the one character {@code :227} moved out of {@code SEC-USR-TYPE}. The response
-     * carries both, and the client resolves the navigation.
-     *
-     * @param caseId  the case identifier
-     * @param outcome the outcome
-     * @param screen  the projection
-     */
     private static void assertRoleAndTargetAgree(String caseId, SignOnOutcome outcome,
                                                  SignOnResponse screen) {
         assertThat(screen.nextProgram())
@@ -1277,18 +572,6 @@ final class COSGN00CParityTest {
                 .isBlank();
     }
 
-    /**
-     * {@code MOVE WS-MESSAGE TO ERRMSGO OF COSGN0AO} at {@code :149} narrows
-     * {@value #WS_MESSAGE_LENGTH} bytes to {@value #ERRMSG_LENGTH}, truncating on the right.
-     *
-     * <p>Asserted as a relationship between the two widths rather than as two literals, so a
-     * translation that truncated on the left - or that did not truncate at all - fails here whatever
-     * the message happens to be.
-     *
-     * @param caseId  the case identifier
-     * @param outcome the outcome, carrying the eighty-byte {@code WS-MESSAGE}
-     * @param screen  the projection, carrying the seventy-eight-byte {@code ERRMSGO}
-     */
     private static void assertMessageNarrowedFromEightyToSeventyEight(String caseId,
                                                                       SignOnOutcome outcome,
                                                                       SignOnResponse screen) {
@@ -1299,11 +582,6 @@ final class COSGN00CParityTest {
                 .as("%s: ERRMSGO is PIC X(78) - app/cpy-bms/COSGN00.CPY:152", caseId)
                 .hasSize(ERRMSG_LENGTH);
         if (!outcome.screenPainted()) {
-            // :149 MOVE WS-MESSAGE TO ERRMSGO is inside SEND-SIGNON-SCREEN, so it does not run on the
-            // PF3 exit at :162-172 or the XCTL at :231-239. What those two paths leave in the item is
-            // the MOVE SPACES of :78, which precedes the EVALUATE and therefore runs on every path.
-            // The PF3 message itself is not lost: it travels at its full eighty bytes in plainText,
-            // which is what EXEC CICS SEND TEXT FROM(WS-MESSAGE) transmits.
             assertThat(screen.errMsg())
                     .as("%s: no SEND MAP ran, so ERRMSGO holds the :78 spaces", caseId)
                     .isEqualTo(spaces(ERRMSG_LENGTH));
@@ -1315,20 +593,6 @@ final class COSGN00CParityTest {
                 .isEqualTo(outcome.message().substring(0, ERRMSG_LENGTH));
     }
 
-    /**
-     * The eighty-byte unformatted transmission of {@code SEND-PLAIN-TEXT}, and its absence everywhere
-     * else.
-     *
-     * <p>{@code EXEC CICS SEND TEXT FROM(WS-MESSAGE) LENGTH(LENGTH OF WS-MESSAGE) ERASE FREEKB} at
-     * {@code :164-169} transmits the whole of {@code WS-MESSAGE PIC X(80)}, which is two characters wider
-     * than {@code ERRMSGO}. Projecting it into the error line would lose the trailing two and would
-     * report a map field for a send that has no map, so it travels at its own width instead. Every other
-     * path transmits no text at all and therefore carries eighty spaces.
-     *
-     * @param caseId  the case identifier
-     * @param outcome the outcome, carrying {@code plainTextSent} and the message
-     * @param screen  the projection
-     */
     private static void assertThePlainTextSendIsEightyBytes(String caseId,
                                                             SignOnOutcome outcome,
                                                             SignOnResponse screen) {
@@ -1348,19 +612,6 @@ final class COSGN00CParityTest {
                 .isEqualTo(spaces(WS_MESSAGE_LENGTH));
     }
 
-    /**
-     * Gate {@code G47}: {@code EXEC CICS READ} was issued exactly where the source issues it.
-     *
-     * <p>{@code READ-USER-SEC-FILE} is performed from one site, {@code :139}, which {@code :138}
-     * guards with {@code IF NOT ERR-FLG-ON}. So a run has a read outcome if and only if it read the
-     * file, and it read it at most once. Tying the observable classification to the call count is
-     * what stops a translation from reading twice, or from reporting a classification it never
-     * obtained.
-     *
-     * @param caseId  the case identifier
-     * @param outcome the outcome
-     * @param reads   how many reads the stub served
-     */
     private static void assertTheFileWasReadOnlyWhereTheSourceReadsIt(String caseId,
                                                                       SignOnOutcome outcome,
                                                                       int reads) {
@@ -1370,13 +621,6 @@ final class COSGN00CParityTest {
                 .isEqualTo(outcome.readOutcome().isPresent() ? 1 : 0);
     }
 
-    /**
-     * Gate {@code G37}: the whole communication area travels in the payload, at its declared width.
-     *
-     * @param caseId     the case identifier
-     * @param invocation the invocation, for the codec
-     * @param screen     the projection
-     */
     private static void assertTheCommareaIsOneHundredAndSixtyBytes(String caseId,
                                                                    Invocation invocation,
                                                                    SignOnResponse screen) {
@@ -1391,51 +635,23 @@ final class COSGN00CParityTest {
                 .containsOnlyKeys(COMMAREA_FIELDS.toArray(new String[0]));
     }
 
-    // =============================================================================================
-    // Small pure helpers. Each states one COBOL primitive or one derived table.
-    // =============================================================================================
-
-    /**
-     * @param width the field width
-     * @return {@code LOW-VALUES} at that width - {@code X'00'} repeated, never spaces
-     */
     private static String lowValues(int width) {
         return String.valueOf(LOW_VALUE).repeat(width);
     }
 
-    /**
-     * @param width the field width
-     * @return {@code SPACES} at that width - the blank {@code MOVE SPACES} writes, never {@code X'00'}
-     */
     private static String spaces(int width) {
         return String.valueOf(SPACE).repeat(width);
     }
 
-    /**
-     * {@code MOVE <literal> TO WS-MESSAGE} where the sender is narrower than
-     * {@value #WS_MESSAGE_LENGTH}.
-     *
-     * @param text the literal
-     * @return the literal left-justified in an eighty-character field, space-filled on the right
-     */
     private static String padded(String text) {
         Objects.requireNonNull(text, "A message literal is required");
         return text + String.valueOf(SPACE).repeat(WS_MESSAGE_LENGTH - text.length());
     }
 
-    /**
-     * @param value a fixed-width image
-     * @return {@code null} when the image is blank, otherwise the image with padding removed
-     */
     private static String named(String value) {
         return value == null || value.isBlank() ? null : value.strip();
     }
 
-    /**
-     * Inverts {@link CicsAid#mnemonicsByAid()} once, at class initialisation.
-     *
-     * @return mnemonic to byte, unmodifiable
-     */
     private static Map<String, Byte> aidBytesByMnemonic() {
         Map<String, Byte> byMnemonic = new LinkedHashMap<>();
         for (Map.Entry<Byte, String> entry : CicsAid.mnemonicsByAid().entrySet()) {
@@ -1444,17 +660,6 @@ final class COSGN00CParityTest {
         return Collections.unmodifiableMap(byMnemonic);
     }
 
-    /**
-     * Pairs the two cursor labels the projection reports with the two length items the source moves
-     * {@code -1} into.
-     *
-     * <p>Built from both production spellings rather than from literals, so the {@code DFHMDF} label
-     * and the {@code xxxL} item name cannot drift apart unnoticed. The pairing is checked as it is
-     * built: an item that is not its label plus {@value #LENGTH_ITEM_SUFFIX} fails here.
-     *
-     * @return label to length item, unmodifiable
-     * @throws IllegalStateException if a label and its length item do not correspond
-     */
     private static Map<String, String> cursorItemsByLabel() {
         Map<String, String> byLabel = new LinkedHashMap<>();
         byLabel.put(SignOnController.CURSOR_USERID,
@@ -1464,12 +669,6 @@ final class COSGN00CParityTest {
         return Collections.unmodifiableMap(byLabel);
     }
 
-    /**
-     * @param label  the {@code DFHMDF} label
-     * @param cursor the service's cursor target
-     * @return the {@code xxxL} item name
-     * @throws IllegalStateException if the two do not correspond
-     */
     private static String requireLengthItemOf(String label, CursorField cursor) {
         String item = cursor.lengthItemName().orElseThrow(() -> new IllegalStateException(
                 "CursorField." + cursor + " names no length item, yet SignOnController reports \""
@@ -1484,23 +683,10 @@ final class COSGN00CParityTest {
         return item;
     }
 
-    /**
-     * The eleven named output items, taken from the projection's own census.
-     *
-     * <p>Composed from {@link SignOnResponse#MAP_FIELDS} rather than typed out, so a field the
-     * projection stopped carrying would fail the ordered assertion in
-     * {@link #everyPaintedScreenCarriesElevenItems()} instead of quietly dropping out of every diff.
-     *
-     * @return the item names in symbolic-map order, unmodifiable
-     */
     private static List<String> screenItems() {
         return Collections.unmodifiableList(new ArrayList<>(SignOnResponse.MAP_FIELDS));
     }
 
-    /**
-     * @param parityCase the case
-     * @return the single {@link ScreenSend} the case pins, or {@code null} when it pins none
-     */
     private static ScreenSend sendOf(ParityCase parityCase) {
         if (parityCase.expectedResponse() == null
                 || parityCase.expectedResponse().sends().isEmpty()) {
@@ -1513,37 +699,15 @@ final class COSGN00CParityTest {
         return parityCase.expectedResponse().sends().get(0);
     }
 
-    /**
-     * @param parityCase the case
-     * @return the {@code ERRMSGO} image the case pins, or {@code null} when it pins no send
-     */
     private static String errMsgOf(ParityCase parityCase) {
         ScreenSend send = sendOf(parityCase);
         return send == null ? null : send.fields().get(SignOnResponse.ERRMSG_FIELD);
     }
 
-    /**
-     * @param parityCase the case
-     * @param field      a {@code CARDDEMO-COMMAREA} field name
-     * @return the image the case pins for it
-     */
     private static String navigationOf(ParityCase parityCase, String field) {
         return parityCase.expectedResponse().navigation().get(field);
     }
 
-    // =============================================================================================
-    // Section - structural checks on the case set itself. Each states a property of the twenty cases
-    // as a SET, which no single case can state about itself, and a gate whose fixtures nobody
-    // validates is a gate that can be weakened by editing a fixture.
-    // =============================================================================================
-
-    /**
-     * Gate {@code G15}: exactly twenty cases, named {@code case01} through {@code case20} in order,
-     * all naming this program and all declaring the shape this adapter constructs.
-     *
-     * <p>Asserted separately from the gate, because the gate is parameterised <em>by</em> the case
-     * set: a set of four would run four green tests and report nothing wrong.
-     */
     @Test
     @DisplayName("the case set is exactly case01 through case20, all naming COSGN00C")
     void theCaseSetIsExactlyTwenty() {
@@ -1591,18 +755,6 @@ final class COSGN00CParityTest {
         });
     }
 
-    /**
-     * Every case seeds {@code USRSEC} from {@code app/jcl/DUSRSECJ.jcl} and declares the pad that
-     * brings those rows to the copybook's width.
-     *
-     * <p>There is no {@code usrsec} fixture in {@code app/data/ASCII} - the nine that exist are for
-     * other datasets - so the ten rows are the JCL's in-stream data, which is
-     * {@value #SEED_ROW_WIDTH} characters per row where {@code app/cpy/CSUSR01Y.cpy} declares
-     * {@value SecUserRecord#RECORD_LENGTH}. The absent span is {@code SEC-USR-FILLER PIC X(23)}. The
-     * pad has exactly one owner: it is declared in the case and applied at seed time by the harness,
-     * never at comparison time, so a width disagreement in a failure is always a real difference and
-     * never a missing declaration.
-     */
     @Test
     @DisplayName("USRSEC is seeded from DUSRSECJ.jcl and padded from 57 to 80 exactly once")
     void everyCaseDeclaresTheUsrsecPad() {
@@ -1635,15 +787,6 @@ final class COSGN00CParityTest {
         }
     }
 
-    /**
-     * The ten seeded rows are the ones {@code app/jcl/DUSRSECJ.jcl} actually carries: five
-     * administrators, five regular users, in ascending key order, all sharing one password.
-     *
-     * <p>The password is compared row against row rather than against a literal spelled here. That
-     * keeps this file free of a credential string while still proving the property the sign-on cases
-     * depend on - that one typed value authenticates all ten users, so a case that signs on has
-     * exercised the comparison rather than a coincidence.
-     */
     @Test
     @DisplayName("the seed is DUSRSECJ.jcl's ten rows: five admins, five users, one password")
     void theSeedIsTheJclInStreamData() {
@@ -1670,7 +813,7 @@ final class COSGN00CParityTest {
                 assertThat(row.substring(SecUserRecord.SEC_USR_PWD_OFFSET,
                         SecUserRecord.SEC_USR_PWD_OFFSET + SecUserRecord.SEC_USR_PWD_LENGTH))
                         .as("%s: DUSRSECJ.jcl gives all ten rows the same eight-character password, "
-                                + "which is what lets one typed value drive every role", 
+                                + "which is what lets one typed value drive every role",
                                 parityCase.caseId())
                         .isEqualTo(password);
             }
@@ -1690,17 +833,6 @@ final class COSGN00CParityTest {
         }
     }
 
-    /**
-     * Gates {@code G19} and {@code G21}: every row any case pins is exactly
-     * {@value SecUserRecord#RECORD_LENGTH} bytes with {@code SEC-USR-FILLER} present and
-     * space-filled, and no case pins a write at all.
-     *
-     * <p>{@code SEC-USR-FILLER X(23)} is assigned by nothing and must still be emitted: omit it and
-     * the record is fifty-seven bytes, which is the very width the seeding deviation would otherwise
-     * disguise. The write channel is empty because {@code app/cbl/COSGN00C.cbl} contains no
-     * {@code WRITE}, {@code REWRITE} or {@code DELETE} - the sign-on read at {@code :211} does not
-     * even specify {@code UPDATE}, so it takes no lock and holds no record.
-     */
     @Test
     @DisplayName("every pinned row is 80 bytes with SEC-USR-FILLER space-filled, and nothing is written")
     void everyPinnedRowIsEightyBytesAndNothingIsWritten() {
@@ -1748,27 +880,6 @@ final class COSGN00CParityTest {
         }
     }
 
-    /**
-     * The blank-field chain keeps the source's order, and the second arm is reached only by falling
-     * through the first.
-     *
-     * <p>{@code EVALUATE TRUE} at {@code app/cbl/COSGN00C.cbl:117} is ordered and the first matching
-     * {@code WHEN} wins, so the order of {@code :118-130} is the whole of the contract - and it is
-     * only falsifiable across the case set. {@code case06} pins the user-id arm from the first
-     * position, while {@code case07} and {@code case08} pin the password arm from the second, each
-     * with a different seeded key: reaching {@code :123} at all proves {@code :118} was evaluated and
-     * found false, because a chain that tested the password first would answer both of them with the
-     * password message and {@code case06} with it too. Each arm also raises {@code WS-ERR-FLG}, so
-     * {@code :138} finds the flag on and the file is never read: an empty read outcome is part of
-     * what these three assert.
-     *
-     * <p>The complementary reading - that when <em>both</em> fields are blank the earlier arm is the
-     * one that speaks - is driven directly against the service by
-     * {@code SignOnServiceTest.bothBlankAsksForTheUserIdFirst()}, where both conditions can be made
-     * true at once and the losing message can be asserted absent. It is proven there rather than
-     * here because a fixture can only ever exhibit one arm's outcome, whereas that test contrasts
-     * the two.
-     */
     @Test
     @DisplayName("the blank-field chain keeps source order and the second arm falls through the first")
     void theBlankFieldChainIsOrderedAndTheSecondArmFallsThroughTheFirst() {
@@ -1829,38 +940,11 @@ final class COSGN00CParityTest {
         }
     }
 
-    /**
-     * {@code FUNCTION UPPER-CASE} is applied to <strong>both</strong> the user id and the password,
-     * and it is applied <strong>unconditionally</strong>.
-     *
-     * <p>{@code app/cbl/COSGN00C.cbl:132-136} sits <em>after</em> the {@code EVALUATE} of
-     * {@code :117-130} and outside every arm of it, so it runs on all three paths - including the two
-     * that already raised the error flag. That is why {@code CDEMO-USER-ID} carries the normalised
-     * image even on a rejected sign-on, and it is asserted here because it is exactly the sort of
-     * detail a translation "tidies" by folding the normalisation into the success path.
-     *
-     * <p>The two halves of the claim are carried by different cases, and neither half rests on one
-     * case alone. <em>Both fields are normalised</em> is proved by {@code case10}, which types
-     * {@code UsEr0002} and {@code PassWord} so that signing on is impossible unless the id
-     * <strong>and</strong> the password were folded, and by {@code case16}, which types the id in
-     * upper case and the password in lower so that {@code :135-136} is isolated from
-     * {@code :132-134}. <em>It runs unconditionally</em> is proved by the loop above, which pins
-     * {@code CDEMO-USER-ID} on every case that typed an id - and its sharpest witnesses are the
-     * rejecting paths, where a translation that folded the normalisation into the success path would
-     * hand back the raw image instead. {@code case09} is asserted below as one such path: it raises
-     * {@code WS-ERR-FLG} at {@code :124} and still leaves the normalised id in the area.
-     *
-     * <p>Note the deliberate asymmetry with the sibling screens: {@code COUSR01C}, which adds a user,
-     * contains {@code FUNCTION UPPER-CASE} <em>zero</em> times and stores what was typed. The
-     * inconsistency is real, verified source behaviour, so it is preserved on both sides rather than
-     * harmonised.
-     */
     @Test
     @DisplayName("FUNCTION UPPER-CASE covers both fields and runs on every path")
     void upperCaseNormalisationIsUnconditionalAndCoversBothFields() {
         for (ParityCase parityCase : cases()) {
             if (parityCase.expectedResponse() == null) {
-                // The PF3 arm at :88-90 never performs PROCESS-ENTER-KEY, so :132-136 is not reached.
                 continue;
             }
             String typed = parityCase.screenRequest().mapFields().get(USERID_INPUT_ITEM);
@@ -1899,11 +983,6 @@ final class COSGN00CParityTest {
                 .isEqualTo(SignOnService.upperCase(
                         lowerPasswordOnly.screenRequest().mapFields().get(USERID_INPUT_ITEM)));
 
-        // The unconditional half of the claim, stated on a case that does NOT sign on. The loop above
-        // would be satisfied vacuously if every case carrying a typed id happened to reach :223, so at
-        // least one rejecting path must be named: case09 raises WS-ERR-FLG at :124, skips
-        // READ-USER-SEC-FILE at :138, and still leaves FUNCTION UPPER-CASE(USERIDI) in CDEMO-USER-ID
-        // because :132-134 sits outside the EVALUATE that rejected it.
         ParityCase rejectedButNormalised = byId.get(ParityHarness.caseId(9));
         String rejectedId = rejectedButNormalised.screenRequest().mapFields().get(USERID_INPUT_ITEM);
         assertThat(rejectedButNormalised.expectedResponse().nextProgram())
@@ -1920,34 +999,6 @@ final class COSGN00CParityTest {
                 .isEqualTo(SignOnService.upperCase(rejectedId));
     }
 
-    /**
-     * Gate {@code G41}: the password comparison at {@code app/cbl/COSGN00C.cbl:223} is plaintext and
-     * byte for byte.
-     *
-     * <p>{@code IF SEC-USR-PWD = WS-USER-PWD} is an alphanumeric comparison of two
-     * {@code PIC X(08)} fields. There is no encoder in the path, and there is no tolerance in it
-     * either. Three cases make that falsifiable from both directions and from both sides of the
-     * width. {@code case02} types the seeded password exactly and signs on, which refuses a
-     * comparison that always fails. {@code case14} types a password of the same eight-character
-     * width that differs from the seeded one and is rejected, which refuses a comparison that always
-     * succeeds - and refuses one that looks at a suffix only, since the two images agree on their
-     * last character. {@code case15} keys fewer characters than the seeded password holds, which CICS
-     * delivers space-padded to the same eight, and whose keyed part is the leading part of the seeded
-     * value; it is rejected too, which refuses a comparison that strips the padding and then
-     * compares a prefix - the failure mode two full-width images cannot see at all.
-     *
-     * <p>The one-differing-character variant this gate used to draw from {@code case17} left that
-     * slot when the build prompt reassigned {@code case17} to the {@code FUNCTION UPPER-CASE}
-     * normalisation applied to the key of a <em>missed</em> read. The property is not restated on a
-     * case that no longer holds it: what is asserted below is the difference the case set actually
-     * carries, and the rejecting cases are required to differ from the seeded value in a way each
-     * names precisely, so a fixture edited into agreement fails here.
-     *
-     * <p>Recorded once more because it matters: <strong>the plaintext credential is an inherited
-     * property of the legacy design and an explicit non-goal of this migration.</strong> Hashing it
-     * would need Spring Security, which is out of scope, and would change which requests sign on,
-     * which is forbidden.
-     */
     @Test
     @DisplayName("the password comparison is plaintext and byte for byte")
     void thePasswordComparisonIsPlaintextAndByteForByte() {
@@ -2005,18 +1056,6 @@ final class COSGN00CParityTest {
         assertRejectedAtThePasswordArm(strictPrefix, "case15");
     }
 
-    /**
-     * The three observable consequences of {@code :241-246}, asserted for one case.
-     *
-     * <p>Factored out because two cases drive that arm from opposite sides of the field width and the
-     * arm's behaviour is one thing: the {@code ELSE} at {@code :241} transfers no control,
-     * {@code :242-243} moves {@code 'Wrong Password. Try again ...'} into {@code WS-MESSAGE} and
-     * {@code :244} moves {@code -1} into {@code PASSWDL} so the cursor returns to the password rather
-     * than to the user id.
-     *
-     * @param parityCase the case that must reach the wrong-password arm
-     * @param label      the case identifier, for the failure message
-     */
     private static void assertRejectedAtThePasswordArm(ParityCase parityCase, String label) {
         assertThat(parityCase.expectedResponse().nextProgram())
                 .as("%s takes the ELSE at :241 and never transfers control", label)
@@ -2029,16 +1068,6 @@ final class COSGN00CParityTest {
                 .isEqualTo(CursorField.PASSWORD.lengthItemName().orElseThrow());
     }
 
-    /**
-     * Gate {@code G47}: all three arms of {@code EVALUATE WS-RESP-CD} are driven.
-     *
-     * <p>{@code app/cbl/COSGN00C.cbl:221-257} branches on the raw numeric literals {@code 0} and
-     * {@code 13} and defaults everything else to {@code WHEN OTHER}. The three arms produce three
-     * different messages and two different cursor positions, and each is pinned by a case:
-     * {@code case02} the found arm, {@code case05} the not-found arm reached from the data itself, and
-     * {@code case11} the unexpected arm, which no arrangement of well-formed rows can reach and which
-     * therefore declares a forced outcome.
-     */
     @Test
     @DisplayName("the RESP split drives 0, 13 and other")
     void theRespSplitDrivesAllThreeArms() {
@@ -2087,16 +1116,6 @@ final class COSGN00CParityTest {
                 .isEqualTo(CursorField.USER_ID.lengthItemName().orElseThrow());
     }
 
-    /**
-     * Gate {@code G40}: the {@code EXEC CICS XCTL} becomes a response field, and the role decides
-     * which target it names.
-     *
-     * <p>{@code :230-240} is the program's only transfer of control and it routes on
-     * {@code 88 CDEMO-USRTYP-ADMIN} alone. In the stateless translation the response carries the role
-     * and the target and the client resolves the navigation, so what is asserted here is a pair of
-     * response fields rather than a dispatch. Both targets are exercised, and the count of signing-on
-     * cases is pinned so that a case which stopped signing on cannot pass unnoticed.
-     */
     @Test
     @DisplayName("role routing becomes a response field, admin to COADM01C and user to COMEN01C")
     void theRoleFieldReplacesTheXctl() {
@@ -2158,28 +1177,6 @@ final class COSGN00CParityTest {
                 .isEqualTo(SignOnResponse.NEXT_PROGRAM_USER);
     }
 
-    /**
-     * Gate {@code G37}: the whole conversation state travels in the payload and none of it is held on
-     * the server.
-     *
-     * <p>Every case pins all sixteen {@code CARDDEMO-COMMAREA} fields, at their copybook widths, on
-     * whichever side of the conversation the program left them. The five that {@code :224-228} writes
-     * are written on the signing-on path only, and {@code CDEMO-PGM-CONTEXT} is reset to the
-     * {@code 88 CDEMO-PGM-ENTER} value there by {@code MOVE ZEROS} at {@code :228} - which every
-     * signing-on case asserts, and which {@code case15} proves is <em>conditional</em> by arriving
-     * with the field at the {@code 88 CDEMO-PGM-REENTER} value, being refused at {@code :223}, and
-     * leaving with it still at that value. It is the only case in the twenty that arrives with a
-     * non-zero program context, so it carries this screen's share of the {@code ENTER}/{@code
-     * REENTER} distinction, and a translation that hoisted the {@code MOVE ZEROS} out of the
-     * matching branch would zero it and be caught here rather than passing.
-     *
-     * <p>{@code case14} carries a fully populated inbound area and asserts the complement: the eleven
-     * fields {@code COSGN00C} does not write come back exactly as they arrived. A translation holding
-     * any of this in a session would have nothing to hand back. It carries that area across the
-     * <em>rejecting</em> path - the wrong-password {@code ELSE} at {@code :241-246} - which is what
-     * makes the assertion non-vacuous: the cases that reject on a blank inbound area would read the
-     * same whether the area was carried or rebuilt, and this one would not.
-     */
     @Test
     @DisplayName("the navigation context travels in the payload, all sixteen fields, no session")
     void theNavigationContextTravelsInThePayload() {
@@ -2264,18 +1261,6 @@ final class COSGN00CParityTest {
         }
     }
 
-    /**
-     * The header widths are this screen's own, and the two {@code EXEC CICS ASSIGN} substitutions
-     * appear on every painted screen.
-     *
-     * <p>{@code COSGN00} is the only one of the five user screens that carries {@code APPLID} and
-     * {@code SYSID} - they come from {@code EXEC CICS ASSIGN} at {@code :198-204}, which no other
-     * program in the set performs - and the only one whose {@code CURTIMEO} is declared
-     * {@code PIC X(9)} rather than {@code PIC X(8)}. Both are easy to get wrong by copying a sibling
-     * screen's field list, so both are asserted against the widths this map declares, and the extra
-     * byte of {@code CURTIMEO} is asserted to be the trailing space it is: {@code WS-CURTIME-HH-MM-SS}
-     * is eight characters and {@code :196} moves it into a nine-character receiver.
-     */
     @Test
     @DisplayName("CURTIMEO is nine bytes and APPLIDO and SYSIDO are this screen's alone")
     void theHeaderWidthsAreThisScreensOwn() {
@@ -2332,16 +1317,6 @@ final class COSGN00CParityTest {
         }
     }
 
-    /**
-     * Every painted screen carries all eleven named items of mapset {@code COSGN00}, in symbolic-map
-     * order, and no attribute item at all.
-     *
-     * <p>The eleven-versus-ten discrepancy is the interesting part. {@link SignOnResponse} projects
-     * ten, deliberately omitting {@code PASSWDO} so the payload never echoes a password over JSON;
-     * the screen storage nonetheless holds eleven, because {@code COSGN0AO REDEFINES COSGN0AI}. This
-     * is where the two counts are held apart, so the gap cannot be closed in either direction without
-     * a test turning red.
-     */
     @Test
     @DisplayName("every painted screen carries all eleven named items and no attribute item")
     void everyPaintedScreenCarriesElevenItems() {
@@ -2389,22 +1364,6 @@ final class COSGN00CParityTest {
                 .isEqualTo(SCREEN_SENDS);
     }
 
-    /**
-     * The three exits partition the twenty cases, and the {@code DFHPF3} arm is the only one that
-     * emits a line.
-     *
-     * <p>{@code SEND-PLAIN-TEXT} at {@code :162-172} transmits
-     * {@code FROM(WS-MESSAGE) LENGTH(LENGTH OF WS-MESSAGE)} - eighty bytes of unformatted text - and
-     * then issues a bare {@code EXEC CICS RETURN} carrying no {@code TRANSID} and no
-     * {@code COMMAREA}, so the pseudo-conversation ends there and {@code :98-102} is never reached.
-     * That case therefore pins no screen response at all: there is no map, no navigation context
-     * handed on and no termination to state. What it pins instead is the eighty-byte line, which is
-     * the whole of what the terminal received, and which is also the only place in this gate where
-     * the full {@value #WS_MESSAGE_LENGTH}-byte {@code WS-MESSAGE} is observable rather than its
-     * {@value #ERRMSG_LENGTH}-byte projection.
-     *
-     * <p>{@code COSGN00C} contains no {@code DISPLAY} on any path, so no other case emits anything.
-     */
     @Test
     @DisplayName("the three exits partition the twenty, and only the PF3 arm emits a line")
     void theThreeExitsPartitionTheCaseSet() {
@@ -2462,26 +1421,6 @@ final class COSGN00CParityTest {
                 .isEqualTo(ParityHarness.CASES_PER_PROGRAM);
     }
 
-    /**
-     * The invalid-key arm is the {@code WHEN OTHER} of an ordered {@code EVALUATE} rather than a test
-     * for one particular key, and it is exactly the complement of the two keys the source names.
-     *
-     * <p>{@code :85-95} names {@code DFHENTER} and {@code DFHPF3} and defaults everything else. The
-     * property is therefore asserted in both directions over the whole case set: every re-entering
-     * case pressing a key that is neither must land on the arm, with the same message and no cursor
-     * request - {@code :91-94} contains no {@code MOVE -1} at all, which is easy to miss because
-     * every other rejecting path in the program has one - and no case pressing either named key may
-     * land on it, which is what makes it a default rather than a third alternative.
-     *
-     * <p>Quantified over the set rather than over {@code case13} and {@code case19}, which is what it
-     * named while both happened to press an unnamed key. {@code case19} now signs on, so a hard-coded
-     * pair would assert the default arm of a case that no longer reaches it. Stating the property as
-     * "every unnamed key lands here and nothing else does" keeps the original claim true of whatever
-     * the folder holds, widens by itself if another unnamed key is added, and is strictly stronger
-     * than the pair it replaces, because the pair asserted only the first direction. The keys are
-     * compared as the bytes {@code :85} evaluates, through {@link #aidByteOf(String)}, and the
-     * arm is required to be non-empty so it can never pass vacuously.
-     */
     @Test
     @DisplayName("the invalid-key arm is WHEN OTHER: every unnamed key lands there, and only those")
     void theInvalidKeyArmIsTheDefault() {
@@ -2532,22 +1471,6 @@ final class COSGN00CParityTest {
         }
     }
 
-    /**
-     * Risk {@code R-D}: the red emphasis on the error line is a static map property, and the
-     * attribute constants this module reproduces are IBM's rather than this repository's.
-     *
-     * <p>{@code app/bms/COSGN00.bms:197-200} declares
-     * {@code ERRMSG DFHMDF ATTRB=(ASKIP,BRT,FSET) COLOR=RED LENGTH=78 POS=(23,1)}, so the colour is
-     * assembled into the map once and is never assigned at run time by this program. Where a runtime
-     * value <em>would</em> come from is {@link BmsAttributes}, which reproduces {@code DFHBMSCA} and
-     * {@code DFHATTR} from IBM CICS documentation because both copybooks are IBM-supplied and absent
-     * from this checkout - as {@code DFHAID} is too. This test states that provenance explicitly, so
-     * that no reader takes an attribute value asserted anywhere in this gate to have been read from a
-     * copybook in this tree.
-     *
-     * <p>Nothing else in this file asserts an attribute value, because {@code COSGN00C} sets none;
-     * {@link #everyPaintedScreenCarriesElevenItems()} is where that emptiness is required.
-     */
     @Test
     @DisplayName("the red emphasis is a static map property and DFHBMSCA is reproduced from IBM docs")
     void theRedEmphasisIsAStaticMapProperty() {
@@ -2563,37 +1486,14 @@ final class COSGN00CParityTest {
                 .isEqualTo("DFHDFCOL");
     }
 
-    // =============================================================================================
-    // Helpers used only by the set-level assertions.
-    // =============================================================================================
-
-    /**
-     * {@code MOVE <literal> TO WS-MESSAGE} followed by {@code MOVE WS-MESSAGE TO ERRMSGO} - the two
-     * moves at, for example, {@code :242-243} and {@code :149}, composed.
-     *
-     * @param literal the message literal the source moves
-     * @return the {@value #ERRMSG_LENGTH}-character image the screen field ends up holding
-     */
     private static String truncated(String literal) {
         return padded(literal).substring(0, ERRMSG_LENGTH);
     }
 
-    /**
-     * @param text  the value
-     * @param width the field width
-     * @return the value left-justified at that width, space-filled on the right
-     */
     private static String rightPadded(String text, int width) {
         return text + String.valueOf(SPACE).repeat(width - text.length());
     }
 
-    /**
-     * The {@code SEC-USR-PWD} span of the row a case's typed user id addresses.
-     *
-     * @param parityCase the case
-     * @return the eight-character seeded password
-     * @throws IllegalStateException if the case types a key the seed does not hold
-     */
     private static String seededPasswordOf(ParityCase parityCase) {
         String key = SignOnService.upperCase(
                 parityCase.screenRequest().mapFields().get(USERID_INPUT_ITEM));
@@ -2610,11 +1510,6 @@ final class COSGN00CParityTest {
                 + "to address a row that exists.");
     }
 
-    /**
-     * @param left  one image
-     * @param right another image of the same length
-     * @return how many character positions differ
-     */
     private static int differingCharacters(String left, String right) {
         int differences = 0;
         for (int index = 0; index < left.length(); index++) {

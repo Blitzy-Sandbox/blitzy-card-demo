@@ -62,148 +62,46 @@ import org.springframework.stereotype.Repository;
 /**
  * Proves the {@code DALYTRAN} repository against {@code app/cbl/CBTRN02C.cbl},
  * {@code app/cbl/CBTRN01C.cbl}, {@code app/cpy/CVTRA06Y.cpy} and {@code app/jcl/POSTTRAN.jcl}.
- *
- * <p>Seven obligations, and each is asserted here rather than described:
- * <ul>
- *   <li><strong>The ladder has exactly three arms.</strong> {@code '00'} carries a record, {@code '10'}
- *       carries none, and everything else carries the status verbatim. All three are driven, plus the
- *       fourth condition the COBOL cannot express - a read against a file whose open failed;</li>
- *   <li><strong>Order is physical.</strong> The composed statement carries no {@code ORDER BY}, and the
- *       records come back in the order the backend presented them. A test that only counted records
- *       would pass over a reordering, so the sequence itself is asserted;</li>
- *   <li><strong>The record is 350 bytes and stays 350 bytes.</strong> Round-tripped byte for byte,
- *       {@code FILLER X(20)} included, and a row of any other width is refused rather than padded;</li>
- *   <li><strong>The amount is exact.</strong> {@code DALYTRAN-AMT PIC S9(09)V99} decodes at scale 2 with
- *       its sign taken from the zoned overpunch in the trailing byte - including the fifty rows of the
- *       shipped fixture that carry a negative one;</li>
- *   <li><strong>Every offset is re-derived, not restated.</strong> {@code DeclaredOffsets} walks the
- *       fourteen entries of {@code CVTRA06Y} and asserts each begins at the running sum of the
- *       {@code PICTURE} widths before it, so the geometry is proved by addition and the total 350 is a
- *       consequence rather than an assumption. The type discipline goes with it: {@code -TYPE-CD} is
- *       {@code PIC X(02)} and therefore a {@code String}, {@code -CAT-CD} is {@code PIC 9(04)} and
- *       therefore an {@code int};</li>
- *   <li><strong>The expiry slice is ten bytes, taken from the front.</strong>
- *       {@code app/cbl/CBTRN02C.cbl:L414} compares {@code ACCT-EXPIRAION-DATE} - the copybook's own
- *       misspelling - against {@code DALYTRAN-ORIG-TS (1:10)}, and both arms of that guard are driven.
- *       {@code ExpiryDateSlice} also shows what a slip costs: comparing the whole twenty-six-byte
- *       timestamp, or slicing one byte late, silently turns a valid same-day transaction into reject
- *       reason 103;</li>
- *   <li><strong>The stored bytes are what the caller receives.</strong>
- *       {@code app/cbl/CBTRN01C.cbl:L168} performs {@code DISPLAY DALYTRAN-RECORD} and
- *       {@code app/cbl/CBTRN02C.cbl:L447} performs {@code MOVE DALYTRAN-RECORD TO REJECT-TRAN-DATA},
- *       so the rejects image is the record's own bytes and not a re-rendering of its decoded fields.
- *       {@code VerbatimRecordImage} pins the hazard on real data - see below.</li>
- * </ul>
- *
- * <h2>Why one shipped row is pinned by position</h2>
- * <p>{@code app/data/ASCII/dailytran.txt} holds six rows whose {@code DALYTRAN-AMT} ends in
- * <code>'&#125;'</code>, the zoned overpunch meaning "negative, final digit zero". Row 1 - transaction
- * {@code 0000000001774260}, amount image {@code 0000009190}<code>&#125;</code> - is pinned field by
- * field so that a fixture edited from under this suite fails loudly rather than quietly testing nothing.
- * <code>'&#125;'</code> is the one character in the encoding a numeric round trip cannot be trusted to
- * reproduce, because {@link BigDecimal} has no signed zero: when the magnitude is zero as well, decoding
- * to a {@code BigDecimal} and storing it back renders <code>'&#123;'</code> instead, and the two images
- * compare equal in value while being different records. That is asserted in both directions, on the six
- * shipped rows and on a composed outright negative zero, which is the sharpest form of it.
- *
- * <h2>Why there is a hand-built backend rather than a stubbed template</h2>
- * <p>Every other dataset in the module is read through {@code JdbcTemplate.query}, which a single
- * {@code when(...)} stubs. This one holds a cursor, because a physical-sequential dataset has no key to
- * resume from, so what has to be exercised is a {@link ResultSet} that advances: {@link Backend} below is
- * a small fake JDBC stack driven by a list of row images. It also counts what it was asked to do, which
- * is what lets the end-of-file idempotence claim be asserted as "and the backend was not visited again"
- * rather than merely as "and the same answer came back".
  */
 @DisplayName("DalyTranRepository - DALYTRAN read forward, read only, in physical order")
 class DalyTranRepositoryTest {
-
-    /** The code page, always named. */
     private static final Charset ASCII = StandardCharsets.US_ASCII;
 
-    /**
-     * The physical-record ordinal the tests read this physical-sequential dataset in.
-     *
-     * <p>{@code _ROWID_} is what {@code application-test.yml} configures, and it is H2's own
-     * row-identifier pseudo-column: it increases with each insert, so it returns the records in the order
-     * they were written - which is what a sequential COBOL {@code READ} of a PS dataset returns.
-     */
     private static final PhysicalSequence ORDINAL = PhysicalSequence.of("_ROWID_");
 
-    /** A stand-in dataset name: this suite proves the name comes from configuration. */
     private static final String DSNAME = "TEST.CARDDEMO.DALYTRAN";
 
-    /** The unordered select the repository must compose - no {@code ORDER BY} and no predicate. */
     private static final String SELECT_SQL =
             "SELECT * FROM \"" + DSNAME + "\" ORDER BY _ROWID_ ASC";
 
-    /** The repository-root-relative path of the class under test, for the source-level guards. */
     private static final String SOURCE_PATH =
             "app/java/src/main/java/com/vsergeychik/carddemo/transaction/DalyTranRepository.java";
 
-    /** The shipped fixture, copied from {@code app/data/ASCII/dailytran.txt}. */
     private static final String FIXTURE_RESOURCE = "/fixtures/dailytran.txt";
 
-    /** Records in the shipped fixture, measured. */
     private static final int FIXTURE_RECORDS = 300;
 
-    /** Rows of the shipped fixture whose {@code DALYTRAN-AMT} carries a negative overpunch, measured. */
     private static final int FIXTURE_NEGATIVE_AMOUNTS = 50;
 
-    /**
-     * The 0-based positions of the shipped rows whose {@code DALYTRAN-AMT} ends in
-     * <code>'&#125;'</code>, measured over {@code app/data/ASCII/dailytran.txt}.
-     *
-     * <p><code>'&#125;'</code> is the zoned overpunch for "negative, final digit zero" - the one
-     * character in the whole encoding that a numeric round trip cannot be trusted to reproduce, because
-     * {@link BigDecimal} has no signed zero to carry the sign in when the magnitude is zero too. There
-     * are exactly six such rows, and they are pinned by position rather than searched for so that a
-     * fixture edited from under this suite fails loudly instead of quietly testing nothing.
-     */
     private static final List<Integer> FIXTURE_NEGATIVE_ZERO_DIGIT_ROWS =
             List.of(1, 54, 86, 149, 164, 209);
 
-    /** The 0-based position of the shipped row this suite pins field by field. */
     private static final int PINNED_ROW = 1;
 
-    /** {@code DALYTRAN-ID} of the pinned row. */
     private static final String PINNED_ID = "0000000001774260";
 
-    /** {@code DALYTRAN-AMT} of the pinned row, stored characters and overpunch included. */
     private static final String PINNED_AMT_IMAGE = "0000009190}";
 
-    /** What {@link #PINNED_AMT_IMAGE} decodes to: nine integer digits and two fractional, signed. */
     private static final String PINNED_AMT_VALUE = "-919.00";
 
-    /** {@code DALYTRAN-ORIG-TS} of the pinned row, all twenty-six characters. */
     private static final String PINNED_ORIG_TS = "2022-06-10 19:27:53.000000";
 
-    /** {@code DALYTRAN-ORIG-TS (1:10)} of the pinned row - the ten bytes the expiry check compares. */
     private static final String PINNED_ORIG_DT = "2022-06-10";
 
-    /**
-     * A {@code DALYTRAN-AMT} image that is negative zero outright: every digit zero, sign negative.
-     *
-     * <p>No shipped row holds this - the six negative-zero-digit rows all carry a non-zero magnitude -
-     * so it is composed here. It is the sharpest form of the hazard: the sign has nowhere to survive in
-     * the decoded value, which is precisely why the raw image, and not the decoded amount, is what the
-     * rejects record is built from.
-     */
     private static final String NEGATIVE_ZERO_AMT_IMAGE = "0000000000}";
 
-    /** The same magnitude and the same sign digit, positive: what a numeric round trip produces. */
     private static final String POSITIVE_ZERO_AMT_IMAGE = "0000000000{";
 
-    // =============================================================================================
-    // Fixtures and helpers.
-    // =============================================================================================
-
-    /**
-     * A binding catalogue holding one {@code DALYTRAN} entry.
-     *
-     * @param dsname       the dataset name to declare
-     * @param recordLength the record length to declare
-     * @return the catalogue
-     */
     private static DatasetBindings bindings(String dsname, int recordLength) {
         DatasetBindings catalogue = new DatasetBindings();
         catalogue.put(DalyTranRepository.DD_NAME, new DatasetBinding(dsname, "sequential", false, "FB",
@@ -211,21 +109,11 @@ class DalyTranRepositoryTest {
         return catalogue;
     }
 
-    /** @return a catalogue declaring the real geometry. */
     private static DatasetBindings validBindings() {
         return bindings(DSNAME, DalyTranRepository.RECORD_LENGTH);
     }
 
-    /**
-     * A repository over a backend of the caller's making.
-     *
-     * @param backend the fake JDBC stack, or {@code null} for a template with no data source
-     * @return the repository
-     */
     private static DalyTranRepository repository(Backend backend) {
-        // The backend is built BEFORE the template is stubbed. Building it creates and stubs mocks of
-        // its own, and doing that inside the argument to thenReturn(...) is a nested stubbing Mockito
-        // rejects - which is worth a comment, because the two orderings look interchangeable.
         DataSource source = backend == null ? null : backend.dataSource();
         JdbcTemplate template = mock(JdbcTemplate.class);
         when(template.getDataSource()).thenReturn(source);
@@ -233,37 +121,15 @@ class DalyTranRepositoryTest {
                 ORDINAL);
     }
 
-    /**
-     * A repository with no backend behind it at all, for the pure seams.
-     *
-     * <p>The decode seams, the composed statement and the layout are reachable with nothing on the other
-     * side of the data source, which is exactly the property residual risk R-E makes valuable: the
-     * byte-level behaviour is exercised with no driver in the path.
-     *
-     * @return the repository
-     */
     private static DalyTranRepository repositoryWithoutBackend() {
         return repository(null);
     }
 
-    /**
-     * One decoded record, built without a repository and without a backend.
-     *
-     * @return a record over a valid 350-byte image
-     */
     private static DalyTranRecord aRecord() {
         return DalyTranRecord.decode(
                 image("0000000000000001", "0000005047G", "4111111111111111"), ASCII);
     }
 
-    /**
-     * Composes a valid 350-character record image in {@code CVTRA06Y} field order.
-     *
-     * @param id        {@code DALYTRAN-ID}, padded or truncated to 16
-     * @param amtImage  the eleven-character {@code DALYTRAN-AMT} image, sign overpunch included
-     * @param cardNum   {@code DALYTRAN-CARD-NUM}, padded or truncated to 16
-     * @return exactly {@link DalyTranRepository#RECORD_LENGTH} characters
-     */
     private static String image(String id, String amtImage, String cardNum) {
         StringBuilder record = new StringBuilder();
         record.append(picX(id, DalyTranRecord.DALYTRAN_ID_LENGTH));
@@ -287,13 +153,11 @@ class DalyTranRepositoryTest {
         return composed;
     }
 
-    /** @return {@code value} space-padded on the right, or truncated on the right, to {@code width}. */
     private static String picX(String value, int width) {
         String padded = value + " ".repeat(Math.max(0, width - value.length()));
         return padded.substring(0, width);
     }
 
-    /** @return the three-row dataset this suite reads most of its ladders over. */
     private static List<String> threeRows() {
         return List.of(
                 image("0000000000000001", "0000005047G", "4111111111111111"),
@@ -301,7 +165,6 @@ class DalyTranRepositoryTest {
                 image("0000000000000003", "00000000000", "4111111111111113"));
     }
 
-    /** @return the shipped fixture's rows, each exactly 350 characters. */
     private static List<String> fixtureRows() {
         try (InputStream stream = DalyTranRepositoryTest.class.getResourceAsStream(FIXTURE_RESOURCE)) {
             assertThat(stream).as("the shipped fixture %s must be on the test classpath",
@@ -313,12 +176,6 @@ class DalyTranRepositoryTest {
         }
     }
 
-    /**
-     * Locates a repository-root-relative path by walking up from the working directory.
-     *
-     * @param relativePath the path to find
-     * @return the resolved path
-     */
     private static Path repositoryFile(String relativePath) {
         Path candidate = Path.of("").toAbsolutePath();
         while (candidate != null) {
@@ -332,7 +189,6 @@ class DalyTranRepositoryTest {
                 + Path.of("").toAbsolutePath());
     }
 
-    /** @return the source text of the class under test. */
     private static String sourceText() {
         try {
             return Files.readString(repositoryFile(SOURCE_PATH), StandardCharsets.UTF_8);
@@ -341,74 +197,43 @@ class DalyTranRepositoryTest {
         }
     }
 
-    /**
-     * A small fake JDBC stack: a data source serving up to {@link #INDEPENDENT_OPENS} independent
-     * forward-only cursors over one list of row images.
-     *
-     * <p>Hand-built rather than stubbed call by call because the property under test is that a cursor
-     * <em>advances</em>: a single {@code when(...).thenReturn(rows)} would prove nothing about a
-     * position. Every chain is built eagerly, before any stubbing begins, so no mock is created while a
-     * stubbing is in progress; and each chain carries its own position, which is what lets two
-     * concurrent opens be shown to read independently.
-     *
-     * <p>The counters are the point of it. {@link #advances()} turns "the backend was not asked again"
-     * into an assertion rather than an inference, and {@link #released()} records the release order, so
-     * a leak or a wrong release order fails a test instead of being reasoned about.
-     */
     private static final class Backend {
-
-        /** How many independent cursors a backend can serve. Two is the most any test needs. */
         private static final int INDEPENDENT_OPENS = 3;
 
-        /** The rows to serve, in the order they are served. */
         private final List<String> rows;
 
-        /** How many times {@code next()} was called, across every cursor. */
         private final AtomicInteger advances = new AtomicInteger();
 
-        /** The resources released, in the order they were released. */
         private final List<String> released = new ArrayList<>();
 
-        /** The connections handed out, in order, for the prepare-time assertions. */
         private final List<Connection> connections = new ArrayList<>();
 
-        /** The statements prepared, in the same order as {@link #connections}, for the same reason. */
         private final List<PreparedStatement> statements = new ArrayList<>();
 
-        /** Column count the metadata reports. Zero models a backend presenting no record image. */
         private int columnCount = DalyTranRepository.RECORD_IMAGE_COLUMN_INDEX;
 
-        /** When true, the metadata is absent altogether. */
         private boolean noMetaData;
 
-        /** When set, {@code getConnection()} raises it. */
         private SQLException connectionFailure;
 
-        /** When set, {@code next()} raises it. */
         private SQLException advanceFailure;
 
-        /** When set, reading the record image raises it. */
         private SQLException readFailure;
 
-        /** When set, every {@code close()} raises it. */
         private SQLException closeFailure;
 
-        /** When true, the row's record-image column holds no value. */
         private boolean nullImage;
 
-        /** The data source, built once on first use so the flags above are all set by then. */
         private DataSource dataSource;
 
         private Backend(List<String> rows) {
             this.rows = List.copyOf(rows);
         }
 
-        /** @return a backend serving {@code rows}. */
         private static Backend serving(List<String> rows) {
             return new Backend(rows);
         }
 
-        /** @return a backend serving nothing, so the first read is the end of the file. */
         private static Backend empty() {
             return new Backend(List.of());
         }
@@ -456,21 +281,14 @@ class DalyTranRepositoryTest {
             return List.copyOf(released);
         }
 
-        /** @return the connections handed out so far, in order. */
         private List<Connection> connections() {
             return List.copyOf(connections);
         }
 
-        /** @return the statements prepared so far, in order. */
         private List<PreparedStatement> statements() {
             return List.copyOf(statements);
         }
 
-        /**
-         * The data source over this backend, built on first use.
-         *
-         * @return the data source; the same instance on every call
-         */
         private DataSource dataSource() {
             if (dataSource == null) {
                 dataSource = build();
@@ -478,14 +296,6 @@ class DalyTranRepositoryTest {
             return dataSource;
         }
 
-        /**
-         * Builds the whole stack eagerly.
-         *
-         * <p>Every mock is created before the first {@code when(...)} that references it, which is what
-         * keeps Mockito from seeing a mock created inside an unfinished stubbing.
-         *
-         * @return the data source
-         */
         private DataSource build() {
             try {
                 List<Connection> chains = new ArrayList<>();
@@ -505,12 +315,6 @@ class DalyTranRepositoryTest {
             }
         }
 
-        /**
-         * One independent connection, statement and cursor, with a position of its own.
-         *
-         * @return the connection at the head of the chain
-         * @throws SQLException never; declared because the stubbed signatures declare it
-         */
         private Connection newChain() throws SQLException {
             AtomicInteger position = new AtomicInteger(-1);
             ResultSet cursor = mock(ResultSet.class);
@@ -551,13 +355,6 @@ class DalyTranRepositoryTest {
             return connection;
         }
 
-        /**
-         * Records one release, and refuses it when the backend was told to.
-         *
-         * @param resource the resource being released
-         * @return {@code null}, the value a {@code void} answer must produce
-         * @throws SQLException when this backend refuses to release
-         */
         private Object record(String resource) throws SQLException {
             released.add(resource);
             if (closeFailure != null) {
@@ -567,14 +364,9 @@ class DalyTranRepositoryTest {
         }
     }
 
-    // =============================================================================================
-    // Construction.
-    // =============================================================================================
-
     @Nested
     @DisplayName("Construction - everything checkable is checked before a read can happen")
     class Construction {
-
         @Test
         @DisplayName("the resolved dataset name, record width and code page are surfaced")
         void theResolvedShapeIsSurfaced() {
@@ -692,14 +484,9 @@ class DalyTranRepositoryTest {
         }
     }
 
-    // =============================================================================================
-    // The statement and the layout.
-    // =============================================================================================
-
     @Nested
     @DisplayName("The statement and the layout - gates G19, G21 and the physical-sequence contract")
     class StatementAndLayout {
-
         @Test
         @DisplayName("the read statement orders by the configured physical-record ordinal")
         void theStatementOrdersByThePhysicalOrdinal() {
@@ -718,10 +505,6 @@ class DalyTranRepositoryTest {
         void theStatementNeverOrdersByTheRecordImage() {
             DalyTranRepository repository = repositoryWithoutBackend();
 
-            // app/jcl/TRANREPT.jcl:46 sorts this file by TRAN-CARD-NUM while the record image begins
-            // with DALYTRAN-ID, so an ordering over the image would be a DIFFERENT order from the file's -
-            // and CBTRN03C subtotals by account as the records arrive. There is exactly one ORDER BY and
-            // its operand is the ordinal.
             assertThat(repository.selectRecordSql().split(" ORDER BY ", -1)).hasSize(2);
             assertThat(repository.selectRecordSql())
                     .doesNotContain("ORDER BY \"")
@@ -818,14 +601,9 @@ class DalyTranRepositoryTest {
         }
     }
 
-    // =============================================================================================
-    // 0000-DALYTRAN-OPEN.
-    // =============================================================================================
-
     @Nested
     @DisplayName("OPEN INPUT - app/cbl/CBTRN02C.cbl:L236-L250")
     class Open {
-
         @Test
         @DisplayName("a successful open reports '00' and positions before the first record")
         void aSuccessfulOpenReportsOk() {
@@ -861,10 +639,6 @@ class DalyTranRepositoryTest {
         @Test
         @DisplayName("the cursor states a positive fetch size, so the driver buffers a page not the file")
         void theCursorStatesAPositiveFetchSize() throws SQLException {
-            // Left unset, the fetch size is the driver's own default, and several drivers default to
-            // materialising the whole result set on the client - which is the unbounded behaviour a
-            // source-faithful sequential READ must not have. A ceiling, not a tuning parameter: AAP
-            // 0.8.6 records that this migration has no performance objective.
             Backend backend = Backend.serving(threeRows());
             DalyTranRepository repository = repository(backend);
 
@@ -879,8 +653,6 @@ class DalyTranRepositoryTest {
         @Test
         @DisplayName("the stated fetch size changes neither the rows served nor the order they arrive")
         void theFetchSizeChangesNeitherContentNorOrder() {
-            // The JDBC contract makes the value a hint, so this asserts the property that matters: the
-            // same three rows, in the same physical order, one per read.
             DalyTranRepository repository = repository(Backend.serving(threeRows()));
 
             try (DalytranFile file = repository.open()) {
@@ -957,14 +729,9 @@ class DalyTranRepositoryTest {
         }
     }
 
-    // =============================================================================================
-    // 1000-DALYTRAN-GET-NEXT.
-    // =============================================================================================
-
     @Nested
     @DisplayName("READ ... INTO - the three-armed guard of app/cbl/CBTRN02C.cbl:L345-L369 (gate G47)")
     class TheGuardInSourceOrder {
-
         @Test
         @DisplayName("WHEN '00' - the record comes back decoded, and the count advances")
         void theSuccessfulArm() {
@@ -1178,14 +945,9 @@ class DalyTranRepositoryTest {
         }
     }
 
-    // =============================================================================================
-    // 9000-DALYTRAN-CLOSE.
-    // =============================================================================================
-
     @Nested
     @DisplayName("CLOSE - app/cbl/CBTRN02C.cbl:L582-L598")
     class Close {
-
         @Test
         @DisplayName("a successful close reports '00' and releases all three resources, in order")
         void aSuccessfulCloseReleasesEverything() {
@@ -1276,14 +1038,9 @@ class DalyTranRepositoryTest {
         }
     }
 
-    // =============================================================================================
-    // The decode seam.
-    // =============================================================================================
-
     @Nested
     @DisplayName("The decode seam - byte-exact, and no JDBC in the path (risk R-E)")
     class DecodeSeam {
-
         @Test
         @DisplayName("a 350-byte round trip preserves every byte, FILLER included (gates G19, G21)")
         void aRoundTripPreservesEveryByte() {
@@ -1357,14 +1114,9 @@ class DalyTranRepositoryTest {
         }
     }
 
-    // =============================================================================================
-    // The shipped fixture.
-    // =============================================================================================
-
     @Nested
     @DisplayName("The shipped fixture - app/data/ASCII/dailytran.txt, measured not assumed")
     class ShippedFixture {
-
         @Test
         @DisplayName("the fixture is 300 records of exactly 350 bytes")
         void theFixtureGeometryIsWhatTheCopybookDeclares() {
@@ -1419,14 +1171,9 @@ class DalyTranRepositoryTest {
         }
     }
 
-    // =============================================================================================
-    // The declared geometry, re-derived rather than restated.
-    // =============================================================================================
-
     @Nested
     @DisplayName("The declared offsets - re-derived from app/cpy/CVTRA06Y.cpy by addition")
     class DeclaredOffsets {
-
         @Test
         @DisplayName("every span begins where the previous one ends, and the fourteenth ends at 350")
         void everySpanBeginsWhereThePreviousOneEnds() {
@@ -1587,28 +1334,9 @@ class DalyTranRepositoryTest {
         }
     }
 
-    // =============================================================================================
-    // The expiry-date slice - app/cbl/CBTRN02C.cbl:L414.
-    // =============================================================================================
-
     @Nested
     @DisplayName("DALYTRAN-ORIG-TS (1:10) - the slice reject reason 103 turns on")
     class ExpiryDateSlice {
-
-        /**
-         * Reproduces the guard of {@code app/cbl/CBTRN02C.cbl:L414-L420}.
-         *
-         * <p>{@code IF ACCT-EXPIRAION-DATE >= DALYTRAN-ORIG-TS (1:10)} continues; otherwise it moves
-         * {@code 103} and {@code 'TRANSACTION RECEIVED AFTER ACCT EXPIRATION'}. COBOL compares
-         * alphanumeric operands character by character after padding the shorter with spaces, which for
-         * two {@code yyyy-MM-dd} strings of equal length is a plain lexicographic comparison - and
-         * lexicographic order coincides with chronological order in that format, which is why the COBOL
-         * gets away with never parsing a date.
-         *
-         * @param acctExpiraionDate {@code ACCT-EXPIRAION-DATE PIC X(10)}, misspelling preserved
-         * @param origDateSlice     the slice taken from {@code DALYTRAN-ORIG-TS}
-         * @return {@code 0} to continue, or {@code 103} for the reject reason
-         */
         private int validationFailReason(String acctExpiraionDate, String origDateSlice) {
             int width = Math.max(acctExpiraionDate.length(), origDateSlice.length());
             String left = picX(acctExpiraionDate, width);
@@ -1714,15 +1442,9 @@ class DalyTranRepositoryTest {
         }
     }
 
-    // =============================================================================================
-    // The verbatim record image. app/cbl/CBTRN01C.cbl:L168 displays it; app/cbl/CBTRN02C.cbl:L447
-    // copies it into REJECT-TRAN-DATA X(350). Both need the stored bytes, not a re-rendering of them.
-    // =============================================================================================
-
     @Nested
     @DisplayName("The verbatim 350-byte image - the bytes the rejects record is built from")
     class VerbatimRecordImage {
-
         @Test
         @DisplayName("the pinned shipped row is the one carrying the negative-zero-digit overpunch")
         void thePinnedRowIsTheOneWithTheNegativeZeroDigitOverpunch() {
@@ -1926,14 +1648,9 @@ class DalyTranRepositoryTest {
         }
     }
 
-    // =============================================================================================
-    // The outcome type.
-    // =============================================================================================
-
     @Nested
     @DisplayName("ReadResult - the three arms, and nothing constructible outside them")
     class ReadResultContract {
-
         @Test
         @DisplayName("no component may be null, so no null escapes the type")
         void noComponentMayBeNull() {
@@ -2018,8 +1735,6 @@ class DalyTranRepositoryTest {
             assertThat(failed.isOther()).isTrue();
             assertThat(failed.diagnostic()).isEmpty();
 
-            // The negative side of every predicate: exactly one arm answers true for any outcome, which
-            // is what lets a caller branch on them the way the COBOL branches on APPL-RESULT.
             assertThat(found.isEndOfFile()).isFalse();
             assertThat(found.isOther()).isFalse();
             assertThat(ended.isFound()).isFalse();
@@ -2045,14 +1760,9 @@ class DalyTranRepositoryTest {
         }
     }
 
-    // =============================================================================================
-    // Structural guards. The properties a later change must not quietly undo.
-    // =============================================================================================
-
     @Nested
     @DisplayName("Structural guards - gates G22, G24, G44, G46, G52 and G53 about the file itself")
     class StructuralGuards {
-
         @Test
         @DisplayName("the public surface is open, read and close - no write and no keyed read")
         void thePublicSurfaceIsReadOnly() {

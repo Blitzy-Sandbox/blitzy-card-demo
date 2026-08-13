@@ -50,66 +50,9 @@ import org.junit.jupiter.params.provider.ValueSource;
 /**
  * Parity tests for {@link CardListRequest}, the projection of {@code app/cpy-bms/COCRDLI.CPY} and
  * {@code app/bms/COCRDLI.bms} onto the inbound payload of {@code GET /api/cards}.
- *
- * <p>Every expected value here is transcribed from the COBOL sources rather than read back from the
- * class under test, so the sources stay the authority and a drifted width or a moved field fails here.
- * The suite is organised around the properties that determine the implementation:
- *
- * <ol>
- *   <li>The screen carries exactly <strong>45</strong> payload members, and the count only reconciles
- *       with the row-1 asymmetry intact - {@code 9 + 4 + 6 x 5 + 2}.</li>
- *   <li>Row 1 has <strong>four</strong> members and no {@code CRDSTP1}; rows 2 through 7 have
- *       <strong>five</strong> with {@code CRDSTPn} second. The invariant is enforced, not assumed.</li>
- *   <li>The group image is <strong>797</strong> bytes, the cursor <strong>58</strong>, the row table
- *       <strong>196</strong> and the transported communication area <strong>254</strong>.</li>
- *   <li>All three seven-element tables are 1-based, and index 1 and index 7 are both addressable and
- *       both correct.</li>
- *   <li>{@code SPACES}, {@code LOW-VALUES} and {@code null} are three different things.</li>
- *   <li>Page size 7 is a compile-time constant with no configuration path.</li>
- *   <li>Every one of the 45 name-labelled {@code DFHMDF} definitions is reachable at its declared
- *       {@code LENGTH}, and the whole 797-byte image reconciles offset by offset.</li>
- * </ol>
- *
- * <h2>Two source divergences recorded rather than corrected</h2>
- *
- * <p><strong>1. This mapset declares no {@code CTRL}, no {@code ALARM} and no {@code EXTATT}.</strong>
- * The Agent Action Plan &sect;0.6.2 states that all seventeen mapsets declare
- * {@code DFHMSD CTRL=(ALARM,FREEKB) EXTATT=YES LANG=COBOL MODE=INOUT STORAGE=AUTO TIOAPFX=YES}. For
- * {@code COCRDLI} that is not what the source says. {@code app/bms/COCRDLI.bms:20-28} is:
- *
- * <pre>
- *   COCRDLI DFHMSD LANG=COBOL, MODE=INOUT, STORAGE=AUTO, TIOAPFX=YES, TYPE=&amp;&amp;SYSPARM
- *   CCRDLIA DFHMDI CTRL=(FREEKB), DSATTS=(COLOR,HILIGHT,PS,VALIDN),
- *                  MAPATTS=(COLOR,HILIGHT,PS,VALIDN), SIZE=(24,80)
- * </pre>
- *
- * <p>The {@code DFHMSD} carries <em>none</em> of the three; the {@code DFHMDI} carries
- * {@code CTRL=(FREEKB)} - so {@code FREEKB} is present but at map level, {@code ALARM} is absent
- * altogether, and extended attributes arrive through {@code DSATTS}/{@code MAPATTS} rather than
- * {@code EXTATT=YES}. Per AAP &sect;0.10.2 B4 the divergence is documented here and the <em>source</em>
- * is what the tests assert; the plan text is not quietly adopted and the mapset is not quietly
- * "corrected". Only {@code SIZE=(24,80)} is common ground, and that is the one the geometry tests use.
- *
- * <p><strong>2. The COBOL communication area is 254 bytes, not 58.</strong>
- * {@code app/cbl/COCRDLIC.cbl:229} opens {@code 01 WS-THIS-PROGCOMMAREA.} and the paging cursor items
- * beneath it are all level <strong>10</strong>. Then {@code :252} declares
- * {@code 05 WS-SCREEN-DATA.} - level <strong>05</strong>, which is <em>numerically lower</em> than 10,
- * so it does not nest inside the cursor group: it closes that group and becomes a <em>sibling</em>
- * within the same {@code 01}. The transported area is therefore
- * {@code 58 + 196 = 254} bytes, which is why {@code :317} and {@code :330} pass
- * {@code LENGTH OF WS-THIS-PROGCOMMAREA} whole. The Java type keeps the two halves as separate nested
- * types because they have separate lifetimes - the cursor round-trips through the payload while the row
- * table is re-read from the card file on every request - so all three widths are asserted
- * independently: 58, 196 and 254.
  */
 @DisplayName("CardListRequest - COCRDLI symbolic map projection")
 class CardListRequestTest {
-
-    /**
-     * The 34 numbered row members in copybook order, {@code app/cpy-bms/COCRDLI.CPY:78-276}. Row 1
-     * contributes four and rows 2 through 7 contribute five each; there is deliberately no
-     * {@code crdstp1}.
-     */
     private static final List<String> NUMBERED_ROW_MEMBERS = numberedRowMembers();
 
     private static List<String> numberedRowMembers() {
@@ -128,44 +71,21 @@ class CardListRequestTest {
         return List.copyOf(members);
     }
 
-    /** Charset for the codec under test. The fixtures in {@code app/data/ASCII} are US-ASCII. */
     private static final FixedWidthCodec CODEC = new FixedWidthCodec(StandardCharsets.US_ASCII);
 
-    /** {@code LOW-VALUES} as a one-character string. */
     private static final String LOW = "\u0000";
 
     /**
-     * One name-labelled {@code DFHMDF} definition, transcribed by hand from
-     * {@code app/bms/COCRDLI.bms}.
+     * One name-labelled {@code DFHMDF} definition, transcribed by hand from {@code app/bms/COCRDLI.bms}.
      *
-     * @param dfhmdfName   the label in column 1 of the {@code DFHMDF} line
-     * @param length       the declared {@code LENGTH=}
-     * @param screenLine   the first element of {@code POS=(line,column)}
+     * @param dfhmdfName the label in column 1 of the {@code DFHMDF} line
+     * @param length the declared {@code LENGTH=}
+     * @param screenLine the first element of {@code POS=(line,column)}
      * @param screenColumn the second element of {@code POS=(line,column)}
      */
     private record BmsField(String dfhmdfName, int length, int screenLine, int screenColumn) { }
 
-    /**
-     * All <strong>45</strong> name-labelled {@code DFHMDF} definitions of {@code app/bms/COCRDLI.bms},
-     * in source order, each with its declared {@code LENGTH} and {@code POS}. Written out one literal
-     * entry per field on purpose (AAP &sect;0.10.2 B11): this table is the <em>oracle</em>, so it is
-     * transcribed from the mapset and never derived from {@link CardListRequest}. A reader can diff it
-     * against the {@code .bms} line by line, which is impossible for a table a loop produced.
-     *
-     * <p>The mapset holds <strong>72</strong> {@code DFHMDF} entries in total. The other <strong>27</strong>
-     * are unnamed and are not payload: they are the literal captions ({@code 'Tran:'}, {@code 'Date:'},
-     * {@code 'Prog:'}, {@code 'Time:'}, {@code 'List Credit Cards'}, {@code 'Page '}, the two field
-     * prompts, the four column headings, the four rules of dashes and the function-key legend) plus the
-     * {@code LENGTH=0} attribute terminators. 72 = 45 + 27, and only the 45 appear here.
-     *
-     * <p>Note in particular what is <em>absent</em>: there is no {@code FKEYS} field on this map at all.
-     * The function-key legend at {@code app/bms/COCRDLI.bms:335-339} is an <em>unnamed</em>
-     * {@code DFHMDF LENGTH=78 POS=(24,1) INITIAL='  F3=Exit F7=Backward  F8=Forward'} - a static caption
-     * the program never addresses. The sibling card maps do declare one ({@code COCRDSL} at 75 bytes,
-     * {@code COCRDUP} at 21 and 18), so a field set may not be carried from one map to the next.
-     */
     private static final List<BmsField> BMS_FIELDS = List.of(
-            // -- Header: 9 fields, screen lines 1, 2, 4, 6 and 7 -------------------------------------
             new BmsField("TRNNAME", 4, 1, 7),
             new BmsField("TITLE01", 40, 1, 21),
             new BmsField("CURDATE", 8, 1, 71),
@@ -175,12 +95,10 @@ class CardListRequestTest {
             new BmsField("PAGENO", 3, 4, 76),
             new BmsField("ACCTSID", 11, 6, 44),
             new BmsField("CARDSID", 16, 7, 44),
-            // -- Row 1: FOUR fields on screen line 11. There is deliberately no CRDSTP1. -------------
             new BmsField("CRDSEL1", 1, 11, 12),
             new BmsField("ACCTNO1", 11, 11, 22),
             new BmsField("CRDNUM1", 16, 11, 43),
             new BmsField("CRDSTS1", 1, 11, 67),
-            // -- Rows 2-7: FIVE fields each, CRDSTPn second, on screen lines 12 through 17 -----------
             new BmsField("CRDSEL2", 1, 12, 12),
             new BmsField("CRDSTP2", 1, 12, 14),
             new BmsField("ACCTNO2", 11, 12, 22),
@@ -211,19 +129,9 @@ class CardListRequestTest {
             new BmsField("ACCTNO7", 11, 17, 22),
             new BmsField("CRDNUM7", 16, 17, 43),
             new BmsField("CRDSTS7", 1, 17, 67),
-            // -- Footer: 2 fields. 45 and 78 here, NOT the 40 and 80 of COCRDSL and COCRDUP. ---------
             new BmsField("INFOMSG", 45, 20, 19),
             new BmsField("ERRMSG", 78, 23, 1));
 
-    /**
-     * The <strong>45</strong> JSON member names the payload must expose, written out as an explicit
-     * literal list. It is deliberately <em>not</em> produced by transforming {@link CardListRequest}'s
-     * own accessors or record components: a list derived from the class under test would agree with that
-     * class by construction and could never detect a member that should not be there.
-     *
-     * <p>One member per {@code xxxI} item of {@code app/cpy-bms/COCRDLI.CPY:17-288}, in copybook order.
-     * There is no {@code crdstp1}, because there is no {@code CRDSTP1I}.
-     */
     private static final List<String> PAYLOAD_JSON_MEMBERS = List.of(
             "trnname", "title01", "curdate", "pgmname", "title02", "curtime", "pageno", "acctsid",
             "cardsid",
@@ -236,35 +144,17 @@ class CardListRequestTest {
             "crdsel7", "crdstp7", "acctno7", "crdnum7", "crdsts7",
             "infomsg", "errmsg");
 
-    /**
-     * The leading {@code 02 FILLER PIC X(12).} of {@code app/cpy-bms/COCRDLI.CPY:18}, present because
-     * the mapset declares {@code TIOAPFX=YES}. Transcribed, not imported, so the offset walk below has
-     * an oracle independent of the class under test.
-     */
     private static final int TIOAPFX_FILLER_BYTES = 12;
 
-    /**
-     * The per-field prefix every {@code xxxI} item sits behind:
-     * {@code 02 xxxL COMP PIC S9(4).} (2) + {@code 02 xxxF PICTURE X.} (1) +
-     * {@code 02 FILLER PICTURE X(4).} (4) = <strong>7</strong>. The {@code xxxA} item is a
-     * {@code REDEFINES} of {@code xxxF} and so occupies no storage of its own.
-     */
     private static final int SYMBOLIC_PREFIX_BYTES = 7;
 
-    /** Screen width declared by {@code CCRDLIA DFHMDI SIZE=(24,80)} - {@code app/bms/COCRDLI.bms:28}. */
     private static final int SCREEN_COLUMNS = 80;
 
-    /** Screen depth declared by {@code CCRDLIA DFHMDI SIZE=(24,80)} - {@code app/bms/COCRDLI.bms:28}. */
     private static final int SCREEN_LINES = 24;
-
-    // -------------------------------------------------------------------------------------------------
-    // 1. FIELD INVENTORY AND GEOMETRY
-    // -------------------------------------------------------------------------------------------------
 
     @Nested
     @DisplayName("Field inventory and geometry")
     class Geometry {
-
         @Test
         @DisplayName("declares exactly 45 payload members, reconciling 9 + 4 + 6x5 + 2")
         void fieldCountIsFortyFive() {
@@ -377,14 +267,9 @@ class CardListRequestTest {
         }
     }
 
-    // -------------------------------------------------------------------------------------------------
-    // 2. THE ROW-1 ASYMMETRY
-    // -------------------------------------------------------------------------------------------------
-
     @Nested
     @DisplayName("The row-1 asymmetry: 4 members for row 1, 5 for rows 2-7")
     class RowAsymmetry {
-
         @Test
         @DisplayName("FirstListRow declares exactly 4 record components and no crdStp")
         void firstRowHasFourComponents() {
@@ -554,14 +439,9 @@ class CardListRequestTest {
         }
     }
 
-    // -------------------------------------------------------------------------------------------------
-    // 3. OCCURS IS 1-BASED
-    // -------------------------------------------------------------------------------------------------
-
     @Nested
     @DisplayName("OCCURS is 1-based in COBOL and 0-based in Java")
     class OneBasedIndexing {
-
         @ParameterizedTest(name = "subscript {0} maps to index {1}")
         @CsvSource({"1,0", "2,1", "3,2", "4,3", "5,4", "6,5", "7,6"})
         @DisplayName("javaIndexOf shifts by exactly one, both ends included")
@@ -642,14 +522,9 @@ class CardListRequestTest {
         }
     }
 
-    // -------------------------------------------------------------------------------------------------
-    // 4. SPACES, LOW-VALUES AND NULL ARE THREE DIFFERENT THINGS
-    // -------------------------------------------------------------------------------------------------
-
     @Nested
     @DisplayName("SPACES, LOW-VALUES and null are three different things")
     class FigurativeConstants {
-
         @Test
         @DisplayName("a fresh selection table holds seven LOW-VALUES bytes, not seven spaces")
         void selectionFlagsStartAtLowValues() {
@@ -741,14 +616,9 @@ class CardListRequestTest {
         }
     }
 
-    // -------------------------------------------------------------------------------------------------
-    // 5. PAGE SIZE IS BEHAVIOUR
-    // -------------------------------------------------------------------------------------------------
-
     @Nested
     @DisplayName("Page size 7 is behaviour, not configuration")
     class PageSize {
-
         @Test
         @DisplayName("PAGE_SIZE is 7 and is a compile-time constant")
         void pageSizeIsSeven() throws ReflectiveOperationException {
@@ -795,14 +665,9 @@ class CardListRequestTest {
         }
     }
 
-    // -------------------------------------------------------------------------------------------------
-    // 6. THE PAGING CURSOR AND ITS 88-LEVELS
-    // -------------------------------------------------------------------------------------------------
-
     @Nested
     @DisplayName("The 58-byte paging cursor")
     class Cursor {
-
         @Test
         @DisplayName("firstPage() is screenNum 1 with the last page not shown")
         void firstPageState() {
@@ -936,14 +801,9 @@ class CardListRequestTest {
         }
     }
 
-    // -------------------------------------------------------------------------------------------------
-    // 7. THE SELECTION TABLES AND THEIR FOUR 88-LEVELS
-    // -------------------------------------------------------------------------------------------------
-
     @Nested
     @DisplayName("The selection tables")
     class Selection {
-
         @ParameterizedTest(name = "action ''{0}'' -> ok={1} view={2} update={3} blank={4}")
         @CsvSource({
             "S,true,true,false,false",
@@ -1086,14 +946,9 @@ class CardListRequestTest {
         }
     }
 
-    // -------------------------------------------------------------------------------------------------
-    // 8. THE ROW TABLE AND FIELD METADATA
-    // -------------------------------------------------------------------------------------------------
-
     @Nested
     @DisplayName("The row table and the non-serialised metadata")
     class Metadata {
-
         @Test
         @DisplayName("the row table copies its element list defensively and enforces OCCURS 7")
         void rowTableValidation() {
@@ -1188,14 +1043,9 @@ class CardListRequestTest {
         }
     }
 
-    // -------------------------------------------------------------------------------------------------
-    // 9. ACCESSORS, CARRIERS AND STATELESSNESS
-    // -------------------------------------------------------------------------------------------------
-
     @Nested
     @DisplayName("Accessors, carriers and statelessness")
     class Accessors {
-
         @Test
         @DisplayName("every header and footer setter round-trips")
         void mapFieldSetters() {
@@ -1368,14 +1218,9 @@ class CardListRequestTest {
         }
     }
 
-    // -------------------------------------------------------------------------------------------------
-    // 10. FIXED-WIDTH NORMALISATION THROUGH THE CODEC
-    // -------------------------------------------------------------------------------------------------
-
     @Nested
     @DisplayName("Fixed-width normalisation goes through FixedWidthCodec")
     class Normalisation {
-
         @Test
         @DisplayName("normalised() renders all 45 members at their declared widths")
         void normalisedWidths() {
@@ -1458,14 +1303,9 @@ class CardListRequestTest {
         }
     }
 
-    // -------------------------------------------------------------------------------------------------
-    // 11. THE JSON PROJECTION
-    // -------------------------------------------------------------------------------------------------
-
     @Nested
     @DisplayName("The JSON projection carries exactly 45 payload members plus 4 carriers")
     class JsonProjection {
-
         private final ObjectMapper mapper = new ObjectMapper();
 
         @Test
@@ -1684,14 +1524,9 @@ class CardListRequestTest {
         }
     }
 
-    // -------------------------------------------------------------------------------------------------
-    // 12. BEAN VALIDATION - declared widths only, nothing more
-    // -------------------------------------------------------------------------------------------------
-
     @Nested
     @DisplayName("Bean Validation constrains declared widths and nothing else")
     class BeanValidation {
-
         @Test
         @DisplayName("a blank request is valid")
         void blankRequestIsValid() {
@@ -1781,14 +1616,9 @@ class CardListRequestTest {
         }
     }
 
-    // -------------------------------------------------------------------------------------------------
-    // 13. VALUE SEMANTICS
-    // -------------------------------------------------------------------------------------------------
-
     @Nested
     @DisplayName("Value semantics")
     class ValueSemantics {
-
         @Test
         @DisplayName("two blank requests are equal and hash alike")
         void blanksAreEqual() {
@@ -1832,14 +1662,9 @@ class CardListRequestTest {
         }
     }
 
-    // -------------------------------------------------------------------------------------------------
-    // 10. BMS TRACEABILITY - every payload field back to its DFHMDF definition
-    // -------------------------------------------------------------------------------------------------
-
     @Nested
     @DisplayName("Every payload field traces to a DFHMDF definition and a symbolic-map PICTURE")
     class BmsTraceability {
-
         @ParameterizedTest(name = "{0} is LENGTH={1} at POS=({2},{3})")
         @MethodSource("com.vsergeychik.carddemo.card.dto.CardListRequestTest#bmsFieldCases")
         @DisplayName("all 45 fields carry the mapset LENGTH and fit inside the 24x80 map")
@@ -1888,8 +1713,6 @@ class CardListRequestTest {
             assertThat(pageno.length()).isEqualTo(3).isEqualTo(CardListRequest.PAGENO_LENGTH);
             assertThat(pageno.screenLine()).isEqualTo(4);
             assertThat(pageno.screenColumn()).isEqualTo(76);
-            // The attribute byte occupies column 75, the caption 'Page ' runs 70-74, and the field
-            // itself 76-78: the whole construct fits the 80-column line with room to spare.
             assertThat(pageno.screenColumn() + pageno.length() - 1).isEqualTo(78)
                     .isLessThan(SCREEN_COLUMNS);
         }
@@ -1897,11 +1720,6 @@ class CardListRequestTest {
         @Test
         @DisplayName("this map declares no FKEYS field at all, unlike COCRDSL and COCRDUP")
         void thereIsNoFunctionKeyField() {
-            // app/bms/COCRDLI.bms:335-339 renders the legend as an UNNAMED DFHMDF LENGTH=78
-            // POS=(24,1) INITIAL='  F3=Exit F7=Backward  F8=Forward'. Unnamed means no symbolic-map
-            // item, which means no payload member: the program can neither read nor rewrite it.
-            // COCRDSL declares FKEYS at 75 bytes and COCRDUP at 21 and 18, so the field set does not
-            // generalise across the three card maps and must not be carried between them.
             assertThat(BMS_FIELDS).extracting(BmsField::dfhmdfName).doesNotContain("FKEYS");
             assertThat(PAYLOAD_JSON_MEMBERS).doesNotContain("fkeys");
             assertThat(CardListRequest.class.getMethods())
@@ -1912,9 +1730,6 @@ class CardListRequestTest {
         @Test
         @DisplayName("the footer is 45/78 here where the sibling card maps are 40/80")
         void footerWidthsAreThisMapsOwn() {
-            // AAP B5: a per-map difference is preserved, not regularised. COCRDSL and COCRDUP both
-            // carry INFOMSG 40 and ERRMSG 80; COCRDLI carries 45 and 78. Neither set is "the right
-            // one" - each map declares its own, and the parity differ compares byte counts.
             assertThat(fieldNamed("INFOMSG").length()).isEqualTo(45).isNotEqualTo(40);
             assertThat(fieldNamed("ERRMSG").length()).isEqualTo(78).isNotEqualTo(80);
             assertThat(fieldNamed("INFOMSG").screenLine()).isEqualTo(20);
@@ -1932,15 +1747,11 @@ class CardListRequestTest {
         void lengthFlagAndAttributeItemsAreNotPayload() throws JsonProcessingException {
             JsonNode json = new ObjectMapper().valueToTree(new CardListRequest().normalised(CODEC));
 
-            // Presence: every one of the 45 names from the hand-written literal list must be there.
             for (String member : PAYLOAD_JSON_MEMBERS) {
                 assertThat(json.has(member)).as("payload member %s", member).isTrue();
             }
             assertThat(PAYLOAD_JSON_MEMBERS).hasSize(45).doesNotHaveDuplicates();
 
-            // Absence: xxxL is the length CICS reports, xxxF the flag byte and xxxA the REDEFINES of
-            // xxxF used to set highlighting. All three are validation and highlight metadata, so none
-            // may appear on the wire - in either the copybook's upper case or Jackson's lower case.
             for (BmsField field : BMS_FIELDS) {
                 String label = field.dfhmdfName();
                 for (String suffix : List.of("L", "F", "A")) {
@@ -1953,7 +1764,6 @@ class CardListRequestTest {
                 }
             }
 
-            // And the metadata that IS modelled lives in its own carrier, which is @JsonIgnore'd.
             assertThat(json.has("fieldMetadata")).isFalse();
         }
 
@@ -1982,18 +1792,12 @@ class CardListRequestTest {
         }
     }
 
-    // -------------------------------------------------------------------------------------------------
-    // 11. THE ASYMMETRY IN BYTES - 57 versus 65, and the absolute offsets it moves
-    // -------------------------------------------------------------------------------------------------
-
     @Nested
     @DisplayName("The row-1 asymmetry expressed in bytes: row 1 spans 57, rows 2-7 span 65")
     class SymbolicMapOffsets {
-
         @Test
         @DisplayName("row 1 occupies 57 bytes and every other row 65 - the difference is one field")
         void rowSpansDifferByExactlyOneField() {
-            // Row 1: 4 fields x 7 bytes of prefix + (1 + 11 + 16 + 1 = 29) data = 28 + 29 = 57.
             assertThat(rowSpanBytes(1))
                     .as("4 x 7 + 29")
                     .isEqualTo(57)
@@ -2001,7 +1805,6 @@ class CardListRequestTest {
                             * CardListRequest.FIELD_OVERHEAD_LENGTH
                             + CardListRequest.FIRST_ROW_DATA_LENGTH);
 
-            // Rows 2-7: 5 fields x 7 + (1 + 1 + 11 + 16 + 1 = 30) = 35 + 30 = 65.
             for (int row = 2; row <= CardListRequest.LAST_ROW_NUMBER; row++) {
                 assertThat(rowSpanBytes(row))
                         .as("row %d: 5 x 7 + 30", row)
@@ -2011,8 +1814,6 @@ class CardListRequestTest {
                                 + CardListRequest.STOPPER_ROW_DATA_LENGTH);
             }
 
-            // 57 != 65 IS the asymmetry. A CRDSTP1 synthesised for symmetry would make row 1 65 too,
-            // and this one inequality would fail before anything else did.
             assertThat(rowSpanBytes(1)).isNotEqualTo(rowSpanBytes(2));
             assertThat(65 - 57).as("the missing CRDSTP1: 7 bytes of prefix + 1 byte of data")
                     .isEqualTo(SYMBOLIC_PREFIX_BYTES + CardListRequest.CRDSTP_LENGTH);
@@ -2021,7 +1822,6 @@ class CardListRequestTest {
         @Test
         @DisplayName("the header ends at 213, so CRDSEL1I sits at 220")
         void headerEndsAtTwoHundredAndThirteen() {
-            // 12 TIOAPFX + 9 x 7 prefix + 138 header data = 213, and CRDSEL1I follows its own prefix.
             assertThat(TIOAPFX_FILLER_BYTES
                     + CardListRequest.HEADER_FIELD_COUNT * CardListRequest.FIELD_OVERHEAD_LENGTH
                     + CardListRequest.HEADER_DATA_LENGTH)
@@ -2092,8 +1892,6 @@ class CardListRequestTest {
             int card = inputItemOffset("CRDNUM" + row);
             int status = inputItemOffset("CRDSTS" + row);
 
-            // Presence alone would be satisfied by a CRDSTPn appended at the end of the row. The
-            // offsets are what pin it between CRDSELn and ACCTNOn, where COCRDLI.CPY declares it.
             assertThat(stopper).isGreaterThan(select).isLessThan(account);
             assertThat(select).isLessThan(stopper);
             assertThat(account).isLessThan(card);
@@ -2116,15 +1914,6 @@ class CardListRequestTest {
         @Test
         @DisplayName("row 1 has no name-labelled field at column 14, though rows 2-7 all do")
         void columnFourteenIsEmptyOnlyOnRowOne() {
-            // Two independent confirmations of the same fact, both preserved deliberately (AAP B5):
-            //   1. app/cpy-bms/COCRDLI.CPY:78 is `02 CRDSEL1I PIC X(1).` and :79 is
-            //      `02 ACCTNO1L COMP PIC S9(4).` - the CRDSTP1 quintuple simply is not declared.
-            //   2. app/bms/COCRDLI.bms places a name-labelled field at column 14 on screen lines 12
-            //      through 17 and none on line 11. Line 11 does carry an unnamed `DFHMDF LENGTH=0,
-            //      POS=(11,14)` at :145-146 - an attribute terminator, which generates no symbolic-map
-            //      item and is therefore not payload.
-            // The output group agrees: it holds CRDSEL1{C,P,H,V,O}, ACCTNO1{...}, CRDNUM1{...} and
-            // CRDSTS1{...} with no CRDSTP1 quintuple.
             assertThat(BMS_FIELDS.stream()
                     .filter(field -> field.screenLine() == screenLineOfRow(1))
                     .filter(field -> field.screenColumn() == 14)
@@ -2145,14 +1934,9 @@ class CardListRequestTest {
         }
     }
 
-    // -------------------------------------------------------------------------------------------------
-    // 12. REDEFINES - the flat 196-byte view and the 7-element view are ONE span
-    // -------------------------------------------------------------------------------------------------
-
     @Nested
     @DisplayName("WS-ALL-ROWS and WS-SCREEN-ROWS are two views over one 196-byte span")
     class RedefinesOverOneSpan {
-
         @Test
         @DisplayName("one element is 28 bytes: 11 + 16 + 1, and seven of them are 196")
         void elementAndTableWidths() {
@@ -2168,9 +1952,6 @@ class CardListRequestTest {
         @Test
         @DisplayName("the element carries acctNo, cardNum and status only - no select flag, no CRDSTP")
         void theElementCarriesThreeMembers() {
-            // WS-EACH-CARD is exactly the three record fields the browse read. The row action code
-            // lives in its own X(7) table (COCRDLIC:72-82) and CRDSTPn is a screen-only stopper, which
-            // is why there are two seven-element structures here rather than one of wider rows.
             assertThat(ScreenRow.class.getRecordComponents())
                     .extracting(RecordComponent::getName)
                     .containsExactly("acctNo", "cardNum", "cardStatus");
@@ -2190,8 +1971,6 @@ class CardListRequestTest {
             byte[] flat = renderFlat(table);
             assertThat(flat).hasSize(196);
 
-            // Read the flat span back by absolute offset. This is a byte reinterpretation of one
-            // storage area, exactly as REDEFINES is - never a parse, so no Integer.parseInt appears.
             FixedWidthRecord view = FixedWidthRecord.copyOf(flat, CardListRequest.SCREEN_DATA_LENGTH,
                     StandardCharsets.US_ASCII);
             assertThat(view.readString(ScreenRowTable.rowOffset(1),
@@ -2219,7 +1998,6 @@ class CardListRequestTest {
                     "Y"));
             assertThat(rebuilt.row(7)).isEqualTo(new ScreenRow("00000000007", "4111111111111777",
                     "N"));
-            // And the round trip closes: structured -> flat -> structured -> flat is stable.
             assertThat(renderFlat(rebuilt)).isEqualTo(span.toByteArray());
         }
 
@@ -2247,8 +2025,6 @@ class CardListRequestTest {
         @Test
         @DisplayName("subscript 1 is offset 0 and subscript 7 is offset 168, ending at 196")
         void firstAndLastElementOffsets() {
-            // COCRDLIC:972 moves CRDSEL1I into WS-EDIT-SELECT(1) and :738 moves WS-EDIT-SELECT(7)
-            // into CRDSEL7O, so subscript 1 is the first screen row and subscript 7 the last.
             assertThat(ScreenRowTable.rowOffset(1)).isZero();
             assertThat(CardListRequest.javaIndexOf(1)).isZero();
             assertThat(ScreenRowTable.rowOffset(7)).as("6 x 28").isEqualTo(168);
@@ -2277,13 +2053,6 @@ class CardListRequestTest {
                     .isThrownBy(() -> CardListRequest.cobolRowNumberOf(7));
         }
 
-        /**
-         * Renders the structured view into the flat 196-byte span, one element at a time at the offset
-         * {@link ScreenRowTable#rowOffset(int)} names.
-         *
-         * @param table the seven-element view
-         * @return the 196 bytes {@code WS-ALL-ROWS} would hold
-         */
         private byte[] renderFlat(ScreenRowTable table) {
             FixedWidthRecord span = new FixedWidthRecord(CardListRequest.SCREEN_DATA_LENGTH,
                     StandardCharsets.US_ASCII);
@@ -2305,12 +2074,6 @@ class CardListRequestTest {
             return span.toByteArray();
         }
 
-        /**
-         * Reinterprets a flat 196-byte span as the seven-element view, slicing at the same offsets.
-         *
-         * @param flat the 196 bytes
-         * @return the structured view of those same bytes
-         */
         private ScreenRowTable readFlat(byte[] flat) {
             FixedWidthRecord span = FixedWidthRecord.copyOf(flat,
                     CardListRequest.SCREEN_DATA_LENGTH, StandardCharsets.US_ASCII);
@@ -2330,19 +2093,12 @@ class CardListRequestTest {
         }
     }
 
-    // -------------------------------------------------------------------------------------------------
-    // 13. MIXED PICTURE KINDS INSIDE ONE 27-BYTE GROUP, AND TWO DIFFERENT INITIAL STATES
-    // -------------------------------------------------------------------------------------------------
-
     @Nested
     @DisplayName("PIC X and PIC 9 sit side by side in the key, and the two flag tables start differently")
     class MixedPictureKinds {
-
         @Test
         @DisplayName("the key is 27 = X(16) + 9(11), and the two halves pad in opposite directions")
         void oneGroupTwoPictureKinds() {
-            // 15  WS-CA-LAST-CARD-NUM      PIC X(16).   alphanumeric -> pad on the RIGHT with spaces
-            // 15  WS-CA-LAST-CARD-ACCT-ID  PIC 9(11).   numeric      -> pad on the LEFT with zeros
             assertThat(CardListRequest.CURSOR_CARD_NUM_LENGTH
                     + CardListRequest.CURSOR_ACCT_ID_LENGTH)
                     .as("16 + 11")
@@ -2358,9 +2114,6 @@ class CardListRequestTest {
                     .isEqualTo("00000000011")
                     .hasSize(11);
 
-            // The direction is chosen per PICTURE and never guessed: the two calls above are different
-            // methods on purpose. Using the alphanumeric rule on the account id would produce
-            // "11         ", which reads as 11000000000 to anything that strips the pad.
             assertThat(CODEC.movePicX("11", CardListRequest.CURSOR_ACCT_ID_LENGTH))
                     .isNotEqualTo(CODEC.movePic9("11", CardListRequest.CURSOR_ACCT_ID_LENGTH));
         }
@@ -2371,7 +2124,6 @@ class CardListRequestTest {
             CardKey key = new CardKey("4111111111111111", 12_345_678_901L);
             assertThat(key.cardNumImage(CODEC)).isEqualTo("4111111111111111").hasSize(16);
             assertThat(key.acctIdImage(CODEC)).isEqualTo("12345678901").hasSize(11);
-            // A key already at its declared widths survives the round trip untouched.
             assertThat(CardKey.decode(CODEC, key.cardNumImage(CODEC), key.acctIdImage(CODEC)))
                     .isEqualTo(key);
 
@@ -2381,17 +2133,12 @@ class CardListRequestTest {
             assertThat(shortKey.cardNumImage(CODEC).length()
                     + shortKey.acctIdImage(CODEC).length()).isEqualTo(27);
 
-            // A short sending value comes back at its declared width, because that is what the
-            // storage holds: the group is 27 bytes whether or not the operator filled them. The
-            // numeric half recovers the same VALUE (11), while the alphanumeric half recovers the same
-            // BYTES (five digits then eleven spaces) - the asymmetry made visible.
             CardKey decoded = CardKey.decode(CODEC, shortKey.cardNumImage(CODEC),
                     shortKey.acctIdImage(CODEC));
             assertThat(decoded).isEqualTo(new CardKey("41111" + " ".repeat(11), 11L));
             assertThat(decoded.acctId()).isEqualTo(shortKey.acctId());
             assertThat(decoded.cardNum()).isNotEqualTo(shortKey.cardNum())
                     .isEqualTo(shortKey.cardNumImage(CODEC));
-            // Re-encoding the decoded key reproduces the same 27 bytes: the round trip is stable.
             assertThat(decoded.cardNumImage(CODEC)).isEqualTo(shortKey.cardNumImage(CODEC));
             assertThat(decoded.acctIdImage(CODEC)).isEqualTo(shortKey.acctIdImage(CODEC));
         }
@@ -2408,8 +2155,6 @@ class CardListRequestTest {
         @Test
         @DisplayName("a space satisfies neither next-page 88-level, and LOW-VALUES is not a space")
         void spaceIsNeitherNextPageState() {
-            // 88 CA-NEXT-PAGE-NOT-EXISTS VALUE LOW-VALUES.   88 CA-NEXT-PAGE-EXISTS VALUE 'Y'.
-            // There is no catch-all, so a space - a third, distinct byte - satisfies neither.
             PageCursor spaced = PageCursor.firstPage().withNextPageNotExists();
             assertThat(spaced.isNextPageNotExists()).isTrue();
             assertThat(spaced.nextPageInd()).isEqualTo(LOW).isNotEqualTo(" ");
@@ -2420,10 +2165,6 @@ class CardListRequestTest {
         @Test
         @DisplayName("the selection table starts at LOW-VALUES; the error table has no VALUE clause")
         void theTwoTablesDoNotStartAlike() {
-            // COCRDLIC:72-73  05 WS-EDIT-SELECT-FLAGS       PIC X(7) VALUE LOW-VALUES.  <- has one
-            // COCRDLIC:83     05 WS-EDIT-SELECT-ERROR-FLAGS PIC X(7).                   <- has none
-            // Two adjacent, near-identical declarations with different initial states. The Java types
-            // model each state explicitly rather than assuming the tables behave alike.
             SelectionFlags selection = SelectionFlags.lowValues();
             SelectionErrorFlags errors = SelectionErrorFlags.none();
 
@@ -2436,8 +2177,6 @@ class CardListRequestTest {
                 assertThat(selection.isSelectOk(row)).isFalse();
             }
 
-            // The error table's own initial state, asserted for what it is rather than assumed equal
-            // to the selection table's.
             assertThat(errors.flags()).hasSize(7);
             for (int row = CardListRequest.FIRST_ROW_NUMBER;
                     row <= CardListRequest.LAST_ROW_NUMBER; row++) {
@@ -2453,9 +2192,6 @@ class CardListRequestTest {
         @Test
         @DisplayName("each element carries its own vector: row 1 'S' and row 7 'U', with no cross-talk")
         void selectionPredicatesArePerElement() {
-            // COCRDLIC:972-978 loads WS-EDIT-SELECT(1) through (7) from seven separate screen fields,
-            // and :683-738 reads them back one at a time, so every 88-level is evaluated against ONE
-            // element. Setting two of them must not disturb each other or the five in between.
             SelectionFlags flags = SelectionFlags.lowValues()
                     .withSelection(1, CardListRequest.SELECT_VIEW)
                     .withSelection(7, CardListRequest.SELECT_UPDATE);
@@ -2486,9 +2222,6 @@ class CardListRequestTest {
         @Test
         @DisplayName("SELECT-OK membership is exactly {'S','U'} and SELECT-BLANK exactly {space, LOW}")
         void conditionNameMembershipIsExhaustive() {
-            // 88 SELECT-OK   VALUES 'S', 'U'.          -> two members, not three: 's' is not 'S'.
-            // 88 SELECT-BLANK VALUES ' ', LOW-VALUES.  -> two DIFFERENT bytes sharing one predicate,
-            //                                             which is what COCRDLIC:757 relies on.
             List<Character> selectOk = new ArrayList<>();
             List<Character> selectBlank = new ArrayList<>();
             for (char candidate = 0; candidate < 128; candidate++) {
@@ -2525,10 +2258,6 @@ class CardListRequestTest {
         @Test
         @DisplayName("setting an error flag changes no declared width and no offset")
         void anErrorFlagIsHighlightMetadataOnly() {
-            // The resulting highlight bytes - DFHRED on CRDSELnC and a '*' in CRDSELnO - belong to
-            // CardListResponseTest. Note that CSSETATY has NO card consumer at all: its only consumer
-            // is COACTUPC. COCRDLIC highlights inline through DFHRED at nine sites, so what is
-            // asserted here is the outcome contract, not a shared mechanism.
             CardListRequest request = new CardListRequest();
             request.setSelectionErrorFlags(SelectionErrorFlags.none().withRowInError(1)
                     .withRowInError(7));
@@ -2541,21 +2270,14 @@ class CardListRequestTest {
             assertThat(CardListRequest.GROUP_LENGTH).isEqualTo(797);
             assertThat(CardListRequest.PROG_COMMAREA_LENGTH).isEqualTo(254);
             assertThat(CardListRequest.SELECT_FLAGS_LENGTH).isEqualTo(7);
-            // No CARDDEMO-COMMAREA travelled with this request, so EIBCALEN is 0 - the false side of
-            // the branch that COCRDLIC:315 tests.
             assertThat(request.commareaLength()).isZero();
             assertThat(request.hasNavigationContext()).isFalse();
         }
     }
 
-    // -------------------------------------------------------------------------------------------------
-    // 14. EVERYTHING TRAVELS IN THE PAYLOAD, AND TWO REQUESTS SHARE NOTHING
-    // -------------------------------------------------------------------------------------------------
-
     @Nested
     @DisplayName("Statelessness: the whole conversation rides in the payload")
     class PayloadCarriesTheConversation {
-
         @Test
         @DisplayName("cursor, row table, both flag tables, screen state and commarea are all members")
         void everyPieceOfStateIsAMember() {
@@ -2569,12 +2291,6 @@ class CardListRequestTest {
             assertThat(request.getCardScreenState()).isNotNull();
             assertThat(request.hasNavigationContext()).isTrue();
 
-            // Two different communication areas, and they must not be conflated.
-            //   commareaLength() is EIBCALEN - the 160-byte CARDDEMO-COMMAREA of COCOM01Y that arrives
-            //   from the previous transaction and is what COCRDLIC:315 tests.
-            //   PROG_COMMAREA_LENGTH is 254 - this program's OWN WS-THIS-PROGCOMMAREA, the level-05
-            //   sibling sum of COCRDLIC:229-260, which it stores into CDEMO-CARD-DEMO storage and
-            //   reads back at :330.
             assertThat(request.commareaLength())
                     .as("EIBCALEN: the 160-byte CARDDEMO-COMMAREA")
                     .isEqualTo(160)
@@ -2613,7 +2329,6 @@ class CardListRequestTest {
             CardListRequest left = new CardListRequest();
             CardListRequest right = new CardListRequest();
 
-            // Row 3 is a StopperListRow, so this exercises the five-member shape as well.
             left.setRow(3, new StopperListRow("S", "*", "00000000003", "4111111111111333", "Y"));
             left.setPageCursor(PageCursor.firstPage().withScreenNum(4));
             left.setSelectionFlags(SelectionFlags.lowValues().withSelection(3,
@@ -2628,7 +2343,6 @@ class CardListRequestTest {
             assertThat(right.getScreenRowTable().row(3).isCleared()).isTrue();
             assertThat(right.getCrdnum3()).isNotEqualTo(left.getCrdnum3());
 
-            // And the reverse: a mutation on the right must not reach the left either.
             right.setRow(3, new StopperListRow("U", " ", "00000000099", "4111111111111999", "N"));
             assertThat(left.getCrdnum3()).isEqualTo("4111111111111333");
             assertThat(left.getCrdsel3()).isEqualTo("S");
@@ -2652,9 +2366,6 @@ class CardListRequestTest {
         @Test
         @DisplayName("TRNNAME holds CCLI at 4 and PGMNAME holds COCRDLIC at 8, exactly")
         void theTransactionAndProgramNamesFitTheirFields() {
-            // app/csd/CARDDEMO.CSD:357-358 DEFINE TRANSACTION(CCLI) PROGRAM(COCRDLIC), and
-            // app/csd/CARDDEMO.CSD:203 DEFINE PROGRAM(COCRDLIC) DESCRIPTION(LIST CARDS). The program
-            // states the same two literals itself at COCRDLIC:179-182.
             CardListRequest request = new CardListRequest();
             request.setTrnname(CardListRequest.TRANSACTION_ID);
             request.setPgmname(CardListRequest.PROGRAM_NAME);
@@ -2685,9 +2396,6 @@ class CardListRequestTest {
         @Test
         @DisplayName("toString neither prints nor disguises a card number")
         void toStringDoesNotMaskAnything() {
-            // AAP B6: masking, redaction and obfuscation are all forbidden - a disguised card number
-            // would be a value this screen never produces. toString reports shape and omits content
-            // entirely, which is a different thing from printing a masked value.
             CardListRequest request = new CardListRequest();
             request.setCardsid("4111111111111111");
             request.setRow(2, new StopperListRow("S", "*", "00000000002", "4111111111111222", "Y"));
@@ -2697,38 +2405,16 @@ class CardListRequestTest {
                     "1111111111", "1111111122");
             assertThat(rendered).contains("payloadFields=45").contains("groupLength=797");
 
-            // The values themselves are untouched by rendering: they are carried in the clear, exactly
-            // as CRDNUM1 through CRDNUM7 and CARDSID declare them.
             assertThat(request.getCardsid()).isEqualTo("4111111111111111");
             assertThat(request.getCrdnum2()).isEqualTo("4111111111111222");
         }
     }
 
-    // -------------------------------------------------------------------------------------------------
-    // Test data
-    // -------------------------------------------------------------------------------------------------
-
-    /**
-     * The 45 {@code (label, LENGTH, POS line, POS column)} quadruples of {@code app/bms/COCRDLI.bms},
-     * fed to the traceability test so every field appears in the surefire report with its geometry.
-     *
-     * @return one argument set per name-labelled {@code DFHMDF}
-     */
     static Stream<Arguments> bmsFieldCases() {
         return BMS_FIELDS.stream().map(field -> Arguments.of(field.dfhmdfName(), field.length(),
                 field.screenLine(), field.screenColumn()));
     }
 
-    /**
-     * The state bytes {@code WS-ROW-CRDSELECT-ERROR} can hold, with the one value its single
-     * {@code 88}-level recognises and four that it does not.
-     *
-     * <p>Written as {@code Arguments} rather than a {@code @CsvSource}: a CSV cell holding a space or a
-     * {@code LOW-VALUES} byte is normalised to {@code null} by the CSV parser, which would silently
-     * replace the two most important cases in this table with something else entirely.
-     *
-     * @return a description, the byte to store, and whether {@code WS-ROW-SELECT-ERROR} holds
-     */
     static Stream<Arguments> rowSelectErrorCases() {
         return Stream.of(
                 Arguments.of("'1', the declared VALUE", "1", true),
@@ -2738,15 +2424,6 @@ class CardListRequestTest {
                 Arguments.of("'0', the neighbouring digit", "0", false));
     }
 
-    /**
-     * The width {@link CardListRequest} declares for one {@code DFHMDF} label, resolved by an explicit
-     * arm per label rather than by reflection or by string surgery on the name. Every one of the 45
-     * labels is named, so removing or renaming a constant breaks <em>compilation</em> here - a stronger
-     * signal than a runtime failure, and the reason this is a {@code switch} and not a map lookup.
-     *
-     * @param dfhmdfName the {@code DFHMDF} label
-     * @return the declared width the class under test carries for it
-     */
     private static int declaredWidthOf(String dfhmdfName) {
         return switch (dfhmdfName) {
             case "TRNNAME" -> CardListRequest.TRNNAME_LENGTH;
@@ -2775,15 +2452,6 @@ class CardListRequestTest {
         };
     }
 
-    /**
-     * Reads one payload member by its {@code DFHMDF} label through the real accessor. Again an explicit
-     * arm per label: a renamed accessor must fail to compile, and {@code CRDSTP1} must have no arm
-     * because it has no accessor.
-     *
-     * @param request the request to read
-     * @param dfhmdfName the {@code DFHMDF} label
-     * @return the stored value, never {@code null}
-     */
     private static String payloadValueOf(CardListRequest request, String dfhmdfName) {
         return switch (dfhmdfName) {
             case "TRNNAME" -> request.getTrnname();
@@ -2837,16 +2505,6 @@ class CardListRequestTest {
         };
     }
 
-    /**
-     * The absolute 0-based offset of one field's {@code xxxI} item inside {@code 01 CCRDLIAI}, walked
-     * from {@link #BMS_FIELDS} using only the two transcribed literals {@link #TIOAPFX_FILLER_BYTES}
-     * and {@link #SYMBOLIC_PREFIX_BYTES}. The walk is an independent oracle: the class under test
-     * publishes group and section widths but no per-field offsets, so nothing here is re-derived from
-     * the code it checks.
-     *
-     * @param dfhmdfName the {@code DFHMDF} label
-     * @return the offset of that field's {@code xxxI} item
-     */
     private static int inputItemOffset(String dfhmdfName) {
         int offset = TIOAPFX_FILLER_BYTES;
         for (BmsField field : BMS_FIELDS) {
@@ -2859,25 +2517,10 @@ class CardListRequestTest {
         throw new IllegalArgumentException(dfhmdfName + " is not a field of COCRDLI");
     }
 
-    /**
-     * The screen line one detail row occupies. The seven rows sit on lines 11 through 17, so subscript
-     * {@code n} is line {@code 10 + n} - {@code app/bms/COCRDLI.bms:140-323}.
-     *
-     * @param cobolRowNumber the COBOL subscript, 1 through 7
-     * @return the screen line
-     */
     private static int screenLineOfRow(int cobolRowNumber) {
         return 10 + cobolRowNumber;
     }
 
-    /**
-     * The total byte span one detail row occupies in {@code 01 CCRDLIAI}, prefixes included. Row 1
-     * yields 57 and rows 2 through 7 yield 65 apiece, and that inequality is the asymmetry stated in
-     * bytes.
-     *
-     * @param cobolRowNumber the COBOL subscript, 1 through 7
-     * @return the row's byte span
-     */
     private static int rowSpanBytes(int cobolRowNumber) {
         int line = screenLineOfRow(cobolRowNumber);
         int span = 0;
@@ -2889,13 +2532,6 @@ class CardListRequestTest {
         return span;
     }
 
-    /**
-     * The labels of one detail row, in copybook order. Row 1 returns four and rows 2 through 7 return
-     * five with the {@code CRDSTPn} label second.
-     *
-     * @param cobolRowNumber the COBOL subscript, 1 through 7
-     * @return that row's labels in source order
-     */
     private static List<String> rowFieldNames(int cobolRowNumber) {
         int line = screenLineOfRow(cobolRowNumber);
         List<String> names = new ArrayList<>();
@@ -2907,12 +2543,6 @@ class CardListRequestTest {
         return List.copyOf(names);
     }
 
-    /**
-     * One entry per map field setter, so each can be shown to reject {@code null} while naming its own
-     * {@code DFHMDF} label.
-     *
-     * @return the eleven setters
-     */
     static Stream<Arguments> nullRejectingSetters() {
         return Stream.of(
                 Arguments.of("TRNNAME", (Consumer<CardListRequest>) r -> r.setTrnname(null)),
@@ -2928,12 +2558,6 @@ class CardListRequestTest {
                 Arguments.of("ERRMSG", (Consumer<CardListRequest>) r -> r.setErrmsg(null)));
     }
 
-    /**
-     * One mutator per member of the request, each altering exactly that member, so equality and hashing
-     * can be shown to depend on all nineteen.
-     *
-     * @return the nineteen mutators
-     */
     static Stream<Arguments> singleMemberMutators() {
         return Stream.of(
                 Arguments.of("trnname", (Consumer<CardListRequest>) r -> r.setTrnname("CCLI")),
@@ -2972,7 +2596,6 @@ class CardListRequestTest {
     @Nested
     @DisplayName("The 34 numbered accessor pairs - one per COCRDLI.CPY xxxI item")
     class NumberedRowAccessors {
-
         @ParameterizedTest(name = "{0} round-trips and touches nothing else on its row")
         @MethodSource("com.vsergeychik.carddemo.card.dto.CardListRequestTest#numberedRowMemberCases")
         @DisplayName("each numbered member reads back exactly what its own setter wrote")
@@ -2982,8 +2605,6 @@ class CardListRequestTest {
             int row = Character.getNumericValue(member.charAt(member.length() - 1));
             String written = "Z";
 
-            // Give every member of the row a distinct value first, so a setter that writes the wrong
-            // component of the record is caught rather than masked by identical blanks.
             Map<String, String> before = new LinkedHashMap<>();
             for (String sibling : membersOfRow(row)) {
                 String value = seedFor(sibling);
@@ -3109,24 +2730,9 @@ class CardListRequestTest {
         return NUMBERED_ROW_MEMBERS.stream().map(Arguments::of);
     }
 
-    /**
-     * The order in which this type publishes its members.
-     *
-     * <p>Every member here traces to a {@code DFHMDF} field of {@code app/bms/COCRDLI.bms} or to a
-     * transport extension, and the projection is only faithful if it is published in the order the
-     * screen declares - a client reading the object top to bottom must read the screen top to bottom.
-     * Jackson does not give that for free: with no explicit order it derives one from reflection over
-     * the accessors and moves every member renamed with {@code @JsonProperty} behind the ones that
-     * were not renamed, which put this type's map fields out of screen order.
-     */
     @Nested
     @DisplayName("the published member order is the order app/cpy-bms/COCRDLI.CPY declares")
     class BmsSerialisationOrder {
-
-        /**
-         * The 45 {@code xxxI} items of {@code app/cpy-bms/COCRDLI.CPY}, in that file's own
-         * declaration order.
-         */
         private static final List<String> MAP_PROJECTION = List.of(
                 "trnname", "title01", "curdate", "pgmname", "title02", "curtime", "pageno",
                 "acctsid", "cardsid", "crdsel1", "acctno1", "crdnum1", "crdsts1", "crdsel2",
@@ -3136,14 +2742,9 @@ class CardListRequestTest {
                 "acctno6", "crdnum6", "crdsts6", "crdsel7", "crdstp7", "acctno7", "crdnum7",
                 "crdsts7", "infomsg", "errmsg");
 
-        /**
-         * The 4 members that are not {@code DFHMDF} fields: the page-of-seven browse cursor, the per-row selection flags, the CVCRD01Y screen state and the CARDDEMO-COMMAREA. They follow
-         * the map and never interleave with it, so the screen reads as one contiguous run.
-         */
         private static final List<String> TRANSPORT_EXTENSIONS = List.of(
                 "pageCursor", "selectionFlags", "cardScreenState", "navigationContext");
 
-        /** The map projection followed by the transport extensions - the whole published object. */
         private static final List<String> PUBLISHED_ORDER =
                 joined(MAP_PROJECTION, TRANSPORT_EXTENSIONS);
 

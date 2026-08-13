@@ -13,35 +13,14 @@ import org.junit.jupiter.params.provider.ValueSource;
 
 /**
  * Proves the physical-record ordinal contract: what it accepts, what it refuses, and what it renders.
- *
- * <p>Three obligations, and every physical-sequential read in the module rests on all three:
- * <ul>
- *   <li><strong>it is required</strong>, because a physical-sequential dataset's order is its records'
- *       position and SQL returns rows in no order unless a statement says which;</li>
- *   <li><strong>it is a bare identifier and nothing else</strong>, because it is rendered into an
- *       {@code ORDER BY} clause unquoted - a pseudo-column cannot be delimited - so the grammar rather
- *       than the quoting is what keeps it from reaching the statement as a clause;</li>
- *   <li><strong>it renders ascending</strong>, because a physical ordinal increases with position and
- *       the first record written is the one a sequential {@code READ} returns first.</li>
- * </ul>
- *
- * <p>The ordinal names below are TEST values. That is deliberate: this suite proves the value comes from
- * configuration, so it must not depend on the one the shipped profile happens to carry.
  */
 @DisplayName("PhysicalSequence - the physical-record ordinal a sequential read is ordered by")
 class PhysicalSequenceTest {
-
-    /** What the fixture-backed profile configures: H2's own row-identifier pseudo-column. */
     private static final String ROW_IDENTIFIER = "_ROWID_";
-
-    // =================================================================================================
-    // Resolution from configuration.
-    // =================================================================================================
 
     @Nested
     @DisplayName("Resolution - required, stripped, and never defaulted")
     class Resolution {
-
         @Test
         @DisplayName("a configured ordinal resolves to itself")
         void aConfiguredOrdinalResolves() {
@@ -97,14 +76,9 @@ class PhysicalSequenceTest {
         }
     }
 
-    // =================================================================================================
-    // The grammar. This is the security-relevant half: the value is rendered unquoted.
-    // =================================================================================================
-
     @Nested
     @DisplayName("The grammar - a single bare identifier, because the value is rendered unquoted")
     class Grammar {
-
         @ParameterizedTest(name = "[{index}] {0} is accepted")
         @ValueSource(strings = {
             "_ROWID_",
@@ -169,10 +143,6 @@ class PhysicalSequenceTest {
         })
         @DisplayName("nothing that could open a second clause or a second statement gets through")
         void nothingThatCouldExtendTheStatementIsAccepted(String configured) {
-            // The whole safety argument for rendering the value unquoted. Whitespace, a comma, a
-            // semicolon, a quote, a parenthesis, a comment marker, an operator and a qualifying dot are
-            // each refused by position, so there is no lexical route from this value to anything but a
-            // name.
             assertThatIllegalArgumentException().isThrownBy(() -> PhysicalSequence.of(configured))
                     .withMessageContaining(PhysicalSequence.EXPRESSION_PROPERTY)
                     .withMessageContaining("0-based position");
@@ -187,14 +157,9 @@ class PhysicalSequenceTest {
         }
     }
 
-    // =================================================================================================
-    // Rendering.
-    // =================================================================================================
-
     @Nested
     @DisplayName("Rendering - ascending, unquoted, and unmistakable in a diagnostic")
     class Rendering {
-
         @Test
         @DisplayName("the clause is ascending, because a physical ordinal increases with position")
         void theClauseIsAscending() {
@@ -205,9 +170,6 @@ class PhysicalSequenceTest {
         @Test
         @DisplayName("the ordinal is rendered unquoted, because a pseudo-column cannot be delimited")
         void theOrdinalIsRenderedUnquoted() {
-            // Measured against H2 2.3.232: ORDER BY _ROWID_ ASC resolves while ORDER BY "_ROWID_" ASC
-            // fails with 'Column "_ROWID_" not found'. Quoting would turn a working ordering into an
-            // error on exactly the backend the fixture-backed profile runs on.
             assertThat(PhysicalSequence.of(ROW_IDENTIFIER).orderByClause()).doesNotContain("\"");
         }
 

@@ -14,31 +14,19 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
 /**
- * {@link ScreenInputRejectedException} - the screen-boundary refusal that keeps a value the caller
- * supplied out of the abend path.
- *
- * <p>The behaviour under test is the answer a caller gets for a payload a {@code RECEIVE MAP} could
- * never have delivered. {@code COACTUPC} and {@code COCRDUPC} declare
- * {@code EXEC CICS HANDLE ABEND LABEL(ABEND-ROUTINE)}, so before this type existed such a payload was
- * answered {@code 500} with {@code ABEND-DATA} - blaming the transaction for the caller's input, and
- * differing from the identical input on the fifteen screens that declare no handler.
- *
- * <p>Two properties are asserted throughout because they are the point of the type: the <em>name</em> of
- * the member always reaches the answer, and the <em>value</em> never does.
+ * {@link ScreenInputRejectedException} - the screen-boundary refusal that keeps a value the caller supplied
+ * out of the abend path.
  */
 @DisplayName("ScreenInputRejectedException - a value no RECEIVE MAP could have delivered")
 class ScreenInputRejectedExceptionTest {
-
     private static final Charset ASCII = StandardCharsets.US_ASCII;
     private static final Charset EBCDIC = Charset.forName("IBM037");
 
-    /** A payload value carrying a card number, to prove it is never echoed. */
     private static final String SENSITIVE = "4111111111111111";
 
     @Nested
     @DisplayName("It is an IllegalArgumentException, which is what routes it to the existing 400")
     class ItsPlaceInTheHierarchy {
-
         @Test
         @DisplayName("extends IllegalArgumentException, so CobolErrorHandler answers it 400 without a "
                 + "second error contract")
@@ -61,7 +49,6 @@ class ScreenInputRejectedExceptionTest {
     @Nested
     @DisplayName("unrepresentable - a character the code page has no representation for")
     class Unrepresentable {
-
         @Test
         @DisplayName("names the member, so a caller can find it among 54 fields")
         void namesTheMember() {
@@ -129,7 +116,6 @@ class ScreenInputRejectedExceptionTest {
     @Nested
     @DisplayName("requireDeliverable - a control character no 3270 could have transmitted")
     class RequireDeliverable {
-
         @ParameterizedTest(name = "U+{0} inside a value is refused")
         @ValueSource(strings = {"0000", "0009", "000A", "000D", "001B", "001F", "007F", "0085", "009F"})
         @DisplayName("every C0 control, DEL and C1 is refused when it sits among data")
@@ -177,7 +163,6 @@ class ScreenInputRejectedExceptionTest {
             assertThatExceptionOfType(ScreenInputRejectedException.class)
                     .isThrownBy(() -> ScreenInputRejectedException
                             .requireDeliverable("fname", "\u0000AB"));
-            // A trailing run interrupted by a space is not a trailing run.
             assertThatExceptionOfType(ScreenInputRejectedException.class)
                     .isThrownBy(() -> ScreenInputRejectedException
                             .requireDeliverable("fname", "JOHN\u0000\u0000 "));
@@ -188,9 +173,6 @@ class ScreenInputRejectedExceptionTest {
         void theFirstOffenderIsReported() {
             assertThatExceptionOfType(ScreenInputRejectedException.class)
                     .isThrownBy(() -> ScreenInputRejectedException
-                            // The line feed is built rather than written as a \\u escape: javac
-                            // processes unicode escapes before lexing, so one inside a literal would
-                            // end the literal.
                             .requireDeliverable("fname", "A\u0009B" + (char) 0x0A + "C"))
                     .satisfies(rejected ->
                             assertThat(rejected.getMessage()).contains("U+0009").doesNotContain("U+000A"));
@@ -244,7 +226,6 @@ class ScreenInputRejectedExceptionTest {
     @Nested
     @DisplayName("conflictingAid - one attention identifier, stated twice, disagreeing with itself")
     class ConflictingAid {
-
         @Test
         @DisplayName("the diagnostic names both carriers and explains which one is authoritative")
         void theDiagnosticNamesBothCarriers() {

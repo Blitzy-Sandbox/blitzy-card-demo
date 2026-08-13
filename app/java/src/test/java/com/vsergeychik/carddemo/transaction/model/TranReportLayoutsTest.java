@@ -31,186 +31,35 @@ import org.junit.jupiter.params.provider.ValueSource;
 
 /**
  * The print image of the CardDemo daily transaction report, under test.
- *
- * <p>{@link TranReportLayouts} is the single Java type for {@code app/cpy/CVTRA07Y.cpy}, and it is
- * pure presentation bytes: every literal, every space, every dot and every hyphen is part of the
- * contract that {@code app/cbl/CBTRN03C.cbl} writes to the 133-byte {@code TRANREPT} dataset. This
- * suite therefore asserts <em>exact</em> images and <em>exact</em> lengths rather than "contains" or
- * "starts with" — a report line of the right shape and the wrong width mis-aligns every column
- * after it, and a mis-suppressed comma shifts an amount by one byte in every row of a page.
- *
- * <h2>Provenance of every expected value</h2>
- *
- * <p>The legacy COBOL <b>cannot be executed in this environment</b>: there is no z/OS runtime, the
- * available compiler has indexed file support disabled, no Language Environment {@code CEE*}
- * services exist and no CICS emulator is present. Every expectation below is consequently
- * <em>statically derived</em> — measured out of {@code app/cpy/CVTRA07Y.cpy}, read out of {@code
- * app/cbl/CBTRN03C.cbl}, and cross-checked against the <em>IBM Enterprise COBOL for z/OS Language
- * Reference</em> sections "Zero suppression and replacement editing", "Fixed insertion editing" and
- * "Initializing a structure (INITIALIZE)" — rather than captured from a live run. Expected images
- * are written as explicit field-by-field concatenations with their 1-based columns in comments, so a
- * failure points at a single copybook item rather than at a 114-character blob.
- *
- * <h2>The four properties of the copybook that shape every assertion</h2>
- *
- * <ol>
- *   <li><b>Seven record areas, of 115, 114, 114, 133, 112, 112 and 112 bytes.</b> All measured from
- *       the {@code PICTURE} clauses; none of them is 133 except the rule line, because padding to
- *       the record width belongs to {@code TranReportWriter}. Seven, counted from the copybook
- *       itself: {@code CVTRA07Y} declares an {@code 01} level at each of its lines 4, 15, 33, 48, 50,
- *       56 and 62, the last three being the page, account and grand total lines as three separate
- *       declarations rather than one repeated group. Descriptions of this copybook as holding "five"
- *       layouts undercount those three; {@code LayoutWidths} asserts all seven.</li>
- *   <li><b>The amount always occupies 1-based columns 98-112.</b> In all four amount-bearing
- *       layouts the bytes ahead of it sum to exactly 97 — which is only true because the dot
- *       leaders are 86, 84 and 86, compensating label widths of 11, 13 and 11.</li>
- *   <li><b>Every digit position of both masks is a {@code Z}.</b> So a zero value blanks the whole
- *       15-byte item, sign and commas and decimal point included.</li>
- *   <li><b>{@code ROUNDED} appears zero times in all 28 programs.</b> So every store truncates, and
- *       {@code RoundingMode.DOWN} is the only faithful mode — which is indistinguishable from
- *       {@code FLOOR} until a negative value is edited, and from {@code HALF_UP} until a half-way
- *       one is.</li>
- * </ol>
- *
- * <h2>Three traps this suite exists to catch</h2>
- *
- * <ol>
- *   <li><b>A normalised dot leader.</b> Unifying 86/84/86 looks like tidying and silently moves the
- *       account-total amount two columns. Caught by {@code AmountColumn}.</li>
- *   <li><b>A "fixed" {@code INITIALIZE}.</b> Blanking the whole detail line would erase the two
- *       {@code '-'} separators, which COBOL's {@code INITIALIZE} leaves standing because they are
- *       {@code FILLER}. Caught by {@code InitializeSemantics}.</li>
- *   <li><b>A locale-sensitive formatter.</b> {@code String.format}, {@code DecimalFormat} and
- *       {@code NumberFormat} would render {@code 1.234,56} under a European default locale and none
- *       of them implements {@code Z} suppression at all. Caught by the exact-image mask tables and,
- *       directly, by {@code LocaleIndependence}.</li>
- * </ol>
- *
- * <h2>Provenance — every source consulted, and nothing else</h2>
- *
- * <p>Nine legacy artefacts define everything asserted here. They are <b>read-only</b>: this suite
- * writes nothing to them and, being a unit test, reads nothing from the filesystem or the classpath
- * at run time either. Where real data bytes are wanted they are embedded below as {@code String}
- * literals, each carrying the file and the record it was transcribed from.
- *
- * <ul>
- *   <li>{@code app/cpy/CVTRA07Y.cpy} — the copybook itself: seven layouts, every {@code PICTURE},
- *       every {@code VALUE} literal, both edit masks and the three dot leaders.</li>
- *   <li>{@code app/cbl/CBTRN03C.cbl} — the sole consumer. {@code :362} is the
- *       {@code INITIALIZE TRANSACTION-DETAIL-REPORT} that opens {@code 1120-WRITE-DETAIL} at
- *       {@code :361}; {@code :363-370} are the eight moves; {@code :277-278} move the two dates;
- *       {@code :294}, {@code :307} and {@code :319} move the three totals; {@code :85} declares the
- *       receiving {@code FD-REPTFILE-REC PIC X(133)}. {@code :129-136} declare
- *       {@code WS-LINE-COUNTER PIC 9(09) COMP-3}, {@code WS-PAGE-SIZE PIC 9(03) COMP-3 VALUE 20},
- *       {@code WS-BLANK-LINE PIC X(133) VALUE SPACES} and the three {@code PIC S9(09)V99} totals in
- *       <em>{@code WORKING-STORAGE}</em> — which is why {@code DeliberateAbsences} asserts that none
- *       of them is a member of this class.</li>
- *   <li>{@code app/jcl/TRANREPT.jcl} {@code :78} and {@code app/proc/TRANREPT.prc} {@code :76} —
- *       {@code TRANREPT DCB=(LRECL=133,RECFM=FB,BLKSIZE=0)}. Corroboration only: these layouts
- *       render at their natural widths and the pad to 133 belongs to {@code TranReportWriter}.</li>
- *   <li>{@code app/cpy/CVTRA05Y.cpy} — the sending record: {@code TRAN-ID PIC X(16)},
- *       {@code TRAN-TYPE-CD PIC X(02)}, {@code TRAN-CAT-CD PIC 9(04)},
- *       {@code TRAN-SOURCE PIC X(10)} and {@code TRAN-AMT PIC S9(09)V99}, the scale-2 sender behind
- *       every edited amount.</li>
- *   <li>{@code app/cpy/CVTRA03Y.cpy} — {@code TRAN-TYPE-DESC PIC X(50)}, the over-wide sender of
- *       {@code :366}, whose receiver is only {@code PIC X(15)}.</li>
- *   <li>{@code app/cpy/CVTRA04Y.cpy} — {@code TRAN-CAT-TYPE-DESC PIC X(50)}, the over-wide sender of
- *       {@code :368}, whose receiver is only {@code PIC X(29)}.</li>
- *   <li>{@code app/data/ASCII/trantype.txt} and {@code app/data/ASCII/trancatg.txt} — the real
- *       description bytes embedded as {@link #FIXTURE_TYPE_DESC_PURCHASE} and its siblings.</li>
- * </ul>
- *
- * <p><b>User-specified rules: none.</b> {@code review_rules} returns exactly one line, "No user
- * rules provided", and that absence is not licence to assert less. The constraints this suite is
- * written against are consequently the migration plan's own, and each is named at the assertion that
- * discharges it: {@code R2}/{@code G24} truncation with {@code RoundingMode.DOWN},
- * {@code R3}/{@code G23} scale from the {@code PICTURE}, {@code R4}/{@code G22} no {@code double} or
- * {@code float} anywhere, {@code R5} bytes asserted at absolute offsets, {@code R7}/{@code G50}
- * every mask branch driven, {@code B5} the 86/84/86 leaders preserved rather than tidied,
- * {@code B8}/{@code G52} explicit imports, a named charset and no locale-sensitive formatting,
- * {@code B9}/{@code G53} no static mutable state, {@code B11} every width proved by addition,
- * {@code G19}/{@code G21} declared widths and emitted {@code FILLER}s, {@code G20} natural width and
- * no padding, {@code G33} no fabricated {@code OCCURS} assertion because {@code CVTRA07Y} declares
- * none, and {@code G44} no persistence artefact.
  */
 @DisplayName("TranReportLayouts - the seven report line layouts of app/cpy/CVTRA07Y.cpy")
 class TranReportLayoutsTest {
-
-    /** The charset of the {@code app/data/ASCII} fixtures, and the default for these tests. */
     private static final Charset ASCII = StandardCharsets.US_ASCII;
 
-    /** The EBCDIC code page of the {@code app/data/EBCDIC} datasets. */
     private static final Charset EBCDIC = Charset.forName("IBM037");
 
-    /** The edited image of zero under either mask. */
     private static final String BLANK_AMOUNT = " ".repeat(TranReportLayouts.AMOUNT_MASK_WIDTH);
 
-    /** {@code REPT-SHORT-NAME}: {@code 'DALYREPT'} right-padded into {@code X(38)}. */
     private static final String SHORT_NAME_IMAGE = "DALYREPT" + " ".repeat(30);
 
-    /** {@code REPT-LONG-NAME}: the long title right-padded into {@code X(41)}. */
     private static final String LONG_NAME_IMAGE = "Daily Transaction Report" + " ".repeat(17);
 
-    /** 86 dots — the {@code REPORT-PAGE-TOTALS} and {@code REPORT-GRAND-TOTALS} leader. */
     private static final String LEADER_86 = ".".repeat(86);
 
-    /** 84 dots — the {@code REPORT-ACCOUNT-TOTALS} leader, two shorter and deliberately so. */
     private static final String LEADER_84 = ".".repeat(84);
 
-    // =================================================================================================
-    // Real description bytes, transcribed from the ASCII fixtures. Embedded as literals rather than
-    // read from the classpath: this is a unit test, and reading app/data or src/test/resources at run
-    // time would make it depend on the filesystem (practice B7) as well as on files it must never
-    // write (practice B3). Each carries the fixture and the record it came from, and its measured
-    // length, so a reviewer can check it against the fixture without running anything.
-    //
-    // The two receivers under test are TRAN-REPORT-TYPE-DESC PIC X(15) and TRAN-REPORT-CAT-DESC
-    // PIC X(29); both senders are PIC X(50). The measured fixture maxima are 13 and 29 respectively,
-    // so REAL data alone can never demonstrate the X(15) receiver truncating and only exactly fills
-    // the X(29) one. That is precisely why the two SYNTHETIC over-long values below exist: without
-    // them the truncation branch would be untested, and a receiver mis-transcribed as X(50) would
-    // pass every assertion drawn from real data.
-    // =================================================================================================
-
-    /** {@code app/data/ASCII/trantype.txt} record 1, {@code TRAN-TYPE '01'} — 8 characters. */
     private static final String FIXTURE_TYPE_DESC_PURCHASE = "Purchase";
 
-    /**
-     * {@code app/data/ASCII/trantype.txt} record 4, {@code TRAN-TYPE '04'} — 13 characters, and the
-     * <b>longest of all seven</b> transaction-type descriptions in the fixture. Being 13, it still
-     * fits {@code PIC X(15)} with two spaces to spare, which is the measured fact that makes a
-     * synthetic value necessary for the truncation case.
-     */
     private static final String FIXTURE_TYPE_DESC_AUTHORIZATION = "Authorization";
 
-    /** {@code app/data/ASCII/trancatg.txt} record 1, key {@code 010001} — 19 characters. */
     private static final String FIXTURE_CAT_DESC_REGULAR_SALES = "Regular Sales Draft";
 
-    /**
-     * {@code app/data/ASCII/trancatg.txt} record 13, key {@code 040002} — <b>exactly 29</b>
-     * characters, so it fills {@code PIC X(29)} with no padding and no truncation.
-     */
     private static final String FIXTURE_CAT_DESC_ONLINE_AUTH = "Online purchase authorization";
 
-    /**
-     * {@code app/data/ASCII/trancatg.txt} record 18, key {@code 070001} — the other <b>exactly
-     * 29</b>-character description, and jointly the fixture's maximum.
-     */
     private static final String FIXTURE_CAT_DESC_CREDIT_ADJUSTMENT = "Sales draft credit adjustment";
 
-    /**
-     * A synthetic 50-character sender, over-long for both receivers. Not fixture data, and labelled
-     * so: no real description reaches 15 characters, so this is the only way to drive the {@code PIC
-     * X(15)} receiver's truncation branch. Its content is deliberately positional — the character at
-     * index {@code i} identifies {@code i} — so a truncated image names the exact cut point.
-     */
     private static final String SYNTHETIC_DESC_50 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789ABCDEFGHIJKLMN";
 
-    /**
-     * A synthetic 30-character sender: one character longer than {@code PIC X(29)}, so it proves the
-     * category receiver truncates at 29 rather than 30. The fixture maximum is exactly 29 and
-     * therefore cannot distinguish the two.
-     */
     private static final String SYNTHETIC_DESC_30 = FIXTURE_CAT_DESC_CREDIT_ADJUSTMENT + "!";
 
     private TranReportLayouts layouts;
@@ -220,24 +69,10 @@ class TranReportLayoutsTest {
         layouts = new TranReportLayouts(ASCII);
     }
 
-    /**
-     * Replaces every {@code _} with a space, so that a {@code @CsvSource} row can carry an expected
-     * image whose leading and interior spaces are significant. A literal space would be trimmed by the
-     * CSV parser and would be invisible in the test source besides.
-     *
-     * @param template the expected image with underscores standing in for spaces
-     * @return the template with every underscore replaced by a space
-     */
     private static String spaced(String template) {
         return template.replace('_', ' ');
     }
 
-    /**
-     * Performs the whole of {@code 1120-WRITE-DETAIL} ({@code CBTRN03C:362-370}) with the values used
-     * throughout this suite: the {@code INITIALIZE} followed by all eight moves. The two descriptions
-     * are supplied at their source widths — {@code PIC X(50)} in {@code app/cpy/CVTRA03Y.cpy} and
-     * {@code app/cpy/CVTRA04Y.cpy} — so the receiving truncation is genuinely exercised.
-     */
     private void writeDetailLine() {
         layouts.initializeTransactionDetailReport();
         layouts.moveTranReportTransId("0000000000000001");
@@ -250,26 +85,10 @@ class TranReportLayoutsTest {
         layouts.moveTranReportAmt(new BigDecimal("-1234.56"));
     }
 
-    /**
-     * Right-pads with spaces to a fixed width, used to present a sending field at its own declared
-     * {@code PIC X(n)} width.
-     *
-     * @param value the sending value
-     * @param width the sending field's declared width
-     * @return {@code value} padded on the right to {@code width}
-     */
     private static String padTo(String value, int width) {
         return value + " ".repeat(width - value.length());
     }
 
-    /**
-     * Asserts a layout's storage spans sum to its declared record length and are contiguous from
-     * offset 0 — the arithmetic proof that no item and no {@code FILLER} was dropped from the
-     * transcription (gates G19 and G21). Contiguity is checked span by span rather than by summing
-     * alone, because two compensating errors can sum correctly while sitting at the wrong offsets.
-     *
-     * @param layout the layout to prove
-     */
     private static void assertSpansSumToRecordLength(RecordLayout layout) {
         int cursor = 0;
         for (FieldSpan span : layout.storageSpans()) {
@@ -287,7 +106,6 @@ class TranReportLayoutsTest {
     @Nested
     @DisplayName("Layout widths - 115 / 114 / 114 / 133 / 112 / 112 / 112 (gate G19)")
     class LayoutWidths {
-
         @Test
         @DisplayName("the seven transcribed widths are the seven the copybook declares")
         void transcribedWidths() {
@@ -303,11 +121,6 @@ class TranReportLayoutsTest {
         @Test
         @DisplayName("each width is the arithmetic sum of that layout's declared item widths")
         void itemWidthsSumToTheDeclaredWidth() {
-            // REPORT-NAME-HEADER    38 + 41 + 12 + 10 + 4 + 10          = 115
-            // TRANSACTION-HEADER-1  17 + 12 + 19 + 35 + 14 + 1 + 16     = 114
-            // REPORT-PAGE-TOTALS    11 + 86 + 15                        = 112
-            // REPORT-ACCOUNT-TOTALS 13 + 84 + 15                        = 112
-            // REPORT-GRAND-TOTALS   11 + 86 + 15                        = 112
             assertThat(TranReportLayouts.REPT_SHORT_NAME_LENGTH
                     + TranReportLayouts.REPT_LONG_NAME_LENGTH
                     + TranReportLayouts.REPT_DATE_HEADER_LENGTH
@@ -340,27 +153,6 @@ class TranReportLayoutsTest {
         @Test
         @DisplayName("all sixteen detail items sum to 114, FILLERs included (practice B11)")
         void detailItemWidthsSumToOneHundredFourteen() {
-            // Every one of the sixteen declarations of TRANSACTION-DETAIL-REPORT, in copybook order.
-            // Eight are FILLER and are written as literals because COBOL FILLER has no referable name:
-            //
-            //   16 + 1 + 11 + 1 + 2 + 1 + 15 + 1 + 4 + 1 + 29 + 1 + 10 + 4 + 15 + 2 = 114
-            //   ^^   ^   ^^   ^   ^   ^   ^^   ^   ^   ^   ^^   ^   ^^   ^   ^^   ^
-            //   |    |   |    |   |   |   |    |   |   |   |    |   |    |   |    +- FILLER cols 113-114
-            //   |    |   |    |   |   |   |    |   |   |   |    |   |    |   +------ TRAN-REPORT-AMT
-            //   |    |   |    |   |   |   |    |   |   |   |    |   |    +---------- FILLER cols 94-97
-            //   |    |   |    |   |   |   |    |   |   |   |    |   +--------------- TRAN-REPORT-SOURCE
-            //   |    |   |    |   |   |   |    |   |   |   |    +------------------- FILLER col 83
-            //   |    |   |    |   |   |   |    |   |   |   +------------------------ TRAN-REPORT-CAT-DESC
-            //   |    |   |    |   |   |   |    |   |   +---------------------------- FILLER col 53 = '-'
-            //   |    |   |    |   |   |   |    |   +-------------------------------- TRAN-REPORT-CAT-CD
-            //   |    |   |    |   |   |   |    +------------------------------------ FILLER col 48
-            //   |    |   |    |   |   |   +----------------------------------------- TRAN-REPORT-TYPE-DESC
-            //   |    |   |    |   |   +--------------------------------------------- FILLER col 32 = '-'
-            //   |    |   |    |   +------------------------------------------------- TRAN-REPORT-TYPE-CD
-            //   |    |   |    +----------------------------------------------------- FILLER col 29
-            //   |    |   +---------------------------------------------------------- TRAN-REPORT-ACCOUNT-ID
-            //   |    +-------------------------------------------------------------- FILLER col 17
-            //   +------------------------------------------------------------------- TRAN-REPORT-TRANS-ID
             int spaceFillers = 1 + 1 + 1 + 1 + 4 + 2;
             int separatorFillers = 1 + 1;
             int namedItems = TranReportLayouts.TRAN_REPORT_TRANS_ID_LENGTH
@@ -378,7 +170,6 @@ class TranReportLayoutsTest {
                     .as("102 + 10 + 2 = 114, which is only true if every FILLER is counted")
                     .isEqualTo(TranReportLayouts.TRANSACTION_DETAIL_REPORT_LENGTH);
 
-            // Independently: the descriptors themselves must sum to the same 114.
             assertThat(TranReportLayouts.TRANSACTION_DETAIL_REPORT_LAYOUT.storageSpans().stream()
                     .mapToInt(FieldSpan::length).sum())
                     .isEqualTo(TranReportLayouts.TRANSACTION_DETAIL_REPORT_LENGTH);
@@ -399,12 +190,6 @@ class TranReportLayoutsTest {
         @Test
         @DisplayName("the width proof is real: a wrong descriptor set is rejected, not accepted")
         void aWrongDescriptorSetFailsTheWidthProof() {
-            // A width check nobody can fail is decoration. These three prove the layouts above are
-            // load-bearing by building deliberately wrong descriptor sets and watching each be
-            // rejected - which is exactly what would happen if a FILLER were dropped from the real
-            // copybook transcription (gate G21) or a width mis-typed (gate G19).
-
-            // 1. A dropped trailing FILLER: the totals line without its 15-byte amount.
             assertThatIllegalArgumentException()
                     .as("11 + 86 = 97 does not reach the declared 112, so the layout must be rejected")
                     .isThrownBy(() -> RecordLayout.of(TranReportLayouts.REPORT_PAGE_TOTALS_LENGTH,
@@ -413,7 +198,6 @@ class TranReportLayoutsTest {
                                     TranReportLayouts.PAGE_TOTAL_LEADER_LENGTH)))
                     .withMessageContaining("97");
 
-            // 2. A "normalised" dot leader: 86 where the copybook says 84 overshoots the width.
             assertThatIllegalArgumentException()
                     .as("normalising the account leader to 86 makes 13 + 86 + 15 = 114, not 112")
                     .isThrownBy(() -> RecordLayout.of(TranReportLayouts.REPORT_ACCOUNT_TOTALS_LENGTH,
@@ -425,7 +209,6 @@ class TranReportLayoutsTest {
                                             + TranReportLayouts.PAGE_TOTAL_LEADER_LENGTH,
                                     TranReportLayouts.AMOUNT_MASK_WIDTH)));
 
-            // 3. A mis-transcribed declared width, with the items themselves correct.
             assertThatIllegalArgumentException()
                     .as("declaring 133 for a 112-byte total line must fail, not silently pad")
                     .isThrownBy(() -> RecordLayout.of(133,
@@ -532,7 +315,6 @@ class TranReportLayoutsTest {
     @Nested
     @DisplayName("The column-97 invariant - every amount on 1-based columns 98-112")
     class AmountColumn {
-
         @Test
         @DisplayName("the amount column constants agree: offset 97, columns 98-112, width 15")
         void amountColumnConstants() {
@@ -605,12 +387,6 @@ class TranReportLayoutsTest {
         @Test
         @DisplayName("each leader image is its own width of dots and nothing else")
         void leaderImagesAreDots() {
-            // Exact image and exact width, then "every byte is a dot" through the copybook class's
-            // own hand-written predicate rather than a regular expression. A regex would assert the
-            // same thing less legibly and would be the one piece of pattern matching in a suite whose
-            // whole discipline is byte-at-an-offset comparison (rule R5, practice B11); using
-            // isRepetitionOf additionally keeps that predicate under test where it is actually relied
-            // on, which is what it was made package-private for.
             assertThat(TranReportLayouts.PAGE_TOTAL_LEADER_IMAGE).isEqualTo(LEADER_86).hasSize(86);
             assertThat(TranReportLayouts.isRepetitionOf(TranReportLayouts.PAGE_TOTAL_LEADER_IMAGE,
                     TranReportLayouts.TOTAL_LEADER_CHARACTER, 86)).isTrue();
@@ -622,8 +398,6 @@ class TranReportLayoutsTest {
                     TranReportLayouts.TOTAL_LEADER_CHARACTER, 86)).isTrue();
             assertThat(TranReportLayouts.TOTAL_LEADER_CHARACTER).isEqualTo('.');
 
-            // And the 84 is not interchangeable with the 86: asserting the wrong width must fail, or
-            // the three assertions above would pass a normalised leader too (practice B5).
             assertThat(TranReportLayouts.isRepetitionOf(TranReportLayouts.ACCOUNT_TOTAL_LEADER_IMAGE,
                     TranReportLayouts.TOTAL_LEADER_CHARACTER, 86))
                     .as("the account leader is 84 dots, so it is not 86 dots")
@@ -662,7 +436,6 @@ class TranReportLayoutsTest {
     @Nested
     @DisplayName("REPORT-NAME-HEADER - 115 bytes, CBTRN03C:277-278 and :325")
     class ReportNameHeader {
-
         @Test
         @DisplayName("the three captions and the ' to ' separator are byte-exact")
         void literalsAreByteExact() {
@@ -698,12 +471,12 @@ class TranReportLayoutsTest {
         void theWholeHeaderImage() {
             layouts.moveReptStartDate("2022-01-01");
             layouts.moveReptEndDate("2022-07-06");
-            String expected = SHORT_NAME_IMAGE   // cols   1- 38  REPT-SHORT-NAME   X(38)
-                    + LONG_NAME_IMAGE            // cols  39- 79  REPT-LONG-NAME    X(41)
-                    + "Date Range: "             // cols  80- 91  REPT-DATE-HEADER  X(12)
-                    + "2022-01-01"               // cols  92-101  REPT-START-DATE   X(10)
-                    + " to "                     // cols 102-105  FILLER            X(04)
-                    + "2022-07-06";              // cols 106-115  REPT-END-DATE     X(10)
+            String expected = SHORT_NAME_IMAGE
+                    + LONG_NAME_IMAGE
+                    + "Date Range: "
+                    + "2022-01-01"
+                    + " to "
+                    + "2022-07-06";
             assertThat(layouts.renderReportNameHeader()).isEqualTo(expected).hasSize(115);
             assertThat(layouts.reptStartDate()).isEqualTo("2022-01-01");
             assertThat(layouts.reptEndDate()).isEqualTo("2022-07-06");
@@ -743,7 +516,6 @@ class TranReportLayoutsTest {
     @Nested
     @DisplayName("TRANSACTION-HEADER-1 - 114 bytes, every item a FILLER, CBTRN03C:333")
     class TransactionHeaderOne {
-
         @Test
         @DisplayName("the five captions are 14, 10, 16, 13 and 11 characters")
         void captionLengths() {
@@ -773,13 +545,13 @@ class TranReportLayoutsTest {
         @Test
         @DisplayName("the whole 114-byte header, caption by caption")
         void theWholeHeaderImage() {
-            String expected = "Transaction ID   "        // cols   1- 17  X(17)
-                    + "Account ID  "                     // cols  18- 29  X(12)
-                    + "Transaction Type   "              // cols  30- 48  X(19)
-                    + "Tran Category" + " ".repeat(22)   // cols  49- 83  X(35)
-                    + "Tran Source   "                   // cols  84- 97  X(14)
-                    + " "                                // col       98  X
-                    + "        Amount  ";                // cols  99-114  X(16)
+            String expected = "Transaction ID   "
+                    + "Account ID  "
+                    + "Transaction Type   "
+                    + "Tran Category" + " ".repeat(22)
+                    + "Tran Source   "
+                    + " "
+                    + "        Amount  ";
             assertThat(layouts.renderTransactionHeader1()).isEqualTo(expected).hasSize(114);
         }
 
@@ -816,14 +588,11 @@ class TranReportLayoutsTest {
     @Nested
     @DisplayName("TRANSACTION-HEADER-2 - 133 hyphens, CBTRN03C:300, :312 and :337")
     class TransactionHeaderTwo {
-
         @Test
         @DisplayName("exactly 133 characters and every one of them a hyphen")
         void exactlyOneHundredThirtyThreeHyphens() {
             String image = layouts.renderTransactionHeader2();
             assertThat(image).hasSize(133).isEqualTo("-".repeat(133));
-            // Byte by byte at its absolute offset rather than by pattern (rule R5): a regex would
-            // report "did not match" where this names the column that is wrong.
             for (int offset = 0; offset < TranReportLayouts.TRANSACTION_HEADER_2_LENGTH; offset++) {
                 assertThat(image.charAt(offset))
                         .as("1-based column %d of the rule line", offset + 1)
@@ -853,27 +622,26 @@ class TranReportLayoutsTest {
     @Nested
     @DisplayName("TRANSACTION-DETAIL-REPORT - the eight moves of CBTRN03C:363-370")
     class DetailMoves {
-
         @Test
         @DisplayName("the whole 114-byte detail line, item by item")
         void theWholeDetailImage() {
             writeDetailLine();
-            String expected = "0000000000000001"              // cols   1- 16  X(16) TRANS-ID
-                    + " "                                     // col       17  X(01) FILLER
-                    + "10000000001"                           // cols  18- 28  X(11) ACCOUNT-ID
-                    + " "                                     // col       29  X(01) FILLER
-                    + "01"                                    // cols  30- 31  X(02) TYPE-CD
-                    + "-"                                     // col       32  X(01) FILLER '-'
-                    + "Purchase       "                       // cols  33- 47  X(15) TYPE-DESC
-                    + " "                                     // col       48  X(01) FILLER
-                    + "5001"                                  // cols  49- 52  9(04) CAT-CD
-                    + "-"                                     // col       53  X(01) FILLER '-'
-                    + "Regular Sales Draft" + " ".repeat(10)  // cols  54- 82  X(29) CAT-DESC
-                    + " "                                     // col       83  X(01) FILLER
-                    + "POS TERM  "                            // cols  84- 93  X(10) SOURCE
-                    + "    "                                  // cols  94- 97  X(04) FILLER
-                    + spaced("-______1,234.56")               // cols  98-112  the edit mask
-                    + "  ";                                   // cols 113-114  X(02) FILLER
+            String expected = "0000000000000001"
+                    + " "
+                    + "10000000001"
+                    + " "
+                    + "01"
+                    + "-"
+                    + "Purchase       "
+                    + " "
+                    + "5001"
+                    + "-"
+                    + "Regular Sales Draft" + " ".repeat(10)
+                    + " "
+                    + "POS TERM  "
+                    + "    "
+                    + spaced("-______1,234.56")
+                    + "  ";
             assertThat(layouts.renderTransactionDetailReport()).isEqualTo(expected).hasSize(114);
         }
 
@@ -928,15 +696,11 @@ class TranReportLayoutsTest {
         @Test
         @DisplayName("real trantype.txt descriptions: the longest, 13, still fits X(15) padded")
         void realTypeDescriptionsFromTheFixture() {
-            // app/data/ASCII/trantype.txt record 1: 'Purchase', 8 characters into PIC X(15).
             layouts.moveTranReportTypeDesc(padTo(FIXTURE_TYPE_DESC_PURCHASE, 50));
             assertThat(layouts.tranReportTypeDesc())
                     .isEqualTo(FIXTURE_TYPE_DESC_PURCHASE + " ".repeat(7))
                     .hasSize(TranReportLayouts.TRAN_REPORT_TYPE_DESC_LENGTH);
 
-            // Record 4: 'Authorization', 13 characters - the longest of the seven, and STILL two
-            // short of the receiver. No fixture row can therefore exercise truncation, which is why
-            // typeDescriptionRightTruncatedTo15 has to use a synthetic sender.
             assertThat(FIXTURE_TYPE_DESC_AUTHORIZATION.length())
                     .as("the fixture maximum, measured")
                     .isEqualTo(13)
@@ -950,15 +714,11 @@ class TranReportLayoutsTest {
         @Test
         @DisplayName("real trancatg.txt descriptions: the two 29-character ones fill X(29) exactly")
         void realCategoryDescriptionsFromTheFixture() {
-            // app/data/ASCII/trancatg.txt record 1: 19 characters, so 10 spaces of padding.
             layouts.moveTranReportCatDesc(padTo(FIXTURE_CAT_DESC_REGULAR_SALES, 50));
             assertThat(layouts.tranReportCatDesc())
                     .isEqualTo(FIXTURE_CAT_DESC_REGULAR_SALES + " ".repeat(10))
                     .hasSize(TranReportLayouts.TRAN_REPORT_CAT_DESC_LENGTH);
 
-            // Records 13 and 18: exactly 29 characters each, the fixture's joint maximum. They fill
-            // the receiver with neither a pad byte nor a discarded one - the boundary case, where an
-            // off-by-one in either direction is visible.
             assertThat(FIXTURE_CAT_DESC_ONLINE_AUTH.length())
                     .isEqualTo(TranReportLayouts.TRAN_REPORT_CAT_DESC_LENGTH);
             assertThat(FIXTURE_CAT_DESC_CREDIT_ADJUSTMENT.length())
@@ -972,8 +732,6 @@ class TranReportLayoutsTest {
                     .hasSize(29)
                     .doesNotEndWith(" ");
 
-            // One character more, and exactly one character is discarded. The fixture cannot show
-            // this, so the sender is synthetic and labelled as such.
             layouts.moveTranReportCatDesc(padTo(SYNTHETIC_DESC_30, 50));
             assertThat(layouts.tranReportCatDesc())
                     .as("the 30th character is dropped, not wrapped into the next field")
@@ -984,11 +742,6 @@ class TranReportLayoutsTest {
         @Test
         @DisplayName("an over-long description does not bleed past its span: columns 32, 48 and 53")
         void longDescriptionsDoNotBleedPastTheirSpans() {
-            // The off-by-one catcher. Both receivers are bounded by FILLERs - the '-' at column 32 and
-            // the space at column 48 bracket TRAN-REPORT-TYPE-DESC, and the '-' at column 53 opens the
-            // category description - so a receiver one byte too wide, or a MOVE that writes past its
-            // span, destroys a separator the COBOL never rewrites. Nothing else in the suite would
-            // notice: the descriptions themselves would still read back correctly.
             writeDetailLine();
             layouts.moveTranReportTypeDesc(SYNTHETIC_DESC_50);
             layouts.moveTranReportCatDesc(SYNTHETIC_DESC_50);
@@ -1000,7 +753,6 @@ class TranReportLayoutsTest {
             assertThat(image.charAt(52)).as("the '-' FILLER on 1-based column 53").isEqualTo('-');
             assertThat(image.charAt(82)).as("the space FILLER on 1-based column 83").isEqualTo(' ');
 
-            // The neighbours are intact too, so the truncated text sits wholly inside its own span.
             assertThat(image.substring(29, 31)).as("TRAN-REPORT-TYPE-CD, columns 30-31").isEqualTo("01");
             assertThat(image.substring(32, 47)).as("TRAN-REPORT-TYPE-DESC, columns 33-47")
                     .isEqualTo("ABCDEFGHIJKLMNO");
@@ -1118,21 +870,19 @@ class TranReportLayoutsTest {
     @Nested
     @DisplayName("INITIALIZE semantics - CBTRN03C:362, and it must not touch FILLER")
     class InitializeSemantics {
-
         @Test
         @DisplayName("the whole 114-byte image after INITIALIZE, separators and all")
         void theWholeInitialisedImage() {
             writeDetailLine();
             layouts.initializeTransactionDetailReport();
-            String expected = " ".repeat(31)   // cols   1- 31  TRANS-ID, FILLER, ACCOUNT-ID,
-                                               //               FILLER, TYPE-CD - all spaced
-                    + "-"                      // col       32  FILLER '-'   <== survives
-                    + " ".repeat(16)           // cols  33- 48  TYPE-DESC and its FILLER
-                    + "0000"                   // cols  49- 52  CAT-CD receives ZERO
-                    + "-"                      // col       53  FILLER '-'   <== survives
-                    + " ".repeat(44)           // cols  54- 97  CAT-DESC, FILLER, SOURCE, FILLER
-                    + " ".repeat(15)           // cols  98-112  numeric-edited ZERO is 15 spaces
-                    + "  ";                    // cols 113-114  FILLER
+            String expected = " ".repeat(31)
+                    + "-"
+                    + " ".repeat(16)
+                    + "0000"
+                    + "-"
+                    + " ".repeat(44)
+                    + " ".repeat(15)
+                    + "  ";
             assertThat(layouts.renderTransactionDetailReport()).isEqualTo(expected).hasSize(114);
         }
 
@@ -1219,11 +969,6 @@ class TranReportLayoutsTest {
         @Test
         @DisplayName("on TRANSACTION-HEADER-1 the rule has no receiver at all, so it is a no-op")
         void headerOneHasNoReceivingItem() {
-            // COBOL's INITIALIZE skips FILLER, and every one of TRANSACTION-HEADER-1's seven items is
-            // a FILLER, so initialising it would change nothing. CBTRN03C never initialises it either
-            // - :333 simply moves the whole constant line out. The class correspondingly exposes no
-            // mutator for it, so the strongest available statement of "no-op" is that the image is
-            // byte-identical after every mutator this type has has been exercised.
             assertThat(TranReportLayouts.TRANSACTION_HEADER_1_LAYOUT.storageSpans())
                     .as("no non-FILLER item exists to receive SPACE or ZERO")
                     .allMatch(span -> span.kind().filler());
@@ -1241,12 +986,6 @@ class TranReportLayoutsTest {
         @Test
         @DisplayName("REPORT-NAME-HEADER's asymmetry: named items blank, the ' to ' FILLER survives")
         void nameHeaderNamedItemsBlankButFillerSurvives() {
-            // The rule applied to REPORT-NAME-HEADER would blank its five NAMED alphanumeric items -
-            // destroying 'DALYREPT', 'Daily Transaction Report' and 'Date Range: ' - while leaving the
-            // ' to ' FILLER standing. That asymmetry is a genuine and easily-missed consequence of the
-            // FILLER exclusion, and it is asserted here for the two named items the type can actually
-            // blank: CBTRN03C does NOT initialise this group, it moves the dates in at :277-278, so
-            // the three captions have no mutator by design and the rule has no way to reach them.
             layouts.moveReptStartDate("2022-01-01");
             layouts.moveReptEndDate("2022-07-06");
             layouts.moveReptStartDate("");
@@ -1267,10 +1006,6 @@ class TranReportLayoutsTest {
         @Test
         @DisplayName("TRANSACTION-HEADER-2 is never initialised: all 133 hyphens stand")
         void headerTwoIsNeverInitialised() {
-            // TRANSACTION-HEADER-2 is a NAMED elementary alphanumeric item, so the INITIALIZE rule
-            // would blank all 133 hyphens and erase the report's rule line. CBTRN03C never initialises
-            // it - :300, :312 and :337 only move it out - and this type exposes no mutator that could,
-            // which is what keeps the separator intact.
             String before = layouts.renderTransactionHeader2();
             writeDetailLine();
             layouts.initializeTransactionDetailReport();
@@ -1286,10 +1021,6 @@ class TranReportLayoutsTest {
         @Test
         @DisplayName("on a total line only the amount blanks: label and dot leader survive")
         void totalLinesKeepTheirLabelAndLeader() {
-            // The same rule on a total line: the label and the ALL '.' leader are FILLER and survive,
-            // and only the numeric-edited amount receives ZERO - which the all-Z mask renders as 15
-            // spaces. CBTRN03C reaches this state by MOVE 0 TO WS-PAGE-TOTAL at :297 followed by the
-            // next :294 move, rather than by an INITIALIZE, and the observable bytes are the same.
             layouts.moveReptPageTotal(new BigDecimal("1234.56"));
             layouts.moveReptAccountTotal(new BigDecimal("-1234.56"));
             layouts.moveReptGrandTotal(new BigDecimal("999999999.99"));
@@ -1308,7 +1039,6 @@ class TranReportLayoutsTest {
     @Nested
     @DisplayName("The three total lines - 112 bytes each, CBTRN03C:294, :307 and :319")
     class TotalLines {
-
         @Test
         @DisplayName("the three labels are byte-exact, and only 'Page Total' leaves a trailing space")
         void labelsAreByteExact() {
@@ -1326,9 +1056,9 @@ class TranReportLayoutsTest {
         @DisplayName("MOVE WS-PAGE-TOTAL produces the whole 112-byte page-total line")
         void theWholePageTotalImage() {
             layouts.moveReptPageTotal(new BigDecimal("123456789.12"));
-            String expected = "Page Total "         // cols   1- 11  X(11), one trailing space
-                    + LEADER_86                     // cols  12- 97  X(86) ALL '.'
-                    + "+123,456,789.12";            // cols  98-112  +ZZZ,ZZZ,ZZZ.ZZ
+            String expected = "Page Total "
+                    + LEADER_86
+                    + "+123,456,789.12";
             assertThat(layouts.renderReportPageTotals()).isEqualTo(expected).hasSize(112);
             assertThat(layouts.reptPageTotal()).isEqualTo("+123,456,789.12");
         }
@@ -1337,9 +1067,9 @@ class TranReportLayoutsTest {
         @DisplayName("MOVE WS-ACCOUNT-TOTAL produces the whole 112-byte account-total line")
         void theWholeAccountTotalImage() {
             layouts.moveReptAccountTotal(new BigDecimal("-0.05"));
-            String expected = "Account Total"        // cols   1- 13  X(13), exactly filled
-                    + LEADER_84                      // cols  14- 97  X(84) ALL '.'
-                    + spaced("-___________.05");     // cols  98-112  +ZZZ,ZZZ,ZZZ.ZZ
+            String expected = "Account Total"
+                    + LEADER_84
+                    + spaced("-___________.05");
             assertThat(layouts.renderReportAccountTotals()).isEqualTo(expected).hasSize(112);
             assertThat(layouts.reptAccountTotal()).isEqualTo(spaced("-___________.05"));
         }
@@ -1348,9 +1078,9 @@ class TranReportLayoutsTest {
         @DisplayName("MOVE WS-GRAND-TOTAL produces the whole 112-byte grand-total line")
         void theWholeGrandTotalImage() {
             layouts.moveReptGrandTotal(new BigDecimal("999999999.99"));
-            String expected = "Grand Total"          // cols   1- 11  X(11), exactly filled
-                    + LEADER_86                      // cols  12- 97  X(86) ALL '.'
-                    + "+999,999,999.99";             // cols  98-112  +ZZZ,ZZZ,ZZZ.ZZ
+            String expected = "Grand Total"
+                    + LEADER_86
+                    + "+999,999,999.99";
             assertThat(layouts.renderReportGrandTotals()).isEqualTo(expected).hasSize(112);
             assertThat(layouts.reptGrandTotal()).isEqualTo("+999,999,999.99");
         }
@@ -1399,7 +1129,6 @@ class TranReportLayoutsTest {
     @Nested
     @DisplayName("Numeric-edited rendering - the two 15-byte all-Z masks")
     class NumericEditing {
-
         @ParameterizedTest(name = "[{index}] -ZZZ,ZZZ,ZZZ.ZZ of {0} is \"{1}\"")
         @DisplayName("the detail mask: a fixed minus, and a space where a plus would be")
         @CsvSource(delimiter = '|', value = {
@@ -1585,25 +1314,15 @@ class TranReportLayoutsTest {
         @Test
         @DisplayName("the sender is PIC S9(09)V99, so it reaches the mask at scale 2 (R3 / G23)")
         void theSenderReachesTheMaskAtScaleTwo() {
-            // R3: the scale comes from the PICTURE, not from the caller. Every value the mask edits
-            // originates in a PIC S9(09)V99 field - TRAN-AMT of app/cpy/CVTRA05Y.cpy for the detail
-            // line, and WS-PAGE-TOTAL / WS-ACCOUNT-TOTAL / WS-GRAND-TOTAL of app/cbl/CBTRN03C.cbl:
-            // 134-136 for the totals - so nine integer digits and exactly two decimals.
             assertThat(TranReportLayouts.AMOUNT_INTEGER_DIGITS).as("the 9 of S9(09)").isEqualTo(9);
             assertThat(TranReportLayouts.AMOUNT_FRACTION_DIGITS).as("the 2 of V99").isEqualTo(2);
 
-            // G24 / R2: the store truncates. Pinning the seam's mode here means a future switch to
-            // HALF_UP or HALF_EVEN fails this test as well as the truncation table below, and the
-            // failure names the constant that changed.
             assertThat(CobolDecimal.COBOL_ROUNDING)
                     .as("ROUNDED appears zero times in all 28 programs, so the mode is DOWN")
                     .isEqualTo(RoundingMode.DOWN);
             assertThat(CobolDecimal.MONETARY_SCALE)
                     .isEqualTo(TranReportLayouts.AMOUNT_FRACTION_DIGITS);
 
-            // The value is at scale 2 BEFORE it is edited, whatever scale the caller held it at, and
-            // editing the already-stored value gives the identical image. That equality is the proof
-            // that the mask applies the store itself rather than trusting its caller to have done so.
             BigDecimal overPrecise = new BigDecimal("1234.567");
             BigDecimal stored = CobolDecimal.storeAtPicture(overPrecise,
                     TranReportLayouts.AMOUNT_INTEGER_DIGITS,
@@ -1619,27 +1338,9 @@ class TranReportLayoutsTest {
         }
     }
 
-    /**
-     * The masks are rendered by explicit character placement, so their output cannot vary by machine.
-     *
-     * <p>This is practice {@code B8} made executable. A {@code String.format("%,.2f", …)}, a {@code
-     * DecimalFormat} or a {@code NumberFormat} built without an explicit {@link Locale} takes its
-     * grouping separator, its decimal separator, its digits and its negative form from the default
-     * locale: under {@link Locale#GERMANY} the same value renders {@code 1.234,56} rather than {@code
-     * 1,234.56}, and under a locale whose numbering system is not Latin the digits themselves change.
-     * Any of those would put different bytes in the {@code TRANREPT} dataset depending on where the
-     * job ran, which is a parity defect that no amount of arithmetic testing would reveal.
-     *
-     * <p>Each test below changes the default locale, asserts, and restores the previous default in a
-     * {@code finally} block <em>within the same test</em> — never in a shared fixture, because a
-     * static or {@code @BeforeAll} holder of the previous default would be exactly the mutable static
-     * state practice {@code B9} forbids, and a leaked default would silently re-target every test
-     * that ran afterwards.
-     */
     @Nested
     @DisplayName("Locale independence - explicit character placement, never a formatter (B8)")
     class LocaleIndependence {
-
         @Test
         @DisplayName("under Locale.GERMANY the separators do not swap: still 1,234.56 not 1.234,56")
         void germanDefaultLocaleDoesNotSwapSeparators() {
@@ -1665,10 +1366,6 @@ class TranReportLayoutsTest {
         @Test
         @DisplayName("under a Turkish default the captions keep their ASCII 'I' and 'i'")
         void turkishDefaultLocaleDoesNotChangeCaseFolding() {
-            // Turkish is the classic locale trap: 'I' lower-cases to a dotless 'ı' and 'i'
-            // upper-cases to 'İ'. Any case folding applied to a caption - a "tidy" toUpperCase on a
-            // report heading, say - would corrupt 'Transaction ID' and 'Daily Transaction Report'
-            // here and nowhere else. The literals are emitted verbatim, so nothing moves.
             Locale previous = Locale.getDefault();
             try {
                 Locale.setDefault(Locale.forLanguageTag("tr-TR"));
@@ -1686,9 +1383,6 @@ class TranReportLayoutsTest {
         @Test
         @DisplayName("under a non-Latin numbering system the digits stay ASCII 0-9")
         void nonLatinNumberingSystemDoesNotChangeTheDigits() {
-            // A locale requesting the Arabic-Indic numbering system makes NumberFormat emit ٠١٢٣…
-            // instead of 0123…. The mask writes the sending value's own digit characters, so the
-            // report stays ASCII - which it must, since TRANREPT is read back byte for byte.
             Locale previous = Locale.getDefault();
             try {
                 Locale.setDefault(Locale.forLanguageTag("ar-EG-u-nu-arab"));
@@ -1750,7 +1444,6 @@ class TranReportLayoutsTest {
     @Nested
     @DisplayName("Natural width, never 133 - the contract with TranReportWriter")
     class NaturalWidthContract {
-
         @Test
         @DisplayName("the detail render is 114 characters, not 133: padding is the writer's job")
         void detailIsOneHundredFourteenNotOneHundredThirtyThree() {
@@ -1790,7 +1483,6 @@ class TranReportLayoutsTest {
     @Nested
     @DisplayName("The charset is always explicit, never a platform default")
     class Charsets {
-
         @Test
         @DisplayName("US-ASCII and IBM037 give the same characters and different bytes")
         void sameCharactersDifferentBytes() {
@@ -1837,7 +1529,6 @@ class TranReportLayoutsTest {
     @Nested
     @DisplayName("State - instances are mutable, nothing static is (gate G53)")
     class State {
-
         @Test
         @DisplayName("every declared static field is final")
         void everyStaticFieldIsFinal() {
@@ -1891,7 +1582,6 @@ class TranReportLayoutsTest {
     @Nested
     @DisplayName("The transcription self-check - the check itself is under test")
     class SelfCheck {
-
         @Test
         @DisplayName("the class initialises, which means every invariant already held")
         void verifyGeometryPasses() {
@@ -1974,35 +1664,9 @@ class TranReportLayoutsTest {
         }
     }
 
-    /**
-     * What this type must <em>not</em> carry. An absence is as much a part of the contract as a
-     * presence, and it is the part no positive assertion can defend: a page-size constant added here
-     * "for convenience" would compile, pass every other test in this suite, and quietly split
-     * pagination state across two types.
-     *
-     * <p>Three groups of absentees, each for its own reason:
-     *
-     * <ul>
-     *   <li><b>{@code CBTRN03C}'s {@code WORKING-STORAGE}.</b> {@code WS-LINE-COUNTER PIC 9(09)
-     *       COMP-3}, {@code WS-PAGE-SIZE PIC 9(03) COMP-3 VALUE 20} and {@code WS-BLANK-LINE PIC
-     *       X(133) VALUE SPACES} are declared at {@code app/cbl/CBTRN03C.cbl:129-133} — in the
-     *       <em>program</em>, not in {@code CVTRA07Y}. They are the report job's own state and belong
-     *       to {@code TransactionReportJob}; {@code WS-BLANK-LINE} is additionally a 133-byte item,
-     *       and admitting it here would smuggle the record width into a class whose whole discipline
-     *       is to render at natural width.</li>
-     *   <li><b>Persistence artefacts (gate G44).</b> The migration adds no DDL, no entity mapping and
-     *       no version column, so no {@code jakarta.persistence} or {@code javax.persistence}
-     *       annotation may appear on the type, its fields, its methods or its constructors.</li>
-     *   <li><b>An {@code OCCURS} index accessor (gate G33).</b> {@code CVTRA07Y} declares no {@code
-     *       OCCURS} at all, so the 1-based-to-0-based conversion has no subject here and this suite
-     *       deliberately asserts nothing about it. Fabricating such a test would assert a property of
-     *       a copybook this class does not model.</li>
-     * </ul>
-     */
     @Nested
     @DisplayName("Deliberate absences - what CVTRA07Y does not declare, this class must not carry")
     class DeliberateAbsences {
-
         @Test
         @DisplayName("no page-size, line-counter or blank-line member: that is CBTRN03C's state")
         void noWorkingStorageOfTheReportJob() {
@@ -2042,10 +1706,6 @@ class TranReportLayoutsTest {
                             .isNotEqualTo(blankLine);
                 }
                 if (value instanceof Integer number) {
-                    // 20 is WS-PAGE-SIZE's VALUE. No width, offset or column of this copybook is 20 -
-                    // the widths are 115/114/114/133/112 and the item widths are 1, 2, 4, 10, 11, 12,
-                    // 13, 14, 15, 16, 17, 19, 29, 35, 38, 41, 84, 86 and 133 - so a 20 appearing here
-                    // could only be the page size arriving by the back door.
                     assertThat(number)
                             .as("public constant %s is 20, which is WS-PAGE-SIZE and nothing in "
                                     + "CVTRA07Y", field.getName())
@@ -2083,24 +1743,10 @@ class TranReportLayoutsTest {
             }
         }
 
-        /**
-         * Upper-cases and strips the separators a Java identifier might use, so that
-         * {@code pageSize}, {@code PAGE_SIZE} and {@code page_size} all normalise to the same token
-         * and one spelling cannot slip past the check.
-         *
-         * @param identifier the declared field or method name
-         * @return the identifier upper-cased with {@code _} and {@code $} removed
-         */
         private String normalise(String identifier) {
             return identifier.toUpperCase(Locale.ROOT).replace("_", "").replace("$", "");
         }
 
-        /**
-         * Asserts none of the given annotations comes from a persistence API.
-         *
-         * @param annotations the annotations present on some element
-         * @param subject     what is being checked, for the failure message
-         */
         private void assertNoPersistenceAnnotation(Annotation[] annotations, String subject) {
             for (Annotation annotation : annotations) {
                 assertThat(annotation.annotationType().getName())
@@ -2111,11 +1757,6 @@ class TranReportLayoutsTest {
             }
         }
 
-        /**
-         * Asserts no parameter of a method or constructor carries a persistence annotation.
-         *
-         * @param executable the method or constructor to inspect
-         */
         private void assertNoParameterPersistenceAnnotation(Executable executable) {
             for (Annotation[] perParameter : executable.getParameterAnnotations()) {
                 assertNoPersistenceAnnotation(perParameter,

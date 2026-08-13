@@ -90,87 +90,31 @@ import org.springframework.transaction.PlatformTransactionManager;
 
 /**
  * Tests for {@link AccountBalanceUpdateJob}, the Java translation of {@code app/cbl/CBACT03C.cbl}.
- *
- * <h2>What this suite is really guarding</h2>
- * Two things, and they are the two a reader of the class name would get wrong.
- *
- * <p><strong>That the job performs no update.</strong> The mandated name says
- * {@code AccountBalanceUpdateJob}; the program reads the card cross-reference file and prints it. The
- * repository is a spy in every execution test here and is verified never to have been asked for
- * anything but a base-cluster browse - and separately, by reflection, to publish no write-side method
- * that could have been asked for.
- *
- * <p><strong>That every record is displayed twice.</strong>
- * {@code app/cbl/CBACT03C.cbl} displays the record area at {@code :96}, inside
- * {@code 1000-XREFFILE-GET-NEXT}, and again at {@code :78} in the mainline. The assertions below pin
- * the count, the pairing and the byte-for-byte identity of each pair, because a translation that
- * emitted one line per record would look completely reasonable and be wrong for all 50 records of the
- * fixture.
- *
- * <h2>How it runs</h2>
- * Plain JUnit 5 with Mockito and no application context, except for the single wiring test that
- * starts one deliberately. The program body is {@link AccountBalanceUpdateJob#execute(SysoutSink)},
- * a plain method, so every branch - three status ladders, both {@code 88}-level conditions in both
- * truth states, and all three abend paths - is driven by an ordinary call with a capturing sink. No
- * {@code JobLauncher}, no database, no clock, no locale and no platform default charset is involved.
- *
- * <p>{@code review_rules} returns exactly one line - "No user rules provided." - so no user rule
- * governs this file. The gates it enforces directly are G1 and G3 (it compiles and the beans wire),
- * G19 and G21 (a displayed record is 50 bytes with its {@code FILLER} present as spaces), G22 (no
- * binary floating point), G28 (the close paragraph's 8-to-0-or-12 ladder, which is this program's
- * entire arithmetic surface), G35 (the abend's return code, abend code and timing), G44 (no write of
- * any kind, on the repository or on the cursor the program actually holds), G45 (the alternate
- * index is never opened), G46 (no dataset name in Java, and the one it uses comes from
- * {@code carddemo.datasets.XREFFILE}), G47 (every file-status outcome at every call site - and the
- * three call sites do not name the same statuses), G49 and G50 (both sides of every branch, including
- * both {@code 88}-levels at each paragraph that tests them) and G52 (no wildcard import).
  */
 @DisplayName("AccountBalanceUpdateJob - CBACT03C: reads the cross reference, updates nothing, "
         + "displays every record twice")
 class AccountBalanceUpdateJobTest {
-
-    /** The fixture code page, named explicitly rather than taken from the platform. */
     private static final Charset ASCII = StandardCharsets.US_ASCII;
 
-    /** The codec the expectations are rendered with, matching the one the job builds. */
     private static final FixedWidthCodec CODEC = new FixedWidthCodec(ASCII);
 
-    /** The derived fixture on the test classpath; {@code app/data/ASCII} itself is never opened. */
     private static final String FIXTURE = "/fixtures/cardxref.txt";
 
-    /** Rows in {@code app/data/ASCII/cardxref.txt}. */
     private static final int FIXTURE_ROW_COUNT = 50;
 
-    /** Bytes per fixture row: 36, because the fixture omits the trailing {@code FILLER X(14)}. */
     private static final int FIXTURE_ROW_WIDTH = 36;
 
-    /** A dataset name for the test bindings. Not a mainframe name, and never read as one. */
     private static final String TEST_DSNAME = "CARDDEMO.TEST.CARDXREF.VSAM.KSDS";
 
-    /** The subject's source path inside the checkout, for the source-level hygiene checks. */
     private static final String SUBJECT_SOURCE_PATH = "app/java/src/main/java/com/vsergeychik/"
             + "carddemo/account/AccountBalanceUpdateJob.java";
 
-    /** A star import, in the one shape Java can express it. */
     private static final Pattern WILDCARD_IMPORT =
             Pattern.compile("import\\s+(?:static\\s+)?[\\w.]+\\.\\*\\s*;");
 
-    /** The property that activates a profile, for the wiring test. */
     private static final String ACTIVE_PROFILE_PROPERTY = "spring.profiles.active=";
 
-    // =================================================================================================
-    // Fixtures and doubles.
-    // =================================================================================================
-
-    /**
-     * A {@link SysoutSink} that keeps every line, in order, exactly as it was given.
-     *
-     * <p>It deliberately does not deduplicate: the whole point of this suite is that consecutive
-     * identical lines are the correct output.
-     */
     private static final class CapturingSysout implements SysoutSink {
-
-        /** The lines, in emission order. */
         private final List<String> lines = new ArrayList<>();
 
         @Override
@@ -178,25 +122,12 @@ class AccountBalanceUpdateJobTest {
             lines.add(line);
         }
 
-        /** @return an unmodifiable snapshot of what was displayed */
         private List<String> lines() {
             return Collections.unmodifiableList(new ArrayList<>(lines));
         }
     }
 
-    /**
-     * An {@link ObjectProvider} over zero or one bean, so the container's two states - a published
-     * {@code SysoutSink} and none - are both reachable without an application context.
-     *
-     * <p>Only the three lookup methods this module uses are overridden; the interface's own default
-     * {@code getIfAvailable(Supplier)} then runs for real, which is the method under test when the
-     * job falls back to its default sink.
-     *
-     * @param <T> the bean type
-     */
     private static final class SuppliedProvider<T> implements ObjectProvider<T> {
-
-        /** The bean, or {@code null} when the container publishes none. */
         private final T bean;
 
         private SuppliedProvider(T bean) {
@@ -227,47 +158,21 @@ class AccountBalanceUpdateJobTest {
         }
     }
 
-    /**
-     * The dataset catalogue the job resolves {@code XREFFILE} from.
-     *
-     * @param recordLength the width to declare
-     * @param dsname       the dataset name to declare
-     * @return a catalogue holding just that entry
-     */
     private static DatasetBindings bindings(int recordLength, String dsname) {
         return bindings(recordLength, dsname, dsname);
     }
 
-    /**
-     * @param recordLength the width to declare
-     * @param dsname       the dataset name to declare for this job's {@code XREFFILE} DD
-     * @param baseDsname   the dataset name to declare for {@code CCXREF}, the key the cross-reference
-     *                     repository is bound to
-     * @return a catalogue holding both entries
-     */
     private static DatasetBindings bindings(int recordLength, String dsname, String baseDsname) {
         DatasetBindings catalogue = new DatasetBindings();
         catalogue.put(AccountBalanceUpdateJob.XREFFILE_DD_NAME, new DatasetBinding(dsname,
                 DatasetBinding.KSDS, false, "FB", null, recordLength, "CVACT03Y",
                 CardXrefRecord.XREF_CARD_NUM_LENGTH, null, null, null));
-        // The job's JCL says XREFFILE (app/jcl/READXREF.jcl:25-26); the repository it browses is bound to
-        // the CICS file name CCXREF. The job proves at construction that the two name one dataset, so
-        // both keys are declared here, and passing two different names exercises the rejection.
         catalogue.put(CardXrefRepository.BASE_DD_NAME, new DatasetBinding(baseDsname,
                 DatasetBinding.KSDS, false, "FB", null, recordLength, "CVACT03Y",
                 CardXrefRecord.XREF_CARD_NUM_LENGTH, null, null, null));
         return catalogue;
     }
 
-    /**
-     * The job-contract catalogue, in the shape {@code application.yml} declares for this job.
-     *
-     * @param program    the program name to declare on the job and its step
-     * @param stepName   the step name to declare
-     * @param gated      whether the step declares {@code COND=(0,NE)} gating
-     * @param parameters the declared job parameters
-     * @return a catalogue holding just that contract
-     */
     private static JobContracts contracts(String program, String stepName, boolean gated,
             List<JobParameterContract> parameters) {
         JobContracts catalogue = new JobContracts();
@@ -276,76 +181,33 @@ class AccountBalanceUpdateJobTest {
         return catalogue;
     }
 
-    /** @return the contract catalogue exactly as {@code application.yml} declares it */
     private static JobContracts validContracts() {
         return contracts(AccountBalanceUpdateJob.PROGRAM_NAME, AccountBalanceUpdateJob.STEP_NAME,
                 false, List.of());
     }
 
-    /**
-     * A {@link BatchConfig} over the supplied catalogues, with batch plumbing that is present but
-     * never touched unless a bean method asks for it.
-     *
-     * @param contracts the job contracts
-     * @param bindings  the dataset catalogue
-     * @return the configured seam
-     */
     private static BatchConfig batchConfig(JobContracts contracts, DatasetBindings bindings) {
         return new BatchConfig(new SuppliedProvider<>(mock(JobRepository.class)),
                 new SuppliedProvider<>(mock(PlatformTransactionManager.class)), contracts, bindings);
     }
 
-    /** @return a {@link BatchConfig} over the catalogues configuration actually declares */
     private static BatchConfig validBatchConfig() {
         return batchConfig(validContracts(), bindings(CardXrefRecord.RECORD_LENGTH, TEST_DSNAME));
     }
 
-    /**
-     * The job under test, over a caller-supplied repository and no published sink.
-     *
-     * @param repository the repository double
-     * @return the job
-     */
     private static AccountBalanceUpdateJob job(CardXrefRepository repository) {
         return new AccountBalanceUpdateJob(validBatchConfig(), repository, ASCII,
                 new SuppliedProvider<>(null));
     }
 
-    /**
-     * A step execution shaped as the framework builds one, so a tasklet can be driven exactly as a
-     * running step drives it.
-     *
-     * <p>Built by hand rather than with a test factory from another artifact, because the dependency set
-     * is closed and the constructors needed are public API. Only the step name and the
-     * {@code terminateOnly} flag are read by anything under test here.
-     *
-     * @return a fresh step execution, not asked to stop
-     */
     private static StepExecution stepExecution() {
         return new StepExecution(AccountBalanceUpdateJob.STEP_NAME, new JobExecution(1L));
     }
 
-    /**
-     * The chunk context the framework hands a tasklet, over the given step execution.
-     *
-     * @param stepExecution the execution the tasklet is running inside
-     * @return a real chunk context; never a mock, because the tasklet reads through it to the execution
-     */
     private static ChunkContext chunkContext(StepExecution stepExecution) {
         return new ChunkContext(new StepContext(stepExecution));
     }
 
-    /**
-     * A probe that permits the given number of records and then reports a stop.
-     *
-     * <p>It sets {@code terminateOnly} on the real step execution and then delegates to the real
-     * {@link StopSignal}, so the refusal is produced by the production probe and the framework's own
-     * interruption policy rather than by a stand-in that merely throws the same type.
-     *
-     * @param stepExecution the execution to mark
-     * @param permitted     how many consultations return before the stop is requested
-     * @return the probe
-     */
     private static StopSignal signalStoppingAfter(StepExecution stepExecution, int permitted) {
         StopSignal real = StopSignal.of(stepExecution);
         int[] consulted = { 0 };
@@ -358,12 +220,6 @@ class AccountBalanceUpdateJobTest {
         };
     }
 
-    /**
-     * A browse cursor that opens cleanly, returns the given records and closes cleanly.
-     *
-     * @param records the records to return, in order
-     * @return the cursor double
-     */
     private static BrowseCursor cursorOver(List<CardXrefRecord> records) {
         List<ReadResult> reads = new ArrayList<>();
         records.forEach(record -> reads.add(xrefFound(CardXrefRepository.BASE_DD_NAME, record)));
@@ -371,14 +227,6 @@ class AccountBalanceUpdateJobTest {
         return cursorYielding(FileStatus.OK, FileStatus.OK, reads);
     }
 
-    /**
-     * A browse cursor with an explicit open status, close status and read sequence.
-     *
-     * @param openStatus  what {@code OPEN INPUT} reports
-     * @param closeStatus what {@code CLOSE} reports
-     * @param reads       the reads, in order; the last is repeated if the program asks again
-     * @return the cursor double
-     */
     private static BrowseCursor cursorYielding(String openStatus, String closeStatus,
             List<ReadResult> reads) {
         BrowseCursor cursor = mock(BrowseCursor.class);
@@ -391,26 +239,6 @@ class AccountBalanceUpdateJobTest {
         return cursor;
     }
 
-    /**
-     * A repository whose browse is the supplied cursor.
-     *
-     * @param cursor the cursor its open returns
-     * @return the repository double
-     */
-    /**
-     * A cross-reference repository mock that hands itself back when the job re-binds it to its own DD.
-     *
-     * <p>{@code CBACT03C} browses the DD {@code app/jcl/READXREF.jcl:25-26} binds, so the job asks the
-     * repository for a view addressing {@value AccountBalanceUpdateJob#XREFFILE_DD_NAME} before it
-     * opens. A bare mock answers {@code null} to that, so a stubbed cursor would hang off an instance
-     * the job never touches.
-     *
-     * <p>Returning the same mock is what the real repository does whenever the DD resolves to the
-     * dataset it already addresses - the shipped configuration, where {@code XREFFILE} and
-     * {@code CCXREF} are two names for one cluster.
-     *
-     * @return the mock, with the re-binding stubbed
-     */
     private static CardXrefRepository cardXrefRepositoryMock() {
         CardXrefRepository repository = mock(CardXrefRepository.class);
         when(repository.addressing(any(), any(), any(), any())).thenReturn(repository);
@@ -423,23 +251,10 @@ class AccountBalanceUpdateJobTest {
         return repository;
     }
 
-    /**
-     * A repository whose browse returns the given records.
-     *
-     * @param records the records the browse yields
-     * @return the repository double
-     */
     private static CardXrefRepository repositoryOver(List<CardXrefRecord> records) {
-        // The cursor is built BEFORE the repository is stubbed. Stubbing one mock inside an unfinished
-        // when() for another is what Mockito reports as unfinished stubbing.
         return repositoryWith(cursorOver(records));
     }
 
-    /**
-     * The fixture rows, verbatim and 36 bytes wide.
-     *
-     * @return the rows of {@code src/test/resources/fixtures/cardxref.txt}
-     */
     private static List<String> fixtureRows() {
         List<String> rows = new ArrayList<>();
         try (InputStream stream = AccountBalanceUpdateJobTest.class.getResourceAsStream(FIXTURE)) {
@@ -457,11 +272,6 @@ class AccountBalanceUpdateJobTest {
         return rows;
     }
 
-    /**
-     * The fixture as records, each 36-byte row widened to the 50 the copybook declares.
-     *
-     * @return the 50 cross-reference records the fixture holds, in fixture order
-     */
     private static List<CardXrefRecord> fixtureRecords() {
         List<CardXrefRecord> records = new ArrayList<>();
         for (String row : fixtureRows()) {
@@ -471,23 +281,10 @@ class AccountBalanceUpdateJobTest {
         return records;
     }
 
-    /**
-     * The 50-character image a record must be displayed as, composed here from the row rather than
-     * from the class under test.
-     *
-     * @param row a 36-byte fixture row
-     * @return the row followed by the fourteen spaces of the trailing {@code FILLER}
-     */
     private static String expectedImage(String row) {
         return row + " ".repeat(CardXrefRecord.FILLER_LENGTH);
     }
 
-    /**
-     * The subject's own source text.
-     *
-     * @return the contents of {@code AccountBalanceUpdateJob.java}
-     * @throws IOException if it cannot be read
-     */
     private static String subjectSource() throws IOException {
         Path candidate = Path.of("").toAbsolutePath();
         while (candidate != null) {
@@ -501,18 +298,9 @@ class AccountBalanceUpdateJobTest {
                 + Path.of("").toAbsolutePath());
     }
 
-    // =================================================================================================
-    // The mandated name against the verified behaviour - migration rule R1.
-    // =================================================================================================
-
-    // =================================================================================================
-    // The declared DD is the DD browsed - the DD-mapping finding.
-    // =================================================================================================
-
     @Nested
     @DisplayName("the DD this job declares is the DD it browses - app/jcl/READXREF.jcl:25-26")
     class TheDeclaredDdDrivesTheBrowse {
-
         @Test
         @DisplayName("the browse is taken through the resolved XREFFILE binding, not through CCXREF")
         void theBrowseGoesThroughTheDeclaredDd() {
@@ -530,10 +318,6 @@ class AccountBalanceUpdateJobTest {
         @Test
         @DisplayName("no alternate-index binding is handed over, because this program opens no path")
         void noAlternateIndexBindingIsSupplied() {
-            // app/cbl/CBACT03C.cbl:29-33 is one SELECT with no ALTERNATE RECORD KEY and READXREF.jcl
-            // declares one DD. Supplying an alternate-index binding would assert a path this program
-            // never opens - and the alternate-index DD name is still named, so a diagnostic can say
-            // which key would have been at fault.
             CardXrefRepository repository = repositoryOver(List.of());
 
             job(repository).execute(new CapturingSysout());
@@ -569,7 +353,6 @@ class AccountBalanceUpdateJobTest {
     @Nested
     @DisplayName("The name says Update; CBACT03C updates nothing")
     class UpdatesNothing {
-
         @Test
         @DisplayName("a full pass asks the repository for one browse and for nothing else")
         void aFullPassOnlyBrowses() {
@@ -578,8 +361,6 @@ class AccountBalanceUpdateJobTest {
             job(repository).execute(new CapturingSysout());
 
             verify(repository).openBrowse();
-            // G45: the CXACAIX path is a different access path in a different key order, and
-            // app/cbl/CBACT03C.cbl:29-33 opens the base cluster in card-number order only.
             verify(repository, never()).readByAccountIdViaAltIndex(anyLong());
             verify(repository, never()).readByAccountIdViaAltIndex(anyString());
             verify(repository, never()).readByCardNumber(anyString());
@@ -608,20 +389,6 @@ class AccountBalanceUpdateJobTest {
                     .isEmpty();
         }
 
-        /**
-         * Whether a method name opens with a verb <em>as a word</em>, in camel case.
-         *
-         * <p>A plain prefix test is not the same question. {@code addressing} opens with the letters of
-         * {@code add} and is a read-side selector - it returns this repository addressing the dataset a
-         * DD names - so a prefix test reports a write method that does not exist, and a guard that cries
-         * wolf gets relaxed rather than obeyed. Requiring the next character to be upper case, or the
-         * name to be the verb exactly, keeps {@code add}, {@code addRecord}, {@code writeImage} and
-         * {@code deleteAll} caught while letting an unrelated word through.
-         *
-         * @param methodName the declared method name, in its own case
-         * @param verb       the lower-case verb to test for
-         * @return {@code true} when the name is the verb, or the verb followed by a new camel-case word
-         */
         private boolean namesTheVerb(String methodName, String verb) {
             String name = methodName.toLowerCase(Locale.ROOT);
             if (!name.startsWith(verb)) {
@@ -636,10 +403,6 @@ class AccountBalanceUpdateJobTest {
         void theBrowseCursorPublishesNoWriteMethod() {
             List<String> writeVerbs = List.of("write", "rewrite", "add", "insert", "update", "delete",
                     "put", "save", "store", "merge", "persist");
-            // The three shapes an update-mode handle takes in this estate's vocabulary. OPEN I-O and
-            // OPEN OUTPUT are the COBOL modes app/cbl/CBACT03C.cbl:120 does not use, and a
-            // read-for-update is how the two update programs in this migration take a record they mean
-            // to REWRITE. None of the three has a counterpart here.
             List<String> updateModeOpens = List.of("forupdate", "openoutput", "openio", "openupdate");
 
             List<String> offenders = new ArrayList<>();
@@ -654,10 +417,6 @@ class AccountBalanceUpdateJobTest {
                 }
             }
 
-            // Reflecting over the repository alone leaves a hole: the repository hands out a cursor, and
-            // the cursor - not the repository - is the handle the program holds from :120 to :138. An
-            // update-mode API added there would be reachable from the program body without the
-            // repository ever growing a write method. It reads, reports and closes, and that is all.
             assertThat(offenders)
                     .as("app/cbl/CBACT03C.cbl:120 is OPEN INPUT, and the paragraph pair at :92 and "
                             + ":136 only READs and CLOSEs, so no update-mode handle exists to reach for")
@@ -673,8 +432,6 @@ class AccountBalanceUpdateJobTest {
                     .map(name -> name.toLowerCase(Locale.ROOT))
                     .toList();
 
-            // The mandated class name is carried by the bean methods and cannot be helped. What can be
-            // helped is any member promising an operation the program does not perform.
             assertThat(methodNames)
                     .as("CBACT03C has no WRITE, REWRITE or DELETE, and reads no account master")
                     .isNotEmpty()
@@ -686,14 +443,9 @@ class AccountBalanceUpdateJobTest {
         }
     }
 
-    // =================================================================================================
-    // The transcribed literals. Byte-exact, and each names XREFFILE.
-    // =================================================================================================
-
     @Nested
     @DisplayName("Every displayed literal is transcribed from app/cbl/CBACT03C.cbl")
     class TranscribedLiterals {
-
         @Test
         @DisplayName("the two banners are the lines at :71 and :85, naming CBACT03C")
         void theBannersAreByteExact() {
@@ -763,22 +515,14 @@ class AccountBalanceUpdateJobTest {
         @Test
         @DisplayName("the charset bean name is the one the charset configuration actually publishes")
         void theCharsetBeanNameMatchesTheConfiguration() {
-            // The constant is restated in the subject rather than imported, because that class is
-            // outside the subject's declared dependency set. This is the assertion that makes the
-            // restatement safe: the two cannot drift without failing here.
             assertThat(AccountBalanceUpdateJob.DATASET_CHARSET_BEAN_NAME)
                     .isEqualTo(CobolCharsetConfig.DATASET_CHARSET_BEAN_NAME);
         }
     }
 
-    // =================================================================================================
-    // The fixture run - the parity expectation, end to end.
-    // =================================================================================================
-
     @Nested
     @DisplayName("A pass over the 50-record fixture")
     class TheFixtureRun {
-
         @Test
         @DisplayName("emits exactly 102 lines: one banner, 100 record lines, one banner")
         void emitsOneHundredAndTwoLines() {
@@ -869,10 +613,6 @@ class AccountBalanceUpdateJobTest {
         @Test
         @DisplayName("a row whose FILLER X(14) is not spaces is displayed twice, as it stands")
         void aRowsFillerSurvivesBothDisplays() {
-            // READ ... INTO CARD-XREF-RECORD (:93) fills the whole 50-byte area from the row, and both
-            // DISPLAY CARD-XREF-RECORD sites (:96 and :78) write that area. CVACT03Y's trailing
-            // FILLER X(14) is covered by no field, so whatever the row held there appears on both lines.
-            // Rendering the decoded record instead would blank it - 14 wrong bytes, twice per record.
             CardXrefRecord record = new CardXrefRecord(fixtureRecords().get(0).xrefCardNum(), 50, 50L);
             String clean = xrefImageOf(record);
             String dirty = clean.substring(0, CardXrefRecord.FILLER_OFFSET)
@@ -907,11 +647,6 @@ class AccountBalanceUpdateJobTest {
                             + "both statements are live - column 7 of each is a space, not an asterisk")
                     .isEqualTo(FIXTURE_ROW_COUNT * AccountBalanceUpdateJob.DISPLAYS_PER_RECORD)
                     .isEqualTo(100)
-                    // The two wrong answers are named, not merely avoided. The three readers are 178 to
-                    // 193 lines each and differ by one line: CBACT02C:96 is commented out, so it emits
-                    // ONE line per record, and CBACT01C:96 is a PERFORM of a field-by-field display
-                    // paragraph, so it emits THIRTEEN. A translation that quietly adopted either
-                    // sibling's shape would still read the right file and still look reasonable.
                     .as("one line per record is CBACT02C's shape, not this program's")
                     .isNotEqualTo(FIXTURE_ROW_COUNT)
                     .as("thirteen lines per record is CBACT01C's shape, not this program's")
@@ -926,11 +661,6 @@ class AccountBalanceUpdateJobTest {
 
             job(repositoryOver(fixtureRecords())).execute(sysout);
 
-            // CBACT01C decomposes its record through PERFORM 1100-DISPLAY-ACCT-RECORD, whose output is
-            // eleven `DISPLAY 'FIELD-NAME :' FIELD` lines and a 49-hyphen rule per record. CBACT03C has
-            // no such paragraph - a comment-stripped search for `1100-DISPLAY` in
-            // app/cbl/CBACT03C.cbl finds nothing - so every line it writes is either a banner or the raw
-            // 50-byte record area. Nothing is labelled, nothing is ruled, and no field name appears.
             assertThat(sysout.lines()).allSatisfy(line -> assertThat(line)
                     .as("a labelled field prefix would mean a display paragraph this program lacks")
                     .doesNotContain(":")
@@ -941,14 +671,9 @@ class AccountBalanceUpdateJobTest {
         }
     }
 
-    // =================================================================================================
-    // The loop's boundaries: no records, and one record.
-    // =================================================================================================
-
     @Nested
     @DisplayName("The read loop at its boundaries")
     class LoopBoundaries {
-
         @Test
         @DisplayName("an empty dataset still emits both banners and nothing between them")
         void anEmptyDatasetEmitsBothBanners() {
@@ -988,21 +713,13 @@ class AccountBalanceUpdateJobTest {
 
             verify(repository).openBrowse();
             verify(cursor).closeBrowse();
-            // 50 records plus the read that reports AT END: app/cbl/CBACT03C.cbl:74 loops until the
-            // flag is set, and the flag is only set by a read.
             verify(cursor, times(FIXTURE_ROW_COUNT + 1)).readNext();
         }
     }
 
-    // =================================================================================================
-    // The three failure paths, each with its own message - app/cbl/CBACT03C.cbl:129, :110 and :147.
-    // =================================================================================================
-
     @Nested
     @DisplayName("The three abend paths, each naming its own paragraph's failure")
     class AbendPaths {
-
-        /** The status the repository reports for a backend it could not reach: renders "9000". */
         private static final String PERMANENT = CardXrefRepository.PERMANENT_ERROR_STATUS;
 
         @Test
@@ -1023,7 +740,6 @@ class AccountBalanceUpdateJobTest {
                     FileStatus.toDisplayLine(PERMANENT), AbendException.ABEND_DISPLAY_TEXT);
             assertThat(abend.getReason()).contains(AccountBalanceUpdateJob.ERROR_OPENING_XREFFILE
                     + " - " + FileStatus.toDisplayLine(PERMANENT));
-            // CEE3ABD terminates the task, so neither the loop nor the close paragraph is reached.
             verify(cursor, never()).readNext();
             verify(cursor, never()).closeBrowse();
         }
@@ -1049,16 +765,6 @@ class AccountBalanceUpdateJobTest {
             assertThat(abend.getReason()).contains(AccountBalanceUpdateJob.ERROR_READING_XREFFILE
                     + " - " + FileStatus.toDisplayLine(PERMANENT));
 
-            // What parity requires is that 9000-XREFFILE-CLOSE did not RUN: CEE3ABD terminates the task
-            // at :113, so the paragraph's own DISPLAY and its APPL-RESULT transitions never happen. The
-            // containsExactly above is what proves that - ERROR CLOSING XREFFILE and the end banner are
-            // both absent - and the abend's reason names the read, not the close.
-            //
-            // The handle is nevertheless released once on the way out, silently. That is not the
-            // paragraph running: closeBrowse() issues no I/O, emits no DISPLAY and cannot alter the
-            // abend, so the SYSOUT line sequence and the return code - the whole of what CBACT03C
-            // observably produces - are identical either way. Asserting exactly once also pins that the
-            // cleanup cannot fire twice or fire on a path that already closed.
             verify(cursor, times(1)).closeBrowse();
             assertThat(sysout.lines())
                     .doesNotContain(AccountBalanceUpdateJob.ERROR_CLOSING_XREFFILE)
@@ -1085,7 +791,6 @@ class AccountBalanceUpdateJobTest {
                     FileStatus.toDisplayLine(PERMANENT), AbendException.ABEND_DISPLAY_TEXT);
             assertThat(abend.getReason()).contains(AccountBalanceUpdateJob.ERROR_CLOSING_XREFFILE
                     + " - " + FileStatus.toDisplayLine(PERMANENT));
-            // The end banner belongs after the close, so a failing close replaces it.
             assertThat(sysout.lines()).doesNotContain(AccountBalanceUpdateJob.END_OF_EXECUTION);
         }
 
@@ -1109,9 +814,6 @@ class AccountBalanceUpdateJobTest {
         @Test
         @DisplayName("a status the program does not name takes the WHEN OTHER arm and abends")
         void anUnnamedStatusTakesTheOtherArm() {
-            // Neither '23' nor '22' is tested by name at app/cbl/CBACT03C.cbl:94 or :98, so both move
-            // 12 into APPL-RESULT at :101 - which is exactly what a batch program testing only '00'
-            // and '10' does with them (gate G47).
             List<ReadResult> unnamed = List.of(
                     ReadResult.notFound(CardXrefRepository.BASE_DD_NAME),
                     xrefDuplicate(CardXrefRepository.BASE_DD_NAME, fixtureRecords().get(0),
@@ -1138,10 +840,6 @@ class AccountBalanceUpdateJobTest {
         @Test
         @DisplayName("a read reporting success without a record is a contradiction and fails loudly")
         void aSuccessWithoutARecordFailsLoudly() {
-            // ReadResult's own invariant makes this unconstructible through its factories - a record is
-            // present exactly for OK and DUPLICATE - so the only way to reach the guard is to fabricate
-            // the contradiction. It is worth reaching: a silent fall-through here would display nothing
-            // for a record app/cbl/CBACT03C.cbl:96 displays, and the pass would look complete.
             ReadResult contradictory = mock(ReadResult.class);
             when(contradictory.status()).thenReturn(FileStatus.OK);
             when(contradictory.record()).thenReturn(Optional.empty());
@@ -1173,42 +871,14 @@ class AccountBalanceUpdateJobTest {
         }
     }
 
-    // =================================================================================================
-    // Every file status, at every call site - gate G47, and the other truth state of both 88-levels at
-    // each of them - gate G50.
-    //
-    // The three paragraphs do NOT test the same set of statuses, and that asymmetry is the whole content
-    // of this section. 1000-XREFFILE-GET-NEXT names '00' at :94 and '10' at :98; 0000-XREFFILE-OPEN
-    // names only '00' at :121, and 9000-XREFFILE-CLOSE only '00' at :139. So '10' is end of file to the
-    // read - APPL-EOF true, loop over, RETURN-CODE 0 - and a hard failure to the open and the close,
-    // where APPL-EOF is never consulted and 12 is moved instead. A translation that hoisted the
-    // end-of-file test into a shared helper would turn an unreadable file into an empty one and report
-    // success, which is the worst possible outcome for a reader whose entire job is to print what it
-    // finds.
-    // =================================================================================================
-
     @Nested
     @DisplayName("Each file status at each call site, and each 88-level in both truth states")
     class StatusLaddersPerCallSite {
-
-        /** The status the repository reports for a backend it could not reach: renders "9000". */
         private static final String PERMANENT = CardXrefRepository.PERMANENT_ERROR_STATUS;
 
-        /**
-         * The statuses neither {@code 0000-XREFFILE-OPEN} nor {@code 9000-XREFFILE-CLOSE} names, so each
-         * takes those paragraphs' second arm - {@code MOVE 12} at {@code :124} and
-         * {@code ADD 12 TO ZERO GIVING} at {@code :142}.
-         *
-         * <p>{@code '10'} leads the list deliberately: it is the one status that means something
-         * different at a third call site, and so the one a shared helper would get wrong.
-         */
         @Test
         @DisplayName("the four statuses these ladders are driven with are the shared vocabulary's own")
         void theDrivenStatusesAreTheSharedOnes() {
-            // The @ValueSource annotations below need compile-time constants, so the four statuses are
-            // written as the FileStatus constants themselves rather than as bare literals - which is
-            // legal precisely because each of those constants is a String literal. This test is what
-            // makes that safe to read: it pins the four to the vocabulary they came from.
             assertThat(List.of(FileStatus.END_OF_FILE, FileStatus.DUPLICATE, FileStatus.NOT_FOUND,
                     FileStatus.RECORD_LENGTH_CONFLICT))
                     .containsExactly("10", "22", "23", "04");
@@ -1234,8 +904,6 @@ class AccountBalanceUpdateJobTest {
                     AccountBalanceUpdateJob.ERROR_OPENING_XREFFILE,
                     FileStatus.toDisplayLine(status), AbendException.ABEND_DISPLAY_TEXT);
             assertThat(abend.getReturnCode()).isEqualTo(AccountBalanceUpdateJob.APPL_RESULT_FATAL);
-            // The open has no end-of-file arm to fall into: 88 APPL-EOF is tested at :107, inside the
-            // read paragraph, and nowhere else. A '10' here is a failed OPEN, not an empty file.
             assertThat(sysout.lines())
                     .doesNotContain(AccountBalanceUpdateJob.END_OF_EXECUTION);
             verify(cursor, never()).readNext();
@@ -1256,22 +924,16 @@ class AccountBalanceUpdateJobTest {
                     .isThrownBy(() -> subject.execute(sysout))
                     .actual();
 
-            // No record was read, so the failing close follows the start banner directly - and replaces
-            // the end banner, which :85 only reaches once :83 has returned.
             assertThat(sysout.lines()).containsExactly(AccountBalanceUpdateJob.START_OF_EXECUTION,
                     AccountBalanceUpdateJob.ERROR_CLOSING_XREFFILE,
                     FileStatus.toDisplayLine(status), AbendException.ABEND_DISPLAY_TEXT);
             assertThat(abend.getReturnCode()).isEqualTo(AccountBalanceUpdateJob.APPL_RESULT_FATAL);
-            // Exactly one CLOSE per run: :83 issues it, and the run's own cleanup stands down because
-            // the paragraph already ran.
             verify(cursor, times(1)).closeBrowse();
         }
 
         @Test
         @DisplayName("'10' is end of file to the read and a hard failure to the open and the close")
         void tenMeansEndOfFileOnlyToTheReadParagraph() {
-            // The read: APPL-EOF true at :107, 'Y' moved to END-OF-FILE at :108, the loop ends, the
-            // close runs and the end banner is written. RETURN-CODE is never moved, so it is zero.
             CapturingSysout readSite = new CapturingSysout();
             ExecutionSummary summary = job(repositoryOver(List.of())).execute(readSite);
             assertThat(readSite.lines()).containsExactly(AccountBalanceUpdateJob.START_OF_EXECUTION,
@@ -1279,9 +941,6 @@ class AccountBalanceUpdateJobTest {
             assertThat(summary.returnCode()).isEqualTo(AbendException.RETURN_CODE_OK);
             assertThat(summary.recordsRead()).isZero();
 
-            // The open and the close: the same '10', no APPL-EOF test in either paragraph, 12 moved, and
-            // each paragraph's own message. RETURN_CODE_END_OF_FILE is 16 and is what APPL-EOF holds;
-            // proving it is NOT the code these two carry is the point of asserting against it.
             CapturingSysout openSite = new CapturingSysout();
             AccountBalanceUpdateJob openFailure = job(repositoryWith(cursorYielding(
                     FileStatus.END_OF_FILE, FileStatus.OK,
@@ -1315,10 +974,6 @@ class AccountBalanceUpdateJobTest {
 
             ExecutionSummary summary = job(repositoryWith(cursor)).execute(sysout);
 
-            // APPL-AOK true at :126 (open), true at :104 (the record read), false-then-APPL-EOF-true at
-            // :104 and :107 (the read that reports AT END), and true at :144 (close). Both 88-levels are
-            // therefore exercised in both truth states by this one pass, and none of the three abend
-            // paths is entered.
             String row = fixtureRows().get(0);
             assertThat(sysout.lines()).containsExactly(AccountBalanceUpdateJob.START_OF_EXECUTION,
                     expectedImage(row), expectedImage(row), AccountBalanceUpdateJob.END_OF_EXECUTION);
@@ -1333,16 +988,6 @@ class AccountBalanceUpdateJobTest {
         @Test
         @DisplayName("the close ladder seeds 8, then reaches 0 on '00' and 12 on anything else")
         void theCloseLadderRunsFromEightToZeroOrTwelve() {
-            // gate G28. 9000-XREFFILE-CLOSE is the only arithmetic in the whole program - two ADDs and
-            // one SUBTRACT, at :137, :140 and :142 - and its shape is easy to lose because both of the
-            // roundabout forms compute a constant:
-            //     :137  ADD 8 TO ZERO GIVING APPL-RESULT        -> 8, the seed
-            //     :140  SUBTRACT APPL-RESULT FROM APPL-RESULT   -> 0, on '00'
-            //     :142  ADD 12 TO ZERO GIVING APPL-RESULT       -> 12, on anything else
-            // The seed is dead: whichever arm runs overwrites it. What proves the SUBTRACT arm actually
-            // ran is that a clean close does NOT abend - had the seed survived, APPL-AOK at :144 would
-            // be false for 8 and the program would report ERROR CLOSING XREFFILE on a close that
-            // succeeded.
             assertThat(AccountBalanceUpdateJob.APPL_RESULT_ASSUMED_FAILURE)
                     .as("the value :137 seeds and :119 moves")
                     .isEqualTo(8)
@@ -1367,9 +1012,6 @@ class AccountBalanceUpdateJobTest {
         @Test
         @DisplayName("no abend carries the dead 8 seed, at any of the three call sites")
         void noAbendCarriesTheDeadSeed() {
-            // The seed of :119 and :137 is never read, so it must never surface as a RETURN-CODE either.
-            // All three failure paths move 12, and JCL-equivalent COND gating downstream depends on
-            // that: 8 and 12 are different conditions on the mainframe.
             List<CapturingSysout> sinks = List.of(new CapturingSysout(), new CapturingSysout(),
                     new CapturingSysout());
             List<AccountBalanceUpdateJob> subjects = List.of(
@@ -1397,7 +1039,6 @@ class AccountBalanceUpdateJobTest {
                         .isNotEqualTo(FileStatus.APPL_EOF);
                 assertThat(abend.getAbendCode()).hasValue(AbendException.STANDARD_ABEND_CODE);
                 assertThat(abend.getTiming()).hasValue(AbendException.STANDARD_TIMING);
-                // :155 writes the abend line before :158 calls CEE3ABD, so it is always the last line.
                 assertThat(sysout.lines()).last().isEqualTo(AbendException.ABEND_DISPLAY_TEXT);
             }
         }
@@ -1407,17 +1048,11 @@ class AccountBalanceUpdateJobTest {
                 FileStatus.RECORD_LENGTH_CONFLICT })
         @DisplayName("a numeric status renders through the ELSE arm as '00' followed by the status")
         void aNumericStatusTakesTheElseArmOfTheRenderer(String status) {
-            // app/cbl/CBACT03C.cbl:169-172, the ELSE arm: MOVE '0000' TO IO-STATUS-04 then
-            // MOVE IO-STATUS TO IO-STATUS-04(3:2). So a numeric status whose first character is not '9'
-            // is written as four digits with the status in the last two. The IF arm at :162-168 - taken
-            // when IO-STATUS is not numeric or IO-STAT1 is '9' - is the one the permanent error takes,
-            // and it is covered by theStatusLineIsTheSharedForm above. Both arms are therefore driven.
             String rendered = FileStatus.toDisplayLine(status);
             assertThat(rendered)
                     .isEqualTo(FileStatus.DISPLAY_PREFIX + "00" + status)
                     .hasSize(FileStatus.DISPLAY_PREFIX.length() + FileStatus.STATUS_IMAGE_LENGTH);
 
-            // And it is that rendering, not a locally assembled one, that the program displays.
             CapturingSysout sysout = new CapturingSysout();
             AccountBalanceUpdateJob subject = job(repositoryWith(cursorYielding(status, FileStatus.OK,
                     List.of(ReadResult.endOfFile(CardXrefRepository.BASE_DD_NAME)))));
@@ -1429,14 +1064,9 @@ class AccountBalanceUpdateJobTest {
         }
     }
 
-    // =================================================================================================
-    // The constructor: what it requires, and what it refuses.
-    // =================================================================================================
-
     @Nested
     @DisplayName("The constructor validates the configured contract against the JCL")
     class ConstructorContract {
-
         @Test
         @DisplayName("it accepts the contract application.yml actually declares, and reports it back")
         void itAcceptsTheConfiguredContract() {
@@ -1465,11 +1095,6 @@ class AccountBalanceUpdateJobTest {
         @Test
         @DisplayName("XREFFILE and CCXREF pointing at different datasets is refused at construction")
         void divergingDdNamesAreRefused() {
-            // The step's JCL names XREFFILE (app/jcl/READXREF.jcl:25-26); the repository it browses is
-            // bound to the CICS file name CCXREF. Both keys carry independent overrides in
-            // application.yml, so a deployment can point them at different datasets - and the job would
-            // then browse one its own DD statement never named, silently. A COBOL step cannot do this,
-            // because the DD statement is the binding.
             BatchConfig diverging = batchConfig(validContracts(),
                     bindings(CardXrefRecord.RECORD_LENGTH, TEST_DSNAME, "TEST.SOMETHING.ELSE"));
 
@@ -1515,9 +1140,6 @@ class AccountBalanceUpdateJobTest {
         @Test
         @DisplayName("a second step declared beside STEP05 is refused: READXREF.jcl has one EXEC")
         void anAddedStepIsRefused() {
-            // The program, gating and name checks all resolve STEP05 by name and find it whether it
-            // stands alone or first of two, so none of them can see an added step. Here the extra step
-            // is a well-formed copy of the real one, which is the shape a copy-paste edit produces.
             JobContracts withASecondStep = new JobContracts();
             withASecondStep.put(AccountBalanceUpdateJob.JOB_KEY,
                     new JobContract(AccountBalanceUpdateJob.PROGRAM_NAME, List.of(),
@@ -1630,14 +1252,9 @@ class AccountBalanceUpdateJobTest {
         }
     }
 
-    // =================================================================================================
-    // The Spring Batch assembly: one job, one tasklet step, no parameters.
-    // =================================================================================================
-
     @Nested
     @DisplayName("The batch assembly is one job over one tasklet step named STEP05")
     class BatchAssembly {
-
         @Test
         @DisplayName("the job is named for the class and the step for the JCL step")
         void theJobAndStepCarryTheExpectedNames() {
@@ -1665,8 +1282,6 @@ class AccountBalanceUpdateJobTest {
 
             assertThat(status).isEqualTo(RepeatStatus.FINISHED);
             assertThat(sysout.lines()).hasSize(102);
-            // The count is of records READ, which is half the lines displayed: :78 and :96 each display
-            // the record the one read delivered. A read count is a count of reads.
             assertThat(contribution.getReadCount())
                     .as("BATCH_STEP_EXECUTION.READ_COUNT must show the volume this pass read, so a run "
                             + "over the whole file is distinguishable from a run over an empty one")
@@ -1696,9 +1311,6 @@ class AccountBalanceUpdateJobTest {
         @Test
         @DisplayName("with no published sink the default one is used, and the program still runs")
         void withNoPublishedSinkTheDefaultIsUsed() throws Exception {
-            // An empty dataset, so the fallback writes the two banner lines to the process's standard
-            // output and nothing more. The assertion is that the fallback resolves and the program
-            // completes; where those two lines land is the deployment's business.
             AccountBalanceUpdateJob subject = job(repositoryOver(List.of()));
 
             StepExecution stepExecution = stepExecution();
@@ -1714,7 +1326,6 @@ class AccountBalanceUpdateJobTest {
     @Nested
     @DisplayName("Bounded cancellation - the pass yields to a stop request between records")
     class BoundedCancellation {
-
         @Test
         @DisplayName("no stop requested leaves the pass exactly as it was: 102 lines, unchanged")
         void withoutAStopTheWholePassRuns() {
@@ -1724,8 +1335,6 @@ class AccountBalanceUpdateJobTest {
 
             ExecutionSummary summary = subject.execute(sysout, StopSignal.of(stepExecution()));
 
-            // The signal is consulted on every iteration and changes nothing while nothing is pending.
-            // Fifty records, two DISPLAY lines each, plus the two banners.
             assertThat(sysout.lines()).hasSize(102);
             assertThat(summary.recordsRead()).isEqualTo(FIXTURE_ROW_COUNT);
         }
@@ -1742,11 +1351,8 @@ class AccountBalanceUpdateJobTest {
                     .isThrownBy(() -> subject.execute(sysout, StopSignal.of(stepExecution)))
                     .withMessageContaining(AccountBalanceUpdateJob.STEP_NAME)
                     .withMessageContaining("NO write is retried")
-                    // The cause is what makes AbstractStep report the step as STOPPED rather than
-                    // FAILED, so it is asserted rather than left as an implementation detail.
                     .withCauseInstanceOf(JobInterruptedException.class);
 
-            // The OPEN happened and its banner was written; not one record line was.
             assertThat(sysout.lines())
                     .containsExactly(AccountBalanceUpdateJob.START_OF_EXECUTION);
         }
@@ -1762,13 +1368,9 @@ class AccountBalanceUpdateJobTest {
             assertThatExceptionOfType(StopRequestedException.class).isThrownBy(() ->
                     subject.execute(sysout, signalStoppingAfter(stepExecution, stopAfter)));
 
-            // CBACT03C displays each record TWICE - :96 inside the read paragraph and :78 in the loop -
-            // so a pass stopped between records must show an EVEN number of record lines. An odd count
-            // would mean the probe had landed mid-record, which is the one thing its position rules out.
             assertThat(sysout.lines()).hasSize(stopAfter * 2 + 1);
             assertThat(sysout.lines().size() - 1).isEven();
 
-            // And the close banner is NOT written, exactly as it is not written on an abend.
             assertThat(sysout.lines()).doesNotContain(AccountBalanceUpdateJob.END_OF_EXECUTION);
         }
 
@@ -1803,8 +1405,6 @@ class AccountBalanceUpdateJobTest {
             AccountBalanceUpdateJob subject = new AccountBalanceUpdateJob(validBatchConfig(),
                     repositoryOver(fixtureRecords()), ASCII, new SuppliedProvider<>(sysout));
 
-            // Driven exactly as TaskletStep drives it, so this asserts the wiring and not just the
-            // program: a tasklet that ignored the chunk context would run the whole pass here.
             assertThatExceptionOfType(StopRequestedException.class).isThrownBy(() ->
                     subject.accountBalanceUpdateTasklet()
                             .execute(new StepContribution(stepExecution), chunkContext(stepExecution)));
@@ -1814,14 +1414,9 @@ class AccountBalanceUpdateJobTest {
         }
     }
 
-    // =================================================================================================
-    // The structural declarations that decide whether any of this wires at all.
-    // =================================================================================================
-
     @Nested
     @DisplayName("The declarations Spring reads")
     class SpringDeclarations {
-
         @Test
         @DisplayName("the class is a @Configuration under its own bean name, and is not final")
         void theClassIsAConfigurationUnderItsOwnName() {
@@ -1848,8 +1443,6 @@ class AccountBalanceUpdateJobTest {
             Method stepBean = AccountBalanceUpdateJob.class
                     .getDeclaredMethod("accountBalanceUpdateStep");
 
-            // Read through value() rather than name(): the two are @AliasFor one another, and that
-            // alias is resolved by Spring's annotation machinery rather than by plain reflection.
             assertThat(jobBean.getDeclaredAnnotation(Bean.class).value())
                     .containsExactly(AccountBalanceUpdateJob.JOB_NAME);
             assertThat(stepBean.getDeclaredAnnotation(Bean.class).value())
@@ -1910,14 +1503,9 @@ class AccountBalanceUpdateJobTest {
         }
     }
 
-    // =================================================================================================
-    // The SYSOUT sink: verbatim, in the named code page, one line feed, flushed.
-    // =================================================================================================
-
     @Nested
     @DisplayName("The default SYSOUT sink writes a DISPLAY line and nothing else")
     class SysoutSinkContract {
-
         @Test
         @DisplayName("a line is written verbatim, terminated by exactly one line feed")
         void aLineIsWrittenVerbatim() {
@@ -2008,14 +1596,9 @@ class AccountBalanceUpdateJobTest {
         }
     }
 
-    // =================================================================================================
-    // The display image, and the summary.
-    // =================================================================================================
-
     @Nested
     @DisplayName("A rendered record is the 50 bytes CVACT03Y declares")
     class DisplayImageContract {
-
         @Test
         @DisplayName("row 1 of the fixture renders as its 36 bytes plus 14 spaces")
         void rowOneRenders() {
@@ -2059,7 +1642,6 @@ class AccountBalanceUpdateJobTest {
     @Nested
     @DisplayName("The execution summary")
     class ExecutionSummaryContract {
-
         @Test
         @DisplayName("the derived line counts follow from the record count")
         void theDerivedCountsFollow() {
@@ -2087,14 +1669,9 @@ class AccountBalanceUpdateJobTest {
         }
     }
 
-    // =================================================================================================
-    // Source-level hygiene: the gates that are properties of the file rather than of a run.
-    // =================================================================================================
-
     @Nested
     @DisplayName("The source itself honours the migration's standing prohibitions")
     class SourceHygiene {
-
         @Test
         @DisplayName("no wildcard import, so every copybook-to-type correspondence stays auditable")
         void noWildcardImport() throws IOException {
@@ -2128,8 +1705,6 @@ class AccountBalanceUpdateJobTest {
                     "com.vsergeychik.carddemo.common.FileStatus",
                     "com.vsergeychik.carddemo.common.FixedWidthCodec",
                     "com.vsergeychik.carddemo.config.BatchConfig",
-                    // The bean name of the dataset code page is taken from the class that publishes it
-                    // rather than restated as a literal, so that class is now a declared dependency.
                     "com.vsergeychik.carddemo.config.CobolCharsetConfig");
 
             List<String> internalImports = subjectSource().lines()
@@ -2150,10 +1725,6 @@ class AccountBalanceUpdateJobTest {
         void theDisplaySitesArePresent() throws IOException {
             String source = subjectSource();
 
-            // Both DISPLAY sites write a stored image - the bytes the row actually held - and neither
-            // re-encodes the decoded record. DISPLAY CARD-XREF-RECORD (app/cbl/CBACT03C.cbl:78 and :96)
-            // writes the whole 50-byte record area, and the area's FILLER X(14) carries whatever the row
-            // carried; re-encoding a decoded record allocates a fresh area and so would blank it.
             assertThat(source).contains("sysout.display(storedImage);")
                     .contains("sysout.display(recordAreaImage);")
                     .contains("sysout.display(START_OF_EXECUTION);")
@@ -2174,25 +1745,15 @@ class AccountBalanceUpdateJobTest {
                     .filter(line -> line.strip().equals(guard + " {"))
                     .count();
 
-            // Two, not one. The guard at app/cbl/CBACT03C.cbl:75 is redundant - the PERFORM UNTIL of
-            // :74 already establishes it, and END-OF-FILE holds only 'N' or 'Y' - so its false path is
-            // unreachable and a coverage report shows it as a half-taken branch. It is preserved
-            // deliberately: removing a statement because it cannot fail is a change to a program whose
-            // observable behaviour is this migration's contract.
             assertThat(occurrences)
                     .as("the guard at :75 and the guard at :77 are both present")
                     .isEqualTo(2);
         }
     }
 
-    // =================================================================================================
-    // Wiring: the beans this class publishes come up in a real context, on the fixture profile.
-    // =================================================================================================
-
     @Nested
     @DisplayName("The job wires in a real application context")
     class SpringWiring {
-
         @Test
         @DisplayName("the job and step beans are published, and the qualified charset resolves")
         void theJobAndStepBeansArePublished() {
@@ -2220,12 +1781,6 @@ class AccountBalanceUpdateJobTest {
                                 context.getBean(AccountBalanceUpdateJob.class);
                         assertThat(subject.stepName()).isEqualTo(AccountBalanceUpdateJob.STEP_NAME);
                         assertThat(subject.xrefFileDatasetName()).isNotBlank();
-                        // gate G46, the half a source scan cannot reach. Asserting that no
-                        // AWS.M2.CARDDEMO literal appears in the Java shows the name was not written
-                        // there; this shows where it DID come from. The dataset the job resolved is the
-                        // one the environment binds under carddemo.datasets.XREFFILE - read back from
-                        // the environment rather than restated here, so the assertion holds whatever
-                        // the active profile or the CARDDEMO_DATASET_XREFFILE override says.
                         assertThat(subject.xrefFileDatasetName())
                                 .as("the dataset name is resolved from carddemo.datasets.XREFFILE."
                                         + "dsname, never composed in Java")
@@ -2233,52 +1788,21 @@ class AccountBalanceUpdateJobTest {
                                         .getProperty("carddemo.datasets."
                                                 + AccountBalanceUpdateJob.XREFFILE_DD_NAME
                                                 + ".dsname"));
-                        // No SysoutSink bean is published by this module, so the fallback is what a
-                        // wired job would use.
                         assertThat(context).doesNotHaveBean(SysoutSink.class);
                         assertThat(subject.defaultSysoutSink()).isNotNull();
                     });
         }
     }
 
-    // =================================================================================================
-    // Synthesised cross-reference read outcomes. A ReadResult carries the decoded record AND the bytes it
-    // was decoded from, because DISPLAY CARD-XREF-RECORD (app/cbl/CBACT03C.cbl:78 and :96) writes the
-    // record area and the area's FILLER X(14) holds whatever the row held. A test constructing an outcome
-    // has no row, so the image it supplies is the one a row of exactly this record would carry - stated
-    // once here rather than at every call site.
-    // =================================================================================================
-
-    /**
-     * The found arm over a synthesised row of this record.
-     *
-     * @param ddName the access path
-     * @param record the record the row would carry
-     * @return the outcome, carrying the record and the image a row of it would hold
-     */
     private static CardXrefRepository.ReadResult xrefFound(String ddName, CardXrefRecord record) {
         return CardXrefRepository.ReadResult.found(ddName, record, xrefImageOf(record));
     }
 
-    /**
-     * The duplicate arm over a synthesised row of this record.
-     *
-     * @param ddName   the access path
-     * @param first    the first of the matching records
-     * @param cicsResp DUPREC for the base key or DUPKEY for an alternate key
-     * @return the outcome, carrying the record and the image a row of it would hold
-     */
     private static CardXrefRepository.ReadResult xrefDuplicate(String ddName, CardXrefRecord first,
             int cicsResp) {
         return CardXrefRepository.ReadResult.duplicate(ddName, first, xrefImageOf(first), cicsResp);
     }
 
-    /**
-     * The 50-character image a row of this record would hold.
-     *
-     * @param record the record
-     * @return its encoded image
-     */
     private static String xrefImageOf(CardXrefRecord record) {
         return new String(record.encode(StandardCharsets.US_ASCII), StandardCharsets.US_ASCII);
     }

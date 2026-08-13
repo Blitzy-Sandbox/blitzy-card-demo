@@ -30,73 +30,19 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
 /**
- * Tests for the four ways the parity judge could report a clean comparison over output that is not
- * clean.
- *
- * <h2>Why these four in particular</h2>
- * A judge has two kinds of defect and they are not equally serious. A false failure is loud: somebody
- * investigates it within the hour. A <strong>false pass</strong> is silent, and the whole point of the
- * diff-count-equals-zero gate is that nobody looks any further once it reads zero. Each case below is a
- * way the judge previously returned zero over output the COBOL would not have produced:
- *
- * <ul>
- *   <li>Two signed zoned images of one value - {@code +0} and {@code -0}, or an unsigned digit against
- *       a positive overpunch - compared equal, because after the byte comparison failed the judge fell
- *       back to comparing numbers. The parity contract is the record's bytes.</li>
- *   <li>A dataset the case never mentions was invisible, because the extra-record pass walked the
- *       expectations and nothing in a set of expectations refers to a dataset it does not mention.</li>
- *   <li>A width normalisation was selected on its width pair alone, so a case declaring the
- *       cross-reference pad had any 36-byte dataset padded to 50 and compared against the wrong
- *       copybook.</li>
- *   <li>A fixture name was any text at all, so a case could name a resource outside the fixture
- *       directory.</li>
- * </ul>
- *
- * <p>Each test therefore asserts a <em>non-zero</em> diff count where the judge used to return zero,
- * and asserts the surviving true-negative alongside it - because a judge that reports everything is as
- * useless as one that reports nothing.
+ * Tests for the four ways the parity judge could report a clean comparison over output that is not clean.
  */
 @DisplayName("Parity judge correctness - the four ways it could have passed dirty output")
 class ParityJudgeCorrectnessTest {
-
-    /** The dataset a signed-field case writes to. */
     private static final String TRANSACT = "TRANSACT";
 
-    /** A twelve-character {@code PIC S9(10)V99} span, the estate's only monetary shape. */
     private static final FieldSpan AMOUNT =
         FieldSpan.signedScaled("TRAN-AMT", 0, 10, 2);
 
-    /** A layout of exactly that one span, so a row is twelve bytes. */
     private static final RecordLayout AMOUNT_LAYOUT = new RecordLayout(12, List.of(AMOUNT));
 
-    /** The differ under test, over the fixture code page. */
     private static final FieldDiffer DIFFER = FieldDiffer.forCharset(StandardCharsets.US_ASCII);
 
-    /**
-     * Builds a case expecting one {@code TRAN-AMT} image in row 0 of {@code TRANSACT}.
-     *
-     * @param expectedImage the expectation, written as the case author would write it
-     * @return the case
-     */
-
-    /**
-     * The differences this suite is about, excluding {@link DiffKind#INCOMPLETE_EXPECTATION}.
-     *
-     * <p>Every fixture in this file names one or two fields deliberately, because isolating a single
-     * comparison behaviour is the whole method: a test about how a wrong balance is reported must not
-     * also have to state the account id, the group id and the {@code FILLER}. Under the completeness
-     * contract such an expectation is <em>also</em> reported as not accounting for its whole record,
-     * which is a true finding about the fixture and a distraction from the behaviour under test.
-     *
-     * <p>Nothing hides behind this filter. The kind is proved reachable, proved to name every uncovered
-     * span, and proved to count toward {@link DiffResult#count()} exactly like every other kind, in the
-     * {@code Completeness} nest of {@code FieldDifferTest}; and the gate itself reads the unfiltered
-     * {@link DiffResult#count()}, so a partial fixture still fails a real module gate. This filter
-     * exists only so a test about one comparison keeps saying one thing.
-     *
-     * @param result the comparison result
-     * @return its differences about the output, in traversal order
-     */
     private static List<Diff> outputDiffs(DiffResult result) {
         List<Diff> output = new ArrayList<>();
         for (Diff diff : result.entries()) {
@@ -107,34 +53,14 @@ class ParityJudgeCorrectnessTest {
         return output;
     }
 
-    /**
-     * How many differences the result carries about the output, on the same footing as
-     * {@link #outputDiffs(DiffResult)}.
-     *
-     * @param result the comparison result
-     * @return the count of differences about the output
-     */
     private static int outputCount(DiffResult result) {
         return outputDiffs(result).size();
     }
 
-    /**
-     * Whether the result is clean about the output, on the same footing as
-     * {@link #outputDiffs(DiffResult)}.
-     *
-     * @param result the comparison result
-     * @return {@code true} when nothing about the output differs
-     */
     private static boolean outputIsClean(DiffResult result) {
         return outputDiffs(result).isEmpty();
     }
 
-    /**
-     * Every kind the result carries, filtering nothing - the view a producibility claim needs.
-     *
-     * @param result the comparison result
-     * @return every kind present, in traversal order
-     */
     private static List<DiffKind> allKindsOf(DiffResult result) {
         List<DiffKind> kinds = new ArrayList<>();
         for (Diff diff : result.entries()) {
@@ -150,12 +76,6 @@ class ParityJudgeCorrectnessTest {
             List.of(), 0, List.of(), List.of());
     }
 
-    /**
-     * Builds a fingerprint holding one {@code TRAN-AMT} image in row 0 of {@code TRANSACT}.
-     *
-     * @param observedImage what the unit wrote
-     * @return the fingerprint
-     */
     private static Fingerprint amountFingerprint(final String observedImage) {
         return Fingerprint.of(
             List.of(DatasetOutput.ofImages(TRANSACT, AMOUNT_LAYOUT, List.of(observedImage),
@@ -166,7 +86,6 @@ class ParityJudgeCorrectnessTest {
     @Nested
     @DisplayName("A signed zoned image is compared as bytes, not as a number - F19")
     class SignedZonedImages {
-
         @ParameterizedTest(name = "expected {0} against observed {1} is reported")
         @ValueSource(strings = {
             "00000000000{|00000000000}",
@@ -201,8 +120,6 @@ class ParityJudgeCorrectnessTest {
             DiffResult result = DIFFER.compare(amountCase("00000000000{"),
                 amountFingerprint("00000000000}"));
 
-            // Both images decode to 0.00, so a numeric comparison finds nothing. The explanation has
-            // to say that plainly, or it reads as a self-contradiction.
             assertThat(outputCount(result)).isEqualTo(1);
             assertThat(outputDiffs(result).get(0).explanation())
                 .contains("right value but the wrong bytes")
@@ -238,14 +155,6 @@ class ParityJudgeCorrectnessTest {
         @Test
         @DisplayName("A decimal literal is encoded to the one image a COBOL store produces, then compared")
         void aDecimalLiteralIsComparedAsTheImageItEncodesTo() {
-            // A literal states a value, and a COBOL store of that value into PIC S9(10)V99 produces
-            // exactly one image - so stating the value and stating that image are the same statement,
-            // and the literal is encoded through the codec the implementation writes with and then
-            // compared as bytes. The strictness is not an inconvenience to be carved out: a literal
-            // compared numerically would accept the unsigned rendering below, and would accept a
-            // positive zero for a "-0.00" expectation, which are the two byte differences the signed
-            // codec exists to preserve. The judge would then be blind to exactly the defects it is
-            // here to catch.
             assertThat(outputIsClean(DIFFER.compare(amountCase("1940.00"),
                 amountFingerprint("00000019400{"))))
                 .as("the canonical image of 1940.00 is the positive-overpunch form")
@@ -303,8 +212,6 @@ class ParityJudgeCorrectnessTest {
     @Nested
     @DisplayName("Output the case never mentions is reported - F20")
     class UnexpectedOutput {
-
-        /** A case that expects one row in TRANSACT and says nothing about any other dataset. */
         private ParityCase caseExpectingOnlyTransact() {
             return amountCase("00000019400{");
         }
@@ -321,15 +228,6 @@ class ParityJudgeCorrectnessTest {
 
             DiffResult result = DIFFER.compare(caseExpectingOnlyTransact(), wroteAnExtraDataset);
 
-            // Previously zero: nothing in the expectations referred to DALYREJS, so the pass over them
-            // could never reach it. It is now reached, because the pass is driven by what the unit
-            // produced rather than by the expectation keys.
-            //
-            // One finding, not one per row. "The unit wrote to an output this case is not about" is a
-            // single defect however many rows followed, so the count carries the scale - 2 row(s) here
-            // - rather than the entries multiplying with the unit's output volume. That is the same
-            // rule that makes a missing record one difference and not one per pinned field, and it
-            // keeps the diff count a count of things wrong.
             assertThat(outputIsClean(result)).isFalse();
             assertThat(outputDiffs(result)).extracting(Diff::kind)
                 .containsExactly(DiffKind.EXTRA_DATASET);
@@ -352,8 +250,6 @@ class ParityJudgeCorrectnessTest {
 
             DiffResult result = DIFFER.compare(caseExpectingOnlyTransact(), openedButWroteNothing);
 
-            // The one shape a row-driven check can never see: a unit that opened an output the COBOL
-            // does not have, and wrote nothing to it.
             assertThat(outputCount(result)).isEqualTo(1);
             assertThat(outputDiffs(result).get(0).kind()).isEqualTo(DiffKind.EXTRA_DATASET);
             assertThat(outputDiffs(result).get(0).explanation()).contains("0 row(s)");
@@ -373,10 +269,6 @@ class ParityJudgeCorrectnessTest {
             DiffResult first = DIFFER.compare(caseExpectingOnlyTransact(), twoExtras);
             DiffResult second = DIFFER.compare(caseExpectingOnlyTransact(), twoExtras);
 
-            // The fingerprint declares DALYREJS first, yet TRANSACT's unaccounted row is reported
-            // first: the datasets the case addresses are examined before the datasets it never
-            // mentions, so the rendered order does not depend on the order the unit happened to open
-            // its outputs in.
             assertThat(outputDiffs(first)).extracting(Diff::dataset)
                 .containsExactly(TRANSACT, "DALYREJS", "TCATBALF");
             assertThat(outputDiffs(first)).extracting(Diff::kind)
@@ -434,18 +326,14 @@ class ParityJudgeCorrectnessTest {
     @Nested
     @DisplayName("A normalisation applies only to the datasets it is bound to - F21")
     class NormalisationBinding {
-
-        /** The cross-reference layout: 50 bytes, of which the fixture supplies 36. */
         private static final RecordLayout XREF_LAYOUT = new RecordLayout(50,
             List.of(FieldSpan.alphanumeric("XREF-CARD-NUM", 0, 16),
                 FieldSpan.unsignedNumeric("XREF-CUST-ID", 16, 9),
                 FieldSpan.unsignedNumeric("XREF-ACCT-ID", 25, 11),
                 FieldSpan.filler(36, 14)));
 
-        /** A 36-byte row, as {@code cardxref.txt} actually holds it. */
         private static final String THIRTY_SIX = "4111111111111111" + "000000009" + "00000000011";
 
-        /** A case over {@code dataset}, seeding the 36-byte row and declaring the pad for it. */
         private ParityCase caseOver(final String dataset) {
             return new ParityCase("CBACT03C", "case01", "one cross-reference row", UnitKind.BATCH_JOB,
                 Map.of(dataset, DatasetInput.ofRows(List.of(THIRTY_SIX))), Map.of(), null, null,
@@ -456,12 +344,6 @@ class ParityJudgeCorrectnessTest {
                     Normalisation.CARDXREF_FILLER_PAD_36_TO_50)));
         }
 
-        /**
-         * The dataset as the run leaves it, seeded through the declared pad.
-         *
-         * <p>The pad is applied here, on the seeding side that owns it, so what the comparison meets
-         * is a full-width record - never a short row the comparison has to repair.
-         */
         private Fingerprint fingerprintOver(final String dataset) {
             String seeded = new DatasetNormalisation(dataset,
                 Normalisation.CARDXREF_FILLER_PAD_36_TO_50).normaliseSeedRow(THIRTY_SIX);
@@ -469,7 +351,6 @@ class ParityJudgeCorrectnessTest {
                 List.of(seeded), StandardCharsets.US_ASCII)), null, 0, List.of());
         }
 
-        /** The same dataset and expectation, with no pad declared and the short row left alone. */
         private ParityCase unpaddedCaseOver(final String dataset) {
             return new ParityCase("CBACT03C", "case01", "one cross-reference row", UnitKind.BATCH_JOB,
                 Map.of(dataset, DatasetInput.ofRows(List.of(THIRTY_SIX))), Map.of(), null, null,
@@ -478,7 +359,6 @@ class ParityJudgeCorrectnessTest {
                 0, List.of(), List.of());
         }
 
-        /** The short row exactly as the fixture holds it, on the final-state channel. */
         private Fingerprint unpaddedFingerprintOver(final String dataset) {
             return Fingerprint.of(List.of(), List.of(DatasetOutput.ofImages(dataset, XREF_LAYOUT,
                 List.of(THIRTY_SIX), StandardCharsets.US_ASCII)), null, 0, List.of());
@@ -503,19 +383,12 @@ class ParityJudgeCorrectnessTest {
         @Test
         @DisplayName("An unrelated dataset of the same width is NOT padded, it is reported")
         void anUnrelatedDatasetOfTheSameWidthIsReported() {
-            // The failure this binding exists to prevent: a case declaring the cross-reference pad,
-            // touching some other dataset that happens to measure 36 against a 50-byte layout, and
-            // PASSING because the width pair matched.
-            // The binding refuses the declaration itself, which is earlier and louder than refusing
-            // the pad when it fires - a case cannot even be written that asks for it.
             assertThatIllegalArgumentException()
                 .isThrownBy(() -> new DatasetNormalisation("TCATBALF",
                     Normalisation.CARDXREF_FILLER_PAD_36_TO_50))
                 .withMessageContaining("does not describe");
             assertThat(Normalisation.CARDXREF_FILLER_PAD_36_TO_50.appliesTo("TCATBALF")).isFalse();
 
-            // And with no pad available the 36-byte row is reported for what it is against a 50-byte
-            // layout, rather than padded and compared against the wrong copybook.
             DiffResult result = DIFFER.compare(unpaddedCaseOver("TCATBALF"),
                 unpaddedFingerprintOver("TCATBALF"));
 
@@ -557,7 +430,6 @@ class ParityJudgeCorrectnessTest {
     @Nested
     @DisplayName("A fixture name is confined to the fixture directory - F17")
     class FixtureConfinement {
-
         @ParameterizedTest(name = "\"{0}\" is accepted")
         @ValueSource(strings = {
             "acctdata.txt", "carddata.txt", "cardxref.txt", "custdata.txt", "dailytran.txt",
@@ -586,11 +458,6 @@ class ParityJudgeCorrectnessTest {
         })
         @DisplayName("A name that is not a bare file name is refused, whatever shape it takes")
         void aNameThatIsNotABareFileNameIsRefused(final String fixture) {
-            // Asserting the STRUCTURAL diagnostic, not merely that something was thrown. The whitelist
-            // would refuse every one of these names too, so a test that accepted either message would
-            // pass with the structural barrier deleted and the two barriers are not interchangeable:
-            // the whitelist says only "not a fixture", which tells a case author nothing about the
-            // traversal they just wrote.
             assertThatIllegalArgumentException()
                 .isThrownBy(() -> new DatasetInput(List.of(), fixture, null, null, null, null, null))
                 .withMessageContaining("DatasetInput.fixture must be a bare file name")
@@ -600,9 +467,6 @@ class ParityJudgeCorrectnessTest {
         @Test
         @DisplayName("Both barriers hold independently, which is what makes them defence in depth")
         void bothBarriersHoldIndependently() {
-            // A traversal is refused structurally even though it is also absent from the whitelist,
-            // and a plausible non-fixture is refused by the whitelist even though it is structurally
-            // a perfectly ordinary file name. Neither check is doing the other's work.
             assertThatIllegalArgumentException()
                 .isThrownBy(() -> new DatasetInput(List.of(), "../acctdata.txt", null, null, null, null, null))
                 .withMessageContaining("must be a bare file name");
@@ -634,8 +498,6 @@ class ParityJudgeCorrectnessTest {
         @Test
         @DisplayName("Containment is by construction: the path is composed, never taken from the case")
         void containmentIsByConstruction() {
-            // Whatever a case says, the resolved path is the root plus a name from a closed set, so
-            // there is no input from which a path outside the root could be built.
             for (String fixture : ParityCase.FIXTURE_NAMES) {
                 DatasetInput input = new DatasetInput(List.of(), fixture, null, null, null, null, null);
 
@@ -667,21 +529,12 @@ class ParityJudgeCorrectnessTest {
     @Nested
     @DisplayName("The shipped case corpus still loads under all four changes")
     class ShippedCaseCorpus {
-
-        /** The only program with cases at this checkpoint; the other 27 arrive later. */
         private static final String PROGRAM = "COUSR02C";
 
-        /** The mapper the loader uses: strict, so an unknown key is a failure rather than a shrug. */
         private static ObjectMapper strictMapper() {
             return new ObjectMapper();
         }
 
-        /**
-         * Loads one shipped case from the test classpath.
-         *
-         * @param caseId the two-digit case number, as the file names spell it
-         * @return the deserialized case
-         */
         private ParityCase load(final String caseId) throws Exception {
             String resource = "parity/" + PROGRAM + "/case" + caseId + ".json";
             try (InputStream stream =
@@ -729,10 +582,6 @@ class ParityJudgeCorrectnessTest {
         @Test
         @DisplayName("The 57-byte USRSEC rows remain authorised for the pad they need")
         void theUsrsecRowsRemainAuthorisedForTheirPad() throws Exception {
-            // The one way F21 could have broken the shipped corpus: these cases seed USRSEC with
-            // 57-byte rows and rely on the declared normalisation to supply CSUSR01Y's trailing
-            // FILLER PIC X(23). Binding the normalisation to a dataset set had to keep USRSEC inside
-            // it, and this asserts that against the shipped files rather than against the enum alone.
             for (int number = 1; number <= 20; number++) {
                 ParityCase parityCase = load(String.format("%02d", number));
 
@@ -761,10 +610,6 @@ class ParityJudgeCorrectnessTest {
         @Test
         @DisplayName("A dataset the corpus expects but no normalisation covers needs no padding")
         void theScreenDatasetNeedsNoPadding() throws Exception {
-            // COUSR2A is the screen projection. No normalisation names it, which under F21 means it
-            // can never be padded - so this asserts the corpus never asks for that, by pinning fields
-            // rather than a record image. Were that to change, F21 would report it rather than pad it
-            // against the wrong copybook, which is the entire point of the binding.
             for (int number = 1; number <= 20; number++) {
                 final int caseNumber = number;
                 ParityCase parityCase = load(String.format("%02d", caseNumber));

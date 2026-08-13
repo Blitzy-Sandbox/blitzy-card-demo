@@ -23,54 +23,22 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
 /**
- * The three properties the {@code CU00}, {@code CC00} and {@code CU02} payloads have to hold on the
- * wire: an absent communication area stays absent, the ten screen rows travel under their own
- * numbered names, and a rejected value never appears in a diagnostic.
- *
- * <h2>Why each matters</h2>
- * <ul>
- *   <li><strong>Absence is a state, not a gap.</strong> {@code app/cbl/COSGN00C.cbl:80-95} and
- *       {@code app/cbl/COUSR00C.cbl:110-120} both test {@code EIBCALEN} before anything else: zero
- *       means no communication area was passed at all, and the program answers by returning to the
- *       sign-on screen. A freshly initialised area is the opposite case - it has a length - so
- *       substituting one for the other makes the cold-start branch unreachable through the API.</li>
- *   <li><strong>Fifty numbered fields are fifty payload members.</strong>
- *       {@code app/cpy-bms/COUSR00.CPY:72-366} declares {@code SEL0001I} through {@code UTYPE10I},
- *       each its own name-labelled {@code DFHMDF}. A single {@code rows} array with generic members
- *       cannot be traced back to a screen field, and cannot be echoed into a response that is
- *       flat.</li>
- *   <li><strong>A width failure must not quote the value.</strong> The guard in
- *       {@link UserUpdateResponse} covers {@code PASSWDO}, which carries the stored plaintext
- *       {@code SEC-USR-PWD}, so an over-wide password would otherwise be written into a log line.</li>
- * </ul>
- *
- * <p>The mapper here has {@code FAIL_ON_UNKNOWN_PROPERTIES} enabled, which is what
- * {@code application.yml} sets for the deployed application, so the strictness these cases assert is
- * the strictness a real request meets.
+ * The three properties the {@code CU00}, {@code CC00} and {@code CU02} payloads have to hold on the wire:
+ * an absent communication area stays absent, the ten screen rows travel under their own numbered names, and
+ * a rejected value never appears in a diagnostic.
  */
 @DisplayName("user/dto - cold-start absence, the fifty numbered row members, and redacted failures")
 class UserScreenStateContractTest {
-
     private final ObjectMapper mapper =
             new ObjectMapper().enable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES);
 
     @Nested
     @DisplayName("SignOnRequest - EIBCALEN = 0 is representable")
     class SignOnColdStart {
-
-        /**
-         * A request as it arrives on the very first invocation of {@code CC00}: no communication area
-         * behind it, because nothing has run yet to pass one.
-         */
         private SignOnRequest coldStart() {
             return withContext(null);
         }
 
-        /**
-         * The same request carrying a communication area. {@link SignOnRequest} is a plain record with
-         * no {@code with*} builders - {@code COSGN00C} is the front door and never rewrites its own
-         * input - so a variant is spelled out through the canonical constructor.
-         */
         private SignOnRequest withContext(NavigationContext context) {
             return new SignOnRequest("CC00", "t1", "07/18/22", "COSGN00C", "t2", "12:00:00",
                     "CICSAWS", "AWS1", "ADMIN001", "PASSWORD", "", context, "ENTER");
@@ -149,7 +117,6 @@ class UserScreenStateContractTest {
     @Nested
     @DisplayName("UserListRequest - the fifty numbered COUSR00 row members")
     class UserListRowNaming {
-
         private UserListRequest populated() {
             return UserListRequest.empty()
                     .withRow(1, new UserListRow("U", "ADMIN001", "JOHN", "PUBLIC", "A"))
@@ -187,8 +154,6 @@ class UserScreenStateContractTest {
                     mapper.readTree(mapper.writeValueAsString(populated())).fieldNames();
             names.forEachRemaining(emitted::add);
 
-            // Screen fields under their xxxI item in lower case (AAP 0.6.3); the six CU00 carriers and
-            // the two conversation members under their own names.
             List<String> expected = new ArrayList<>(List.of("trnname", "title01", "curdate",
                     "pgmname", "title02", "curtime", "pagenum", "usridin"));
             for (int row = 1; row <= 10; row++) {
@@ -278,12 +243,8 @@ class UserScreenStateContractTest {
             Set<String> responseOnly = new TreeSet<>(responseNames);
             responseOnly.removeAll(requestNames);
 
-            // The only members the response has and the request does not are the three XCTL targets,
-            // which are outbound by nature - COUSR00C decides where to transfer, the client obeys.
             assertThat(responseOnly).containsExactly("nextMap", "nextMapset", "nextProgram");
 
-            // And in particular the six CDEMO-CU00-INFO members are spelled identically on both
-            // sides, which is what lets a client echo the browse cursor untouched.
             assertThat(requestNames).contains("cdemoCu00UsrIdFirst", "cdemoCu00UsrIdLast",
                     "cdemoCu00PageNum", "cdemoCu00NextPageFlg", "cdemoCu00UsrSelFlg",
                     "cdemoCu00UsrSelected");
@@ -299,8 +260,6 @@ class UserScreenStateContractTest {
 
             assertThat(cold.hasNavigationContext()).isFalse();
             assertThat(cold.commareaLength()).isZero();
-            // COUSR00C passes CARDDEMO-COMMAREA plus the CDEMO-CU00-INFO extension behind it, so the
-            // non-zero EIBCALEN is the sum of the two, not the commarea's own width.
             assertThat(UserListRequest.empty().commareaLength())
                     .isEqualTo(UserListRequest.CU00_COMMAREA_LENGTH)
                     .isEqualTo(NavigationContext.COMMAREA_LENGTH + UserListRequest.CU00_INFO_LENGTH);
@@ -323,7 +282,6 @@ class UserScreenStateContractTest {
     @Nested
     @DisplayName("UserUpdateResponse - a width failure names the field, never the value")
     class WidthFailureRedaction {
-
         @Test
         @DisplayName("an over-wide password is refused without quoting it")
         void anOverWidePasswordIsRefusedWithoutQuotingIt() {
@@ -370,19 +328,9 @@ class UserScreenStateContractTest {
         }
     }
 
-    /**
-     * The guards on {@code UserListRequest}'s two non-string components: the {@code PIC 9(08)} page
-     * number and the ten-row table.
-     *
-     * <p>These are the boundary refusals the numbered-member binding of {@code F10} routes every
-     * inbound row through, so each one is a real inbound failure mode rather than an internal
-     * assertion.
-     */
     @Nested
     @DisplayName("CDEMO-CU00-PAGE-NUM and the ten-row table - the two non-string guards")
     class NonStringGuards {
-
-        /** A minimal well-formed request, so each guard is exercised in isolation. */
         private UserListRequest base() {
             return UserListRequest.empty();
         }
@@ -493,18 +441,9 @@ class UserScreenStateContractTest {
         }
     }
 
-    /**
-     * {@link UserUpdateResponse#value(String)} - the lookup that refuses a misspelled {@code xxxO}
-     * name instead of answering {@code null}.
-     *
-     * <p>Worth its own group because the failure it guards against is specific and documented in the
-     * production code: {@code COUSR02} spells its user id field {@code USRIDINO} while
-     * {@code COUSR01} spells it {@code USERIDO}, and the two are deliberately not harmonised.
-     */
     @Nested
     @DisplayName("CU02 field lookup - a misspelled xxxO name fails where the mistake is")
     class FieldLookup {
-
         @Test
         @DisplayName("every declared field name resolves to the value the response holds")
         void everyDeclaredNameResolves() {

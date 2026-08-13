@@ -43,110 +43,19 @@ import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 
 /**
  * Unit tests for {@link TranReportWriter}, the {@code TRANREPT} transaction detail report writer.
- *
- * <p>Plain JUnit 5 throughout: no application context, no {@code JobLauncher}, no filesystem and no
- * database. Every record is collected by an in-memory {@link RecordSink}, which is the seam the class
- * under test exposes precisely so that this is possible (practice B10, gate G51). The one place a
- * database type appears at all is {@link JdbcSinkTests}, where a mocked
- * {@link java.sql.PreparedStatement} is used to assert what reaches the driver - and even there nothing
- * is connected to anything.
- *
- * <h2>Every expectation is transcribed from the sources, not from the implementation</h2>
- *
- * <p>The pad counts below - <strong>18, 0, 19, 0, 19, 21, 21, 21</strong> - are written as literals
- * rather than computed from {@link TranReportWriter}'s own constants, and that is the whole point of
- * this suite. They were obtained by adding up the {@code PIC} clauses in {@code app/cpy/CVTRA07Y.cpy}
- * and subtracting from the {@code LRECL=133} that {@code app/jcl/TRANREPT.jcl:L78} and
- * {@code app/proc/TRANREPT.prc:L76} both declare. Asserting against the class's derived constants
- * instead would be circular: a wrong width would agree with itself.
- *
- * <table border="1">
- *   <caption>The arithmetic these literals come from</caption>
- *   <tr><th>Layout</th><th>Sum of PIC widths</th><th>133 minus that</th></tr>
- *   <tr><td>{@code REPORT-NAME-HEADER}</td><td>38+41+12+10+4+10 = 115</td><td>18</td></tr>
- *   <tr><td>{@code WS-BLANK-LINE}</td><td>{@code PIC X(133)} = 133</td><td>0</td></tr>
- *   <tr><td>{@code TRANSACTION-HEADER-1}</td><td>17+12+19+35+14+1+16 = 114</td><td>19</td></tr>
- *   <tr><td>{@code TRANSACTION-HEADER-2}</td><td>{@code PIC X(133)} = 133</td><td>0</td></tr>
- *   <tr><td>{@code TRANSACTION-DETAIL-REPORT}</td>
- *       <td>16+1+11+1+2+1+15+1+4+1+29+1+10+4+15+2 = 114</td><td>19</td></tr>
- *   <tr><td>{@code REPORT-PAGE-TOTALS}</td><td>11+86+15 = 112</td><td>21</td></tr>
- *   <tr><td>{@code REPORT-ACCOUNT-TOTALS}</td><td>13+84+15 = 112</td><td>21</td></tr>
- *   <tr><td>{@code REPORT-GRAND-TOTALS}</td><td>11+86+15 = 112</td><td>21</td></tr>
- * </table>
- *
- * <p>The eight layout images themselves are produced by {@link TranReportLayouts}, which has its own
- * suite asserting them field by field against the copybook. Using them here rather than hand-typing 133
- * characters eight times is deliberate: it means this suite tests the <em>seam between</em> the two
- * classes - the {@code MOVE <layout> TO FD-REPTFILE-REC PIC X(133)} - which is exactly where a missing
- * pad would hide.
- *
- * <h2>What is asserted about the record's interior, and why</h2>
- *
- * <p>A record of the right length can still be the wrong record, so five further families of
- * assertion look inside the 133 bytes at absolute offsets (rule R5):
- *
- * <ul>
- *   <li>{@link RecordFormatSemantics} - the pad is {@code 0x20}, never {@code NUL} and never the digit
- *       zero; the rule line's byte at 0-based offset 132 is a hyphen rather than a pad space; every
- *       line kind written in one run is the same length; and no record carries a newline, carriage
- *       return or any other non-printable byte, because {@code RECFM=FB} has no record delimiter and a
- *       delimiter inside the image would <em>be</em> the defect.</li>
- *   <li>{@link NinetySevenColumnInvariant} - the {@code ALL '.'} leaders are 86, 84 and 86 because the
- *       labels are 11, 13 and 11, so label + leader is 97 on all three total lines and the 15-byte
- *       amount always occupies 1-based columns 98-112. {@code TRANSACTION-HEADER-1}'s {@code 'Amount'}
- *       heading ends on column 112 for the same reason.</li>
- *   <li>{@link EditMasks} - {@code PIC -ZZZ,ZZZ,ZZZ.ZZ} and {@code PIC +ZZZ,ZZZ,ZZZ.ZZ} rendered byte
- *       for byte, including {@code Z} suppression, the suppression of a comma inside a suppressed run,
- *       the all-{@code Z} zero rule, truncation with {@code RoundingMode.DOWN} rather than any
- *       {@code HALF_*} mode (rule R2, gate G24), and the two {@code '-'}-valued {@code FILLER}s at
- *       1-based columns 32 and 53 (gate G21).</li>
- *   <li>{@link DescriptionTruncation} - {@code TRAN-TYPE-DESC PIC X(50)} into
- *       {@code TRAN-REPORT-TYPE-DESC PIC X(15)} and {@code TRAN-CAT-TYPE-DESC PIC X(50)} into
- *       {@code TRAN-REPORT-CAT-DESC PIC X(29)}, both truncating on the <em>right</em>.</li>
- *   <li>{@link NotThisWritersJob} - the layouts are <em>not</em> pre-padded, so 133 appears in this one
- *       class and nowhere else, and a write moves no line counter.</li>
- * </ul>
  */
 @DisplayName("TranReportWriter - the 133-byte TRANREPT report record writer")
 class TranReportWriterTest {
-
-    /** The code page, named explicitly. Never the platform default (practice B8). */
     private static final Charset ASCII = StandardCharsets.US_ASCII;
 
-    /** {@code LRECL=133} from app/jcl/TRANREPT.jcl:L78, written as a literal on purpose. */
     private static final int LRECL = 133;
 
-    /**
-     * A well-formed z/OS dataset name for the tests, carrying the {@code (+1)} relative generation the
-     * real binding uses because {@code TRANREPT} is a generation data group
-     * (app/jcl/REPTFILE.jcl:L25-L28). No production dataset name appears in Java (gate G46).
-     */
     private static final String TEST_DSNAME = "TEST.M2.TRANREPT(+1)";
 
-    // =================================================================================================
-    // Fixtures.
-    // =================================================================================================
-
-    /**
-     * A {@code TRANREPT} catalogue with the given geometry.
-     *
-     * @param recordLength the record length to declare
-     * @param recordFormat the record format to declare, or {@code null} to omit the key
-     * @return the catalogue
-     */
     private static DatasetBindings bindings(int recordLength, String recordFormat) {
         return catalogue(TEST_DSNAME, recordLength, recordFormat);
     }
 
-    /**
-     * A {@code TRANREPT} catalogue naming an arbitrary location, so the dataset-name checks can be
-     * driven over every shape a deployment might supply.
-     *
-     * @param dsname       the value to bind, which need not be a dataset name
-     * @param recordLength the record length to declare
-     * @param recordFormat the record format to declare, or {@code null} to omit the key
-     * @return the catalogue
-     */
     private static DatasetBindings catalogue(String dsname, int recordLength, String recordFormat) {
         DatasetBindings bindings = new DatasetBindings();
         bindings.put(TranReportWriter.DD_NAME, new DatasetBinding(dsname, "sequential", true,
@@ -154,24 +63,16 @@ class TranReportWriterTest {
         return bindings;
     }
 
-    /** A correctly configured writer over {@link #ASCII}. */
     private static TranReportWriter writer() {
         return new TranReportWriter(new JdbcTemplate(), ASCII, bindings(LRECL, "FB"),
                 RecordImageForm.CHARACTER);
     }
 
-    /**
-     * A correctly configured writer whose {@code TRANREPT} binding names the given location.
-     *
-     * @param dsname the value to bind, which need not be a dataset name
-     * @return the writer
-     */
     private static TranReportWriter writerBoundTo(String dsname) {
         return new TranReportWriter(new JdbcTemplate(), ASCII, catalogue(dsname, LRECL, "FB"),
                 RecordImageForm.CHARACTER);
     }
 
-    /** A populated layout set, so the detail and total lines carry real content rather than blanks. */
     private static TranReportLayouts populatedLayouts() {
         TranReportLayouts layouts = new TranReportLayouts(ASCII);
         layouts.moveReptStartDate("2022-01-01");
@@ -191,12 +92,6 @@ class TranReportWriterTest {
         return layouts;
     }
 
-    /**
-     * The eight layouts, each paired with the width the copybook declares and the pad this writer must
-     * add. Every number is a literal transcribed from the source, never read back from the subject.
-     *
-     * @return name, image, natural width, expected pad
-     */
     private static Stream<Arguments> theEightLayouts() {
         TranReportLayouts layouts = populatedLayouts();
         return Stream.of(
@@ -211,7 +106,6 @@ class TranReportWriterTest {
                 Arguments.of("REPORT-GRAND-TOTALS", layouts.renderReportGrandTotals(), 112, 21));
     }
 
-    /** The same eight layouts as byte images, for the {@code byte[]} overloads. */
     private static Stream<Arguments> theEightLayoutsAsBytes() {
         TranReportLayouts layouts = populatedLayouts();
         return Stream.of(
@@ -227,31 +121,17 @@ class TranReportWriterTest {
                 Arguments.of("REPORT-GRAND-TOTALS", layouts.renderReportGrandTotalsBytes(), 21));
     }
 
-    /**
-     * An in-memory sink that keeps every record it is handed, in order.
-     *
-     * <p>The answer it gives is configurable so both arms of the COBOL guard chain - the
-     * {@code TRANREPT-STATUS = '00'} arm and the arm that sets {@code APPL-RESULT} to 12 - are reachable
-     * without a backend (gate G47).
-     */
     private static final class Collector implements RecordSink {
-
-        /** Every record handed over, in call order. */
         private final List<byte[]> records = new ArrayList<>();
 
-        /** What {@link #open()} answers, or {@code null} to exercise the contract violation. */
         private FileStatus.Outcome openAnswer = FileStatus.Outcome.OK;
 
-        /** What {@link #write(byte[])} answers, or {@code null} to exercise the contract violation. */
         private FileStatus.Outcome writeAnswer = FileStatus.Outcome.OK;
 
-        /** What {@link #close()} answers, or {@code null} to exercise the contract violation. */
         private FileStatus.Outcome closeAnswer = FileStatus.Outcome.OK;
 
-        /** How many times {@link #open()} was reached. */
         private int opens;
 
-        /** How many times {@link #close()} was reached. */
         private int closes;
 
         @Override
@@ -272,24 +152,16 @@ class TranReportWriterTest {
             return closeAnswer;
         }
 
-        /** The records as decoded strings. */
         private List<String> images() {
             return records.stream().map(record -> new String(record, ASCII)).toList();
         }
 
-        /** The single record written, as a string. */
         private String onlyImage() {
             assertThat(records).hasSize(1);
             return images().get(0);
         }
     }
 
-    /**
-     * Counts the trailing spaces of an image, which is the pad this writer added.
-     *
-     * @param image the emitted record
-     * @return the trailing space count
-     */
     private static int trailingSpaces(String image) {
         int count = 0;
         while (count < image.length() && image.charAt(image.length() - 1 - count) == ' ') {
@@ -298,29 +170,10 @@ class TranReportWriterTest {
         return count;
     }
 
-    /**
-     * Writes one layout image through a fresh handle and returns the single emitted record.
-     *
-     * <p>A new writer, a new handle and a new sink per call, so no assertion can depend on what ran
-     * before it and the suite stays order-independent (practice B7).
-     *
-     * @param layoutImage the rendered layout image to move and write
-     * @return the emitted record as characters, exactly {@link #LRECL} of them
-     */
     private static String emitted(String layoutImage) {
         return new String(emittedBytes(layoutImage), ASCII);
     }
 
-    /**
-     * Writes one layout image through a fresh handle and returns the single emitted record's bytes.
-     *
-     * <p>The byte form is what the assertions about pad bytes, control characters and the {@code '-'}
-     * separators need: a {@code char} comparison cannot distinguish {@code 0x20} from any other
-     * whitespace, and it is the bytes that reach the dataset.
-     *
-     * @param layoutImage the rendered layout image to move and write
-     * @return the emitted record's bytes in the injected code page
-     */
     private static byte[] emittedBytes(String layoutImage) {
         Collector sink = new Collector();
         try (ReportFile file = writer().openOutput(sink)) {
@@ -330,18 +183,6 @@ class TranReportWriterTest {
         return sink.records.get(0);
     }
 
-    /**
-     * The names of a type's integer-valued <em>instance</em> fields, in declaration order.
-     *
-     * <p>Used to state which numbers a class owns, which is how "this writer does not keep a line
-     * counter" is asserted structurally rather than by matching field names against words - a name
-     * match would flag {@code WS_BLANK_LINE_IMAGE} and {@code REPORT_PAGE_TOTALS_PAD}, both of which
-     * are layout facts rather than pagination state.
-     *
-     * @param type the type to inspect
-     * @return the names of its {@code int}, {@code long}, {@code Integer} and {@code Long} instance
-     *         fields
-     */
     private static List<String> numericFieldNames(Class<?> type) {
         List<String> names = new ArrayList<>();
         for (Field field : type.getDeclaredFields()) {
@@ -357,33 +198,12 @@ class TranReportWriterTest {
         return names;
     }
 
-    /**
-     * A {@code REPORT-PAGE-TOTALS} image carrying the given amount, rendered at its natural 112.
-     *
-     * <p>The page total is used wherever an assertion needs one total line rather than all three,
-     * because it is the line the COBOL writes most often and the one whose amount
-     * {@code 1110-WRITE-PAGE-TOTALS} resets to zero after every page.
-     *
-     * @param pageTotal the amount to edit through {@code PIC +ZZZ,ZZZ,ZZZ.ZZ}
-     * @return the rendered layout image, 112 characters
-     */
     private static String pageTotalOf(BigDecimal pageTotal) {
         TranReportLayouts layouts = new TranReportLayouts(ASCII);
         layouts.moveReptPageTotal(pageTotal);
         return layouts.renderReportPageTotals();
     }
 
-    /**
-     * The three total lines, each with its label text, both declared widths and the 15-byte amount image
-     * the line must carry.
-     *
-     * <p>The widths are transcribed from {@code app/cpy/CVTRA07Y.cpy} and the amount images are derived
-     * by hand from the {@code PIC +ZZZ,ZZZ,ZZZ.ZZ} mask, never read back from the subject. The three
-     * amounts are chosen to be different shapes on purpose - one positive, one negative, one zero - so
-     * a single hard-coded expectation cannot satisfy all three.
-     *
-     * @return name, label text, label width, leader width, rendered image, expected amount image
-     */
     private static Stream<Arguments> theThreeTotalLines() {
         TranReportLayouts layouts = new TranReportLayouts(ASCII);
         layouts.moveReptPageTotal(new BigDecimal("1234.56"));
@@ -398,17 +218,6 @@ class TranReportWriterTest {
                         layouts.renderReportGrandTotals(), "               "));
     }
 
-    /**
-     * Cases for {@code TRAN-REPORT-AMT PIC -ZZZ,ZZZ,ZZZ.ZZ}.
-     *
-     * <p>Every expected image is 15 characters derived by hand from the mask: position 1 is the fixed
-     * sign insertion, positions 2-4, 6-8 and 10-12 are the nine {@code Z} integer digit slots, positions
-     * 5 and 9 the two commas, position 13 the decimal point and 14-15 the two fractional {@code Z}s.
-     * Suppression replaces every leading zero - and every comma to the left of the first significant
-     * digit - with a space, and stops at the decimal point.
-     *
-     * @return rule described, sending value, expected 15-character image
-     */
     private static Stream<Arguments> detailAmountCases() {
         return Stream.of(
                 Arguments.of("zero blanks the whole item - every digit position is Z",
@@ -437,17 +246,6 @@ class TranReportWriterTest {
                         new BigDecimal("-0.009"), "               "));
     }
 
-    /**
-     * Cases for {@code REPT-PAGE-TOTAL}, {@code REPT-ACCOUNT-TOTAL} and {@code REPT-GRAND-TOTAL}, all
-     * three {@code PIC +ZZZ,ZZZ,ZZZ.ZZ}.
-     *
-     * <p>Identical to the detail mask in every respect but one: position 1 carries a {@code '+'} when
-     * the value is not negative instead of a space. The zero case is the exception that proves the
-     * all-{@code Z} rule outranks the fixed sign - a total netting to zero prints a blank column, not
-     * {@code +0.00}.
-     *
-     * @return rule described, sending value, expected 15-character image
-     */
     private static Stream<Arguments> totalAmountCases() {
         return Stream.of(
                 Arguments.of("zero blanks the whole item, sign included",
@@ -468,14 +266,9 @@ class TranReportWriterTest {
                         new BigDecimal("1234567.891"), "+  1,234,567.89"));
     }
 
-    // =================================================================================================
-    // The dataset contract.
-    // =================================================================================================
-
     @Nested
     @DisplayName("The dataset contract - app/jcl/TRANREPT.jcl:L76-L80")
     class DatasetContract {
-
         @Test
         @DisplayName("the DD name is TRANREPT, from SELECT REPORT-FILE ASSIGN TO TRANREPT")
         void ddNameIsTranrept() {
@@ -522,14 +315,9 @@ class TranReportWriterTest {
         }
     }
 
-    // =================================================================================================
-    // The pad arithmetic. Literals from the copybook, never from the subject.
-    // =================================================================================================
-
     @Nested
     @DisplayName("The pad arithmetic - 133 minus each layout's declared width")
     class PadArithmetic {
-
         @Test
         @DisplayName("18 / 0 / 19 / 0 / 19 / 21 / 21 / 21, in the copybook's own declaration order")
         void thePadsAreTheDeclaredDifferences() {
@@ -553,8 +341,6 @@ class TranReportWriterTest {
         @Test
         @DisplayName("both edit masks are 15 bytes: sign + 3 + , + 3 + , + 3 + . + 2")
         void bothEditMasksAreFifteenBytes() {
-            // Not this class's constants, but the arithmetic that makes its 19 and 21 correct: the
-            // detail line and all three totals end in a 15-byte edited amount.
             assertThat(TranReportLayouts.DETAIL_AMOUNT_MASK).hasSize(15);
             assertThat(TranReportLayouts.TOTAL_AMOUNT_MASK).hasSize(15);
             assertThat(TranReportLayouts.AMOUNT_MASK_WIDTH).isEqualTo(15);
@@ -576,14 +362,9 @@ class TranReportWriterTest {
         }
     }
 
-    // =================================================================================================
-    // The eight layouts, written. This is gate G20.
-    // =================================================================================================
-
     @Nested
     @DisplayName("All eight layouts, written - exactly 133 bytes each (G20)")
     class TheEightLayouts {
-
         @ParameterizedTest(name = "{0}: {2} bytes + {3} pad = 133")
         @MethodSource("com.vsergeychik.carddemo.transaction.TranReportWriterTest#theEightLayouts")
         @DisplayName("each is emitted as 133 bytes with exactly the pad the copybook implies")
@@ -649,14 +430,9 @@ class TranReportWriterTest {
         }
     }
 
-    // =================================================================================================
-    // RECFM=FB. app/jcl/TRANREPT.jcl:L78 and app/proc/TRANREPT.prc:L76, both DCB=(LRECL=133,RECFM=FB).
-    // =================================================================================================
-
     @Nested
     @DisplayName("RECFM=FB semantics - one uniform 133-byte image with nothing inside it but data")
     class RecordFormatSemantics {
-
         @ParameterizedTest(name = "{0}: pad {3} byte(s)")
         @MethodSource("com.vsergeychik.carddemo.transaction.TranReportWriterTest#theEightLayouts")
         @DisplayName("the pad is 0x20 - never NUL, never the digit zero, never any other whitespace")
@@ -670,10 +446,6 @@ class TranReportWriterTest {
 
             assertThat(record).as("%s reaches the dataset as %d bytes", name, LRECL).hasSize(LRECL);
             for (int offset = naturalWidth; offset < LRECL; offset++) {
-                // A COBOL alphanumeric MOVE space-fills the remainder of the receiver. Zero-filling it
-                // would be the PIC 9 rule applied to a PIC X receiver, and NUL-filling it would be a
-                // freshly allocated Java array left untouched - both produce a 133-byte record that
-                // looks correct to a length check and is wrong on the dataset.
                 assertThat(record[offset])
                         .as("%s pad byte at 0-based offset %d", name, offset)
                         .isEqualTo((byte) 0x20)
@@ -692,9 +464,6 @@ class TranReportWriterTest {
             byte[] record = emittedBytes(image);
 
             for (int offset = 0; offset < record.length; offset++) {
-                // RECFM=FB carries no record delimiter: records are separated by their fixed length and
-                // nothing else. A newline inside the image would not delimit anything - it would be
-                // one of the 133 data bytes, silently displacing every column after it.
                 assertThat(record[offset])
                         .as("%s byte at 0-based offset %d must be printable data", name, offset)
                         .isNotEqualTo((byte) '\n')
@@ -732,10 +501,6 @@ class TranReportWriterTest {
             byte[] record = emittedBytes(new TranReportLayouts(ASCII).renderTransactionHeader2());
 
             assertThat(record).hasSize(LRECL);
-            // 01 TRANSACTION-HEADER-2 PIC X(133) VALUE ALL '-' is an ELEMENTARY item that is already
-            // the record width, so it must pass through with no pad at all. A writer that padded it
-            // would still emit 133 hyphens - but only because the truncation happened to remove
-            // exactly what the pad added, and offset 132 is where that accident shows.
             assertThat(record[132])
                     .as("the 133rd byte of PIC X(133) VALUE ALL '-'")
                     .isEqualTo((byte) '-');
@@ -759,14 +524,9 @@ class TranReportWriterTest {
         }
     }
 
-    // =================================================================================================
-    // The 97-column invariant. app/cpy/CVTRA07Y.cpy, the three total lines plus the detail line.
-    // =================================================================================================
-
     @Nested
     @DisplayName("The 97-column invariant - why the ALL '.' leaders are 86, 84 and 86")
     class NinetySevenColumnInvariant {
-
         @ParameterizedTest(name = "{0}: label {2} + leader {3} = 97")
         @MethodSource("com.vsergeychik.carddemo.transaction.TranReportWriterTest#theThreeTotalLines")
         @DisplayName("label + leader is 97 on every total line, and the leader really is dots")
@@ -799,11 +559,6 @@ class TranReportWriterTest {
         @Test
         @DisplayName("one window - 1-based columns 98-112 - holds the amount on all three total lines")
         void oneWindowHoldsTheAmountOnAllThreeTotalLines() {
-            // The three leaders differ - 86, 84, 86 - BECAUSE the three labels differ - 11, 13, 11.
-            // Only the sums agree: 11 + 86 == 13 + 84 == 97. That is what puts the 15-byte
-            // +ZZZ,ZZZ,ZZZ.ZZ mask in the same columns on every total line, so one window reads all
-            // three. Normalising the leaders to a single width would move the account total's amount
-            // two columns left of the other two and break the report's alignment. Never "tidy" them.
             List<String> amounts = theThreeTotalLines()
                     .map(line -> emitted((String) line.get()[4]).substring(97, 112))
                     .toList();
@@ -818,9 +573,6 @@ class TranReportWriterTest {
         void theDetailLineSharesTheSameWindow() {
             String record = emitted(populatedLayouts().renderTransactionDetailReport());
 
-            // 16+1+11+1+2+1+15+1+4+1+29+1+10+4 = 97 bytes precede TRAN-REPORT-AMT, which is the same
-            // 97 the totals reach through a label and a dot leader. Two entirely different item
-            // sequences, one amount column - and that is the whole design of CVTRA07Y.
             assertThat(record.substring(97, 112)).hasSize(15).isEqualTo("-      1,234.56");
             assertThat(record.substring(112, 114))
                     .as("FILLER PIC X(02) VALUE SPACES closes the detail line at its natural 114")
@@ -840,11 +592,6 @@ class TranReportWriterTest {
         void theHeadingAmountEndsOnColumnOneHundredAndTwelve() {
             String record = emitted(new TranReportLayouts(ASCII).renderTransactionHeader1());
 
-            // The seventh and last item is FILLER PIC X(16) VALUE '        Amount' - fourteen
-            // characters with exactly eight leading spaces, in a sixteen-wide item. Those eight
-            // spaces are why the heading looks right: they push 'Amount' onto 1-based columns 107-112,
-            // so its last character sits on the last column of the amount window the 97-invariant
-            // establishes. Trim them and the heading floats away from the numbers it labels.
             assertThat(record.substring(98, 106)).isEqualTo(" ".repeat(8));
             assertThat(record.substring(106, 112)).isEqualTo("Amount");
             assertThat(record.indexOf("Amount") + "Amount".length())
@@ -858,14 +605,9 @@ class TranReportWriterTest {
         }
     }
 
-    // =================================================================================================
-    // The two edit masks. PIC -ZZZ,ZZZ,ZZZ.ZZ and PIC +ZZZ,ZZZ,ZZZ.ZZ, app/cpy/CVTRA07Y.cpy.
-    // =================================================================================================
-
     @Nested
     @DisplayName("The edit masks - byte-exact, truncating DOWN, and proof against every locale")
     class EditMasks {
-
         @ParameterizedTest(name = "{1} -> \"{2}\" ({0})")
         @MethodSource("com.vsergeychik.carddemo.transaction.TranReportWriterTest#detailAmountCases")
         @DisplayName("PIC -ZZZ,ZZZ,ZZZ.ZZ renders 15 bytes and they land on columns 98-112")
@@ -907,9 +649,6 @@ class TranReportWriterTest {
             assertThat(TranReportLayouts.DETAIL_AMOUNT_MASK).isEqualTo("-ZZZ,ZZZ,ZZZ.ZZ").hasSize(15);
             assertThat(TranReportLayouts.TOTAL_AMOUNT_MASK).isEqualTo("+ZZZ,ZZZ,ZZZ.ZZ").hasSize(15);
 
-            // A '-' insertion prints the minus for a negative value and a SPACE otherwise; a '+'
-            // insertion prints a sign either way. Both occupy character position 1 of the item, which
-            // is why both masks are 15 bytes and not 14.
             assertThat(TranReportLayouts.editDetailAmount(new BigDecimal("1.00")).charAt(0))
                     .isEqualTo(' ');
             assertThat(TranReportLayouts.editDetailAmount(new BigDecimal("-1.00")).charAt(0))
@@ -925,7 +664,6 @@ class TranReportWriterTest {
         void suppressionWritesSpacesIncludingTheCommas() {
             String hundred = emitted(pageTotalOf(new BigDecimal("100.00"))).substring(97, 112);
 
-            // 1 + 86 characters of label and leader precede this, so these are 1-based columns 98-112.
             assertThat(hundred).isEqualTo("+        100.00");
             assertThat(hundred.charAt(4)).as("the first comma, left of the first digit").isEqualTo(' ');
             assertThat(hundred.charAt(8)).as("the second comma, also suppressed").isEqualTo(' ');
@@ -943,12 +681,6 @@ class TranReportWriterTest {
         @Test
         @DisplayName("the all-Z zero rule: a zero amount blanks all 15 bytes, not '+0.00' and not 0")
         void aZeroAmountBlanksTheWholeItem() {
-            // Every one of the eleven digit positions in both masks is Z, and COBOL blanks the entire
-            // item when the sending value is zero. This is reachable in the real report rather than
-            // synthetic: 1110-WRITE-PAGE-TOTALS does MOVE 0 TO WS-PAGE-TOTAL immediately after writing
-            // its line (app/cbl/CBTRN03C.cbl:L297), so a page carrying no qualifying transaction
-            // prints a blank page total. It is also the single most commonly mis-implemented COBOL
-            // editing rule.
             for (BigDecimal zero : List.of(BigDecimal.ZERO, new BigDecimal("0.00"),
                     new BigDecimal("-0.00"), new BigDecimal("0.004"), new BigDecimal("-0.009"))) {
                 assertThat(TranReportLayouts.editTotalAmount(zero))
@@ -974,12 +706,6 @@ class TranReportWriterTest {
             BigDecimal value = new BigDecimal("1234567.89");
             Locale original = Locale.getDefault();
             try {
-                // In de-DE and fr-FR the grouping separator is not ',' and the decimal separator is
-                // not '.', so String.format("%,.2f"), DecimalFormat and NumberFormat would all render
-                // this value differently on a machine configured that way - and none of them
-                // implements Z suppression or the all-Z zero rule in the first place. The mask is
-                // therefore placed character by character, and this asserts that it is: the emitted
-                // bytes are identical under every default locale (practices B7 and B8).
                 for (Locale locale : List.of(Locale.ROOT, Locale.US, Locale.GERMANY, Locale.FRANCE,
                         Locale.forLanguageTag("ar-EG"), Locale.forLanguageTag("hi-IN-u-nu-deva"))) {
                     Locale.setDefault(locale);
@@ -1031,21 +757,14 @@ class TranReportWriterTest {
             byte[] record = emittedBytes(populatedLayouts().renderTransactionDetailReport());
 
             assertThat(record).hasSize(LRECL);
-            // FILLER PIC X(01) VALUE '-' follows TRAN-REPORT-TYPE-CD PIC X(02), which follows
-            // 16 + 1 + 11 + 1 = 29 bytes: so the separator is 0-based offset 31, 1-based column 32.
             assertThat(record[31])
                     .as("FILLER PIC X(01) VALUE '-' after TRAN-REPORT-TYPE-CD, 1-based column 32")
                     .isEqualTo((byte) '-');
-            // And FILLER PIC X(01) VALUE '-' follows TRAN-REPORT-CAT-CD PIC 9(04) at 48-51, so it is
-            // 0-based offset 52, 1-based column 53.
             assertThat(record[52])
                     .as("FILLER PIC X(01) VALUE '-' after TRAN-REPORT-CAT-CD, 1-based column 53")
                     .isEqualTo((byte) '-');
             assertThat(TranReportLayouts.DETAIL_SEPARATOR_VALUE).isEqualTo("-");
 
-            // The other four single-byte FILLERs on this line declare VALUE SPACES, and emitting a
-            // hyphen there would be the same defect in the other direction. A FILLER emits exactly
-            // the VALUE it declares - which is what gate G21 says and why the total width holds.
             for (int spaceFiller : new int[] {16, 28, 47, 82}) {
                 assertThat(record[spaceFiller])
                         .as("FILLER PIC X(01) VALUE SPACES at 0-based offset %d", spaceFiller)
@@ -1061,31 +780,15 @@ class TranReportWriterTest {
 
             byte[] record = emittedBytes(layouts.renderTransactionDetailReport());
 
-            // INITIALIZE TRANSACTION-DETAIL-REPORT (app/cbl/CBTRN03C.cbl:L362) runs immediately before
-            // the eight detail moves on every detail line. With no FILLER phrase written, a FILLER is
-            // not a receiving operand, so both '-' separators survive it - and a Java equivalent that
-            // blanked the whole record area first would silently lose them on every line.
             assertThat(record[31]).isEqualTo((byte) '-');
             assertThat(record[52]).isEqualTo((byte) '-');
             assertThat(record).hasSize(LRECL);
         }
     }
 
-    // =================================================================================================
-    // Right-truncation of the two X(50) descriptions. CBTRN03C:366 and CBTRN03C:368.
-    // =================================================================================================
-
     @Nested
     @DisplayName("The two X(50) descriptions truncate on the RIGHT (CBTRN03C:L366, L368)")
     class DescriptionTruncation {
-
-        /**
-         * Fifty distinguishable characters, so which end was kept is unambiguous.
-         *
-         * <p>{@code TRAN-TYPE-DESC} of {@code app/cpy/CVTRA03Y.cpy} and {@code TRAN-CAT-TYPE-DESC} of
-         * {@code app/cpy/CVTRA04Y.cpy} are both {@code PIC X(50)}, so a real sender is exactly this
-         * wide and both receivers are narrower.
-         */
         private static final String FIFTY = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwx";
 
         @Test
@@ -1134,10 +837,6 @@ class TranReportWriterTest {
             layouts.moveTranReportCatDesc(FIFTY);
             String record = emitted(layouts.renderTransactionDetailReport());
 
-            // A COBOL alphanumeric MOVE aligns the sender left in the receiver and discards whatever
-            // does not fit off the RIGHT. A numeric MOVE aligns on the decimal point and discards off
-            // the LEFT. Getting the direction backwards yields a record of exactly the right width
-            // carrying exactly the wrong characters.
             assertThat(record.substring(32, 47)).isNotEqualTo(FIFTY.substring(35));
             assertThat(record.substring(32, 47)).doesNotEndWith("uvwx");
             assertThat(record.substring(53, 82)).isNotEqualTo(FIFTY.substring(21));
@@ -1155,7 +854,6 @@ class TranReportWriterTest {
             assertThat(record.substring(32, 47)).isEqualTo("Purchase" + " ".repeat(7));
             assertThat(record.substring(53, 82))
                     .isEqualTo("Regular Sales Draft" + " ".repeat(10));
-            // The neighbours must be untouched by that padding, or the offsets have drifted.
             assertThat(record.charAt(31)).isEqualTo('-');
             assertThat(record.charAt(47)).isEqualTo(' ');
             assertThat(record.charAt(52)).isEqualTo('-');
@@ -1164,14 +862,9 @@ class TranReportWriterTest {
         }
     }
 
-    // =================================================================================================
-    // What belongs to the caller. WS-LINE-COUNTER and WS-PAGE-SIZE are CBTRN03C WORKING-STORAGE.
-    // =================================================================================================
-
     @Nested
     @DisplayName("What belongs to the report job, not to this writer")
     class NotThisWritersJob {
-
         @Test
         @DisplayName("TranReportLayouts renders at natural width - 133 lives in this class alone")
         void theLayoutsAreNotPrePaddedToTheRecordWidth() {
@@ -1183,9 +876,6 @@ class TranReportWriterTest {
             assertThat(layouts.renderReportPageTotals()).hasSize(112);
             assertThat(layouts.renderReportAccountTotals()).hasSize(112);
             assertThat(layouts.renderReportGrandTotals()).hasSize(112);
-            // The one layout that is already 133 is elementary rather than a group:
-            // 01 TRANSACTION-HEADER-2 PIC X(133) VALUE ALL '-'. It is 133 because the copybook says
-            // so, not because anything padded it.
             assertThat(layouts.renderTransactionHeader2()).hasSize(133);
             assertThat(TranReportLayouts.TRANSACTION_HEADER_2_LENGTH).isEqualTo(LRECL);
 
@@ -1214,13 +904,6 @@ class TranReportWriterTest {
 
             Collector second = new Collector();
             try (ReportFile file = subject.openOutput(second)) {
-                // WS-LINE-COUNTER PIC 9(09) COMP-3 and WS-PAGE-SIZE PIC 9(03) COMP-3 VALUE 20 are
-                // CBTRN03C's own WORKING-STORAGE (app/cbl/CBTRN03C.cbl:L129-L132), and the calling
-                // paragraphs increment the counter at their own points - four times in
-                // 1120-WRITE-HEADERS, twice in each of the two page/account total paragraphs and NOT
-                // AT ALL in 1110-WRITE-GRAND-TOTALS. A counter kept here would have to guess which
-                // caller it was serving. Pagination, page breaks and header re-emission therefore
-                // belong to TransactionReportJob and are asserted in TransactionReportJobTest.
                 assertThat(file.recordsWritten())
                         .as("the bean carried no count forward from the previous run")
                         .isZero();
@@ -1235,11 +918,6 @@ class TranReportWriterTest {
         @Test
         @DisplayName("the only number either type owns is recordsWritten - no counter, no page size")
         void theOnlyTallyIsRecordsWritten() {
-            // WS-LINE-COUNTER PIC 9(09) COMP-3 and WS-PAGE-SIZE PIC 9(03) COMP-3 VALUE 20 are
-            // CBTRN03C's own WORKING-STORAGE (app/cbl/CBTRN03C.cbl:L129-L132). Neither has a
-            // counterpart here, and the structural way to say so is to enumerate the state that could
-            // hold one: the bean owns no number at all, and a handle owns exactly one - the handover
-            // tally, which paginates nothing and is reset by being a new handle rather than by a MOVE.
             assertThat(numericFieldNames(TranReportWriter.class))
                     .as("the writer bean holds no number of its own, so it cannot be counting lines")
                     .isEmpty();
@@ -1249,20 +927,12 @@ class TranReportWriterTest {
         }
     }
 
-    // =================================================================================================
-    // The MOVE rule itself.
-    // =================================================================================================
-
     @Nested
     @DisplayName("MOVE <layout> TO FD-REPTFILE-REC PIC X(133)")
     class TheMoveRule {
-
         @Test
         @DisplayName("an over-long image is truncated on the RIGHT, not rejected and not wrapped")
         void anOverLongImageIsTruncatedOnTheRight() {
-            // 140 characters, so seven must be discarded. COBOL fills a PIC X receiver from its
-            // leftmost position and drops the overflow, so the SURVIVORS are the leading 133 - the
-            // opposite of what a numeric MOVE would do.
             String tooLong = "A".repeat(133) + "BBBBBBB";
             Collector sink = new Collector();
 
@@ -1375,19 +1045,12 @@ class TranReportWriterTest {
         }
     }
 
-    // =================================================================================================
-    // Write order and counting.
-    // =================================================================================================
-
     @Nested
     @DisplayName("Write order - the report's line sequence is its content")
     class WriteOrder {
-
         @Test
         @DisplayName("records reach the sink in call order, one per call, nothing coalesced")
         void recordsReachTheSinkInCallOrder() {
-            // The order 1120-WRITE-HEADERS produces (app/cbl/CBTRN03C.cbl:L324-L341), followed by a
-            // detail line and a page total - which is the shape of a real page.
             TranReportLayouts layouts = populatedLayouts();
             Collector sink = new Collector();
 
@@ -1449,14 +1112,9 @@ class TranReportWriterTest {
         }
     }
 
-    // =================================================================================================
-    // The guard chain: outcomes, never abends.
-    // =================================================================================================
-
     @Nested
     @DisplayName("1111-WRITE-REPORT-REC - outcomes, never an abend (G47)")
     class Outcomes {
-
         @Test
         @DisplayName("the '00' arm and the APPL-RESULT 12 arm are both reachable")
         void bothArmsAreReachable() {
@@ -1570,9 +1228,6 @@ class TranReportWriterTest {
         @Test
         @DisplayName("the default sink open() and close() answer OK, because they hold nothing")
         void theDefaultSinkOpenAndCloseAnswerOk() {
-            // The seam stays a single-abstract-method interface: both open() and close() are defaults,
-            // so a lambda is still a valid sink. If either ever stopped being a default this line would
-            // not compile, which is the point of writing it as a lambda.
             RecordSink minimal = recordImage -> FileStatus.Outcome.OK;
 
             assertThat(minimal.open()).isEqualTo(FileStatus.Outcome.OK);
@@ -1580,14 +1235,9 @@ class TranReportWriterTest {
         }
     }
 
-    // =================================================================================================
-    // 0100-REPTFILE-OPEN - the third outcome, which completes the set.
-    // =================================================================================================
-
     @Nested
     @DisplayName("0100-REPTFILE-OPEN - the open outcome (app/cbl/CBTRN03C.cbl:L394-L410)")
     class OpenOutcome {
-
         @Test
         @DisplayName("the sink is asked exactly once, and the '00' arm is reported")
         void theSinkIsAskedOnceAndReportsTheOkArm() {
@@ -1614,9 +1264,6 @@ class TranReportWriterTest {
         @Test
         @DisplayName("a failed open still yields a usable, still-open handle for the job to unwind")
         void aFailedOpenStillYieldsAUsableHandle() {
-            // The COBOL abends on this arm (L405-L408), but the abend belongs to the report job. A
-            // writer that pre-closed the handle or threw would take that decision away from it, and
-            // would be inconsistent with how a rejected WRITE is treated three lines further down.
             Collector sink = new Collector();
             sink.openAnswer = FileStatus.Outcome.OTHER;
 
@@ -1658,11 +1305,6 @@ class TranReportWriterTest {
         @Test
         @DisplayName("the JdbcTemplate-backed default sink reports OK: it prepares nothing at open")
         void theDefaultSinkReportsOkAtOpen() throws SQLException {
-            // 0100-REPTFILE-OPEN is an OPEN OUTPUT over a dataset TRANREPT.jcl:L76-L80 declares
-            // DISP=(NEW,CATLG,DELETE), so the open resolves the destination and empties it: a describe
-            // that transfers nothing, then a delete. Both must reach the backend, because an open that
-            // reached nothing could not report the '00'-or-12 the report job branches on, and a run that
-            // did not clear would append this report to the previous one.
             DataSource dataSource = Mockito.mock(DataSource.class);
             Connection connection = Mockito.mock(Connection.class);
             PreparedStatement statement = Mockito.mock(PreparedStatement.class);
@@ -1681,16 +1323,11 @@ class TranReportWriterTest {
             Mockito.verify(plain).execute(describe);
             Mockito.verify(plain).executeUpdate("DELETE FROM \"" + TEST_DSNAME + "\"");
 
-            // The close probes the destination again and clears nothing: exactly one DELETE for the
-            // whole run, whatever else happens to it. A close that cleared would throw the report away
-            // at the moment the job finished writing it.
             assertThat(file.closeOutput()).isEqualTo(FileStatus.Outcome.OK);
             Mockito.verify(plain, Mockito.times(2)).execute(describe);
             Mockito.verify(plain, Mockito.times(1))
                     .executeUpdate("DELETE FROM \"" + TEST_DSNAME + "\"");
 
-            // No record was written, so the insert was never prepared: the open transfers no report
-            // line, it only makes the destination ready to receive them.
             Mockito.verifyNoInteractions(statement);
         }
 
@@ -1698,9 +1335,6 @@ class TranReportWriterTest {
         @DisplayName("the JDBC sink reports the WHEN OTHER outcome when the destination cannot be "
                 + "opened, rather than letting the first line discover it")
         void theJdbcSinkReportsARefusedOpen() throws SQLException {
-            // 'ERROR OPENING REPTFILE' (CBTRN03C.cbl:L404-L409) is what a destination that is not there
-            // must produce, and it must produce it from the OPEN. Before the open issued anything, an
-            // absent dataset was silently OK here and surfaced 133 bytes later as a failed write.
             DataSource dataSource = Mockito.mock(DataSource.class);
             Mockito.when(dataSource.getConnection())
                     .thenThrow(new SQLException("dataset unavailable"));
@@ -1717,9 +1351,6 @@ class TranReportWriterTest {
         @DisplayName("the JDBC sink reports the WHEN OTHER outcome from the close when the destination "
                 + "has gone (CBTRN03C.cbl:L540-L545)")
         void theJdbcSinkReportsARefusedClose() throws SQLException {
-            // Nothing is buffered, so what a close can still discover is that the destination is no
-            // longer addressable. A close that could not fail would make the report job's
-            // 'ERROR CLOSING REPORT FILE' arm unreachable.
             DataSource dataSource = Mockito.mock(DataSource.class);
             Connection connection = Mockito.mock(Connection.class);
             Statement plain = Mockito.mock(Statement.class);
@@ -1740,8 +1371,6 @@ class TranReportWriterTest {
         @Test
         @DisplayName("all three of the COBOL paragraphs now have an outcome the job can branch on")
         void allThreeParagraphsReportAnOutcome() {
-            // 0100-REPTFILE-OPEN, 1111-WRITE-REPORT-REC and 9100-REPTFILE-CLOSE run the same shape of
-            // guard, so all three must be readable here and none of them decided here.
             Collector sink = new Collector();
             ReportFile file = writer().openOutput(sink);
 
@@ -1752,14 +1381,9 @@ class TranReportWriterTest {
         }
     }
 
-    // =================================================================================================
-    // Construction - the fail-fast geometry checks.
-    // =================================================================================================
-
     @Nested
     @DisplayName("Construction - the geometry is verified before the application can start")
     class Construction {
-
         @Test
         @DisplayName("every collaborator is required, and the diagnostic says which and why")
         void everyCollaboratorIsRequired() {
@@ -1848,10 +1472,6 @@ class TranReportWriterTest {
         @Test
         @DisplayName("it still constructs under a fixture-backed binding, so the context starts (G3)")
         void stillConstructsUnderAFixtureBackedBinding() {
-            // The 'test' profile binds TRANREPT to a filesystem location. That is not a dataset name
-            // and can never become a SQL identifier - but refusing the bean outright would stop the
-            // application context from starting under the only profile this environment can run, even
-            // though every test and the parity harness supply their own sink.
             TranReportWriter fixtureBound = writerBoundTo("/tmp/carddemo/tranrept.txt");
 
             assertThat(fixtureBound.recordLength()).isEqualTo(LRECL);
@@ -1876,14 +1496,9 @@ class TranReportWriterTest {
         }
     }
 
-    // =================================================================================================
-    // The default sink. The one part no test can prove end to end (risk R-E).
-    // =================================================================================================
-
     @Nested
     @DisplayName("The JdbcTemplate-backed default sink")
     class JdbcSinkTests {
-
         @Test
         @DisplayName("binds the whole 133-byte image as one parameter, in the configured form")
         void bindsTheWholeImageAsOneParameter() throws SQLException {
@@ -1931,10 +1546,6 @@ class TranReportWriterTest {
             assertThat(file.writeLine(TranReportWriter.WS_BLANK_LINE_IMAGE))
                     .isEqualTo(FileStatus.Outcome.OTHER);
             assertThat(file.recordsWritten()).isEqualTo(1);
-            // The same unreachable destination is reported by all three verbs rather than by the write
-            // alone: 0100-REPTFILE-OPEN, 1111-WRITE-REPORT-REC and 9100-REPTFILE-CLOSE each run their
-            // own '00'-or-12 ladder, and a close that reported OK over a dataset that was never there
-            // would tell the report job the run completed.
             assertThat(file.openOutcome()).isEqualTo(FileStatus.Outcome.OTHER);
             assertThat(file.closeOutput()).isEqualTo(FileStatus.Outcome.OTHER);
         }
@@ -1942,26 +1553,15 @@ class TranReportWriterTest {
         @Test
         @DisplayName("lets a wiring defect propagate rather than reporting it as a bad write")
         void letsAWiringDefectPropagate() {
-            // A JdbcTemplate with no DataSource is a wiring defect, not a dataset condition. It raises
-            // an unchecked type outside the DataAccessException family, which the sink deliberately does
-            // not catch: reporting it as a failed write would make every line abend with a misleading
-            // reason instead of failing once, clearly.
             TranReportWriter subject = writer();
 
-            // The open is now the first statement the sink issues, so that is where the defect surfaces
-            // - one failure at the top of the job instead of one per report line.
             assertThatIllegalStateException().isThrownBy(subject::openOutput);
         }
     }
 
-    // =================================================================================================
-    // Structural properties.
-    // =================================================================================================
-
     @Nested
     @DisplayName("Structural properties")
     class Structure {
-
         @Test
         @DisplayName("no static field is mutable (practice B9, gate G53)")
         void noStaticFieldIsMutable() {
@@ -2003,29 +1603,9 @@ class TranReportWriterTest {
         }
     }
 
-    // =================================================================================================
-    // The abnormal disposition - the THIRD positional of DISP=(NEW,CATLG,DELETE).
-    //
-    // app/jcl/TRANREPT.jcl:L76-L80 declares three dispositions for TRANREPT and the writer used to
-    // reproduce two. NEW is the open's clear; CATLG is what the close leaves behind; DELETE is what an
-    // abended run must leave - which is nothing. A partial report is the worst kind of wrong for this
-    // dataset: the page totals of CBTRN03C.cbl:299-321 are all present and only the account and grand
-    // totals of :322-344 are missing, so it reads as complete and is not.
-    // =================================================================================================
-
     @Nested
     @DisplayName("The abnormal disposition deletes the generation an abended run wrote")
     class TheAbnormalDisposition {
-
-        /**
-         * A real in-memory relation, so the count-then-delete is measured rather than mocked.
-         *
-         * <p>{@code DB_CLOSE_DELAY=-1} because {@link SimpleDriverDataSource} opens a connection per
-         * call: without it H2 would discard the database the moment the connection that created the
-         * relation was returned, and every later statement would find nothing.
-         *
-         * @return a template over a private H2 database already holding the TRANREPT relation
-         */
         private JdbcTemplate liveTemplate() {
             JdbcTemplate template = new JdbcTemplate(new SimpleDriverDataSource(new org.h2.Driver(),
                     "jdbc:h2:mem:tranrept-disp-" + UUID.randomUUID() + ";DB_CLOSE_DELAY=-1", "sa", ""));
@@ -2034,7 +1614,6 @@ class TranReportWriterTest {
             return template;
         }
 
-        /** @return how many records the relation holds */
         private int held(JdbcTemplate template) {
             Integer count = template.queryForObject(
                     "SELECT COUNT(*) FROM \"" + TEST_DSNAME + "\"", Integer.class);
@@ -2053,7 +1632,6 @@ class TranReportWriterTest {
                     .isEqualTo(FileStatus.Outcome.OK);
             assertThat(file.writeLine(TranReportWriter.WS_BLANK_LINE_IMAGE))
                     .isEqualTo(FileStatus.Outcome.OK);
-            // CATLG: the close leaves the report where it is. That is the whole distinction.
             assertThat(file.closeOutput()).isEqualTo(FileStatus.Outcome.OK);
             assertThat(held(template)).isEqualTo(2);
 
@@ -2064,8 +1642,6 @@ class TranReportWriterTest {
         @Test
         @DisplayName("a second discard neither issues anything nor contradicts the first")
         void theDiscardIsIdempotent() {
-            // An abnormal path can reach a cleanup twice - a finally inside a finally. A second delete
-            // would find an empty relation against a non-zero count and refuse work that had succeeded.
             JdbcTemplate template = liveTemplate();
             TranReportWriter subject = new TranReportWriter(template, ASCII, bindings(LRECL, "FB"),
                     RecordImageForm.CHARACTER);
@@ -2082,8 +1658,6 @@ class TranReportWriterTest {
         @Test
         @DisplayName("a run that wrote no line deletes nothing and reports OK")
         void anEmptyRunDeletesNothing() {
-            // On the mainframe the step still allocates and still deletes an empty dataset, so there is
-            // no observable difference - and no statement is worth issuing for it.
             JdbcTemplate template = liveTemplate();
             template.update("INSERT INTO \"" + TEST_DSNAME + "\" VALUES (?)", " ".repeat(LRECL));
             TranReportWriter subject = new TranReportWriter(template, ASCII, bindings(LRECL, "FB"),
@@ -2097,9 +1671,6 @@ class TranReportWriterTest {
         @Test
         @DisplayName("a relation holding records this run did not write is left untouched")
         void aCountMismatchIsRefused() {
-            // DISP=(NEW,CATLG,DELETE) deletes the generation this step allocated. A deployment that maps
-            // successive generations onto one relation would have this delete a published report, so the
-            // count is read first and a disagreement is reported rather than acted on.
             JdbcTemplate template = liveTemplate();
             TranReportWriter subject = new TranReportWriter(template, ASCII, bindings(LRECL, "FB"),
                     RecordImageForm.CHARACTER);
@@ -2115,10 +1686,6 @@ class TranReportWriterTest {
         @Test
         @DisplayName("a count the backend will not state is refused exactly as a wrong count is")
         void anUnstatedCountIsRefused() {
-            // The other half of the guard above. A backend answering the count with SQL NULL has not said
-            // the generation holds what this run wrote - it has said nothing - and nothing is not
-            // permission to delete a report. A real COUNT(*) cannot be null, so the one call is bent and
-            // everything else, including the open's own clear, runs for real.
             JdbcTemplate live = liveTemplate();
             JdbcTemplate template = Mockito.spy(live);
             TranReportWriter subject = new TranReportWriter(template, ASCII, bindings(LRECL, "FB"),
@@ -2139,9 +1706,6 @@ class TranReportWriterTest {
         @Test
         @DisplayName("a delete that removes a different number than it counted is reported, not called OK")
         void aDeleteRemovingADifferentCountIsReported() {
-            // The count agreed and the delete was issued, then removed a different number of rows than the
-            // count promised. This run cannot claim it deleted its own generation and nothing else, and
-            // reporting OK would tell an operator the DISP=(NEW,CATLG,DELETE) obligation was met.
             JdbcTemplate template = Mockito.spy(liveTemplate());
             TranReportWriter subject = new TranReportWriter(template, ASCII, bindings(LRECL, "FB"),
                     RecordImageForm.CHARACTER);
@@ -2157,7 +1721,6 @@ class TranReportWriterTest {
         @Test
         @DisplayName("a backend that refuses the disposition is reported, never raised")
         void aRefusedDispositionIsReported() throws SQLException {
-            // This runs on a path that is already abending, so the reason the run failed must survive.
             DataSource dataSource = Mockito.mock(DataSource.class);
             Connection connection = Mockito.mock(Connection.class);
             PreparedStatement statement = Mockito.mock(PreparedStatement.class);
@@ -2182,9 +1745,6 @@ class TranReportWriterTest {
         @DisplayName("a sink that holds no catalogued generation reports OK without being asked to "
                 + "implement anything")
         void aCollectorSinkDefaultsToOk() {
-            // The default is not a stub: an in-memory collector's lines are per-run state that ceases to
-            // exist with the run, which is precisely the outcome DELETE produces. It also has to be a
-            // default method, because RecordSink is used as a lambda.
             RecordSink minimal = recordImage -> FileStatus.Outcome.OK;
             ReportFile file = writer().openOutput(minimal);
             assertThat(file.writeLine(TranReportWriter.WS_BLANK_LINE_IMAGE))
@@ -2196,8 +1756,6 @@ class TranReportWriterTest {
         @Test
         @DisplayName("a sink answering null from discard is read as OTHER rather than raising")
         void aNullDiscardOutcomeIsReported() {
-            // Every other outcome on this handle refuses a null, because a caller can act on the refusal.
-            // Here the caller is already abending.
             ReportFile file = writer().openOutput(new RecordSink() {
                 @Override
                 public FileStatus.Outcome write(byte[] recordImage) {

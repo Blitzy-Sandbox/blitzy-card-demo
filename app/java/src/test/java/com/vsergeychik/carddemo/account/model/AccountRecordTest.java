@@ -35,213 +35,54 @@ import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 
 /**
- * Unit tests for {@link AccountRecord}, the single Java type for copybook
- * {@code app/cpy/CVACT01Y.cpy} - {@code 01 ACCOUNT-RECORD}, exactly <strong>300</strong> bytes, the
- * most widely consumed record layout in this migration with eleven COBOL consumers.
- *
- * <h2>Governing rules</h2>
- *
- * <p>{@code review_rules} returns exactly one line, <strong>"No user rules provided."</strong> - that
- * is the entire rules document, and it was read in full rather than sampled. Their absence is
- * explicitly <em>not</em> treated as licence to lower the bar: the enterprise-best-practice
- * substitutes of the Agent Action Plan section 0.10.2 bind in their place, and the ones that govern
- * this file are honoured as follows.
- *
- * <ul>
- *   <li><strong>B1 / B2 - closed, exactly-versioned dependency set.</strong> Only JUnit Jupiter 5.12.2
- *       and AssertJ 3.27.7 are used, both already supplied by {@code spring-boot-starter-test} on the
- *       Spring Boot 3.5.16 BOM. Nothing is added to {@code app/java/pom.xml}. Mockito is on the test
- *       classpath but is deliberately <em>not</em> used: {@link AccountRecord} is a pure value type
- *       whose only collaborators are the two fixed-width classes and {@link CobolDecimal}, so every
- *       decision in it is reachable directly and a mock would only hide the real byte behaviour.</li>
- *   <li><strong>B3 - reference inputs are immutable.</strong> The fixture is read from the test
- *       classpath at {@code fixtures/acctdata.txt}. Nothing under {@code app/cpy}, {@code app/cbl} or
- *       {@code app/data} is opened or written at test runtime.</li>
- *   <li><strong>B4 - no silent scope creep.</strong> Where a measured byte contradicts a written
- *       expectation, the measurement is asserted and the tension is documented rather than either side
- *       being quietly corrected. One such case exists and is called out on
- *       {@link SignOverpunch}.</li>
- *   <li><strong>B5 - defects and unused declarations are preserved.</strong> Governs
- *       {@link NeverDisplayedZip} and the fixture quirk asserted in {@link FixtureRoundTrip}.</li>
- *   <li><strong>B8 - explicit over implicit.</strong> No wildcard imports (also gate G52);
- *       {@link StandardCharsets#US_ASCII} is named at every byte boundary and the platform default is
- *       never relied on; scale 2 and {@link RoundingMode#DOWN} are named at every numeric
- *       expectation.</li>
- *   <li><strong>B9 - no static mutable state</strong> (also gate G53). Every static member below is
- *       {@code final} over a deeply immutable type - {@code int}, {@code String}, {@link Charset},
- *       {@link BigDecimal} or an immutable {@link List#of} - and {@link SchemaIntegrity} asserts that
- *       reflectively of both the class under test and this test class itself.</li>
- *   <li><strong>B11 - hand-written, reviewable slicing.</strong> Every expected value below is sliced
- *       with plain index arithmetic a reviewer can check against the copybook line. No third-party
- *       copybook parser is involved; the Agent Action Plan section 0.5.6 excludes them outright.</li>
- *   <li><strong>B12 - provenance, because there is no execution baseline.</strong> See below.</li>
- * </ul>
- *
- * <h2>Where the expected values come from (risk R-A)</h2>
- *
- * <p>The legacy COBOL <strong>cannot be executed in this environment</strong>, so no captured baseline
- * exists and every expectation here is <em>statically derived</em>. Each non-obvious one therefore
- * names its origin inline: a copybook line ({@code CVACT01Y.cpy:L5} through {@code L17}), a COBOL line
- * ({@code CBACT01C.cbl:L118-L131}), or the fixture row it was measured from. The three independent
- * sources cross-check one another:
- *
- * <pre>
- *   offset  line  COBOL field               PICTURE      bytes
- *   ------  ----  ------------------------  -----------  -----
- *        0  L5    ACCT-ID                   9(11)           11
- *       11  L6    ACCT-ACTIVE-STATUS        X(01)            1
- *       12  L7    ACCT-CURR-BAL             S9(10)V99       12
- *       24  L8    ACCT-CREDIT-LIMIT         S9(10)V99       12
- *       36  L9    ACCT-CASH-CREDIT-LIMIT    S9(10)V99       12
- *       48  L10   ACCT-OPEN-DATE            X(10)           10
- *       58  L11   ACCT-EXPIRAION-DATE       X(10)           10   (sic)
- *       68  L12   ACCT-REISSUE-DATE         X(10)           10
- *       78  L13   ACCT-CURR-CYC-CREDIT      S9(10)V99       12
- *       90  L14   ACCT-CURR-CYC-DEBIT       S9(10)V99       12
- *      102  L15   ACCT-ADDR-ZIP             X(10)           10
- *      112  L16   ACCT-GROUP-ID             X(10)           10
- *      122  L17   FILLER                    X(178)         178
- *   ------------------------------------------------------------
- *   11 + 1 + 12 + 12 + 12 + 10 + 10 + 10 + 12 + 12 + 10 + 10 + 178 = 300
- * </pre>
- *
- * <p><strong>The single most dangerous arithmetic error in this layout</strong> is to give each
- * {@code PIC S9(10)V99} field a sign byte of its own. It has none: the field occupies {@code p + s} =
- * 12 bytes and the sign is <em>overpunched into the trailing byte</em>. Thirteen bytes apiece totals
- * 305, which still looks plausible and would fail gate G19. Twelve is therefore asserted explicitly,
- * once per monetary field, five times over, in {@link DeclaredGeometry}.
- *
- * <h2>Scope - what this file deliberately does not test</h2>
- *
- * <p>{@code AccountRepositoryTest} round-trips the same fixture rows through
- * {@code AccountRepository}; that is dataset behaviour and is not repeated here, and no repository is
- * mocked. This file owns the branch surface that no repository or job test reaches: factory validation
- * and its rejection paths, the offset-arithmetic guards, the layout self-check's <em>failure</em> path,
- * {@code equals}/{@code hashCode}/{@code toString}, the nine date-slice accessors, the twelve raw
- * zoned span accessors, the {@code REDEFINES}-style two-views-over-one-span round trip, and sign
- * overpunch in both directions for all three sign cases. The 300-byte fixture round trip is kept
- * because it is this file's primary G19 and G21 evidence at the model level.
- *
- * <p>{@code CBACT01C}'s SYSOUT shape belongs to {@code AccountBalanceJobTest}, not here; this file
- * only records, in {@link NeverDisplayedZip}, that the display omits a field the record declares.
- *
- * <h2>Gates discharged</h2>
- *
- * <p><strong>G8</strong> one Java type per copybook, {@link AccountRecord} being the sole unit under
- * test for {@code CVACT01Y} - <strong>G19</strong> the 300-byte record width -
- * <strong>G21</strong> {@code FILLER X(178)} present and space-filled - <strong>G22</strong> never
- * {@code double} or {@code float} - <strong>G23</strong> monetary scale exactly 2 -
- * <strong>G24</strong> {@link RoundingMode#DOWN} only - <strong>G34</strong> two typed accessors over
- * one backing span, round-tripped - <strong>G44</strong> no persistence annotation and no DDL,
- * asserted reflectively - <strong>G49</strong> this package's own branch ratio -
- * <strong>G52</strong> no wildcard imports - <strong>G53</strong> no static mutable state.
+ * Unit tests for {@link AccountRecord}, the single Java type for copybook {@code app/cpy/CVACT01Y.cpy} -
+ * {@code 01 ACCOUNT-RECORD}, exactly 300 bytes, the most widely consumed record layout in this migration
+ * with eleven COBOL consumers.
  */
 @DisplayName("AccountRecord - CVACT01Y account master record, 300 bytes")
 class AccountRecordTest {
-
-    /**
-     * The code page of the text fixtures under {@code app/data/ASCII}, named explicitly rather than
-     * defaulted (practice B8). Fixed-width mainframe data is bytes in a specific code page, and every
-     * byte boundary in this file states which one.
-     */
     private static final Charset ASCII = StandardCharsets.US_ASCII;
 
-    /**
-     * The code page of the binary datasets under {@code app/data/EBCDIC}, which {@code README.md:L65}
-     * requires be transferred in binary mode. Used only to prove that nothing here depends on ASCII
-     * byte values - the space is {@code 0x40} in this code page, not {@code 0x20}.
-     */
     private static final Charset EBCDIC = Charset.forName("IBM037");
 
-    /** Classpath location of the derived fixture copy. Never {@code app/data/ASCII} itself (B3). */
     private static final String FIXTURE_RESOURCE = "fixtures/acctdata.txt";
 
-    /** Measured: {@code app/data/ASCII/acctdata.txt} holds exactly 50 records. */
     private static final int EXPECTED_FIXTURE_ROWS = 50;
 
-    // -------------------------------------------------------------------------------------------------
-    // Fixture row 1, sliced by hand from app/data/ASCII/acctdata.txt with awk and transcribed verbatim.
-    // These are measurements, not inferences: the raw monetary values keep their sign overpunch because
-    // that is what the dataset actually stores.
-    // -------------------------------------------------------------------------------------------------
-
-    /** Row 1 {@code ACCT-ID} as stored: 11 zero-filled digits. Bytes [0, 11). */
     private static final String ROW_1_ACCT_ID_IMAGE = "00000000001";
 
-    /** Row 1 {@code ACCT-ACTIVE-STATUS}. Byte 11. Measured: {@code Y} in all 50 rows. */
     private static final String ROW_1_ACTIVE_STATUS = "Y";
 
-    /**
-     * Row 1 {@code ACCT-CURR-BAL} as stored, bytes [12, 24).
-     *
-     * <p>Twelve characters, the last of which is the overpunch. <code>&#123;</code> is the zoned
-     * encoding of "positive, low-order digit 0", so the digit sequence is {@code 000000019400} which
-     * at {@code V99} denotes {@code +194.00}. This is what {@code DISPLAY ACCT-CURR-BAL} emits, and
-     * asserting {@code "194.00"} here instead would silently diverge from CBACT01C's SYSOUT.
-     */
     private static final String ROW_1_CURR_BAL_RAW = "00000001940{";
 
-    /** Row 1 {@code ACCT-CREDIT-LIMIT} as stored, bytes [24, 36): {@code +2020.00}. */
     private static final String ROW_1_CREDIT_LIMIT_RAW = "00000020200{";
 
-    /** Row 1 {@code ACCT-CASH-CREDIT-LIMIT} as stored, bytes [36, 48): {@code +1020.00}. */
     private static final String ROW_1_CASH_CREDIT_LIMIT_RAW = "00000010200{";
 
-    /** Row 1 {@code ACCT-OPEN-DATE}, bytes [48, 58). */
     private static final String ROW_1_OPEN_DATE = "2014-11-20";
 
-    /** Row 1 {@code ACCT-EXPIRAION-DATE}, bytes [58, 68). Copybook spelling; see {@link Misspelling}. */
     private static final String ROW_1_EXPIRAION_DATE = "2025-05-20";
 
-    /** Row 1 {@code ACCT-REISSUE-DATE}, bytes [68, 78). Coincidentally equal to the expiry date. */
     private static final String ROW_1_REISSUE_DATE = "2025-05-20";
 
-    /** Row 1 {@code ACCT-CURR-CYC-CREDIT} as stored, bytes [78, 90): {@code +0.00}. */
     private static final String ROW_1_CURR_CYC_CREDIT_RAW = "00000000000{";
 
-    /** Row 1 {@code ACCT-CURR-CYC-DEBIT} as stored, bytes [90, 102): {@code +0.00}. */
     private static final String ROW_1_CURR_CYC_DEBIT_RAW = "00000000000{";
 
-    /**
-     * {@code ACCT-ADDR-ZIP}, bytes [102, 112).
-     *
-     * <p>Measured as {@code A000000000} in <strong>all 50 rows</strong>, which looks like a
-     * disclosure-group identifier rather than a postal code. It is asserted, not repaired (practice
-     * B5): the copybook is authoritative about the offset, and the fixture is simply populated that
-     * way.
-     */
     private static final String FIXTURE_ADDR_ZIP = "A000000000";
 
-    /**
-     * {@code ACCT-GROUP-ID}, bytes [112, 122): measured as <strong>ten spaces</strong> in all 50 rows.
-     *
-     * <p>Not trimmed to {@code ""}, because {@link AccountRecord#getAcctGroupId()} documents that it
-     * does not trim - {@code app/cbl/CBACT04C.cbl:L210} moves the field whole into the disclosure-group
-     * key, so the trailing spaces are part of that key. The blank group id is precisely why the keyed
-     * read misses and {@code L437} substitutes {@code 'DEFAULT'}, for which {@code discgrp.txt} does
-     * carry rows.
-     */
     private static final String FIXTURE_GROUP_ID = "          ";
 
-    /** The {@code FILLER X(178)} of {@code CVACT01Y.cpy:L17} as spaces - what all 50 rows contain. */
     private static final String FILLER_SPACES = " ".repeat(AccountRecord.FILLER_LENGTH);
 
-    /** Row 1 {@code ACCT-CURR-BAL} decoded: {@code +194.00} at the declared scale of 2. */
     private static final BigDecimal ROW_1_CURR_BAL = new BigDecimal("194.00");
 
-    /** Row 1 {@code ACCT-CREDIT-LIMIT} decoded: {@code +2020.00} at scale 2. */
     private static final BigDecimal ROW_1_CREDIT_LIMIT = new BigDecimal("2020.00");
 
-    /** Row 1 {@code ACCT-CASH-CREDIT-LIMIT} decoded: {@code +1020.00} at scale 2. */
     private static final BigDecimal ROW_1_CASH_CREDIT_LIMIT = new BigDecimal("1020.00");
 
-    /** A monetary zero at the declared scale of 2 - deliberately not {@link BigDecimal#ZERO}. */
     private static final BigDecimal SCALE_2_ZERO = new BigDecimal("0.00");
 
-    /**
-     * The five monetary field names of {@code CVACT01Y.cpy:L7-L9} and {@code L13-L14}, in copybook
-     * order. Immutable, so it may be {@code static final} without breaching practice B9.
-     */
     private static final List<String> MONETARY_FIELD_NAMES = List.of(
             AccountRecord.ACCT_CURR_BAL_NAME,
             AccountRecord.ACCT_CREDIT_LIMIT_NAME,
@@ -249,23 +90,8 @@ class AccountRecordTest {
             AccountRecord.ACCT_CURR_CYC_CREDIT_NAME,
             AccountRecord.ACCT_CURR_CYC_DEBIT_NAME);
 
-    /** A codec bound to the ASCII code page, for the direct overpunch encode and decode assertions. */
     private final FixedWidthCodec asciiCodec = new FixedWidthCodec(ASCII);
 
-    // -------------------------------------------------------------------------------------------------
-    // Helpers. All state they build is local to the call, so nothing is shared between tests.
-    // -------------------------------------------------------------------------------------------------
-
-    /**
-     * Reads every row of the derived fixture from the test classpath as text, in
-     * {@link StandardCharsets#US_ASCII} named explicitly (practice B8).
-     *
-     * <p>Rows are returned exactly as stored. Unlike {@code cardxref}, this fixture matches its
-     * copybook width, so nothing is padded or normalised on the way in - a test that wants the
-     * declared width simply asserts it.
-     *
-     * @return the fixture's rows, in file order
-     */
     private static List<String> fixtureRows() {
         List<String> rows = new ArrayList<>();
         try (InputStream stream =
@@ -283,43 +109,14 @@ class AccountRecordTest {
         return rows;
     }
 
-    /**
-     * The first row of the fixture, as text.
-     *
-     * @return exactly {@link AccountRecord#RECORD_LENGTH} characters
-     */
     private static String fixtureRow1() {
         return fixtureRows().get(0);
     }
 
-    /**
-     * The first fixture row decoded, in {@link #ASCII}.
-     *
-     * @return a record over row 1's bytes
-     */
     private static AccountRecord decodedRow1() {
         return AccountRecord.decode(fixtureRow1(), ASCII);
     }
 
-    /**
-     * Builds a 300-byte image from the twelve named field images plus a {@code FILLER}, so a test can
-     * synthesise stored bytes the fixture does not contain - notably the positive-nonzero and negative
-     * sign overpunches, which appear nowhere in {@code acctdata.txt}.
-     *
-     * @param acctId          11 characters
-     * @param activeStatus    1 character
-     * @param currBal         12 characters, overpunch included
-     * @param creditLimit     12 characters, overpunch included
-     * @param cashCreditLimit 12 characters, overpunch included
-     * @param openDate        10 characters
-     * @param expiraionDate   10 characters, copybook spelling
-     * @param reissueDate     10 characters
-     * @param currCycCredit   12 characters, overpunch included
-     * @param currCycDebit    12 characters, overpunch included
-     * @param addrZip         10 characters
-     * @param groupId         10 characters
-     * @return exactly {@link AccountRecord#RECORD_LENGTH} characters, ending in 178 spaces
-     */
     private static String image(String acctId,
                                 String activeStatus,
                                 String currBal,
@@ -341,13 +138,6 @@ class AccountRecordTest {
         return assembled;
     }
 
-    /**
-     * A synthesised image differing from row 1 only in the twelve bytes of {@code ACCT-CURR-BAL}, so a
-     * sign case absent from the fixture can be decoded through the real record type.
-     *
-     * @param currBalRaw the 12-character stored balance, overpunch included
-     * @return exactly {@link AccountRecord#RECORD_LENGTH} characters
-     */
     private static String row1WithBalance(String currBalRaw) {
         return image(ROW_1_ACCT_ID_IMAGE, ROW_1_ACTIVE_STATUS, currBalRaw, ROW_1_CREDIT_LIMIT_RAW,
                 ROW_1_CASH_CREDIT_LIMIT_RAW, ROW_1_OPEN_DATE, ROW_1_EXPIRAION_DATE,
@@ -355,28 +145,13 @@ class AccountRecordTest {
                 FIXTURE_ADDR_ZIP, FIXTURE_GROUP_ID);
     }
 
-    /**
-     * Every declared method of {@link AccountRecord}, public API and private helpers alike, so a
-     * reflective assertion covers the whole type rather than only its public face.
-     *
-     * @return the declared methods
-     */
     private static Method[] declaredMethods() {
         return AccountRecord.class.getDeclaredMethods();
     }
 
-    /**
-     * Every declared field of {@link AccountRecord}, excluding compiler- and coverage-agent-synthesised
-     * members such as JaCoCo's {@code $jacocoData}, which are not part of the authored type.
-     *
-     * @return the authored declared fields
-     */
     private static List<Field> authoredFields(Class<?> type) {
         List<Field> fields = new ArrayList<>();
         for (Field field : type.getDeclaredFields()) {
-            // JaCoCo's coverage agent adds a private static transient boolean[] $jacocoData to every
-            // instrumented class, marked ACC_SYNTHETIC. It is not authored code, so it is excluded here
-            // rather than being allowed to fail the static-state rule that G53 asks this file to enforce.
             if (!field.isSynthetic() && !field.getName().startsWith("$")) {
                 fields.add(field);
             }
@@ -384,39 +159,22 @@ class AccountRecordTest {
         return fields;
     }
 
-    // =================================================================================================
-    // Phase 1 - the declared layout, verified span by span against app/cpy/CVACT01Y.cpy.
-    // =================================================================================================
-
     @Nested
     @DisplayName("Declared geometry - every span at its copybook offset, totalling 300 (G19)")
     class DeclaredGeometry {
-
         @ParameterizedTest(name = "{0} occupies [{1}, {1}+{2}) as {3}")
         @CsvSource({
-            // CVACT01Y.cpy:L5    05  ACCT-ID                 PIC 9(11).
             "ACCT-ID,                  0,  11, UNSIGNED_NUMERIC",
-            // CVACT01Y.cpy:L6    05  ACCT-ACTIVE-STATUS      PIC X(01).
             "ACCT-ACTIVE-STATUS,      11,   1, ALPHANUMERIC",
-            // CVACT01Y.cpy:L7    05  ACCT-CURR-BAL           PIC S9(10)V99.
             "ACCT-CURR-BAL,           12,  12, SIGNED_SCALED",
-            // CVACT01Y.cpy:L8    05  ACCT-CREDIT-LIMIT       PIC S9(10)V99.
             "ACCT-CREDIT-LIMIT,       24,  12, SIGNED_SCALED",
-            // CVACT01Y.cpy:L9    05  ACCT-CASH-CREDIT-LIMIT  PIC S9(10)V99.
             "ACCT-CASH-CREDIT-LIMIT,  36,  12, SIGNED_SCALED",
-            // CVACT01Y.cpy:L10   05  ACCT-OPEN-DATE          PIC X(10).
             "ACCT-OPEN-DATE,          48,  10, ALPHANUMERIC",
-            // CVACT01Y.cpy:L11   05  ACCT-EXPIRAION-DATE     PIC X(10).   <- misspelled in the source
             "ACCT-EXPIRAION-DATE,     58,  10, ALPHANUMERIC",
-            // CVACT01Y.cpy:L12   05  ACCT-REISSUE-DATE       PIC X(10).
             "ACCT-REISSUE-DATE,       68,  10, ALPHANUMERIC",
-            // CVACT01Y.cpy:L13   05  ACCT-CURR-CYC-CREDIT    PIC S9(10)V99.
             "ACCT-CURR-CYC-CREDIT,    78,  12, SIGNED_SCALED",
-            // CVACT01Y.cpy:L14   05  ACCT-CURR-CYC-DEBIT     PIC S9(10)V99.
             "ACCT-CURR-CYC-DEBIT,     90,  12, SIGNED_SCALED",
-            // CVACT01Y.cpy:L15   05  ACCT-ADDR-ZIP           PIC X(10).
             "ACCT-ADDR-ZIP,          102,  10, ALPHANUMERIC",
-            // CVACT01Y.cpy:L16   05  ACCT-GROUP-ID           PIC X(10).
             "ACCT-GROUP-ID,          112,  10, ALPHANUMERIC",
         })
         @DisplayName("Each of the twelve named spans sits where the copybook puts it")
@@ -451,19 +209,16 @@ class AccountRecordTest {
 
         @ParameterizedTest(name = "{0} is 12 bytes, not 13")
         @ValueSource(strings = {
-            "ACCT-CURR-BAL",           // CVACT01Y.cpy:L7
-            "ACCT-CREDIT-LIMIT",       // CVACT01Y.cpy:L8
-            "ACCT-CASH-CREDIT-LIMIT",  // CVACT01Y.cpy:L9
-            "ACCT-CURR-CYC-CREDIT",    // CVACT01Y.cpy:L13
-            "ACCT-CURR-CYC-DEBIT",     // CVACT01Y.cpy:L14
+            "ACCT-CURR-BAL",
+            "ACCT-CREDIT-LIMIT",
+            "ACCT-CASH-CREDIT-LIMIT",
+            "ACCT-CURR-CYC-CREDIT",
+            "ACCT-CURR-CYC-DEBIT",
         })
         @DisplayName("A PIC S9(10)V99 field occupies p+s=12 bytes: the sign is overpunched, not stored")
         void signedMonetaryFieldOccupiesTwelveBytesNotThirteen(String monetaryField) {
             FieldSpan span = AccountRecord.LAYOUT.span(monetaryField);
 
-            // PIC S9(10)V99 is ten integer digit positions plus two fraction digit positions. The sign
-            // occupies NO byte of its own - it is overpunched into the trailing byte. Reserving a
-            // thirteenth byte here would total 305 and fail gate G19 while still looking plausible.
             assertThat(span.length())
                     .as("%s is p + s = %d + %d bytes with the sign overpunched into the last one",
                             monetaryField,
@@ -497,9 +252,6 @@ class AccountRecordTest {
         @Test
         @DisplayName("ACCT-ADDR-ZIP at 102 precedes ACCT-GROUP-ID at 112 - the order is easy to invert")
         void addrZipPrecedesGroupId() {
-            // CVACT01Y.cpy:L15 declares ACCT-ADDR-ZIP and L16 declares ACCT-GROUP-ID, in that order.
-            // Both are PIC X(10), so swapping them compiles, keeps the record at 300 bytes and produces
-            // a field-for-field diff that is very hard to trace. Hence an explicit ordering assertion.
             assertThat(AccountRecord.ACCT_ADDR_ZIP_OFFSET).isEqualTo(102);
             assertThat(AccountRecord.ACCT_GROUP_ID_OFFSET).isEqualTo(112);
             assertThat(AccountRecord.ACCT_ADDR_ZIP_OFFSET)
@@ -513,8 +265,6 @@ class AccountRecordTest {
         @Test
         @DisplayName("The thirteen declared widths sum to exactly 300 (G19)")
         void declaredWidthsSumToThreeHundred() {
-            // The hand sum from CVACT01Y.cpy:L5-L17:
-            // 11 + 1 + 12 + 12 + 12 + 10 + 10 + 10 + 12 + 12 + 10 + 10 + 178 = 300.
             int total = 0;
             for (FieldSpan span : AccountRecord.LAYOUT.spans()) {
                 total += span.length();
@@ -566,9 +316,6 @@ class AccountRecordTest {
         @Test
         @DisplayName("Self-check FAILURE: dropping the trailing FILLER leaves the record 178 short")
         void droppingFillerTripsTheSelfCheck() {
-            // The counterpart of the 300-byte assertion above. Omitting CVACT01Y.cpy:L17 leaves the
-            // twelve named spans covering only bytes [0, 122), and the layout's own arithmetic rejects
-            // that at construction rather than letting the shortfall surface later as a bad offset.
             assertThatIllegalArgumentException()
                     .isThrownBy(() -> RecordLayout.of(AccountRecord.RECORD_LENGTH,
                             AccountRecord.SPAN_ACCT_ID,
@@ -591,9 +338,6 @@ class AccountRecordTest {
         @Test
         @DisplayName("Self-check FAILURE: a sign byte per monetary field totals 305 and is rejected")
         void reservingASignByteTripsTheSelfCheck() {
-            // The mistake this guards against, spelled out: give each of the five PIC S9(10)V99 fields
-            // a thirteenth byte for its sign and the record becomes 305. Five extra bytes on a 300-byte
-            // record is exactly the kind of error that looks plausible in review.
             assertThatIllegalArgumentException()
                     .isThrownBy(() -> RecordLayout.of(AccountRecord.RECORD_LENGTH,
                             FieldSpan.unsignedNumeric("ACCT-ID", 0, 11),
@@ -617,8 +361,6 @@ class AccountRecordTest {
         @Test
         @DisplayName("Self-check FAILURE: an undeclared gap between two spans is rejected")
         void anUndeclaredGapTripsTheSelfCheck() {
-            // Omitting ACCT-ACTIVE-STATUS (CVACT01Y.cpy:L6) leaves byte 11 undeclared. Every byte of a
-            // fixed-width record must be accounted for, FILLER included.
             assertThatIllegalArgumentException()
                     .isThrownBy(() -> RecordLayout.of(AccountRecord.RECORD_LENGTH,
                             AccountRecord.SPAN_ACCT_ID,
@@ -659,30 +401,16 @@ class AccountRecordTest {
         }
     }
 
-
-    // =================================================================================================
-    // Phase 2 - the copybook's misspelling is part of the contract (AAP implicit requirement I1).
-    // =================================================================================================
-
     @Nested
     @DisplayName("The ACCT-EXPIRAION-DATE misspelling is preserved deliberately (AAP I1)")
     class Misspelling {
-
-        /** The name as the copybook declares it at {@code app/cpy/CVACT01Y.cpy:L11} - no second T. */
         private static final String COPYBOOK_SPELLING = "ACCT-EXPIRAION-DATE";
 
-        /** The spelling a well-meaning reviewer would "fix" it to. It must appear nowhere. */
         private static final String CORRECTED_SPELLING = "ACCT-EXPIRATION-DATE";
 
         @Test
         @DisplayName("The copybook item name is carried verbatim, misspelling included")
         void copybookNameIsVerbatim() {
-            // app/cpy/CVACT01Y.cpy:L11 reads:  05  ACCT-EXPIRAION-DATE  PIC X(10).
-            // AAP implicit requirement I1 makes copybook field names part of the record contract that
-            // parity/FieldDiffer compares field-for-field, so a rename would produce a diff whose cause
-            // is very expensive to trace. app/cbl/CBACT01C.cbl:L125 repeats the same misspelling in its
-            // DISPLAY literal, which is independent confirmation that it is load-bearing rather than a
-            // one-off slip in the copybook.
             assertThat(AccountRecord.ACCT_EXPIRAION_DATE_NAME).isEqualTo(COPYBOOK_SPELLING);
             assertThat(AccountRecord.SPAN_ACCT_EXPIRAION_DATE.name()).isEqualTo(COPYBOOK_SPELLING);
             assertThat(AccountRecord.LAYOUT.hasSpan(COPYBOOK_SPELLING)).isTrue();
@@ -710,9 +438,6 @@ class AccountRecordTest {
         })
         @DisplayName("Every accessor uses the misspelled stem, checked reflectively so a rename fails")
         void misspelledAccessorsExist(String accessorName) {
-            // Reflective on purpose. A rename would still compile - nothing in this test class calls
-            // these by name at compile time - so only a reflective lookup turns a rename into a
-            // failure rather than a silent parity regression.
             assertThat(declaredMethods())
                     .extracting(Method::getName)
                     .as("%s must exist on AccountRecord with the copybook's spelling", accessorName)
@@ -754,19 +479,12 @@ class AccountRecordTest {
         }
     }
 
-    // =================================================================================================
-    // Phase 3a - ACCT-ID is also the 11-byte KSDS key of ACCTDAT / ACCTFILE.
-    // =================================================================================================
-
     @Nested
     @DisplayName("The primary key - ACCT-ID at offset 0, eleven bytes wide")
     class PrimaryKey {
-
         @Test
         @DisplayName("The named key-length constant is 11 and is the width of ACCT-ID")
         void keyLengthConstantIsEleven() {
-            // Named rather than a bare literal, so no repository re-derives it. This is the value
-            // app/cbl/COBIL00C.cbl:L350 supplies as KEYLENGTH (LENGTH OF ACCT-ID).
             assertThat(AccountRecord.KEY_LENGTH)
                     .as("CVACT01Y.cpy:L5 declares ACCT-ID as PIC 9(11)")
                     .isEqualTo(11)
@@ -815,7 +533,6 @@ class AccountRecordTest {
         @Test
         @DisplayName("A key image can be built from an identifier alone, zero-filled to eleven digits")
         void keyImageCanBeBuiltWithoutARecord() {
-            // A repository looking an account up has a number and no record yet.
             assertThat(AccountRecord.keyImage(1L, ASCII)).isEqualTo(ROW_1_ACCT_ID_IMAGE);
             assertThat(AccountRecord.keyImage(50L, ASCII)).isEqualTo("00000000050");
             assertThat(AccountRecord.keyImage(0L, ASCII)).isEqualTo("00000000000");
@@ -847,9 +564,6 @@ class AccountRecordTest {
         @Test
         @DisplayName("A PIC 9 receiver truncates on the LEFT, keeping the low-order digits")
         void picNineTruncatesOnTheLeft() {
-            // The COBOL numeric move rule, and the opposite of the alphanumeric rule. A twelve-digit
-            // value stored into PIC 9(11) keeps the eleven LOW-order digits; keeping the leading ones
-            // instead is the classic defect.
             AccountRecord record = new AccountRecord(ASCII);
             record.setAcctId(123456789012L);
 
@@ -858,21 +572,12 @@ class AccountRecordTest {
         }
     }
 
-
-    // =================================================================================================
-    // Phase 3b - the three date fields and their one-based (1:4) / (6:2) / (9:2) slices.
-    // =================================================================================================
-
     @Nested
     @DisplayName("Date slices - COBOL reference modification is ONE-based, hyphens excluded")
     class DateSlices {
-
         @Test
         @DisplayName("The slice constants reproduce (1:4), (6:2) and (9:2) exactly")
         void sliceConstantsMatchTheCobolReferenceModification() {
-            // AccountUpdateService applies these three slices to all three dates inside
-            // 9700-CHECK-CHANGE-IN-REC (app/cbl/COACTUPC.cbl:L4109-L4193). Positions 5 and 8 of a
-            // YYYY-MM-DD value are the hyphens and are deliberately not part of any slice.
             assertThat(AccountRecord.YEAR_START).as("the 1 in (1:4)").isEqualTo(1);
             assertThat(AccountRecord.YEAR_LENGTH).as("the 4 in (1:4)").isEqualTo(4);
             assertThat(AccountRecord.MONTH_START).as("the 6 in (6:2), skipping the hyphen").isEqualTo(6);
@@ -919,10 +624,6 @@ class AccountRecordTest {
         @Test
         @DisplayName("No slice of any date ever returns a hyphen - the off-by-one guard")
         void noSliceEverReturnsAHyphen() {
-            // The sharpest available check on the one-based to zero-based conversion. An off-by-one in
-            // either direction yields "-1", "1-", "4-" or "-2" from a YYYY-MM-DD value, all of which
-            // this catches immediately - and it is driven over every row rather than just the first, so
-            // it holds for all fifty distinct date values in the fixture.
             for (String row : fixtureRows()) {
                 AccountRecord record = AccountRecord.decode(row, ASCII);
                 List<String> slices = List.of(
@@ -952,7 +653,6 @@ class AccountRecordTest {
                         record.getAcctExpiraionDate(),
                         record.getAcctReissueDate())) {
                     assertThat(date).hasSize(10);
-                    // One-based positions 5 and 8, hence zero-based indexes 4 and 7.
                     assertThat(date.charAt(4)).as("position 5 of %s", date).isEqualTo('-');
                     assertThat(date.charAt(7)).as("position 8 of %s", date).isEqualTo('-');
                 }
@@ -973,7 +673,6 @@ class AccountRecordTest {
                                                       int oneBasedStart,
                                                       int length,
                                                       String expected) {
-            // (1:4) is substring(0, 4); (6:2) is substring(5, 7); (9:2) is substring(8, 10).
             assertThat(AccountRecord.referenceModify(value, oneBasedStart, length))
                     .isEqualTo(expected)
                     .hasSize(length);
@@ -982,9 +681,6 @@ class AccountRecordTest {
         @Test
         @DisplayName("A blank or short date yields spaces rather than an index-out-of-bounds failure")
         void referenceModifyPadsRatherThanThrows() {
-            // A fresh record's dates are ten spaces, and COACTUPC's date-edit engine relies on partial
-            // content being sliceable. A StringIndexOutOfBoundsException would be a poor way to learn
-            // that a date arrived blank.
             assertThat(AccountRecord.referenceModify(null, 1, 4)).isEqualTo("    ");
             assertThat(AccountRecord.referenceModify("", 1, 4)).isEqualTo("    ");
             assertThat(AccountRecord.referenceModify("ab", 1, 4)).isEqualTo("ab  ");
@@ -1030,25 +726,14 @@ class AccountRecordTest {
         }
     }
 
-    // =================================================================================================
-    // Phase 3c - raw zoned span access. COBOL's DISPLAY of a field emits its STORED bytes.
-    // =================================================================================================
-
     @Nested
     @DisplayName("Raw zoned spans - the stored characters, overpunch and all")
     class RawZonedSpans {
-
         @Test
         @DisplayName("ACCT-CURR-BAL reads raw as 00000001940{ and NOT as 194.00")
         void currentBalanceReadsRawWithItsOverpunch() {
             AccountRecord row1 = decodedRow1();
 
-            // The distinction this asserts is the whole point of having raw accessors.
-            // DISPLAY ACCT-CURR-BAL (app/cbl/CBACT01C.cbl:L121) emits the field's twelve stored bytes,
-            // the trailing overpunch included. '{' is the zoned encoding of "positive, low-order digit
-            // 0", so the digit sequence 000000019400 read at V99 denotes +194.00. Asserting the typed
-            // value's toString here instead would silently diverge from CBACT01C's SYSOUT, which is
-            // exactly the mistake this guards against.
             assertThat(row1.rawAcctCurrBal())
                     .isEqualTo(ROW_1_CURR_BAL_RAW)
                     .isEqualTo("00000001940{")
@@ -1100,8 +785,6 @@ class AccountRecordTest {
             String row = fixtureRow1();
             AccountRecord row1 = AccountRecord.decode(row, ASCII);
 
-            // Hand-sliced with plain index arithmetic a reviewer can check line by line against the
-            // copybook (practice B11). The offsets come from CVACT01Y.cpy:L5-L16.
             assertThat(row1.rawAcctId()).isEqualTo(row.substring(0, 11));
             assertThat(row1.rawAcctActiveStatus()).isEqualTo(row.substring(11, 12));
             assertThat(row1.rawAcctCurrBal()).isEqualTo(row.substring(12, 24));
@@ -1148,8 +831,6 @@ class AccountRecordTest {
         @DisplayName("Offset guard: a span reaching past byte 300 is refused, not truncated")
         void aSpanReachingPastTheRecordIsRefused() {
             AccountRecord row1 = decodedRow1();
-            // A ten-byte span at offset 295 would reach byte 305 - the same 305 that a reserved sign
-            // byte per monetary field produces. Silently truncating it would hide the arithmetic error.
             FieldSpan overlong = FieldSpan.alphanumeric("ACCT-BEYOND-END", 295, 10);
 
             assertThatExceptionOfType(IndexOutOfBoundsException.class)
@@ -1172,19 +853,12 @@ class AccountRecordTest {
         }
     }
 
-
-    // =================================================================================================
-    // Phase 4a - FILLER X(178) is a first-class span and is emitted as spaces (G21).
-    // =================================================================================================
-
     @Nested
     @DisplayName("FILLER X(178) at offset 122 - present and space-filled (G21)")
     class FillerSpan {
-
         @Test
         @DisplayName("The FILLER span is declared at [122, 300) and carries no VALUE literal")
         void fillerIsDeclaredAsASpan() {
-            // CVACT01Y.cpy:L17    05  FILLER  PIC X(178).
             assertThat(AccountRecord.FILLER_OFFSET).isEqualTo(122);
             assertThat(AccountRecord.FILLER_LENGTH).isEqualTo(178);
             assertThat(AccountRecord.SPAN_FILLER.offset()).isEqualTo(122);
@@ -1212,8 +886,6 @@ class AccountRecordTest {
         @Test
         @DisplayName("Every one of the 50 fixture rows has an all-spaces FILLER (G21)")
         void everyFixtureRowHasASpaceFilledFiller() {
-            // Measured over the whole file, not sampled: awk over substr($0,123) finds zero rows whose
-            // FILLER span holds anything other than spaces.
             List<String> rows = fixtureRows();
             assertThat(rows).hasSize(EXPECTED_FIXTURE_ROWS);
 
@@ -1229,9 +901,6 @@ class AccountRecordTest {
         @Test
         @DisplayName("A freshly constructed record emits FILLER as 178 spaces (AAP 0.3.7)")
         void freshRecordEmitsFillerAsSpaces() {
-            // AAP section 0.3.7 requires FILLER to be emitted as spaces rather than left as whatever
-            // an uninitialised buffer happens to hold. A fresh record therefore already matches the
-            // shape of every stored row before a single field is set.
             AccountRecord fresh = new AccountRecord(ASCII);
 
             assertThat(fresh.getFiller()).isEqualTo(FILLER_SPACES).hasSize(178);
@@ -1244,8 +913,6 @@ class AccountRecordTest {
         @Test
         @DisplayName("FILLER is space-filled in the EBCDIC code page too - 0x40, not 0x20")
         void fillerIsSpaceFilledInEbcdicAsWell() {
-            // Proof that nothing here depends on ASCII byte values: the pad byte comes from the named
-            // charset, never from a hard-coded 0x20 and never from the platform default (practice B8).
             byte[] ebcdic = new AccountRecord(EBCDIC).toByteArray();
 
             assertThat(ebcdic).hasSize(AccountRecord.RECORD_LENGTH);
@@ -1262,11 +929,6 @@ class AccountRecordTest {
         @Test
         @DisplayName("Omitting FILLER is impossible: it is what makes the 300-byte total provable")
         void omittingFillerIsImpossible() {
-            // Stated so the intent is legible rather than implicit. The total-width assertion of 300
-            // fails the instant the span is dropped - proven in
-            // DeclaredGeometry.droppingFillerTripsTheSelfCheck, where the layout reports itself 178
-            // bytes short and names the dropped trailing FILLER as the cause. Here the positive form:
-            // the FILLER is exactly the difference between the named fields and the record.
             int namedFieldBytes = 0;
             for (FieldSpan span : AccountRecord.LAYOUT.storageSpans()) {
                 if (!span.kind().filler()) {
@@ -1296,8 +958,6 @@ class AccountRecordTest {
         @Test
         @DisplayName("A non-blank FILLER is retained verbatim, so re-encoding stays byte-identical")
         void aNonBlankFillerIsRetainedVerbatim() {
-            // No fixture row exercises this, but retaining reserved storage verbatim is precisely what
-            // makes decode-then-re-encode byte-identical for any stored row, blank FILLER or not.
             String dirty = fixtureRow1().substring(0, AccountRecord.FILLER_OFFSET)
                     + "Z".repeat(AccountRecord.FILLER_LENGTH);
             AccountRecord record = AccountRecord.decode(dirty, ASCII);
@@ -1307,14 +967,9 @@ class AccountRecordTest {
         }
     }
 
-    // =================================================================================================
-    // Phase 4b - the 50-row fixture round trip. This file's primary G19 and G21 evidence.
-    // =================================================================================================
-
     @Nested
     @DisplayName("Fixture round trip - 50 rows of 300 bytes, decoded and re-encoded (G19)")
     class FixtureRoundTrip {
-
         @Test
         @DisplayName("The fixture holds 50 rows and every one is exactly 300 bytes")
         void everyRowIsExactlyThreeHundredBytes() {
@@ -1334,9 +989,6 @@ class AccountRecordTest {
         @Test
         @DisplayName("Unlike cardxref, this fixture matches its copybook width - nothing is padded")
         void theFixtureNeedsNoWidening() {
-            // cardxref.txt is 36 bytes per row against a 50-byte copybook and must be right-padded
-            // before comparison. acctdata.txt is not that case: it is already 300, so padding it would
-            // be wrong. Asserting the difference keeps the two from being conflated.
             for (String row : fixtureRows()) {
                 assertThat(row.length())
                         .as("no widening is required or permitted")
@@ -1389,7 +1041,6 @@ class AccountRecordTest {
                 int rowNumber = index + 1;
                 AccountRecord record = AccountRecord.decode(row, ASCII);
 
-                // Each span asserted against the row's own bytes at the copybook's absolute offset.
                 assertThat(record.rawAcctId()).as("row %d L5", rowNumber)
                         .isEqualTo(row.substring(0, 11));
                 assertThat(record.getAcctActiveStatus()).as("row %d L6", rowNumber)
@@ -1417,7 +1068,6 @@ class AccountRecordTest {
                 assertThat(record.getFiller()).as("row %d L17", rowNumber)
                         .isEqualTo(row.substring(122, 300));
 
-                // And the whole image comes back exactly as it went in - the G19 round-trip proof.
                 assertThat(record.toFixedWidthString()).as("row %d re-encoded", rowNumber)
                         .isEqualTo(row);
                 assertThat(record.toByteArray()).as("row %d re-encoded bytes", rowNumber)
@@ -1448,10 +1098,6 @@ class AccountRecordTest {
         @Test
         @DisplayName("PRESERVED QUIRK: ACCT-ADDR-ZIP is A000000000 in all 50 rows (practice B5)")
         void addrZipIsUniformAcrossEveryRow() {
-            // Measured, not inferred: awk over substr($0,103,10) yields a single distinct value across
-            // all fifty rows. A000000000 looks like a disclosure-group identifier rather than a postal
-            // code, and it is asserted rather than repaired - the copybook is authoritative about the
-            // offset and the fixture is simply populated that way.
             Set<String> distinct = new LinkedHashSet<>();
             for (String row : fixtureRows()) {
                 distinct.add(AccountRecord.decode(row, ASCII).getAcctAddrZip());
@@ -1463,11 +1109,6 @@ class AccountRecordTest {
         @Test
         @DisplayName("PRESERVED QUIRK: ACCT-GROUP-ID is ten spaces in all 50 rows (practice B5)")
         void groupIdIsBlankAcrossEveryRow() {
-            // The blank group id is behaviourally load-bearing: app/cbl/CBACT04C.cbl:L210 moves it whole
-            // into the disclosure-group key, the keyed read therefore misses, and L437 substitutes
-            // 'DEFAULT' - which is why every account in the interest calculation falls through to the
-            // default disclosure group. Trimming this to "" would lose the trailing spaces that are
-            // part of the key, so the expectation is ten spaces exactly.
             Set<String> distinct = new LinkedHashSet<>();
             for (String row : fixtureRows()) {
                 distinct.add(AccountRecord.decode(row, ASCII).getAcctGroupId());
@@ -1480,9 +1121,6 @@ class AccountRecordTest {
         @Test
         @DisplayName("MEASURED: all 250 monetary overpunches in the fixture are '{', i.e. positive zero")
         void everyFixtureOverpunchIsPositiveZero() {
-            // 50 rows times 5 monetary fields. This is exactly why SignOverpunch has to synthesise its
-            // own spans: the positive-nonzero and negative zone branches are unreachable from fixture
-            // data, and leaving them undriven would put gate G49 out of reach for this package.
             Set<Character> distinct = new LinkedHashSet<>();
             int counted = 0;
             for (String row : fixtureRows()) {
@@ -1564,22 +1202,12 @@ class AccountRecordTest {
         }
     }
 
-
-    // =================================================================================================
-    // Phase 5a - numeric parity: BigDecimal only, scale 2 always, RoundingMode.DOWN only.
-    // =================================================================================================
-
     @Nested
     @DisplayName("Numeric parity - BigDecimal at scale 2, truncating DOWN (G22, G23, G24)")
     class NumericParity {
-
         @Test
         @DisplayName("No field or accessor anywhere on the type is double, float, Double or Float (G22)")
         void noBinaryFloatingPointAnywhere() {
-            // A hard prohibition in AAP section 0.8.9: the binary double primitive cannot represent
-            // decimal fractions exactly, so a single double in a monetary path silently corrupts every
-            // value that flows through it. Checked reflectively over fields, return types and parameter
-            // types so no route into the type can smuggle one in.
             List<Class<?>> forbidden = List.of(double.class, float.class, Double.class, Float.class);
 
             for (Field field : authoredFields(AccountRecord.class)) {
@@ -1629,10 +1257,6 @@ class AccountRecordTest {
         @Test
         @DisplayName("A zero value still reports scale 2, where a careless implementation yields 0 (G23)")
         void zeroStillReportsScaleTwo() {
-            // The specific trap: BigDecimal.ZERO has scale 0. A field that stores it unscaled would
-            // read back as 0 rather than 0.00, and every comparison written with equals rather than
-            // compareTo would then invert - for instance the IF ACCT-CURR-BAL <= ZEROS check at
-            // app/cbl/COBIL00C.cbl:L198.
             AccountRecord fresh = new AccountRecord(ASCII);
             assertThat(fresh.getAcctCurrBal().scale()).as("a fresh record's balance").isEqualTo(2);
             assertThat(fresh.getAcctCurrBal()).isEqualTo(SCALE_2_ZERO);
@@ -1656,17 +1280,12 @@ class AccountRecordTest {
         @Test
         @DisplayName("The rounding policy is DOWN, because ROUNDED appears zero times in the COBOL (G24)")
         void theRoundingPolicyIsDown() {
-            // AAP rule R2: an exhaustive search finds the keyword ROUNDED zero times across all 28
-            // programs, so COBOL truncates excess fraction digits on store. HALF_UP and HALF_EVEN are
-            // both wrong, and HALF_EVEN in particular is what the superseded specification asserted.
             assertThat(CobolDecimal.COBOL_ROUNDING).isEqualTo(RoundingMode.DOWN);
         }
 
         @Test
         @DisplayName("A store truncates DOWN where HALF_UP would round up - the two differ visibly")
         void storeTruncatesWhereHalfUpWouldRound() {
-            // Deliberately a value where the two modes disagree, so a rounding regression fails loudly
-            // instead of passing by luck: 1.005 becomes 1.00 under DOWN and 1.01 under HALF_UP.
             BigDecimal input = new BigDecimal("1.005");
             assertThat(input.setScale(2, RoundingMode.HALF_UP))
                     .as("the wrong answer, shown so the difference is explicit")
@@ -1679,14 +1298,11 @@ class AccountRecordTest {
                     .as("DOWN truncates the third fraction digit away")
                     .isEqualByComparingTo(new BigDecimal("1.00"))
                     .isNotEqualByComparingTo(new BigDecimal("1.01"));
-            // Stored image of +1.00: the digit sequence 000000000100 with its trailing 0 overpunched
-            // to '{'. Ten integer positions then two fraction positions, twelve bytes in total.
             assertThat(record.rawAcctCurrBal()).isEqualTo("00000000010{");
         }
 
         @ParameterizedTest(name = "{0} stores as {1} with raw image {2}")
         @CsvSource({
-            // DOWN is truncation toward zero, so it applies symmetrically to both signs.
             "194.999,   194.99,  00000001949I",
             "-194.999,  -194.99, 00000001949R",
             "0.009,     0.00,    00000000000{",
@@ -1706,11 +1322,6 @@ class AccountRecordTest {
         @Test
         @DisplayName("More than ten integer digits: the HIGH-ORDER digits are dropped, and nothing throws")
         void integerOverflowTruncatesOnTheLeft() {
-            // No program in this codebase uses ON SIZE ERROR, so a value too wide for the receiver is
-            // simply truncated on store - and a numeric receiver is aligned on its implied decimal
-            // point, so the digits that survive are the LOW-order ones. Twelve integer digits into
-            // PIC S9(10)V99 keeps ten: 123456789012.34 becomes 3456789012.34. Throwing here would be a
-            // behaviour change, so the assertion is on the value, not on an exception.
             AccountRecord record = new AccountRecord(ASCII);
             record.setAcctCurrBal(new BigDecimal("123456789012.34"));
 
@@ -1740,7 +1351,6 @@ class AccountRecordTest {
             AccountRecord record = new AccountRecord(ASCII);
             record.setAcctCurrBal(new BigDecimal("99123456789012.999"));
 
-            // Fraction truncated to two digits first, then the integer part reduced to ten digits.
             assertThat(record.getAcctCurrBal())
                     .isEqualByComparingTo(new BigDecimal("3456789012.99"));
             assertThat(CobolDecimal.storeAtPicture(new BigDecimal("99123456789012.999"),
@@ -1752,11 +1362,6 @@ class AccountRecordTest {
         @Test
         @DisplayName("The cycle amounts accept arbitrary signed values, not only zero")
         void cycleAmountsAcceptArbitrarySignedValues() {
-            // Zeroing them is only half the contract. app/cbl/CBTRN02C.cbl:L403-L405 reads both cycle
-            // amounts into WS-TEMP-BAL and L548-L549 adds the transaction amount into one of them, so
-            // each has to hold a real signed value and not merely be cleared. The zeroing counterpart -
-            // MOVE 0 TO both at app/cbl/CBACT04C.cbl:L353-L354 - is the named zero* operation, asserted
-            // separately, and this test is what proves the general setter carries a value through.
             AccountRecord record = new AccountRecord(ASCII);
 
             record.setAcctCurrCycCredit(new BigDecimal("1234.56"));
@@ -1777,11 +1382,9 @@ class AccountRecordTest {
                     .as("digits 000000098765 with the trailing 5 overpunched negative to N")
                     .isEqualTo("00000009876N");
 
-            // Writing one must not disturb the other, since they are adjacent twelve-byte spans.
             assertThat(record.rawAcctCurrCycCredit()).isEqualTo("00000012345F");
             assertThat(record.toFixedWidthString()).hasSize(AccountRecord.RECORD_LENGTH);
 
-            // And the named zero operations clear them back to the overpunched scale-2 zero.
             record.zeroAcctCurrCycCredit();
             record.zeroAcctCurrCycDebit();
             assertThat(record.rawAcctCurrCycCredit()).isEqualTo("00000000000{");
@@ -1881,9 +1484,6 @@ class AccountRecordTest {
         @Test
         @DisplayName("The interest divisor and monetary scale come from CobolDecimal, not restated here")
         void numericPolicyLivesInOnePlace() {
-            // AAP rule R3: WS-MONTHLY-INT is PIC S9(09)V99 and the interest formula at
-            // app/cbl/CBACT04C.cbl:L464-L465 divides by 1200 with no ROUNDED phrase. The record does not
-            // own that policy; it delegates, which is why the whole system has one place to audit.
             assertThat(AccountRecord.MONETARY_SCALE).isEqualTo(CobolDecimal.MONETARY_SCALE);
             assertThat(CobolDecimal.MONTHLY_INTEREST_DIVISOR).isEqualTo(1200L);
             assertThat(AccountRecord.MONETARY_INTEGER_DIGITS)
@@ -1892,30 +1492,9 @@ class AccountRecordTest {
         }
     }
 
-
-    // =================================================================================================
-    // Phase 5b - sign overpunch, in both directions, for all three sign cases.
-    // =================================================================================================
-
     @Nested
     @DisplayName("Sign overpunch - the branches the fixture cannot reach")
     class SignOverpunch {
-
-        /**
-         * A caution on this file's own brief, recorded rather than silently reconciled (practice B4).
-         *
-         * <p>The written brief offers "trailing {@code E} to {@code +4}" as an example of a
-         * positive-nonzero overpunch. That is off by one. The zoned table is
-         * <code>&#123;</code>{@code ABCDEFGHI} for {@code +0} through {@code +9}, so {@code E} is the
-         * fifth letter and denotes low-order digit <strong>5</strong> - measured:
-         * {@code "00000012345E"} decodes to {@code +1234.55}. The letter that genuinely denotes
-         * {@code +4} is {@code D}. The brief's companion example, {@code N} to {@code -5}, is correct,
-         * since {@code N} is the fifth letter of <code>&#125;</code>{@code JKLMNOPQR}.
-         *
-         * <p>What the bytes say is asserted, and both characters are covered - {@code E} for
-         * {@code +5} and {@code D} for {@code +4} - so the letter the brief names and the digit it
-         * names are each exercised and neither side is quietly corrected.
-         */
         private static final String OVERPUNCH_NOTE =
                 "positive {ABCDEFGHI = +0..+9, negative }JKLMNOPQR = -0..-9";
 
@@ -1924,7 +1503,6 @@ class AccountRecordTest {
         void theZonedTableIsAsRecorded() {
             assertThat(OVERPUNCH_NOTE).contains("{ABCDEFGHI").contains("}JKLMNOPQR");
 
-            // Read straight off the codec, one character at a time, at the declared scale of 2.
             assertThat(asciiCodec.decodeSignedScaled("00000000000{", 2))
                     .isEqualByComparingTo(SCALE_2_ZERO);
             assertThat(asciiCodec.decodeSignedScaled("00000000000D", 2))
@@ -1946,22 +1524,16 @@ class AccountRecordTest {
 
         @ParameterizedTest(name = "stored {0} decodes to {1}")
         @CsvSource({
-            // Positive zero - the only case the fixture exercises, all 250 occurrences of it.
             "00000001940{, 194.00",
             "00000000000{, 0.00",
-            // Positive nonzero: unreachable from acctdata.txt, so synthesised.
             "00000012345D, 1234.54",
             "00000012345E, 1234.55",
             "00000012345I, 1234.59",
             "00000012345A, 1234.51",
-            // Negative: also unreachable from acctdata.txt. COBIL00C:L234 can drive a balance below
-            // zero, so both signs have to be carried faithfully.
             "00000012345N, -1234.55",
             "00000012345J, -1234.51",
             "00000012345R, -1234.59",
-            // Negative zero collapses to zero, as it must: BigDecimal has no signed zero.
             "00000000000}, 0.00",
-            // Zone F - a plain trailing digit, the unsigned zoned form a freshly initialised span holds.
             "000000000000, 0.00",
             "000000019407, 194.07",
         })
@@ -2040,8 +1612,6 @@ class AccountRecordTest {
         @Test
         @DisplayName("A negative balance written through the setter stores a negative overpunch")
         void aNegativeBalanceWritesANegativeOverpunch() {
-            // COMPUTE ACCT-CURR-BAL = ACCT-CURR-BAL - TRAN-AMT (app/cbl/COBIL00C.cbl:L234) can drive the
-            // balance below zero, so the write direction has to reach the negative zone.
             AccountRecord record = new AccountRecord(ASCII);
             record.setAcctCurrBal(new BigDecimal("-1234.55"));
 
@@ -2055,11 +1625,6 @@ class AccountRecordTest {
         @Test
         @DisplayName("A freshly established monetary span carries a positive-zero overpunch")
         void aFreshMonetarySpanCarriesAPositiveZeroOverpunch() {
-            // Measured against app/data/ASCII/acctdata.txt, which holds 250 '{' and no '}' - one per
-            // signed field of its 50 records - and renders both of the first record's zero cycle
-            // amounts as 00000000000{. A signed span is signed in storage whatever its value, so an
-            // established span whose trailing byte were a plain '0' would match no row of
-            // production-shaped data and would read back as an unsigned quantity.
             AccountRecord fresh = new AccountRecord(ASCII);
 
             assertThat(fresh.rawAcctCurrBal()).isEqualTo("00000000000{");
@@ -2084,21 +1649,14 @@ class AccountRecordTest {
         }
     }
 
-    // =================================================================================================
-    // Phase 6a - REDEFINES: two typed accessors over one backing span (G34).
-    // =================================================================================================
-
     @Nested
     @DisplayName("Two typed views over one backing span, round-tripped (G34)")
     class RedefinesOverlay {
-
         @Test
         @DisplayName("The typed long view and the raw character view address the same eleven bytes")
         void theTypedAndRawViewsShareOneSpan() {
             AccountRecord row1 = decodedRow1();
 
-            // ACCT-ID's natural pair, and the same shape as the CC-ACCT-ID X(11) / CC-ACCT-ID-N 9(11)
-            // REDEFINES pair of app/cpy/CVCRD01Y.cpy: one span, two categories.
             assertThat(row1.getAcctId()).isEqualTo(1L);
             assertThat(row1.rawAcctId()).isEqualTo("00000000001");
             assertThat(row1.rawBytes(AccountRecord.SPAN_ACCT_ID))
@@ -2143,8 +1701,6 @@ class AccountRecordTest {
         @Test
         @DisplayName("A narrower overlay may cover only the leading bytes of the span it redefines")
         void aNarrowerOverlayCoversTheLeadingBytes() {
-            // The year of ACCT-OPEN-DATE, viewed as a numeric overlay over the first four of its ten
-            // bytes. Same idea as the date slices, expressed through a descriptor instead.
             FieldSpan yearOverlay = AccountRecord.SPAN_ACCT_OPEN_DATE
                     .redefinedAs("ACCT-OPEN-DATE-YEAR", PictureKind.UNSIGNED_NUMERIC, 4);
             AccountRecord row1 = decodedRow1();
@@ -2199,23 +1755,15 @@ class AccountRecordTest {
             written.setAcctAddrZip(FIXTURE_ADDR_ZIP);
             written.setAcctGroupId(FIXTURE_GROUP_ID);
 
-            // Every field written through its typed setter reproduces fixture row 1 byte for byte,
-            // which is the strongest available statement that the two views agree.
             assertThat(written.toFixedWidthString()).isEqualTo(fixtureRow1());
             assertThat(written.toByteArray()).isEqualTo(fixtureRow1().getBytes(ASCII));
             assertThat(written).isEqualTo(decodedRow1());
         }
     }
 
-
-    // =================================================================================================
-    // Phase 6b - equals, hashCode and toString.
-    // =================================================================================================
-
     @Nested
     @DisplayName("Value semantics - equality over the complete 300-byte image")
     class ValueSemantics {
-
         @Test
         @DisplayName("Two records decoded from the same row are equal and hash equally")
         void equalByValueRecordsAreEqualAndHashEqually() {
@@ -2276,9 +1824,6 @@ class AccountRecordTest {
         @Test
         @DisplayName("Differing only in the reserved FILLER still makes two records unequal")
         void differingOnlyInTheFillerMakesRecordsUnequal() {
-            // Comparing the group item ACCOUNT-RECORD in COBOL compares all 300 bytes, FILLER included,
-            // so two records that agree on every modelled field but differ in reserved storage are
-            // genuinely not the same record.
             AccountRecord baseline = decodedRow1();
             AccountRecord dirty = AccountRecord.decode(
                     fixtureRow1().substring(0, AccountRecord.FILLER_OFFSET)
@@ -2292,10 +1837,6 @@ class AccountRecordTest {
         @Test
         @DisplayName("TRAP: two BigDecimals of different scale for the same value store identically")
         void differentlyScaledInputsForTheSameValueStoreIdentically() {
-            // BigDecimal.equals is scale-sensitive: new BigDecimal("194.0") does not equal
-            // new BigDecimal("194.00") even though they compare equal. Storing at the declared scale is
-            // what removes the ambiguity, and it is why equality here is over the stored bytes rather
-            // than field by field. Both inputs therefore produce the SAME record.
             assertThat(new BigDecimal("194.0"))
                     .as("scale-sensitive equals - the trap itself")
                     .isNotEqualTo(new BigDecimal("194.00"))
@@ -2330,10 +1871,6 @@ class AccountRecordTest {
         void toStringNamesEveryField() {
             String rendered = decodedRow1().toString();
 
-            // Every copybook name is still named, because a diagnostic that omitted a field name
-            // could not tell a reader which field was wrong. What has changed is that the VALUES are
-            // no longer disclosed: this is an account record, and its balances, limits, dates and
-            // postcode are the cardholder's.
             assertThat(rendered)
                     .startsWith("AccountRecord[")
                     .endsWith("]")
@@ -2357,8 +1894,6 @@ class AccountRecordTest {
         void toStringIdentifiesWithoutDisclosing() {
             String rendered = decodedRow1().toString();
 
-            // The account identifier survives only as its last four digits, which is enough to tell
-            // two records apart in a log and not enough to reconstruct either.
             assertThat(rendered).doesNotContain(ROW_1_ACCT_ID_IMAGE)
                     .contains(DiagnosticText.masked(ROW_1_ACCT_ID_IMAGE));
             assertThat(rendered)
@@ -2368,11 +1903,8 @@ class AccountRecordTest {
                     .doesNotContain(ROW_1_CURR_CYC_CREDIT_RAW)
                     .doesNotContain(ROW_1_CURR_CYC_DEBIT_RAW)
                     .doesNotContain(FIXTURE_ADDR_ZIP.trim());
-            // The widths are still reported, because a width is shape rather than content and a
-            // width mismatch is the commonest fixed-width defect there is.
             assertThat(rendered).contains(DiagnosticText.OMITTED + ":" + ROW_1_CURR_BAL_RAW.length());
         }
-
 
         @Test
         @DisplayName("toString summarises the 178-byte FILLER rather than printing it, both ways")
@@ -2404,24 +1936,13 @@ class AccountRecordTest {
         }
     }
 
-    // =================================================================================================
-    // Phase 6c - schema integrity and static state (G44, G53).
-    // =================================================================================================
-
     @Nested
     @DisplayName("Schema integrity - no persistence mapping, no DDL, no static mutable state")
     class SchemaIntegrity {
-
-        /**
-         * The annotation simple names that must not appear. Matched by <em>simple name</em> so this test
-         * compiles and runs with no JPA on the classpath - none is declared in {@code app/java/pom.xml}
-         * and none may be added, because the migration forbids schema change outright.
-         */
         private static final List<String> FORBIDDEN_ANNOTATIONS =
                 List.of("Entity", "Table", "Id", "Column", "Version", "GeneratedValue",
                         "EmbeddedId", "JoinColumn", "SequenceGenerator");
 
-        /** DDL fragments that must not appear in any constant the type carries. */
         private static final List<String> FORBIDDEN_DDL =
                 List.of("CREATE TABLE", "ALTER TABLE", "DROP TABLE", "INSERT INTO", "CREATE INDEX");
 
@@ -2450,9 +1971,6 @@ class AccountRecordTest {
         @Test
         @DisplayName("No field name suggests a row version - optimistic locking stays where COBOL put it")
         void noFieldNameSuggestsARowVersion() {
-            // COACTUPC's 9700-CHECK-CHANGE-IN-REC re-reads and compares the record before rewriting.
-            // Replacing that with a version column would be a schema change, which is forbidden, so no
-            // version-like field may exist here.
             for (Field field : authoredFields(AccountRecord.class)) {
                 String lower = field.getName().toLowerCase(Locale.ROOT);
                 assertThat(lower)
@@ -2525,9 +2043,6 @@ class AccountRecordTest {
         @Test
         @DisplayName("This test class itself declares no static mutable field (G53)")
         void thisTestClassDeclaresNoStaticMutableField() {
-            // Practice B9 binds the test as much as the code under test: an expectation table shared
-            // across test methods is exactly the kind of state that makes a suite order-dependent.
-            // Every nested class is swept, not a chosen few, so a future addition cannot slip through.
             assertStaticStateIsImmutable(AccountRecordTest.class);
             for (Class<?> nested : AccountRecordTest.class.getDeclaredClasses()) {
                 assertStaticStateIsImmutable(nested);
@@ -2551,18 +2066,6 @@ class AccountRecordTest {
             }
         }
 
-        /**
-         * Whether a type is safe to hold in a {@code static final} field.
-         *
-         * <p>Primitives and enums are immutable by construction. Records are accepted because both
-         * record types used here - {@code FieldSpan} and {@code RecordLayout} - have deeply immutable
-         * components, the latter copying its span list defensively. Arrays are rejected outright: an
-         * array is mutable however final its reference is, which is the classic way static mutable
-         * state hides in plain sight.
-         *
-         * @param type the declared field type
-         * @return {@code true} when a static field of this type cannot be mutated through
-         */
         private boolean isImmutableType(Class<?> type) {
             if (type.isArray()) {
                 return false;
@@ -2580,8 +2083,6 @@ class AccountRecordTest {
         @Test
         @DisplayName("An array constant would be rejected by the immutability rule, final or not")
         void theImmutabilityRuleRejectsArrays() {
-            // Stated so the rule above is not vacuous: a final field holding an array is still mutable
-            // state, and the check has to say so.
             assertThat(isImmutableType(byte[].class)).isFalse();
             assertThat(isImmutableType(String[].class)).isFalse();
             assertThat(isImmutableType(String.class)).isTrue();
@@ -2597,8 +2098,6 @@ class AccountRecordTest {
         @Test
         @DisplayName("Collaborators are constructor-supplied; nothing is injected into a static hook")
         void collaboratorsAreConstructorSupplied() {
-            // The record's only construction-time input is its code page, which is required rather than
-            // defaulted. There is no setter for it and no static registry it could be read from.
             assertThat(new AccountRecord(ASCII).charset()).isEqualTo(ASCII);
             assertThat(declaredMethods())
                     .extracting(Method::getName)
@@ -2607,25 +2106,12 @@ class AccountRecordTest {
         }
     }
 
-    // =================================================================================================
-    // Phase 7 - a preserved defect, recorded rather than fixed (practice B5).
-    // =================================================================================================
-
     @Nested
     @DisplayName("PRESERVED DEFECT: the record declares ACCT-ADDR-ZIP; CBACT01C never displays it")
     class NeverDisplayedZip {
-
         @Test
         @DisplayName("ACCT-ADDR-ZIP exists and decodes correctly at offset 102")
         void addrZipExistsAndDecodesAtItsOffset() {
-            // The RECORD contract is complete even though the DISPLAY contract is not.
-            // app/cbl/CBACT01C.cbl paragraph 1100-DISPLAY-ACCT-RECORD (L118) emits eleven labelled lines
-            // at L119-L129 - ACCT-ID, ACCT-ACTIVE-STATUS, ACCT-CURR-BAL, ACCT-CREDIT-LIMIT,
-            // ACCT-CASH-CREDIT-LIMIT, ACCT-OPEN-DATE, ACCT-EXPIRAION-DATE, ACCT-REISSUE-DATE,
-            // ACCT-CURR-CYC-CREDIT, ACCT-CURR-CYC-DEBIT, ACCT-GROUP-ID - followed by a hyphen separator
-            // at L130. ACCT-ADDR-ZIP is NEVER displayed, even though CVACT01Y.cpy:L15 declares it at
-            // offset 102. That omission is a preserved defect: it is recorded here and deliberately not
-            // corrected, and the SYSOUT shape itself belongs to AccountBalanceJobTest, not to this file.
             AccountRecord row1 = decodedRow1();
 
             assertThat(AccountRecord.ACCT_ADDR_ZIP_OFFSET).isEqualTo(102);
@@ -2639,11 +2125,6 @@ class AccountRecordTest {
         @Test
         @DisplayName("The field is writable and readable like any other, despite having no consumer")
         void addrZipBehavesLikeAnyOtherCharacterField() {
-            // No COBOL program references ACCT-ADDR-ZIP at all: it is absent from CBACT01C's display
-            // paragraph and from COACTUPC's change-detection comparison. It is modelled regardless,
-            // because it occupies bytes 102 to 111 and dropping it would shorten the record to 290 bytes
-            // and shift ACCT-GROUP-ID and FILLER. Preserving behaviour includes preserving what is
-            // unused, so it must not be deleted as dead code.
             AccountRecord record = new AccountRecord(ASCII);
 
             assertThat(record.getAcctAddrZip())
@@ -2667,8 +2148,6 @@ class AccountRecordTest {
                     .as("290, not 300 - which is why an unused field is still declared")
                     .isEqualTo(290);
 
-            // And the layout says so itself: omit CVACT01Y.cpy:L15 and the remaining spans no longer
-            // reach the declared width.
             assertThatIllegalArgumentException()
                     .isThrownBy(() -> RecordLayout.of(AccountRecord.RECORD_LENGTH,
                             AccountRecord.SPAN_ACCT_ID,

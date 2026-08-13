@@ -14,7 +14,7 @@ import com.vsergeychik.carddemo.config.BatchConfig.JobContract;
 import com.vsergeychik.carddemo.config.BatchConfig.JobContracts;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBinding;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBindings;
-import com.vsergeychik.carddemo.config.DatasetUnitOfWork;
+import com.vsergeychik.carddemo.common.DatasetUnitOfWork;
 import com.vsergeychik.carddemo.statement.StatementGenerationJobA;
 import com.vsergeychik.carddemo.statement.StatementGenerationJobA.DatasetUtilityPort;
 import com.vsergeychik.carddemo.statement.StatementGenerationJobA.SysoutSink;
@@ -22,6 +22,7 @@ import com.vsergeychik.carddemo.statement.StatementGenerationJobA.TiotEntry;
 import com.vsergeychik.carddemo.statement.StatementGenerationJobA.TiotImage;
 import com.vsergeychik.carddemo.statement.StatementGenerationJobA.TiotSource;
 import com.vsergeychik.carddemo.statement.StatementGenerationJobB;
+import com.vsergeychik.carddemo.statement.TrnxRepository;
 import com.vsergeychik.carddemo.statement.StatementGenerationJobB.Response;
 import com.vsergeychik.carddemo.statement.StatementGenerationJobB.Session;
 import com.vsergeychik.carddemo.statement.StatementHtmlWriter;
@@ -65,213 +66,31 @@ import static org.mockito.Mockito.mock;
 
 /**
  * The twenty-case parity gate for {@code CBSTM03A}, the account-statement generator.
- *
- * <h2>Why this program gets the densest coverage in the plan</h2>
- * <p>{@code app/cbl/CBSTM03A.CBL} is the <strong>only</strong> one of the twenty-eight programs whose
- * {@code GO TO} statements form implicit <em>loops</em> rather than paragraph exits, and the only one
- * that reaches them through {@code ALTER ... TO PROCEED TO} - COBOL's self-modifying branch. Fifteen
- * {@code GO TO}s target {@code 0000-START} (four sites), {@code 1000-MAINLINE},
- * {@code 8100-FILE-OPEN} (four sites), {@code 8100-TRNXFILE-OPEN}, {@code 8500-READTRNX-READ},
- * {@code 8599-EXIT} and {@code 9999-GOBACK}, and between them they build two nested record loops out
- * of nothing but branches. Restructuring that into Java is the single highest-risk translation in the
- * estate, which is why {@code CBSTM03A} shares the densest case allocation with {@code COACTUPC} and
- * {@code CBTRN02C}, and why these cases assert <strong>iteration order and count</strong> rather than
- * final state alone (gate G32).
- *
- * <h2>The baseline is statically derived, never captured (AAP risk R-A, practice B12)</h2>
- * <p>The expected values in {@code src/test/resources/parity/CBSTM03A/case01..case20.json} were
- * <strong>derived by structured reading of the COBOL source</strong> - the seventeen {@code ST-LINE}
- * templates and the thirty {@code HTML-FIXED-LN} literals at {@code app/cbl/CBSTM03A.CBL:L85-L223},
- * the {@code STRING} statements at {@code L462-L481} and {@code L560-L716}, the copybook byte layouts
- * of {@code app/cpy/COSTM01.CPY}, {@code app/cpy/CVACT03Y.cpy}, {@code app/cpy/CUSTREC.cpy} and
- * {@code app/cpy/CVACT01Y.cpy}, the DD and {@code COND} contracts of {@code app/jcl/CREASTMT.JCL},
- * and the real fixture rows of {@code app/data/ASCII}. They were <strong>not</strong> captured from a
- * live COBOL execution, because no such execution is possible here.
- *
- * <p>{@code CBSTM03A} is in fact one of the programs that proves the point. The only COBOL compiler
- * available refuses it outright at {@code app/cpy/CUSTREC.cpy:6} with "unbalanced parentheses" and
- * "invalid PICTURE character '2'", because seventeen lines of that copybook - lines 6 through 22 -
- * carry literal TAB characters in the source margin, which no fixed-format COBOL reader can align.
- * Even setting that aside, its four input files are {@code ORGANIZATION INDEXED} and that build
- * reports {@code indexed file handler : disabled}, and its abend needs a Language Environment
- * {@code CEE3ABD} that does not exist there. The deviation is a change of <em>provenance only</em> -
- * twenty cases per program, field-for-field diffing and a diff count of zero per module all stand -
- * and it is recorded rather than absorbed (practice B12).
- *
- * <p>Because a statically derived expectation can encode a misreading, the derivation deliberately
- * avoids the one shortcut that would make this suite worthless: it never asks the Java classes what
- * they produce. Every 80-byte and 100-byte image in the case files was composed from the COBOL
- * literals, the copybook offsets and the shipped fixtures alone, so a passing comparison is
- * independent evidence rather than the implementation compared with itself.
- *
- * <h2>The TIOT walk is substituted, and the substitution is stated rather than hidden</h2>
- * <p>{@code L266-L291} walks real z/OS control blocks: it sets the address of the {@code PSA} from a
- * null pointer, follows {@code TCB-POINT} to the {@code TCB}, follows {@code TIOT-POINT} to the
- * {@code TIOT}, and then bumps a pointer through the DD chain twenty bytes at a time until a
- * low-values terminator. None of that has a JVM counterpart and none of it is invented here.
- * {@link StatementGenerationJobA} substitutes a {@link TiotSource}, and these cases assert the
- * <strong>lines the production class emits</strong> from it: {@code 'Running JCL : '} with the eight-byte
- * job and step names, {@code 'DD Names from TIOT: '}, one entry line per DD of
- * {@code app/jcl/CREASTMT.JCL}'s {@value StatementGenerationJobA#STEP_040} step, and then the
- * post-loop entry. The two null-UCB literals are <em>byte-different</em> - {@code ' --  null UCB'}
- * inside the loop at {@code L281} and {@code ' -- null  UCB'} after it at {@code L290} - and case 20
- * pins both, because a translation that normalised them would look correct and read wrong.
- *
- * <h2>What the twenty cases pin</h2>
- * <ul>
- *   <li><strong>Both output widths, in the same run.</strong> {@code STMTFILE} is
- *       {@value StatementTextWriter#RECORD_LENGTH} bytes ({@code 01 FD-STMTFILE-REC PIC X(80)} at
- *       {@code L45}, {@code LRECL=80} at {@code app/jcl/CREASTMT.JCL:L89}) and {@code HTMLFILE} is
- *       {@value StatementHtmlWriter#RECORD_LENGTH} ({@code PIC X(100)} at {@code L47},
- *       {@code LRECL=100} at {@code :L94}). The {@code STEP030} pre-delete declares the HTML file at
- *       {@code LRECL=80}; that is the <em>losing</em> declaration and the creating step wins (gates
- *       G19 and G20, risk R-G).</li>
- *   <li><strong>Write order, including the duplicates.</strong> {@code ST-LINE5} is written twice
- *       ({@code L492}, {@code L494}) and {@code ST-LINE12} three times ({@code L500}, {@code L502},
- *       {@code L435}), and the HTML footer is eight records ({@code L439-L454}). Nothing is
- *       de-duplicated and nothing is reordered.</li>
- *   <li><strong>The 1-based 51x10 table.</strong> Case 3 pins {@code WS-CARD-NUM(1)} and
- *       {@code WS-TRAN-NUM(1,1)}; case 4 pins {@code WS-CARD-NUM(51)} and {@code WS-TRAN-NUM(51,1)}
- *       through {@code (51,10)} - both {@code OCCURS} bounds at once (gate G33).</li>
- *   <li><strong>Every byte of every record.</strong> {@link FieldDiffer} reports an observed row no
- *       expectation addresses, and an expectation that leaves any byte of a record unasserted, as
- *       differences in their own right - so each case pins the complete image of each of its records
- *       and thereby proves that every {@code FILLER} literal in the sixteen line templates was
- *       emitted (gate G21).</li>
- *   <li><strong>The amount masks as exact strings.</strong> {@code PIC 9(9).99-} for
- *       {@code ST-CURR-BAL} and {@code PIC Z(9).99-} for {@code ST-TRANAMT} and
- *       {@code ST-TOTAL-TRAMT}, thirteen bytes each with a trailing sign byte. Case 9 pins the
- *       high-order truncation of {@code ACCT-CURR-BAL}'s ten integer digits into nine, case 8 a
- *       negative amount, and case 19 a zero. {@link StatementHtmlWriter} receives these
- *       already-edited images and never re-applies a mask, which is what {@code L622} and
- *       {@code L712} send.</li>
- *   <li><strong>Every file-status arm of every guard.</strong> {@code '00'} throughout,
- *       {@code '04'} accepted at an open by {@code IF WS-M03B-RC = '00' OR '04'} ({@code L736}),
- *       {@code '10'} benign at the cross-reference read ({@code L356}) but <em>fatal</em> at the
- *       customer read ({@code L379-L386}), and {@code WHEN OTHER} at an open, a sequential read, two
- *       keyed reads and a close (gate G47).</li>
- *   <li><strong>The unique abend.</strong> {@code CALL 'CEE3ABD'} at {@code L923} passes neither an
- *       {@code ABCODE} nor a {@code TIMING} - the only such site in the estate - which
- *       {@link StructuralGates#theAbendCarriesNeitherAnAbendCodeNorATiming()} asserts directly
- *       (gate G35).</li>
- *   <li><strong>The {@code COND=(0,NE)} gate.</strong> Case 17 has a preceding step return 4, so the
- *       statement step is bypassed: no walk, no open, no record, and the job reports 4.</li>
- * </ul>
- *
- * <h2>How the unit is reached</h2>
- * <p>{@link StatementGenerationJobA#printAccountStatements(SysoutSink)} is called directly. There is
- * no {@code JobLauncher} and no HTTP layer in the path (gate G51): the program is a single pass inside
- * one tasklet invocation, and a launcher would only add ways for a parity assertion to fail for a
- * reason that has nothing to do with parity. Its collaborators are the <em>real</em>
- * {@link StatementGenerationJobB} over a per-case in-memory relation - so all four inputs are reached
- * through the 1040-byte {@code LK-M03B-AREA} contract its own twenty cases already gate - and the
- * <em>real</em> {@link StatementTextWriter} and {@link StatementHtmlWriter}, which own every byte of
- * the two record widths and both amount masks. A mocked writer would turn the width and mask
- * assertions into assertions about the mock.
- *
- * <p>Every collaborator, every counter and every collecting list is created per invocation. This class
- * holds no mutable static field of its own (practice B9, gate G53), so no case can leak into the next
- * and two clones can run in parallel without sharing a byte.
- *
- * <h2>The standing practices this suite is held to</h2>
- * <p>{@code review_rules} reports that <strong>no user rules were provided</strong> for this project,
- * which is not permission to lower the bar: enterprise-standard practice governs instead, and the
- * relevant ones are named here so a reader can check them rather than take them on trust.
- * <ul>
- *   <li><strong>B3, reference inputs are immutable.</strong> Not a byte of {@code app/cbl},
- *       {@code app/cpy} or {@code app/jcl} was changed to make anything here pass. They are read as the
- *       parity contract, and the fixtures are read from {@code src/test/resources/fixtures/}, which are
- *       byte-for-byte copies of {@code app/data/ASCII}.</li>
- *   <li><strong>B6, the generated bytes are the contract.</strong> No HTML is escaped, trimmed,
- *       reindented or otherwise improved on its way into an expectation. {@code HTML-L08} carries two
- *       consecutive spaces after {@code <table}, several elements are unclosed, and the whole document
- *       is padded to 100 bytes a line - all of it preserved exactly.</li>
- *   <li><strong>B7, deterministic and non-interactive.</strong> Nothing here reads a wall clock, a
- *       locale, a platform charset, a directory listing or an environment variable, so two runs of the
- *       same case produce identical bytes. Each case gets its own in-memory database, named with a
- *       store of its own, so the suite is order independent and safe to run in parallel.</li>
- *   <li><strong>B10, the tests ship with the implementation.</strong> These twenty cases were authored
- *       against the COBOL rather than against a completed translation, which is the whole reason a
- *       difference here localises to a line of {@code app/cbl/CBSTM03A.CBL} instead of to "somewhere in
- *       the statement job".</li>
- *   <li><strong>B11, hand-written and reviewable.</strong> Every expected image was composed from the
- *       copybook offsets and the COBOL literals rather than produced by a copybook parser, so each of
- *       them is diffable against the source by eye.</li>
- * </ul>
  */
 @DisplayName("CBSTM03A parity - the statement generator's loops, widths, masks and write order")
 class CBSTM03AParityTest {
-
-    // =============================================================================================
-    //  IDENTITY
-    // =============================================================================================
-
-    /**
-     * The program these cases gate, matching the {@code parity/CBSTM03A/} resource directory.
-     *
-     * <p>The source file is {@code app/cbl/CBSTM03A.CBL} with an <strong>upper-case</strong>
-     * extension - it and {@code CBSTM03B.CBL} are the only two of the twenty-eight that are - but the
-     * program name itself is upper case either way, so nothing about the casing of the file name
-     * reaches this constant or the directory it names.
-     */
     private static final String PROGRAM = StatementGenerationJobA.PROGRAM_ID;
 
-    /** The code page of the nine ASCII fixtures, named explicitly and never defaulted (practice B8). */
     private static final Charset ASCII = StandardCharsets.US_ASCII;
 
-    /**
-     * How this deployment's driver presents a record image. {@link RecordImageForm#CHARACTER} because
-     * {@link #ASCII} is single byte, which is what makes a character round trip exact.
-     */
     private static final RecordImageForm IMAGE_FORM = RecordImageForm.CHARACTER;
 
-    /**
-     * The row-identifier pseudo-column {@code application-test.yml} configures for
-     * {@value PhysicalSequence#EXPRESSION_PROPERTY}; the record-image store behind this suite answers an
-     * ordering over it with write order, which is the same thing it means to the shipped test profile's
-     * engine. It is never read by the statement pass - all four
-     * inputs are keyed or ascending browses - but the job's utility steps take it, so it is supplied
-     * rather than left to a default that does not exist.
-     */
     private static final PhysicalSequence ORDINAL = PhysicalSequence.of("_ROWID_");
 
-    /** The single column of a one-column record-image relation. */
     private static final String RECORD_IMAGE_COLUMN = "REC";
 
-    // ---------------------------------------------------------------------------------------------
-    //  Test dataset names. Deliberately NOT the production high-level qualifier that
-    //  app/csd/CARDDEMO.CSD and app/jcl/CREASTMT.JCL carry (gate G46): a parity case addresses a
-    //  dataset through its binding key, and the name behind that key belongs to configuration. A
-    //  TEST. qualifier keeps that visible, and keeps a production dataset name out of Java source.
-    // ---------------------------------------------------------------------------------------------
-
-    /** {@code TRNXFILE} - the sorted work KSDS {@code app/jcl/CREASTMT.JCL:L83} binds. */
     private static final String TRNXFILE_DSNAME = "TEST.M2.CARDDEMO.TRXFL.VSAM.KSDS";
 
-    /** {@code XREFFILE} - the card cross-reference, {@code :L84}. */
     private static final String XREFFILE_DSNAME = "TEST.M2.CARDDEMO.CARDXREF.VSAM.KSDS";
 
-    /** {@code ACCTFILE} - the account master, {@code :L85}. */
     private static final String ACCTFILE_DSNAME = "TEST.M2.CARDDEMO.ACCTDATA.VSAM.KSDS";
 
-    /** {@code CUSTFILE} - the customer master, {@code :L86}. */
     private static final String CUSTFILE_DSNAME = "TEST.M2.CARDDEMO.CUSTDATA.VSAM.KSDS";
 
-    /** {@code STMTFILE} - the plain-text statement, {@code :L87-L91}. */
     private static final String STMTFILE_DSNAME = "TEST.M2.CARDDEMO.STATEMNT.PS";
 
-    /** {@code HTMLFILE} - the HTML statement, {@code :L92-L96}. */
     private static final String HTMLFILE_DSNAME = "TEST.M2.CARDDEMO.STATEMNT.HTML";
 
-    /**
-     * The six DD names {@code app/jcl/CREASTMT.JCL} allocates to the statement step, in the order the
-     * JCL declares them at {@code :L83-L96}.
-     *
-     * <p>Sourced from {@link StatementGenerationJobA}'s own constants rather than retyped, so a DD name
-     * has exactly one spelling in the module. Its one reader is
-     * {@link #declaredDdNames(String)}, which refuses a {@code NULL_UCB_DDS} declaration naming
-     * anything else - a DD the program never opens has no {@code TIOT} entry to report on.
-     */
     private static final List<String> ALL_DD_NAMES = List.of(
         StatementGenerationJobA.TRNXFILE_DD,
         StatementGenerationJobA.XREFFILE_DD,
@@ -280,127 +99,28 @@ class CBSTM03AParityTest {
         StatementGenerationJobA.STMTFILE_DD,
         StatementGenerationJobA.HTMLFILE_DD);
 
-    /**
-     * The substitutable call sites this directory deliberately does <strong>not</strong> drive, and where
-     * each is driven instead.
-     *
-     * <p>One entry, and it is a considered allocation rather than an omission. {@code READ-CUSTFILE} is
-     * the keyed read at {@code app/cbl/CBSTM03A.CBL:L377}, whose guard at {@code L379-L386} has only a
-     * {@code WHEN '00'} and a {@code WHEN OTHER} - so <em>every</em> unusual status is fatal there, and
-     * a single parity case forcing one of them would assert one row of a matrix.
-     * {@code StatementGenerationJobATest.TheStatusMatrix} drives {@code '10'}, {@code '22'}, {@code '23'}
-     * and {@code '34'} through that guard as parameterized rows, asserting the
-     * {@code ERROR READING CUSTFILE}, {@code RETURN CODE} and {@code ABENDING PROGRAM} lines for each,
-     * which is a strictly stronger statement than one case here could make. The parity case that used to
-     * force it - the {@code STRING} and {@code MOVE} truncation case - now runs to completion, which is
-     * what its own subject requires: three whole transactions inside one whole statement.
-     *
-     * <p>Recorded as an assertion rather than a comment on purpose. A comment saying "covered elsewhere"
-     * decays the moment the elsewhere changes;
-     * {@link #everyCaseDeclaresADecodableScenario()} reads this map and fails if a site appears in
-     * neither place, and fails equally if a site appears in both.
-     */
     private static final Map<CallSite, String> GUARD_ARMS_COVERED_OUTSIDE_THIS_DIRECTORY = Map.of(
         CallSite.READ_CUSTFILE,
         "StatementGenerationJobATest.TheStatusMatrix.theCustFileKeyedReadHasNoEndOfFileArm");
 
-    /**
-     * The {@link ParityCase.UnitStimulus#PERMITTED_ENVIRONMENT_KEYS} entry a case names to declare a DD
-     * whose {@code TIOT} entry carries no unit control block.
-     *
-     * <p>The control-block walk at {@code app/cbl/CBSTM03A.CBL:L262-L291} reports such a DD with a
-     * different literal, and no seeded row can express it - the condition is a property of the address
-     * space, not of the data. That is why the key exists.
-     */
     private static final String NULL_UCB_DDS_KEY = "NULL_UCB_DDS";
 
-    // ---------------------------------------------------------------------------------------------
-    //  The two output record layouts.
-    // ---------------------------------------------------------------------------------------------
-
-    /**
-     * {@code 01 FD-STMTFILE-REC PIC X(80)} ({@code app/cbl/CBSTM03A.CBL:L45}).
-     *
-     * <p>One span over the whole record, and that is the honest layout rather than a convenience: the
-     * record area receives a different group on every {@code WRITE} - {@code ST-LINE0} is three
-     * {@code FILLER}s, {@code ST-LINE8} is a literal, an edited amount and two {@code FILLER}s - so
-     * there is no single sub-field structure to declare. The case files pin the complete image, which
-     * asserts every one of those groups byte for byte and, by asserting the total width, proves that
-     * every {@code FILLER} was emitted (gate G21).
-     */
     private static final RecordLayout STMT_LAYOUT = RecordLayout.of(
         StatementTextWriter.RECORD_LENGTH,
         FieldSpan.alphanumeric("FD-STMTFILE-REC", 0, StatementTextWriter.RECORD_LENGTH));
 
-    /**
-     * {@code 01 FD-HTMLFILE-REC PIC X(100)} ({@code app/cbl/CBSTM03A.CBL:L47}), for the same reason:
-     * this record carries a 100-byte fixed literal, a 59-byte {@code HTML-L11} group and four
-     * {@code STRING}-composed lines, at one width.
-     */
     private static final RecordLayout HTML_LAYOUT = RecordLayout.of(
         StatementHtmlWriter.RECORD_LENGTH,
         FieldSpan.alphanumeric("FD-HTMLFILE-REC", 0, StatementHtmlWriter.RECORD_LENGTH));
 
-    /**
-     * The step whose non-zero return code closes the {@code COND=(0,NE)} gate on {@code STEP040}.
-     *
-     * <p>{@value StatementGenerationJobA#STEP_010} is the {@code SORT}, and it is the honest choice:
-     * it is the last <em>ungated</em> step of {@code app/jcl/CREASTMT.JCL}, so it is exactly the step
-     * whose failure the three gates downstream of it exist to react to.
-     *
-     * <p>No case currently declares a {@code stepStatuses} entry. The gate is a genuine
-     * dimension of this step's environment and a case file can express it - the decoder honours it and
-     * {@link #drive(ParityCase, ParityHarness.Invocation)} acts on it - but the
-     * behaviour itself is asserted where it can be asserted far more thoroughly - {@code
-     * StatementGenerationJobATest} drives all three gates and the ungated control through a real
-     * {@code JobRepository}, and {@code BatchConfigTest} pins the shared decider. A parity case, whose
-     * whole output under a bypass is "nothing happened", is the weakest possible statement of it.
-     */
     private static final String BYPASSING_STEP = StatementGenerationJobA.STEP_010;
 
-    /**
-     * The return code a preceding step leaves behind to close the {@code COND=(0,NE)} gate.
-     *
-     * <p>Four rather than eight or twelve, and the choice carries a point: four is z/OS's warning code,
-     * the one a {@code SORT} really does return for a condition it survived, so the bypass being tested
-     * is the one that happens in practice rather than a catastrophic failure that would be obvious
-     * anyway. {@code COND=(0,NE)} bypasses on <em>anything</em> other than zero, four included.
-     */
     private static final int BYPASSING_RETURN_CODE = 4;
 
-    // =============================================================================================
-    //  THE GATE
-    // =============================================================================================
-
-    /**
-     * The program's twenty declarative cases, in {@code case01} through {@code case20} order.
-     *
-     * <p>{@link ParityHarness#casesOf(String)} is the whole guard and it is a strict one: it refuses a
-     * directory missing any of the twenty, naming each absentee, and equally refuses one holding
-     * anything the twenty-case enumeration would never read - a {@code case21.json}, a
-     * {@code Case07.json}, a {@code case07.json.bak}. Both halves matter, because the count <em>is</em>
-     * part of the gate: "the diff count is zero across all twenty cases" is satisfied vacuously by a
-     * set of four.
-     *
-     * @return the twenty cases, never fewer and never more
-     */
     static List<ParityCase> cases() {
         return ParityHarness.casesOf(PROGRAM);
     }
 
-    /**
-     * Runs one case against {@link StatementGenerationJobA} and requires a diff count of zero.
-     *
-     * <p>The differ compares in <strong>both</strong> directions - every expectation against what the
-     * run produced, and every observation against what the case expected - so a record the case never
-     * pinned is a difference in its own right and cannot pass unnoticed. That is what makes a
-     * per-record expectation the whole of this program's write order rather than a sample of it. On a
-     * failure the entire rendered report is surfaced, never a summary: it localises each difference to
-     * the record and byte offset that carries it, which for a ninety-five-record run is the only form
-     * in which a mismatch is actionable.
-     *
-     * @param parityCase the case to run; supplied by {@link #cases()}
-     */
     @ParameterizedTest(name = "{0}")
     @MethodSource("cases")
     @DisplayName("the case's diff count is zero")
@@ -418,15 +138,6 @@ class CBSTM03AParityTest {
             .isZero();
     }
 
-    /**
-     * Guards the case set itself, independently of {@link #cases()} being called by the runner.
-     *
-     * <p>A parameterized method whose source resolved to nothing is reported by JUnit, but a
-     * <em>short</em> source is not, so the count is asserted here as well - and with it the identity of
-     * every case, since twenty files that all declared {@code case01} would satisfy a count. The unit
-     * kind is asserted too: a case declaring anything other than {@code BATCH_JOB} would be refused by
-     * the harness at run time, and finding that out here names the file instead.
-     */
     @Test
     @DisplayName("exactly twenty cases exist, named case01 through case20, all declaring CBSTM03A")
     void exactlyTwentyCasesAreDeclared() {
@@ -468,19 +179,6 @@ class CBSTM03AParityTest {
             .isEqualTo(expected);
     }
 
-    /**
-     * Every case's declared stimulus decodes into a scenario, and the set covers every guard arm a
-     * substitution exists to reach.
-     *
-     * <p>{@link #scenarioFrom(String, ParityCase.UnitStimulus)} refuses a malformed declaration rather
-     * than defaulting it, so a mistyped call-site name fails here with the five legal names in the
-     * message instead of silently leaving the guard arm unreached. What this adds is the other
-     * direction: that each of the five substitutable sites is reached by <em>something</em>, because a
-     * substitution nothing declares is a guard arm nothing drives, and gate {@code G47} asks for all of
-     * them. Four are reached by a case here; the fifth is reached by the unit test named in
-     * {@link #GUARD_ARMS_COVERED_OUTSIDE_THIS_DIRECTORY}, and this requires that no case declares it
-     * too, so there is exactly one place the arm is driven from and exactly one record of where.
-     */
     @Test
     @DisplayName("decodes every case's declared stimulus, and names all five substitutable call sites")
     void everyCaseDeclaresADecodableScenario() {
@@ -532,65 +230,25 @@ class CBSTM03AParityTest {
             .isNotEmpty();
     }
 
-    // =============================================================================================
-    //  THE SCENARIO - what a case file cannot carry
-    // =============================================================================================
-
-    /**
-     * The ten {@code CALL 'CBSTM03B'} sites a scenario may substitute a file status at.
-     *
-     * <p>Ten, not thirteen: {@code CBSTM03A} calls the subroutine thirteen times, but three of those
-     * calls are the {@code TRNXFILE} sequential reads of the table-loading loop, which run a variable
-     * number of times and whose status is what <em>ends</em> the loop rather than something a scenario
-     * chooses. The remaining ten are addressable individually, and each is named for the DD and the
-     * operation so the constant cannot be misread as naming a paragraph.
-     *
-     * <p>A closed type rather than a pair of strings, because the whole purpose of a substitution is to
-     * reach a guard arm the seeded data cannot reach. A DD-and-operation pair spelt as free text is one
-     * transposed letter away from matching no call site at all, at which point the arm stays unreached
-     * and the case passes having asserted the opposite of what it says.
-     */
     private enum CallSite {
-
-        /** No substitution: every call reports whatever the real subroutine reports. */
         NONE(null),
 
-        /** {@code 8100-TRNXFILE-OPEN}'s open, {@code app/cbl/CBSTM03A.CBL:L734}, guarded at {@code L736}. */
         OPEN_TRNXFILE("OPEN-TRNXFILE"),
 
-        /** {@code 1000-XREFFILE-GET-NEXT}'s sequential read, {@code L351}, guarded at {@code L353}. */
         READ_XREFFILE("READ-XREFFILE"),
 
-        /** {@code 2000-CUSTFILE-GET}'s keyed read, {@code L377}, guarded at {@code L379}. */
         READ_CUSTFILE("READ-CUSTFILE"),
 
-        /** {@code 3000-ACCTFILE-GET}'s keyed read, {@code L401}, guarded at {@code L403}. */
         READ_ACCTFILE("READ-ACCTFILE"),
 
-        /** {@code 9100-TRNXFILE-CLOSE}'s close, {@code L860}, guarded at {@code L862}. */
         CLOSE_TRNXFILE("CLOSE-TRNXFILE");
 
-        /**
-         * The {@code <VERB>-<DD>} name a case file declares this site under, or {@code null} for
-         * {@link #NONE}, which no case declares because naming no site is how a case declares no
-         * substitution.
-         */
         private final String declaredName;
 
-        /** @param declaredName the name a case declares, or {@code null} */
         CallSite(String declaredName) {
             this.declaredName = declaredName;
         }
 
-        /**
-         * The name a case file declares this site under.
-         *
-         * <p>{@code <VERB>-<DD>}, the convention every gate in this package uses, so the declaration
-         * reads as the COBOL statement it substitutes at rather than as a Java enum constant.
-         *
-         * @return the declared name
-         * @throws IllegalStateException if asked of {@link #NONE}
-         */
         private String declaredName() {
             if (declaredName == null) {
                 throw new IllegalStateException("CallSite.NONE has no declared name: a case declares no "
@@ -613,59 +271,16 @@ class CBSTM03AParityTest {
      */
     private record Scenario(CallSite site, String status, int bypassExitCode,
                             List<String> nullUcbDds) {
-
-        /** The ordinary environment: every call succeeds and every DD is allocated. */
         private static Scenario normal() {
             return new Scenario(CallSite.NONE, null, 0, List.of());
         }
 
     }
 
-    /**
-     * Decodes the scenario a case declares in its {@link ParityCase.UnitStimulus}.
-     *
-     * <p><strong>Nothing here reads {@link ParityCase#caseId()}.</strong> It used to: a {@code switch}
-     * over {@code case01}..{@code case20} chose a substituted status, a bypass code or a null-UCB DD
-     * list, and that is the defect this replaces. A case file gave no indication of the environment it
-     * ran in, renumbering a case silently moved the environment to a different run, and a new case file
-     * either threw or fell into an arm asserting something it had not asked for. The environment is an
-     * <em>input</em>, so it is declared beside the seed that is also an input.
-     *
-     * <p>Three declarations are honoured, each mapping to one member of the stimulus:
-     * <ul>
-     *   <li>a {@code callSiteOutcomes} entry naming one of the six {@link CallSite} members and the
-     *       two-character {@code FILE STATUS} it reports - which is how a case reaches a guard arm no
-     *       arrangement of seeded rows can produce;</li>
-     *   <li>a {@code stepStatuses} entry naming a preceding step of {@code app/jcl/CREASTMT.JCL} and the
-     *       condition code it left behind, which the {@code COND=(0,NE)} gate on the statement step
-     *       reads;</li>
-     *   <li>an {@code environment} entry under {@code NULL_UCB_DDS} listing the DD names whose
-     *       {@code TIOT} entry reports no unit control block, which the control-block walk at
-     *       {@code app/cbl/CBSTM03A.CBL:L262-L291} reports with a different literal.</li>
-     * </ul>
-     *
-     * <p>Silence is itself a declaration, and the commonest one: the fifteen cases that name nothing are
-     * not uninteresting - they are the ones whose whole assertion is the record sequence, and they differ
-     * from each other only in their seed, which is where a case file belongs.
-     *
-     * @param parityCase the case whose declared environment to decode
-     * @return that case's scenario; never {@code null}
-     * @throws IllegalArgumentException if a declared call site is not one of the six, if a status is
-     *     malformed, if more than one call site is named, or if a stimulus member this program has no
-     *     use for is declared
-     */
     private static Scenario scenarioOf(ParityCase parityCase) {
         return scenarioFrom(parityCase.caseId(), parityCase.unitStimulus());
     }
 
-    /**
-     * Decodes a stimulus into the scenario it describes.
-     *
-     * @param caseId the case, for a diagnostic only - never for a decision
-     * @param stimulus the declared stimulus
-     * @return the scenario; never {@code null}
-     * @throws IllegalArgumentException if the stimulus is malformed or declares something unusable
-     */
     private static Scenario scenarioFrom(String caseId, ParityCase.UnitStimulus stimulus) {
         if (!stimulus.operationScript().isEmpty()) {
             throw new IllegalArgumentException(caseId + " of " + PROGRAM + " declares an "
@@ -713,17 +328,6 @@ class CBSTM03AParityTest {
         return new Scenario(site, status, bypassExitCode, nullUcbDds);
     }
 
-    /**
-     * Resolves a declared call-site name to the enum member it names.
-     *
-     * <p>Refused rather than defaulted, because a name matching nothing would leave the guard arm
-     * unreached and the case would pass having asserted the opposite of what it says.
-     *
-     * @param caseId the case, for the diagnostic
-     * @param name the declared name
-     * @return the matching member, never {@link CallSite#NONE}
-     * @throws IllegalArgumentException if the name is not one of the five substitutable sites
-     */
     private static CallSite callSiteNamed(String caseId, String name) {
         for (CallSite candidate : CallSite.values()) {
             if (candidate != CallSite.NONE && candidate.declaredName().equals(name)) {
@@ -736,16 +340,6 @@ class CBSTM03AParityTest {
             + "driven it.");
     }
 
-    /**
-     * The two-character {@code FILE STATUS} a declared outcome reports.
-     *
-     * @param caseId the case, for the diagnostic
-     * @param site the declared site name, for the diagnostic
-     * @param outcome the declared outcome
-     * @return the status, never {@code null}
-     * @throws IllegalArgumentException if the outcome declares a CICS response, a record count or
-     *     nothing at all
-     */
     private static String statusOf(String caseId, String site,
                                    ParityCase.CallSiteOutcome outcome) {
         if (outcome.resp() != null) {
@@ -773,13 +367,6 @@ class CBSTM03AParityTest {
         return outcome.status();
     }
 
-    /**
-     * Splits a comma-separated {@code NULL_UCB_DDS} declaration into DD names.
-     *
-     * @param declared the declared value
-     * @return the DD names, in declaration order
-     * @throws IllegalArgumentException if the value names no DD, or names one this program never opens
-     */
     private static List<String> declaredDdNames(String declared) {
         List<String> names = new ArrayList<>();
         for (String candidate : declared.split(",", -1)) {
@@ -798,7 +385,6 @@ class CBSTM03AParityTest {
         return List.copyOf(names);
     }
 
-    /** @return the five substitutable call-site names, for a diagnostic */
     private static List<String> substitutableCallSiteNames() {
         List<String> names = new ArrayList<>();
         for (CallSite candidate : CallSite.values()) {
@@ -809,43 +395,6 @@ class CBSTM03AParityTest {
         return List.copyOf(names);
     }
 
-    // =============================================================================================
-    //  THE ADAPTER - one run of CBSTM03A, recorded as it happens
-    // =============================================================================================
-
-    /**
-     * Builds the job over a per-case in-memory relation and runs it once.
-     *
-     * <p><strong>Everything is recorded eagerly, as it is emitted.</strong> That is not a style choice:
-     * three of the twenty cases end in an {@link AbendException} - case13, case15 and case16, the three
-     * that force a status a guard refuses - and the harness builds the fingerprint from whatever the
-     * recorder holds at the moment the exception arrives. A displayed line collected into a list and
-     * handed over afterwards would simply not exist on those three, and neither would a written
-     * record. So the {@code SYSOUT} sink records straight into the recorder, and so does each
-     * of the two output sinks - and the sinks' {@code open()} registers the dataset before the first
-     * record, which is what makes "the program opened both files and wrote nothing to either" an
-     * assertion rather than a silence.
-     *
-     * <p>The final state is the one thing that cannot be recorded eagerly, because it is the
-     * <em>consequence</em> of a discard: {@code app/jcl/CREASTMT.JCL:L87-L96} declares both outputs
-     * {@code DISP=(NEW,CATLG,DELETE)}, so a run that does not reach {@code 9999-GOBACK} leaves nothing
-     * behind however many records it wrote. It is therefore recorded in a {@code finally}, before the
-     * abend leaves this method.
-     *
-     * <p><strong>It is recorded for every case, unconditionally.</strong> It used to be recorded only
-     * for the cases that declared a {@code FINAL_STATE} expectation, and that was a defect however
-     * convenient it read: an observation chosen by consulting the expectation makes the two sides of the
-     * comparison one side. A case that should have pinned a retained record but did not would have had
-     * nothing observed to contradict it, and the differ - which reports an observed dataset no
-     * expectation addresses - would have had nothing to report. Both outputs are declared
-     * {@code DISP=(NEW,CATLG,DELETE)} and both are opened on every path that runs at all, so both are
-     * observable on every such path, and what the run left behind is now measured rather than asked
-     * about.
-     *
-     * @param parityCase the case being run; supplies the seed and states which channels it expects
-     * @param invocation the seeded datasets, the codec and the recorder
-     * @return the outcome the recorder holds
-     */
     private ParityHarness.UnitOutcome drive(ParityCase parityCase,
                                             ParityHarness.Invocation invocation) {
         Scenario scenario = scenarioOf(parityCase);
@@ -853,21 +402,14 @@ class CBSTM03AParityTest {
 
         if (scenario.bypassExitCode() != 0
             && bypassed(scaffolding(bindings()), scenario.bypassExitCode())) {
-            // COND=(0,NE): the step is flushed, so the program does not run and produces nothing. The
-            // job still reports the highest executed condition code, which is the code that closed the
-            // gate - a bypass is not a success and must not be reported as zero.
             return recorder.returnCode(scenario.bypassExitCode()).build();
         }
 
         JobFixture assembled = fixture(invocation.datasets(), scenario, recorder);
 
         try {
-            // Every DISPLAY goes straight into the fingerprint rather than into a list drained
-            // afterwards: three of the twenty cases end in an abend, and the harness builds from
-            // whatever the recorder holds at that moment.
             assembled.job().printAccountStatements(recorder::display);
         } finally {
-            // Unconditionally, and never gated on what the case expects: see the method comment.
             recorder.finalState(StatementGenerationJobA.STMTFILE_DD, STMT_LAYOUT,
                 assembled.textSink().retained());
             recorder.finalState(StatementGenerationJobA.HTMLFILE_DD, HTML_LAYOUT,
@@ -876,32 +418,9 @@ class CBSTM03AParityTest {
         return recorder.build();
     }
 
-    /**
-     * One runnable job with both output sinks captured, built per invocation.
-     *
-     * @param job the subject
-     * @param textSink the {@code STMTFILE} sink
-     * @param htmlSink the {@code HTMLFILE} sink
-     */
     private record JobFixture(StatementGenerationJobA job, TextSink textSink, HtmlSink htmlSink) {
     }
 
-    /**
-     * Assembles the job over a given seed and scenario, with every seam captured.
-     *
-     * <p>Shared by the twenty cases and by the structural gates that need a real run, so both reach the
-     * program the same way. The two writers are <em>real</em> and only their no-argument open is
-     * redirected: they own the two record widths, both thirteen-byte amount masks and every padding
-     * decision, so a mocked writer would turn the width and mask assertions into assertions about the
-     * mock. {@link StatementGenerationJobA} opens its outputs with the no-argument
-     * {@link StatementTextWriter#openOutput()} and {@link StatementHtmlWriter#open()}, which is why the
-     * redirection is where the seam has to be.
-     *
-     * @param seeded the datasets to place behind the subroutine, keyed by binding key
-     * @param scenario the environment: any substituted status and any DD with no unit control block
-     * @param recorder where every displayed line and every written record is recorded as it happens
-     * @return the assembled job and its two sinks
-     */
     private JobFixture fixture(Map<String, ParityHarness.SeededDataset> seeded, Scenario scenario,
                                ParityHarness.UnitOutcome.Builder recorder) {
         DatasetBindings catalogue = bindings();
@@ -913,9 +432,6 @@ class CBSTM03AParityTest {
         TextSink textSink = new TextSink(recorder);
         HtmlSink htmlSink = new HtmlSink(recorder);
 
-        // A FRESH handle per open rather than one handle returned repeatedly: the COBOL opens once at
-        // L293 and closes once at L339, and a closed handle refuses further writes exactly as the real
-        // writer does.
         StatementTextWriter textWriter = Mockito.spy(realText);
         Mockito.doAnswer(stubbed -> realText.openOutput(textSink)).when(textWriter).openOutput();
         StatementHtmlWriter htmlWriter = Mockito.spy(realHtml);
@@ -930,20 +446,6 @@ class CBSTM03AParityTest {
         return new JobFixture(job, textSink, htmlSink);
     }
 
-    /**
-     * Evaluates {@code COND=(0,NE)} the way the job's own flow does, against a hand-built execution.
-     *
-     * <p>The decision is <strong>consumed, not asserted</strong>. If the shared decider were to answer
-     * {@link BatchConfig#PROCEED} for a preceding step that returned four, this method returns
-     * {@code false}, the program runs, and the case fails on the ninety-five records and nine displayed
-     * lines it then produces against the nothing it expects. That is a considerably better failure than
-     * an assertion here would give, because it is the difference the gate exists to catch rather than a
-     * restatement of the gating rule.
-     *
-     * @param scaffolding the batch seam holding the shared gating policy
-     * @param exitCode the non-zero return code a preceding step left behind
-     * @return whether the statement step is bypassed
-     */
     private static boolean bypassed(BatchConfig scaffolding, int exitCode) {
         JobExecution execution = new JobExecution(1L);
         StepExecution preceding = execution.createStepExecution(BYPASSING_STEP);
@@ -953,33 +455,9 @@ class CBSTM03AParityTest {
         return BatchConfig.SKIP.equals(decision);
     }
 
-    // =============================================================================================
-    //  STRUCTURAL GATES - the properties a per-record comparison cannot reach
-    // =============================================================================================
-
-    /**
-     * The facts the twenty record comparisons rest on but cannot themselves assert.
-     *
-     * <p>A diff count of zero says the run produced the bytes the case expected. It cannot say that the
-     * expectation was stated at the right <em>width</em>, that the abend carried no {@code ABCODE}, that
-     * a sixth {@code EVALUATE} arm exists and is unreachable, or that a declared-but-never-written
-     * literal survived. Each of those is a property of the translation rather than of one run, so each
-     * is asserted here, once.
-     */
     @Nested
     @DisplayName("Structural gates")
     class StructuralGates {
-
-        /**
-         * The five steps of {@code app/jcl/CREASTMT.JCL}, their programs and their three
-         * {@code COND=(0,NE)} gates.
-         *
-         * <p>Gating the wrong count of steps is the easy mistake in this job and it is silent: four
-         * gated steps bypass work the mainframe performs, two run work it bypasses. The first two steps
-         * carry no {@code COND} at all - {@code DELDEF01} at {@code :L22} and {@code STEP010} at
-         * {@code :L44} - and the last three carry one each, at {@code :L56}, {@code :L66} and
-         * {@code :L79}.
-         */
         @Test
         @DisplayName("the job declares DELDEF01, STEP010, STEP020, STEP030 and STEP040, gating the last three")
         void theJobDeclaresTheFiveStepsOfCreastmtWithThreeCondGates() {
@@ -1011,18 +489,6 @@ class CBSTM03AParityTest {
                     StatementGenerationJobA.NOOP_PROGRAM, PROGRAM);
         }
 
-        /**
-         * The two output record widths, and the losing {@code HTMLFILE} declaration (gates G19, G20,
-         * risk R-G).
-         *
-         * <p>{@code app/jcl/CREASTMT.JCL} declares {@code HTMLFILE} <strong>twice at different
-         * widths</strong>: the {@code STEP030} pre-delete says {@code LRECL=80} at {@code :L69} and the
-         * {@code STEP040} step that actually creates it says {@code LRECL=100} at {@code :L94}. The
-         * creating step is authoritative and {@code 01 FD-HTMLFILE-REC PIC X(100)} at
-         * {@code app/cbl/CBSTM03A.CBL:L47} confirms it. The second half of this test proves the
-         * disagreement cannot be resolved the wrong way by configuration: a catalogue offering 80 is
-         * refused at construction rather than at the hundredth write.
-         */
         @Test
         @DisplayName("STMTFILE is 80 bytes, HTMLFILE is 100, and a configured 80 for HTMLFILE is refused")
         void theTwoOutputWidthsAreEightyAndOneHundred() {
@@ -1054,15 +520,6 @@ class CBSTM03AParityTest {
                 .withMessageContaining(String.valueOf(StatementHtmlWriter.RECORD_LENGTH));
         }
 
-        /**
-         * The seventeen text line templates, each exactly 80 bytes, contiguous and complete (gate G21).
-         *
-         * <p>{@code 01 STATEMENT-LINES} at {@code app/cbl/CBSTM03A.CBL:L85-L146} is sixteen numbered
-         * lines plus {@code ST-LINE14A}, and every one of them is a group of {@code FILLER}s and named
-         * slots summing to 80. If a {@code FILLER} were dropped from any of them the group would be
-         * narrower than the record and the whole line would shift, which is why the sum is asserted per
-         * line rather than only in aggregate.
-         */
         @Test
         @DisplayName("STATEMENT-LINES is seventeen contiguous 80-byte lines, ST-LINE14A included")
         void theSeventeenLineTemplatesAreEightyBytesEach() {
@@ -1095,14 +552,6 @@ class CBSTM03AParityTest {
                 .isEqualTo(13);
         }
 
-        /**
-         * The 1-based 51x10 transaction table (gate G33).
-         *
-         * <p>{@code 05 WS-CARD-TBL OCCURS 51 TIMES} containing {@code 10 WS-TRAN-TBL OCCURS 10 TIMES}
-         * ({@code app/cbl/CBSTM03A.CBL:L226-L230}). The bounds are asserted here and the <em>indexing</em>
-         * is asserted by cases 3 and 4, which pin the first and the last element of both dimensions -
-         * the two places a 1-based-to-0-based conversion goes wrong.
-         */
         @Test
         @DisplayName("WS-TRNX-TABLE is 51 cards of 10 transactions, at the copybook's own widths")
         void theTableIsFiftyOneByTenAndOneBased() {
@@ -1127,17 +576,6 @@ class CBSTM03AParityTest {
                 .isEqualTo(TrnxRecord.RECORD_LENGTH);
         }
 
-        /**
-         * The {@code WS-FL-DD} dispatch, whose sixth {@code EVALUATE} arm is unreachable (gate G30).
-         *
-         * <p>{@code EVALUATE WS-FL-DD} at {@code app/cbl/CBSTM03A.CBL:L298-L314} has six arms: the four
-         * DD names, {@code 'READTRNX'}, and a {@code WHEN OTHER} that goes straight to
-         * {@code 9999-GOBACK}. Every assignment to {@code WS-FL-DD} in the program - the
-         * {@code VALUE 'TRNXFILE'} at {@code L67} and the moves at {@code L760}, {@code L779},
-         * {@code L797} and {@code L851} - names one of the five, so {@code WHEN OTHER} cannot be
-         * reached at run time. It is preserved rather than removed (practice B5), and this asserts the
-         * five that are reachable so a sixth state slipping into the set would be caught.
-         */
         @Test
         @DisplayName("WS-FL-DD takes exactly five values, so the EVALUATE's WHEN OTHER is unreachable")
         void theFileControlStatesAreTheFiveReachableWsFlDdValues() {
@@ -1159,16 +597,6 @@ class CBSTM03AParityTest {
                 .isEqualTo(StatementGenerationJobB.DD_NAMES);
         }
 
-        /**
-         * The program declares only its two outputs and reaches all four inputs through the subroutine.
-         *
-         * <p>This is the structural fact the whole statement job turns on: {@code CBSTM03A}'s
-         * {@code FILE-CONTROL} at {@code app/cbl/CBSTM03A.CBL:L38-L40} declares {@code STMTFILE} and
-         * {@code HTMLFILE} and nothing else, while all four of {@code TRNXFILE}, {@code XREFFILE},
-         * {@code CUSTFILE} and {@code ACCTFILE} are declared in {@code CBSTM03B} - which is why
-         * {@code CBSTM03A} calls it thirteen times. The step nonetheless binds all six DD names at
-         * {@code app/jcl/CREASTMT.JCL:L83-L96}, because the subroutine runs inside the same step.
-         */
         @Test
         @DisplayName("the step binds six DDs; the four inputs belong to CBSTM03B and the two outputs here")
         void theProgramDeclaresOnlyItsTwoOutputs() {
@@ -1191,18 +619,6 @@ class CBSTM03AParityTest {
                 .isEqualTo(StatementHtmlWriter.HTMLFILE_DD_NAME);
         }
 
-        /**
-         * The HTML literal catalogue, including the two literals nothing ever writes (practice B5).
-         *
-         * <p>Three properties, and each is a way the catalogue could be wrong while every case still
-         * passed. First, {@code HTML-L08} and the eleven other continuation-line literals must be joined
-         * with <strong>no inserted whitespace</strong>: a COBOL continuation reopens the literal at the
-         * quote and adds nothing, so {@code '...styl'} followed by {@code 'e="width:70%...'} is one word.
-         * Second, {@code HTML-L11} is a 59-byte group and {@code HTML-L23} a 76-byte one, and
-         * {@code HTML-L23} is <em>declared and never written</em> - as is {@code HTML-LTDS}, which no
-         * {@code SET} in the program names. Both stay. Third, every literal must fit the 100-byte record,
-         * because a longer one would be silently truncated on the {@code MOVE}.
-         */
         @Test
         @DisplayName("every HTML literal fits 100 bytes; HTML-L23 and HTML-LTDS are declared and unwritten")
         void theHtmlLiteralCatalogueIsPreservedIncludingItsDeadEntries() {
@@ -1249,23 +665,6 @@ class CBSTM03AParityTest {
                     "<p>Current Balance    : ", "<p>FICO Score         : ");
         }
 
-        /**
-         * Both amount masks truncate toward zero at scale 2, and neither ever rounds (gates G22, G24).
-         *
-         * <p>The keyword {@code ROUNDED} appears <strong>zero times</strong> in all twenty-eight
-         * programs, so a COBOL store of an over-precise fraction truncates - which makes
-         * {@link java.math.RoundingMode#DOWN} the only faithful choice and {@code HALF_UP} and
-         * {@code HALF_EVEN} both wrong. Every monetary value in the twenty case files is already an
-         * edited thirteen-byte image, so a case file cannot by itself distinguish a truncation from a
-         * rounding that happened to agree with it; this asserts the policy at the seam
-         * ({@link com.vsergeychik.carddemo.common.CobolDecimal}) and then at the mask, with a third
-         * fractional digit that a half-up rounding would carry.
-         *
-         * <p>The sign is asserted separately and deliberately: a {@code PICTURE} sign control symbol
-         * represents the operational sign of the value being <em>edited</em>, so a magnitude that
-         * truncates away entirely still renders a minus. Taking the sign from the truncated magnitude
-         * instead is the plausible mistake, and it differs only for this value.
-         */
         @Test
         @DisplayName("G24 - both masks truncate toward zero at scale 2, and the sign is the sender's")
         void theAmountMasksTruncateRatherThanRound() {
@@ -1302,22 +701,6 @@ class CBSTM03AParityTest {
                 .isEqualTo("234567890.12-");
         }
 
-        /**
-         * The unique abend: {@code CALL 'CEE3ABD'} with neither an {@code ABCODE} nor a {@code TIMING}
-         * (gate G35).
-         *
-         * <p>{@code 9999-ABEND-PROGRAM} at {@code app/cbl/CBSTM03A.CBL:L921-L923} is
-         * {@code DISPLAY 'ABENDING PROGRAM'} followed by a bare {@code CALL 'CEE3ABD'} - no
-         * {@code USING}, no abend code, no timing. Every other abend site in the estate passes both, so
-         * {@link AbendException} models them as optional and this is the one place where both must be
-         * absent.
-         *
-         * <p>The abend is provoked rather than constructed: an <em>empty</em> {@code TRNXFILE} makes
-         * {@code 8100-TRNXFILE-OPEN}'s read at {@code L746} report {@code '10'}, which the
-         * {@code IF WS-M03B-RC = '00' OR '04'} guard at {@code L748} treats as fatal. So what is asserted
-         * is the exception the program's own guard chain raises, and the three displayed lines it raises
-         * it with.
-         */
         @Test
         @DisplayName("G35 - the abend carries neither an ABCODE nor a TIMING, after three DISPLAY lines")
         void theAbendCarriesNeitherAnAbendCodeNorATiming() {
@@ -1361,15 +744,6 @@ class CBSTM03AParityTest {
                     StatementGenerationJobA.ABENDING_PROGRAM);
         }
 
-        /**
-         * The two null-UCB literals differ by a space, and the difference is preserved.
-         *
-         * <p>{@code app/cbl/CBSTM03A.CBL:L281} displays {@code ' --  null UCB'} inside the {@code TIOT}
-         * loop and {@code :L290} displays {@code ' -- null  UCB'} after it. Both are thirteen characters
-         * and both have two consecutive spaces, in different places. Normalising them would look like
-         * tidying and would change two of this program's displayed lines, so the divergence is asserted
-         * explicitly - and case 20 is the one that emits both in a single run.
-         */
         @Test
         @DisplayName("the in-loop and post-loop null-UCB literals are byte-different, and both survive")
         void theTiotSubstitutionKeepsBothNullUcbLiterals() {
@@ -1395,25 +769,6 @@ class CBSTM03AParityTest {
         }
     }
 
-    // =============================================================================================
-    //  THE COLLABORATORS - a fixture-backed relation, the real writers and a real subroutine
-    // =============================================================================================
-
-    /**
-     * The six-entry {@code carddemo.datasets} catalogue every collaborator is constructed with.
-     *
-     * <p>Every entry has to agree with its copybook about the record width, because three constructors
-     * check it at startup rather than at the first read - and one of those checks is the whole of gate
-     * G20: {@link StatementHtmlWriter} refuses a configured width of 80 for {@code HTMLFILE} and names
-     * both JCL declarations in the refusal, so the losing {@code STEP030} width cannot reach a run.
-     *
-     * <p>{@code recordFormat} is {@code "FB"}, which is what {@code app/jcl/CREASTMT.JCL} declares. The
-     * CSD says {@code RECORDFORMAT(V)} for the four input datasets and the two disagree in the source;
-     * practice B4 forbids reconciling that, and nothing here depends on it - every width is
-     * copybook-fixed either way.
-     *
-     * @return the catalogue
-     */
     private static DatasetBindings bindings() {
         DatasetBindings catalogue = new DatasetBindings();
         catalogue.put(StatementGenerationJobA.TRNXFILE_DD, ksds(TRNXFILE_DSNAME,
@@ -1431,49 +786,17 @@ class CBSTM03AParityTest {
         return catalogue;
     }
 
-    /**
-     * One well-formed indexed binding.
-     *
-     * @param dsname the dataset name
-     * @param recordLength the copybook's record width
-     * @param keyLength the {@code RECORD KEY} width
-     * @param copybook the copybook the width comes from
-     * @return the binding
-     */
     private static DatasetBinding ksds(String dsname, int recordLength, int keyLength,
                                        String copybook) {
         return new DatasetBinding(dsname, DatasetBinding.KSDS, false, "FB", null, recordLength,
             copybook, keyLength, 0, null, null);
     }
 
-    /**
-     * One well-formed physical-sequential binding - the shape both statement outputs take.
-     *
-     * @param dsname the dataset name
-     * @param recordLength the {@code LRECL} of the creating step
-     * @param blockSize the {@code BLKSIZE} of the creating step
-     * @return the binding
-     */
     private static DatasetBinding sequential(String dsname, int recordLength, int blockSize) {
         return new DatasetBinding(dsname, "sequential", false, "FB", blockSize, recordLength, null,
             null, null, null, null);
     }
 
-    /**
-     * The batch seam, carrying the five-step {@code app/jcl/CREASTMT.JCL} contract verbatim.
-     *
-     * <p>{@link StatementGenerationJobA#REQUIRED_STEPS} is handed straight in rather than re-listed.
-     * The constructor compares the configured sequence against that list as a whole - names, programs,
-     * gates and order - so a hand-written copy here would only create a second thing to keep right, and
-     * the one property worth asserting about the contract is asserted in
-     * {@link StructuralGates#theJobDeclaresTheFiveStepsOfCreastmtWithThreeCondGates()} instead.
-     *
-     * <p>The job repository and transaction manager are mocked because nothing in this suite launches a
-     * job: the program is reached by a direct call (gate G51), so no execution is ever persisted.
-     *
-     * @param catalogue the dataset catalogue the seam publishes
-     * @return the seam
-     */
     private static BatchConfig scaffolding(DatasetBindings catalogue) {
         JobContracts contracts = new JobContracts();
         contracts.put(StatementGenerationJobA.JOB_KEY, new JobContract(
@@ -1483,46 +806,10 @@ class CBSTM03AParityTest {
             new SuppliedBean<>(mock(PlatformTransactionManager.class)), contracts, catalogue);
     }
 
-    /**
-     * A real unit of work over the case's own relation.
-     *
-     * <p>Real rather than mocked because the abnormal disposition depends on it: three of the twenty
-     * cases end in an abend, {@code app/jcl/CREASTMT.JCL:L87-L96} declares both outputs
-     * {@code DISP=(NEW,CATLG,DELETE)}, and a mocked transaction manager would let a disposition that
-     * never opens a boundary look correct. The discard itself reaches the two collecting sinks rather
-     * than the relation, since that is where this run's records are.
-     *
-     * @param template the template whose data source the boundary is opened on
-     * @return the unit of work
-     */
     private static DatasetUnitOfWork unitOfWork(JdbcTemplate template) {
         return new DatasetUnitOfWork(new JdbcTransactionManager(template.getDataSource()));
     }
 
-    /**
-     * A template over a fresh in-memory relation per case, holding the seeded input rows.
-     *
-     * <p>One store per invocation: two cases - and two clones running in parallel - can never share one,
-     * and no counter is kept because a mutable static field is exactly what practice B9 and gate G53
-     * forbid. Only the four <em>input</em> datasets get a relation; the two outputs are reached through
-     * supplied sinks.
-     *
-     * <p><strong>No DDL, for the inputs either.</strong> A relation here is declared to a
-     * {@link RecordImageDataSource}, which holds record images and has no schema, so gate
-     * <strong>G44</strong> - no DDL, no schema migration, no entity annotation and no generated table
-     * definition anywhere in this module - holds with nothing to reinterpret. Everything above the driver
-     * is unchanged: the real {@code JdbcTemplate}, the real {@link StatementGenerationJobA} and its real
-     * subroutine, {@code DatasetRelation}'s real composed statements and {@code RecordImageForm}'s real
-     * column read.
-     *
-     * <p>The column is declared at the seeded width rather than at the copybook width. The two agree
-     * for every case here, and stating the seeded one means a disagreement would surface as the
-     * {@code '04'} record-length conflict COBOL reports rather than being papered over by a wider
-     * column.
-     *
-     * @param seeded the datasets the harness seeded, keyed by binding key
-     * @return a template over the seeded relations
-     */
     private static JdbcTemplate seededTemplate(Map<String, ParityHarness.SeededDataset> seeded) {
         RecordImageDataSource backend = new RecordImageDataSource();
         for (String dd : StatementGenerationJobB.DD_NAMES) {
@@ -1537,13 +824,6 @@ class CBSTM03AParityTest {
         return new JdbcTemplate(backend);
     }
 
-    /**
-     * The test dataset name each binding key resolves to.
-     *
-     * @param dd the binding key
-     * @return that dataset's test name
-     * @throws IllegalArgumentException if the DD is not one this program touches
-     */
     private static String dsnameOf(String dd) {
         return switch (dd) {
             case StatementGenerationJobA.TRNXFILE_DD -> TRNXFILE_DSNAME;
@@ -1559,34 +839,10 @@ class CBSTM03AParityTest {
         };
     }
 
-    /**
-     * Renders an identifier as a SQL delimited identifier, doubling any quotation mark within it.
-     *
-     * <p>A dataset name is dotted and would otherwise be parsed as a qualified reference, and it is
-     * never a parameter, so it is delimited rather than bound. Doubling is unreachable for these six
-     * constants; it is written anyway so the helper is correct for whatever it is handed rather than
-     * only for the values one caller happens to supply.
-     *
-     * @param identifier the identifier text
-     * @return the delimited identifier
-     */
     private static String delimited(String identifier) {
         return '"' + identifier.replace("\"", "\"\"") + '"';
     }
 
-    /**
-     * The {@code TIOT} substitute one case runs against.
-     *
-     * <p>Supplied rather than left to {@link StatementGenerationJobA}'s configured default so a case can
-     * choose which DD names have no unit control block behind them, which is the only way to reach the
-     * in-loop {@code ' --  null UCB'} literal at {@code L281}. The entry list is
-     * {@link StatementGenerationJobA#STEP_040_DD_NAMES} in JCL declaration order and the job and step
-     * names are the two the production class derives, so what is asserted is still the lines the
-     * production class emits rather than a shape invented here.
-     *
-     * @param scenario the case's environment, naming any DD with no unit control block
-     * @return the source
-     */
     private static TiotSource tiotSource(Scenario scenario) {
         List<TiotEntry> entries = new ArrayList<>(StatementGenerationJobA.STEP_040_DD_NAMES.size());
         for (String dd : StatementGenerationJobA.STEP_040_DD_NAMES) {
@@ -1597,34 +853,12 @@ class CBSTM03AParityTest {
         return () -> image;
     }
 
-    /**
-     * The real subroutine, with one call site's {@code FILE STATUS} substituted.
-     *
-     * <p>Real and not scripted, deliberately. {@code CBSTM03B}'s own twenty cases already gate the
-     * data layer field for field, so a diff here is almost certainly a control-flow or write-order
-     * fault rather than an I/O fault - and that is only true if the I/O is the same I/O. Every read
-     * therefore goes to the seeded relation through the 1040-byte {@code LK-M03B-AREA} contract, and
-     * only the two-character status of one nominated call is replaced.
-     *
-     * <p>The record area is carried through unchanged when a status is substituted, because the guard
-     * that receives it abends before looking at it. Overriding the four operations rather than
-     * {@code call(Session, Request)} is what {@link StatementGenerationJobA} actually invokes: it
-     * reaches the subroutine through {@code open}, {@code readNext}, {@code readByKey} and
-     * {@code close} at all thirteen of its {@code CALL 'CBSTM03B'} sites.
-     */
     private static final class SubstitutingSubroutine extends StatementGenerationJobB {
-
-        /** The case's environment, naming at most one call site and the status it reports. */
         private final Scenario scenario;
 
-        /**
-         * @param template the template over the seeded relations
-         * @param catalogue the dataset catalogue
-         * @param scenario the case's environment
-         */
         private SubstitutingSubroutine(JdbcTemplate template, DatasetBindings catalogue,
                                        Scenario scenario) {
-            super(template, catalogue, ASCII, IMAGE_FORM);
+            super(template, catalogue, ASCII, IMAGE_FORM, new TrnxRepository(catalogue));
             this.scenario = scenario;
         }
 
@@ -1652,15 +886,6 @@ class CBSTM03AParityTest {
             return substituted(CallSite.CLOSE_TRNXFILE, TRNXFILE_DD, dd, super.close(session, dd));
         }
 
-        /**
-         * Replaces the status of exactly the nominated call site, and of nothing else.
-         *
-         * @param site the call site this override implements
-         * @param siteDd the DD name that site addresses
-         * @param dd the DD name this call addressed
-         * @param real what the subroutine actually reported
-         * @return the substituted response, or {@code real} when this is not the nominated site
-         */
         private Response substituted(CallSite site, String siteDd, String dd, Response real) {
             if (scenario.site() != site || !siteDd.equals(dd)) {
                 return real;
@@ -1669,24 +894,11 @@ class CBSTM03AParityTest {
         }
     }
 
-    /**
-     * The {@code STMTFILE} sink: records every 80-byte image into the fingerprint as it is written.
-     *
-     * <p>Two channels, and they are genuinely different observations. A record handed to the sink was
-     * <em>written</em> - the COBOL {@code WRITE} completed and the record is durable as it completes -
-     * while what the sink still <em>retains</em> is what the step leaves behind, and
-     * {@code DISP=(NEW,CATLG,DELETE)} makes those two differ on every abnormal end. A sink that modelled
-     * only "what was written" could not say that the abended run left nothing.
-     */
     private static final class TextSink implements StatementTextWriter.RecordSink {
-
-        /** Where a write is recorded the moment it happens. */
         private final ParityHarness.UnitOutcome.Builder recorder;
 
-        /** Every image still retained, in write order, after any abnormal disposition. */
         private final List<String> retained = new ArrayList<>();
 
-        /** @param recorder the fingerprint recorder */
         private TextSink(ParityHarness.UnitOutcome.Builder recorder) {
             this.recorder = recorder;
         }
@@ -1694,11 +906,8 @@ class CBSTM03AParityTest {
         /**
          * {@code OPEN OUTPUT STMT-FILE}, {@code app/cbl/CBSTM03A.CBL:L293}.
          *
-         * <p>Registering the dataset here rather than at the first write is what makes "the program
-         * opened this file and wrote nothing to it" an observation. Two of the twenty cases turn on it.
-         *
-         * @return {@link FileStatus.Outcome#OK}; the COBOL's {@code OPEN} carries no
-         *     {@code FILE STATUS} clause and no guard, so there is no failure arm to model
+         * @return {@link FileStatus.Outcome#OK}; the COBOL's {@code OPEN} carries no {@code FILE STATUS}
+         *     clause and no guard, so there is no failure arm to model
          */
         @Override
         public FileStatus.Outcome open() {
@@ -1727,29 +936,16 @@ class CBSTM03AParityTest {
             return FileStatus.Outcome.OK;
         }
 
-        /** @return every image the run left behind, in write order */
         private List<String> retained() {
             return List.copyOf(retained);
         }
     }
 
-    /**
-     * The {@code HTMLFILE} sink, at 100 bytes, with the same two channels for the same reason.
-     *
-     * <p>It reports a two-character status rather than a {@link FileStatus.Outcome} because that is the
-     * shape {@link StatementHtmlWriter.HtmlRecordSink} declares; the two writers were translated from
-     * two files whose COBOL says nothing about status at all, so neither shape is more faithful than
-     * the other.
-     */
     private static final class HtmlSink implements StatementHtmlWriter.HtmlRecordSink {
-
-        /** Where a write is recorded the moment it happens. */
         private final ParityHarness.UnitOutcome.Builder recorder;
 
-        /** Every image still retained, in write order, after any abnormal disposition. */
         private final List<String> retained = new ArrayList<>();
 
-        /** @param recorder the fingerprint recorder */
         private HtmlSink(ParityHarness.UnitOutcome.Builder recorder) {
             this.recorder = recorder;
         }
@@ -1787,25 +983,12 @@ class CBSTM03AParityTest {
             return FileStatus.OK;
         }
 
-        /** @return every image the run left behind, in write order */
         private List<String> retained() {
             return List.copyOf(retained);
         }
     }
 
-    /**
-     * An {@link ObjectProvider} over one bean, or over none.
-     *
-     * <p>{@code null} means the container publishes no such bean, which is how the utility port is
-     * supplied here: the statement step never touches it, so letting
-     * {@link StatementGenerationJobA} build its own default is more honest than injecting a stand-in
-     * that would never be called.
-     *
-     * @param <T> the bean type
-     * @param bean the bean, or {@code null} when none is published
-     */
     private record SuppliedBean<T>(T bean) implements ObjectProvider<T> {
-
         @Override
         public T getObject() {
             if (bean == null) {

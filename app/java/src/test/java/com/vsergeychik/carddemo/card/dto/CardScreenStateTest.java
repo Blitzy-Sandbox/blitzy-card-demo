@@ -34,75 +34,13 @@ import org.junit.jupiter.params.provider.MethodSource;
 
 /**
  * Parity tests for {@link CardScreenState}, the translation of {@code app/cpy/CVCRD01Y.cpy}.
- *
- * <p>The suite is organised around the properties of the copybook that determine the implementation,
- * so a failure names a translation decision rather than merely a value:
- *
- * <ol>
- *   <li>The nine storage items sum to <strong>213</strong> bytes and the three {@code REDEFINES}
- *       overlays add none.</li>
- *   <li>{@code CCARD-AID} carries <strong>16</strong> condition names - not the plan's 15 - and
- *       {@code PA1} and {@code PA2} keep their two trailing spaces.</li>
- *   <li>{@code CCARD-NEXT-MAPSET} and {@code CCARD-NEXT-MAP} are {@code X(7)}, not {@code X(8)}.</li>
- *   <li>{@code LOW-VALUES} is a third state, distinct from spaces and from absent.</li>
- *   <li>Each of the <strong>three</strong> {@code REDEFINES} pairs is one shared span, so a write
- *       through either view is visible through the other.</li>
- *   <li>The sixteen tokens are exactly the sixteen {@code common.PfKeyResolver} emits from a raw
- *       {@code EIBAID}, and the AID constant set is deliberately <em>wider</em> than the token set -
- *       see {@link ResolverAlignment}.</li>
- * </ol>
- *
- * <p>The expected values are transcribed from the copybook, not from the class under test, so the
- * copybook remains the authority: a change to either class that moved a literal or a width would fail
- * here. Every expectation is an inlined literal derived at authoring time; nothing under
- * {@code app/cpy/} or {@code app/cbl/} is opened, read or loaded at runtime, and nothing there is ever
- * written (practice <strong>B3</strong>).
- *
- * <h2>The standard this suite is held to</h2>
- *
- * <p><strong>No user-specified rules were provided for this project</strong> - {@code review_rules}
- * returns the single line "No user rules provided", which is the whole document. Nothing here is
- * therefore a "user rule", none has been invented, and their absence is explicitly not treated as
- * licence to lower the bar. The substitute standard is enterprise best practice as codified by the
- * migration plan's practices <strong>B1</strong>-<strong>B11</strong>, and each is cited by identifier
- * at the point in this file where it bites: <strong>B1</strong>/<strong>B2</strong> JUnit 5 Jupiter and
- * AssertJ only, both arriving through the pinned {@code spring-boot-starter-test}, with no version
- * literal anywhere; <strong>B3</strong> the copybook and the three card programs are cited by line and
- * never read; <strong>B4</strong> two divergences are recorded below rather than resolved in silence;
- * <strong>B5</strong> the four commented-out groups are asserted absent; <strong>B6</strong> the full
- * sixteen-digit card number is used unmasked; <strong>B8</strong> a {@link Charset} is named at every
- * byte boundary and no import is a wildcard; <strong>B9</strong> no static mutable state and the
- * default per-test-method lifecycle; <strong>B11</strong> every width and offset is an explicit integer
- * literal a reviewer can trace by eye, with no copybook parser, no reflective member walk and no
- * generic bean comparison.
- *
- * <h2>Two divergences this suite records rather than resolves (practice B4)</h2>
- *
- * <ol>
- *   <li><strong>The copybook declares three {@code REDEFINES} pairs; the migration plan's body names
- *       one.</strong> Recorded in full at {@link RedefinesPairs}, which asserts all three.</li>
- *   <li><strong>The numeric overlay over spaces reads as zero, not as space bytes.</strong> Recorded in
- *       full at {@link RedefinesPairs#spacesReadAsZero()}. The source itself settles it, so the
- *       implementation is asserted as it actually behaves rather than as the plan's summary predicted -
- *       and the accompanying assertions prove the storage bytes themselves are never coerced.</li>
- * </ol>
  */
 @DisplayName("CardScreenState - CVCRD01Y CC-WORK-AREA")
 class CardScreenStateTest {
-
-    /** The two code pages this system uses, both named explicitly and never assumed. */
     private static final Charset ASCII = StandardCharsets.US_ASCII;
 
-    /** The EBCDIC code page of the datasets under {@code app/data/EBCDIC}. */
     private static final Charset EBCDIC = Charset.forName("IBM037");
 
-    /**
-     * The sixteen {@code CCARD-AID} literals, retyped from {@code app/cpy/CVCRD01Y.cpy} lines 4 to 19
-     * so that this suite compares the class against the <em>copybook</em> rather than against another
-     * class's copy of it. Note the two trailing spaces on {@code PA1} and {@code PA2}.
-     *
-     * @return the sixteen condition names mapped to their copybook literals, in copybook order
-     */
     private static Map<AidKey, String> copybookAidLiterals() {
         Map<AidKey, String> literals = new LinkedHashMap<>();
         literals.put(AidKey.ENTER, "ENTER");
@@ -124,11 +62,6 @@ class CardScreenStateTest {
         return literals;
     }
 
-    /**
-     * The class's own sixteen token constants, in copybook order.
-     *
-     * @return the class's sixteen token constants, in copybook order
-     */
     private static List<String> declaredTokens() {
         return List.of(CardScreenState.CCARD_AID_ENTER,
                 CardScreenState.CCARD_AID_CLEAR,
@@ -148,11 +81,6 @@ class CardScreenStateTest {
                 CardScreenState.CCARD_AID_PFK12);
     }
 
-    /**
-     * A fully populated work area, distinct in every field, for round-trip and equality work.
-     *
-     * @return a work area with a distinct value in every one of the nine fields
-     */
     private static CardScreenState populated() {
         return new CardScreenState("PFK03",
                 "COCRDSLC",
@@ -168,7 +96,6 @@ class CardScreenStateTest {
     @Nested
     @DisplayName("Record geometry - the nine storage items sum to 213")
     class Geometry {
-
         @Test
         @DisplayName("the declared record length is 213")
         void recordLengthIs213() {
@@ -245,8 +172,6 @@ class CardScreenStateTest {
                     .sum();
             assertThat(storage).isEqualTo(CardScreenState.RECORD_LENGTH);
 
-            // The overlays measure 11 + 16 + 9 = 36 bytes between them, yet the record is still 213:
-            // an overlay views storage a preceding item already accounts for, so it adds nothing.
             int overlays = CardScreenState.LAYOUT.redefinitions().stream()
                     .mapToInt(FieldSpan::length)
                     .sum();
@@ -274,71 +199,28 @@ class CardScreenStateTest {
                     "CC-CUST-ID-N");
         }
 
-        /**
-         * Practice <strong>B5</strong>: commented-out COBOL is not behaviour, and reviving any of it
-         * would add a feature nothing asked for. Four groups in {@code app/cpy/CVCRD01Y.cpy} carry a
-         * {@code *} in column 7 and so declare nothing at all:
-         *
-         * <ul>
-         *   <li>{@code CCARD-LAST-PROG PIC X(8)} - line 20</li>
-         *   <li>{@code CCARD-RETURN-TO-PROG PIC X(8)} - line 22</li>
-         *   <li>{@code CCARD-RETURN-FLAG PIC X(1)} with {@code 88 CCARD-RETURN-FLAG-OFF VALUE
-         *       LOW-VALUES} and {@code 88 CCARD-RETURN-FLAG-ON VALUE '1'} - lines 25 to 27</li>
-         *   <li>{@code CCARD-FUNCTION PIC X(1)} with {@code 88 CCARD-NO-VALUE VALUE LOW-VALUES} and
-         *       {@code 88 CCARD-GET-DATA VALUE '1'} - lines 31 to 33</li>
-         * </ul>
-         *
-         * <p>Their absence is asserted <strong>structurally</strong> - through the declared field
-         * inventory and, decisively, through the 213-byte total in
-         * {@link #theNineWidthsSumToTheRecordLength()} and
-         * {@link #omittingASpanFailsTheWidthSelfCheck()}. Two further {@code X(8)} items and two
-         * further {@code X(1)} items would make the group 231 bytes wide, so the arithmetic alone
-         * forbids them. Reflection is deliberately not used to enumerate members (practice
-         * <strong>B11</strong>): a reflective walk would assert the shape of the Java class, whereas
-         * what matters is the shape of the record.
-         */
         @Test
         @DisplayName("the four commented-out items have no span: no CCARD-LAST-PROG, "
                 + "CCARD-RETURN-TO-PROG, CCARD-RETURN-FLAG or CCARD-FUNCTION")
         void commentedOutItemsAreAbsent() {
-            // The four commented-out elementary items - CVCRD01Y L20, L22, L25 and L31.
             assertThat(CardScreenState.LAYOUT.hasSpan("CCARD-LAST-PROG")).isFalse();
             assertThat(CardScreenState.LAYOUT.hasSpan("CCARD-RETURN-TO-PROG")).isFalse();
             assertThat(CardScreenState.LAYOUT.hasSpan("CCARD-RETURN-FLAG")).isFalse();
             assertThat(CardScreenState.LAYOUT.hasSpan("CCARD-FUNCTION")).isFalse();
 
-            // Their four commented-out 88-levels - L26, L27, L32 and L33. A condition name is not a
-            // span, so their absence shows as the absence of any span carrying the name, and as the
-            // absence of any token literal a condition could have been declared over.
             assertThat(CardScreenState.LAYOUT.hasSpan("CCARD-RETURN-FLAG-OFF")).isFalse();
             assertThat(CardScreenState.LAYOUT.hasSpan("CCARD-RETURN-FLAG-ON")).isFalse();
             assertThat(CardScreenState.LAYOUT.hasSpan("CCARD-NO-VALUE")).isFalse();
             assertThat(CardScreenState.LAYOUT.hasSpan("CCARD-GET-DATA")).isFalse();
 
-            // And the inventory is closed, not merely missing these eight: nine storage items and
-            // three overlays, which is what leaves no room for any of them.
             assertThat(CardScreenState.LAYOUT.storageSpans()).hasSize(9);
             assertThat(CardScreenState.LAYOUT.redefinitions()).hasSize(3);
             assertThat(CardScreenState.LAYOUT.spans()).hasSize(12);
         }
 
-        /**
-         * Gate <strong>G21</strong>: the width self-check has to <em>fail</em> when a span is dropped,
-         * not merely pass when every span is present.
-         *
-         * <p>{@link RecordLayout} verifies its own geometry in its constructor, so this drives that
-         * real validation rather than asserting a hypothetical: a layout that still declares 213 bytes
-         * but omits {@code CC-CUST-ID} is refused, and so is one whose declared total disagrees with
-         * the spans it lists. That is what makes {@link CardScreenState#LAYOUT} a proof rather than a
-         * transcription - a dropped or mistyped span cannot reach a byte image, because the class
-         * would fail to initialise first.
-         */
         @Test
         @DisplayName("omitting a span fails the width self-check - 213 bytes cannot be short a field")
         void omittingASpanFailsTheWidthSelfCheck() {
-            // Every span except the last nine bytes, CC-CUST-ID. The nine storage items sum to 213
-            // only when all nine are present, so 204 bytes of storage against a declared 213 is
-            // exactly the mistranscription this check exists to catch.
             assertThatExceptionOfType(IllegalArgumentException.class)
                     .isThrownBy(() -> RecordLayout.of(CardScreenState.RECORD_LENGTH,
                             CardScreenState.CCARD_AID_SPAN,
@@ -350,7 +232,6 @@ class CardScreenStateTest {
                             CardScreenState.CC_ACCT_ID_SPAN,
                             CardScreenState.CC_CARD_NUM_SPAN));
 
-            // The same check from the other side: all nine spans, but a declared total one byte out.
             assertThatExceptionOfType(IllegalArgumentException.class)
                     .isThrownBy(() -> RecordLayout.of(CardScreenState.RECORD_LENGTH - 1,
                             CardScreenState.CCARD_AID_SPAN,
@@ -363,7 +244,6 @@ class CardScreenStateTest {
                             CardScreenState.CC_CARD_NUM_SPAN,
                             CardScreenState.CC_CUST_ID_SPAN));
 
-            // And the real layout, with all twelve descriptors, is accepted at exactly 213.
             assertThat(CardScreenState.LAYOUT.recordLength())
                     .isEqualTo(CardScreenState.RECORD_LENGTH);
         }
@@ -421,7 +301,6 @@ class CardScreenStateTest {
     @Nested
     @DisplayName("The sixteen CCARD-AID condition literals")
     class AidTokens {
-
         @Test
         @DisplayName("there are exactly 16 tokens - CVCRD01Y lines 4-19 show 16, not the plan's 15")
         void thereAreSixteenTokens() {
@@ -460,50 +339,21 @@ class CardScreenStateTest {
             assertThat(declaredTokens()).doesNotHaveDuplicates();
         }
 
-        /**
-         * The AID constant set is deliberately <em>wider</em> than the token set, and this test pins
-         * that asymmetry on purpose so a later reader cannot mistake it for an omission.
-         *
-         * <p>{@code common.CicsAid} declares {@code DFHPA3} and all of {@code DFHPF1} through
-         * {@code DFHPF24}, because those are the AIDs a 3270 terminal can send and that class
-         * transcribes IBM's set. {@code app/cpy/CVCRD01Y.cpy} declares only sixteen condition names
-         * (lines 4-19), and {@code app/cpy/CSSTRPFY.cpy} has no {@code DFHPA3} branch at all while
-         * folding {@code DFHPF13}-{@code DFHPF24} back onto {@code PFK01}-{@code PFK12} (its lines
-         * 54-77). So: twenty-five AIDs, sixteen tokens - not a gap, a translation.
-         *
-         * <p>Adding a seventeenth condition for symmetry would invent behaviour (practice
-         * <strong>B5</strong>); the fold and the absent {@code DFHPA3} branch are exercised end to end
-         * in {@link ResolverAlignment}.
-         */
         @Test
         @DisplayName("there is no PA3 token and no PFK13-PFK24 token - the copybook declares sixteen")
         void thereIsNoPa3OrPfk13ThroughPfk24Token() {
-            // CSSTRPFY has no DFHPA3 branch, so no token was ever declared for it. Both the padded
-            // and unpadded spellings are excluded, since a padded 'PA3  ' is what one would look like.
             assertThat(declaredTokens()).doesNotContain("PA3  ", "PA3");
 
-            // PF13-PF24 fold onto PFK01-PFK12, so no PFK13..PFK24 literal exists either.
             for (int pfKey = 13; pfKey <= 24; pfKey++) {
                 assertThat(declaredTokens()).doesNotContain("PFK" + pfKey);
             }
 
-            // The set is closed at sixteen: exactly ENTER, CLEAR, the two PA keys and PFK01-PFK12.
             assertThat(declaredTokens()).hasSize(16);
             assertThat(AidKey.values()).hasSize(16);
 
-            // Stated positively, so the boundary between PFK12 and the absent PFK13 is explicit.
             assertThat(declaredTokens()).contains("PFK12").doesNotContain("PFK13");
         }
 
-        /**
-         * The predicate set is closed at sixteen too, matching the sixteen tokens one to one.
-         *
-         * <p>Counted through the token-to-predicate pairing that drives {@link AidConditions} rather
-         * than through reflection (practice <strong>B11</strong>): every pair is written out by hand in
-         * {@link CardScreenStateTest#aidConditionPredicates()}, so a seventeenth predicate could only
-         * be counted here if somebody also declared its literal - which
-         * {@link #thereIsNoPa3OrPfk13ThroughPfk24Token()} forbids.
-         */
         @Test
         @DisplayName("there are exactly sixteen predicates, one per condition name, and no more")
         void thereAreExactlySixteenPredicates() {
@@ -539,21 +389,10 @@ class CardScreenStateTest {
         }
     }
 
-    /**
-     * Feeds {@link AidTokens#everyTokenIsFiveCharacters(String)}.
-     *
-     * @return each of the sixteen token constants in turn
-     */
     static Stream<String> everyDeclaredToken() {
         return declaredTokens().stream();
     }
 
-    /**
-     * Pairs each condition literal with the predicate that tests it, so the sixteen predicates can be
-     * driven true and false from one place. Feeds {@link AidConditions}.
-     *
-     * @return each condition's literal, its predicate and its COBOL name
-     */
     static Stream<Arguments> aidConditionPredicates() {
         return Stream.of(
                 Arguments.of(CardScreenState.CCARD_AID_ENTER,
@@ -590,43 +429,16 @@ class CardScreenStateTest {
                         (Predicate<CardScreenState>) CardScreenState::isCcardAidPfk12, "CCARD-AID-PFK12"));
     }
 
-    /**
-     * The three five-byte states {@code CCARD-AID} can hold that match none of the sixteen conditions.
-     *
-     * <p>All three are widths of exactly {@link CardScreenState#CCARD_AID_LENGTH}, because the field is
-     * five bytes and a shorter value would be testing the binding rule instead of the condition names.
-     * Feeds {@link AidConditions#unmatchedAidStatesSatisfyNoCondition(String, String)}.
-     *
-     * @return each unmatched state with a description for the failure message
-     */
     static Stream<Arguments> unmatchedAidStates() {
         return Stream.of(
-                // A five-character token no 88-level names. CSSTRPFY leaves exactly this behind when
-                // EIBAID matched nothing, because it neither defaults nor clears the field.
                 Arguments.of("ZZZZZ", "an unrecognised five-character token"),
-                // The initial state: CCARD-AID is spaces before any key has been recorded.
                 Arguments.of(CardScreenState.spaces(CardScreenState.CCARD_AID_LENGTH), "five spaces"),
-                // LOW-VALUES - five bytes of 0x00, which is neither a token nor spaces.
                 Arguments.of(CardScreenState.lowValues(CardScreenState.CCARD_AID_LENGTH),
                         "LOW-VALUES"));
     }
 
-    /**
-     * Every AID {@code app/cpy/CSSTRPFY.cpy} has a {@code WHEN} arm for, paired with the token that arm
-     * sets and the predicate that then reports it.
-     *
-     * <p>Twenty-eight arms in the source (its lines 22-77) map onto sixteen tokens, because
-     * {@code DFHPF13}-{@code DFHPF24} fold back onto {@code PFK01}-{@code PFK12}. All twenty-eight are
-     * listed here in source order so the fold is visible rather than implied, and so a missing arm shows
-     * up as a missing case rather than as coverage that quietly never ran. Feeds
-     * {@link ResolverAlignment}.
-     *
-     * @return each AID byte with the copybook literal it sets, the predicate that tests it, and the
-     *         copybook line of the arm
-     */
     static Stream<Arguments> resolvedAidArms() {
         return Stream.of(
-                // ---- CSSTRPFY.cpy L22-L29: ENTER, CLEAR and the two tested PA keys --------------
                 aidArm(CicsAid.DFHENTER, AidKey.ENTER, CardScreenState.CCARD_AID_ENTER,
                         CardScreenState::isCcardAidEnter, "L22-23"),
                 aidArm(CicsAid.DFHCLEAR, AidKey.CLEAR, CardScreenState.CCARD_AID_CLEAR,
@@ -636,7 +448,6 @@ class CardScreenStateTest {
                 aidArm(CicsAid.DFHPA2, AidKey.PA2, CardScreenState.CCARD_AID_PA2,
                         CardScreenState::isCcardAidPa2, "L28-29"),
 
-                // ---- CSSTRPFY.cpy L30-L53: PF1..PF12 map one to one onto PFK01..PFK12 -----------
                 aidArm(CicsAid.DFHPF1, AidKey.PFK01, CardScreenState.CCARD_AID_PFK01,
                         CardScreenState::isCcardAidPfk01, "L30-31"),
                 aidArm(CicsAid.DFHPF2, AidKey.PFK02, CardScreenState.CCARD_AID_PFK02,
@@ -662,9 +473,6 @@ class CardScreenStateTest {
                 aidArm(CicsAid.DFHPF12, AidKey.PFK12, CardScreenState.CCARD_AID_PFK12,
                         CardScreenState::isCcardAidPfk12, "L52-53"),
 
-                // ---- CSSTRPFY.cpy L54-L77: PF13..PF24 FOLD BACK onto PFK01..PFK12 ---------------
-                // The same sixteen tokens and the same twelve predicates, reached by twelve more
-                // AIDs. No PFK13..PFK24 token exists for them to land on.
                 aidArm(CicsAid.DFHPF13, AidKey.PFK01, CardScreenState.CCARD_AID_PFK01,
                         CardScreenState::isCcardAidPfk01, "L54-55"),
                 aidArm(CicsAid.DFHPF14, AidKey.PFK02, CardScreenState.CCARD_AID_PFK02,
@@ -691,17 +499,6 @@ class CardScreenStateTest {
                         CardScreenState::isCcardAidPfk12, "L76-77"));
     }
 
-    /**
-     * Assembles one {@link #resolvedAidArms()} case, so the twenty-eight entries above read as a table
-     * rather than as twenty-eight casts.
-     *
-     * @param eibAid    the raw AID byte, a {@code common.CicsAid} constant
-     * @param expected  the token {@code common.PfKeyResolver} maps it to
-     * @param literal   the copybook literal that token carries
-     * @param predicate the {@link CardScreenState} predicate that reports it
-     * @param sourceRef the {@code app/cpy/CSSTRPFY.cpy} lines of the arm
-     * @return the assembled case
-     */
     private static Arguments aidArm(byte eibAid,
                                     AidKey expected,
                                     String literal,
@@ -710,21 +507,8 @@ class CardScreenStateTest {
         return Arguments.of(eibAid, expected, literal, predicate, sourceRef);
     }
 
-    /**
-     * The AIDs {@code app/cpy/CSSTRPFY.cpy} has <strong>no</strong> {@code WHEN} arm for, so its
-     * {@code EVALUATE} falls through {@code END-EVALUATE} at L78 having set nothing.
-     *
-     * <p>{@code DFHPA3} is the case that matters and the reason this provider exists:
-     * {@code common.CicsAid} declares it - IBM's AID set contains it and that class transcribes the set
-     * faithfully - while the copybook declares no {@code CCARD-AID-PA3} condition and the resolver has
-     * no branch for it. The others are AIDs the card screens can receive but never test. Feeds
-     * {@link ResolverAlignment}.
-     *
-     * @return each unhandled AID byte with its name
-     */
     static Stream<Arguments> unhandledAids() {
         return Stream.of(
-                // The deliberate asymmetry: DFHPA3 exists as an AID and has no token.
                 Arguments.of(CicsAid.DFHPA3, "DFHPA3"),
                 Arguments.of(CicsAid.DFHCLRP, "DFHCLRP"),
                 Arguments.of(CicsAid.DFHPEN, "DFHPEN"),
@@ -737,7 +521,6 @@ class CardScreenStateTest {
     @Nested
     @DisplayName("CCARD-AID condition names - the 88-levels as predicates")
     class AidConditions {
-
         @ParameterizedTest(name = "{2} is true for its own literal")
         @MethodSource(
                 "com.vsergeychik.carddemo.card.dto.CardScreenStateTest#aidConditionPredicates")
@@ -831,25 +614,6 @@ class CardScreenStateTest {
             assertThat(trueConditionCount(state)).isZero();
         }
 
-        /**
-         * The three unmatched five-byte states the field can actually hold, each leaving every one of
-         * the sixteen conditions false.
-         *
-         * <p>{@code app/cpy/CVCRD01Y.cpy} declares no catch-all {@code 88} over {@code CCARD-AID}, and
-         * {@code app/cpy/CSSTRPFY.cpy}'s {@code EVALUATE} has no {@code WHEN OTHER} (its L78 reaches
-         * {@code END-EVALUATE} directly), so no default token is ever stored. Three distinct states
-         * reach that outcome and all three are real:
-         *
-         * <ul>
-         *   <li>a token no condition names - the value a previous key left behind when the current AID
-         *       matched nothing;</li>
-         *   <li>five spaces - the initial state, before any key has been recorded;</li>
-         *   <li>{@code LOW-VALUES} - five bytes of {@code 0x00}, which is neither of the above.</li>
-         * </ul>
-         *
-         * <p>Each is asserted against all sixteen predicates and against {@link
-         * CardScreenState#aidKey()}, so an accidental catch-all in either class would fail here.
-         */
         @ParameterizedTest(name = "[{index}] {1} satisfies none of the sixteen conditions")
         @MethodSource("com.vsergeychik.carddemo.card.dto.CardScreenStateTest#unmatchedAidStates")
         @DisplayName("an unrecognised token, five spaces and LOW-VALUES all leave all sixteen false")
@@ -857,23 +621,12 @@ class CardScreenStateTest {
             CardScreenState state = new CardScreenState();
             state.setCcardAid(aid);
 
-            // The stored value is exactly what was set - nothing was substituted for it.
             assertThat(state.getCcardAid()).isEqualTo(aid).hasSize(CardScreenState.CCARD_AID_LENGTH);
 
-            // No condition holds, and no condition name can be reported for it.
             assertThat(trueConditionCount(state)).as("true conditions for %s", description).isZero();
             assertThat(state.aidKey()).as("named condition for %s", description).isEmpty();
         }
 
-        /**
-         * Counts how many of the sixteen condition predicates hold for a given work area.
-         *
-         * <p>An instance method on the nested test class rather than a static helper, so no state -
-         * mutable or otherwise - is shared between test methods (practice <strong>B9</strong>).
-         *
-         * @param state the work area to test
-         * @return the number of the sixteen predicates that return {@code true}
-         */
         private long trueConditionCount(CardScreenState state) {
             return aidConditionPredicates()
                     .map(arguments -> arguments.get()[1])
@@ -890,15 +643,11 @@ class CardScreenStateTest {
         void theAidBindsLosslesslyAndRefusesOverflow() {
             CardScreenState state = new CardScreenState();
 
-            // Stored exactly as sent. Padding it here would make a two-character token
-            // indistinguishable from a two-character token followed by three real spaces.
             state.setCcardAid("PF");
             assertThat(state.getCcardAid()).isEqualTo("PF");
 
-            // The MOVE is a named, separate step - and only there is the value padded to PIC X(5).
             assertThat(state.asWorkArea().getCcardAid()).isEqualTo("PF   ");
 
-            // Twelve characters cannot enter a five-byte field, and are refused rather than shortened.
             assertThatThrownBy(() -> state.setCcardAid("TOOLONGVALUE"))
                     .isInstanceOf(IllegalArgumentException.class)
                     .hasMessageContaining("CCARD-AID")
@@ -908,57 +657,9 @@ class CardScreenStateTest {
         }
     }
 
-    /**
-     * Alignment with {@code common.PfKeyResolver} and {@code common.CicsAid} - that the tokens the
-     * resolver produces from a raw {@code EIBAID} are exactly the tokens this field's condition names
-     * are declared over.
-     *
-     * <h2>Why this belongs here</h2>
-     *
-     * <p>All three card programs execute {@code COPY 'CSSTRPFY'} - {@code app/cbl/COCRDLIC.cbl:1416},
-     * {@code app/cbl/COCRDSLC.cbl:855} and {@code app/cbl/COCRDUPC.cbl:1528} - and that copybook's whole
-     * body is {@code SET CCARD-AID-xxx TO TRUE} over the very field this class carries. The resolver is
-     * therefore not an incidental collaborator: it is the only producer of this field's value in the
-     * online path, and if the two disagreed by a single byte every condition test would silently stop
-     * matching while both classes' own tests continued to pass. That failure is invisible to a unit test
-     * of either class alone, which is precisely why it is asserted at the seam.
-     *
-     * <h2>The asymmetry, asserted on purpose</h2>
-     *
-     * <p>{@code CicsAid} declares twenty-five AIDs including {@code DFHPA3} and all of {@code DFHPF1}
-     * through {@code DFHPF24}. This field has sixteen condition names. The two are reconciled by the
-     * copybook, not by adjusting either class:
-     *
-     * <ul>
-     *   <li>{@code DFHPF13}-{@code DFHPF24} <strong>fold</strong> onto {@code PFK01}-{@code PFK12}
-     *       ({@code CSSTRPFY} lines 54-77), so twelve extra AIDs reach twelve existing predicates and
-     *       no {@code PFK13}-{@code PFK24} token is needed.</li>
-     *   <li>{@code DFHPA3} has <strong>no arm at all</strong>, and {@code CSSTRPFY}'s {@code EVALUATE}
-     *       has no {@code WHEN OTHER}, so it sets nothing and leaves whatever was there.</li>
-     * </ul>
-     *
-     * <p>Both are asserted below so a later reader cannot mistake either for an omission.
-     *
-     * <h2>Scope</h2>
-     *
-     * <p>Alignment only. The resolver's own branch ordering, its {@code storePfKey} contract in
-     * isolation and its inline-test helpers belong to its own test; what is verified here is strictly
-     * that its output is assignable to {@code CCARD-AID} and lands on the right condition.
-     */
     @Nested
     @DisplayName("Alignment with PfKeyResolver and CicsAid - the resolver's tokens are these tokens")
     class ResolverAlignment {
-
-        /**
-         * Each of the twenty-eight {@code CSSTRPFY} arms, driven from the raw AID byte all the way to
-         * the condition predicate - which is the full path the online programs take.
-         *
-         * @param eibAid    the raw AID byte
-         * @param expected  the token the resolver must map it to
-         * @param literal   the copybook literal that token carries
-         * @param predicate the predicate that must then report it
-         * @param sourceRef the {@code CSSTRPFY} lines of the arm
-         */
         @ParameterizedTest(name = "[{index}] CSSTRPFY {4} sets {2} and only its own condition")
         @MethodSource("com.vsergeychik.carddemo.card.dto.CardScreenStateTest#resolvedAidArms")
         @DisplayName("every CSSTRPFY arm resolves to a token this field accepts, and to one condition")
@@ -967,39 +668,26 @@ class CardScreenStateTest {
                                                     String literal,
                                                     Predicate<CardScreenState> predicate,
                                                     String sourceRef) {
-            // The resolver maps the byte to the token the copybook arm sets.
             assertThat(PfKeyResolver.resolve(eibAid)).as("CSSTRPFY %s", sourceRef).contains(expected);
 
-            // The token IS the copybook literal, and it is exactly five bytes wide - the width of
-            // CCARD-AID PIC X(5). PA1 and PA2 reach this assertion carrying their trailing spaces.
             assertThat(expected.token()).isEqualTo(literal).hasSize(CardScreenState.CCARD_AID_LENGTH);
 
-            // It is assignable to the field through the condition setter - SET CCARD-AID-xxx TO TRUE.
             CardScreenState viaCondition = new CardScreenState();
             viaCondition.setCcardAidCondition(expected);
             assertThat(viaCondition.getCcardAid()).isEqualTo(literal);
             assertThat(predicate.test(viaCondition)).isTrue();
 
-            // And through the plain setter, at exactly the declared width and with no truncation.
             CardScreenState viaToken = new CardScreenState();
             viaToken.setCcardAid(expected.token());
             assertThat(viaToken.getCcardAid()).isEqualTo(literal);
             assertThat(predicate.test(viaToken)).isTrue();
             assertThat(viaToken).isEqualTo(viaCondition);
 
-            // Exactly one condition holds: the other fifteen are false. Literals are all distinct, so
-            // "every other condition" is every pairing whose literal differs from this one.
             assertThat(otherConditionsThatHold(viaCondition, literal)).isEmpty();
 
-            // The condition can also be named back, which closes the loop token -> condition -> token.
             assertThat(viaCondition.aidKey()).contains(expected);
         }
 
-        /**
-         * The fold, asserted as an identity rather than as a coincidence: {@code DFHPF13} and
-         * {@code DFHPF1} resolve to the <em>same</em> token, and so on through {@code DFHPF24} and
-         * {@code DFHPF12} ({@code CSSTRPFY} lines 30-53 against lines 54-77).
-         */
         @Test
         @DisplayName("DFHPF13-DFHPF24 fold onto PFK01-PFK12 - the same twelve tokens, not new ones")
         void highFunctionKeysFoldOntoTheLowTwelve() {
@@ -1013,20 +701,16 @@ class CardScreenStateTest {
             for (int index = 0; index < lowKeys.length; index++) {
                 int pfKey = index + 1;
 
-                // The two AIDs are genuinely different bytes - so this is a fold, not an alias.
                 assertThat(highKeys[index]).isNotEqualTo(lowKeys[index]);
 
-                // Yet they resolve to one and the same token.
                 assertThat(PfKeyResolver.resolve(highKeys[index]))
                         .as("PF%d folds onto PF%d", pfKey + 12, pfKey)
                         .isEqualTo(PfKeyResolver.resolve(lowKeys[index]));
 
-                // And that token is a PFK01..PFK12 literal, never a PFK13..PFK24 one.
                 String token = PfKeyResolver.resolve(highKeys[index]).orElseThrow().token();
                 assertThat(token).isEqualTo(String.format("PFK%02d", pfKey));
                 assertThat(declaredTokens()).contains(token);
 
-                // Landing it on the field reaches the low key's condition, and only that one.
                 CardScreenState state = new CardScreenState();
                 state.setCcardAidCondition(PfKeyResolver.resolve(highKeys[index]).orElseThrow());
                 assertThat(state.getCcardAid()).isEqualTo(token);
@@ -1034,59 +718,37 @@ class CardScreenStateTest {
             }
         }
 
-        /**
-         * The unhandled AIDs, {@code DFHPA3} foremost: the resolver reports no match and the field is
-         * left exactly as it was, because {@code CSSTRPFY} has neither an arm for them nor a
-         * {@code WHEN OTHER}.
-         *
-         * @param eibAid the unhandled AID byte
-         * @param name   its {@code CicsAid} name, for the failure message
-         */
         @ParameterizedTest(name = "[{index}] {1} has no CSSTRPFY arm and sets no condition")
         @MethodSource("com.vsergeychik.carddemo.card.dto.CardScreenStateTest#unhandledAids")
         @DisplayName("DFHPA3 and the other untested AIDs resolve to nothing and leave all sixteen false")
         void unhandledAidsSetNoCondition(byte eibAid, String name) {
-            // No token. Not a substituted default, not an exception - simply no match.
             assertThat(PfKeyResolver.resolve(eibAid)).as("%s has no CSSTRPFY arm", name).isEmpty();
 
-            // A fresh work area is spaces, and an unhandled AID leaves it spaces: nothing was set.
             CardScreenState state = new CardScreenState();
             Optional<AidKey> stored = PfKeyResolver.storePfKey(eibAid, state.aidKey());
             assertThat(stored).isEmpty();
             assertThat(state.getCcardAid())
                     .isEqualTo(CardScreenState.spaces(CardScreenState.CCARD_AID_LENGTH));
 
-            // And every one of the sixteen conditions is false.
             assertThat(allConditionsThatHold(state)).as("conditions after %s", name).isEmpty();
             assertThat(state.aidKey()).isEmpty();
         }
 
-        /**
-         * {@code DFHPA3} against the two PA keys that <em>are</em> tested, so the asymmetry is stated as
-         * a contrast rather than only as an absence.
-         */
         @Test
         @DisplayName("DFHPA1 and DFHPA2 have tokens; DFHPA3 exists as an AID but has none")
         void thePaKeyAsymmetryIsDeliberate() {
-            // CicsAid declares all three PA keys as distinct bytes.
             assertThat(CicsAid.DFHPA1).isNotEqualTo(CicsAid.DFHPA2);
             assertThat(CicsAid.DFHPA3).isNotEqualTo(CicsAid.DFHPA1).isNotEqualTo(CicsAid.DFHPA2);
 
-            // Two of them carry space-padded tokens - CVCRD01Y L6 and L7.
             assertThat(PfKeyResolver.resolve(CicsAid.DFHPA1)).contains(AidKey.PA1);
             assertThat(PfKeyResolver.resolve(CicsAid.DFHPA2)).contains(AidKey.PA2);
             assertThat(AidKey.PA1.token()).isEqualTo("PA1  ");
             assertThat(AidKey.PA2.token()).isEqualTo("PA2  ");
 
-            // The third carries none, and no condition name was invented for it.
             assertThat(PfKeyResolver.resolve(CicsAid.DFHPA3)).isEmpty();
             assertThat(declaredTokens()).doesNotContain("PA3  ", "PA3");
         }
 
-        /**
-         * The resolver's whole output range is inside this field's declared condition set: it can never
-         * produce a token no condition names, nor one that does not fit {@code PIC X(5)}.
-         */
         @Test
         @DisplayName("the resolver can only ever emit one of the sixteen declared literals")
         void theResolverEmitsOnlyDeclaredLiterals() {
@@ -1098,42 +760,30 @@ class CardScreenStateTest {
                         .isIn(declared)
                         .hasSize(CardScreenState.CCARD_AID_LENGTH);
 
-                // Assignable to the field, and reported by exactly one condition.
                 CardScreenState state = new CardScreenState();
                 state.setCcardAidCondition(key);
                 assertThat(allConditionsThatHold(state)).hasSize(1);
             }
 
-            // Both sets are closed at sixteen, and the resolver's width constant agrees with the field.
             assertThat(AidKey.values()).hasSize(declared.size()).hasSize(16);
             assertThat(PfKeyResolver.AID_TOKEN_LENGTH).isEqualTo(CardScreenState.CCARD_AID_LENGTH);
         }
 
-        /**
-         * {@code storePfKey} against this field: a matched AID replaces the token, an unmatched one
-         * retains it. This is the property {@code CSSTRPFY} has by virtue of not clearing
-         * {@code CCARD-AID} before its {@code EVALUATE}, and it is asserted here because the retained
-         * value has to remain a value this field's conditions still read correctly.
-         */
         @Test
         @DisplayName("an unmatched AID retains the previous token, so the field keeps reading true")
         void anUnmatchedAidRetainsThePreviousToken() {
-            // PF3 was pressed first: CCARD-AID-PFK03 holds, per COCRDSLC.cbl:293.
             CardScreenState state = new CardScreenState();
             state.setCcardAidCondition(PfKeyResolver.resolve(CicsAid.DFHPF3).orElseThrow());
             assertThat(state.isCcardAidPfk03()).isTrue();
 
-            // Then PA3 arrives, which CSSTRPFY has no arm for. The token is retained, not cleared.
             Optional<AidKey> retained = PfKeyResolver.storePfKey(CicsAid.DFHPA3, state.aidKey());
             assertThat(retained).contains(AidKey.PFK03);
 
-            // Storing the retained token leaves the field, and therefore the condition, unchanged.
             state.setCcardAidCondition(retained.orElseThrow());
             assertThat(state.getCcardAid()).isEqualTo(CardScreenState.CCARD_AID_PFK03);
             assertThat(state.isCcardAidPfk03()).isTrue();
             assertThat(otherConditionsThatHold(state, CardScreenState.CCARD_AID_PFK03)).isEmpty();
 
-            // A matched AID does replace it - ENTER, per COCRDSLC.cbl:298.
             Optional<AidKey> replaced = PfKeyResolver.storePfKey(CicsAid.DFHENTER, state.aidKey());
             assertThat(replaced).contains(AidKey.ENTER);
             state.setCcardAidCondition(replaced.orElseThrow());
@@ -1141,16 +791,6 @@ class CardScreenStateTest {
             assertThat(state.isCcardAidPfk03()).isFalse();
         }
 
-        /**
-         * The COBOL names of every condition that currently holds on a work area.
-         *
-         * <p>An instance method, so nothing is shared between test methods (practice
-         * <strong>B9</strong>), and driven from the hand-written pairing table rather than by reflection
-         * (practice <strong>B11</strong>).
-         *
-         * @param state the work area to test
-         * @return the COBOL names of the conditions that report {@code true}
-         */
         private List<String> allConditionsThatHold(CardScreenState state) {
             List<String> holding = new ArrayList<>();
             aidConditionPredicates().forEach(arguments -> {
@@ -1164,14 +804,6 @@ class CardScreenStateTest {
             return holding;
         }
 
-        /**
-         * The conditions that hold on a work area other than the one owning the given literal - expected
-         * to be empty, since the sixteen literals are distinct and a field holds one value.
-         *
-         * @param state       the work area to test
-         * @param ownLiteral  the literal whose own condition is expected to hold and is excluded
-         * @return the COBOL names of any other conditions that report {@code true}
-         */
         private List<String> otherConditionsThatHold(CardScreenState state, String ownLiteral) {
             List<String> holding = new ArrayList<>();
             aidConditionPredicates().forEach(arguments -> {
@@ -1192,7 +824,6 @@ class CardScreenStateTest {
     @Nested
     @DisplayName("Initial state - VALUE SPACES and INITIALIZE CC-WORK-AREA")
     class InitialState {
-
         @Test
         @DisplayName("a fresh work area holds spaces at every declared width")
         void freshInstanceIsSpaceFilled() {
@@ -1276,7 +907,6 @@ class CardScreenStateTest {
             assertThat(moved.getCcCardNum()).isEqualTo("2               ");
             assertThat(moved.getCcCustId()).isEqualTo("3        ");
 
-            // The two are the same work area, because equality compares the moved images.
             assertThat(moved).isEqualTo(state);
         }
 
@@ -1294,7 +924,6 @@ class CardScreenStateTest {
     @Nested
     @DisplayName("CCARD-NEXT-PROG, -MAPSET and -MAP - opaque fixed-width tokens")
     class OpaqueNavigationTokens {
-
         @Test
         @DisplayName("a full-width program name is stored as sent, and a short one is padded only by the MOVE")
         void programNameBindsLosslesslyAtEightCharacters() {
@@ -1366,49 +995,21 @@ class CardScreenStateTest {
         }
     }
 
-    /**
-     * Feeds {@link OpaqueNavigationTokens#mapNamesAreOpaque(String)}.
-     *
-     * @return map names of exactly the seven characters the field declares
-     */
     static Stream<String> sevenCharacterMapNames() {
         return Stream.of("CCRDLIA", "CCRDSLA", "CCRDUPA", "ZZZZZZZ", "1234567", "       ");
     }
 
-    /**
-     * Gate <strong>G37</strong> at type level: the conversation state is carried <strong>by the
-     * instance</strong>, so there is no server-side session for the three card transactions to keep.
-     *
-     * <h2>Why a type-level test can establish this at all</h2>
-     *
-     * <p>CICS is pseudo-conversational: {@code CC-WORK-AREA} is the storage that survives between a
-     * {@code SEND MAP} and the next {@code RECEIVE MAP}, and under REST it has to travel in the request
-     * and response payloads instead. "No server-side session state" is usually argued from the absence of
-     * a {@code HttpSession}, which is a claim about a controller. Here it is instead a mechanically
-     * checkable property of the carrier: if every byte of the conversation lives in fields of an instance
-     * the caller owns, and instances share nothing, then there is no place for cross-request state to
-     * accumulate even in principle.
-     *
-     * <p>What follows drives that directly. Two independently constructed work areas are mutated in every
-     * one of the nine fields and neither is observable from the other; a third, constructed afterwards,
-     * still comes up in the declared initial state, which is what rules out a static or otherwise ambient
-     * holder having been written to along the way (practices <strong>B9</strong> and <strong>B6</strong>
-     * both depend on this: no shared mutable state, and no accidental retention of an identifier).
-     */
     @Nested
     @DisplayName("Statelessness - the conversation is carried by the instance, not by the server")
     class Statelessness {
-
         @Test
         @DisplayName("two independently constructed work areas share nothing at all")
         void twoIndependentInstancesShareNothing() {
             CardScreenState first = new CardScreenState();
             CardScreenState second = new CardScreenState();
 
-            // Distinct objects that happen to be equal, because both are in the initial state.
             assertThat(first).isNotSameAs(second).isEqualTo(second);
 
-            // Fill the first completely - all nine fields, including a full unmasked card number.
             first.setCcardAidCondition(AidKey.PFK03);
             first.setCcardNextProg("COCRDSLC");
             first.setCcardNextMapset("COCRDSL");
@@ -1419,7 +1020,6 @@ class CardScreenStateTest {
             first.setCcCardNum("4111111111111111");
             first.setCcCustId("000000001");
 
-            // The second is untouched: every one of the nine fields is still spaces.
             assertThat(second.getCcardAid())
                     .isEqualTo(CardScreenState.spaces(CardScreenState.CCARD_AID_LENGTH));
             assertThat(second.getCcardNextProg())
@@ -1439,12 +1039,10 @@ class CardScreenStateTest {
             assertThat(second.getCcCustId())
                     .isEqualTo(CardScreenState.spaces(CardScreenState.CC_CUST_ID_LENGTH));
 
-            // No condition holds on the second, so not even the AID leaked across.
             assertThat(second.isCcardAidPfk03()).isFalse();
             assertThat(second.aidKey()).isEmpty();
             assertThat(second).isNotEqualTo(first);
 
-            // Mutating the second in turn leaves the first exactly as it was.
             second.setCcardAidCondition(AidKey.ENTER);
             second.setCcCardNum("5555555555554444");
             assertThat(first.isCcardAidPfk03()).isTrue();
@@ -1454,8 +1052,6 @@ class CardScreenStateTest {
         @Test
         @DisplayName("a work area constructed afterwards is still in the declared initial state")
         void nothingIsRetainedInAnAmbientHolder() {
-            // Two instances are populated and discarded. If any field were backed by static or
-            // otherwise ambient storage, the values below would survive into the third instance.
             CardScreenState populated = new CardScreenState();
             populated.setCcardAidCondition(AidKey.PFK12);
             populated.setCcAcctId("99999999999");
@@ -1466,7 +1062,6 @@ class CardScreenStateTest {
             CardScreenState alsoPopulated = new CardScreenState(populated);
             alsoPopulated.setCcCustId("000000042");
 
-            // A work area created after both is indistinguishable from one created before either.
             CardScreenState fresh = new CardScreenState();
             assertThat(fresh).isEqualTo(new CardScreenState());
             assertThat(fresh.getCcAcctId())
@@ -1479,12 +1074,9 @@ class CardScreenStateTest {
                     .isEqualTo(CardScreenState.spaces(CardScreenState.CCARD_NEXT_PROG_LENGTH));
             assertThat(fresh.aidKey()).isEmpty();
 
-            // In particular the LOW-VALUES return message did not become the new default: a fresh
-            // work area is spaces, so the -OFF condition is false.
             assertThat(fresh.isCcardReturnMsgOff()).isFalse();
             assertThat(populated.isCcardReturnMsgOff()).isTrue();
 
-            // And re-initialising one instance does not disturb the other.
             populated.initializeWorkArea();
             assertThat(populated).isEqualTo(fresh);
             assertThat(alsoPopulated.getCcCustId()).isEqualTo("000000042");
@@ -1499,7 +1091,6 @@ class CardScreenStateTest {
             outbound.setCcAcctId("00000000011");
             outbound.setCcCardNum("4111111111111111");
 
-            // The image is the whole of the conversation - nothing accompanies it.
             byte[] image = outbound.toFixedWidth(StandardCharsets.US_ASCII);
             assertThat(image).hasSize(CardScreenState.RECORD_LENGTH);
 
@@ -1507,11 +1098,9 @@ class CardScreenStateTest {
                     CardScreenState.fromFixedWidth(image, StandardCharsets.US_ASCII);
             assertThat(inbound).isEqualTo(outbound).isNotSameAs(outbound);
 
-            // Mutating what came back leaves the sender untouched: two ends, two instances.
             inbound.setCcAcctId("00000000022");
             assertThat(outbound.getCcAcctId()).isEqualTo("00000000011");
 
-            // Decoding the same bytes twice yields two equal but independent work areas.
             CardScreenState again = CardScreenState.fromFixedWidth(image, StandardCharsets.US_ASCII);
             assertThat(again).isEqualTo(outbound).isNotSameAs(inbound);
             again.initializeWorkArea();
@@ -1522,7 +1111,6 @@ class CardScreenStateTest {
     @Nested
     @DisplayName("The two PIC X(75) messages and the one LOW-VALUES condition")
     class Messages {
-
         @Test
         @DisplayName("both messages are 75 characters, padded on the right")
         void messagesAreSeventyFiveWide() {
@@ -1547,7 +1135,6 @@ class CardScreenStateTest {
                     .hasMessageContaining("80 character(s)")
                     .hasMessageContaining("movePicX");
 
-            // Nothing was stored, and the deliberate shortening route is named in the message.
             assertThat(state.getCcardErrorMsg()).isEqualTo(" ".repeat(75));
             state.setCcardErrorMsg(new FixedWidthCodec(StandardCharsets.US_ASCII)
                     .movePicX("A".repeat(80), 75));
@@ -1598,52 +1185,9 @@ class CardScreenStateTest {
         }
     }
 
-    /**
-     * The {@code REDEFINES} pairs of {@code app/cpy/CVCRD01Y.cpy} - each one region of storage seen two
-     * ways, so a write through either view is visible through the other.
-     *
-     * <h2>A documented divergence: three pairs, not one (practice B4)</h2>
-     *
-     * <p><strong>The copybook is authoritative here and the migration plan under-counts.</strong> The
-     * plan's body - its sub-sections 0.3.3 and 0.4.7 - describes {@code CardScreenState} as carrying a
-     * single {@code REDEFINES} pair, naming only {@code CC-ACCT-ID} / {@code CC-ACCT-ID-N}.
-     * {@code app/cpy/CVCRD01Y.cpy} verifiably declares <strong>three</strong>, all built identically:
-     *
-     * <pre>
-     *   L34-35  10 CC-ACCT-ID   PIC X(11) VALUE SPACES
-     *   L36     10 CC-ACCT-ID-N  REDEFINES CC-ACCT-ID   PIC 9(11)
-     *   L37-38  10 CC-CARD-NUM  PIC X(16) VALUE SPACES
-     *   L39     10 CC-CARD-NUM-N REDEFINES CC-CARD-NUM  PIC 9(16)
-     *   L40-41  10 CC-CUST-ID   PIC X(09) VALUE SPACES
-     *   L42     10 CC-CUST-ID-N  REDEFINES CC-CUST-ID   PIC 9(9)
-     * </pre>
-     *
-     * <p>The two omitted pairs are not dormant. {@code app/cbl/COCRDSLC.cbl:343} performs
-     * {@code MOVE CDEMO-CARD-NUM TO CC-CARD-NUM-N} and {@code :471} reads the result back as
-     * {@code CC-CARD-NUM}, so the card-number pair is exercised on the ordinary path of the card detail
-     * screen. All three are therefore asserted in full below, in both directions.
-     *
-     * <p>Recording the conflict is the point: the divergence is written down here rather than quietly
-     * applied as though the plan had said three all along, and nothing in the plan or in the copybook was
-     * edited to make the two agree. The copybook wins because it is the byte-level contract every parity
-     * comparison is measured against.
-     *
-     * <h2>The relevant source usage</h2>
-     *
-     * <p>The COBOL writes through the numeric view and reads through the alphanumeric one -
-     * {@code MOVE CDEMO-ACCT-ID TO CC-ACCT-ID-N} at {@code app/cbl/COCRDSLC.cbl:342} and
-     * {@code MOVE CC-ACCT-ID TO ACCTSIDO} at {@code :465} - which is the round trip
-     * {@link #acctIdNumericWriteIsVisibleAsCharacters()} and
-     * {@link #acctIdCharacterWriteIsVisibleAsNumber()} assert byte for byte.
-     */
     @Nested
     @DisplayName("The three REDEFINES pairs - one shared span, two views")
     class RedefinesPairs {
-
-        /**
-         * The pair count itself, asserted so the divergence documented above cannot regress to one pair
-         * without a test failing.
-         */
         @Test
         @DisplayName("the copybook declares exactly three REDEFINES pairs - not the plan's one")
         void thereAreExactlyThreeRedefinesPairs() {
@@ -1653,7 +1197,6 @@ class CardScreenStateTest {
                     .extracting(FieldSpan::name)
                     .containsExactly("CC-ACCT-ID-N", "CC-CARD-NUM-N", "CC-CUST-ID-N");
 
-            // Each names the item it redefines, and each is declared - so none is inferred.
             assertThat(CardScreenState.LAYOUT.hasSpan("CC-ACCT-ID")).isTrue();
             assertThat(CardScreenState.LAYOUT.hasSpan("CC-ACCT-ID-N")).isTrue();
             assertThat(CardScreenState.LAYOUT.hasSpan("CC-CARD-NUM")).isTrue();
@@ -1662,21 +1205,12 @@ class CardScreenStateTest {
             assertThat(CardScreenState.LAYOUT.hasSpan("CC-CUST-ID-N")).isTrue();
         }
 
-        /**
-         * {@code CC-CUST-ID} is written {@code PIC X(09)} at L40 while its overlay {@code CC-CUST-ID-N}
-         * is written {@code PIC 9(9)} at L42 - two notations for the same nine bytes.
-         *
-         * <p>Worth its own test because the leading zero in {@code X(09)} is the kind of detail a
-         * transcription drops or reads as ten, and because the pair is the one the plan omits entirely.
-         */
         @Test
         @DisplayName("CC-CUST-ID PIC X(09) and CC-CUST-ID-N PIC 9(9) are the same nine bytes")
         void theCustomerIdPairIsNineBytesUnderBothNotations() {
-            // PIC X(09) - nine, not ninety and not ten.
             assertThat(CardScreenState.CC_CUST_ID_LENGTH).isEqualTo(9);
             assertThat(CardScreenState.CC_CUST_ID_SPAN.length()).isEqualTo(9);
 
-            // PIC 9(9) - the same nine bytes at the same offset, adding none.
             assertThat(CardScreenState.CC_CUST_ID_N_SPAN.length()).isEqualTo(9);
             assertThat(CardScreenState.CC_CUST_ID_N_SPAN.offset())
                     .isEqualTo(CardScreenState.CC_CUST_ID_SPAN.offset())
@@ -1685,7 +1219,6 @@ class CardScreenStateTest {
                     .isEqualTo(CardScreenState.CC_CUST_ID_SPAN.endOffsetExclusive())
                     .isEqualTo(CardScreenState.RECORD_LENGTH);
 
-            // And the field itself holds nine characters through either view.
             CardScreenState state = new CardScreenState();
             state.setCcCustIdN(123456789L);
             assertThat(state.getCcCustId()).isEqualTo("123456789").hasSize(9);
@@ -1777,39 +1310,6 @@ class CardScreenStateTest {
                     .isThrownBy(() -> state.setCcCustIdN(-1L));
         }
 
-        /**
-         * A documented divergence, recorded rather than resolved in silence (practice
-         * <strong>B4</strong>).
-         *
-         * <p><strong>The plan's summary predicted the opposite of what the source requires.</strong> A
-         * reading of the {@code REDEFINES} construction in the abstract suggests that the numeric view
-         * over an all-spaces span should hand back the space bytes rather than a number, on the grounds
-         * that an overlay is a reinterpretation and not a parse. The premise is right; the conclusion is
-         * not, and the source settles it:
-         *
-         * <ul>
-         *   <li>{@code app/cbl/COCRDUPC.cbl:591} and {@code :600} move {@code LOW-VALUES} into
-         *       {@code CC-ACCT-ID} and {@code CC-CARD-NUM};</li>
-         *   <li>{@code app/cbl/COCRDUPC.cbl:1087} and {@code :1093} then evaluate
-         *       {@code IF CC-ACCT-ID-N = 0} and {@code IF CC-CARD-NUM-N = 0} over those very bytes.</li>
-         * </ul>
-         *
-         * <p>On the mainframe a space and a {@code 0x00} each occupy a zero digit position under a
-         * {@code PIC 9 DISPLAY} item, so both tests are <strong>true</strong>. A numeric view that
-         * returned space characters instead - or that threw - would make those two {@code IF}s
-         * unreachable or fatal, which is a behaviour change and a parity failure. So the implementation
-         * is asserted as it actually behaves, per the instruction to assert the real API and never weaken
-         * an assertion to fit an assumption.
-         *
-         * <p>The overlay is nonetheless still a reinterpretation and not a parse, and that is asserted
-         * where it is actually observable: <strong>the storage is never coerced</strong>. See
-         * {@link #theStorageBytesAreNeverCoercedByTheNumericView()}, which shows the alphanumeric view
-         * still returning the exact bytes written - spaces stay eleven spaces, and non-digits survive a
-         * failed numeric read untouched. This suite performs no string-to-number conversion of its own
-         * anywhere: it asserts bytes, and the only decode in play is the codec's single reviewable
-         * {@code PIC 9} implementation. This copybook declares no scaled or signed picture, so no
-         * fixed-point type and no rounding policy takes any part in it either.
-         */
         @Test
         @DisplayName("a space-filled span reads as 0 through the numeric view, as COBOL does")
         void spacesReadAsZero() {
@@ -1819,8 +1319,6 @@ class CardScreenStateTest {
             assertThat(state.getCcCardNumN()).isZero();
             assertThat(state.getCcCustIdN()).isZero();
 
-            // Reading the numeric view did not rewrite the storage: all three are still spaces, not
-            // "0" and not zero-filled. This is the reinterpretation property, stated positively.
             assertThat(state.getCcAcctId())
                     .isEqualTo(CardScreenState.spaces(CardScreenState.CC_ACCT_ID_LENGTH))
                     .isNotEqualTo("00000000000");
@@ -1832,26 +1330,14 @@ class CardScreenStateTest {
             assertThat(state.isCcAcctIdNumeric()).isFalse();
         }
 
-        /**
-         * The property that makes an overlay an overlay: reading the {@code PIC 9} view never rewrites
-         * the bytes underneath it, whatever those bytes are.
-         *
-         * <p>Three cases, covering the three ways the span can be occupied. In each the alphanumeric view
-         * afterwards returns exactly what was written - character for character - so the numeric view is
-         * demonstrably a way of looking at the region rather than a conversion of it.
-         */
         @Test
         @DisplayName("reading the numeric view never rewrites the bytes underneath it")
         void theStorageBytesAreNeverCoercedByTheNumericView() {
-            // 1. Digits. The numeric view reads a value; the characters are unchanged, leading zeros
-            //    and all - not renormalised to "42".
             CardScreenState digits = new CardScreenState();
             digits.setCcAcctId("00000000042");
             assertThat(digits.getCcAcctIdN()).isEqualTo(42L);
             assertThat(digits.getCcAcctId()).isEqualTo("00000000042").hasSize(11);
 
-            // 2. LOW-VALUES. COCRDSLC.cbl:617 writes exactly this. The numeric view reads 0 and the
-            //    bytes remain 0x00 - they are not turned into spaces, zeros or an empty value.
             CardScreenState lowValues = new CardScreenState();
             lowValues.setCcAcctIdToLowValues();
             assertThat(lowValues.getCcAcctIdN()).isZero();
@@ -1860,26 +1346,18 @@ class CardScreenStateTest {
                     .isNotEqualTo(CardScreenState.spaces(CardScreenState.CC_ACCT_ID_LENGTH));
             assertThat(lowValues.getCcAcctId().charAt(0)).isEqualTo('\u0000');
 
-            // 3. Non-digits. The strict PIC 9 decode refuses them - which is the codec's deliberate
-            //    policy for a numeric span - and, decisively, the refusal leaves the storage exactly as
-            //    written. The bytes are still readable through the X view, so nothing was consumed,
-            //    normalised or lost by the attempt.
             CardScreenState letters = new CardScreenState();
             letters.setCcAcctId("ABCDEFGHIJK");
             assertThatExceptionOfType(IllegalArgumentException.class)
                     .isThrownBy(letters::getCcAcctIdN);
             assertThat(letters.getCcAcctId()).isEqualTo("ABCDEFGHIJK").hasSize(11);
 
-            // The guard the COBOL uses ahead of every numeric read reports false here, which is how a
-            // controller reproduces COCRDSLC.cbl:665 and never reaches the strict path at all.
             assertThat(letters.isCcAcctIdNumeric()).isFalse();
 
-            // A second failed read changes nothing either - the state is not left half-converted.
             assertThatExceptionOfType(IllegalArgumentException.class)
                     .isThrownBy(letters::getCcAcctIdN);
             assertThat(letters.getCcAcctId()).isEqualTo("ABCDEFGHIJK");
 
-            // And the same holds for the card-number pair, with a mixed non-digit span.
             CardScreenState mixed = new CardScreenState();
             mixed.setCcCardNum("4111-1111-1111-X");
             assertThat(mixed.isCcCardNumNumeric()).isFalse();
@@ -2004,11 +1482,6 @@ class CardScreenStateTest {
         }
     }
 
-    /**
-     * Feeds {@link RedefinesPairs#classTestAcceptsOnlyAsciiDigits(String)}.
-     *
-     * @return eleven-character spans that the class test must reject
-     */
     static Stream<String> nonNumericElevenChars() {
         return Stream.of("1234567890!",
                 "1234567890A",
@@ -2021,7 +1494,6 @@ class CardScreenStateTest {
     @Nested
     @DisplayName("The 213-byte fixed-width image, under an explicitly named code page")
     class FixedWidthImage {
-
         @Test
         @DisplayName("a fresh work area renders as exactly 213 bytes")
         void theImageIsAlwaysTwoHundredAndThirteenBytes() {
@@ -2173,20 +1645,10 @@ class CardScreenStateTest {
         }
     }
 
-    /**
-     * Feeds the code-page parameterised tests.
-     *
-     * @return the two code pages this system uses
-     */
     static Stream<Charset> bothCodePages() {
         return Stream.of(StandardCharsets.US_ASCII, Charset.forName("IBM037"));
     }
 
-    /**
-     * Feeds {@link FixedWidthImage#wrongLengthImagesAreRejected(int)}.
-     *
-     * @return byte counts that are not the declared 213
-     */
     static Stream<Integer> wrongImageLengths() {
         return Stream.of(0, 1, 212, 214, 350);
     }
@@ -2194,7 +1656,6 @@ class CardScreenStateTest {
     @Nested
     @DisplayName("Figurative constants - SPACES and LOW-VALUES are not interchangeable")
     class FigurativeConstants {
-
         @Test
         @DisplayName("spaces(n) yields n spaces and lowValues(n) yields n binary zeros")
         void bothConstantsRenderAtTheRequestedWidth() {
@@ -2238,7 +1699,6 @@ class CardScreenStateTest {
     @Nested
     @DisplayName("null is not a COBOL state and is rejected everywhere")
     class NullRejection {
-
         @ParameterizedTest(name = "{0} rejects null")
         @MethodSource("com.vsergeychik.carddemo.card.dto.CardScreenStateTest#everyStringSetter")
         @DisplayName("every field setter rejects null and names the field it guards")
@@ -2272,11 +1732,6 @@ class CardScreenStateTest {
         }
     }
 
-    /**
-     * Feeds {@link NullRejection#everySetterRejectsNull(String, Consumer)}.
-     *
-     * @return each field's COBOL name paired with an action that passes it null
-     */
     static Stream<Arguments> everyStringSetter() {
         return Stream.of(
                 Arguments.of("CCARD-AID",
@@ -2302,7 +1757,6 @@ class CardScreenStateTest {
     @Nested
     @DisplayName("Object contract - value semantics over the nine storage fields")
     class ObjectContract {
-
         @Test
         @DisplayName("a work area equals itself and equals an identical copy")
         void equalityIsReflexiveAndValueBased() {
@@ -2322,25 +1776,13 @@ class CardScreenStateTest {
             assertThat(state).isNotEqualTo("CardScreenState");
         }
 
-        /**
-         * The single-byte case that matters most: two work areas differing only in whether one field
-         * holds spaces or {@code LOW-VALUES}.
-         *
-         * <p>Both are "blank" to the eye and both are 75 characters wide, so an equality that compared
-         * them loosely - or a hash that ignored the distinction - would report two genuinely different
-         * conversation states as the same one. The distinction is load-bearing: it is exactly what
-         * {@code 88 CCARD-RETURN-MSG-OFF VALUE LOW-VALUES} at {@code app/cpy/CVCRD01Y.cpy} line 30
-         * tests, and what {@code app/cbl/COCRDSLC.cbl:617} writes into {@code CC-ACCT-ID}.
-         */
         @Test
         @DisplayName("spaces and LOW-VALUES in one field make two work areas unequal")
         void spacesVersusLowValuesInOneFieldBreaksEquality() {
-            // CCARD-RETURN-MSG: spaces in one, LOW-VALUES in the other, everything else identical.
             CardScreenState spaceFilled = new CardScreenState();
             CardScreenState lowValued = new CardScreenState();
             lowValued.setCcardReturnMsgToLowValues();
 
-            // Both fields are 75 characters, so this is a content difference and not a width one.
             assertThat(spaceFilled.getCcardReturnMsg())
                     .hasSize(CardScreenState.CCARD_RETURN_MSG_LENGTH);
             assertThat(lowValued.getCcardReturnMsg())
@@ -2351,7 +1793,6 @@ class CardScreenStateTest {
             assertThat(lowValued.isCcardReturnMsgOff()).isTrue();
             assertThat(spaceFilled.isCcardReturnMsgOff()).isFalse();
 
-            // The same on an identifier field, per COCRDSLC.cbl:617.
             CardScreenState spacedId = new CardScreenState();
             CardScreenState lowValuedId = new CardScreenState();
             lowValuedId.setCcAcctIdToLowValues();
@@ -2360,12 +1801,10 @@ class CardScreenStateTest {
             assertThat(lowValuedId.isCcAcctIdLowValues()).isTrue();
             assertThat(spacedId.isCcAcctIdSpaces()).isTrue();
 
-            // Equal field sets do hash alike, which is the other half of the contract.
             CardScreenState alsoLowValued = new CardScreenState();
             alsoLowValued.setCcardReturnMsgToLowValues();
             assertThat(alsoLowValued).isEqualTo(lowValued).hasSameHashCodeAs(lowValued);
 
-            // hashCode is stable across repeated calls on an unchanged instance.
             assertThat(lowValued.hashCode()).isEqualTo(lowValued.hashCode());
         }
 
@@ -2390,9 +1829,6 @@ class CardScreenStateTest {
 
             String rendered = state.toString();
 
-            // The screen state itself stays legible - it is what a navigation parity failure is read
-            // from - while the three identifiers are masked. Practice B6 is intact: the components, the
-            // accessors and the encoded bytes still carry the real values, and COBOL has no toString.
             assertThat(rendered).contains("CCARD-AID='PFK03'",
                     "CCARD-NEXT-PROG='COCRDSLC'",
                     "CCARD-NEXT-MAPSET='CCRDSLA'",
@@ -2405,11 +1841,6 @@ class CardScreenStateTest {
         }
     }
 
-    /**
-     * Feeds {@link ObjectContract#anyFieldDifferenceBreaksEquality(String, Consumer)}.
-     *
-     * @return each field's COBOL name paired with an action that changes just that field
-     */
     static Stream<Arguments> singleFieldMutations() {
         return Stream.of(
                 Arguments.of("CCARD-AID",
@@ -2435,7 +1866,6 @@ class CardScreenStateTest {
     @Nested
     @DisplayName("JSON projection - the wire carries the nine storage fields and nothing else")
     class JsonProjection {
-
         private final ObjectMapper mapper = new ObjectMapper();
 
         @Test
@@ -2500,14 +1930,10 @@ class CardScreenStateTest {
                             + "\"ccAcctId\":\"11\",\"ccCardNum\":\"\",\"ccCustId\":\"\"}",
                     CardScreenState.class);
 
-            // Empty stays empty and "11" stays "11": the wire value is inspectable as it was sent.
             assertThat(bound.getCcardAid()).isEmpty();
             assertThat(bound.getCcAcctId()).isEqualTo("11");
             assertThat(bound.getCcardErrorMsg()).isEmpty();
 
-            // And the COBOL semantics are unchanged, because they read the moved image: "11" moves to
-            // "11         ", which is neither all digits nor all spaces - exactly what the pre-binding
-            // behaviour produced, and exactly what the class test IF CC-ACCT-ID IS NUMERIC reports.
             assertThat(bound.isCcAcctIdSpaces()).isFalse();
             assertThat(bound.isCcAcctIdNumeric()).isFalse();
             assertThat(bound.isCcCardNumSpaces()).isTrue();
@@ -2553,7 +1979,6 @@ class CardScreenStateTest {
     @Nested
     @DisplayName("asWorkArea - the one named step that applies the COBOL MOVE")
     class WorkAreaConversion {
-
         @Test
         @DisplayName("every field is rendered at its declared width")
         void everyFieldIsMovedToItsDeclaredWidth() {

@@ -59,137 +59,21 @@ import static org.mockito.Mockito.verify;
 /**
  * The twenty-case parity suite for {@code COTRN00C}, the CICS online program behind transaction
  * {@code CT00}, projected onto {@code GET /api/transactions}.
- *
- * <h2>Where the expected values come from, and where they do not</h2>
- * <p><strong>This baseline is statically derived. It was never captured from a running COBOL
- * program.</strong> Executing the twenty-eight legacy programs is impossible in this environment -
- * eight blockers are individually verified, from a COBOL compiler whose indexed-file handler is
- * disabled through to the absence of any CICS emulator and of the three IBM-supplied copybooks
- * {@code DFHAID}, {@code DFHBMSCA} and {@code DFHATTR}. Every expectation in
- * {@code src/test/resources/parity/COTRN00C/case01..case20.json} was therefore derived by reading
- * {@code app/cbl/COTRN00C.cbl} paragraph by paragraph and cross-checking four authorities: the
- * copybook byte layouts in {@code app/cpy}, the symbolic-map widths in
- * {@code app/cpy-bms/COTRN00.CPY}, the {@code DFHMDF} field definitions in
- * {@code app/bms/COTRN00.bms}, and the transaction-to-program binding in
- * {@code app/csd/CARDDEMO.CSD}. Each case file names the source lines it pins, so a reviewer can
- * check the derivation against the oracle rather than having to trust it. Every substantive part of
- * the gate survives the substitution - twenty cases, field-by-field diffing, a diff count that must
- * be zero - and only the provenance of the numbers differs. This is recorded as an accepted risk and
- * is stated here rather than left implicit.
- *
- * <h2>The class name says Menu; the program lists transactions</h2>
- * <p>{@code TransactionMenuController} is the name this migration is required to use, and the name
- * is honoured verbatim. It does not describe the behaviour: {@code COTRN00C}'s own header reads
- * {@code Function : List Transactions from TRANSACT file}, and the program paints a ten-row scrolling
- * <em>list</em> with PF7/PF8 paging and a per-row selection cell. It is not a menu, it holds no menu
- * option table, and it copies neither {@code COMEN02Y} nor {@code COADM02Y}. The divergence is
- * documented rather than acted on: a mandated name never licenses adding, removing or altering
- * logic, so every assertion below is taken from the paired source and none from the name.
- *
- * <h2>Page size ten is behaviour, not configuration</h2>
- * <p>The ten comes from two loop bounds in the source - {@code UNTIL WS-IDX > 10} at {@code :290} and
- * {@code :344}, and {@code UNTIL WS-IDX >= 11} at {@code :297} - and from the ten-armed
- * {@code EVALUATE WS-IDX} at {@code :390-445}. It is not a property, not a request parameter and not
- * a tunable: changing it would change which records a given page shows and would therefore break
- * parity outright. {@link PageSizeIsBehaviour} asserts the literal ten in both halves of the DTO
- * pair and asserts that no eleventh row exists to page into, so a later attempt to externalise the
- * value fails here first.
- *
- * <h2>Why the controller is invoked as a plain object, and why that is not a G51 violation</h2>
- * <p>The unit under test is {@link TransactionMenuController} itself, constructed through its
- * canonical constructor as an ordinary Java object and called through
- * {@link TransactionMenuController#listTransactions(TransactionListRequest, byte, WorkArea)}. There
- * is <strong>no</strong> {@code MockMvc}, no {@code TestRestTemplate}, no {@code WebTestClient}, no
- * Spring context and no {@code JobLauncher} anywhere in this file. That looks unusual for a
- * {@code @RestController} and it is deliberate, for two reasons that a reviewer should not have to
- * reconstruct:
- * <ul>
- *   <li><strong>The rule is that no HTTP layer may sit between the assertion and the code.</strong>
- *       Direct construction has none - it is the strictest possible reading of that rule, not an
- *       exception to it. Putting a servlet container in the path would add a JSON round trip whose
- *       failures are indistinguishable from the arithmetic failures this suite exists to catch.</li>
- *   <li><strong>The {@code transaction} package has no service class to invoke instead.</strong> All
- *       four of its online programs keep their decision logic in the controller, so the controller
- *       <em>is</em> the decision layer here. The alternative - invoking a service - does not exist,
- *       and inventing one would be a redesign.</li>
- * </ul>
- * <p>{@code TRANSACT} is reached through a stubbed {@link TransactionRepository}: never a
- * {@code JdbcTemplate}, never a live dataset, and never by dataset name. No case file and no line of
- * this class contains a mainframe dataset name, which {@link ScopeAndProvenance} asserts directly.
- *
- * <p>{@link TransactionListRequest} and {@link TransactionListResponse} are imported because they
- * <em>are</em> the controller's signature - {@code listTransactions} takes the one and returns the
- * other - so reaching the unit under test at all requires both. They are the DTO pair projected
- * field-for-field from {@code app/cpy-bms/COTRN00.CPY}, and the payload names and lengths this suite
- * asserts are read from them rather than restated, so a drift between the symbolic map and the DTO
- * fails here instead of being masked by a second copy of the same number.
- *
- * <h2>What the diff judges, and what is asserted alongside it</h2>
- * <p>The differ compares the response - next program, next mapset, next map, cursor field,
- * termination, all twenty-two commarea fields, the ordered send list - the {@code RETURN-CODE}, and
- * the two message channels. Two aspects of the observation need explaining:
- * <ul>
- *   <li><strong>Each send carries the six fields {@code POPULATE-HEADER-INFO} moves, and only
- *       those.</strong> {@code :567-586} moves {@code CCDA-TITLE01}, {@code CCDA-TITLE02},
- *       {@code WS-TRANID}, {@code WS-PGMNAME} and the two clock renderings on <em>every</em> send of
- *       an invocation, so under a pinned clock those six are provably identical across the sends of
- *       one run and can honestly be attributed to each. The rest of {@code COTRN0AO} cannot: the
- *       program mutates one output area in place and sends it repeatedly, so a per-send snapshot of
- *       the row block does not exist to be reported. Rather than attribute the final screen to an
- *       earlier send - which would assert something false - the row block, the page number and the
- *       error line are pinned by the targeted assertions in {@link PaintedPage},
- *       {@link PageArithmetic} and {@link Messages}, which read the final painted response
- *       directly.</li>
- *   <li><strong>No dataset channel is reported at all.</strong> {@code COTRN00C} only ever issues
- *       {@code STARTBR}, {@code READNEXT}, {@code READPREV} and {@code ENDBR}; there is no
- *       {@code WRITE}, {@code REWRITE} or {@code DELETE} anywhere in its 699 lines. An empty write
- *       channel and an empty final-state channel are therefore the honest fingerprint, and
- *       {@link ReadOnlyAccess} proves it from the other side by verifying that no mutating
- *       repository method was called on any of the twenty cases.</li>
- * </ul>
- *
- * <h2>Fixed-point and encoding discipline</h2>
- * <p>No {@code double} or {@code float} appears here. The one monetary rendering this screen performs
- * is re-derived through {@link CobolDecimal} at scale two with {@link RoundingMode#DOWN}, which is
- * the only faithful mode because the keyword {@code ROUNDED} appears zero times in all twenty-eight
- * programs. Every charset is named explicitly - {@code US-ASCII} for the text fixtures - and never
- * taken from the platform. There is no static mutable state: the work area, the request, the response
- * and the stubbed repository are all created per invocation, exactly as {@code WORKING-STORAGE} is
- * per-task, and {@link Statelessness} asserts that by reflection and by re-running a case on a reused
- * controller instance.
  */
 @DisplayName("COTRN00C parity: twenty statically derived cases, each of which must diff in nothing")
 final class COTRN00CParityTest {
-
-    // =================================================================================================
-    // Identity. Every constant here is read from the type that owns it rather than restated, so a
-    // drift in the DTO pair or the repository fails this suite instead of being papered over by a
-    // second copy of the same literal.
-    // =================================================================================================
-
-    /** The program whose behaviour is the oracle, and the resource directory that holds its cases. */
     private static final String PROGRAM = "COTRN00C";
 
-    /** The {@code TRANSACT} binding key, which is the one dataset every case seeds. */
     private static final String TRANSACT = TransactionRepository.CICS_FILE_NAME;
 
-    /** The copybook that fixes the 350-byte record {@code TRANSACT} holds, named as app/cpy spells it. */
     private static final String TRAN_COPYBOOK = "CVTRA05Y";
 
-    /** Every case declares this kind, and the harness checks the declaration before the unit runs. */
     private static final ParityCase.UnitKind UNIT_KIND = ParityCase.UnitKind.CONTROLLER_POJO;
 
-    /** The code page the nine ASCII fixtures and every seeded row are stated in. */
     private static final Charset CHARSET = StandardCharsets.US_ASCII;
 
-    /** {@code 05 WS-MESSAGE PIC X(80)} - {@code app/cbl/COTRN00C.cbl:38}. */
     private static final int WS_MESSAGE_WIDTH = 80;
 
-    /**
-     * The six fields {@code POPULATE-HEADER-INFO} moves at {@code :571-586}, in source order. They are
-     * the only part of {@code COTRN0AO} that is identical on every send of one invocation, which is
-     * what makes them the honest per-send observation.
-     */
     private static final List<String> HEADER_PREFIXES = List.of(
             TransactionListResponse.TITLE01,
             TransactionListResponse.TITLE02,
@@ -198,28 +82,13 @@ final class COTRN00CParityTest {
             TransactionListResponse.CURDATE,
             TransactionListResponse.CURTIME);
 
-    /**
-     * The five {@code EVALUATE EIBAID} arms at {@code :119-134}, in source order, named by the
-     * {@code DFHAID} mnemonic each tests. {@code DFHPF12} stands for {@code WHEN OTHER}: it is a real
-     * attention identifier that this program names nowhere, so it must fall through all four named
-     * arms to reach the default.
-     */
     private static final List<String> ENTER_ARM = List.of("DFHENTER");
 
-    /** The four arms {@code EVALUATE EIBAID} names explicitly, in source order. */
     private static final List<String> NAMED_AIDS =
             List.of("DFHENTER", "DFHPF3", "DFHPF7", "DFHPF8");
 
-    /** The mnemonic that must reach {@code WHEN OTHER} at {@code :129}. */
     private static final String UNNAMED_AID = "DFHPF12";
 
-    /**
-     * The nine message literals {@code COTRN00C} moves into {@code WS-MESSAGE}, transcribed from the
-     * source lines named beside each. Three of them are near-identical top-of-page texts emitted from
-     * three different places, which is precisely why they are listed rather than paraphrased: a
-     * translation that used one where the source uses another would be wrong in a way no amount of
-     * reading the Java would reveal.
-     */
     private static final String MSG_AT_TOP = "You are at the top of the page...";
     private static final String MSG_REACHED_BOTTOM = "You have reached the bottom of the page...";
     private static final String MSG_REACHED_TOP = "You have reached the top of the page...";
@@ -227,118 +96,36 @@ final class COTRN00CParityTest {
     private static final String MSG_ALREADY_TOP = "You are already at the top of the page...";
     private static final String MSG_ALREADY_BOTTOM = "You are already at the bottom of the page...";
 
-    /** {@code COSGN00C}, the target of the no-commarea guard at {@code :108}. */
     private static final String SIGNON_PGM = "COSGN00C";
 
-    /** {@code COMEN01C}, the target of the {@code DFHPF3} arm at {@code :123}. */
     private static final String MENU_PGM = "COMEN01C";
 
-    /** {@code COTRN01C}, the target of an accepted row selection at {@code :188}. */
     private static final String TRAN_VIEW_PGM = "COTRN01C";
 
-    /**
-     * The ordinal of the record {@code case19}'s typed key names, and therefore the record that must
-     * be painted into screen row one.
-     *
-     * <p>{@code case19} is the one case that types a key into {@code TRNIDINI}, so it is the one case
-     * that reaches the {@code ELSE} at {@code :208} and positions the browse on a key the operator
-     * supplied rather than on {@code LOW-VALUES}. Eight is a record in the middle of that case's
-     * twenty-four-row seed, chosen so that ten records lie at or after it and an eleventh lies beyond
-     * them - which is what makes both the full page and {@code SET NEXT-PAGE-YES} at {@code :310}
-     * observable from one browse.
-     */
     private static final int NUMERIC_START_ORDINAL = 8;
 
-    /**
-     * The record {@link #partialBackwardPageVariant()} anchors its backward page on.
-     *
-     * <p>Six, because the anchor read at {@code :340} consumes it and leaves exactly FIVE records
-     * below it - fewer than the ten rows the loop at {@code :351-357} would fill, which is what makes
-     * the loop end on end-of-file rather than on {@code WS-IDX <= 0} and therefore what makes the
-     * rewind block at {@code :359-369} unreachable.
-     */
     private static final int PARTIAL_BACKWARD_ANCHOR_ORDINAL = 6;
 
-    /** How many records lie below that anchor, and therefore how many rows a partial page fills. */
     private static final int PARTIAL_BACKWARD_AVAILABLE = PARTIAL_BACKWARD_ANCHOR_ORDINAL - 1;
 
-    /**
-     * The record {@link #fullBackwardPageVariant()} anchors its backward page on.
-     *
-     * <p>Twenty-one, against the twenty-four-row seed, because the anchor {@code READPREV} at
-     * {@code :340} consumes it and leaves TWENTY records below it - more than the ten rows the loop at
-     * {@code :351-357} fills, which is what makes the loop end on {@code WS-IDX <= 0} rather than on
-     * end-of-file and therefore what makes the rewind block at {@code :359-369} reachable. Records
-     * twenty down to eleven land in rows ten down to one, and record ten is still there for the extra
-     * {@code READPREV} at {@code :360} to find.
-     */
     private static final int FULL_BACKWARD_ANCHOR_ORDINAL = 21;
 
-    /**
-     * The page number that variant arrives on, and therefore the page the {@code SUBTRACT} at
-     * {@code :364} rewinds from.
-     *
-     * <p>Three rather than two, so that {@code CDEMO-CT00-PAGE-NUM > 1} at {@code :363} is satisfied by
-     * a margin: page two minus one is the same ONE that {@code :366} would have moved, so the
-     * {@code SUBTRACT} arm and the {@code MOVE} arm could not be told apart by the resulting number
-     * alone. Three minus one is two, which only {@code :364} can produce.
-     */
     private static final int FULL_BACKWARD_PAGE_NUM = 3;
 
-    /**
-     * The declared case the two further selector letters are derived from - {@code case14}, whose
-     * tenth cell carries the accepted {@code 'S'}.
-     *
-     * <p>Any case that selects a row would do, and {@code case14} is named rather than assumed because
-     * the derivation substitutes {@link #selectedCellOf that case's own} cell: re-typing the cell the
-     * declared case already fills leaves {@code CDEMO-CT00-TRN-SELECTED} correct, so only the echoed
-     * selector byte has to be amended.
-     */
     private static final int SELECTION_CASE = 14;
 
-    /** {@code WHEN 's'} at {@code :187} - the lower-case half of the two-clause selection arm. */
     private static final String SELECTOR_LOWER = "s";
 
-    /** A letter neither {@code :186} nor {@code :187} enumerates, so it reaches {@code :196}. */
     private static final String SELECTOR_INVALID = "x";
 
-    /**
-     * The record {@code case17}'s screen showed in row two, and therefore the identifier {@code :154}
-     * moves into {@code CDEMO-CT00-TRN-SELECTED} when the invalid selector is read from that cell.
-     *
-     * <p>Twenty-two because {@code case17} arrives on page three of a twenty-four record file, whose
-     * rows one to four hold records twenty-one to twenty-four. It is deliberately NOT a record the
-     * page that {@code :225} then paints contains in row two, so that the two can be told apart.
-     */
     private static final int INVALID_SELECTOR_ROW_TWO_ORDINAL = 22;
 
-    /** The screen row {@code case17} types its rejected selector into - the SECOND scan arm, {@code :152}. */
     private static final int INVALID_SELECTOR_ROW = 2;
 
-    /** {@code MOVE 'Invalid selection. Valid value is S' TO WS-MESSAGE} - {@code :198-200}. */
     private static final String MSG_INVALID_SELECTION = "Invalid selection. Valid value is S";
 
-    /**
-     * {@code MOVE 'Tran ID must be Numeric ...' TO WS-MESSAGE} - {@code :213-215}.
-     *
-     * <p>Twenty-seven characters, the trailing space and the three dots included. It is the message of
-     * the one arm of the browse-key filter that also sets {@code WS-ERR-FLG}.
-     */
     private static final String MSG_TRAN_ID_NOT_NUMERIC = "Tran ID must be Numeric ...";
 
-    // =================================================================================================
-    // Case supply. ParityHarness.cases(String) already refuses a set that is not exactly case01
-    // through case20 - a short set is not a smaller gate, it is a gate that passes vacuously - so the
-    // loud failure the suite needs is inherited rather than reimplemented. The assertions below state
-    // the invariant anyway, because a reader of this file should not have to open the harness to
-    // discover that twenty is enforced.
-    // =================================================================================================
-
-    /**
-     * The twenty declared cases, in ordinal order, as the parameterized test consumes them.
-     *
-     * @return exactly twenty cases; the harness throws rather than returning fewer
-     */
     private static List<ParityCase> declaredCases() {
         List<ParityCase> cases = ParityHarness.casesOf(PROGRAM);
         assertThat(cases)
@@ -349,58 +136,14 @@ final class COTRN00CParityTest {
         return cases;
     }
 
-    /**
-     * The same twenty cases as a stream, which is the shape {@code @MethodSource} wants.
-     *
-     * <p>Each case is wrapped in a {@link Named} carrying its case id, so the gate below reports
-     * {@code case07} rather than the whole of {@link ParityCase#toString()}. The wrapper is unwrapped
-     * before the test sees it, so the parameter stays a {@code ParityCase}: this buys legibility in
-     * the failure line at no cost to the assertion. It matters because the gate is stated per case -
-     * a reader looking at a red build needs to know which of the twenty diverged before reading
-     * anything else.
-     *
-     * @return a stream over exactly twenty cases, each named by its case id
-     */
     private static Stream<Named<ParityCase>> cases() {
         return declaredCases().stream().map(parityCase -> Named.of(parityCase.caseId(), parityCase));
     }
 
-    /**
-     * Loads one case by ordinal, for a targeted assertion that is about that case specifically.
-     *
-     * @param ordinal the case number, {@code 1} through {@code 20}
-     * @return the loaded case
-     */
     private static ParityCase caseNumber(int ordinal) {
         return ParityHarness.usAscii().load(PROGRAM, ParityHarness.caseId(ordinal));
     }
 
-    /**
-     * A declared case with one selection cell re-typed, and its echoed selector expectation amended to
-     * match.
-     *
-     * <p>Two arms of the selection {@code EVALUATE} at {@code :185-203} differ from one another in
-     * exactly one byte of the payload: {@code WHEN 'S'} at {@code :186} and {@code WHEN 's'} at
-     * {@code :187} share one body, and {@code WHEN OTHER} at {@code :196} takes a different one. The
-     * suite is fixed at twenty declared cases, so rather than spending three of them on one byte, the
-     * two further letters are driven from the declared upper-case case with that byte substituted.
-     * Only the received cell and the {@code CDEMO-CT00-TRN-SEL-FLG} the program echoes back are
-     * changed, so the derived case remains a faithful statement of what the source does with that
-     * letter - and the lower-case one is still judged, diff for diff, against the amended expectation.
-     *
-     * <p>The cell substituted is the one the declared case <em>itself</em> selects - the first cell it
-     * fills, which by {@code EVALUATE TRUE}'s first-match-wins rule is the cell that decided its
-     * outcome. Substituting that cell and no other is what keeps
-     * {@code CDEMO-CT00-TRN-SELECTED} - the identifier the matching arm moves from that row - correct
-     * without amending it: the arm taken is the same arm, on the same row, differing only in the
-     * letter. Substituting a fixed row instead would silently move the selection to a different row
-     * whenever the declared case selected elsewhere, and the derived expectation would then name the
-     * wrong transaction.
-     *
-     * @param base the declared case to derive from; the selection cell it fills is the one substituted
-     * @param letter the letter to type into that cell
-     * @return a case identical to {@code base} but for that one byte and its echo
-     */
     private static ParityCase withSelectorLetter(ParityCase base, String letter) {
         String selectorItem = selectedCellOf(base);
         ParityCase.ScreenRequest request = base.screenRequest();
@@ -427,19 +170,6 @@ final class COTRN00CParityTest {
                 base.expectedMessages(), base.normalisations(), base.expectedDatasets());
     }
 
-    /**
-     * The {@code SEL000nI} item of the row a declared case selects - the first cell it fills.
-     *
-     * <p>Ascending, and returning on the first filled cell, because that is exactly what the ten-way
-     * {@code EVALUATE TRUE} at {@code :148-182} does: clause <em>n</em> is reached only when clauses
-     * {@code 1} to <em>n-1</em> were false, so the earliest filled cell is the one that decides the
-     * outcome. A case that fills no cell reaches {@code WHEN OTHER} at {@code :179-181} and selects
-     * nothing, so there is no cell to substitute and saying so loudly is better than substituting the
-     * first row and changing which arm the derived case takes.
-     *
-     * @param parityCase the declared case
-     * @return the input item name of the selection cell that case fills
-     */
     private static String selectedCellOf(ParityCase parityCase) {
         Map<String, String> mapFields = parityCase.screenRequest().mapFields();
         for (int row = TransactionListResponse.FIRST_ROW;
@@ -457,78 +187,25 @@ final class COTRN00CParityTest {
                 + "row, because the arm at :185-203 is only entered when :183-184 holds.");
     }
 
-    // =================================================================================================
-    // The browse, in memory. This is the only part of the suite that stands in for a backend, and its
-    // contract is the one TransactionRepository.startBrowse documents rather than an approximation of
-    // it: positioning is at-or-after going forward and at-or-before going backward, both inclusive of
-    // the anchor record, a boundary browse starts at the first or last record, and running off the end
-    // reports END_OF_FILE and keeps reporting it rather than wrapping round.
-    //
-    // GTEQ is in force because it is the STARTBR default: app/cbl/COTRN00C.cbl:597 has the keyword
-    // commented out, which changed nothing. Whether to discard the anchor record is the caller's
-    // decision, and COTRN00C makes it at :285 and :339 - which is exactly the skip-read guard cases 13
-    // to 16 exist to pin.
-    // =================================================================================================
-
-    /**
-     * One positioned browse over the seeded rows, walked in one direction.
-     *
-     * <p>Per-invocation state, created inside the adapter and unreachable from anywhere else, so no
-     * two cases can see each other's cursor.
-     */
     private static final class TransactBrowseCursor {
-
-        /** The seeded records in ascending {@code TRAN-ID} order, which is KSDS key order. */
         private final List<TranRecord> ascending;
 
-        /** The direction this browse is walked; a read the other way is never issued to it. */
         private final BrowseDirection direction;
 
-        /** The {@code RIDFLD} to position at, or {@code null} for a boundary browse. */
         private final String anchor;
 
-        /**
-         * The outcome forced onto the positioning probe, or {@code null} to let the data decide. This
-         * is how the {@code WHEN DFHRESP(NOTFND)} arm at {@code :605} and the {@code WHEN OTHER} arm at
-         * {@code :612} are reached over a file that has records to offer.
-         */
         private final ParityCase.ForcedOutcome forcedPositioning;
 
-        /**
-         * The outcome forced onto this browse's reads, or {@code null}. Kept separate from the
-         * positioning force on purpose: in CICS terms the {@code STARTBR} carries its own status, so a
-         * case that forced both through one declaration could not say which of the two arms it was
-         * exercising - {@code :602-619} is the positioning {@code EVALUATE} and {@code :636-653} is the
-         * read's, and they set different flags.
-         *
-         * <p>It takes effect from the <em>second</em> read, leaving the first to the data. That is what
-         * makes {@code WHEN OTHER} at {@code :646-652} reachable with the page already part-painted:
-         * the browse delivers the record its position found, {@code :299} paints it, and the refusal
-         * then strikes with {@code WS-IDX} at two. A refusal on the very first read is a different
-         * state, which no case declares and which would need a seam of its own to express.
-         */
         private final ParityCase.ForcedOutcome forcedRead;
 
-        /** Index of the record the next read returns; {@code -1} or {@code size} means past the end. */
         private int next;
 
-        /**
-         * Whether {@link #position()} has run, which happens on the first enquiry - the probe or a read,
-         * whichever comes first - rather than eagerly.
-         */
         private boolean positioned;
 
-        /** Once the end has been reported it stays reported; a browse does not wrap. */
         private boolean exhausted;
 
-        /**
-         * How many reads this browse has served. The positioning probe is <em>not</em> one of them: a
-         * {@code STARTBR} transfers no record, so it is reported through {@link #positioningResult()}
-         * and consumes nothing. A browse whose paging body never runs has served zero reads.
-         */
         private int reads;
 
-        /** The probe's outcome, computed once on first enquiry and cached, since it cannot change. */
         private ReadResult positioningResult;
 
         TransactBrowseCursor(List<TranRecord> ascending,
@@ -543,14 +220,6 @@ final class COTRN00CParityTest {
             this.forcedRead = forcedRead;
         }
 
-        /**
-         * Serves one read in this browse's direction.
-         *
-         * @param requested the direction the caller read in, checked against the browse's own so a
-         *                  {@code READPREV} on a forward browse is a defect rather than a silent
-         *                  success
-         * @return the discriminated outcome
-         */
         ReadResult read(BrowseDirection requested) {
             if (requested != direction) {
                 throw new IllegalStateException("A " + requested + " read was issued against a "
@@ -560,8 +229,6 @@ final class COTRN00CParityTest {
                         + "not an outcome to report.");
             }
             reads = reads + 1;
-            // From the second read, per the field's contract: the first read delivers what the position
-            // found, so the forced refusal strikes after a row has been painted rather than before.
             if (forcedRead != null && reads >= 2) {
                 return forcedResult(forcedRead);
             }
@@ -578,29 +245,14 @@ final class COTRN00CParityTest {
             return ReadResult.found(TRANSACT, record);
         }
 
-        /** Ends the browse. Called twice on most paths - once at {@code :322} or {@code :371} and once
-         * by the try-with-resources close - which is tolerated exactly as CICS tolerates it. */
         void end() {
             exhausted = true;
         }
 
-        /** How many reads were served, the probe included. */
         int reads() {
             return reads;
         }
 
-        /**
-         * Reports what the {@code STARTBR} found, consuming nothing.
-         *
-         * <p>{@code STARTBR ... GTEQ} establishes a position without transferring a record, so this
-         * peeks at the record the position lands on and leaves it for the first read. A position that
-         * lands past either end is {@code DFHRESP(NOTFND)} - the condition {@code :605} branches on.
-         * {@code DFHRESP(ENDFILE)} is a read condition and {@code :602-619} has no arm for it, so a case
-         * that forces end of file onto the {@code STARTBR} is restated as the not-found it really is,
-         * exactly as {@code TransactionRepository.Browse} restates it.
-         *
-         * @return the positioning outcome, computed once and cached
-         */
         ReadResult positioningResult() {
             if (positioningResult != null) {
                 return positioningResult;
@@ -620,10 +272,6 @@ final class COTRN00CParityTest {
             return positioningResult;
         }
 
-        /**
-         * Positions the cursor, inclusive of the anchor, per the contract
-         * {@link TransactionRepository#startBrowse(String, BrowseDirection)} documents.
-         */
         private void position() {
             if (anchor == null) {
                 next = direction == BrowseDirection.FORWARD ? 0 : ascending.size() - 1;
@@ -648,12 +296,6 @@ final class COTRN00CParityTest {
             }
         }
 
-        /**
-         * Turns a declared outcome into the {@link ReadResult} the repository would report for it.
-         *
-         * @param forced the outcome the case declared
-         * @return the corresponding result
-         */
         private ReadResult forcedResult(ParityCase.ForcedOutcome forced) {
             return switch (forced.outcome()) {
                 case OK -> ReadResult.found(TRANSACT, requireRecordToForce(FileStatus.Outcome.OK));
@@ -665,8 +307,6 @@ final class COTRN00CParityTest {
             };
         }
 
-        /** A forced record-bearing outcome needs a record; a case that forces one over an empty file
-         * has mis-stated itself and is told so rather than producing a null record. */
         private TranRecord requireRecordToForce(FileStatus.Outcome outcome) {
             if (ascending.isEmpty()) {
                 throw new IllegalStateException("A forced " + outcome + " outcome carries a record, "
@@ -677,18 +317,6 @@ final class COTRN00CParityTest {
         }
     }
 
-    /**
-     * Builds the stubbed {@code TRANSACT} file: a mocked repository whose two {@code startBrowse}
-     * overloads hand back a mocked handle driven by an in-memory cursor over the seeded rows.
-     *
-     * <p>Mocking is used rather than a hand-written subclass because {@code Browse} is final and
-     * because a mock is what lets {@link ReadOnlyAccess} prove a negative - that no mutating method
-     * was ever called - which a subclass could only assert by overriding every one of them.
-     *
-     * @param invocation the seeded datasets and the case's forced outcomes
-     * @param cursors    every cursor this repository hands out, so a test can count the reads
-     * @return the stubbed repository
-     */
     private static TransactionRepository stubbedTransactFile(ParityHarness.Invocation invocation,
                                                              List<TransactBrowseCursor> cursors) {
         List<TranRecord> ascending = seededRecords(invocation);
@@ -703,13 +331,6 @@ final class COTRN00CParityTest {
         return repository;
     }
 
-    /**
-     * Creates one positioned handle and records its cursor.
-     *
-     * <p>The forced outcomes are taken through {@link ParityHarness.Invocation#forcedOutcome} here,
-     * at the call site that consumes them, which is what makes an unconsumed declaration fail the run
-     * rather than quietly forcing nothing.
-     */
     private static Browse handleFor(ParityHarness.Invocation invocation,
                                     List<TransactBrowseCursor> cursors,
                                     List<TranRecord> ascending,
@@ -720,9 +341,6 @@ final class COTRN00CParityTest {
                 declaredOutcome(invocation, ParityCase.RepositoryOperation.READ_NEXT));
         cursors.add(cursor);
         Browse handle = Mockito.mock(Browse.class);
-        // The STARTBR status comes from the position itself, computed over the seeded rows, so a case
-        // that seeds nothing reaches :605 and a case that seeds a row reaches :603 - without either
-        // being declared. The probe consumes nothing, so the first read still returns record one.
         Mockito.when(handle.positioningResult()).thenAnswer(call -> cursor.positioningResult());
         Mockito.when(handle.positioningOutcome())
                 .thenAnswer(call -> cursor.positioningResult().outcome());
@@ -738,18 +356,11 @@ final class COTRN00CParityTest {
         return handle;
     }
 
-    /** The outcome the case forced for one operation, or {@code null} when it forced none. */
     private static ParityCase.ForcedOutcome declaredOutcome(ParityHarness.Invocation invocation,
                                                             ParityCase.RepositoryOperation operation) {
         return invocation.hasForcedOutcome(operation) ? invocation.forcedOutcome(operation) : null;
     }
 
-    /**
-     * Decodes the seeded {@code TRANSACT} rows into records, in ascending key order.
-     *
-     * <p>{@link TranRecord#decode(String, Charset)} rejects a row that is not exactly its declared 350
-     * bytes, so a mis-measured seed fails here rather than silently shifting every field offset.
-     */
     private static List<TranRecord> seededRecords(ParityHarness.Invocation invocation) {
         List<TranRecord> records = new ArrayList<>();
         if (!invocation.hasDataset(TRANSACT)) {
@@ -763,32 +374,14 @@ final class COTRN00CParityTest {
         return records;
     }
 
-    /**
-     * Reshapes a {@code RIDFLD} to the sixteen-byte key, space padded on the right, exactly as
-     * {@code MOVE TRNIDINI OF COTRN0AI TO TRAN-ID} pads it at {@code :210}.
-     */
     private static String keyImageOf(String ridfld) {
         return new FixedWidthCodec(CHARSET).movePicX(ridfld, TranRecord.TRAN_ID_KEY_LENGTH);
     }
 
-    // =================================================================================================
-    // The inbound payload. Rule R6 in one method: the whole conversation - the 160-byte commarea, the
-    // 58-byte CDEMO-CT00-INFO extension appended to it, the attention identifier and the screen field
-    // values - arrives in the request body, and nothing arrives in a session.
-    // =================================================================================================
-
-    /**
-     * Assembles the request a case describes.
-     *
-     * @param invocation the case's screen request, already validated by the case model
-     * @return the payload to hand the controller
-     */
     private static TransactionListRequest requestOf(ParityHarness.Invocation invocation) {
         TransactionListRequest request = new TransactionListRequest();
         Map<String, String> commarea = invocation.commarea();
         if (!commarea.isEmpty()) {
-            // :111  MOVE DFHCOMMAREA(1:EIBCALEN) TO CARDDEMO-COMMAREA, which covers both the shared
-            // area and this program's own extension to it.
             request.setNavigationContext(navigationContextOf(commarea));
             request.setCursor(paginationCursorOf(commarea));
         }
@@ -800,27 +393,15 @@ final class COTRN00CParityTest {
                         NavigationContext.COMMAREA_LENGTH, PaginationCursor.CURSOR_LENGTH)
                 .isEqualTo(invocation.eibcalen());
 
-        // The key indication travels in the payload too. The byte is what EVALUATE EIBAID tests and is
-        // passed separately below; the token is set so the payload the controller receives is the one
-        // production traffic would carry rather than a half-populated one.
         PfKeyResolver.resolve(aidByteOf(invocation.aid()))
                 .ifPresent(key -> request.setAid(key.token()));
 
-        // The received map. RECEIVE-TRNLST-SCREEN at :554-562 copies COTRN0AI wholesale, so the case
-        // states only the xxxI items it fills and every other item keeps the spaces the request was
-        // constructed with.
         for (Map.Entry<String, String> field : invocation.mapFields().entrySet()) {
             request.setPayloadValue(basePrefixOf(field.getKey()), field.getValue());
         }
         return request;
     }
 
-    /**
-     * Builds the 160-byte {@code CARDDEMO-COMMAREA} from the case's field map.
-     *
-     * <p>Every component is named, so a case that omitted one would fail loudly here rather than
-     * silently receiving a default that the COBOL never produced.
-     */
     private static NavigationContext navigationContextOf(Map<String, String> commarea) {
         return new NavigationContext(
                 text(commarea, NavigationContext.FROM_TRANID_FIELD),
@@ -841,14 +422,6 @@ final class COTRN00CParityTest {
                 text(commarea, NavigationContext.LAST_MAPSET_FIELD));
     }
 
-    /**
-     * Builds the 58-byte {@code CDEMO-CT00-INFO} extension from the case's field map.
-     *
-     * <p>Deliberately separate from {@link NavigationContext}: the shared area is exactly 160 bytes
-     * and stays that width for all seventeen online programs, and this program's paging cursor is an
-     * extension appended after it, not a member of it. Folding the two together would widen a
-     * structure that twelve other programs share.
-     */
     private static PaginationCursor paginationCursorOf(Map<String, String> commarea) {
         PaginationCursor cursor = new PaginationCursor();
         cursor.setTrnidFirst(text(commarea, PaginationCursor.TRNID_FIRST_FIELD));
@@ -860,7 +433,6 @@ final class COTRN00CParityTest {
         return cursor;
     }
 
-    /** One {@code PIC X} commarea field, verbatim. */
     private static String text(Map<String, String> commarea, String field) {
         String value = commarea.get(field);
         assertThat(value)
@@ -871,32 +443,14 @@ final class COTRN00CParityTest {
         return value;
     }
 
-    /**
-     * One {@code PIC 9} commarea field, decoded from its zero-filled image, for a field whose Java
-     * component is a {@code long} - the eleven-digit account identifier and the sixteen-digit card
-     * number, neither of which fits an {@code int}.
-     */
     private static long number(Map<String, String> commarea, String field) {
         return Long.parseLong(text(commarea, field).trim());
     }
 
-    /**
-     * The same decode for a field whose Java component is an {@code int}: the one-digit program
-     * context and the nine-digit customer identifier. Declared separately rather than cast at the call
-     * site so that a widening mistake is a compile error rather than a silent narrowing.
-     */
     private static int digit(Map<String, String> commarea, String field) {
         return Integer.parseInt(text(commarea, field).trim());
     }
 
-    /**
-     * The {@code EIBAID} byte a {@code DFHAID} mnemonic names.
-     *
-     * <p>{@code DFHAID} is IBM-supplied and absent from this repository, so {@link CicsAid} is the
-     * single reproduction of it and the mapping is inverted from that one table rather than restated
-     * here. An absent mnemonic is {@code DFHNULL}, which is what {@code EIBAID} holds when the task
-     * was not started from a terminal key - the state the no-commarea guard runs in.
-     */
     private static byte aidByteOf(String mnemonic) {
         if (mnemonic == null) {
             return CicsAid.DFHNULL;
@@ -911,7 +465,6 @@ final class COTRN00CParityTest {
                 + "so reaching here means the two have drifted apart.");
     }
 
-    /** The base field prefix behind a symbolic-map {@code xxxI} input item name. */
     private static String basePrefixOf(String inputItemName) {
         assertThat(inputItemName)
                 .as("a case states received screen fields by their symbolic-map xxxI item names, "
@@ -921,21 +474,6 @@ final class COTRN00CParityTest {
                 inputItemName.length() - TransactionListRequest.INPUT_ITEM_SUFFIX.length());
     }
 
-    // =================================================================================================
-    // The observation. Everything below reads what the run produced and reports it; nothing here
-    // decides anything, which is what keeps the adapter from being able to pass a case by agreeing
-    // with itself.
-    // =================================================================================================
-
-    /**
-     * Projects the response onto the shape the differ judges.
-     *
-     * @param ws       the work area the run used, which carries the send count, the cursor field and
-     *                 whether control was transferred
-     * @param response the painted response
-     * @param codec    the codec every rendering goes through, carrying the named code page
-     * @return the observation
-     */
     private static FieldDiffer.ObservedResponse observedResponseOf(WorkArea ws,
                                                                   TransactionListResponse response,
                                                                   FixedWidthCodec codec) {
@@ -951,15 +489,6 @@ final class COTRN00CParityTest {
                         : ParityCase.Termination.RETURN_TRANSID);
     }
 
-    /**
-     * All twenty-two commarea fields the response carries, each rendered at the width its
-     * {@code PICTURE} clause declares.
-     *
-     * <p>Sixteen come from {@code app/cpy/COCOM01Y.cpy} and six from the {@code CDEMO-CT00-INFO}
-     * extension {@code app/cbl/COTRN00C.cbl:62-70} appends to it. All twenty-two are reported because
-     * the differ compares this map in both directions: an unreported field would be silently
-     * unchecked, and the commarea is what the next transaction in the conversation receives.
-     */
     private static Map<String, String> observedNavigationOf(TransactionListResponse response,
                                                             FixedWidthCodec codec) {
         NavigationContext context = response.getNavigationContext();
@@ -1013,20 +542,6 @@ final class COTRN00CParityTest {
         return navigation;
     }
 
-    /**
-     * One entry per {@code EXEC CICS SEND}, each carrying the six fields
-     * {@code POPULATE-HEADER-INFO} moves and no attribute.
-     *
-     * <p>The count is the behaviour this list exists to pin: several paths through {@code COTRN00C}
-     * perform {@code SEND-TRNLST-SCREEN} twice in one invocation - once from a file paragraph's
-     * end-of-data or failure arm and once from {@code :326} or {@code :374} - and a translation that
-     * collapsed them would have changed what the terminal saw. The six fields are attributed to every
-     * send because {@code :571-586} moves exactly those six on every send, from two copybook literals,
-     * two program literals and one pinned clock, so they cannot differ between the sends of one run.
-     * The attribute map is empty on every send because {@code COTRN00C} moves no attribute anywhere:
-     * it copies {@code DFHBMSCA} at {@code :81} and never uses it, and it does not copy
-     * {@code CSSETATY} at all.
-     */
     private static List<FieldDiffer.ObservedSend> observedSendsOf(WorkArea ws,
                                                                  TransactionListResponse response) {
         Map<String, String> header = new LinkedHashMap<>();
@@ -1040,36 +555,15 @@ final class COTRN00CParityTest {
         return sends;
     }
 
-    /**
-     * The symbolic-map length item that received {@code MOVE -1}, which is how COBOL positions the
-     * cursor.
-     *
-     * <p>{@code COTRN00C} has exactly one cursor target, {@code TRNIDINL}, and moves {@code -1} into
-     * it at eleven separate sites. The work area records the base field name, so it is turned into the
-     * length item's name through the DTO's own naming rule rather than by string concatenation here.
-     */
     private static String cursorItemOf(WorkArea ws) {
         String base = ws.cursorField();
         return base == null ? null : TransactionListRequest.lengthItemName(base);
     }
 
-    /**
-     * Reports an all-blank navigation target as absent.
-     *
-     * <p>{@code CDEMO-TO-PROGRAM} is {@code PIC X(8)} and a path that transfers nowhere leaves it
-     * spaces, which is the absence of a target rather than a target named by eight spaces. The case
-     * model refuses a blank value for the same reason, so the two agree.
-     */
     private static String blankToAbsent(String value) {
         return value == null || value.isBlank() ? null : value;
     }
 
-    // =================================================================================================
-    // The run. One method reaches the unit under test, and every assertion in this file goes through
-    // it, so there is exactly one place where the controller is constructed and called.
-    // =================================================================================================
-
-    /** Everything one run produced, so a targeted assertion can read what the differ has judged. */
     private record Observed(ParityCase parityCase,
                             TransactionListResponse response,
                             WorkArea work,
@@ -1078,13 +572,6 @@ final class COTRN00CParityTest {
                             FieldDiffer.DiffResult diffs) {
     }
 
-    /**
-     * Seeds the case, invokes {@code COTRN00C}'s translation as a plain Java object, captures the
-     * fingerprint and judges it.
-     *
-     * @param parityCase the case to run
-     * @return the run, judged
-     */
     private static Observed execute(ParityCase parityCase) {
         ParityHarness harness = ParityHarness.usAscii();
         AtomicReference<TransactionListResponse> painted = new AtomicReference<>();
@@ -1097,9 +584,6 @@ final class COTRN00CParityTest {
             TransactionRepository repository = stubbedTransactFile(invocation, cursors);
             file.set(repository);
 
-            // The canonical constructor: no Spring context, no MockMvc, no servlet container and no
-            // JobLauncher - only a stubbed repository, a codec carrying a named code page and the
-            // pinned clock FUNCTION CURRENT-DATE is read from at :569.
             TransactionMenuController controller =
                     new TransactionMenuController(repository, codec, invocation.clock());
 
@@ -1113,11 +597,6 @@ final class COTRN00CParityTest {
             invocation.recorder()
                     .response(observedResponseOf(ws, response, codec))
                     .returnCode(0)
-                    // Both message channels, every time. WS-MESSAGE is PIC X(80) and always holds a
-                    // value - :102 moves SPACES into it before anything else - and ERRMSGO is the
-                    // PIC X(78) field :531 truncates it into, so reporting the pair is what makes the
-                    // 80-to-78 move comparable at all. EmittedMessage rejects a text that is not
-                    // exactly its channel's width, so a drift in either declaration fails here.
                     .message(new ParityCase.EmittedMessage(
                             ParityCase.MessageChannel.WS_MESSAGE_80, ws.message()))
                     .message(new ParityCase.EmittedMessage(
@@ -1128,24 +607,10 @@ final class COTRN00CParityTest {
         return new Observed(parityCase, painted.get(), work.get(), file.get(), cursors, diffs);
     }
 
-    /**
-     * Runs a case and requires it to be clean, for a targeted assertion that builds on a case having
-     * already passed.
-     *
-     * @param ordinal the case number
-     * @return the run
-     */
     private static Observed clean(int ordinal) {
         return clean(caseNumber(ordinal));
     }
 
-    /**
-     * Runs a case and requires it to be clean, for a targeted assertion that builds on a case having
-     * already passed.
-     *
-     * @param parityCase the case to run, which need not be one of the twenty declared files
-     * @return the run
-     */
     private static Observed clean(ParityCase parityCase) {
         Observed observed = execute(parityCase);
         assertThat(observed.diffs().count())
@@ -1155,22 +620,6 @@ final class COTRN00CParityTest {
         return observed;
     }
 
-    /**
-     * {@code case06} over a TRANSACT that exists and holds no row, instead of over twelve rows and a
-     * forced {@code NOTFND}.
-     *
-     * <p>{@code STARTBR-TRANSACT-FILE} at {@code :602-619} declares three arms and not one of them is
-     * {@code DFHRESP(ENDFILE)}: an empty file and a not-found key both land on {@code :605}, and
-     * {@code TransactionMenuController} folds {@link FileStatus.Outcome#END_OF_FILE} and
-     * {@link FileStatus.Outcome#NOT_FOUND} into that single arm. The two ways in therefore differ only
-     * at the repository seam, which is why {@code case06}'s expectations apply unchanged here - and
-     * asserting them against BOTH inputs is what proves the fold, rather than assuming it.
-     *
-     * <p>Derived in code rather than declared as a twenty-first file because exactly twenty case files
-     * may exist per program, and {@link ParityCase#caseId()} enforces it.
-     *
-     * @return the empty-file variant, carrying {@code case06}'s expectations verbatim
-     */
     private static ParityCase emptyFileVariant() {
         ParityCase forced = caseNumber(6);
         ParityCase.ScreenRequest request = forced.screenRequest();
@@ -1193,32 +642,6 @@ final class COTRN00CParityTest {
                 forced.normalisations());
     }
 
-    /**
-     * {@code case16}'s backward page re-anchored mid-file, so that the loop runs out of records
-     * before it runs out of rows.
-     *
-     * <p>This is the third of the three ways {@code PROCESS-PAGE-BACKWARD} can end, and the only one
-     * on which the page number changes not at all. Twelve records on file and {@code PF7} from page
-     * two anchored on record six: the anchor {@code READPREV} at {@code :340} consumes record six,
-     * the loop at {@code :351-357} reads records five down to one into screen rows ten down to six,
-     * and the sixth {@code READPREV} reports {@code ENDFILE}. {@code TRANSACT-EOF} is then true, so
-     * the {@code IF} at {@code :359} is FALSE and the entire rewind block - the extra read at
-     * {@code :360}, the {@code NEXT-PAGE-YES} test at {@code :361}, the {@code SUBTRACT} at
-     * {@code :364} and the {@code MOVE} at {@code :366} - is skipped. The page number therefore stays
-     * at the TWO it arrived with while the screen shows the first five records of the file. That is an
-     * inherited oddity of the program rather than a translation artefact and is preserved rather than
-     * tidied (practice B5).
-     *
-     * <p>Derived in code rather than declared as a twenty-first file for the same reason
-     * {@link #emptyFileVariant()} is: {@link ParityCase#caseId()} admits {@code case01} through
-     * {@code case20} and nothing else, and the twenty declared files are spoken for. Only the seed and
-     * the anchor are substituted, so everything else about the invocation is {@code case16}'s. The
-     * assertions that read this variant judge the work area and the painted rows directly rather than
-     * through the diff gate, because the expectations it carries are {@code case16}'s and describe
-     * {@code case16}'s outcome - the same seam {@link #withSelectorLetter} uses.
-     *
-     * @return {@code case16}'s invocation over twelve records, anchored on record six
-     */
     private static ParityCase partialBackwardPageVariant() {
         ParityCase base = caseNumber(16);
         ParityCase.ScreenRequest request = base.screenRequest();
@@ -1242,35 +665,6 @@ final class COTRN00CParityTest {
                 base.expectedDatasets());
     }
 
-    /**
-     * {@code case16}'s backward page re-anchored deep enough in a twenty-four row file that the loop
-     * runs out of ROWS before it runs out of records - the full backward page.
-     *
-     * <p>This is the first of the three ways {@code PROCESS-PAGE-BACKWARD} can end, and the only one
-     * that reaches every statement of the paragraph. {@code PF7} from page three anchored on record
-     * twenty-one: the anchor {@code READPREV} at {@code :340} consumes record twenty-one, the loop at
-     * {@code :351-357} reads records twenty down to eleven into screen rows ten down to one - so
-     * {@code WS-IDX}, primed at TEN by {@code :349} and decremented by {@code :355}, reaches ZERO and
-     * ends the loop on its own bound rather than on end-of-file. {@code TRANSACT-NOT-EOF} is therefore
-     * still true at {@code :359}, the extra {@code READPREV} at {@code :360} finds record ten, and
-     * because {@code PROCESS-PF7-KEY} has already {@code SET NEXT-PAGE-YES} at {@code :242} the test at
-     * {@code :361} passes and {@code :363} finds the page number above one - so {@code :364}
-     * {@code SUBTRACT}s and page three becomes page two. Twelve reads in all: one anchor, ten painting
-     * and one look-ahead.
-     *
-     * <p>Derived in code rather than declared as a twenty-first file for the same reason
-     * {@link #partialBackwardPageVariant()} and {@link #emptyFileVariant()} are: {@link
-     * ParityCase#caseId()} admits {@code case01} through {@code case20} and nothing else, and the twenty
-     * declared files are spoken for - {@code case15} declares the lower-case selection arm, which no
-     * other case reaches and which cannot be derived from a paging case. Only the seed and the anchor
-     * are substituted, so everything else about the invocation is {@code case16}'s, and the assertions
-     * that read this variant judge the work area and the painted rows directly rather than through the
-     * diff gate, because the expectations it carries are {@code case16}'s and describe {@code case16}'s
-     * outcome - the same seam {@link #withSelectorLetter} uses.
-     *
-     * @return {@code case16}'s invocation over twenty-four records, anchored on record twenty-one of
-     *     page three
-     */
     private static ParityCase fullBackwardPageVariant() {
         ParityCase base = caseNumber(16);
         ParityCase.ScreenRequest request = base.screenRequest();
@@ -1305,20 +699,6 @@ final class COTRN00CParityTest {
                 base.expectedDatasets());
     }
 
-    // =================================================================================================
-    // THE GATE. Everything above exists to make this one assertion mean something.
-    // =================================================================================================
-
-    /**
-     * The parity gate: every one of the twenty cases must diff in nothing.
-     *
-     * <p>Stated as a diff <em>count</em> rather than as a boolean because the count is what the gate
-     * is written in terms of, and because a count of seven and a count of one are different amounts of
-     * work to do. The rendered diff list is attached to the failure so a reader sees which field, on
-     * which channel, with which expected and observed value - not merely that something was wrong.
-     *
-     * @param parityCase one of the twenty declared cases
-     */
     @ParameterizedTest(name = "{0}")
     @MethodSource("cases")
     @DisplayName("The gate: diff count must be exactly zero, case by case")
@@ -1337,11 +717,9 @@ final class COTRN00CParityTest {
         assertThat(observed.diffs().entries()).isEmpty();
     }
 
-    // =================================================================================================
     @Nested
     @DisplayName("The suite's own shape: twenty cases, and each of them complete")
     class SuiteShape {
-
         @Test
         @DisplayName("exactly twenty cases exist, named case01 through case20")
         void exactlyTwentyCasesExist() {
@@ -1456,11 +834,9 @@ final class COTRN00CParityTest {
         }
     }
 
-    // =================================================================================================
     @Nested
     @DisplayName("Page size ten: behaviour taken from two loop bounds, not configuration")
     class PageSizeIsBehaviour {
-
         @Test
         @DisplayName("ten is stated identically in both halves of the DTO pair and nowhere else")
         void tenIsStatedIdenticallyInBothHalvesOfThePair() {
@@ -1526,22 +902,13 @@ final class COTRN00CParityTest {
         }
     }
 
-    /**
-     * The {@code TRAN-ID} the seed generator gives record {@code n}: {@code PIC X(16)} filled with the
-     * zero-padded ordinal, which is both a valid key and sortable in KSDS order.
-     *
-     * @param ordinal the record's position in the seed, from one
-     * @return the sixteen-character key image
-     */
     private static String tranIdImage(int ordinal) {
         return new FixedWidthCodec(CHARSET).movePic9(ordinal, TranRecord.TRAN_ID_KEY_LENGTH);
     }
 
-    // =================================================================================================
     @Nested
     @DisplayName("The painted page: which records land in which row, and in which order")
     class PaintedPage {
-
         @Test
         @DisplayName("a partial first page fills rows one to five and leaves six to ten blanked")
         void aPartialPageLeavesTheTailBlank() {
@@ -1581,10 +948,6 @@ final class COTRN00CParityTest {
         void aPartialBackwardPageLeavesTheHeadBlank() {
             Observed observed = execute(partialBackwardPageVariant());
 
-            // PF7 anchored on record six, so only records five down to one lie below the anchor.
-            // WS-IDX is primed at ten and decremented, so those five land in rows ten down to six and
-            // the head of the page is never reached at all - which is the opposite end from the one a
-            // forward partial page leaves blank.
             int availableBelowAnchor = PARTIAL_BACKWARD_AVAILABLE;
             int firstPopulatedRow = TransactionListResponse.LAST_ROW - availableBelowAnchor + 1;
             assertThat(firstPopulatedRow).isEqualTo(6);
@@ -1611,11 +974,6 @@ final class COTRN00CParityTest {
         void anInvalidSelectorStillPaintsAFullPage() {
             Observed observed = clean(17);
 
-            // The WHEN OTHER arm at :196 sets the message and repositions the cursor, and the two
-            // statements that would have stopped the paragraph there are COMMENTED OUT in the source:
-            // :197 '* SET TRANSACT-EOF TO TRUE' and :202 '* PERFORM SEND-TRNLST-SCREEN'. Nothing in
-            // the arm sets WS-ERR-FLG either. So there is no early exit, and this is the assertion
-            // that says so - practice B5 in one test.
             assertThat(observed.work().errFlg())
                     .as("no MOVE 'Y' TO WS-ERR-FLG anywhere in :196-202, unlike the non-numeric "
                             + "TRNIDINI arm at :212 which does set one. That single difference is why "
@@ -1764,15 +1122,6 @@ final class COTRN00CParityTest {
             assertThat(observed.response().getCurtimeO()).isEqualTo("23:12:34");
         }
 
-        // =============================================================================================
-        // The four display-format edges, all of them seeded inside case19's ten-row window. case02's
-        // seed is uniform and positive, so on its own it cannot tell a correct rendering from one that
-        // drops the sign position, rounds instead of truncating, keeps the wrong end of an overflowing
-        // number or truncates a description at the wrong end. These four assertions are stated twice
-        // over: once against the mechanically derived rendering, and once against the literal bytes, so
-        // that a reader can see what the terminal shows without re-deriving it.
-        // =============================================================================================
-
         @Test
         @DisplayName("the sign position is occupied on every row - '-' when negative, '+' at zero")
         void theSignPositionIsAlwaysOccupied() {
@@ -1868,36 +1217,21 @@ final class COTRN00CParityTest {
                     .isEqualTo("07/19/22");
         }
 
-        /** One row of {@code case19}'s seed, decoded at its declared 350-byte width. */
         private TranRecord case19Record(int screenRow) {
             List<String> rows = caseNumber(19).inputs().get(TRANSACT).rows();
             int recordOrdinal = NUMERIC_START_ORDINAL + screenRow - TransactionListResponse.FIRST_ROW;
             return TranRecord.decode(rows.get(recordOrdinal - 1), CHARSET);
         }
 
-        /** The {@code TRAN-AMT} {@code case19} seeded into the record that screen row shows. */
         private BigDecimal case19Amount(int screenRow) {
             return case19Record(screenRow).tranAmt();
         }
 
-        /**
-         * The amount the seed generator gives record {@code n}: {@code 100.00} plus the ordinal, which
-         * makes every row distinguishable and keeps the two decimal places non-zero-only.
-         */
         private BigDecimal seededAmount(int ordinal) {
             return CobolDecimal.store(new BigDecimal(10000 + ordinal * 100).movePointLeft(2),
                     CobolDecimal.MONETARY_SCALE);
         }
 
-        /**
-         * Renders {@code PIC +99999999.99} from a stored amount, mechanically, from the picture clause
-         * at {@code app/cbl/COTRN00C.cbl:56}.
-         *
-         * <p>Derived here rather than borrowed from the controller, so that agreeing with it is
-         * evidence. {@link CobolDecimal} supplies the store-with-truncation rule, which is the only
-         * faithful one: {@code ROUNDED} appears zero times in all twenty-eight programs, so COBOL
-         * truncates excess fractional digits, and {@link RoundingMode#DOWN} is what that means.
-         */
         private String editedAmountOf(BigDecimal amount) {
             BigDecimal stored = CobolDecimal.store(amount, CobolDecimal.MONETARY_SCALE);
             assertThat(stored.scale()).isEqualTo(CobolDecimal.MONETARY_SCALE);
@@ -1909,11 +1243,9 @@ final class COTRN00CParityTest {
         }
     }
 
-    // =================================================================================================
     @Nested
     @DisplayName("Page arithmetic: the four named sites, each with its own case")
     class PageArithmetic {
-
         @Test
         @DisplayName(":301 - COMPUTE WS-IDX = WS-IDX + 1, ten times for a full page")
         void theForwardCounterStepsOncePerPaintedRow() {
@@ -2029,16 +1361,13 @@ final class COTRN00CParityTest {
         }
     }
 
-    /** One message literal padded into {@code WS-MESSAGE PIC X(80)}, which is how the program holds it. */
     private static String paddedMessage(String literal) {
         return new FixedWidthCodec(CHARSET).movePicX(literal, WS_MESSAGE_WIDTH);
     }
 
-    // =================================================================================================
     @Nested
     @DisplayName("Ordered dispatch: EVALUATE decides by position, and the position is the behaviour")
     class OrderedDispatch {
-
         @Test
         @DisplayName("all five EVALUATE EIBAID arms are driven, WHEN OTHER last")
         void allFiveEibaidArmsAreDriven() {
@@ -2109,10 +1438,6 @@ final class COTRN00CParityTest {
         @Test
         @DisplayName("the TENTH arm is reached only after nine failures, and it takes TRNID10I")
         void theLastSelectionCellIsReachedOnlyAfterNineFailures() {
-            // The far end of the table from case20's third arm. An EVALUATE TRUE stops at its first
-            // true WHEN, so :176 can only be reached when :149, :152, :155, :158, :161, :164, :167,
-            // :170 and :173 have each been evaluated and each been false - which is why the nine
-            // cells below must be genuinely empty for this case to mean what it says.
             for (int row = TransactionListResponse.FIRST_ROW;
                     row < TransactionListResponse.LAST_ROW; row++) {
                 assertThat(caseNumber(14).screenRequest().mapFields()
@@ -2149,10 +1474,6 @@ final class COTRN00CParityTest {
         void theNumericLimbOfTheBrowseKeyFilterIsTaken() {
             Observed observed = clean(19);
 
-            // :206 IF TRNIDINI = SPACES OR LOW-VALUES is FALSE, so control takes the ELSE at :208,
-            // and :209 IF TRNIDINI IS NUMERIC is TRUE, so :210 copies the sixteen typed digits into
-            // TRAN-ID. Nineteen of the twenty cases take the :206-207 limb and browse from
-            // LOW-VALUES; this is the one that takes the other.
             assertThat(observed.work().selectedRow())
                     .as("all ten SEL000nI cells are spaces, so the ten-way EVALUATE TRUE at :148 "
                             + "falls through every arm to WHEN OTHER at :179-181 and no row is "
@@ -2166,10 +1487,6 @@ final class COTRN00CParityTest {
                             + "selection EVALUATE at :185 is never entered")
                     .isBlank();
 
-            // GTEQ is the STARTBR default and :597 has the keyword commented out, so positioning is
-            // at-or-after the RIDFLD and inclusive of the anchor. The AID is ENTER, so the combined
-            // relation at :285 is false and no skip read discards that anchor: the record AT the
-            // typed key is screen row one.
             assertThat(observed.response().getRowTransactionId(TransactionListResponse.FIRST_ROW))
                     .as("the typed key is record eight's, so record eight - not record one and not "
                             + "record nine - is painted into row one")
@@ -2182,8 +1499,6 @@ final class COTRN00CParityTest {
                     .isEqualTo(keyImageOf(tranIdImage(
                             NUMERIC_START_ORDINAL + TransactionListResponse.PAGE_SIZE - 1)));
 
-            // :224 MOVE 0 TO CDEMO-CT00-PAGE-NUM ran before :306-307 added one. The commarea arrived
-            // at page two, so a translation that dropped :224 would report three here.
             assertThat(caseNumber(19).screenRequest().commarea()
                             .get(TransactionListCursor.PAGE_NUM_FIELD))
                     .as("the inbound page number must be non-zero for the reset at :224 to be "
@@ -2214,10 +1529,6 @@ final class COTRN00CParityTest {
             String typed = declared.screenRequest().mapFields()
                     .get(TransactionListRequest.inputItemName(TransactionListRequest.TRNIDIN_FIELD));
 
-            // The trap this case exists for. TRNIDINI is PIC X(16) and IS NUMERIC at :209 is a class
-            // condition over ALL sixteen positions, so a short entry that is digits followed by
-            // padding is NOT numeric. A translation that trimmed before testing would take the
-            // numeric limb at :210 instead, and every assertion below would read differently.
             assertThat(typed)
                     .as("the key the operator typed occupies the field's full declared width")
                     .hasSize(TransactionListResponse.TRNIDIN_LENGTH);
@@ -2233,9 +1544,6 @@ final class COTRN00CParityTest {
 
             Observed observed = clean(18);
 
-            // :212 MOVE 'Y' TO WS-ERR-FLG. This is the one difference from case17's :196 WHEN OTHER
-            // arm, which paints the same kind of message and sets no flag - and it is the difference
-            // that decides everything below.
             assertThat(observed.work().isErrFlgOn())
                     .as("MOVE 'Y' TO WS-ERR-FLG at :212, where case17's invalid-selector arm sets no "
                             + "flag at all")
@@ -2248,8 +1556,6 @@ final class COTRN00CParityTest {
                     .startsWith(MSG_TRAN_ID_NOT_NUMERIC)
                     .hasSize(WS_MESSAGE_WIDTH);
 
-            // :281 runs BEFORE :283 tests the flag, so the browse IS positioned - and then abandoned
-            // without an ENDBR, because :322 is inside the guarded block. Preserved, not tidied.
             assertThat(observed.cursors())
                     .as("PERFORM STARTBR-TRANSACT-FILE at :281 precedes the guard at :283, so exactly "
                             + "one browse is opened even though the paging body never runs")
@@ -2271,7 +1577,6 @@ final class COTRN00CParityTest {
                             + "block, and the NORMAL arm at :603-604 sends nothing")
                     .isEqualTo(1);
 
-            // Nothing the guarded block would have written was written.
             assertThat(observed.work().cursor().getPageNum())
                     .as("MOVE 0 TO CDEMO-CT00-PAGE-NUM at :224 ran; neither :306-307 nor :317-318 did")
                     .isZero();
@@ -2296,8 +1601,6 @@ final class COTRN00CParityTest {
                             + "case17, having painted a page, blanked it twice")
                     .isEqualTo(typed);
 
-            // POPULATE-TRAN-DATA never ran, so the two cursor anchors it writes at :393 and :439 are
-            // the ones the commarea arrived with.
             assertThat(observed.work().cursor().getTrnidFirst())
                     .isEqualTo(declared.screenRequest().commarea()
                             .get(TransactionListCursor.TRNID_FIRST_FIELD));
@@ -2305,9 +1608,6 @@ final class COTRN00CParityTest {
                     .isEqualTo(declared.screenRequest().commarea()
                             .get(TransactionListCursor.TRNID_LAST_FIELD));
 
-            // And the ten row groups come back exactly as the terminal sent them: the blanking loop at
-            // :290-292 and the fill loop at :297-303 are both inside the block :283 skips, so they are
-            // neither repainted nor cleared. This is the assertion that proves the short-circuit.
             Map<String, String> received = declared.screenRequest().mapFields();
             for (int row = TransactionListResponse.FIRST_ROW;
                     row <= TransactionListResponse.LAST_ROW; row++) {
@@ -2339,7 +1639,6 @@ final class COTRN00CParityTest {
                     .isFalse();
         }
 
-        /** The value the case declared for one row field, addressed by its {@code xxxI} item name. */
         private String receivedField(Map<String, String> mapFields, String fieldPrefix) {
             String item = TransactionListRequest.inputItemName(fieldPrefix);
             assertThat(mapFields)
@@ -2356,9 +1655,6 @@ final class COTRN00CParityTest {
                     .as("WHEN 'S' at :186")
                     .isEqualTo("S");
 
-            // WHEN 's' at :187 - a second WHEN clause sharing one body. case15 DECLARES it, typed into
-            // the middle cell of the page, so the lower half of the pair is pinned by a fixture that
-            // passes the diff gate in its own right rather than by a case derived in code.
             Observed declaredLowerCase = clean(15);
             assertThat(declaredLowerCase.work().cursor().getTrnSelFlg())
                     .as("WHEN 's' at :187, and NOT normalised to upper case on the way in: :162 moves "
@@ -2371,11 +1667,6 @@ final class COTRN00CParityTest {
                             + "WHEN clauses share one body")
                     .isEqualTo(TRAN_VIEW_PGM);
 
-            // The same letter is also driven from case14's own payload with its one filled cell
-            // re-typed in lower case, which holds the rest of the payload still and so isolates the
-            // byte itself: case15 and case14 differ in the selected row as well as the letter, and this
-            // derivation does not. If the implementation folded case instead of enumerating, this would
-            // pass for 'x' too, which the assertion after it rules out.
             ParityCase lowerCase = withSelectorLetter(caseNumber(SELECTION_CASE), SELECTOR_LOWER);
             Observed folded = execute(lowerCase);
             assertThat(folded.diffs().count())
@@ -2388,9 +1679,6 @@ final class COTRN00CParityTest {
                     .as("the lower-case letter reaches the XCTL at :192-195, exactly as 'S' does")
                     .isEqualTo(TRAN_VIEW_PGM);
 
-            // And a letter that is neither reaches WHEN OTHER at :196, which sets the message and
-            // then FALLS THROUGH to the browse, because PERFORM SEND-TRNLST-SCREEN at :202 is
-            // commented out in the source and stays commented out.
             Observed rejected =
                     execute(withSelectorLetter(caseNumber(SELECTION_CASE), SELECTOR_INVALID));
             assertThat(rejected.work().cursor().getTrnSelFlg()).isEqualTo(SELECTOR_INVALID);
@@ -2405,18 +1693,12 @@ final class COTRN00CParityTest {
         }
     }
 
-    // =================================================================================================
     @Nested
     @DisplayName("Stateless navigation: every XCTL becomes a response field the client resolves")
     class StatelessNavigation {
-
         @Test
         @DisplayName("an accepted selection names COTRN01C and performs no server-side forward")
         void anAcceptedSelectionNamesTheNextProgram() {
-            // The three accepted selections: case14 fills the TENTH and last cell, case15 the FIFTH in
-            // lower case, and case20 fills two cells so that the ordering of the ten-way EVALUATE is
-            // what decides which one is acted on. All three reach the same body at :186-195 - the two
-            // WHEN clauses at :186-187 share it - so all three must produce the same transfer.
             for (int ordinal : new int[]{14, 15, 20}) {
                 Observed observed = clean(ordinal);
                 assertThat(observed.response().getNextProgram())
@@ -2498,11 +1780,9 @@ final class COTRN00CParityTest {
         }
     }
 
-    // =================================================================================================
     @Nested
     @DisplayName("The 58-byte CDEMO-CT00-INFO extension, which is not part of the shared commarea")
     class CommareaExtension {
-
         @Test
         @DisplayName("the six fields are 16, 16, 8, 1, 1 and 16 bytes, summing to 58")
         void theSixFieldWidthsSumToFiftyEight() {
@@ -2584,11 +1864,9 @@ final class COTRN00CParityTest {
         }
     }
 
-    // =================================================================================================
     @Nested
     @DisplayName("The 350-byte TRAN-RECORD, FILLER included")
     class RecordGeometry {
-
         @Test
         @DisplayName("the declared width is 350 and the spans account for every byte of it")
         void theDeclaredWidthIsThreeHundredAndFifty() {
@@ -2676,11 +1954,9 @@ final class COTRN00CParityTest {
         }
     }
 
-    // =================================================================================================
     @Nested
     @DisplayName("Messages: nine literals, two channels, and a truncation with a direction")
     class Messages {
-
         @Test
         @DisplayName("each of the six paging literals is emitted byte-exactly by its own path")
         void eachPagingLiteralComesFromItsOwnPath() {
@@ -2807,11 +2083,9 @@ final class COTRN00CParityTest {
         }
     }
 
-    // =================================================================================================
     @Nested
     @DisplayName("File outcomes: every arm of every file paragraph, per call site")
     class FileOutcomes {
-
         @Test
         @DisplayName("STARTBR reports OK, end-of-file, not-found and a refusal across the suite")
         void everyStartbrArmIsReached() {
@@ -2933,11 +2207,9 @@ final class COTRN00CParityTest {
         }
     }
 
-    // =================================================================================================
     @Nested
     @DisplayName("Read-only access: the screen browses TRANSACT and mutates nothing")
     class ReadOnlyAccess {
-
         @Test
         @DisplayName("no case calls a mutating repository method, or any keyed read")
         void noCaseMutatesTheFile() {
@@ -2974,11 +2246,6 @@ final class COTRN00CParityTest {
         @Test
         @DisplayName("a path that opens no browse issues no repository call at all")
         void aPathThatOpensNoBrowseIssuesNoCall() {
-            // case18 and case19 are deliberately absent: each types a key into TRNIDINI and therefore
-            // reaches :225, and :281 opens a browse BEFORE :283 tests the error flag - so even
-            // case18, whose paging body is entirely skipped, does position the file. The ordinals here
-            // are the ones whose paths never reach :281 at all - the no-commarea guard, the PF3
-            // return, the unnamed key, the two paging refusals and the three accepted selections.
             for (int ordinal : new int[]{1, 9, 10, 11, 12, 14, 15, 20}) {
                 Observed observed = clean(ordinal);
                 assertThat(observed.cursors())
@@ -2995,11 +2262,9 @@ final class COTRN00CParityTest {
         }
     }
 
-    // =================================================================================================
     @Nested
     @DisplayName("Statelessness: the conversation lives in the payload and nowhere else")
     class Statelessness {
-
         @Test
         @DisplayName("the controller holds no static mutable state")
         void theControllerHoldsNoStaticMutableState() {
@@ -3012,9 +2277,6 @@ final class COTRN00CParityTest {
         @Test
         @DisplayName("two invocations on ONE controller instance share nothing but their payloads")
         void twoInvocationsOnOneInstanceShareNothing() {
-            // The same seam the parity gate uses, but with a single controller reused across two
-            // different cases. A controller that cached a page, a cursor or a work area would make the
-            // second result depend on the first, and one of the two comparisons would fail.
             ParityHarness harness = ParityHarness.usAscii();
             ParityCase secondPage = caseNumber(5);
             ParityCase firstPage = caseNumber(2);
@@ -3074,7 +2336,6 @@ final class COTRN00CParityTest {
             }
         }
 
-        /** Constructs the shared controller on first use and returns the same instance afterwards. */
         private TransactionMenuController sharedController(
                 AtomicReference<TransactionMenuController> holder,
                 ParityHarness.Invocation invocation) {
@@ -3086,14 +2347,6 @@ final class COTRN00CParityTest {
             return holder.get();
         }
 
-        /**
-         * Runs one invocation against an already-constructed controller.
-         *
-         * <p>The repository the controller was built with belongs to the FIRST invocation, which is
-         * the point: a controller that had captured per-request state would carry it here, and the
-         * seeded data it browses is the first case's. Only case05's own run is judged against case05,
-         * so this seam is used exclusively by the shared-instance assertion above.
-         */
         private ParityHarness.UnitOutcome runOn(TransactionMenuController controller,
                                                 ParityHarness.Invocation invocation) {
             FixedWidthCodec codec = new FixedWidthCodec(invocation.charset());
@@ -3111,7 +2364,6 @@ final class COTRN00CParityTest {
                     .build();
         }
 
-        /** Fails if a type declares a static field that is not final. */
         private void assertNoStaticMutableState(Class<?> type) {
             for (Field field : type.getDeclaredFields()) {
                 if (!Modifier.isStatic(field.getModifiers())) {
@@ -3127,11 +2379,9 @@ final class COTRN00CParityTest {
         }
     }
 
-    // =================================================================================================
     @Nested
     @DisplayName("Scope and provenance: what this suite may contain, and where its numbers came from")
     class ScopeAndProvenance {
-
         @Test
         @DisplayName("no case file names a mainframe dataset")
         void noCaseFileNamesAMainframeDataset() {
@@ -3169,9 +2419,6 @@ final class COTRN00CParityTest {
         @Test
         @DisplayName("the suite reaches the file only through the mandated dependencies")
         void theSuiteReachesTheFileOnlyThroughItsDependencies() {
-            // Stated as an assertion rather than as a comment so that adding an HTTP layer, a Spring
-            // context or a job launcher to this suite has somewhere to fail. Each of the four types
-            // below is the one this file is allowed to reach TRANSACT and COTRN00C through.
             assertThat(TransactionMenuController.TRANSACTIONS_PATH)
                     .as("the REST projection of transaction CT00, declared by the controller itself. "
                             + "This suite never issues a request to it - the mapping is asserted, not "
@@ -3191,7 +2438,6 @@ final class COTRN00CParityTest {
                     .contains("US-ASCII");
         }
 
-        /** Reads one classpath resource as UTF-8, which is how the case files are stored. */
         private String readResource(String resource) {
             try (InputStream stream = getClass().getClassLoader().getResourceAsStream(resource)) {
                 assertThat(stream).as("resource %s must exist on the test classpath", resource)

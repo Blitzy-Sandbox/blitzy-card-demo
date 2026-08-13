@@ -26,62 +26,20 @@ import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 
 /**
- * Tests the two properties of the parity judge that decide whether the diff-count gate means anything:
- * that a signed field is compared by its <strong>stored bytes</strong>, and that a width normalisation
- * can only ever be applied to the record it was derived from.
- *
- * <h2>Why these two and not the whole differ</h2>
- * Both are cases where a judge that is slightly too generous passes a unit that has genuinely failed
- * byte parity, and neither is visible from the outside: the run is green either way. A signed field
- * compared as a quantity accepts the wrong stored zone and a lost sign of zero; a normalisation
- * authorised by a width pair alone silently supplies a trailing span to a record that has no such span.
- * Everything else the differ does already fails loudly when it is wrong.
- *
- * <p>The datasets used here are the real ones - {@code CVTRA01Y}'s 50-byte transaction category balance
- * and {@code CVACT03Y}'s 50-byte card cross-reference - because it is precisely the coincidence that
- * <em>both</em> declare 50 bytes that makes the normalisation binding necessary.
+ * Tests the two properties of the parity judge that decide whether the diff-count gate means anything: that
+ * a signed field is compared by its stored bytes, and that a width normalisation can only ever be applied
+ * to the record it was derived from.
  */
 @DisplayName("FieldDiffer - stored bytes decide, and a normalisation is bound to its own record")
 class FieldDifferByteParityTest {
-
-    /** The ASCII fixtures are US-ASCII, and the code page is always named rather than defaulted. */
     private static final Charset ASCII = Charset.forName("US-ASCII");
 
-    /** The transaction category balance dataset, whose 17-byte key precedes an 11-byte signed span. */
     private static final String TCATBALF = "TCATBALF";
 
-    /** The card cross-reference dataset, the one whose fixture is 36 bytes against a declared 50. */
     private static final String CCXREF = "CCXREF";
 
     private final FieldDiffer differ = FieldDiffer.forCharset(ASCII);
 
-    /**
-     * {@code app/cpy/CVTRA01Y.cpy}, {@code 01 TRAN-CAT-BAL-RECORD}, documented {@code RECLN = 50}:
-     * {@code TRANCAT-ACCT-ID PIC 9(11)} + {@code TRANCAT-TYPE-CD PIC X(02)} +
-     * {@code TRANCAT-CD PIC 9(04)} - the 17-byte key - then {@code TRAN-CAT-BAL PIC S9(09)V99} at
-     * offset 17 for 11 bytes, then {@code FILLER PIC X(22)}.
-     *
-     * @return the validated 50-byte transaction category balance layout
-     */
-
-    /**
-     * The differences this suite is about, excluding {@link DiffKind#INCOMPLETE_EXPECTATION}.
-     *
-     * <p>Every fixture in this file names one or two fields deliberately, because isolating a single
-     * comparison behaviour is the whole method: a test about how a wrong balance is reported must not
-     * also have to state the account id, the group id and the {@code FILLER}. Under the completeness
-     * contract such an expectation is <em>also</em> reported as not accounting for its whole record,
-     * which is a true finding about the fixture and a distraction from the behaviour under test.
-     *
-     * <p>Nothing hides behind this filter. The kind is proved reachable, proved to name every uncovered
-     * span, and proved to count toward {@link DiffResult#count()} exactly like every other kind, in the
-     * {@code Completeness} nest of {@code FieldDifferTest}; and the gate itself reads the unfiltered
-     * {@link DiffResult#count()}, so a partial fixture still fails a real module gate. This filter
-     * exists only so a test about one comparison keeps saying one thing.
-     *
-     * @param result the comparison result
-     * @return its differences about the output, in traversal order
-     */
     private static List<Diff> outputDiffs(DiffResult result) {
         List<Diff> output = new ArrayList<>();
         for (Diff diff : result.entries()) {
@@ -92,34 +50,14 @@ class FieldDifferByteParityTest {
         return output;
     }
 
-    /**
-     * How many differences the result carries about the output, on the same footing as
-     * {@link #outputDiffs(DiffResult)}.
-     *
-     * @param result the comparison result
-     * @return the count of differences about the output
-     */
     private static int outputCount(DiffResult result) {
         return outputDiffs(result).size();
     }
 
-    /**
-     * Whether the result is clean about the output, on the same footing as
-     * {@link #outputDiffs(DiffResult)}.
-     *
-     * @param result the comparison result
-     * @return {@code true} when nothing about the output differs
-     */
     private static boolean outputIsClean(DiffResult result) {
         return outputDiffs(result).isEmpty();
     }
 
-    /**
-     * Every kind the result carries, filtering nothing - the view a producibility claim needs.
-     *
-     * @param result the comparison result
-     * @return every kind present, in traversal order
-     */
     private static List<DiffKind> allKindsOf(DiffResult result) {
         List<DiffKind> kinds = new ArrayList<>();
         for (Diff diff : result.entries()) {
@@ -137,13 +75,6 @@ class FieldDifferByteParityTest {
                 FieldSpan.filler(28, 22));
     }
 
-    /**
-     * {@code app/cpy/CVACT03Y.cpy}, {@code 01 CARD-XREF-RECORD}, documented {@code RECLN 50}:
-     * {@code XREF-CARD-NUM PIC X(16)} + {@code XREF-CUST-ID PIC 9(09)} + {@code XREF-ACCT-ID PIC 9(11)}
-     * - the 36 bytes the fixture carries - then the {@code FILLER PIC X(14)} it omits.
-     *
-     * @return the validated 50-byte card cross-reference layout
-     */
     private static RecordLayout cardXrefLayout() {
         return RecordLayout.of(50,
                 FieldSpan.alphanumeric("XREF-CARD-NUM", 0, 16),
@@ -152,23 +83,14 @@ class FieldDifferByteParityTest {
                 FieldSpan.filler(36, 14));
     }
 
-    /** A 50-byte transaction-category-balance row whose signed span holds {@code image}. */
     private static String tranCatBalRow(String balanceImage) {
         return "00000000001" + "01" + "0001" + balanceImage + " ".repeat(22);
     }
 
-    /** A case pinning one field of one written row, seeding nothing and normalising nothing. */
     private static ParityCase caseFor(String dataset, String fieldName, String expectedValue) {
         return caseFor(dataset, fieldName, expectedValue, Map.of(), List.of());
     }
 
-    /**
-     * A case pinning one field of one written row, over the datasets it seeds and the seed-time
-     * normalisations bound to them.
-     *
-     * <p>A normalisation is declared against a dataset the case seeds, because that is where the pad
-     * is applied - once, before anything decodes the row. The comparison itself never pads.
-     */
     private static ParityCase caseFor(String dataset,
                                       String fieldName,
                                       String expectedValue,
@@ -180,18 +102,15 @@ class FieldDifferByteParityTest {
                 List.of(), 0, List.of(), normalisations);
     }
 
-    /** A fingerprint carrying one written row of one dataset and a return code of zero. */
     private Fingerprint fingerprintOf(String dataset, RecordLayout layout, String row) {
         return Fingerprint.of(
                 List.of(DatasetOutput.ofImages(dataset, layout, List.of(row), ASCII)), List.of(),
                 null, 0, List.of());
     }
 
-    // =============================================================================================
     @Nested
     @DisplayName("A signed field is compared by its stored bytes")
     class SignedFieldsCompareByBytes {
-
         @Test
         @DisplayName("identical images are clean")
         void identicalImagesAreClean() {
@@ -206,10 +125,6 @@ class FieldDifferByteParityTest {
         @Test
         @DisplayName("the unsigned zone-F form differs from the signed form, though both mean the same")
         void aZoneMismatchIsADifference() {
-            // Both images denote 12345.63. Only the overpunched form is what a COBOL store into
-            // PIC S9(09)V99 produces - app/data/ASCII/tcatbal.txt carries an overpunch in every signed
-            // field and not one bare-digit trailing byte - so a unit that wrote the zone-F form has
-            // failed byte parity even though no arithmetic assertion could tell.
             DiffResult result = differ.compare(
                     caseFor(TCATBALF, "TRAN-CAT-BAL", "0000123456C"),
                     fingerprintOf(TCATBALF, tranCatBalLayout(), tranCatBalRow("00001234563")));
@@ -327,11 +242,9 @@ class FieldDifferByteParityTest {
         }
     }
 
-    // =============================================================================================
     @Nested
     @DisplayName("A normalisation is bound to the record it was derived from")
     class NormalisationsAreDatasetBound {
-
         @Test
         @DisplayName("the cross-reference pad applies to the cross-reference, at seed time")
         void theCrossReferencePadAppliesToItsOwnDataset() {
@@ -339,10 +252,6 @@ class FieldDifferByteParityTest {
             DatasetNormalisation pad =
                     new DatasetNormalisation(CCXREF, Normalisation.CARDXREF_FILLER_PAD_36_TO_50);
 
-            // The pad is applied once, where it is owned - before anything decodes the row - and the
-            // comparison then meets a full-width record. That ordering is the whole point: a pad
-            // applied at comparison time would also have repaired a row a correctly seeded run never
-            // produces, and would have let a case that forgot its normalisation pass anyway.
             String seeded = pad.normaliseSeedRow(thirtySixByteRow);
 
             DiffResult result = differ.compare(
@@ -365,15 +274,8 @@ class FieldDifferByteParityTest {
         @Test
         @DisplayName("the same pad cannot repair a different 50-byte record that happens to be short")
         void theSamePadCannotRepairAnUnrelatedFiftyByteRecord() {
-            // The hole this closes. TCATBALF's record is 50 bytes too, so "measured 36, declared 50"
-            // would authorise supplying fourteen spaces to a transaction-category-balance row - a
-            // record whose copybook has no trailing FILLER X(14) at all - and the padded row would
-            // then compare field by field as though it were sound.
             String thirtySixBytes = "00000000001" + "01" + "0001" + "0000123456C" + " ".repeat(8);
 
-            // The binding is refused at the point it would be declared, which is earlier and louder
-            // than refusing the pad when it fires: the cross-reference pad names the DD names that
-            // reach CVACT03Y's record, and TCATBALF is not one of them.
             assertThatIllegalArgumentException()
                     .isThrownBy(() -> new DatasetNormalisation(TCATBALF,
                             Normalisation.CARDXREF_FILLER_PAD_36_TO_50))
@@ -381,7 +283,6 @@ class FieldDifferByteParityTest {
                     .withMessageContaining("FILLER PIC X(14)");
             assertThat(Normalisation.CARDXREF_FILLER_PAD_36_TO_50.describes(TCATBALF)).isFalse();
 
-            // And with no pad available, the short row is what it is: one width mismatch.
             DiffResult result = differ.compare(
                     caseFor(TCATBALF, "TRAN-CAT-BAL", "0000123456C"),
                     fingerprintOf(TCATBALF, tranCatBalLayout(), thirtySixBytes));
@@ -420,9 +321,6 @@ class FieldDifferByteParityTest {
         @Test
         @DisplayName("the cross-reference pad covers every DD name and path the one cluster is bound to")
         void theCrossReferencePadCoversEveryAliasOfItsCluster() {
-            // application.yml binds the one CARDXREF.VSAM.KSDS cluster to its CICS file name, its
-            // alternate-index path and three batch DD names; app/jcl/INTCALC.jcl opens the base as
-            // XREFFILE and the path as XREFFIL1 in a single step, which is why two coexist.
             assertThat(Normalisation.CARDXREF_FILLER_PAD_36_TO_50.datasets())
                     .containsExactlyInAnyOrder("CCXREF", "CXACAIX", "XREFFILE", "XREFFIL1",
                             "CARDXREF");
@@ -444,11 +342,9 @@ class FieldDifferByteParityTest {
         }
     }
 
-    // =============================================================================================
     @Nested
     @DisplayName("The differ's own contract")
     class DifferContract {
-
         @Test
         @DisplayName("the code page is always named, never defaulted")
         void theCodePageIsAlwaysNamed() {

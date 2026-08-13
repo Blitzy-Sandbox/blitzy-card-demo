@@ -17,7 +17,7 @@ import com.vsergeychik.carddemo.config.BatchConfig.JobParameterContract;
 import com.vsergeychik.carddemo.config.BatchConfig.StepContract;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBinding;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBindings;
-import com.vsergeychik.carddemo.config.DatasetUnitOfWork;
+import com.vsergeychik.carddemo.common.DatasetUnitOfWork;
 import com.vsergeychik.carddemo.transaction.TransactionValidationJob.ChunkDelegate;
 import com.vsergeychik.carddemo.transaction.TransactionValidationJob.CobolTimestamp;
 import com.vsergeychik.carddemo.transaction.TransactionValidationJob.PostingResult;
@@ -87,48 +87,11 @@ import static org.assertj.core.api.Assertions.assertThatIllegalStateException;
 /**
  * {@link TransactionValidationJob} - {@code CBTRN02C}, the daily-transaction poster of
  * {@code app/jcl/POSTTRAN.jcl}.
- *
- * <p>Nothing here launches a job. Every paragraph is reached through the package-visible
- * {@link PostingRun} or through {@link TransactionValidationJob#postTransactions(SysoutSink)}, exactly as
- * practice B10 and gate G51 require, so a failure names a paragraph rather than a framework. The datasets
- * are real H2 relations of the copybook widths, so the assertions are over the bytes that would reach the
- * dataset.
- *
- * <p><strong>Provenance of every expected value in this class.</strong> They are <strong>statically
- * derived</strong> - read out of {@code app/cbl/CBTRN02C.cbl}, the five copybooks it copies, the DD and
- * {@code DCB} cards of {@code app/jcl/POSTTRAN.jcl} and the nine real fixtures under
- * {@code app/data/ASCII} - and they are <strong>not</strong> captured from a run of the legacy program.
- * No COBOL execution is possible in this environment: AAP 0.7.6 documents eight independently verified
- * blockers, from a disabled indexed-file handler to the absence of Language Environment {@code CEE*}
- * services, and the deviation is carried as risk R-A. Nothing here should be read as a captured baseline.
- * Where a value could not be derived mechanically from a byte layout it is derived from the statement that
- * produces it, with that statement's line number beside the assertion.
- *
- * <p>The three preserved defects each have their own assertion, because a defect that is not pinned is a
- * defect somebody will tidy: reason 109 is set and cannot reject; the two count literals differ in their
- * spacing; and {@code 9300-DALYREJS-CLOSE} displays the cross-reference file's status. To those, the
- * cascade adds the one that changes an outcome rather than a message - the credit-limit test at
- * {@code :407} and the expiry test at {@code :414} are sibling {@code IF}s, so 103 overwrites 102 on a
- * transaction that fails both.
- *
- * <p>Two properties are asserted on the <em>interaction</em> rather than on the datasets, because they are
- * invisible afterwards: the cascade's single short-circuit at {@code :372} (gate G31 - the account is
- * never read when the card is unknown) and the posting order of {@code :440-442}. Both live in
- * {@code Interactions}, over Mockito spies that delegate to the real collaborators.
- *
- * <p>{@code GateSweep} reads the COBOL back and asserts the census this suite covers - zero
- * {@code ROUNDED}, zero {@code EVALUATE}, one {@code COMPUTE} and seven {@code ADD}s at known lines, two
- * {@code 88}-levels - so gates G24, G28, G30 and G50 are settled against the source rather than claimed
- * about it, and any future edit to the program that adds an arithmetic site fails this class first.
  */
 class TransactionValidationJobTest {
-
     private static final Charset ASCII = StandardCharsets.US_ASCII;
 
-    /** The row-identifier pseudo-column the test profile names: a physical-sequential read follows
-     * insertion order, which is the order the record-image store behind this suite holds rows in. */
     private static final PhysicalSequence ORDINAL = PhysicalSequence.of("_ROWID_");
-
 
     private static final String DALYTRAN_DS = "TEST.DALYTRAN.PS";
     private static final String TRANSACT_DS = "TEST.TRANSACT.KSDS";
@@ -140,11 +103,9 @@ class TransactionValidationJobTest {
     private static final String TCATBAL_DS = "TEST.TCATBALF.KSDS";
     private static final String COL = "REC";
 
-    /** Every run is stamped from this clock, so the 26-byte {@code TRAN-PROC-TS} is assertable. */
     private static final Clock FIXED = Clock.fixed(
             Instant.parse("2022-07-18T12:34:56.780Z"), ZoneId.of("UTC"));
 
-    /** {@code 2022-07-18-12.34.56.780000} composed by {@code Z-GET-DB2-FORMAT-TIMESTAMP}. */
     private static final String EXPECTED_PROC_TS = "2022-07-18-12.34.56.780000";
 
     private static final String CARD = "4444333322221111";
@@ -154,11 +115,7 @@ class TransactionValidationJobTest {
     private static final String TYPE_CD = "01";
     private static final int CAT_CD = 1;
 
-    // ------------------------------------------------------------------------------------- collectors
-
-    /** A {@code SYSOUT} that keeps every line, so the fingerprint can be asserted byte for byte. */
     private static final class CapturedSysout implements SysoutSink {
-
         private final List<String> lines = new ArrayList<>();
 
         @Override
@@ -171,18 +128,14 @@ class TransactionValidationJobTest {
         }
     }
 
-    /** An {@link ObjectProvider} over one present bean, which is all the constructor needs. */
     private record PresentBean<T>(T bean) implements ObjectProvider<T> {
-
         @Override
         public T getObject() {
             return bean;
         }
     }
 
-    /** An {@link ObjectProvider} that resolves to no bean, so the default sink is used. */
     private record AbsentBean<T>() implements ObjectProvider<T> {
-
         @Override
         public T getObject() {
             throw new IllegalStateException("no bean");
@@ -193,8 +146,6 @@ class TransactionValidationJobTest {
             return null;
         }
     }
-
-    // ---------------------------------------------------------------------------------------- wiring
 
     private static DatasetBindings bindings() {
         DatasetBindings b = new DatasetBindings();
@@ -225,6 +176,24 @@ class TransactionValidationJobTest {
     }
 
     /**
+     * The same bindings with {@value TransactionValidationJob#TRANFILE_DD_NAME} declared {@code REUSE}.
+     *
+     * <p>The shipped value is {@code NOREUSE} - {@code app/catlg/LISTCAT.txt:3595} for
+     * {@code AWS.M2.CARDDEMO.TRANSACT.VSAM.KSDS} - and {@link #bindings()} carries it, because the
+     * eleven-argument {@link DatasetBinding} constructor defaults {@code reusable} to {@code false}. This
+     * one uses the twelve-argument form to reach the other arm of {@code 0100-TRANFILE-OPEN}: over a
+     * reusable cluster load mode resets the cluster and the open succeeds.
+     *
+     * @return bindings identical to {@link #bindings()} except that {@code TRANFILE} is reusable
+     */
+    private static DatasetBindings reusableTranfileBindings() {
+        DatasetBindings b = bindings();
+        b.put(TransactionRepository.INPUT_DD_NAME, new DatasetBinding(TRANSACT_DS, "ksds", false, "FB",
+                null, 350, "CVTRA05Y", 16, null, null, null, true));
+        return b;
+    }
+
+    /**
      * A real unit of work over the same database a template addresses.
      *
      * <p>Real rather than mocked, and it has to be: the two {@value DalyRejectWriter#DD_NAME} dispositions
@@ -244,11 +213,6 @@ class TransactionValidationJobTest {
                 Objects.requireNonNull(t.getDataSource(), "the test template always carries its source")));
     }
 
-    /**
-     * The one job-scoped override {@code application.yml} declares: in {@code POSTTRAN.jcl} the DD name
-     * {@code TRANFILE} is the transaction master, stated explicitly as an alias of {@code TRANSACT} because
-     * {@code app/jcl/TRANREPT.jcl} binds the same eight characters to a different dataset.
-     */
     private static Map<String, JobDatasetBinding> jobScopedDatasets() {
         return Map.of(TransactionValidationJob.TRANFILE_DD_NAME,
                 new JobDatasetBinding(TransactionRepository.CICS_FILE_NAME, null, null, false, null, null,
@@ -277,24 +241,6 @@ class TransactionValidationJobTest {
                 SYSTRAN_DS);
     }
 
-    /**
-     * A store holding only the named relations, so a missing one makes the corresponding {@code OPEN}
-     * report a permanent error and reach its own {@code 'ERROR OPENING ...'} arm.
-     *
-     * <p><strong>No DDL.</strong> A relation is declared to a {@link RecordImageDataSource}, which is a map
-     * from dataset name to a list of record images and has no schema, so gate <strong>G44</strong> - no DDL,
-     * no schema migration, no entity annotation and no generated table definition anywhere in this module -
-     * holds with nothing to reinterpret. Only the storage engine is replaced: the real {@code JdbcTemplate},
-     * the real repositories and writers, {@code DatasetRelation}'s real composed statements, the real
-     * {@code DatasetUnitOfWork} and a real {@code JdbcTransactionManager} all stay in the path, which is
-     * what keeps this suite's per-verb durability assertions meaningful.
-     *
-     * <p>Each call makes a store of its own, so nothing is shared between tests and no sequence number is
-     * needed to keep them apart.
-     *
-     * @param datasets the relations to declare
-     * @return a template over a private record-image store
-     */
     private static JdbcTemplate database(String... datasets) {
         RecordImageDataSource backend = new RecordImageDataSource();
         for (String dsname : datasets) {
@@ -303,47 +249,15 @@ class TransactionValidationJobTest {
         return new JdbcTemplate(backend);
     }
 
-    /**
-     * The store behind one of this suite's templates.
-     *
-     * @param t the template
-     * @return the relations it serves
-     */
     private static RecordImageStore store(JdbcTemplate t) {
         return ((RecordImageDataSource) Objects.requireNonNull(t.getDataSource(),
                 "A template built by database(...) always has its store behind it")).store();
     }
 
-    /**
-     * Withdraws a relation, so every statement naming it fails as an absent dataset would.
-     *
-     * <p>The {@code DROP TABLE} this suite used to issue. Withdrawing the declaration is what drives the
-     * {@code MOVE 12 TO APPL-RESULT} arm of a paragraph whose other arms are unreachable through data
-     * alone: the failure carries the class-42 {@code SQLSTATE} an absent relation reports, which is the
-     * class {@code BackendDiagnostic} sorts on, so the arm is reached for the same reason and by the same
-     * route as before.
-     *
-     * @param t      the template
-     * @param dsname the relation to withdraw
-     */
     private static void drop(JdbcTemplate t, String dsname) {
         store(t).undefine(dsname);
     }
 
-    /**
-     * The same database, reached through connections that refuse to close.
-     *
-     * <p>Three of the six {@code CLOSE} paragraphs - {@code 9000-DALYTRAN-CLOSE},
-     * {@code 9100-TRANFILE-CLOSE} and {@code 9200-XREFFILE-CLOSE} - release a cursor rather than describe
-     * a relation, so dropping the relation does not make them fail: a cursor already open closes cleanly.
-     * The one thing that does make a cursor release report a permanent error is a connection whose
-     * {@code close()} refuses, which is what this wrapper produces. Spring's own
-     * {@code DataSourceUtils.releaseConnection} logs and swallows a refusal, so every other statement in
-     * the test still behaves normally.
-     *
-     * @param clean a template over the database to wrap
-     * @return a template whose connections refuse to close
-     */
     private static JdbcTemplate closeRefusing(JdbcTemplate clean) {
         DataSource delegate = Objects.requireNonNull(clean.getDataSource(),
                 "the template under test must expose its data source");
@@ -381,17 +295,6 @@ class TransactionValidationJobTest {
         }
     }
 
-    /**
-     * Puts a relation back after a test dropped it to force a permanent I/O error.
-     *
-     * <p>Withdrawing a relation is the only reliable way to drive the {@code MOVE 12 TO APPL-RESULT} arm of
-     * a paragraph whose other arms are unreachable through data alone. Restoring it before the run is
-     * released keeps {@link PostingRun#release()} exercising its real cleanup rather than tripping over
-     * the deliberate breakage, so the release path stays honestly covered.
-     *
-     * @param t      the template
-     * @param dsname the relation to redeclare, empty
-     */
     private static void recreate(JdbcTemplate t, String dsname) {
         store(t).define(dsname, COL, ColumnForm.CHARACTER, widthOf(dsname));
     }
@@ -417,31 +320,6 @@ class TransactionValidationJobTest {
         return store(t).rows(dsname);
     }
 
-    // ------------------------------------------------------------------------------ the step's boundary
-
-    /**
-     * Declares the unit of work the step supplies, for the duration of every test in this class.
-     *
-     * <p>{@code CBTRN02C} posts: each accepted record writes or rewrites a category balance, rewrites an
-     * account and adds a transaction, and each rejected one writes a {@code DALYREJS} record. The pool
-     * hands out connections with auto-commit disabled on purpose, so a statement issued with nothing bound
-     * to the thread is rolled back when the connection is returned - and the repositories therefore refuse
-     * a write they cannot commit rather than reporting a record as stored. Under the launcher the step's
-     * own chunk transaction is what satisfies that, and it encloses the reads, the processing and the
-     * writes alike; these tests drive the same paragraphs directly, so they declare the same thing.
-     *
-     * <p>Directly rather than through a real {@code TransactionTemplate} because several tests below run
-     * against mocked JDBC chains that cannot begin a transaction at all, and what the repositories inspect
-     * is exactly this thread state. {@link #withoutUnitOfWork(Runnable)} takes it away again for the tests
-     * that are about its absence.
-     *
-     * <p><strong>Synchronization is declared too, not only the transaction</strong>, because a real step
-     * transaction activates both and the two {@value DalyRejectWriter#DD_NAME} dispositions open a
-     * {@code REQUIRES_NEW} boundary inside this one. Without an active synchronization that nested
-     * boundary is the one that initialised it, so committing tears the thread state down and takes this
-     * declaration with it - and every posting verb after the open would be refused for want of a unit of
-     * work the launcher would still have had.
-     */
     @BeforeEach
     void declareTheStepsUnitOfWork() {
         if (!TransactionSynchronizationManager.isSynchronizationActive()) {
@@ -450,7 +328,6 @@ class TransactionValidationJobTest {
         TransactionSynchronizationManager.setActualTransactionActive(true);
     }
 
-    /** Ends it, whatever the test did, so no declaration leaks into the next test on this thread. */
     @AfterEach
     void endTheStepsUnitOfWork() {
         TransactionSynchronizationManager.setActualTransactionActive(false);
@@ -459,30 +336,11 @@ class TransactionValidationJobTest {
         }
     }
 
-    /**
-     * Re-declares the step's unit of work, immediately before a run that persists.
-     *
-     * <p><strong>Why a run needs this and not just the {@code @BeforeEach}.</strong> Each of
-     * {@code CBTRN02C}'s WRITE and REWRITE verbs now commits in its own {@code REQUIRES_NEW} transaction,
-     * which is what makes it durable the moment it completes. Spring suspends the enclosing transaction to
-     * do that and restores it afterwards from the suspended-resources holder it recorded - and there is no
-     * holder to record here, because {@code declareTheStepsUnitOfWork} sets the thread flag directly rather
-     * than beginning a real transaction. So the first committed verb leaves the flag clear, and a second
-     * run in the same test would be refused. Re-declaring before each run removes the ordering dependency
-     * without giving the mocked-JDBC tests a transaction they cannot begin.
-     *
-     * @return the same declaration the {@code @BeforeEach} makes, reasserted
-     */
     private static boolean stepUnitOfWork() {
         TransactionSynchronizationManager.setActualTransactionActive(true);
         return true;
     }
 
-    /**
-     * Runs work with the step's unit of work taken away, and always puts it back.
-     *
-     * @param work the work to run outside any unit of work
-     */
     private static void withoutUnitOfWork(Runnable work) {
         TransactionSynchronizationManager.setActualTransactionActive(false);
         try {
@@ -501,14 +359,6 @@ class TransactionValidationJobTest {
         return job(t, b, contracts, clock, new AbsentBean<SysoutSink>());
     }
 
-    /**
-     * A job whose {@link SysoutSink} bean is the given collector, so the {@code DISPLAY}s the chunk
-     * delegate emits through {@code job.sysoutSink} can be asserted.
-     *
-     * @param t      the template
-     * @param sysout the collector to publish as the sink bean
-     * @return the job
-     */
     private static TransactionValidationJob jobWithSink(JdbcTemplate t, CapturedSysout sysout) {
         return job(t, bindings(), contracts(), FIXED, new PresentBean<SysoutSink>(sysout));
     }
@@ -526,29 +376,6 @@ class TransactionValidationJobTest {
                 sysoutSink, clock);
     }
 
-
-    // -------------------------------------------------------------------------------- abend assertions
-
-    /**
-     * The three values {@code 9999-ABEND-PROGRAM} carries, on every path that reaches it.
-     *
-     * <p>{@code app/cbl/CBTRN02C.cbl:707-711} is the whole paragraph:
-     *
-     * <pre>
-     * DISPLAY 'ABENDING PROGRAM'                                                                L708
-     * MOVE 0 TO TIMING                                                                          L709
-     * MOVE 999 TO ABCODE                                                                        L710
-     * CALL 'CEE3ABD'.                                                                           L711
-     * </pre>
-     *
-     * <p>Every caller reaches it through {@code MOVE 12 TO APPL-RESULT}, so the return code is the
-     * I/O-error value in every case: the guard chains in this program set 8 as their assumed-failure value
-     * and then 0 or 12, and only 12 survives to the abend. Gate <strong>G35</strong> is that the abend
-     * carries all three - a bare "it threw" assertion would pass against an abend that reported the wrong
-     * user completion code, and the completion code is what a JCL {@code COND} sees.
-     *
-     * @param abend the abend raised by the paragraph under test
-     */
     private static void assertStandardAbendParameters(AbendException abend) {
         assertThat(abend.getReturnCode()).isEqualTo(AbendException.RETURN_CODE_IO_ERROR);
         assertThat(abend.getReturnCode()).isEqualTo(TransactionValidationJob.APPL_RESULT_FATAL);
@@ -558,32 +385,7 @@ class TransactionValidationJobTest {
         assertThat(abend.getTiming()).hasValue(0);
     }
 
-    // ------------------------------------------------------------------------- collaborator spies
-
-    /**
-     * A job whose account, balance and master collaborators are Mockito spies, so that <em>which</em> call
-     * happened - and <em>in what order</em> - is asserted on the interaction rather than inferred from the
-     * dataset afterwards.
-     *
-     * <p>Two properties of {@code CBTRN02C} are interaction properties and cannot be observed any other
-     * way. Gate <strong>G31</strong>'s short-circuit is that {@code 1500-B-LOOKUP-ACCT} is never
-     * <em>performed</em> when the cross-reference read failed ({@code app/cbl/CBTRN02C.cbl:372}); a
-     * dataset-state assertion cannot separate a read that never happened from one whose result was
-     * discarded. The posting order of {@code :440-442} is invisible once all three writes have landed, yet
-     * it decides what a mid-sequence failure leaves behind.
-     *
-     * <p>The two file handles are spied <em>as they are opened</em>, because every paragraph calls through
-     * the handle its {@code OPEN} returned rather than through the repository bean:
-     * {@code acctfile.readByKey}, {@code acctfile.rewrite}, {@code tcatbalf.readByKey},
-     * {@code tcatbalf.write} and {@code tcatbalf.rewrite}. Only {@code 2900-WRITE-TRANSACTION-FILE} calls
-     * its repository directly ({@code TransactionRepository#write}), so that one is spied at the bean.
-     *
-     * <p>Every spy delegates to the real object, so the datasets behind them behave exactly as in the rest
-     * of this class: these tests assert interactions <em>in addition to</em> outcomes, never instead of
-     * them.
-     */
     private static final class SpiedCollaborators {
-
         private final TransactionValidationJob job;
 
         private final TransactionRepository master;
@@ -624,22 +426,12 @@ class TransactionValidationJobTest {
                     new PresentBean<SysoutSink>(sysout), FIXED);
         }
 
-        /**
-         * Opens the six files, which is when the two handle spies come into existence.
-         *
-         * @return the opened run
-         */
         PostingRun openedRun() {
             PostingRun run = job.newRun(job.sysoutSink());
             run.openFiles();
             return run;
         }
 
-        /**
-         * The one {@code ACCTFILE} handle {@code 0400-ACCTFILE-OPEN} took.
-         *
-         * @return the spied handle
-         */
         AccountRepository.AccountFile accountFile() {
             assertThat(accountFiles)
                     .as("0400-ACCTFILE-OPEN takes exactly one handle per run")
@@ -647,11 +439,6 @@ class TransactionValidationJobTest {
             return accountFiles.get(0);
         }
 
-        /**
-         * The one {@code TCATBALF} handle {@code 0500-TCATBALF-OPEN} took.
-         *
-         * @return the spied handle
-         */
         TranCatBalRepository.TranCatBalFile balanceFile() {
             assertThat(balanceFiles)
                     .as("0500-TCATBALF-OPEN takes exactly one handle per run")
@@ -663,8 +450,6 @@ class TransactionValidationJobTest {
             return master;
         }
     }
-
-    // ------------------------------------------------------------------------------ record fixtures
 
     private static DalyTranRecord dalyTran(String id, String cardNum, String amount, String origTs) {
         return dalyTran(id, cardNum, amount, origTs, TYPE_CD, CAT_CD);
@@ -714,16 +499,6 @@ class TransactionValidationJobTest {
         return a;
     }
 
-    /**
-     * One 350-byte {@code CVTRA05Y} master record under a given key.
-     *
-     * <p>Only the key matters to the callers below - what they need is a master that is not empty, because
-     * that is what {@code OPEN OUTPUT}'s load mode refuses - but the record is built complete rather than
-     * key-only, because a short row would misplace every span after the first.
-     *
-     * @param tranId the sixteen-byte {@code TRAN-ID} the row is stored under
-     * @return the record; never {@code null}
-     */
     private static TranRecord postedTranRecord(String tranId) {
         TranRecord r = new TranRecord(ASCII);
         r.moveTranId(tranId);
@@ -745,11 +520,6 @@ class TransactionValidationJobTest {
         return new String(r.encode(), ASCII);
     }
 
-    /**
-     * A database whose card, account and balance rows all resolve, so a transaction posts.
-     *
-     * @param t the template to seed
-     */
     private static void seedResolvableAccount(JdbcTemplate t) {
         seed(t, XREF_DS, xrefImage(CARD, ACCOUNT));
         seed(t, ACCT_DS, account(ACCOUNT, "5000.00", "2026-01-01", "100.00", "50.00", "250.00")
@@ -757,27 +527,15 @@ class TransactionValidationJobTest {
         seed(t, TCATBAL_DS, tcatbalImage(ACCOUNT, TYPE_CD, CAT_CD, "1000.00"));
     }
 
-    /**
-     * Opens a run's six files and returns it, so a test can drive a single paragraph.
-     *
-     * @param job    the job
-     * @param sysout the collector
-     * @return the opened run
-     */
     private static PostingRun openedRun(TransactionValidationJob job, CapturedSysout sysout) {
         PostingRun run = job.newRun(sysout);
         run.openFiles();
         return run;
     }
 
-    // =============================================================================================
-    // Construction: the contract is proven before any run can start.
-    // =============================================================================================
-
     @Nested
     @DisplayName("Construction - the carddemo.jobs contract is proven, not assumed")
     class Construction {
-
         @Test
         @DisplayName("the shipped single ungated STEP15 sequence is what the class requires")
         void theShippedStepSequenceIsRequired() {
@@ -813,20 +571,6 @@ class TransactionValidationJobTest {
         @Test
         @DisplayName("a declared job parameter is refused: the EXEC card carries no PARM")
         void aDeclaredParameterIsRefused() {
-            // THE CONTRAST THAT MAKES THIS TEST NECESSARY. app/jcl/POSTTRAN.jcl:23 is
-            //
-            //     //STEP15 EXEC PGM=CBTRN02C
-            //
-            // and nothing follows the program name, whereas app/jcl/INTCALC.jcl:22 is
-            //
-            //     //STEP15 EXEC PGM=CBACT04C,PARM='2022071800'
-            //
-            // which is why AccountInterestCalcJob carries a parmDate parameter and this job carries none.
-            // The value below is INTCALC's own PARM, used here precisely because it is the parameter a
-            // future change would most plausibly copy across: a declared parameter cannot alter what
-            // CBTRN02C does - it receives none - but Spring Batch identifies a job INSTANCE by its
-            // parameters, so declaring one would silently resolve two submissions of the same work to two
-            // different instances. Do not add a parameter to this job's contract.
             JobContracts parameterised = contracts(TransactionValidationJob.REQUIRED_STEPS,
                     List.of(new JobParameterContract("parmDate", "string", "2022071800")),
                     jobScopedDatasets());
@@ -840,7 +584,6 @@ class TransactionValidationJobTest {
         @Test
         @DisplayName("the declared parameter set really is empty")
         void theParameterSetIsEmpty() {
-            // POSTTRAN.jcl declares no PARM, so the launched instance is identified by nothing at all.
             assertThat(job(database(), bindings()).jobParameters().isEmpty()).isTrue();
             assertThat(job(database(), bindings()).jobParameters().getParameters()).isEmpty();
         }
@@ -912,14 +655,9 @@ class TransactionValidationJobTest {
         }
     }
 
-    // =============================================================================================
-    // The Spring Batch surface.
-    // =============================================================================================
-
     @Nested
     @DisplayName("The Spring Batch surface - one job, one chunk step of one item")
     class BatchSurface {
-
         @Test
         @DisplayName("the job bean name is what BatchConfig derives from the carddemo.jobs key")
         void theJobNameMatchesTheContractKey() {
@@ -966,8 +704,6 @@ class TransactionValidationJobTest {
                 assertThat(context.getBeanNamesForType(Step.class)).containsExactly(
                         TransactionValidationJob.STEP_BEAN_NAME);
 
-                // Boot auto-configures the JobRepository and BatchConfig owns the transaction manager;
-                // contributing either here would produce a duplicate and break the context (gate G3).
                 assertThat(context.getBeanNamesForType(JobRepository.class)).isEmpty();
                 assertThat(context.getBeanNamesForType(PlatformTransactionManager.class)).isEmpty();
             }
@@ -985,14 +721,9 @@ class TransactionValidationJobTest {
         }
     }
 
-    // =============================================================================================
-    // Z-GET-DB2-FORMAT-TIMESTAMP - app/cbl/CBTRN02C.cbl:692-705.
-    // =============================================================================================
-
     @Nested
     @DisplayName("Z-GET-DB2-FORMAT-TIMESTAMP - 26 bytes, hyphen between the date and the time")
     class Db2Timestamp {
-
         @Test
         @DisplayName("the composed value is exactly 26 characters")
         void theTimestampIsTwentySixCharacters() {
@@ -1006,8 +737,6 @@ class TransactionValidationJobTest {
             String composed = job(database(), bindings()).db2FormatTimestamp();
             assertThat(composed.charAt(4)).isEqualTo('-');
             assertThat(composed.charAt(7)).isEqualTo('-');
-            // DB2-STREEP-3 at :166 sits between DB2-DD and DB2-HH: the date and the time are joined by a
-            // HYPHEN, not by a space. This is the assertion that pins it.
             assertThat(composed.charAt(10)).isEqualTo('-');
             assertThat(composed.charAt(13)).isEqualTo('.');
             assertThat(composed.charAt(16)).isEqualTo('.');
@@ -1071,14 +800,9 @@ class TransactionValidationJobTest {
         }
     }
 
-    // =============================================================================================
-    // The outcome types and their invariants.
-    // =============================================================================================
-
     @Nested
     @DisplayName("The outcome types - a record cannot be both posted and rejected")
     class OutcomeTypes {
-
         @Test
         @DisplayName("neither posted nor rejected describes no arm of the IF at :211")
         void neitherArmIsRefused() {
@@ -1166,14 +890,9 @@ class TransactionValidationJobTest {
         }
     }
 
-    // =============================================================================================
-    // WORKING-STORAGE.
-    // =============================================================================================
-
     @Nested
     @DisplayName("WORKING-STORAGE - the register the paragraphs move through")
     class Register {
-
         @Test
         @DisplayName("APPL-RESULT's two condition names are both reachable")
         void bothConditionNamesAreReachable() {
@@ -1210,7 +929,6 @@ class TransactionValidationJobTest {
             assertThat(ws.validationFailReasonIsZero()).isFalse();
             assertThat(ws.validationFailReason()).isEqualTo(102);
 
-            // The unguarded second MOVE of :417 - last writer wins.
             ws.moveToValidationTrailer(103, "TRANSACTION RECEIVED AFTER ACCT EXPIRATION");
             assertThat(ws.validationFailReason()).isEqualTo(103);
             assertThat(ws.validationFailReasonDesc())
@@ -1289,14 +1007,9 @@ class TransactionValidationJobTest {
         }
     }
 
-    // =============================================================================================
-    // The six OPEN paragraphs - app/cbl/CBTRN02C.cbl:236-343.
-    // =============================================================================================
-
     @Nested
     @DisplayName("The six OPEN paragraphs - in order, each with its own message")
     class OpenLadder {
-
         @Test
         @DisplayName("all six open cleanly and the banner is not emitted by openFiles itself")
         void allSixOpenCleanly() {
@@ -1310,10 +1023,6 @@ class TransactionValidationJobTest {
         @Test
         @DisplayName("0100 over a NON-EMPTY master: load mode cannot begin, so '37' and an abend")
         void tranfileOpenOutputRefusesANonEmptyCluster() {
-            // :256 OPEN OUTPUT TRANSACT-FILE over the ORGANIZATION IS INDEXED SELECT at :34-38 is VSAM
-            // load mode, and load mode requires an empty base cluster. POSTTRAN.jcl:28-29 binds TRANFILE
-            // to the existing master with DISP=SHR and LISTCAT.txt:3595-3597 records it NOREUSE, so a
-            // cluster that already holds records cannot be reset by the open.
             JdbcTemplate t = database();
             seed(t, TRANSACT_DS, new String(
                     postedTranRecord("T000000000000009").encode(ASCII), ASCII));
@@ -1325,7 +1034,6 @@ class TransactionValidationJobTest {
                     .isThrownBy(run::openFiles)
                     .satisfies(TransactionValidationJobTest::assertStandardAbendParameters);
 
-            // The paragraph's own two lines, and nothing from the four opens after it.
             assertThat(sysout.lines()).containsExactly(
                     TransactionValidationJob.ERROR_OPENING_TRANFILE,
                     FileStatus.toDisplayLine(FileStatus.OPEN_MODE_CONFLICT),
@@ -1339,8 +1047,6 @@ class TransactionValidationJobTest {
         @Test
         @DisplayName("0100 over an EMPTY master opens cleanly, so the refusal is derived and not fixed")
         void tranfileOpenOutputAcceptsAnEmptyCluster() {
-            // The same code path, the same dataset, one row fewer - and it opens. That is what makes the
-            // arm above a derived outcome rather than a hard-coded refusal.
             JdbcTemplate t = database();
             CapturedSysout sysout = new CapturedSysout();
             PostingRun run = job(t, bindings()).newRun(sysout);
@@ -1352,13 +1058,6 @@ class TransactionValidationJobTest {
             run.release();
         }
 
-        /**
-         * Drops one relation so that DD's open reports a permanent error, and asserts the paragraph's own
-         * three-line failure tail plus the abend's {@code CEE3ABD} arguments.
-         *
-         * @param present the relations to create
-         * @param message the {@code DISPLAY} literal the failing paragraph owns
-         */
         private void assertOpenFailureReports(List<String> present, String message) {
             JdbcTemplate t = database(present.toArray(String[]::new));
             CapturedSysout sysout = new CapturedSysout();
@@ -1366,8 +1065,6 @@ class TransactionValidationJobTest {
             try {
                 assertThatExceptionOfType(AbendException.class)
                         .isThrownBy(run::openFiles)
-                        // The same three values every other path through 9999-ABEND-PROGRAM carries, from
-                        // the one helper, so the six open failures cannot drift from the six later ones.
                         .satisfies(TransactionValidationJobTest::assertStandardAbendParameters);
             } finally {
                 run.release();
@@ -1410,15 +1107,9 @@ class TransactionValidationJobTest {
         @DisplayName("finding DB-03: the NEW-generation clear survives a rolled-back enclosing boundary")
         void theDalyrejsGenerationClearIsDurable() {
             JdbcTemplate t = database();
-            // A record from a previous run's generation. DISP=(NEW,...) on DALYREJS(+1) means this run
-            // writes into an EMPTY generation, so 0300-DALYREJS-OPEN must remove it - durably.
             seed(t, DALYREJS_DS, "X".repeat(DalyRejectWriter.RECORD_LENGTH));
             TransactionValidationJob job = job(t, bindings());
 
-            // The enclosing boundary is rolled back, which is what a failed step does. The clear is applied
-            // through DatasetUnitOfWork.persistDisposition, so it commits on its own and the rollback
-            // cannot take it back. Before this fix the clear ran with no boundary at all: the pool hands
-            // out connections with auto-commit disabled, so it was reported and then discarded.
             TransactionTemplate enclosing =
                     new TransactionTemplate(new JdbcTransactionManager(t.getDataSource()));
             assertThatCode(() -> enclosing.execute(status -> {
@@ -1435,11 +1126,43 @@ class TransactionValidationJobTest {
         }
 
         @Test
+        @DisplayName("0100 over a NON-EMPTY REUSE master: load mode RESETS it, durably, then opens")
+        void tranfileLoadModeResetsAReusableClusterDurably() {
+            // The same shape as the DALYREJS clear above, for the same reason. Load mode over a cluster
+            // catalogued REUSE resets it - that is what REUSE means - so :256 empties the master and only
+            // then reports '00'. The open runs in the ItemStream open callback, outside the chunk
+            // transaction, so the reset is applied through DatasetUnitOfWork.persistDisposition: rolling
+            // the enclosing boundary back must not put the records back, or the run would post 300
+            // transactions on top of records the source's own open had already discarded.
+            JdbcTemplate t = database();
+            seed(t, TRANSACT_DS, new String(
+                    postedTranRecord("T000000000000009").encode(ASCII), ASCII));
+            TransactionValidationJob job = job(t, reusableTranfileBindings());
+
+            TransactionTemplate enclosing =
+                    new TransactionTemplate(new JdbcTransactionManager(t.getDataSource()));
+            PostingRun[] opened = new PostingRun[1];
+            assertThatCode(() -> enclosing.execute(status -> {
+                PostingRun run = job.newRun(job.sysoutSink());
+                run.tranfileOpen();
+                opened[0] = run;
+                status.setRollbackOnly();
+                return null;
+            })).doesNotThrowAnyException();
+
+            assertThat(opened[0].workingStorage().tranfileStatus())
+                    .as("a REUSE cluster is reset by the open, so load mode begins and :257 sees '00'")
+                    .isEqualTo(FileStatus.OK);
+            assertThat(rows(t, TRANSACT_DS))
+                    .as("the previous run's record must be gone and must stay gone: an open that "
+                            + "reported '00' while the rollback restored the record would leave this run "
+                            + "posting into a master the source's own open had emptied")
+                    .isEmpty();
+        }
+
+        @Test
         @DisplayName("finding DB-03: a refused generation clear still reports the open failure")
         void aRefusedDalyrejsClearStillAbends() {
-            // The boundary changes where the clear commits, never whether a failure is reported: the
-            // relation is absent, so the describe inside the boundary refuses and 0300-DALYREJS-OPEN must
-            // still reach its own 'ERROR OPENING DALY REJECTS FILE' arm and abend.
             assertOpenFailureReports(List.of(DALYTRAN_DS, TRANSACT_DS, XREF_DS, XREF_AIX_DS, ACCT_DS,
                     TCATBAL_DS, SYSTRAN_DS), TransactionValidationJob.ERROR_OPENING_DALYREJS);
         }
@@ -1461,16 +1184,12 @@ class TransactionValidationJobTest {
         @Test
         @DisplayName("the open and close literals differ where the source differs")
         void theOpenAndCloseLiteralsDifferWhereTheSourceDoes() {
-            // :247 names the DD; :593 appends FILE.
             assertThat(TransactionValidationJob.ERROR_OPENING_DALYTRAN)
                     .isNotEqualTo(TransactionValidationJob.ERROR_CLOSING_DALYTRAN);
-            // :302 abbreviates DALY; :648 spells DAILY.
             assertThat(TransactionValidationJob.ERROR_OPENING_DALYREJS).contains("DALY REJECTS");
             assertThat(TransactionValidationJob.ERROR_CLOSING_DALYREJS).contains("DAILY REJECTS");
-            // :320 says MASTER; :666 does not.
             assertThat(TransactionValidationJob.ERROR_OPENING_ACCTFILE).contains("MASTER");
             assertThat(TransactionValidationJob.ERROR_CLOSING_ACCTFILE).doesNotContain("MASTER");
-            // :338 and :685 are the one pair that differ in nothing but the verb.
             assertThat(TransactionValidationJob.ERROR_OPENING_TCATBALF)
                     .isEqualTo("ERROR OPENING TRANSACTION BALANCE FILE");
             assertThat(TransactionValidationJob.ERROR_CLOSING_TCATBALF)
@@ -1485,15 +1204,10 @@ class TransactionValidationJobTest {
                     "2022-06-10 19:27:53.000000")));
             CapturedSysout sysout = new CapturedSysout();
             PostingRun run = openedRun(job(t, bindings()), sysout);
-            // One reject written, then released WITHOUT closeFiles - which is what an abending run does, and
-            // what DISP=(NEW,CATLG,DELETE) at app/jcl/POSTTRAN.jcl:34 says must leave no generation behind.
             run.writeRejectRec(dalyTran("T0000000000000001", CARD, "10.00",
                     "2022-06-10 19:27:53.000000"));
             assertThat(rows(t, DALYREJS_DS)).hasSize(1);
 
-            // The enclosing boundary is rolled back, as a failed step's is. The discard is applied through
-            // persistDisposition, so it commits on its own: without that it would be reported as applied
-            // and then undone, leaving an abended run's rejects catalogued where the mainframe leaves none.
             TransactionTemplate enclosing =
                     new TransactionTemplate(new JdbcTransactionManager(t.getDataSource()));
             assertThatCode(() -> enclosing.execute(status -> {
@@ -1515,20 +1229,14 @@ class TransactionValidationJobTest {
             assertThatIllegalStateException().isThrownBy(run::dalytranGetNext)
                     .withMessageContaining("195-200");
             assertThatIllegalStateException().isThrownBy(run::closeFiles);
-            // Releasing an unopened run is a no-op, not a failure.
             run.release();
             assertThat(run.closedNormally()).isFalse();
         }
     }
 
-    // =============================================================================================
-    // 1000-DALYTRAN-GET-NEXT - app/cbl/CBTRN02C.cbl:345-369.
-    // =============================================================================================
-
     @Nested
     @DisplayName("1000-DALYTRAN-GET-NEXT - three arms and only three")
     class DalytranRead {
-
         @Test
         @DisplayName("'00' returns the record and leaves END-OF-FILE at 'N'")
         void aSuccessfulReadReturnsTheRecord() {
@@ -1560,8 +1268,6 @@ class TransactionValidationJobTest {
         @DisplayName("any other status reports 'ERROR READING DALYTRAN FILE' and abends")
         void aFatalReadAbends() {
             JdbcTemplate t = database();
-            // A row narrower than CVTRA06Y's declared 350 bytes is reported as a permanent error rather
-            // than padded, which is the WHEN OTHER arm of :350-355.
             seed(t, DALYTRAN_DS, "SHORT ROW");
             CapturedSysout sysout = new CapturedSysout();
             PostingRun run = openedRun(job(t, bindings()), sysout);
@@ -1580,17 +1286,6 @@ class TransactionValidationJobTest {
         @Test
         @DisplayName("a completed verb survives the enclosing transaction rolling back - :440-442")
         void everyVerbIsDurableOnItsOwn() {
-            // THE F23 PROOF. CBTRN02C issues no syncpoint and every dataset POSTTRAN opens is defined
-            // RECOVERY(NONE) (app/csd/CARDDEMO.CSD:9 and its siblings), so a WRITE or REWRITE is durable
-            // the moment it completes and CALL 'CEE3ABD' does not take it back. 2000-POST-TRANSACTION
-            // performs its three verbs unconditionally and in one order at :440-442 - 2700, then 2800,
-            // then 2900 - so a failure in the third leaves the first two standing.
-            //
-            // The collision is created BY THE RUN, which is the only way the source can reach it: a master
-            // that already held the key would be a non-empty master, and :256's load-mode OPEN OUTPUT
-            // refuses one of those before the loop starts (see tranfileOpenOutputRefusesANonEmptyCluster).
-            // Two daily records sharing a TRAN-ID over an EMPTY master is the reachable path: the first
-            // posts and adds the key, the second re-updates the balances and then collides at :564.
             JdbcTemplate t = database();
             seedResolvableAccount(t);
             String daily = dalyTranImage(
@@ -1598,8 +1293,6 @@ class TransactionValidationJobTest {
             seed(t, DALYTRAN_DS, daily);
             seed(t, DALYTRAN_DS, daily);
 
-            // A REAL enclosing transaction, which the propagating AbendException rolls back. Without
-            // persistVerb every write below would be undone with it, and this test is what says so.
             TransactionTemplate enclosing =
                     new TransactionTemplate(new JdbcTransactionManager(t.getDataSource()));
             enclosing.afterPropertiesSet();
@@ -1617,9 +1310,6 @@ class TransactionValidationJobTest {
                     FileStatus.toDisplayLine(FileStatus.DUPLICATE),
                     AbendException.ABEND_DISPLAY_TEXT);
 
-            // Both records ran 2700 and 2800, so both increments stand: 1000.00 + 1.00 + 1.00 on the
-            // category balance, 250.00 + 1.00 + 1.00 on the account, 100.00 + 1.00 + 1.00 on the cycle
-            // credit. The debit is untouched because :548 sends a non-negative amount to :549.
             TranCatBalRecord balance = TranCatBalRecord.decode(
                     rows(t, TCATBAL_DS).get(0).getBytes(ASCII), ASCII);
             assertThat(balance.tranCatBal())
@@ -1631,21 +1321,15 @@ class TransactionValidationJobTest {
             assertThat(stored.getAcctCurrCycCredit()).isEqualByComparingTo("102.00");
             assertThat(stored.getAcctCurrCycDebit()).isEqualByComparingTo("50.00");
 
-            // And the first record's own 2900 stands too: one row, not zero and not two.
             assertThat(rows(t, TRANSACT_DS))
                     .describedAs("the first add committed; the second never stored anything")
                     .hasSize(1);
         }
     }
 
-    // =============================================================================================
-    // 1500-VALIDATE-TRAN and its two lookups - app/cbl/CBTRN02C.cbl:370-422. Gate G31.
-    // =============================================================================================
-
     @Nested
     @DisplayName("The validation cascade - one short-circuit, and 103 overwrites 102")
     class Cascade {
-
         private PostingRun runOver(JdbcTemplate t, CapturedSysout sysout) {
             return openedRun(job(t, bindings()), sysout);
         }
@@ -1675,9 +1359,7 @@ class TransactionValidationJobTest {
                     .isEqualTo(TransactionValidationJob.REASON_INVALID_CARD_NUMBER);
             assertThat(run.workingStorage().validationFailReasonDesc())
                     .isEqualTo(DalyRejectWriter.DESC_INVALID_CARD_NUMBER);
-            // The short-circuit: ACCTFILE-STATUS was never touched, so it still reads '00'.
             assertThat(run.workingStorage().acctfileStatus()).isEqualTo(FileStatus.OK);
-            // And the retained cross-reference area was not replaced.
             assertThat(run.cardXrefRecord().xrefAcctId()).isZero();
             run.release();
         }
@@ -1711,7 +1393,6 @@ class TransactionValidationJobTest {
                     .isEqualTo(TransactionValidationJob.REASON_OVERLIMIT_TRANSACTION);
             assertThat(run.workingStorage().validationFailReasonDesc())
                     .isEqualTo(DalyRejectWriter.DESC_OVERLIMIT_TRANSACTION);
-            // WS-TEMP-BAL = 90.00 - 0.00 + 50.00 = 140.00, which exceeds the 100.00 limit.
             assertThat(run.workingStorage().tempBal()).isEqualByComparingTo("140.00");
             run.release();
         }
@@ -1732,7 +1413,6 @@ class TransactionValidationJobTest {
 
         @ParameterizedTest(name = "[{index}] limit {0}, expiry {1}, amount {2} -> reason {3}")
         @CsvSource(delimiter = '|', value = {
-            // limit    | expiry     | amount | reason | the description that reason carries
             "5000.00    | 2026-01-01 | 10.00  | 0      | SPACES",
             "100.00     | 2026-01-01 | 50.00  | 102    | OVERLIMIT TRANSACTION",
             "5000.00    | 2022-01-01 | 10.00  | 103    | TRANSACTION RECEIVED AFTER ACCT EXPIRATION",
@@ -1746,9 +1426,6 @@ class TransactionValidationJobTest {
                 int expectedReason, String expectedDescription) {
             JdbcTemplate t = database();
             seed(t, XREF_DS, xrefImage(CARD, ACCOUNT));
-            // The cycle amounts are fixed at 90.00 credit and 0.00 debit throughout, so WS-TEMP-BAL is
-            // 90.00 + the amount and the only variables are the limit and the expiry - which is what makes
-            // the fourth row (both tests failing) comparable with rows two and three.
             seed(t, ACCT_DS, account(ACCOUNT, creditLimit, expiry, "90.00", "0.00", "0.00")
                     .toFixedWidthString());
             CapturedSysout sysout = new CapturedSysout();
@@ -1756,11 +1433,6 @@ class TransactionValidationJobTest {
 
             run.validateTran(dalyTran("T1", CARD, amount, "2022-06-10 19:27:53.000000"));
 
-            // NO IMPLICIT FALL-THROUGH AND NO ACCUMULATION. WS-VALIDATION-FAIL-REASON is one PIC 9(04)
-            // item and WS-VALIDATION-FAIL-REASON-DESC one PIC X(76): a MOVE replaces, it never appends.
-            // Asserting the description with isEqualTo rather than contains is what makes that a property
-            // of this test - a cascade that concatenated its reasons would fail here even though the final
-            // reason code was right.
             assertThat(run.workingStorage().validationFailReason()).isEqualTo(expectedReason);
             assertThat(run.workingStorage().validationFailReasonDesc())
                     .isEqualTo("SPACES".equals(expectedDescription)
@@ -1776,11 +1448,6 @@ class TransactionValidationJobTest {
         void oneHundredthOverTheLimitFails() {
             JdbcTemplate t = database();
             seed(t, XREF_DS, xrefImage(CARD, ACCOUNT));
-            // WS-TEMP-BAL = 90.00 - 0.00 + 50.00 = 140.00 and the limit is 139.99, so the test at :407
-            // fails by exactly one hundredth - the smallest amount by which it can fail, because every
-            // operand is scale 2. Compare anExactLimitPasses(), where the limit is 140.00 and it passes:
-            // the two cases together pin the comparison as >= rather than >, and pin it at scale 2 rather
-            // than at some wider precision that would swallow the difference.
             seed(t, ACCT_DS, account(ACCOUNT, "139.99", "2026-01-01", "90.00", "0.00", "0.00")
                     .toFixedWidthString());
             CapturedSysout sysout = new CapturedSysout();
@@ -1797,10 +1464,6 @@ class TransactionValidationJobTest {
         @Test
         @DisplayName("the three COMPUTE operands are all scale 2, so no rounding can enter the comparison")
         void everyOperandOfTheComputeIsScaleTwo() {
-            // ACCT-CURR-CYC-CREDIT, ACCT-CURR-CYC-DEBIT and ACCT-CREDIT-LIMIT are PIC S9(10)V99
-            // (app/cpy/CVACT01Y.cpy) and DALYTRAN-AMT is PIC S9(09)V99 (app/cpy/CVTRA06Y.cpy): four
-            // operands, one scale. Any of them arriving at another scale would make the >= at :407 a
-            // comparison between two different quantities.
             AccountRecord a = account(ACCOUNT, "139.99", "2026-01-01", "90.00", "0.00", "0.00");
             assertThat(a.getAcctCurrCycCredit().scale()).isEqualTo(CobolDecimal.MONETARY_SCALE);
             assertThat(a.getAcctCurrCycDebit().scale()).isEqualTo(CobolDecimal.MONETARY_SCALE);
@@ -1851,9 +1514,6 @@ class TransactionValidationJobTest {
             PostingRun run = runOver(t, sysout);
             run.validateTran(dalyTran("T1", CARD, "50.00", "2022-06-10 19:27:53.000000"));
 
-            // app/cbl/CBTRN02C.cbl:414 is NOT guarded by :407, so :417 overwrites the 102 that :410
-            // stored. Last writer wins. An early return or an else after the credit-limit failure would
-            // make this assertion fail, which is exactly why it is here.
             assertThat(run.workingStorage().validationFailReason())
                     .isEqualTo(TransactionValidationJob.REASON_TRANSACTION_AFTER_EXPIRATION);
             assertThat(run.workingStorage().validationFailReasonDesc())
@@ -1866,8 +1526,6 @@ class TransactionValidationJobTest {
         void theExpiryComparisonIsCharacterWise() {
             JdbcTemplate t = database();
             seed(t, XREF_DS, xrefImage(CARD, ACCOUNT));
-            // A blank expiry date is not a date at all; a character comparison simply loses to any
-            // timestamp, which is what the COBOL does. Parsing would throw instead.
             seed(t, ACCT_DS, account(ACCOUNT, "5000.00", "          ", "0.00", "0.00", "0.00")
                     .toFixedWidthString());
             CapturedSysout sysout = new CapturedSysout();
@@ -1883,7 +1541,6 @@ class TransactionValidationJobTest {
         void theExpiryBoundaryIsOneDayWide() {
             String origTs = "2022-06-10 19:27:53.000000";
 
-            // 2022-06-09 < '2022-06-10' - the transaction arrived after the account expired.
             JdbcTemplate dayBefore = database();
             seed(dayBefore, XREF_DS, xrefImage(CARD, ACCOUNT));
             seed(dayBefore, ACCT_DS, account(ACCOUNT, "5000.00", "2022-06-09", "0.00", "0.00", "0.00")
@@ -1895,8 +1552,6 @@ class TransactionValidationJobTest {
                     .isEqualTo(TransactionValidationJob.REASON_TRANSACTION_AFTER_EXPIRATION);
             beforeRun.release();
 
-            // 2022-06-11 > '2022-06-10' - still valid. With anEqualExpiryDatePasses() in between, the
-            // three cases pin the comparison as >= across the whole boundary.
             JdbcTemplate dayAfter = database();
             seed(dayAfter, XREF_DS, xrefImage(CARD, ACCOUNT));
             seed(dayAfter, ACCT_DS, account(ACCOUNT, "5000.00", "2022-06-11", "0.00", "0.00", "0.00")
@@ -1914,8 +1569,6 @@ class TransactionValidationJobTest {
             String origTs = "2022-06-10 19:27:53.000000";
             DalyTranRecord item = dalyTran("T1", CARD, "10.00", origTs);
 
-            // The reference subscript at :414 is (1:10): the first ten characters of the 26-byte
-            // timestamp, at DALYTRAN-ORIG-TS's own offset.
             assertThat(item.dalytranOrigDt())
                     .hasSize(DalyTranRecord.DALYTRAN_ORIG_DT_LENGTH)
                     .isEqualTo("2022-06-10")
@@ -1924,20 +1577,12 @@ class TransactionValidationJobTest {
             assertThat(DalyTranRecord.DALYTRAN_ORIG_DT_OFFSET)
                     .isEqualTo(DalyTranRecord.DALYTRAN_ORIG_TS_OFFSET);
 
-            // WHY THE WIDTH OF THE SLICE IS ITSELF A PARITY PROPERTY. Take an account whose expiry is the
-            // very day of the transaction. Against the ten-character slice the two are equal, so the >= at
-            // :414 holds. Against an eleven-character slice the sender carries a trailing space, and
-            // against the whole 26 bytes it carries a time as well, and in both cases the ten-character
-            // receiver compares SHORT - COBOL pads the shorter operand with spaces, and a space is below
-            // every digit - so the account would look expired. An off-by-one here rejects a transaction
-            // the mainframe posts, on the boundary day, silently.
             String expiry = "2022-06-10";
             assertThat(expiry.compareTo(item.dalytranOrigDt())).isZero();
             assertThat(expiry.compareTo(item.dalytranOrigTs().substring(0,
                     DalyTranRecord.DALYTRAN_ORIG_DT_LENGTH + 1))).isNegative();
             assertThat(expiry.compareTo(item.dalytranOrigTs())).isNegative();
 
-            // And the run itself takes the ten-character outcome, not either of the other two.
             JdbcTemplate t = database();
             seed(t, XREF_DS, xrefImage(CARD, ACCOUNT));
             seed(t, ACCT_DS, account(ACCOUNT, "5000.00", expiry, "0.00", "0.00", "0.00")
@@ -1955,10 +1600,6 @@ class TransactionValidationJobTest {
             AccountRecord a = account(ACCOUNT, "5000.00", "2026-12-31", "0.00", "0.00", "0.00");
             assertThat(a.getAcctExpiraionDate()).isEqualTo("2026-12-31");
             assertThat(a.rawAcctExpiraionDate()).isEqualTo("2026-12-31");
-            // CVACT01Y spells it EXPIRAION, and the field-for-field diff the parity gate performs is by
-            // NAME: renaming it to EXPIRATION would break every comparison the differ makes (implicit
-            // requirement I1). The accessor is therefore misspelled deliberately, and this assertion is
-            // what stops a well-meaning rename.
             assertThat(AccountRecord.ACCT_EXPIRAION_DATE_NAME).isEqualTo("ACCT-EXPIRAION-DATE");
             assertThat(AccountRecord.ACCT_EXPIRAION_DATE_OFFSET).isEqualTo(58);
             assertThat(AccountRecord.ACCT_EXPIRAION_DATE_LENGTH)
@@ -1970,7 +1611,6 @@ class TransactionValidationJobTest {
         void theReasonIsResetBeforeEveryRecord() {
             JdbcTemplate t = database();
             seedResolvableAccount(t);
-            // Two records: the first has an unknown card, the second resolves. The second must post.
             seed(t, DALYTRAN_DS, dalyTranImage(dalyTran("T000000000000001", OTHER_CARD, "10.00",
                     "2022-06-10 19:27:53.000000")));
             seed(t, DALYTRAN_DS, dalyTranImage(dalyTran("T000000000000002", CARD, "10.00",
@@ -1993,8 +1633,6 @@ class TransactionValidationJobTest {
         @DisplayName("a record rejected before the account was read reports no temporary balance")
         void aRecordRejectedBeforeTheAccountReadHasNoTemporaryBalance() {
             JdbcTemplate t = database();
-            // The card resolves, so stage 1 passes; the account does not exist, so stage 2 sets 101 and
-            // the COMPUTE at :403 is never reached.
             seed(t, XREF_DS, xrefImage(CARD, ACCOUNT));
             seed(t, DALYTRAN_DS, dalyTranImage(dalyTran("T000000000000001", CARD, "10.00",
                     "2022-06-10 19:27:53.000000")));
@@ -2026,8 +1664,6 @@ class TransactionValidationJobTest {
             PostingRun run = runOver(t, sysout);
             DalyTranRecord item = dalyTran("T000000000000001", CARD, "10.00",
                     "2022-06-10 19:27:53.000000");
-            // 1500-B-LOOKUP-ACCT has only the two READ phrases and no status guard, so a permanent
-            // error takes neither: the reason stays 0 and the record area is left as it was.
             drop(t, ACCT_DS);
             try {
                 run.validateTran(item);
@@ -2040,7 +1676,6 @@ class TransactionValidationJobTest {
             assertThat(run.workingStorage().validationFailReasonDesc()).isEmpty();
             assertThat(run.workingStorage().acctfileStatus())
                     .isEqualTo(TransactionValidationJob.PERMANENT_ERROR_STATUS);
-            // No DISPLAY: the paragraph has no diagnostic for a status it does not test.
             assertThat(sysout.lines()).isEmpty();
         }
 
@@ -2060,14 +1695,9 @@ class TransactionValidationJobTest {
         }
     }
 
-    // =============================================================================================
-    // 2000-POST-TRANSACTION and the three paragraphs it performs - app/cbl/CBTRN02C.cbl:424-579.
-    // =============================================================================================
-
     @Nested
     @DisplayName("The posting sequence - TCATBAL, then the account, then the master")
     class Posting {
-
         @Test
         @DisplayName("the posted record is exactly 350 bytes with its trailing FILLER intact")
         void thePostedRecordIsThreeHundredAndFiftyBytes() {
@@ -2089,11 +1719,6 @@ class TransactionValidationJobTest {
             TranRecord stored = TranRecord.decode(image, ASCII);
             assertThat(stored.filler()).isEqualTo(" ".repeat(TranRecord.FILLER_LENGTH));
 
-            // GATES G19 AND G21 AT THE BYTE LEVEL. The decoded accessors above would agree with a codec
-            // that had every span in the wrong place, so the two spans CVTRA05Y puts last are asserted at
-            // their absolute offsets in the 350 bytes that reached the dataset:
-            //   05 TRAN-PROC-TS PIC X(26)  - bytes 304..329
-            //   05 FILLER       PIC X(20)  - bytes 330..349, spaces, never written by 2000
             assertThat(TranRecord.TRAN_PROC_TS_OFFSET).isEqualTo(304);
             assertThat(TranRecord.FILLER_OFFSET).isEqualTo(330);
             assertThat(image.substring(TranRecord.TRAN_PROC_TS_OFFSET,
@@ -2102,9 +1727,6 @@ class TransactionValidationJobTest {
             assertThat(image.substring(TranRecord.FILLER_OFFSET,
                     TranRecord.FILLER_OFFSET + TranRecord.FILLER_LENGTH))
                     .isEqualTo(" ".repeat(TranRecord.FILLER_LENGTH));
-            // The record ends there: FILLER is the last span, so its end IS the record length. Omitting
-            // FILLER would shorten the record to 330 and shift nothing - which is exactly why the length
-            // assertion above and this offset assertion are both needed.
             assertThat(TranRecord.FILLER_OFFSET + TranRecord.FILLER_LENGTH)
                     .isEqualTo(TranRecord.RECORD_LENGTH);
         }
@@ -2181,7 +1803,6 @@ class TransactionValidationJobTest {
             assertThat(created.trancatTypeCd()).isEqualTo(TYPE_CD);
             assertThat(created.trancatCd()).isEqualTo(CAT_CD);
             assertThat(created.tranCatBal()).isEqualByComparingTo("25.55");
-            // INITIALIZE skips FILLER, and a record with no stored predecessor was allocated with spaces.
             assertThat(created.fillerImage())
                     .isEqualTo(" ".repeat(TranCatBalRecord.FILLER_LENGTH));
         }
@@ -2223,7 +1844,6 @@ class TransactionValidationJobTest {
             assertThat(balances).hasSize(1);
             assertThat(TranCatBalRecord.decode(balances.get(0), ASCII).tranCatBal())
                     .isEqualByComparingTo("1025.55");
-            // No notice was displayed, because the read found the record.
             assertThat(sysout.lines()).isEmpty();
         }
 
@@ -2293,7 +1913,6 @@ class TransactionValidationJobTest {
             CapturedSysout sysout = new CapturedSysout();
             PostingRun run = openedRun(job(t, bindings()), sysout);
 
-            // The account resolves for the validation read, and is then removed before 2800 rewrites it.
             DalyTranRecord item = run.dalytranGetNext();
             run.validateTran(item);
             t.update("DELETE FROM \"" + ACCT_DS + "\"");
@@ -2303,7 +1922,6 @@ class TransactionValidationJobTest {
             assertThat(invalidKey).isTrue();
             assertThat(run.workingStorage().validationFailReason())
                     .isEqualTo(TransactionValidationJob.REASON_ACCOUNT_NOT_FOUND_ON_REWRITE);
-            // The whole point of the defect: no reject record, and the reject counter untouched.
             assertThat(rows(t, DALYREJS_DS)).isEmpty();
             assertThat(run.workingStorage().rejectCount()).isZero();
         }
@@ -2322,8 +1940,6 @@ class TransactionValidationJobTest {
             PostingRun run = openedRun(validationJob, sysout);
 
             DalyTranRecord item = run.dalytranGetNext();
-            // The account resolves for 1500-B, and is removed before 2800 rewrites it, so 2800's
-            // INVALID KEY arm is the one taken while the mainline has already committed to posting.
             run.workingStorage().resetValidationTrailer();
             run.validateTran(item);
             assertThat(run.workingStorage().validationFailReasonIsZero()).isTrue();
@@ -2334,7 +1950,6 @@ class TransactionValidationJobTest {
             run.release();
 
             assertThat(posting.accountRewriteInvalidKey()).isTrue();
-            // 2900 still ran, because :442 follows :441 unconditionally, and no reject was produced.
             assertThat(rows(t, TRANSACT_DS)).hasSize(1);
             assertThat(rows(t, DALYREJS_DS)).isEmpty();
             assertThat(outcome.rejectCount()).isZero();
@@ -2352,23 +1967,18 @@ class TransactionValidationJobTest {
                     "2022-06-10 19:27:53.000000");
 
             run.validateTran(item);
-            // 1500-A moved the cross-reference record in, and 1500-B the account record.
             assertThat(run.cardXrefRecord().xrefCardNum()).isEqualTo(CARD);
             assertThat(run.cardXrefRecord().xrefAcctId()).isEqualTo(ACCOUNT);
             assertThat(run.accountRecord().getAcctId()).isEqualTo(ACCOUNT);
             assertThat(run.accountRecord().getAcctCurrBal()).isEqualByComparingTo("250.00");
 
             run.updateTcatbal(item);
-            // 2700-B added the amount to the area, and the rewrite wrote that area out.
             assertThat(run.tranCatBalRecord().tranCatBal()).isEqualByComparingTo("1025.55");
 
             run.updateAccountRec(item);
-            // 2800 added to the area the validation read filled; the rewrite persisted it.
             assertThat(run.accountRecord().getAcctCurrBal()).isEqualByComparingTo("275.55");
             assertThat(run.accountRecord().getAcctCurrCycCredit()).isEqualByComparingTo("125.55");
 
-            // 2000's twelve moves and the timestamp land in TRAN-RECORD, which 2900 then writes.
-            // TRAN-ID is PIC X(16) and is not trimmed on read, so an untouched area is 16 spaces.
             assertThat(run.tranRecord().tranId()).isEqualTo(" ".repeat(16));
             run.postTransaction(item);
             assertThat(run.tranRecord().tranId()).isEqualTo("T000000000000001");
@@ -2409,43 +2019,26 @@ class TransactionValidationJobTest {
             DalyTranRecord item = dalyTran("T000000000000001", CARD, "25.55",
                     "2022-06-10 19:27:53.000000");
 
-            // The whole posting sequence for one record, in source order, with the LAST verb failing: the
-            // TRAN-ID is written once and then written again, and :566-570 accepts only '00', so the
-            // duplicate '22' abends at :707. On the mainframe the category balance and the account rewrite
-            // that preceded it are already on their datasets - CBTRN02C issues no syncpoint and every one
-            // of these datasets is RECOVERY(NONE), so CALL 'CEE3ABD' takes nothing back.
-            //
-            // The enclosing boundary is then rolled back, which is what a failed chunk does. Each verb was
-            // persisted through DatasetUnitOfWork.persistVerb at its own source position, so the rollback
-            // cannot reach them. Grouped in one chunk transaction they would all three vanish, and a re-run
-            // over the same input would apply this transaction's amount to an account it had in fact
-            // already updated.
             TransactionTemplate enclosing =
                     new TransactionTemplate(new JdbcTransactionManager(t.getDataSource()));
             assertThatCode(() -> enclosing.execute(status -> {
                 run.validateTran(item);
-                // 2000-POST-TRANSACTION performs all three verbs in the source's order - :440 the balance,
-                // :441 the account, :442 the transaction - so one call is the whole posting.
                 run.postTransaction(item);
                 assertThatExceptionOfType(AbendException.class)
-                        .isThrownBy(run::writeTransactionFile)               // the duplicate, :564 again
+                        .isThrownBy(run::writeTransactionFile)
                         .satisfies(TransactionValidationJobTest::assertStandardAbendParameters);
                 status.setRollbackOnly();
                 return null;
             })).doesNotThrowAnyException();
             run.release();
 
-            // 2700-B's rewrite: 1000.00 + 25.55, byte for byte as the record encodes it.
             assertThat(rows(t, TCATBAL_DS))
                     .as("the category balance rewritten at :528 stands")
                     .containsExactly(tcatbalImage(ACCOUNT, TYPE_CD, CAT_CD, "1025.55"));
-            // 2800's rewrite: 250.00 + 25.55 into ACCT-CURR-BAL and 100.00 + 25.55 into the cycle credit,
-            // because the amount is positive (:548).
             assertThat(rows(t, ACCT_DS))
                     .as("the account rewritten at :554 stands, cycle credit included")
                     .containsExactly(account(ACCOUNT, "5000.00", "2026-01-01", "125.55", "50.00",
                             "275.55").toFixedWidthString());
-            // 2900's first write: the record that succeeded before the duplicate.
             assertThat(rows(t, TRANSACT_DS))
                     .as("the transaction added at :564 stands")
                     .hasSize(1);
@@ -2463,23 +2056,15 @@ class TransactionValidationJobTest {
             DalyTranRecord rejected = dalyTran("T000000000000009", "9999999999999999", "1.00",
                     "2022-06-10 19:27:53.000000");
 
-            // A reject, then a failure. The run continues past a reject - :215 writes it and the loop reads
-            // the next record - so a reject discarded by a later rollback would leave that transaction
-            // neither posted nor rejected, which is the one outcome nothing downstream can detect.
             TransactionTemplate enclosing =
                     new TransactionTemplate(new JdbcTransactionManager(t.getDataSource()));
             assertThatCode(() -> enclosing.execute(status -> {
                 run.validateTran(rejected);
-                run.writeRejectRec(rejected);                                // 2500 WRITE :451
+                run.writeRejectRec(rejected);
                 status.setRollbackOnly();
                 return null;
             })).doesNotThrowAnyException();
 
-            // Asserted before the release, deliberately: the release applies POSTTRAN's
-            // DISP=(NEW,CATLG,DELETE) abnormal disposition, which deletes the whole generation on purpose
-            // and would mask what this test is about. What is being proved here is that the enclosing
-            // rollback did not reach the reject - which is a different thing from whether the step's own
-            // disposition later removes it.
             assertThat(rows(t, DALYREJS_DS))
                     .as("the reject written at :451 survives the enclosing rollback: DALYREJS is "
                             + "RECOVERY(NONE) and the run continues past a reject")
@@ -2522,7 +2107,6 @@ class TransactionValidationJobTest {
             DalyTranRecord item = dalyTran("T000000000000001", CARD, "1.00",
                     "2022-06-10 19:27:53.000000");
             run.validateTran(item);
-            // The read reports '23', so the create path is taken; the relation then disappears.
             drop(t, TCATBAL_DS);
             try {
                 assertThatExceptionOfType(AbendException.class)
@@ -2561,20 +2145,9 @@ class TransactionValidationJobTest {
         }
     }
 
-    // =============================================================================================
-    // The gate sweep, taken from the COBOL rather than claimed about it - gates G24, G28, G30 and G50.
-    // =============================================================================================
-
     @Nested
     @DisplayName("The gate sweep - the census this suite covers, read out of CBTRN02C itself")
     class GateSweep {
-
-        /**
-         * Reads the translated program, which is a read-only parity reference and never written.
-         *
-         * @return its 731 lines
-         * @throws Exception if the source cannot be read, which is itself a failure
-         */
         private List<String> programSource() throws Exception {
             java.nio.file.Path path = java.nio.file.Path
                     .of("..", "..", "app", "cbl", "CBTRN02C.cbl").normalize();
@@ -2587,20 +2160,6 @@ class TransactionValidationJobTest {
             return java.nio.file.Files.readAllLines(path, ASCII);
         }
 
-        /**
-         * The line numbers, 1-based, at which a verb begins a statement.
-         *
-         * <p>Counted at <strong>statement-initial</strong> positions - six characters of sequence area,
-         * then optional indentation, then the verb and a space. A bare word search over-counts, because
-         * COBOL's hyphen is not a word character: {@code END-COMPUTE} and a paragraph named
-         * {@code 1300-COMPUTE-INTEREST} both match {@code \bCOMPUTE\b}. Column 7 holds {@code *} on a
-         * comment line, which this shape excludes - including the {@code * ADD MORE VALIDATIONS HERE}
-         * comment at {@code :377}, which is a comment and not an eighth {@code ADD}.
-         *
-         * @param source the program
-         * @param verb   the verb to locate
-         * @return the 1-based line numbers, in order
-         */
         private List<Integer> statementInitial(List<String> source, String verb) {
             java.util.regex.Pattern shape =
                     java.util.regex.Pattern.compile("^.{6} *" + verb + " ");
@@ -2617,10 +2176,6 @@ class TransactionValidationJobTest {
         @DisplayName("GATE G24: ROUNDED appears nowhere, so every store truncates toward zero")
         void roundedAppearsNowhere() throws Exception {
             assertThat(programSource()).noneMatch(line -> line.contains("ROUNDED"));
-            // Which is why CobolDecimal's only rounding mode is DOWN, and why every expectation in this
-            // class is the truncated value. HALF_UP on the interest-style divide of a sibling program, or
-            // here on any ADD, would differ by one hundredth on exactly the amounts a parity case cares
-            // about.
             assertThat(CobolDecimal.COBOL_ROUNDING).isEqualTo(RoundingMode.DOWN);
         }
 
@@ -2629,22 +2184,11 @@ class TransactionValidationJobTest {
         void theArithmeticCensusIsComplete() throws Exception {
             List<String> source = programSource();
 
-            // One COMPUTE: WS-TEMP-BAL at :403, asserted by theTemporaryBalanceIsComputedAtScaleTwo,
-            // theStoreTruncatesTowardZero, oneHundredthOverTheLimitFails and anExactLimitPasses.
             assertThat(statementInitial(source, "COMPUTE")).containsExactly(403);
 
-            // Seven ADDs, each with its own assertion:
-            //   :206 ADD 1 TO WS-TRANSACTION-COUNT        - theCountersIncrement, aMixedRun
-            //   :214 ADD 1 TO WS-REJECT-COUNT             - theCountersIncrement, aMixedRun
-            //   :508 ADD DALYTRAN-AMT TO TRAN-CAT-BAL     - the '23' create path
-            //   :527 ADD DALYTRAN-AMT TO TRAN-CAT-BAL     - the '00' update path
-            //   :547 ADD DALYTRAN-AMT TO ACCT-CURR-BAL    - every posting
-            //   :549 ADD ... TO ACCT-CURR-CYC-CREDIT      - the amount >= 0 arm, zero included
-            //   :551 ADD ... TO ACCT-CURR-CYC-DEBIT       - the amount < 0 arm
             assertThat(statementInitial(source, "ADD"))
                     .containsExactly(206, 214, 508, 527, 547, 549, 551);
 
-            // And no other arithmetic verb exists in this program at all, so the census above is closed.
             assertThat(statementInitial(source, "SUBTRACT")).isEmpty();
             assertThat(statementInitial(source, "MULTIPLY")).isEmpty();
             assertThat(statementInitial(source, "DIVIDE")).isEmpty();
@@ -2653,12 +2197,6 @@ class TransactionValidationJobTest {
         @Test
         @DisplayName("GATE G30: CBTRN02C contains no EVALUATE, so the gate is vacuous here - by fact")
         void thereIsNoEvaluateInThisProgram() throws Exception {
-            // Recorded rather than assumed. Gate G30 (every EVALUATE arm in source order, WHEN OTHER last)
-            // has no subject in CBTRN02C: the whole program branches with IF alone. The nearest analogue
-            // is the nested IF of 1000-DALYTRAN-GET-NEXT at :347-356, whose three arms - '00', '10' and
-            // everything else, in that order - are covered by the DalytranRead tests. Should an EVALUATE
-            // ever appear in this program, this assertion fails and the arm-ordering tests G30 asks for
-            // become due.
             assertThat(programSource()).noneMatch(line -> line.contains("EVALUATE"));
         }
 
@@ -2669,24 +2207,15 @@ class TransactionValidationJobTest {
                     .filter(line -> line.matches("^ *88 .*"))
                     .map(line -> line.trim().split("\\s+")[1])
                     .toList();
-            // :143 88 APPL-AOK VALUE 0 and :144 88 APPL-EOF VALUE 16 - the program declares no others, and
-            // bothConditionNamesAreReachable drives each of them true and false.
             assertThat(conditionNames).containsExactly("APPL-AOK", "APPL-EOF");
             assertThat(TransactionValidationJob.APPL_RESULT_AOK).isZero();
             assertThat(TransactionValidationJob.APPL_RESULT_EOF).isEqualTo(16);
         }
     }
 
-    // =============================================================================================
-    // The interaction properties: the cascade's one short-circuit (gate G31) and the posting order of
-    // app/cbl/CBTRN02C.cbl:440-442. Neither is visible in the datasets afterwards, so both are asserted
-    // on the calls themselves.
-    // =============================================================================================
-
     @Nested
     @DisplayName("Collaborator interactions - what is NOT called, and the order of what is")
     class Interactions {
-
         @Test
         @DisplayName("GATE G31: an unknown card number means ACCTFILE is never read at all")
         void theAccountIsNeverReadWhenTheCardIsUnknown() {
@@ -2696,16 +2225,10 @@ class TransactionValidationJobTest {
             SpiedCollaborators spies = new SpiedCollaborators(t, sysout);
             PostingRun run = spies.openedRun();
             AccountRepository.AccountFile acctfile = spies.accountFile();
-            // The handle was taken by 0400-ACCTFILE-OPEN, so the account file IS open and a read would
-            // succeed - the account row seeded above resolves. Nothing but the guard at :372 prevents it.
             Mockito.clearInvocations(acctfile);
 
             run.validateTran(dalyTran("T1", OTHER_CARD, "10.00", "2022-06-10 19:27:53.000000"));
 
-            // app/cbl/CBTRN02C.cbl:372 - IF WS-VALIDATION-FAIL-REASON = 0 PERFORM 1500-B-LOOKUP-ACCT.
-            // The reason is 100, so 1500-B is never performed and no form of read reaches ACCTFILE. An
-            // outcome-only assertion would pass just as well against an implementation that read the
-            // account and then threw the result away, which is why this is a never() verification.
             Mockito.verify(acctfile, Mockito.never()).readByKey(ArgumentMatchers.anyLong());
             Mockito.verify(acctfile, Mockito.never()).readNext();
             Mockito.verify(acctfile, Mockito.never()).readForUpdate(ArgumentMatchers.anyString());
@@ -2728,8 +2251,6 @@ class TransactionValidationJobTest {
 
             run.validateTran(dalyTran("T1", CARD, "10.00", "2022-06-10 19:27:53.000000"));
 
-            // The counterpart of the never() above: without this, a job that never read the account at all
-            // would satisfy the short-circuit test. READ ACCOUNT-FILE at :395 is one keyed read, not two.
             Mockito.verify(acctfile, Mockito.times(1)).readByKey(ACCOUNT);
             Mockito.verify(acctfile, Mockito.never()).rewrite(ArgumentMatchers.any());
             assertThat(run.workingStorage().validationFailReasonIsZero()).isTrue();
@@ -2754,30 +2275,17 @@ class TransactionValidationJobTest {
 
             run.postTransaction(item);
 
-            // app/cbl/CBTRN02C.cbl:440-442 in that order and no other:
-            //     PERFORM 2700-UPDATE-TCATBAL      L440   - the keyed read, then the rewrite
-            //     PERFORM 2800-UPDATE-ACCOUNT-REC  L441
-            //     PERFORM 2900-WRITE-TRANSACTION-FILE L442
-            // The order is contractual, not incidental: it decides what a mid-sequence failure leaves
-            // behind. A failure inside 2700 leaves the account and the master untouched, while a failure
-            // inside 2900 leaves both already updated. Once all three writes have landed the order is
-            // invisible in the datasets, so it is verified here on the calls.
             InOrder posting = Mockito.inOrder(tcatbalf, acctfile, master);
             posting.verify(tcatbalf).readByKey(ArgumentMatchers.<TranCatBalRecord.TranCatKey>any());
             posting.verify(tcatbalf).rewrite(ArgumentMatchers.any());
             posting.verify(acctfile).rewrite(ArgumentMatchers.any());
             posting.verify(master).write(ArgumentMatchers.any());
 
-            // Each of the three happens exactly once per posted record. 2000-POST-TRANSACTION performs
-            // each paragraph once ({@code PERFORM}, not {@code PERFORM n TIMES}), and a retry would apply
-            // an amount twice that ADD had already applied.
             Mockito.verify(tcatbalf, Mockito.times(1)).rewrite(ArgumentMatchers.any());
             Mockito.verify(acctfile, Mockito.times(1)).rewrite(ArgumentMatchers.any());
             Mockito.verify(master, Mockito.times(1)).write(ArgumentMatchers.any());
             run.release();
 
-            // And the datasets agree with the interactions: one balance row, one account row, one master
-            // record. Interaction and outcome are asserted together, never one instead of the other.
             assertThat(rows(t, TCATBAL_DS)).hasSize(1);
             assertThat(rows(t, ACCT_DS)).hasSize(1);
             assertThat(rows(t, TRANSACT_DS)).hasSize(1);
@@ -2787,8 +2295,6 @@ class TransactionValidationJobTest {
         @DisplayName("on the create path the order is unchanged: the write still precedes the account")
         void theCreatePathKeepsTheSameOrder() {
             JdbcTemplate t = database();
-            // No TCATBAL row, so 2700 takes the '23' create arm instead of the '00' update arm. The order
-            // of the three paragraphs is a property of 2000-POST-TRANSACTION and cannot depend on it.
             seed(t, XREF_DS, xrefImage(CARD, ACCOUNT));
             seed(t, ACCT_DS, account(ACCOUNT, "5000.00", "2026-01-01", "100.00", "50.00", "250.00")
                     .toFixedWidthString());
@@ -2811,8 +2317,6 @@ class TransactionValidationJobTest {
             posting.verify(acctfile).rewrite(ArgumentMatchers.any());
             posting.verify(master).write(ArgumentMatchers.any());
 
-            // 2700-A writes and never rewrites; 2700-B rewrites and never writes. The two arms of :495-499
-            // are exclusive, so the wrong one running applies DALYTRAN-AMT twice.
             Mockito.verify(tcatbalf, Mockito.times(1)).write(ArgumentMatchers.any());
             Mockito.verify(tcatbalf, Mockito.never()).rewrite(ArgumentMatchers.any());
             Mockito.verify(acctfile, Mockito.times(1)).rewrite(ArgumentMatchers.any());
@@ -2836,8 +2340,6 @@ class TransactionValidationJobTest {
             TransactionRepository master = spies.master();
             Mockito.clearInvocations(tcatbalf, acctfile, master);
 
-            // The ELSE arm of :211-216: ADD 1 TO WS-REJECT-COUNT then 2500-WRITE-REJECT-REC. Nothing in
-            // that arm posts, so no write of any kind may appear on the three posting collaborators.
             RecordOutcome outcome = run.processRecord(
                     dalyTran("T1", OTHER_CARD, "10.00", "2022-06-10 19:27:53.000000"));
 
@@ -2850,14 +2352,9 @@ class TransactionValidationJobTest {
         }
     }
 
-    // =============================================================================================
-    // 2500-WRITE-REJECT-REC - app/cbl/CBTRN02C.cbl:446-465. Gate G20.
-    // =============================================================================================
-
     @Nested
     @DisplayName("2500-WRITE-REJECT-REC - a 430-byte record of 350 plus an 80-byte trailer")
     class Rejects {
-
         @Test
         @DisplayName("the reject record is exactly 430 bytes: the transaction, the reason, the text")
         void theRejectRecordIsFourHundredAndThirtyBytes() {
@@ -2884,10 +2381,8 @@ class TransactionValidationJobTest {
 
             String trailer = reject.substring(DalyRejectWriter.VALIDATION_TRAILER_OFFSET);
             assertThat(trailer).hasSize(DalyRejectWriter.VALIDATION_TRAILER_LENGTH);
-            // WS-VALIDATION-FAIL-REASON is PIC 9(04), so 100 renders zero-filled to four digits.
             assertThat(trailer.substring(0, DalyRejectWriter.WS_VALIDATION_FAIL_REASON_LENGTH))
                     .isEqualTo("0100");
-            // WS-VALIDATION-FAIL-REASON-DESC is PIC X(76), space-padded on the right.
             assertThat(trailer.substring(DalyRejectWriter.WS_VALIDATION_FAIL_REASON_LENGTH))
                     .isEqualTo(padRight(DalyRejectWriter.DESC_INVALID_CARD_NUMBER,
                             DalyRejectWriter.WS_VALIDATION_FAIL_REASON_DESC_LENGTH));
@@ -2929,14 +2424,9 @@ class TransactionValidationJobTest {
         }
     }
 
-    // =============================================================================================
-    // The six CLOSE paragraphs, and the trailer - app/cbl/CBTRN02C.cbl:221-232 and :582-690.
-    // =============================================================================================
-
     @Nested
     @DisplayName("The six CLOSE paragraphs and the trailer - order, texts and RETURN-CODE")
     class CloseLadderAndTrailer {
-
         @Test
         @DisplayName("a DALYTRAN close whose cursor release refuses reports its own text and abends")
         void aFailedDalytranCloseAbends() {
@@ -2959,10 +2449,6 @@ class TransactionValidationJobTest {
         @Test
         @DisplayName("a TRANFILE close of a file that never opened reports the transaction-file text")
         void aFailedTranfileCloseAbends() {
-            // 9100-TRANFILE-CLOSE fails only for a file that is not open, and the COBOL abends in
-            // 0100-TRANFILE-OPEN before it could reach the close - so the guard at :608 is unreachable
-            // through the program's own sequence. It is still the guard the source writes, and driving
-            // the paragraph directly proves its message and its APPL-RESULT rather than assuming them.
             JdbcTemplate t = database();
             CapturedSysout sysout = new CapturedSysout();
             PostingRun run = job(t, bindings()).newRun(sysout);
@@ -2987,7 +2473,6 @@ class TransactionValidationJobTest {
         @Test
         @DisplayName("an XREFFILE close of a browse that never opened reports the cross-reference text")
         void aFailedXreffileCloseAbends() {
-            // The same unreachable-by-construction guard, at :627, for 9200-XREFFILE-CLOSE.
             JdbcTemplate t = database();
             CapturedSysout sysout = new CapturedSysout();
             PostingRun run = job(t, bindings()).newRun(sysout);
@@ -3042,7 +2527,6 @@ class TransactionValidationJobTest {
                     TransactionValidationJob.ERROR_CLOSING_ACCTFILE,
                     TransactionValidationJob.ERROR_CLOSING_TCATBALF);
             assertThat(closes).doesNotHaveDuplicates();
-            // The source's own inconsistencies, each pinned so a tidy-up cannot pass unnoticed.
             assertThat(TransactionValidationJob.ERROR_CLOSING_DALYTRAN)
                     .isEqualTo("ERROR CLOSING DALYTRAN FILE");
             assertThat(TransactionValidationJob.ERROR_OPENING_DALYTRAN)
@@ -3119,8 +2603,6 @@ class TransactionValidationJobTest {
             JdbcTemplate t = database();
             CapturedSysout sysout = new CapturedSysout();
             PostingRun run = openedRun(job(t, bindings()), sysout);
-            // Give XREFFILE-STATUS a value that is neither the reject file's nor the default, so the
-            // operand actually rendered is unambiguous. '10' is what a real XREFFILE EOF would leave.
             run.workingStorage().moveXreffileStatus(FileStatus.END_OF_FILE);
             drop(t, DALYREJS_DS);
             try {
@@ -3129,10 +2611,8 @@ class TransactionValidationJobTest {
                 recreate(t, DALYREJS_DS);
                 run.release();
             }
-            // The close itself reported a permanent error, and DALYREJS-STATUS holds it...
             assertThat(run.workingStorage().dalyrejsStatus())
                     .isEqualTo(TransactionValidationJob.PERMANENT_ERROR_STATUS);
-            // ...but :649 moves XREFFILE-STATUS, so that is what the display shows.
             assertThat(sysout.lines()).containsExactly(
                     TransactionValidationJob.ERROR_CLOSING_DALYREJS,
                     FileStatus.toDisplayLine(FileStatus.END_OF_FILE),
@@ -3155,7 +2635,6 @@ class TransactionValidationJobTest {
                     "END OF EXECUTION OF PROGRAM CBTRN02C");
             assertThat(outcome).isEqualTo(new RunOutcome(0L, 0L,
                     TransactionValidationJob.RETURN_CODE_CLEAN));
-            // The literals themselves, so the spacing cannot drift even if a run emits nothing.
             assertThat(TransactionValidationJob.TRANSACTIONS_PROCESSED_PREFIX)
                     .isEqualTo("TRANSACTIONS PROCESSED :");
             assertThat(TransactionValidationJob.TRANSACTIONS_REJECTED_PREFIX)
@@ -3221,14 +2700,9 @@ class TransactionValidationJobTest {
         }
     }
 
-    // =============================================================================================
-    // The whole program - app/cbl/CBTRN02C.cbl:193-234, banners included.
-    // =============================================================================================
-
     @Nested
     @DisplayName("A whole run - the banners, the loop, the closes and the trailer in order")
     class WholeRun {
-
         @Test
         @DisplayName("an empty DALYTRAN still emits both banners and two zero counts")
         void anEmptyRunIsStillAWholeRun() {
@@ -3279,7 +2753,6 @@ class TransactionValidationJobTest {
                     rejected.get(0).substring(0, DalyTranRecord.RECORD_LENGTH), ASCII).dalytranId())
                     .isEqualTo("T000000000000002");
 
-            // Both amounts landed on the one account and the one balance bucket, in read order.
             assertThat(AccountRecord.decode(rows(t, ACCT_DS).get(0), ASCII).getAcctCurrBal())
                     .isEqualByComparingTo("40.00");
             assertThat(TranCatBalRecord.decode(rows(t, TCATBAL_DS).get(0), ASCII).tranCatBal())
@@ -3291,7 +2764,6 @@ class TransactionValidationJobTest {
         void anAbendLeavesTheTrailerUnperformed() {
             JdbcTemplate t = database();
             seedResolvableAccount(t);
-            // A short row makes 1000-DALYTRAN-GET-NEXT report a permanent error, which is fatal.
             seed(t, DALYTRAN_DS, "SHORT ROW");
             CapturedSysout sysout = new CapturedSysout();
             TransactionValidationJob validationJob = job(t, bindings());
@@ -3305,22 +2777,12 @@ class TransactionValidationJobTest {
             assertThat(sysout.lines()).noneSatisfy(line ->
                     assertThat(line).startsWith(TransactionValidationJob.TRANSACTIONS_PROCESSED_PREFIX));
             assertThat(sysout.lines()).doesNotContain("END OF EXECUTION OF PROGRAM CBTRN02C");
-            // DISP=(NEW,CATLG,DELETE): the generation an abended run allocated is discarded.
             assertThat(rows(t, DALYREJS_DS)).isEmpty();
         }
 
         @Test
         @DisplayName("postTransactions refuses to run at all outside a unit of work, before the banner")
         void postTransactionsRefusesWithNoUnitOfWork() {
-            // The sharpest instance of the whole class of defect. This program posts, so a run with no
-            // boundary open executes every INSERT and UPDATE it performs and has every one of them rolled
-            // back when the connection returns to the pool - while still answering a RunOutcome carrying a
-            // transaction count, a reject count and RETURN-CODE 4. Nothing downstream can detect that.
-            //
-            // It is refused before the opening banner rather than at the first write, so a caller that
-            // forgot the boundary is told what is wrong instead of being handed counters for work that was
-            // discarded, and so a run whose input happens to produce no write is refused just as loudly as
-            // one that would have written.
             JdbcTemplate t = database();
             seedResolvableAccount(t);
             seed(t, DALYTRAN_DS, dalyTranImage(dalyTran("T0000000000000001", CARD, "10.00",
@@ -3348,13 +2810,6 @@ class TransactionValidationJobTest {
             assertThatExceptionOfType(NullPointerException.class)
                     .isThrownBy(() -> job(t, bindings()).postTransactions(null));
 
-            // The no-argument form runs the program through whatever SysoutSink bean the context
-            // supplied. It is driven with the collector rather than with the absent-bean fallback of
-            // standardOutput(Charset) on purpose: that fallback writes to FileDescriptor.out, which
-            // bypasses the stream Surefire redirects in a forked JVM and makes the build report
-            // "Corrupted channel by directly writing to native stream". The fallback itself is still
-            // exercised - every job built with an AbsentBean resolves it in the constructor - so the
-            // only thing avoided here is emitting 4 lines onto the raw descriptor.
             CapturedSysout sysout = new CapturedSysout();
             RunOutcome outcome = jobWithSink(t, sysout).postTransactions();
 
@@ -3369,9 +2824,6 @@ class TransactionValidationJobTest {
         @Test
         @DisplayName("the absent-bean fallback builds a sink over the dataset code page, not the default")
         void theAbsentBeanFallbackNamesItsCharset() {
-            // standardOutput(Charset) is what the constructor resolves when no SysoutSink bean exists.
-            // Building one is side-effect free; it is only writing through it that reaches the process's
-            // standard output, which is why this asserts the contract rather than the emission.
             assertThat(TransactionValidationJob.standardOutput(ASCII)).isNotNull();
             assertThatExceptionOfType(NullPointerException.class)
                     .isThrownBy(() -> TransactionValidationJob.standardOutput(null));
@@ -3386,8 +2838,6 @@ class TransactionValidationJobTest {
             assertThat(tcatbal).hasSize(50);
 
             JdbcTemplate t = database();
-            // One resolvable card, generous limit and a far expiry, so the cascade turns on the data
-            // rather than on the account. Every fixture row carries the same card number.
             String fixtureCard = DalyTranRecord.decode(dailyTran.get(0), ASCII).dalytranCardNum();
             seed(t, XREF_DS, xrefImage(fixtureCard, ACCOUNT));
             seed(t, ACCT_DS, account(ACCOUNT, "9999999999.99", "9999-12-31", "0.00", "0.00", "0.00")
@@ -3411,7 +2861,6 @@ class TransactionValidationJobTest {
             assertThat(outcome.returnCode()).isZero();
             assertThat(rows(t, TRANSACT_DS)).hasSize(seeded)
                     .allSatisfy(image -> assertThat(image).hasSize(TranRecord.RECORD_LENGTH));
-            // A balance bucket was created for every distinct type/category pair the rows carried.
             assertThat(rows(t, TCATBAL_DS)).isNotEmpty()
                     .allSatisfy(image -> assertThat(image).hasSize(TranCatBalRecord.RECORD_LENGTH));
         }
@@ -3429,7 +2878,6 @@ class TransactionValidationJobTest {
                 assertThat(widened).hasSize(CardXrefRecord.RECORD_LENGTH);
                 seed(t, XREF_DS, widened);
             }
-            // The widened rows decode, so a run over them resolves cards rather than rejecting them.
             CardXrefRecord first =
                     CardXrefRecord.decode(rows(t, XREF_DS).get(0).getBytes(ASCII), ASCII);
             assertThat(first.xrefCardNum()).isNotBlank();
@@ -3455,14 +2903,9 @@ class TransactionValidationJobTest {
         }
     }
 
-    // =============================================================================================
-    // The chunk delegate - the ItemReader / ItemProcessor / ItemWriter the Step is built from.
-    // =============================================================================================
-
     @Nested
     @DisplayName("The chunk delegate - one run per step execution, closed once")
     class Delegate {
-
         @Test
         @DisplayName("the delegate runs the whole program across its callbacks, in Spring Batch's order")
         void theDelegateRunsTheWholeProgram() {
@@ -3496,8 +2939,6 @@ class TransactionValidationJobTest {
             assertThat(delegate.postedCount()).isEqualTo(1L);
             assertThat(delegate.rejectedCount()).isEqualTo(1L);
 
-            // AbstractStep.execute calls afterStep BEFORE it closes the item streams, so the outcome has
-            // to exist by now. It does, because the read that returned null performed the epilogue.
             assertThat(delegate.runOutcome())
                     .contains(new RunOutcome(2L, 1L, TransactionValidationJob.RETURN_CODE_REJECTS_PRESENT));
             assertThat(delegate.afterStep(execution)).isEqualTo(ExitStatus.COMPLETED
@@ -3523,12 +2964,10 @@ class TransactionValidationJobTest {
 
             DalyTranRecord item = delegate.read();
             delegate.write(Chunk.of(delegate.process(item)));
-            // Still nothing after the banner: the trailer has not been reached.
             assertThat(sysout.lines()).hasSize(1);
             assertThat(delegate.runOutcome()).isEmpty();
 
             assertThat(delegate.read()).isNull();
-            // The epilogue happened here, before close() was called at all.
             assertThat(delegate.runOutcome()).contains(new RunOutcome(1L, 0L, 0));
             assertThat(sysout.lines()).containsExactly(
                     "START OF EXECUTION OF PROGRAM CBTRN02C",
@@ -3537,7 +2976,6 @@ class TransactionValidationJobTest {
                     "END OF EXECUTION OF PROGRAM CBTRN02C");
 
             delegate.close();
-            // close() adds nothing: the epilogue is not performed twice.
             assertThat(sysout.lines()).hasSize(4);
         }
 
@@ -3591,7 +3029,6 @@ class TransactionValidationJobTest {
             delegate.open(new ExecutionContext());
             drop(t, ACCT_DS);
             try {
-                // The read reaches end of file, performs the epilogue, and 9400-ACCTFILE-CLOSE fails.
                 assertThatExceptionOfType(AbendException.class).isThrownBy(delegate::read);
             } finally {
                 recreate(t, ACCT_DS);
@@ -3661,10 +3098,8 @@ class TransactionValidationJobTest {
             scoped.beforeStep(first);
             assertThat(scoped.scopedDelegate()).isPresent();
             ChunkDelegate bound = scoped.scopedDelegate().orElseThrow();
-            // The same execution binding again is the idempotent case Spring may produce on a retry.
             scoped.beforeStep(first);
             assertThat(scoped.scopedDelegate()).contains(bound);
-            // A different execution on the same thread would silently share state, so it is refused.
             assertThatIllegalStateException().isThrownBy(() -> scoped.beforeStep(stepExecution()));
 
             scoped.open(new ExecutionContext());
@@ -3673,11 +3108,9 @@ class TransactionValidationJobTest {
             scoped.write(Chunk.of(scoped.process(item)));
             assertThat(scoped.read()).isNull();
             scoped.update(new ExecutionContext());
-            // Spring Batch's order: the listener first, then the stream close.
             assertThat(scoped.afterStep(first)).isNull();
             assertThat(bound.runOutcome()).contains(new RunOutcome(1L, 0L, 0));
             scoped.close();
-            // The scope is released, so the same instance can serve the next execution.
             assertThat(scoped.scopedDelegate()).isEmpty();
             assertThatCode(() -> scoped.beforeStep(stepExecution())).doesNotThrowAnyException();
             scoped.close();
@@ -3714,8 +3147,6 @@ class TransactionValidationJobTest {
             assertThatIllegalStateException().isThrownBy(scoped::read);
             assertThatIllegalStateException().isThrownBy(() -> scoped.process(item));
             assertThatIllegalStateException().isThrownBy(() -> scoped.write(Chunk.of()));
-            // afterStep, update and close all tolerate the absent scope, because Spring Batch calls them
-            // unconditionally and a step may end without a delegate ever having been bound.
             assertThat(scoped.afterStep(stepExecution())).isNull();
             assertThatCode(() -> scoped.update(new ExecutionContext())).doesNotThrowAnyException();
             assertThatCode(scoped::close).doesNotThrowAnyException();

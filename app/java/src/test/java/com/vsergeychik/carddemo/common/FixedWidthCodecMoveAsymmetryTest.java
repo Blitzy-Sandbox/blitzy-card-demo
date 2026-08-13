@@ -21,50 +21,16 @@ import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 /**
- * Tests for {@link FixedWidthCodec}, the module's single implementation of COBOL {@code PICTURE}
- * semantics over a fixed-width record area.
- *
- * <h2>Why this class earns the most thorough test in the package</h2>
- * It is the one place a cross-width {@code MOVE} is implemented and the one place a zoned
- * {@code DISPLAY} field becomes a decimal value. The legacy estate contains <strong>2,795
- * {@code MOVE} statements</strong> against 94 named arithmetic statements, so {@code MOVE} - not
- * arithmetic - is the dominant source of silent divergence in this migration, and every one of those
- * moves routes through here. A defect in this class is invisible at each of its thousands of call
- * sites and shows up only as a byte difference in a serialised record.
- *
- * <p>Three asymmetries carry essentially all of the risk, and each is asserted from both directions
- * rather than only in its happy case:
- * <ul>
- *   <li><strong>Direction of truncation.</strong> {@code PIC X} pads and truncates on the
- *       <em>right</em>; {@code PIC 9} pads and truncates on the <em>left</em>. Java's assignment
- *       operator does neither, so getting one backwards is both easy and undetectable.</li>
- *   <li><strong>The sign occupies no character position.</strong> {@code PIC S9(p)V(s)} is exactly
- *       {@code p + s} wide with the sign overpunched into the trailing byte. Reserving a byte for it
- *       shifts every subsequent field.</li>
- *   <li><strong>A {@code FILLER} emits its declared {@code VALUE}, and a pad only otherwise.</strong>
- *       Blanket space-filling would blank every date and time separator in the system.</li>
- * </ul>
- *
- * <h2>How the expectations were derived</h2>
- * The COBOL cannot be executed here, so nothing was captured from a running program. The overpunch
- * expectations are the byte images the class's own documentation records as measured from
- * {@code app/data/ASCII/acctdata.txt} and {@code dailytran.txt}; the width and truncation
- * expectations come from the copybooks and from cited program lines. Those sources are a read-only
- * parity oracle - this test opens no file and writes nowhere.
+ * Tests for {@link FixedWidthCodec}, the module's single implementation of COBOL {@code PICTURE} semantics
+ * over a fixed-width record area.
  */
 @DisplayName("FixedWidthCodec - COBOL PICTURE semantics over a fixed-width area")
 class FixedWidthCodecMoveAsymmetryTest {
-
     private static final Charset ASCII = StandardCharsets.US_ASCII;
     private static final Charset EBCDIC = Charset.forName("IBM037");
 
     private static final FixedWidthCodec CODEC = new FixedWidthCodec(ASCII);
 
-    /**
-     * A three-field layout wide enough to exercise a character span, an unsigned numeric span and a
-     * signed scaled span side by side: {@code PIC X(4)} then {@code PIC 9(4)} then
-     * {@code PIC S9(3)V99}, which is 5 characters and not 6 because the sign takes no position.
-     */
     private static final FieldSpan TEXT = FieldSpan.alphanumeric("TEXT", 0, 4);
     private static final FieldSpan NUMBER = FieldSpan.unsignedNumeric("NUMBER", 4, 4);
     private static final FieldSpan AMOUNT = FieldSpan.signedScaled("AMOUNT", 8, 3, 2);
@@ -74,12 +40,9 @@ class FixedWidthCodecMoveAsymmetryTest {
         return CODEC.newRecord(LAYOUT);
     }
 
-    // =================================================================================================
-
     @Nested
     @DisplayName("Construction - the charset is mandatory and must be single-byte for the repertoire")
     class Construction {
-
         @Test
         @DisplayName("both mainframe code pages are accepted")
         void bothCodePagesAccepted() {
@@ -108,12 +71,9 @@ class FixedWidthCodecMoveAsymmetryTest {
         }
     }
 
-    // =================================================================================================
-
     @Nested
     @DisplayName("Rule 1a - PIC X pads and truncates on the RIGHT")
     class Alphanumeric {
-
         @ParameterizedTest(name = "movePicX({0}, {1}) is {2}")
         @CsvSource({
             "ABCD,4,ABCD",
@@ -183,12 +143,9 @@ class FixedWidthCodecMoveAsymmetryTest {
         }
     }
 
-    // =================================================================================================
-
     @Nested
     @DisplayName("Rule 1b - PIC 9 pads and truncates on the LEFT")
     class UnsignedNumeric {
-
         @ParameterizedTest(name = "movePic9({0}, {1}) is {2}")
         @CsvSource({
             "'05',4,0005",
@@ -205,8 +162,6 @@ class FixedWidthCodecMoveAsymmetryTest {
         @Test
         @DisplayName("MOVE '05' TO TRAN-CAT-CD gives 0005, the direction proven by CBACT04C:483")
         void theCitedCase() {
-            // app/cbl/CBACT04C.cbl:483 moves the literal '05' into a PIC 9(04) receiver declared at
-            // app/cpy/CVTRA05Y.cpy:7. Right-padding would give 0500 - the classic error.
             assertThat(CODEC.movePic9("05", 4)).isEqualTo("0005").isNotEqualTo("0500");
             assertThat(CODEC.movePic9("123456", 4)).isEqualTo("3456").isNotEqualTo("1234");
         }
@@ -237,9 +192,6 @@ class FixedWidthCodecMoveAsymmetryTest {
             assertThatIllegalArgumentException()
                     .isThrownBy(() -> CODEC.movePic9("", 4))
                     .withMessageContaining("empty value");
-            // The position is named so the caller can find the offending character; the character
-            // itself is not echoed, because the values flowing through these spans are card numbers
-            // and account identifiers and this message is one an error boundary could publish.
             assertThatIllegalArgumentException()
                     .isThrownBy(() -> CODEC.movePic9("12A4", 4))
                     .withMessageContaining("character 3 is not a digit")
@@ -302,22 +254,14 @@ class FixedWidthCodecMoveAsymmetryTest {
         }
     }
 
-    // =================================================================================================
-
     @Nested
     @DisplayName("Rule 2 - the sign is overpunched into the trailing byte and takes no position")
     class SignedScaled {
-
         @ParameterizedTest(name = "{0} as S9({1})V({2}) encodes to {3}")
         @CsvSource({
-            // The three images the class documents as measured from the ASCII fixtures.
             "194.00,10,2,00000001940{",
             "504.77,9,2,0000005047G",
             "-919.00,9,2,'0000009190}'",
-            // Positive and negative zero, and both alphabets at the trailing digit position. Note
-            // every image below is exactly p + s wide: the overpunch REPLACES the trailing digit
-            // rather than being appended to it, which is the whole point of Rule 2. Expecting a
-            // p + s + 1 image here is the error this parameter list exists to exclude.
             "0.00,3,2,'0000{'",
             "-0.00,3,2,'0000{'",
             "0.01,3,2,0000A",
@@ -340,7 +284,6 @@ class FixedWidthCodecMoveAsymmetryTest {
         @Test
         @DisplayName("the three measured fixture images encode and decode exactly")
         void measuredFixtureImages() {
-            // The class's own documentation records these as measured from app/data/ASCII.
             assertThat(CODEC.encodeSignedScaled(new BigDecimal("194.00"), 10, 2))
                     .isEqualTo("00000001940{");
             assertThat(CODEC.encodeSignedScaled(new BigDecimal("504.77"), 9, 2))
@@ -381,8 +324,6 @@ class FixedWidthCodecMoveAsymmetryTest {
         @Test
         @DisplayName("a trailing plain digit is the unsigned zone F form and reads as positive")
         void zoneFReadsPositive() {
-            // The zone-F twin of "0000009190}" must be the SAME width - 11 characters for
-            // S9(09)V99 - because the overpunch replaced a digit rather than adding a position.
             assertThat(CODEC.decodeSignedScaled("00000091900", 2))
                     .isEqualByComparingTo(new BigDecimal("919.00"));
             assertThat(CODEC.decodeSignedScaled("0000009190", 2))
@@ -401,19 +342,15 @@ class FixedWidthCodecMoveAsymmetryTest {
         @Test
         @DisplayName("an excess fraction is truncated toward zero, never rounded")
         void truncatesNeverRounds() {
-            // ROUNDED appears zero times in all 28 programs, so 1.999 into V99 is 1.99, not 2.00.
             assertThat(CODEC.encodeSignedScaled(new BigDecimal("1.999"), 3, 2)).isEqualTo("0019I");
             assertThat(CODEC.encodeSignedScaled(new BigDecimal("-1.999"), 3, 2)).isEqualTo("0019R");
-            // Rounding would carry into the next cent and give 0020{ / 0020} instead.
             assertThat(CODEC.encodeSignedScaled(new BigDecimal("1.999"), 3, 2)).isNotEqualTo("0020{");
         }
 
         @Test
         @DisplayName("an over-wide integer part loses its HIGH-order digits, without an exception")
         void integerOverflowTruncates() {
-            // COBOL reports this loss only under ON SIZE ERROR, and no program in the estate uses it.
             assertThat(CODEC.encodeSignedScaled(new BigDecimal("1234.56"), 3, 2)).isEqualTo("2345F");
-            // The high-order 1 is lost, not the low-order digits: 234.56, never 123.45.
             assertThat(CODEC.decodeSignedScaled(
                     CODEC.encodeSignedScaled(new BigDecimal("1234.56"), 3, 2), 2))
                     .isEqualByComparingTo(new BigDecimal("234.56"));
@@ -512,12 +449,9 @@ class FixedWidthCodecMoveAsymmetryTest {
         }
     }
 
-    // =================================================================================================
-
     @Nested
     @DisplayName("Rule 5 - a FILLER emits its declared VALUE, and a pad only otherwise")
     class DeclaredValues {
-
         @Test
         @DisplayName("a FILLER carrying a literal emits the literal - the CSDAT01Y separator case")
         void literalFillerEmitsItsLiteral() {
@@ -564,12 +498,9 @@ class FixedWidthCodecMoveAsymmetryTest {
         }
     }
 
-    // =================================================================================================
-
     @Nested
     @DisplayName("Rule 6 - widening a short row to its declared width, and never truncating")
     class PadToDeclaredWidth {
-
         @Test
         @DisplayName("a short byte row is right-padded with spaces - the cardxref 36-to-50 case")
         void shortByteRowIsWidened() {
@@ -626,12 +557,9 @@ class FixedWidthCodecMoveAsymmetryTest {
         }
     }
 
-    // =================================================================================================
-
     @Nested
     @DisplayName("STRING ... DELIMITED BY SIZE - every operand contributes its full width")
     class StringDelimitedBySize {
-
         @Test
         @DisplayName("operands are concatenated at their full declared widths, in order")
         void concatenates() {
@@ -662,7 +590,6 @@ class FixedWidthCodecMoveAsymmetryTest {
 
             CODEC.stringIntoDelimitedBySize(record, TEXT, "AB");
 
-            // COBOL's STRING leaves the receiving positions beyond the transferred data as they were.
             assertThat(record.readSpan(TEXT)).isEqualTo("AB..");
         }
 
@@ -699,12 +626,9 @@ class FixedWidthCodecMoveAsymmetryTest {
         }
     }
 
-    // =================================================================================================
-
     @Nested
     @DisplayName("Whole-record serialise and deserialise")
     class WholeRecord {
-
         private Map<String, String> images() {
             Map<String, String> values = new LinkedHashMap<>();
             values.put("TEXT", "AB");
@@ -719,7 +643,6 @@ class FixedWidthCodecMoveAsymmetryTest {
             byte[] record = CODEC.serialise(LAYOUT, images());
 
             assertThat(record).hasSize(13);
-            // TEXT pads right, NUMBER pads left, AMOUNT keeps its overpunch untouched.
             assertThat(new String(record, ASCII)).isEqualTo("AB  " + "0007" + "0123M");
         }
 
@@ -728,8 +651,6 @@ class FixedWidthCodecMoveAsymmetryTest {
         void absentNamesKeepTheirInitialisedContent() {
             byte[] record = CODEC.serialise(LAYOUT, new LinkedHashMap<>());
 
-            // The signed span's default is zoned zeros with a positive-zero overpunch in its trailing
-            // byte, which is the only representation of a zero-valued signed field the datasets carry.
             assertThat(new String(record, ASCII)).isEqualTo("    " + "0000" + "0000{");
         }
 
@@ -804,8 +725,6 @@ class FixedWidthCodecMoveAsymmetryTest {
         @Test
         @DisplayName("the rewrite overload carries untouched bytes across, FILLER included")
         void rewritePreservesUntouchedBytes() {
-            // A tcatbal-shaped case: a reserved span holding ZEROS rather than the spaces a rebuild
-            // from the layout would emit. Rewriting must carry those bytes across unchanged.
             FieldSpan value = FieldSpan.unsignedNumeric("VALUE", 0, 2);
             FieldSpan reserved = FieldSpan.filler(2, 3);
             RecordLayout layout = RecordLayout.of(5, value, reserved);
@@ -815,7 +734,6 @@ class FixedWidthCodecMoveAsymmetryTest {
             update.put("VALUE", "7");
 
             assertThat(new String(CODEC.serialise(layout, update, stored), ASCII)).isEqualTo("07000");
-            // Rebuilding from the layout instead would silently replace those zeros with spaces.
             assertThat(new String(CODEC.serialise(layout, update), ASCII)).isEqualTo("07   ");
         }
 
@@ -885,12 +803,9 @@ class FixedWidthCodecMoveAsymmetryTest {
         }
     }
 
-    // =================================================================================================
-
     @Nested
     @DisplayName("Code page independence of the character layer")
     class CodePages {
-
         @Test
         @DisplayName("the same values give the same characters in both code pages, different bytes")
         void sameCharactersDifferentBytes() {

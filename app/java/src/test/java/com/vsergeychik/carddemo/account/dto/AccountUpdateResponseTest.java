@@ -50,103 +50,17 @@ import org.junit.jupiter.params.provider.ValueSource;
 
 /**
  * {@link AccountUpdateResponse} - the {@code CACTUPAO} output projection of {@code CAUP}.
- *
- * <h2>What this suite is checking, and why in this shape</h2>
- * The response is a projection of a byte-level contract, so almost everything worth asserting is a
- * <em>property over all {@value AccountUpdateResponse#FIELD_COUNT} fields</em> rather than a fact about
- * one of them. Every such property is therefore driven from {@code ScreenField.values()} with
- * {@code @EnumSource} or a loop: a field added to the mapset is then covered by construction, instead of
- * being covered only if somebody remembers to add a case. That is the failure mode a hand-written list of
- * fields has, and it is the one this file is written to avoid.
- *
- * <p>Nothing here needs a Spring context, a {@code JobLauncher} or an HTTP layer (practice
- * <strong>B10</strong>): every instance is built through the public builder, which is exactly how
- * {@code AccountUpdateService}'s {@code 9700-CHECK-CHANGE-IN-REC} tests and
- * {@code parity/ParityHarness} build one.
- *
- * <h2>Project rules</h2>
- * <strong>No user rules were provided for this project.</strong> {@code review_rules} returns exactly one
- * line - {@code "No user rules provided."} - and that single line is the whole document, not a truncated
- * read of a longer one. Per <strong>UR4</strong> that absence is recorded here rather than glossed over, no
- * rule has been invented to fill the space, and it is emphatically not treated as licence to assert less.
- * Enterprise best practice governs instead, in the specific form the migration plan fixes in its
- * <em>Rules</em> section:
- *
- * <ul>
- *   <li><strong>B1</strong> - only coordinates {@code app/java/pom.xml} already resolves: JUnit Jupiter
- *       5.12.2, AssertJ 3.27.7 and Jackson 2.21.5, under {@code spring-boot-starter-parent:3.5.16}.
- *       No new dependency, and in particular no Lombok, MapStruct, springdoc, Testcontainers or
- *       {@code spring-security-test}.</li>
- *   <li><strong>B2</strong> - no Boot 4.x, JUnit 6 or Batch 6 API is used, however current: the plan pins
- *       Spring Boot 3.x and constraint fidelity outranks recency.</li>
- *   <li><strong>B3</strong> - the eight COBOL reference inputs are read-only. Nothing here opens one at
- *       run time; every expected width, literal and total below is an inlined Java literal, so this suite
- *       cannot be made to pass by editing the oracle.</li>
- *   <li><strong>B4</strong> - three places where a downstream document and the source disagree are settled
- *       in the source's favour and commented at the assertion, not silently harmonised: the
- *       {@code CCARD-AID} condition count is <strong>16</strong>, the composite-component count is
- *       <strong>21</strong>, and the {@code XCTL} spans {@code L956-L958}. A fourth: {@code COACTUP.bms}
- *       declares neither {@code ALARM} nor {@code EXTATT}.</li>
- *   <li><strong>B6</strong> - no Spring Security anywhere: no {@code @WithMockUser}, no filter chain, no
- *       token. The legacy plaintext posture is neither weakened nor unrequestedly strengthened.</li>
- *   <li><strong>B7</strong> - deterministic: no sleep, no randomness, no wall clock. Where the header date
- *       and time are involved a {@link java.time.Clock#fixed} is injected, because {@link DateHeader}
- *       takes a clock by design and never calls {@code now()} of its own.</li>
- *   <li><strong>B8</strong> - explicit over implicit: no wildcard import (<strong>G52</strong>), an
- *       explicit {@link java.nio.charset.Charset} on every codec call, and an explicit scale plus
- *       {@link RoundingMode#DOWN} wherever a scaled value appears.</li>
- *   <li><strong>B9</strong> - no static mutable state (<strong>G53</strong>). The one static field is a
- *       {@code final} stateless codec; every {@code ObjectMapper} and every response is built inside the
- *       test that uses it.</li>
- *   <li><strong>B12</strong> - provenance on every number: each asserted width, byte total, literal and
- *       {@code PICTURE} names the file and line it came from, because no COBOL execution baseline exists
- *       in this environment (risk <strong>R-A</strong>) and a statically derived expectation is only as
- *       trustworthy as its citation.</li>
- * </ul>
- *
- * <h2>Gates this suite owns</h2>
- * <strong>G9</strong> every payload field traces to one {@code DFHMDF} and one {@code xxxO} {@code PICTURE}
- * · <strong>G37</strong> no server-side session state · <strong>G38</strong> the {@code CSSETATY}
- * REENTER-gated highlight, this file's headline · <strong>G40</strong> the navigation trio ·
- * <strong>G50</strong> both states of the nine {@code ACUP-CHANGE-ACTION} names and of the four
- * {@code COCOM01Y} {@code 88}s · <strong>G49</strong> this package's own branch ratio ·
- * <strong>G52</strong> · <strong>G53</strong>. <strong>G22</strong>, <strong>G23</strong> and
- * <strong>G24</strong> are owned as negatives: no {@code double}, no {@code float}, and no rounding mode
- * other than {@code DOWN}.
- *
- * <p><strong>On G38 in particular.</strong> {@code grep -c CSSETATY app/cbl/COACTUPC.cbl} is
- * <strong>39</strong> and {@code grep -c CSSETATY app/cbl/COACTVWC.cbl} is <strong>0</strong>.
- * {@code COACTUPC} is the copybook's sole COBOL consumer, so this is the only suite in the package
- * entitled to assert the strict rule; {@code AccountViewResponseTest} must not, because {@code COACTVWC}
- * hand-inlines its highlight and leaves the colour arm ungated on context. The blanket wording
- * "highlight only in REENTER" is accurate here and inaccurate for the View pair.
  */
 @DisplayName("AccountUpdateResponse - the CACTUPAO output projection of CAUP")
 class AccountUpdateResponseTest {
-
-    /** The code page of the ASCII fixtures, named explicitly rather than left to the platform. */
     private static final FixedWidthCodec ASCII = new FixedWidthCodec(StandardCharsets.US_ASCII);
 
-    /** Every field, for {@code @MethodSource}. */
     private static List<ScreenField> allFields() {
         return AccountUpdateResponse.FIELDS;
     }
 
-    /** A value that fits any field, so a single sentinel can be written into all 54. */
     private static final String SHORT_VALUE = "X";
 
-    /**
-     * A response with a <strong>distinct</strong>, width-correct value in every field.
-     *
-     * <p>Distinctness is the point, and it is why the value is base-36 of the field's ordinal rather than
-     * its label: a {@code PIC X} move truncates on the right, so label-derived values collide as soon as a
-     * field is narrower than its own name - {@code ACTSSN1} and {@code ACTSSN2} would both become
-     * {@code "ACT"}-ish, and an accessor wired to the wrong enum constant would then go unnoticed. Base-36
-     * of the ordinal needs at most two characters, which fits even the two {@code X(1)} fields, so every
-     * one of the {@value AccountUpdateResponse#FIELD_COUNT} values survives its own width intact.
-     *
-     * @return the populated response
-     */
     private static AccountUpdateResponse populated() {
         AccountUpdateResponse.Builder builder = AccountUpdateResponse.builder();
         for (ScreenField field : ScreenField.values()) {
@@ -155,32 +69,16 @@ class AccountUpdateResponseTest {
         return builder.build();
     }
 
-    /**
-     * A value unique to one field and short enough to survive its declared width.
-     *
-     * @param field the field
-     * @return the value, before the {@code PIC X} move
-     */
     private static String distinctValueFor(ScreenField field) {
         return Integer.toString(field.ordinal(), 36) + "-" + field.label();
     }
 
-    // =============================================================================================
-    // Screen identity and geometry. The arithmetic the whole type rests on.
-    // =============================================================================================
-
     @Nested
     @DisplayName("Screen identity, from the CSD and the program's own WORKING-STORAGE")
     class Identity {
-
         @Test
         @DisplayName("the four literals of app/cbl/COACTUPC.cbl:533-540, trailing space included")
         void literalsMatchTheSource() {
-            // The transaction-to-program binding is not the program's own claim about itself; it is
-            // declared by CICS resource definition, and both halves must agree:
-            //   app/csd/CARDDEMO.CSD:306  DEFINE TRANSACTION(CAUP) GROUP(CARDDEMO)
-            //   app/csd/CARDDEMO.CSD:307  DESCRIPTION(CREDIT CARD DEMO ACCOUNT UPDATE)
-            //   app/csd/CARDDEMO.CSD:308         PROGRAM(COACTUPC) ...
             assertThat(AccountUpdateResponse.THIS_PROGRAM)
                     .as("CARDDEMO.CSD:308 - PROGRAM(COACTUPC)")
                     .isEqualTo("COACTUPC");
@@ -223,7 +121,6 @@ class AccountUpdateResponseTest {
     @Nested
     @DisplayName("Group geometry - 12 + 54 x 7 + 705 = 1095, written out by hand")
     class Geometry {
-
         @Test
         @DisplayName("the per-field stride is 3 of FILLER plus a 4-item quad")
         void theStrideIsSevenPlusN() {
@@ -283,14 +180,9 @@ class AccountUpdateResponseTest {
         }
     }
 
-    // =============================================================================================
-    // The 54 fields. Gate G9: every payload field traces to one DFHMDF definition and one PICTURE.
-    // =============================================================================================
-
     @Nested
     @DisplayName("The 54 fields - names, order, widths and the G9 provenance trace")
     class Fields {
-
         @Test
         @DisplayName("exactly 54, and FIELDS is unmodifiable and in copybook order")
         void thereAreExactlyFiftyFour() {
@@ -305,8 +197,6 @@ class AccountUpdateResponseTest {
         @Test
         @DisplayName("the declared names, order and widths, transcribed from app/cpy-bms/COACTUP.CPY")
         void theTableMatchesTheCopybook() {
-            // Written out as one literal table rather than derived, so that this assertion is an
-            // independent transcription of the copybook and not a restatement of the enum.
             assertThat(AccountUpdateResponse.FIELDS.stream().map(ScreenField::label).toList())
                     .containsExactly("TRNNAME", "TITLE01", "CURDATE", "PGMNAME", "TITLE02", "CURTIME",
                             "ACCTSID", "ACSTTUS", "OPNYEAR", "OPNMON", "OPNDAY", "ACRDLIM", "EXPYEAR",
@@ -437,32 +327,13 @@ class AccountUpdateResponseTest {
                     .isThrownBy(() -> ScreenField.ofLabel(null));
         }
 
-        /**
-         * The twenty-one composite components, each its own {@code xxxO} item.
-         *
-         * <p><strong>Twenty-one, not twenty</strong> - practice <strong>B4</strong>, and the count is worth
-         * spelling out because it is easy to get wrong by one: four three-part dates
-         * ({@code OPN}, {@code EXP}, {@code RIS} on the account side and {@code DOB} on the customer side)
-         * give twelve, the SSN gives three, and the two phone numbers give three each, so
-         * {@code 12 + 3 + 3 + 3 = 21}. Counting only three dates - the plan's own arithmetic reads
-         * "3 dates x 3 = 9, SSN 3, DOB 3, phone 1 = 3, phone 2 = 3", which also totals 21 because it
-         * accounts for {@code DOB} separately - is where the twenty comes from. Either decomposition
-         * reaches 21; twenty is reachable by neither.
-         */
         private static final List<String> COMPOSITE_COMPONENTS = List.of(
-                // COACTUP.CPY:398,404,410 - ACCT-OPEN-DATE, split three ways
                 "OPNYEAR", "OPNMON", "OPNDAY",
-                // COACTUP.CPY:422,428,434 - ACCT-EXPIRAION-DATE, split three ways
                 "EXPYEAR", "EXPMON", "EXPDAY",
-                // COACTUP.CPY:446,452,458 - ACCT-REISSUE-DATE, split three ways
                 "RISYEAR", "RISMON", "RISDAY",
-                // COACTUP.CPY:494,500,506 - CUST-SSN X(09), split three ways
                 "ACTSSN1", "ACTSSN2", "ACTSSN3",
-                // COACTUP.CPY:512,518,524 - CUST-DOB-YYYY-MM-DD, split three ways
                 "DOBYEAR", "DOBMON", "DOBDAY",
-                // COACTUP.CPY:590,596,602 - CUST-PHONE-NUM-1, split three ways
                 "ACSPH1A", "ACSPH1B", "ACSPH1C",
-                // COACTUP.CPY:614,620,626 - CUST-PHONE-NUM-2, split three ways
                 "ACSPH2A", "ACSPH2B", "ACSPH2C");
 
         @Test
@@ -473,8 +344,6 @@ class AccountUpdateResponseTest {
                     .hasSize(21);
             assertThat(AccountUpdateResponse.FIELDS.stream().map(ScreenField::label).toList())
                     .containsAll(COMPOSITE_COMPONENTS);
-            // Each component is its own member at its own width: never pre-joined into one item, because
-            // COACTUPC edits, highlights and reports each part independently.
             assertThat(COMPOSITE_COMPONENTS.stream().map(ScreenField::ofLabel).distinct().count())
                     .as("21 distinct enum constants, so nothing has been merged")
                     .isEqualTo(21L);
@@ -484,8 +353,6 @@ class AccountUpdateResponseTest {
                     + ScreenField.ACSPH1C.length()).isEqualTo(10);
             assertThat(ScreenField.ACSPH2A.length() + ScreenField.ACSPH2B.length()
                     + ScreenField.ACSPH2C.length()).isEqualTo(10);
-            // The four dates each recompose to the CVACT01Y / CVCUS01Y X(10) yyyy-mm-dd width once the
-            // two separators the map draws as literals are counted back in: 4 + 2 + 2 + 2 = 10.
             assertThat(ScreenField.OPNYEAR.length() + ScreenField.OPNMON.length()
                     + ScreenField.OPNDAY.length() + 2).isEqualTo(10);
             assertThat(ScreenField.EXPYEAR.length() + ScreenField.EXPMON.length()
@@ -516,14 +383,9 @@ class AccountUpdateResponseTest {
         }
     }
 
-    // =============================================================================================
-    // The Request/Response diff. Gate G9's companion: the pair must agree on all 54.
-    // =============================================================================================
-
     @Nested
     @DisplayName("Request and Response agree on all 54 - only the metadata carriers differ")
     class PairSymmetry {
-
         @Test
         @DisplayName("the same labels in the same order")
         void labelsAndOrderAreIdentical() {
@@ -574,14 +436,9 @@ class AccountUpdateResponseTest {
         }
     }
 
-    // =============================================================================================
-    // Values: the LOW-VALUES baseline of MOVE LOW-VALUES TO CACTUPAO, and what a value may hold.
-    // =============================================================================================
-
     @Nested
     @DisplayName("The LOW-VALUES baseline - app/cbl/COACTUPC.cbl:2668")
     class Baseline {
-
         @Test
         @DisplayName("initial() puts every field at its declared width in LOW-VALUES, not spaces")
         void initialIsLowValuesAtEveryDeclaredWidth() {
@@ -623,8 +480,6 @@ class AccountUpdateResponseTest {
                     .isNotEqualTo(AccountUpdateResponse.spaces(3));
             assertThat(AccountUpdateResponse.lowValues(0)).isEmpty();
             assertThat(AccountUpdateResponse.spaces(0)).isEmpty();
-            // A null value is "not supplied" and restores the baseline, which is not the same as a
-            // caller explicitly writing spaces.
             AccountUpdateResponse spaced = AccountUpdateResponse.initial()
                     .withValue(ScreenField.ACSTTUS, " ");
             assertThat(spaced.getAcsttus()).isEqualTo(" ");
@@ -654,7 +509,6 @@ class AccountUpdateResponseTest {
     @Nested
     @DisplayName("A field may hold exactly '*' - CSSETATY writes one at 39 sites")
     class AsteriskAcceptance {
-
         @ParameterizedTest
         @EnumSource(ScreenField.class)
         @DisplayName("'*' is accepted, stored untouched and survives the group-image round trip")
@@ -700,7 +554,6 @@ class AccountUpdateResponseTest {
     @Nested
     @DisplayName("The 54 accessors, and fieldValues as a differ consumes it")
     class Accessors {
-
         @Test
         @DisplayName("every named accessor returns its own field's value")
         void everyAccessorReadsItsOwnField() {
@@ -806,21 +659,15 @@ class AccountUpdateResponseTest {
             assertThat(response.getAcsfnam()).isEqualTo("AB");
             assertThat(response.getAcspflg()).hasSize(AccountUpdateResponse.ACSPFLG_LENGTH);
             assertThat(response.getAcsttus()).isEqualTo("TOO LONG");
-            // Only the group image and normalize() apply the MOVE.
             assertThat(response.image(ScreenField.ACSFNAM, ASCII))
                     .hasSize(AccountUpdateResponse.ACSFNAM_LENGTH).startsWith("AB ");
             assertThat(response.image(ScreenField.ACSTTUS, ASCII)).isEqualTo("T");
         }
     }
 
-    // =============================================================================================
-    // The attribute quad. Metadata, server-written, excluded from JSON.
-    // =============================================================================================
-
     @Nested
     @DisplayName("The xxxC/xxxP/xxxH/xxxV quad - from DSATTS/MAPATTS, not from EXTATT")
     class Quad {
-
         @Test
         @DisplayName("a fresh quad is LOW-VALUES on all four items")
         void aFreshQuadIsUnset() {
@@ -948,14 +795,9 @@ class AccountUpdateResponseTest {
         }
     }
 
-    // =============================================================================================
-    // CSSETATY's two destinations, and gate G38: the highlight applies only in REENTER context.
-    // =============================================================================================
-
     @Nested
     @DisplayName("CSSETATY - DFHRED into xxxC, '*' into xxxO, and only when REENTER (gate G38)")
     class Highlight {
-
         @ParameterizedTest
         @EnumSource(ScreenField.class)
         @DisplayName("a blank field in REENTER gets BOTH destinations written")
@@ -1015,32 +857,18 @@ class AccountUpdateResponseTest {
                     .isThrownBy(() -> response.applyHighlight(ScreenField.ACCTSID, null, true));
         }
 
-        /**
-         * The six rows of {@code CSSETATY}'s decision, as data.
-         *
-         * <p>Three flag states by two context states. Six is the whole matrix and anything less is not: a
-         * suite that drives only the three flags in REENTER misses that the outer gate can fail on
-         * <em>context</em> while the flag says error, and a suite that drives only the two contexts misses
-         * that the inner gate distinguishes BLANK from merely NOT-OK.
-         *
-         * @return {@code {state, reenter, colourExpected, asteriskExpected}} per row
-         */
         static List<Arguments> csssetatyMatrix() {
             return List.of(
-                    // Outer gate false on the flag: FLG-x-NOT-OK and FLG-x-BLANK are both false.
                     Arguments.of(
                             FieldValidationState.OK, false, false, false),
                     Arguments.of(
                             FieldValidationState.OK, true, false, false),
-                    // Outer gate false on the context: CSSETATY.cpy:20 - AND CDEMO-PGM-REENTER.
                     Arguments.of(
                             FieldValidationState.NOT_OK, false, false, false),
-                    // Outer gate true, inner gate false: CSSETATY.cpy:21-22 fires, :24-25 does not.
                     Arguments.of(
                             FieldValidationState.NOT_OK, true, true, false),
                     Arguments.of(
                             FieldValidationState.BLANK, false, false, false),
-                    // Both gates true: CSSETATY.cpy:21-22 and :24-25 both fire.
                     Arguments.of(
                             FieldValidationState.BLANK, true, true, true));
         }
@@ -1050,7 +878,6 @@ class AccountUpdateResponseTest {
         @DisplayName("the collaborator's own six-row decision matrix, both destinations per row")
         void theSetterDecidesExactlyAsTheCopybookDoes(FieldValidationState state, boolean reenter,
                 boolean colourExpected, boolean asteriskExpected) {
-
             FieldHighlight decision = FieldAttributeSetter.resolve(
                     state, reenter, ScreenField.ACCTSID.label(), AccountUpdateResponse.MAP_NAME);
 
@@ -1062,8 +889,6 @@ class AccountUpdateResponseTest {
                     .isEqualTo(asteriskExpected);
             assertThat(decision.untouched()).isEqualTo(!colourExpected && !asteriskExpected);
 
-            // The two destinations are different items, and the copybook says which is which:
-            // DFHRED goes to the xxxC colour METADATA, the bare '*' to the xxxO PAYLOAD item.
             if (colourExpected) {
                 assertThat(decision.colourItemValue())
                         .as("the colour byte is DFHRED, taken from BmsAttributes, never a literal")
@@ -1075,8 +900,6 @@ class AccountUpdateResponseTest {
                         .isEqualTo(FieldAttributeSetter.ASTERISK)
                         .hasSize(1);
             }
-            // Whichever way the decision went, it names its two targets the way the copybook writes them:
-            // (SCRNVAR)C OF (MAPNAME)O and (SCRNVAR)O OF (MAPNAME)O.
             assertThat(decision.colourItemName())
                     .isEqualTo(ScreenField.ACCTSID.label() + FieldAttributeSetter.COLOUR_ITEM_SUFFIX)
                     .isEqualTo(ScreenField.ACCTSID.colourItemName());
@@ -1095,7 +918,6 @@ class AccountUpdateResponseTest {
         @DisplayName("the response reaches the same six verdicts the collaborator does")
         void theResponseAgreesWithTheCollaboratorOnEveryRow(FieldValidationState state, boolean reenter,
                 boolean colourExpected, boolean asteriskExpected) {
-
             AccountUpdateResponse before = populated();
             AccountUpdateResponse painted = before.applyHighlight(ScreenField.ACSFNAM, state, reenter);
 
@@ -1114,22 +936,11 @@ class AccountUpdateResponseTest {
         @Test
         @DisplayName("resolveFromFlags reaches the same verdicts, including both flags set at once")
         void theFlagPairFoldsIntoTheThreeWayState() {
-            // FLG-x-NOT-OK and FLG-x-BLANK are two independent 88s on one flag byte, so all four
-            // combinations are reachable in COBOL. BLANK is the stronger claim and must win the fold,
-            // otherwise a blank field in REENTER would get the colour but never the asterisk.
             assertThat(FieldValidationState.of(false, false)).isEqualTo(FieldValidationState.OK);
             assertThat(FieldValidationState.of(true, false)).isEqualTo(FieldValidationState.NOT_OK);
             assertThat(FieldValidationState.of(false, true)).isEqualTo(FieldValidationState.BLANK);
             assertThat(FieldValidationState.of(true, true)).isEqualTo(FieldValidationState.BLANK);
 
-            // The three conditions are MUTUALLY EXCLUSIVE values of one flag byte, not overlapping
-            // predicates: app/cbl/COACTUPC.cbl:184 FLG-ACCTFILTER-ISVALID VALUE '1',
-            //            app/cbl/COACTUPC.cbl:185 FLG-ACCTFILTER-NOT-OK  VALUE '0',
-            //            app/cbl/COACTUPC.cbl:186 FLG-ACCTFILTER-BLANK   VALUE ' '.
-            // One byte cannot hold '0' and ' ' at once, so BLANK does NOT imply NOT-OK - and that is
-            // precisely why CSSETATY.cpy:18-19 has to spell the outer gate as a disjunction. Were BLANK
-            // a special case of NOT-OK the OR would be redundant, which is the misreading this block
-            // exists to rule out.
             assertThat(FieldValidationState.OK.notOk()).isFalse();
             assertThat(FieldValidationState.OK.blank()).isFalse();
             assertThat(FieldValidationState.NOT_OK.notOk()).isTrue();
@@ -1138,14 +949,12 @@ class AccountUpdateResponseTest {
                     .as("BLANK is the ' ' byte, NOT-OK is the '0' byte - exclusive, so this is false")
                     .isFalse();
             assertThat(FieldValidationState.BLANK.blank()).isTrue();
-            // Each state answers true to exactly one of the two raw flags, or to neither.
             for (FieldValidationState state : FieldValidationState.values()) {
                 assertThat(state.notOk() && state.blank())
                         .as("%s must not claim both flag bytes at once", state)
                         .isFalse();
             }
 
-            // Both entry points, both contexts: eight rows of the flag-pair truth table.
             for (boolean reenter : new boolean[] {false, true}) {
                 for (boolean notOk : new boolean[] {false, true}) {
                     for (boolean blank : new boolean[] {false, true}) {
@@ -1165,9 +974,6 @@ class AccountUpdateResponseTest {
         @Test
         @DisplayName("a bare '*' is legal as a WHOLE value, not merely as a prefix")
         void theAsteriskIsAcceptedAsAnEntireValue() {
-            // CSSETATY.cpy:24-25 moves the literal '*' into the xxxO item, replacing whatever was there.
-            // On a 25- or 50-byte field that is a one-character value in a wide item, which is exactly the
-            // case a length-validating setter would wrongly reject.
             for (ScreenField field : List.of(ScreenField.ACSFNAM, ScreenField.ACSADL1,
                     ScreenField.ACSTTUS, ScreenField.ACRDLIM)) {
                 AccountUpdateResponse painted = populated()
@@ -1176,7 +982,6 @@ class AccountUpdateResponseTest {
                         .as("%s must hold the asterisk as its entire value", field.symbolicItemName())
                         .isEqualTo("*")
                         .hasSize(1);
-                // And the move to the declared width pads it rather than rejecting it.
                 assertThat(painted.image(field, ASCII))
                         .hasSize(field.length())
                         .startsWith("*")
@@ -1187,9 +992,6 @@ class AccountUpdateResponseTest {
         @Test
         @DisplayName("no highlight decision is reachable that writes the asterisk without the colour")
         void theNestingInvariantHolds() {
-            // The gates are nested, not parallel: the inner IF sits inside the outer one, so
-            // outputItemAssigned implies colourItemAssigned. A parallel reading would admit a seventh,
-            // impossible row - asterisk without colour - and this is the assertion that forbids it.
             for (FieldValidationState state : FieldValidationState.values()) {
                 for (boolean reenter : new boolean[] {false, true}) {
                     FieldHighlight decision = FieldAttributeSetter.resolve(state, reenter);
@@ -1206,22 +1008,9 @@ class AccountUpdateResponseTest {
         }
     }
 
-    // =============================================================================================
-    // 3100-SCREEN-INIT's value projection.
-    // =============================================================================================
-
     @Nested
     @DisplayName("3100-SCREEN-INIT - the six header moves and the three legends")
     class ScreenInit {
-
-        /**
-         * A fixed instant, so the header assertions are deterministic.
-         *
-         * <p>The value is the source version footer's own timestamp - {@code Ver:
-         * CardDemo_v1.0-15-g27d6c6f-68 Date: 2022-07-19 23:15:58 CDT}, carried by
-         * {@code app/cpy/CSSETATY.cpy:29} among others - so the literal in this file is traceable to the
-         * revision the whole parity contract is anchored to rather than being an arbitrary date.
-         */
         private static final LocalDateTime WHEN = LocalDateTime.of(2022, 7, 19, 23, 15, 58);
 
         @Test
@@ -1256,10 +1045,6 @@ class AccountUpdateResponseTest {
         @Test
         @DisplayName("a fixed Clock drives the header, so the two eight-byte items are deterministic")
         void aFixedClockIsTheOnlyTimeSourceInPlay() {
-            // Practice B7. COACTUPC reads the clock through FUNCTION CURRENT-DATE, which is the one
-            // genuinely non-deterministic input the screen has. DateHeader takes a Clock rather than
-            // calling now() precisely so a test can pin it, and Clock.fixed is how that is done: run this
-            // twice, a day apart, and both runs must produce the same eight bytes.
             Instant instant = WHEN.toInstant(ZoneOffset.UTC);
             Clock fixed = Clock.fixed(instant, ZoneOffset.UTC);
 
@@ -1269,7 +1054,6 @@ class AccountUpdateResponseTest {
             assertThat(first.wsCurtimeHhMmSs()).isEqualTo(second.wsCurtimeHhMmSs());
 
             AccountUpdateResponse response = AccountUpdateResponse.initial().withDateTimeHeader(first);
-            // COACTUP.CPY:362 - CURDATEO PIC X(8); COACTUP.CPY:380 - CURTIMEO PIC X(8).
             assertThat(response.getCurdate())
                     .isEqualTo(first.wsCurdateMmDdYy())
                     .hasSize(DateHeader.WS_CURDATE_LENGTH)
@@ -1279,12 +1063,10 @@ class AccountUpdateResponseTest {
                     .hasSize(DateHeader.WS_CURTIME_LENGTH)
                     .hasSize(AccountUpdateResponse.CURTIME_LENGTH);
 
-            // A different fixed instant must move the header, or the clock is not being read at all.
             Clock later = Clock.fixed(instant.plusSeconds(86_400L), ZoneOffset.UTC);
             assertThat(DateHeader.from(ASCII, later).wsCurdateMmDdYy())
                     .isNotEqualTo(first.wsCurdateMmDdYy());
 
-            // And the seam refuses to invent one of its own.
             assertThatExceptionOfType(NullPointerException.class)
                     .isThrownBy(() -> DateHeader.from(ASCII, null));
         }
@@ -1292,9 +1074,6 @@ class AccountUpdateResponseTest {
         @Test
         @DisplayName("CSMSG01Y's 50 bytes pad into ERRMSGO 78 but truncate in INFOMSGO 45")
         void theFiftyByteMessagesFitOneLineAndNotTheOther() {
-            // ScreenTitles.CCDA_THANK_YOU is X(40) and SystemMessages.CCDA_MSG_THANK_YOU is X(50):
-            // different text, different width, different owner. They are NOT interchangeable, and a
-            // migration that substitutes one for the other silently changes the bytes on the wire.
             assertThat(ScreenTitles.CCDA_THANK_YOU).hasSize(ScreenTitles.TITLE_LENGTH).hasSize(40);
             assertThat(SystemMessages.CCDA_MSG_THANK_YOU)
                     .hasSize(SystemMessages.MESSAGE_LENGTH).hasSize(50)
@@ -1305,7 +1084,6 @@ class AccountUpdateResponseTest {
 
             for (String message : List.of(SystemMessages.CCDA_MSG_THANK_YOU,
                     SystemMessages.CCDA_MSG_INVALID_KEY)) {
-                // COACTUP.CPY:650 - ERRMSGO PIC X(78). 78 > 50, so the MOVE pads on the right.
                 String intoErrmsg = AccountUpdateResponse.initial()
                         .withValue(ScreenField.ERRMSG, message)
                         .image(ScreenField.ERRMSG, ASCII);
@@ -1316,8 +1094,6 @@ class AccountUpdateResponseTest {
                                 AccountUpdateResponse.ERRMSG_LENGTH - SystemMessages.MESSAGE_LENGTH));
                 assertThat(intoErrmsg.strip()).isEqualTo(message.strip());
 
-                // COACTUP.CPY:644 - INFOMSGO PIC X(45). 45 < 50, so the MOVE truncates on the RIGHT,
-                // which is what a COBOL alphanumeric MOVE does. Five bytes of the message are lost.
                 String intoInfomsg = AccountUpdateResponse.initial()
                         .withValue(ScreenField.INFOMSG, message)
                         .image(ScreenField.INFOMSG, ASCII);
@@ -1402,14 +1178,9 @@ class AccountUpdateResponseTest {
         }
     }
 
-    // =============================================================================================
-    // Statelessness. Gates G37, G40 and G53: XCTL becomes response data, nothing is held server-side.
-    // =============================================================================================
-
     @Nested
     @DisplayName("Statelessness - XCTL becomes response data (rule R6, gates G37/G40/G53)")
     class Statelessness {
-
         @Test
         @DisplayName("the navigation trio is settable and clearable")
         void theNavigationTrioTravelsInThePayload() {
@@ -1484,16 +1255,6 @@ class AccountUpdateResponseTest {
         @Test
         @DisplayName("the XCTL at COACTUPC.cbl:956-958 becomes three payload fields and nothing else")
         void theTransferOfControlIsFullyDescribedByThePayload() {
-            // app/cbl/COACTUPC.cbl:956 - EXEC CICS XCTL
-            //                      :957 -      PROGRAM (CDEMO-TO-PROGRAM)
-            //                      :958 -      COMMAREA(CARDDEMO-COMMAREA)
-            // Cited as L956-L958. The migration plan's bare "L957" names the PROGRAM continuation line
-            // rather than the statement, which is practice B4's kind of correction: the statement starts
-            // at 956 and a reader sent to 957 alone sees an operand with no verb.
-            //
-            // The preceding EXEC CICS SYNCPOINT at :952-954 has NO Java DTO counterpart and none is
-            // asserted here: a syncpoint is a transaction boundary, not payload. It belongs to whatever
-            // commits the update, and a response field claiming to represent it would be fiction.
             AccountUpdateResponse response = AccountUpdateResponse.initial()
                     .withNextTarget("COADM01C", "COADM01", "COADM1A");
             assertThat(response.getNextProgram())
@@ -1507,10 +1268,6 @@ class AccountUpdateResponseTest {
         @Test
         @DisplayName("CDEMO-TO-PROGRAM's LOW-VALUES and SPACES fallbacks are both reachable")
         void theTargetProgramFallbacksAreBothDriven() {
-            // COCOM01Y declares CDEMO-TO-PROGRAM as X(8) with no VALUE, so a caller that never set it
-            // leaves LOW-VALUES, while a caller that MOVEd SPACES leaves eight blanks. Those are two
-            // distinct byte images and neither is Java null - a response must be able to carry both,
-            // because "no target" and "a target cleared to blanks" reach the client differently.
             String lowValues = AccountUpdateResponse.lowValues(
                     AccountUpdateResponse.NEXT_PROGRAM_LENGTH);
             String spaces = " ".repeat(AccountUpdateResponse.NEXT_PROGRAM_LENGTH);
@@ -1538,7 +1295,6 @@ class AccountUpdateResponseTest {
         @Test
         @DisplayName("COCOM01Y is 160 bytes, MAP before MAPSET, and all four 88s go both ways")
         void theCommareaCarrierIsTheCopybookShape() {
-            // app/cpy/COCOM01Y.cpy:19 - CARDDEMO-COMMAREA is 34 + 84 + 12 + 16 + 14 = 160.
             assertThat(NavigationContext.GENERAL_INFO_LENGTH).isEqualTo(34);
             assertThat(NavigationContext.CUSTOMER_INFO_LENGTH).isEqualTo(84);
             assertThat(NavigationContext.ACCOUNT_INFO_LENGTH).isEqualTo(12);
@@ -1553,8 +1309,6 @@ class AccountUpdateResponseTest {
                     .isEqualTo(160);
             assertThat(NavigationContext.LAYOUT.recordLength()).isEqualTo(160);
 
-            // COCOM01Y.cpy:43 CDEMO-LAST-MAP then :44 CDEMO-LAST-MAPSET - MAP first, both X(7).
-            // Seven, not eight: a symbolic group name is a 7-character map name plus an I/O suffix.
             assertThat(NavigationContext.LAST_MAP_LENGTH).isEqualTo(7);
             assertThat(NavigationContext.LAST_MAPSET_LENGTH).isEqualTo(7);
             assertThat(NavigationContext.LAST_MAP_OFFSET)
@@ -1564,8 +1318,6 @@ class AccountUpdateResponseTest {
                     .as("7-character map name plus the O suffix is what makes X(7) the right width")
                     .hasSize(NavigationContext.LAST_MAP_LENGTH + 1);
 
-            // All four 88s, each driven true AND false - gate G50.
-            // COCOM01Y.cpy:27 CDEMO-USRTYP-ADMIN 'A'; :28 CDEMO-USRTYP-USER 'U'.
             NavigationContext admin = NavigationContext.empty().withUserTypeAdmin();
             assertThat(admin.isAdmin()).isTrue();
             assertThat(admin.isUser()).isFalse();
@@ -1575,8 +1327,6 @@ class AccountUpdateResponseTest {
             assertThat(user.isAdmin()).isFalse();
             assertThat(user.userType()).isEqualTo(NavigationContext.USER_TYPE_USER).isEqualTo("U");
 
-            // COCOM01Y.cpy:30 CDEMO-PGM-ENTER 0; :31 CDEMO-PGM-REENTER 1. This is the pair the
-            // CSSETATY matrix above turns on, which is why both states matter twice over.
             NavigationContext enter = NavigationContext.empty().withPgmEnter();
             assertThat(enter.pgmContext()).isEqualTo(NavigationContext.PGM_CONTEXT_ENTER).isZero();
             NavigationContext reenter = NavigationContext.empty().withPgmReenter();
@@ -1594,7 +1344,6 @@ class AccountUpdateResponseTest {
         @Test
         @DisplayName("CVCRD01Y is 213 bytes and declares SIXTEEN AID conditions, not fifteen")
         void theCardWorkAreaIsTheCopybookShape() {
-            // app/cpy/CVCRD01Y.cpy - 5 + 8 + 7 + 7 + 75 + 75 + 11 + 16 + 9 = 213.
             assertThat(CardScreenState.CCARD_AID_LENGTH).isEqualTo(5);
             assertThat(CardScreenState.RECORD_LENGTH)
                     .isEqualTo(CardScreenState.CCARD_AID_LENGTH
@@ -1608,12 +1357,6 @@ class AccountUpdateResponseTest {
                             + CardScreenState.CC_CUST_ID_LENGTH)
                     .isEqualTo(213);
 
-            // SIXTEEN, not fifteen - practice B4, and read straight off the copybook:
-            // CVCRD01Y.cpy:4 ENTER, :5 CLEAR, :6 'PA1  ', :7 'PA2  ', :8-:19 PFK01 through PFK12.
-            // That is 2 + 2 + 12 = 16 declarations on consecutive lines with no gap for a seventeenth.
-            // There is deliberately NO PA3 condition: the copybook does not declare one, and dropping a
-            // real condition to reach a documented "15" would lose a branch the source can take.
-            // Each token is X(5), which is why PA1 and PA2 carry two trailing spaces.
             List<String> aidTokens = List.of(
                     CardScreenState.CCARD_AID_ENTER, CardScreenState.CCARD_AID_CLEAR,
                     CardScreenState.CCARD_AID_PA1, CardScreenState.CCARD_AID_PA2,
@@ -1630,15 +1373,10 @@ class AccountUpdateResponseTest {
                         .as("CCARD-AID is X(5), so every token is exactly five bytes wide")
                         .hasSize(CardScreenState.CCARD_AID_LENGTH);
             }
-            // CVCRD01Y.cpy:6-7 - the two PA tokens are literals 'PA1  ' and 'PA2  ', padded in source.
             assertThat(CardScreenState.CCARD_AID_PA1).isEqualTo("PA1  ");
             assertThat(CardScreenState.CCARD_AID_PA2).isEqualTo("PA2  ");
             assertThat(aidTokens).doesNotContain("PA3  ", "PA3");
 
-            // CCARD-RETURN-MSG X(75) carries 88 CCARD-RETURN-MSG-OFF VALUE LOW-VALUES: binary 0x00
-            // seventy-five times, never spaces and never Java null. A fresh work area is NOT off,
-            // because the item starts at spaces the way the program's own INITIALIZE leaves it - so both
-            // sides of the condition are reachable, which is what gate G50 asks of an 88.
             CardScreenState fresh = new CardScreenState();
             assertThat(fresh.getCcardReturnMsg()).hasSize(CardScreenState.CCARD_RETURN_MSG_LENGTH);
             assertThat(fresh.isCcardReturnMsgOff()).isFalse();
@@ -1650,7 +1388,6 @@ class AccountUpdateResponseTest {
                     .isEqualTo("\u0000".repeat(CardScreenState.CCARD_RETURN_MSG_LENGTH))
                     .isNotEqualTo(" ".repeat(CardScreenState.CCARD_RETURN_MSG_LENGTH));
 
-            // And the work area survives the response round trip at its declared width.
             AccountUpdateResponse carried =
                     AccountUpdateResponse.initial().withCardScreenState(off);
             assertThat(carried.getCardScreenState().isCcardReturnMsgOff()).isTrue();
@@ -1676,16 +1413,9 @@ class AccountUpdateResponseTest {
         }
     }
 
-    // =============================================================================================
-    // ACUP-CHANGE-ACTION: all nine 88-levels, each driven true AND false (gate G50), and the two
-    // groupings in particular.
-    // =============================================================================================
-
     @Nested
     @DisplayName("ACUP-CHANGE-ACTION - all nine 88-levels, both ways (gate G50)")
     class ChangeActionStates {
-
-        /** Every state, with the predicate that must hold for it. */
         private AccountUpdateResponse at(ChangeAction action) {
             return AccountUpdateResponse.initial().withChangeAction(action);
         }
@@ -1771,40 +1501,21 @@ class AccountUpdateResponseTest {
             assertThat(at(ChangeAction.changesNotOk()).isChangesFailed()).isFalse();
         }
 
-        /**
-         * The nine-row byte table, exactly as the copybook declares it.
-         *
-         * <p>Nine <em>overlapping</em> conditions on one {@code PIC X(1)} byte, not nine independent
-         * toggles - and the difference matters. {@code 'L'} and {@code 'F'} each satisfy
-         * <strong>three</strong> predicates at once ({@code CHANGES-MADE}, {@code CHANGES-FAILED} and
-         * their own singleton); {@code LOW-VALUES} and {@code SPACES} are two <em>distinct bytes</em> that
-         * both satisfy {@code ACUP-DETAILS-NOT-FETCHED}; and one unmatched byte satisfies nothing at all,
-         * which is what drives every predicate's false side simultaneously. A suite that flipped nine
-         * booleans one at a time would look thorough and prove none of that.
-         *
-         * @return {@code {byte, the predicates that must be TRUE}} per row
-         */
         static List<Arguments> changeActionTable() {
             return List.of(
-                    // COACTUPC.cbl:656-658 - 88 ACUP-DETAILS-NOT-FETCHED VALUES LOW-VALUES, SPACES.
                     Arguments.of(ChangeAction.LOW_VALUES, List.of("DETAILS_NOT_FETCHED")),
                     Arguments.of(ChangeAction.SPACES, List.of("DETAILS_NOT_FETCHED")),
-                    // COACTUPC.cbl:659 - 88 ACUP-SHOW-DETAILS VALUE 'S'.
                     Arguments.of(ChangeAction.SHOW_DETAILS, List.of("SHOW_DETAILS")),
-                    // COACTUPC.cbl:660-662 - the five CHANGES-MADE bytes; the singletons follow at :663-:665.
                     Arguments.of(ChangeAction.CHANGES_NOT_OK,
                             List.of("CHANGES_MADE", "CHANGES_NOT_OK")),
                     Arguments.of(ChangeAction.CHANGES_OK_NOT_CONFIRMED,
                             List.of("CHANGES_MADE", "CHANGES_OK_NOT_CONFIRMED")),
                     Arguments.of(ChangeAction.CHANGES_OKAYED_AND_DONE,
                             List.of("CHANGES_MADE", "CHANGES_OKAYED_AND_DONE")),
-                    // Three at once: :660-662 CHANGES-MADE and :666 CHANGES-FAILED both span 'L', plus :667.
                     Arguments.of(ChangeAction.CHANGES_OKAYED_LOCK_ERROR,
                             List.of("CHANGES_MADE", "CHANGES_FAILED", "CHANGES_OKAYED_LOCK_ERROR")),
-                    // Three at once again for 'F': :660-662, :666 and the :668 singleton.
                     Arguments.of(ChangeAction.CHANGES_OKAYED_BUT_FAILED,
                             List.of("CHANGES_MADE", "CHANGES_FAILED", "CHANGES_OKAYED_BUT_FAILED")),
-                    // No condition names 'X', so every one of the nine must read false.
                     Arguments.of("X", List.<String>of()));
         }
 
@@ -1833,9 +1544,6 @@ class AccountUpdateResponseTest {
                     .as("byte %s: %s must be %s", value, name, expectedTrue.contains(name))
                     .isEqualTo(expectedTrue.contains(name)));
 
-            // The unmatched byte is the row that drives every false side at once, and the only row on
-            // which isUnrecognised() holds. PIC X(1) VALUE LOW-VALUES means the default is binary 0x00 -
-            // not a space, and certainly not Java null.
             assertThat(response.changeAction().isUnrecognised()).isEqualTo(expectedTrue.isEmpty());
         }
 
@@ -1852,7 +1560,6 @@ class AccountUpdateResponseTest {
             assertThat(ChangeAction.spacesState().isDetailsNotFetched()).isTrue();
             assertThat(ChangeAction.initial().isUnrecognised()).isFalse();
             assertThat(ChangeAction.spacesState().isUnrecognised()).isFalse();
-            // The default really is the 0x00 byte and not the blank.
             assertThat(AccountUpdateResponse.initial().changeAction())
                     .isEqualTo(ChangeAction.initial())
                     .isNotEqualTo(ChangeAction.spacesState());
@@ -1883,14 +1590,9 @@ class AccountUpdateResponseTest {
         }
     }
 
-    // =============================================================================================
-    // The 873-byte commarea, and the two snapshots reached through it. Gates G34 and G43.
-    // =============================================================================================
-
     @Nested
     @DisplayName("The 873-byte commarea and its two 436-byte snapshots")
     class Commarea {
-
         @Test
         @DisplayName("the OLD and NEW images are reachable and carry their own group markers")
         void bothImagesAreReachable() {
@@ -1905,13 +1607,6 @@ class AccountUpdateResponseTest {
             assertThat(response.newCust()).isSameAs(response.newDetails().cust());
         }
 
-        /**
-         * A NEW customer snapshot carrying a stated nine-byte SSN, built through the canonical
-         * constructor because {@link CustSnapshot} is a record and has no wither.
-         *
-         * @param ssn the nine characters to place in {@code ACUP-NEW-CUST-SSN-X}
-         * @return the snapshot
-         */
         private static CustSnapshot custWithSsn(String ssn) {
             CustSnapshot base = CustSnapshot.initialised();
             return new CustSnapshot(base.custIdX(), base.firstName(), base.middleName(),
@@ -1947,24 +1642,6 @@ class AccountUpdateResponseTest {
         @Test
         @DisplayName("the EXPIRAION misspelling is preserved on both images")
         void theMisspellingIsPreserved() {
-            // ============================================================================
-            // READ THIS BEFORE "FIXING" THE SPELLING. It is EXPIRAION, not EXPIRATION, and
-            // it stays that way.
-            //
-            //   app/cpy/CVACT01Y.cpy:11        05  ACCT-EXPIRAION-DATE      PIC X(10).
-            //   app/cbl/COACTUPC.cbl:428       15  ACCT-UPDATE-EXPIRAION-DATE   PIC X(10).
-            //   app/cbl/COACTUPC.cbl:690       15  ACUP-OLD-EXPIRAION-DATE      PIC X(08).
-            //   app/cbl/COACTUPC.cbl:691-692       ACUP-OLD-EXPIRAION-DATE-PARTS REDEFINES ...
-            //   app/cbl/COACTUPC.cbl:778       15  ACUP-NEW-EXPIRAION-DATE      PIC X(08).
-            //
-            // The typo is in the copybook that defines the record, so it is in the CONTRACT, not
-            // in a comment: seventeen textual occurrences in COACTUPC.cbl alone. Per the migration
-            // plan's implicit requirement I1 and its standing constraint "never rename a copybook
-            // field, including one that is misspelled", correcting it here would make the Java
-            // member name disagree with the COBOL field name, and the field-for-field differ
-            // reports that as a diff on every single comparison - a silent, total parity failure
-            // that looks like a tidy-up in review. Renaming is a behaviour change. Leave it.
-            // ============================================================================
             AccountUpdateResponse response = AccountUpdateResponse.initial();
             assertThat(response.oldAcct().expiraionDate()).hasSize(8);
             assertThat(response.newAcct().expiraionDate()).hasSize(8);
@@ -1975,7 +1652,6 @@ class AccountUpdateResponseTest {
                     .as("CVACT01Y.cpy:11 spells it EXPIRAION - the Java member must too")
                     .contains("expiraionDate")
                     .doesNotContain("expirationDate");
-            // Both halves of the commarea carry the same misspelling, so neither can drift alone.
             List<String> newComponentNames = Arrays.stream(
                             AccountUpdateRequest.AcctSnapshot.class.getRecordComponents())
                     .map(java.lang.reflect.RecordComponent::getName)
@@ -1993,7 +1669,6 @@ class AccountUpdateResponseTest {
             assertThat(response.oldAcct().openDate()).hasSize(8);
             assertThat(response.oldAcct().reissueDate()).hasSize(8);
             assertThat(response.oldCust().dobYyyyMmDd()).hasSize(8);
-            // The parts read at (1:4)/(5:2)/(7:2) of the unseparated form, which is why 8 is correct.
             assertThat(response.oldCust().dobYear()).hasSize(4);
             assertThat(response.oldCust().dobMon()).hasSize(2);
             assertThat(response.oldCust().dobDay()).hasSize(2);
@@ -2017,10 +1692,6 @@ class AccountUpdateResponseTest {
                 assertThat(amount.scale()).isEqualTo(AccountUpdateResponse.MONETARY_SCALE);
             }
 
-            // Asserting that the CONSTANT is DOWN is necessary but not sufficient: it would still pass
-            // if some arithmetic path quietly rounded elsewhere. So drive values where DOWN and HALF_UP
-            // genuinely DISAGREE, and pin the DOWN answer. The keyword ROUNDED appears ZERO times in all
-            // 28 COBOL programs, so the mainframe truncates on store and HALF_UP would be a cent out.
             assertThat(CobolDecimal.storeMonetary(new BigDecimal("1.239")))
                     .as("truncate, do not round: 1.239 -> 1.23, whereas HALF_UP would give 1.24")
                     .isEqualByComparingTo(new BigDecimal("1.23"))
@@ -2029,13 +1700,10 @@ class AccountUpdateResponseTest {
                     .as("0.005 -> 0.00 under DOWN; HALF_UP would invent a cent from nothing")
                     .isEqualByComparingTo(BigDecimal.ZERO)
                     .isNotEqualByComparingTo(new BigDecimal("0.005").setScale(2, RoundingMode.HALF_UP));
-            // Negative amounts truncate TOWARDS ZERO, which is what DOWN means and what FLOOR does not:
-            // a balance of -1.239 stores as -1.23, never -1.24.
             assertThat(CobolDecimal.storeMonetary(new BigDecimal("-1.239")))
                     .as("DOWN is toward zero: -1.239 -> -1.23, whereas FLOOR would give -1.24")
                     .isEqualByComparingTo(new BigDecimal("-1.23"))
                     .isNotEqualByComparingTo(new BigDecimal("-1.239").setScale(2, RoundingMode.FLOOR));
-            // And the scale is exactly 2 afterwards, not merely numerically equal.
             assertThat(CobolDecimal.storeMonetary(new BigDecimal("1.239")).scale())
                     .isEqualTo(AccountUpdateResponse.MONETARY_SCALE);
         }
@@ -2052,14 +1720,9 @@ class AccountUpdateResponseTest {
         }
     }
 
-    // =============================================================================================
-    // The group image. Gate G21: every FILLER declared, and the total width verifiable.
-    // =============================================================================================
-
     @Nested
     @DisplayName("The 1095-byte CACTUPAO image - hand-written, byte-explicit (gates G21, B11)")
     class GroupImage {
-
         @Test
         @DisplayName("the layout declares 1 + 54 x 6 = 325 spans over 1095 bytes")
         void theLayoutIsCompleteAndContiguous() {
@@ -2072,21 +1735,6 @@ class AccountUpdateResponseTest {
         @Test
         @DisplayName("the two spans are 1095 and 873, and each passes its own total-width self-check")
         void theGroupImageAndTheCommareaAreDifferentSpans() {
-            // These are TWO DIFFERENT totals over two different structures, and conflating them is the
-            // arithmetic error most likely to slip through unnoticed:
-            //
-            //   1095 = 12 (TIOAPFX FILLER, COACTUP.CPY:344)
-            //        + 54 x 7 (per-field output preamble: FILLER X(3) at :345 plus the C/P/H/V quad
-            //                  at :346-:349, one byte each)
-            //        + 705 (the sum of the 54 declared payload widths)
-            //
-            //    873 = 1 (ACUP-CHANGE-ACTION, COACTUPC.cbl:654)
-            //        + 436 (ACUP-OLD-DETAILS)  + 436 (ACUP-NEW-DETAILS),
-            //          each 436 = 106 acct + 330 cust
-            //
-            // RecordLayout.of throws if the declared spans do not account for the declared record
-            // length, so simply constructing each layout is the self-check; asserting the totals
-            // separately is what stops one number being silently used for the other.
             assertThat(AccountUpdateResponse.GROUP_LENGTH)
                     .isEqualTo(AccountUpdateResponse.TIOAPFX_LENGTH
                             + AccountUpdateResponse.FIELD_COUNT * AccountUpdateResponse.FIELD_OVERHEAD
@@ -2105,8 +1753,6 @@ class AccountUpdateResponseTest {
                     .as("1095 and 873 must never be interchangeable")
                     .isNotEqualTo(CommArea.RECORD_LENGTH);
 
-            // Neither total is the other's building block: the commarea is not part of the group image
-            // and the group image is not part of the commarea. They travel side by side in one payload.
             assertThat(AccountUpdateResponse.initial().toGroupImage(ASCII)).hasSize(1095);
             assertThat(AccountUpdateResponse.initial().commareaLength()).isEqualTo(873);
         }
@@ -2114,17 +1760,6 @@ class AccountUpdateResponseTest {
         @Test
         @DisplayName("the quad comes from DSATTS/MAPATTS - COACTUP.bms declares no ALARM and no EXTATT")
         void theAttributeItemsComeFromTheMapNotFromExtatt() {
-            // app/bms/COACTUP.bms:20-24 - DFHMSD LANG=COBOL, MODE=INOUT, STORAGE=AUTO, TIOAPFX=YES,
-            //                            TYPE=&&SYSPARM.
-            // That is the WHOLE macro. There is no CTRL= on it, no ALARM and no EXTATT=YES, contrary to
-            // the plan's generalisation over all 17 mapsets - practice B4, so nothing here asserts
-            // either. What this mapset actually declares sits one macro lower:
-            // app/bms/COACTUP.bms:25-28 - DFHMDI CTRL=(FREEKB), DSATTS=(COLOR,HILIGHT,PS,VALIDN),
-            //                             MAPATTS=(COLOR,HILIGHT,PS,VALIDN), SIZE=(24,80).
-            //
-            // Each of the four attributes named there yields exactly one single-byte item per field, and
-            // that - not EXTATT - is where the C/P/H/V quad comes from. Four attributes named, four
-            // one-byte items generated, so the quad is 4 and the preamble is 3 + 4 = 7.
             assertThat(AccountUpdateResponse.COLOUR_ITEM_LENGTH).isEqualTo(1);
             assertThat(AccountUpdateResponse.PS_ITEM_LENGTH).isEqualTo(1);
             assertThat(AccountUpdateResponse.HILIGHT_ITEM_LENGTH).isEqualTo(1);
@@ -2134,7 +1769,6 @@ class AccountUpdateResponseTest {
                     .isEqualTo(4);
             assertThat(AccountUpdateResponse.FIELD_PREFIX_FILLER_LENGTH).isEqualTo(3);
             assertThat(AccountUpdateResponse.FIELD_OVERHEAD).isEqualTo(7);
-            // SIZE=(24,80) is on the DFHMDI too, and it is the one geometry fact the mapset does state.
             assertThat(AccountUpdateResponse.SCREEN_ROWS).isEqualTo(24);
             assertThat(AccountUpdateResponse.SCREEN_COLUMNS).isEqualTo(80);
         }
@@ -2265,14 +1899,9 @@ class AccountUpdateResponseTest {
         }
     }
 
-    // =============================================================================================
-    // Immutability, equality, JSON and the disclosure policy.
-    // =============================================================================================
-
     @Nested
     @DisplayName("Immutability, equality and the JSON contract")
     class Contract {
-
         @Test
         @DisplayName("the type is final, has no public constructor and exposes no payload setter")
         void theTypeIsImmutableByShape() {
@@ -2380,8 +2009,6 @@ class AccountUpdateResponseTest {
                     .withValue(ScreenField.ACSCTRY, "USA");
             String rendered = response.toString();
 
-            // Every field is still NAMED. The field name is what a difference is reported against, and
-            // it carries no data, so nothing about diagnosability is given up here.
             for (ScreenField field : ScreenField.values()) {
                 assertThat(rendered).as("%s appears in the rendering", field.label())
                         .contains(field.label() + "='");
@@ -2390,12 +2017,8 @@ class AccountUpdateResponseTest {
                     .contains("nextProgram=", "commArea=", "cardScreenState=",
                             "navigationContext=");
 
-            // Scoped to THIS type's own 54-field section. The embedded NavigationContext,
-            // CardScreenState, AcctSnapshot and CustSnapshot each apply their own disclosure policy to
-            // their own rendering, and those are their decisions to make, not this type's to override.
             String ownSection = rendered.substring(0, rendered.indexOf(", nextProgram='"));
 
-            // Withheld entirely: the value appears nowhere, in no part and in no order.
             assertThat(ownSection)
                     .as("the social-security parts, date of birth, government identifier, funds "
                             + "transfer account and credit score are withheld outright - a build log "
@@ -2410,7 +2033,6 @@ class AccountUpdateResponseTest {
                             "DOBMON='" + SensitiveDiagnostics.REDACTED + "'",
                             "DOBDAY='" + SensitiveDiagnostics.REDACTED + "'");
 
-            // Length only: the shape survives, the content does not.
             assertThat(ownSection)
                     .as("a name, an address line and a telephone part have no useful prefix, so only "
                             + "their shape is reported")
@@ -2418,21 +2040,18 @@ class AccountUpdateResponseTest {
                     .contains("ACSLNAM='" + SensitiveDiagnostics.describeText("SANDERSON") + "'",
                             "ACSPH1A='" + SensitiveDiagnostics.describeText("617") + "'");
 
-            // Masked to the last four: enough to correlate two log lines, not enough to identify.
             assertThat(ownSection)
                     .as("the account and customer keys keep their stored width and their last four "
                             + "characters, which is what correlation needs")
                     .contains("ACCTSID='" + SensitiveDiagnostics.maskIdentifier("00000000011") + "'",
                             "ACSTNUM='" + SensitiveDiagnostics.maskIdentifier("000000009") + "'");
 
-            // Plain: what a parity investigation is actually conducted from stays legible.
             assertThat(ownSection)
                     .as("balances, coarse geography and the screen furniture stay legible - they are "
                             + "the difference a parity failure consists of and identify nobody once "
                             + "the keys above are masked")
                     .contains("ACURBAL='+00000123.45'", "ACSSTTE='MA'", "ACSCTRY='USA'");
 
-            // The classification itself, asserted directly rather than inferred from the rendering.
             assertThat(AccountUpdateResponse.disclosureOf(null))
                     .as("a field nobody classified is withheld, not published")
                     .isEqualTo(SensitiveDiagnostics.Disclosure.REDACTED_VALUE);
@@ -2454,9 +2073,6 @@ class AccountUpdateResponseTest {
                     .withValue(ScreenField.ACSGOVT, "GOVTID9988776655    ")
                     .withValue(ScreenField.DOBYEAR, "1955");
 
-            // The stored values are the parity contract and are untouched. COACTUPC paints all of this
-            // on a 3270 in the clear, so withholding it from the PAYLOAD would be an unrequested
-            // behaviour change (practice B6). Only the diagnostic rendering is classified.
             assertThat(response.value(ScreenField.ACTSSN1)).isEqualTo("078");
             assertThat(response.value(ScreenField.ACSGOVT)).isEqualTo("GOVTID9988776655    ");
             assertThat(response.value(ScreenField.DOBYEAR)).isEqualTo("1955");
@@ -2540,11 +2156,6 @@ class AccountUpdateResponseTest {
         @Test
         @DisplayName("nothing on the type is locale-sensitive, under a non-US default locale")
         void theRenderingIsIndependentOfTheDefaultLocale() {
-            // A COBOL record has no locale. Every byte this type emits is fixed-width and
-            // culture-free, so a run under a Turkish or German default must produce the identical
-            // image - and proving it is what guards against an accidental locale-aware formatter or a
-            // toUpperCase()/toLowerCase() without Locale.ROOT. Turkish is the classic trap: its
-            // dotless-i rules change the case mapping of ASCII 'I' and 'i'.
             Locale original = Locale.getDefault();
             AccountUpdateResponse reference = populated()
                     .withValue(ScreenField.ACURBAL, "-1234567890.12")
@@ -2567,12 +2178,9 @@ class AccountUpdateResponseTest {
                     assertThat(under.fieldValues()).isEqualTo(referenceFields);
                     assertThat(under.toString()).isEqualTo(referenceText);
                     assertThat(under).isEqualTo(reference);
-                    // The decimal separator is the one a locale would most eagerly rewrite: the
-                    // account balance stays a '.' and never becomes a ','.
                     assertThat(under.value(ScreenField.ACURBAL))
                             .contains(".")
                             .doesNotContain(",");
-                    // And the scaled decode of that same image stays exact and DOWN-truncated.
                     assertThat(new BigDecimal(under.value(ScreenField.ACURBAL).trim())
                             .setScale(CobolDecimal.MONETARY_SCALE, CobolDecimal.COBOL_ROUNDING))
                             .isEqualByComparingTo(new BigDecimal("-1234567890.12"));

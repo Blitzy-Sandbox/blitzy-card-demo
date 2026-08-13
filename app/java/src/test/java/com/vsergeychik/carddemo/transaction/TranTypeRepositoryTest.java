@@ -71,145 +71,31 @@ import org.springframework.stereotype.Repository;
 /**
  * {@link TranTypeRepository} - the {@code TRANTYPE} lookup: 60 bytes, a two-character key, and a
  * description that must never be trimmed.
- *
- * <h2>What this suite protects, in descending order of how quietly its absence would corrupt the
- * report</h2>
- * <ol>
- *   <li><strong>The key is character data, not a number.</strong> {@code app/cpy/CVTRA03Y.cpy:5}
- *       declares {@code TRAN-TYPE PIC X(02)} and the shipped data is {@code 01} through {@code 07}.
- *       Those values <em>look</em> numeric, so an implementation that modelled the key as an
- *       {@code int} would compile, read cleanly, and render {@code 1} - which matches no record. The
- *       failure would be total and silent: every keyed read misses, every report line takes the
- *       {@code INVALID KEY} path, and the program abends on the first transaction. Proven here from
- *       both directions - {@code "01"} finds its record, and {@code "1"} does not, because a
- *       {@code PIC X} move pads on the <em>right</em>.</li>
- *   <li><strong>{@code TRAN-TYPE-DESC} decodes untrimmed.</strong>
- *       {@code app/cbl/CBTRN03C.cbl:366} is
- *       {@code MOVE TRAN-TYPE-DESC TO TRAN-REPORT-TYPE-DESC}, and
- *       {@code app/cpy/CVTRA07Y.cpy:22} declares that receiver as {@code PIC X(15)}. COBOL fills an
- *       alphanumeric receiver from the left and discards the overflow, so the report line carries
- *       the <em>first fifteen</em> of the fifty stored characters, trailing padding included. A
- *       repository that trimmed on read could not reproduce that at all: the fifty-character span
- *       would no longer be fifty characters, the record would no longer be sixty bytes, and a
- *       description carrying a <em>leading</em> space would move into a different fifteen
- *       characters. All three are asserted.</li>
- *   <li><strong>{@code INVALID KEY} is returned, never thrown.</strong>
- *       {@code 1500-B-LOOKUP-TRANTYPE} ({@code :494-502}) owns its own failure handling in full -
- *       the {@code DISPLAY 'INVALID TRANSACTION TYPE : '}, the {@code MOVE 23 TO IO-STATUS}, the
- *       rendered status line and the abend. Every one of those is the <em>caller's</em> to
- *       reproduce byte for byte, so the repository reports a status and returns (gate G47). A
- *       repository that threw would move the message text into the data layer, where
- *       {@code TransactionReportJob} could no longer emit it in the program's own order.</li>
- *   <li><strong>The reserved span survives.</strong> {@code FILLER X(08)} at offset 52 is written
- *       to the dataset like any other byte. Every row of {@code app/data/ASCII/trantype.txt} holds
- *       {@code "00000000"} there - eight ASCII zeros, <em>not</em> spaces - so a decode-then-encode
- *       round trip that normalised it would change the stored record while every field accessor
- *       still answered correctly (gates G19, G21).</li>
- * </ol>
- *
- * <h2>Deliberate omission: no fixed-point expectation, and the absence itself is asserted</h2>
- * {@code CVTRA03Y} declares three items and all three are {@code PIC X}. There is no signed decimal,
- * no scale, no rounding decision and therefore nothing for rule R2's truncating
- * {@code RoundingMode.DOWN} policy to apply to. So rather than introduce a fixed-point expectation
- * the copybook does not license, this suite asserts the <em>absence</em> of any dependency on
- * {@code common.CobolDecimal} - the same deliberate omission {@code card.model.CardRecord} and
- * {@code card.model.CardXrefRecord} make, and for the same reason. See {@link SourceLevelGates}.
- *
- * <h2>How it tests, and why with no Spring context</h2>
- * Plain JUnit 5 with AssertJ and Mockito. {@code @ActiveProfiles("test")} is deliberately
- * <strong>not</strong> used: the {@code carddemo.datasets.TRANTYPE} binding is hand-built here from
- * the repository's own published constants, so every configuration guard can be driven through both
- * of its arms - which a context that only ever supplies the one valid binding cannot do - and the
- * suite stays hermetic, order-independent and free of any container start-up cost (practice B7).
- * The shipped fixture is still the real data: {@code /fixtures/trantype.txt} on the test classpath
- * is byte-identical to {@code app/data/ASCII/trantype.txt}.
- *
- * <p>Nothing here reads the wall clock, opens a socket, writes a file, or imports anything from
- * {@code com.vsergeychik.carddemo.parity} - this is a unit suite over one repository, and the
- * parity harness is a separate concern with its own case fixtures.
- *
- * <p><strong>On the two collaborator types this suite names beyond the unit and its record.</strong>
- * {@code common.RecordImageForm} and {@code common.DatasetRelation} (with its nested
- * {@code BackendDiagnostic}) are not decoration: they are part of {@link TranTypeRepository}'s own
- * published signature. {@code RecordImageForm} is the fourth constructor parameter, so the unit
- * cannot be constructed without it; {@code DatasetRelation.BackendDiagnostic} is the payload of
- * {@link ReadResult#diagnostic()}, so the {@code WHEN OTHER} arm cannot be asserted without it; and
- * {@code DatasetRelation.RECORD_IMAGE_COLUMN_INDEX} is the value
- * {@link TranTypeRepository#RECORD_IMAGE_COLUMN_INDEX} is defined as. Every other type named here
- * comes from the unit under test, its record, or the JDK and the module's own closed test stack.
- *
- * <p>No user rules were supplied for this project ({@code review_rules} returns a single line), so
- * the binding constraints applied here are the AAP's: R5 fixed-width is the wire format, B3 the
- * reference inputs are read and never written, B4 field names are never harmonised, B7 determinism,
- * B8 no wildcard imports and an always-named charset, B9 no static mutable state, B11 offsets
- * asserted by addition.
- *
- * @see TranTypeRepository
- * @see TranTypeRecord
  */
 @DisplayName("TranTypeRepository - the TRANTYPE lookup, its X(02) key and its untrimmed description")
 class TranTypeRepositoryTest {
-
-    /** The code page of the ASCII fixtures, named explicitly and never taken from the platform. */
     private static final Charset ASCII = StandardCharsets.US_ASCII;
 
-    /**
-     * A configured dataset name, well formed as the z/OS grammar requires.
-     *
-     * <p>Deliberately <em>not</em> the production name. Gate G46 says no {@code AWS.M2.CARDDEMO.*}
-     * literal belongs in Java, and a test is Java: the point being proved is that the name is
-     * whatever configuration supplies, so supplying a different one proves it better than echoing
-     * the shipped default would.
-     */
     private static final String DS = "TEST.M2.CARDDEMO.TRANTYPE.VSAM.KSDS";
 
-    /** The record-image column name the stand-in backend describes. */
     private static final String DESCRIBED_COLUMN = "RECORD_IMAGE";
 
-    /** The row limit a keyed read asks for: one more than a unique key can return. */
     private static final int DUPLICATE_DETECTION_LIMIT = 2;
 
-    /** The classpath location of the fixture copied from {@code app/data/ASCII/trantype.txt}. */
     private static final String FIXTURE = "/fixtures/trantype.txt";
 
-    /** How many records that fixture holds: seven, measured. */
     private static final int FIXTURE_RECORDS = 7;
 
-    /**
-     * What the fixture's trailing {@code FILLER X(08)} actually contains: eight ASCII zeros.
-     *
-     * <p>Measured from {@code app/data/ASCII/trantype.txt}, not assumed. The copybook declares no
-     * {@code VALUE} for the span, so a record built from field values space-fills it while a record
-     * decoded from the dataset keeps what the dataset holds - and the difference between those two
-     * is precisely what makes the round-trip assertion prove something.
-     */
     private static final String FIXTURE_FILLER = "00000000";
 
-    /** A {@code FILLER X(08)} of spaces: what a COBOL {@code INITIALIZE} leaves in the span. */
     private static final String SPACE_FILLER = " ".repeat(TranTypeRecord.FILLER_LENGTH);
 
-    // =============================================================================================
-    // Fixtures and stubbing.
-    // =============================================================================================
-
-    /**
-     * The {@code TRANTYPE} binding as {@code application.yml:567-575} declares it: a KSDS, 60 bytes,
-     * a 2-byte key at offset 0, copybook {@code CVTRA03Y}, no base and no alternate key.
-     *
-     * @return the valid binding
-     */
     private static DatasetBinding validBinding() {
         return new DatasetBinding(DS, DatasetBinding.KSDS, false, "FB", null,
                 TranTypeRepository.RECORD_LENGTH, TranTypeRepository.EXPECTED_COPYBOOK,
                 TranTypeRepository.TRAN_TYPE_KEY_LENGTH, null, null, null);
     }
 
-    /**
-     * A catalogue holding one entry under the DD name the repository looks up.
-     *
-     * @param binding the binding, or {@code null} to omit the entry entirely
-     * @return the catalogue
-     */
     private static DatasetBindings bindings(DatasetBinding binding) {
         DatasetBindings catalogue = new DatasetBindings();
         if (binding != null) {
@@ -218,36 +104,15 @@ class TranTypeRepositoryTest {
         return catalogue;
     }
 
-    /**
-     * Builds a repository over a mocked template and the valid catalogue.
-     *
-     * @param jdbcTemplate the mocked template
-     * @return the repository
-     */
     private static TranTypeRepository repository(JdbcTemplate jdbcTemplate) {
         return new TranTypeRepository(jdbcTemplate, bindings(validBinding()), ASCII,
                 RecordImageForm.CHARACTER);
     }
 
-    /**
-     * Renders a transaction-type record as the 60-character image a character-form driver presents.
-     *
-     * <p>Built through {@link TranTypeRecord#of(String, String, Charset)}, so the {@code PIC X} move
-     * rule and the space-filled {@code FILLER} are the model's and not this suite's.
-     *
-     * @param tranType     the two-character type code
-     * @param tranTypeDesc the description at its natural length; padded to 50 by the model
-     * @return the 60-character image
-     */
     private static String image(String tranType, String tranTypeDesc) {
         return TranTypeRecord.of(tranType, tranTypeDesc, ASCII).image();
     }
 
-    /**
-     * The shipped fixture's rows, read from the test classpath in an explicitly named code page.
-     *
-     * @return the seven 60-character record images, in file order
-     */
     private static List<String> fixtureRows() {
         try (InputStream source = TranTypeRepositoryTest.class.getResourceAsStream(FIXTURE)) {
             assertThat(source).as("%s must be on the test classpath", FIXTURE).isNotNull();
@@ -257,139 +122,55 @@ class TranTypeRepositoryTest {
         }
     }
 
-    /** The stand-in backends, one per mocked template, so each test's dataset is independent. */
     private final Map<JdbcTemplate, Backend> backends = new LinkedHashMap<>();
 
-    /**
-     * The stand-in backend for a template, created on first use.
-     *
-     * @param jdbcTemplate the mocked template
-     * @return its backend
-     */
     private Backend backend(JdbcTemplate jdbcTemplate) {
         return backends.computeIfAbsent(jdbcTemplate, Backend::new);
     }
 
-    /**
-     * Seeds a dataset with the given record images and returns a repository over it.
-     *
-     * @param rows the images the dataset holds
-     * @return a repository whose backend holds {@code rows}
-     */
     private TranTypeRepository seeded(List<String> rows) {
         JdbcTemplate template = mock(JdbcTemplate.class);
         backend(template).storing(rows);
         return repository(template);
     }
 
-    /**
-     * A repository over the seven shipped fixture rows.
-     *
-     * @return a repository holding the real {@code trantype} data
-     */
     private TranTypeRepository seededWithFixture() {
         return seeded(fixtureRows());
     }
 
-    /**
-     * A stand-in for the deployment backend, sufficient to prove that the key predicate really is in
-     * the statement rather than applied in Java after the fact.
-     *
-     * <p>It captures every statement and every bound operand, and answers a keyed read by evaluating
-     * the repository's own composed {@code LIKE} pattern against the seeded rows - so a predicate
-     * that named the wrong offset, the wrong width, or failed to escape a metacharacter would select
-     * the wrong rows here exactly as it would against a real relation.
-     *
-     * <p>A seeded {@code null} image models a row the dataset holds and cannot present. SQL evaluates
-     * every comparison against a null as {@code UNKNOWN}, so such a row is <strong>not</strong>
-     * returned by a keyed {@code LIKE} here either - that faithfulness is what makes the
-     * unreadable-row probe reachable, and a stub that let a null satisfy the keyed predicate would
-     * hide the whole not-found-must-be-proved path. The repository's defensive "the driver handed back
-     * a matched row with no value" guard is still reachable, through the explicit
-     * {@link #presentingUnreadableRowsToKeyedReads()} opt-in, because it is right to exist: a driver
-     * answering {@code null} for a column it declared non-null is exactly what it defends against.
-     *
-     * <p>Residual risk R-E applies and is not pretended away: no driver for the production VSAM
-     * backend is available in this build, so what is exercised is everything on this side of the
-     * driver.
-     */
     private static final class Backend {
-
-        /** What the dataset holds, in order. A {@code null} element models an unreadable image. */
         private final List<String> stored = new ArrayList<>();
 
-        /** Every statement sent, in order. */
         private final List<String> statementsSent = new ArrayList<>();
 
-        /** Every operand bound to a keyed read, in order. */
         private final List<String> patternsBound = new ArrayList<>();
 
-        /** Whether the dataset cannot be reached at all - the describe refuses first. */
         private boolean failing;
 
-        /**
-         * Whether the dataset describes cleanly but refuses the read itself.
-         *
-         * <p>A separate flag from {@link #failing}, and it has to be: the repository has two catch
-         * arms, one around resolving the statement and one around transferring the rows, and a
-         * backend that fails the describe never reaches the second. Only a backend that answers the
-         * describe and <em>then</em> refuses exercises it - the realistic shape of a dataset that is
-         * catalogued but whose data component cannot be read.
-         */
         private boolean failingOnRead;
 
-        /** Whether the describe answers with no metadata object at all. */
         private boolean withoutMetadata;
 
-        /** Whether the describe answers with a relation carrying no column. */
         private boolean withoutColumn;
 
-        /** Whether the describe answers with a blank column name. */
         private boolean blankColumnName;
 
-        /** Whether the template yields no result object at all. */
         private boolean yieldingNothing;
 
-        /**
-         * Whether the unreadable-row probe - and only the probe - is refused.
-         *
-         * <p>Separate from {@link #failingOnRead}, and it has to be: the not-found path issues two
-         * statements, and only a backend that answers the keyed read and then refuses the probe
-         * reaches the arm where an absence could not be established.
-         */
         private boolean failingOnProbe;
 
-        /** Whether the probe answers with no result object at all, having answered the read. */
         private boolean probeYieldingNothing;
 
-        /**
-         * Whether a keyed {@code LIKE} is allowed to return a seeded {@code null} row.
-         *
-         * <p>Off by default because real SQL cannot do it. Switched on only to reach the repository's
-         * defensive guard for a driver that hands back a matched row carrying no value.
-         */
         private boolean unreadableRowsMatchKeyedReads;
 
-        /**
-         * The statement text the repository prepared on the current keyed read.
-         *
-         * <p>Instance state rather than per-call locals so the {@link Connection} and
-         * {@link PreparedStatement} stand-ins can be built once and reused. Mock creation dominates
-         * the cost of a seven-record fixture walk, and each test method is single-threaded, so
-         * reusing them is both safe and materially faster. Cleared at the start of every read.
-         */
         private final List<String> preparedSql = new ArrayList<>();
 
-        /** The operand bound on the current keyed read. See {@link #preparedSql}. */
         private final List<String> boundOperands = new ArrayList<>();
 
-        /** The row-less result set the describe answers with, built once. */
         private ResultSet described;
 
-        /** The connection stand-in, built once. */
         private Connection connection;
 
-        /** The prepared-statement stand-in, built once. */
         private PreparedStatement prepared;
 
         Backend(JdbcTemplate template) {
@@ -459,14 +240,6 @@ class TranTypeRepositoryTest {
             return List.copyOf(patternsBound);
         }
 
-        /**
-         * Answers the metadata describe by driving the repository's own extractor over a stubbed,
-         * row-less result set - so the extractor under test is the one that runs.
-         *
-         * @param invocation the stubbed {@code query(String, ResultSetExtractor)} call
-         * @return whatever the repository's extractor produces
-         * @throws SQLException if the stubbed result set signals a driver failure
-         */
         private Object describe(InvocationOnMock invocation) throws SQLException {
             statementsSent.add(invocation.getArgument(0));
             requireReachable();
@@ -474,12 +247,6 @@ class TranTypeRepositoryTest {
             return extractor.extractData(describedResultSet());
         }
 
-        /**
-         * A row-less result set whose metadata describes the record-image column, built once.
-         *
-         * @return the described result set
-         * @throws SQLException never, but the stubbing API declares it
-         */
         private ResultSet describedResultSet() throws SQLException {
             if (described != null) {
                 return described;
@@ -501,12 +268,6 @@ class TranTypeRepositoryTest {
             return resultSet;
         }
 
-        /**
-         * The connection stand-in, whose {@code prepareStatement} captures the composed text.
-         *
-         * @return the connection stand-in
-         * @throws SQLException never, but the stubbing API declares it
-         */
         private Connection connection() throws SQLException {
             if (connection != null) {
                 return connection;
@@ -525,16 +286,6 @@ class TranTypeRepositoryTest {
             return stub;
         }
 
-        /**
-         * Answers a keyed read by evaluating the composed predicate, then driving the repository's
-         * own extractor over the matching rows.
-         *
-         * @param invocation the stubbed {@code query(PreparedStatementCreator, ResultSetExtractor)}
-         *                   call
-         * @return whatever the repository's extractor produces, or {@code null} when configured to
-         *         yield nothing
-         * @throws SQLException if the stubbed statement signals a driver failure
-         */
         private Object keyedRead(InvocationOnMock invocation) throws SQLException {
             PreparedStatementCreator creator = invocation.getArgument(0);
             preparedSql.clear();
@@ -545,7 +296,6 @@ class TranTypeRepositoryTest {
             statementsSent.add(statement);
             requireReachable();
             if (isUnreadableRowProbe(statement)) {
-                // The probe binds no operand: its predicate is IS NULL and names no key.
                 if (failingOnProbe) {
                     throw new DataAccessResourceFailureException(
                             "the unreadable-row probe cannot be answered");
@@ -568,12 +318,6 @@ class TranTypeRepositoryTest {
             return extractor.extractData(rowsResultSet(matching(pattern)));
         }
 
-        /**
-         * The rows a pattern selects, up to the limit the repository asks for.
-         *
-         * @param pattern the escaped {@code LIKE} pattern the repository bound
-         * @return the matching images, at most {@value #DUPLICATE_DETECTION_LIMIT} of them
-         */
         private List<String> matching(String pattern) {
             Pattern matcher = likeAsRegex(pattern);
             List<String> matches = new ArrayList<>();
@@ -588,13 +332,6 @@ class TranTypeRepositoryTest {
             return matches;
         }
 
-        /**
-         * A result set walking a list of record images, a {@code null} entry included.
-         *
-         * @param rows the images to walk
-         * @return the stubbed result set
-         * @throws SQLException never, but the stubbing API declares it
-         */
         private static ResultSet rowsResultSet(List<String> rows) throws SQLException {
             ResultSet resultSet = mock(ResultSet.class);
             int[] cursor = {-1};
@@ -604,11 +341,6 @@ class TranTypeRepositoryTest {
             return resultSet;
         }
 
-        /**
-         * The rows the dataset holds and cannot present: what {@code ... IS NULL} selects.
-         *
-         * @return one entry per seeded {@code null}, capped at the one row the probe asks for
-         */
         private List<String> unreadableRows() {
             List<String> unreadable = new ArrayList<>(1);
             for (String row : stored) {
@@ -620,16 +352,6 @@ class TranTypeRepositoryTest {
             return unreadable;
         }
 
-        /**
-         * Whether a statement is the unreadable-row probe rather than a keyed read.
-         *
-         * <p>Recognised by its trailing {@code IS NULL} predicate, which is the whole of
-         * {@link com.vsergeychik.carddemo.common.DatasetRelation#selectUnreadableRows(String)} and
-         * which this repository's only other statement - a keyed {@code LIKE} - never ends with.
-         *
-         * @param statement the statement the repository prepared
-         * @return whether it is the probe
-         */
         private static boolean isUnreadableRowProbe(String statement) {
             return statement.endsWith(" IS NULL");
         }
@@ -640,13 +362,6 @@ class TranTypeRepositoryTest {
             }
         }
 
-        /**
-         * Translates a SQL {@code LIKE} pattern into the regular expression it denotes, honouring the
-         * module's backslash escape so an escaped metacharacter is matched literally.
-         *
-         * @param like the pattern
-         * @return the equivalent regular expression
-         */
         private static Pattern likeAsRegex(String like) {
             StringBuilder regex = new StringBuilder(like.length() * 2);
             for (int index = 0; index < like.length(); index++) {
@@ -665,15 +380,9 @@ class TranTypeRepositoryTest {
         }
     }
 
-    // =============================================================================================
-    // LOAD-BEARING ASSERTION 1. TRAN-TYPE is PIC X(02): character data, not a number. This is the
-    // regression that would fail every single keyed read while compiling perfectly.
-    // =============================================================================================
-
     @Nested
     @DisplayName("TRAN-TYPE is a String, not an int: PIC X(02) is alphanumeric")
     class KeyIsCharacterData {
-
         @Test
         @DisplayName("the lookup takes a String, and offers no numeric overload to fall into")
         void theKeyIsDeclaredAsCharacterData() throws NoSuchMethodException {
@@ -797,7 +506,6 @@ class TranTypeRepositoryTest {
         @Test
         @DisplayName("a key whose text appears inside another record's description is not confused")
         void aDescriptionThatLooksLikeAKeyDoesNotMatch() {
-            // "01" occurs in the SECOND record's description, at an offset the key span excludes.
             TranTypeRepository repository = seeded(List.of(
                     image("09", "Nine"),
                     image("10", "01 looks like a key but is not one")));
@@ -836,15 +544,9 @@ class TranTypeRepositoryTest {
         }
     }
 
-    // =============================================================================================
-    // LOAD-BEARING ASSERTION 2. TRAN-TYPE-DESC decodes UNTRIMMED, because CBTRN03C:366 moves the
-    // 50-byte item into CVTRA07Y's PIC X(15) receiver and COBOL truncates on the right.
-    // =============================================================================================
-
     @Nested
     @DisplayName("TRAN-TYPE-DESC decodes untrimmed: all 50 bytes, padding included")
     class UntrimmedDescription {
-
         @Test
         @DisplayName("the description comes back at its full 50 characters, trailing spaces kept")
         void theDescriptionIsFiftyCharacters() {
@@ -913,9 +615,6 @@ class TranTypeRepositoryTest {
         @Test
         @DisplayName("a LEADING space survives, so trimming would land on different report bytes")
         void aLeadingSpaceMakesTheDifferenceObservable() {
-            // COBOL MOVE never strips a leading space, so a description that begins with one is the
-            // case where trim-versus-no-trim produces two DIFFERENT 15-character report fields -
-            // not merely a different intermediate value.
             TranTypeRepository repository = seeded(List.of(image("08", " Refund")));
 
             TranTypeRecord record = repository.readByTranType("08").record().orElseThrow();
@@ -977,15 +676,9 @@ class TranTypeRepositoryTest {
         }
     }
 
-    // =============================================================================================
-    // LOAD-BEARING ASSERTION 3. The 60-byte image, proved BY ADDITION from the copybook (practice
-    // B11), with FILLER present at offset 52 (gates G19, G21).
-    // =============================================================================================
-
     @Nested
     @DisplayName("The 60-byte image: 2 + 50 + 8, FILLER included")
     class SixtyByteImage {
-
         @Test
         @DisplayName("gate G19: the width is 60, re-derived by addition and never restated")
         void theWidthIsProvedByAddition() {
@@ -1179,15 +872,9 @@ class TranTypeRepositoryTest {
         }
     }
 
-    // =============================================================================================
-    // 0300-TRANTYPE-OPEN and 9300-TRANTYPE-CLOSE - app/cbl/CBTRN03C.cbl:430-446 and 569-585. Both
-    // report a status and neither ever abends: the DISPLAY and the abend are the caller's.
-    // =============================================================================================
-
     @Nested
     @DisplayName("open() and close() report a status and never abend")
     class OpenAndClose {
-
         @Test
         @DisplayName("a describable dataset opens with '00', exactly as IF TRANTYPE-STATUS = '00'")
         void aDescribableDatasetOpens() {
@@ -1346,23 +1033,14 @@ class TranTypeRepositoryTest {
         }
     }
 
-    // =============================================================================================
-    // LOAD-BEARING ASSERTION 4 (gate G47). 1500-B-LOOKUP-TRANTYPE, app/cbl/CBTRN03C.cbl:494-502.
-    // Every arm of the ladder is driven, and INVALID KEY is RETURNED - never thrown.
-    // =============================================================================================
-
     @Nested
     @DisplayName("readByTranType reproduces READ ... INVALID KEY, and reports rather than throws")
     class KeyedReadAndNotFound {
-
         @Test
         @DisplayName("gate G47: an absent key yields '23' WITHOUT throwing - the INVALID KEY arm")
         void anAbsentKeyIsReportedAndNeverThrown() {
             TranTypeRepository repository = seededWithFixture();
 
-            // The assertion gate G47 actually asks for: NOTHING escapes. Stated first and on its own,
-            // because a suite that only inspected the returned value would still pass if the method
-            // threw on some other key, and the display-and-abend sequence belongs to the caller.
             assertThatCode(() -> repository.readByTranType("99"))
                     .as("app/cbl/CBTRN03C.cbl:496-500 keeps the DISPLAY 'INVALID TRANSACTION TYPE : ', "
                             + "the MOVE 23 TO IO-STATUS, the rendered status line and the abend inside "
@@ -1401,10 +1079,6 @@ class TranTypeRepositoryTest {
         @Test
         @DisplayName("a matched row carrying no record image is reported, never treated as absent")
         void aMatchedRowWithNoRecordImageIsReported() {
-            // The driver is made to hand the matched row back although its column holds nothing, which real
-            // SQL cannot do - NULL LIKE ? is UNKNOWN. That is the point: this is the repository's defensive
-            // guard against a driver answering null for a column it declared non-null, and it is reached
-            // deliberately rather than by a stub that quietly mismodels SQL.
             JdbcTemplate template = mock(JdbcTemplate.class);
             List<String> withUnreadable = new ArrayList<>();
             withUnreadable.add(null);
@@ -1422,10 +1096,6 @@ class TranTypeRepositoryTest {
         @Test
         @DisplayName("finding DB-05: an unreadable row is not reported as INVALID KEY")
         void anUnreadableRowIsNotReportedAsAbsent() {
-            // A row the dataset holds and cannot present. TRAN-TYPE is the leading two bytes of the record
-            // image, so SQL evaluates the keyed LIKE against a null image as UNKNOWN and the read matches
-            // nothing - which looks exactly like INVALID KEY and is not: that row's key is unknowable and
-            // may be the one asked for. CBTRN03C:496-500 displays, moves 23 and abends on the claim.
             List<String> withUnreadable = new ArrayList<>(fixtureRows());
             withUnreadable.add(null);
 
@@ -1441,7 +1111,6 @@ class TranTypeRepositoryTest {
         @Test
         @DisplayName("finding DB-05: a genuinely absent key still reports '23'")
         void aGenuinelyAbsentKeyIsStillNotFound() {
-            // No row of the fixture is unreadable, so the absence is established rather than assumed.
             assertThat(seededWithFixture().readByTranType("99").status())
                     .isEqualTo(FileStatus.NOT_FOUND);
         }
@@ -1452,8 +1121,6 @@ class TranTypeRepositoryTest {
             List<String> withUnreadable = new ArrayList<>(fixtureRows());
             withUnreadable.add(null);
 
-            // A VSAM READ of a key that resolves does not fail because another record is damaged, so the
-            // proof is confined to the not-found path and no successful read pays for it.
             assertThat(seeded(withUnreadable).readByTranType("01").isFound()).isTrue();
         }
 
@@ -1733,18 +1400,9 @@ class TranTypeRepositoryTest {
         }
     }
 
-    // =============================================================================================
-    // THE NEGATIVE CONTRACT. A repository exposes only the access paths the COBOL actually performs.
-    // grep -n "TRANTYPE" over app/cbl finds three verbs and no more: OPEN INPUT (:432), READ (:495)
-    // and CLOSE (:571). An unused write path is a capability the legacy system does not have, and
-    // offering one invites a caller to use it - which is how a like-for-like migration acquires a
-    // feature nobody asked for.
-    // =============================================================================================
-
     @Nested
     @DisplayName("The negative contract: no write, no rewrite, no delete, no browse")
     class NegativeContract {
-
         @Test
         @DisplayName("no mutating or browsing operation is exposed at all")
         void noMutatingOrBrowsingOperationIsExposed() {
@@ -1809,15 +1467,9 @@ class TranTypeRepositoryTest {
         }
     }
 
-    // =============================================================================================
-    // CONSTRUCTION. Everything checkable about the configuration is checked at startup, and each
-    // guard is driven through BOTH arms so none of them is a branch this suite left untested.
-    // =============================================================================================
-
     @Nested
     @DisplayName("Construction is configuration-bound and refuses to guess")
     class Construction {
-
         @Test
         @DisplayName("gate G46: the dataset name comes from configuration and is returned unchanged")
         void theDatasetNameComesFromConfiguration() {
@@ -2018,18 +1670,6 @@ class TranTypeRepositoryTest {
             assertThat(repository.resolvedKeyedReadStatement()).isNull();
         }
 
-        /**
-         * Builds a binding with the geometry a guard is being driven through.
-         *
-         * @param recordLength the declared record width
-         * @param copybook     the declared copybook, or {@code null} to omit it
-         * @param organization the declared organization
-         * @param keyLength    the declared key length, or {@code null} to omit it
-         * @param keyOffset    the declared key offset, or {@code null} to omit it
-         * @param base         the declared base cluster, or {@code null} for a base entry
-         * @param dsname       the declared dataset name
-         * @return the binding
-         */
         private static DatasetBinding binding(int recordLength, String copybook, String organization,
                                               Integer keyLength, Integer keyOffset, String base,
                                               String dsname) {
@@ -2037,27 +1677,15 @@ class TranTypeRepositoryTest {
                     copybook, keyLength, keyOffset, base, null);
         }
 
-        /**
-         * Constructs a repository over a binding, with a template that is never reached.
-         *
-         * @param binding the binding under test
-         * @return the constructed repository, when the guards allow it
-         */
         private static TranTypeRepository construct(DatasetBinding binding) {
             return new TranTypeRepository(mock(JdbcTemplate.class), bindings(binding), ASCII,
                     RecordImageForm.CHARACTER);
         }
     }
 
-    // =============================================================================================
-    // THE OUTCOME TYPE. Three arms, and only three: an arm no caller could act on would misrepresent
-    // what this READ can do.
-    // =============================================================================================
-
     @Nested
     @DisplayName("ReadResult admits exactly the three arms this READ can produce")
     class ReadResultInvariants {
-
         @Test
         @DisplayName("every component is required")
         void everyComponentIsRequired() {
@@ -2183,15 +1811,9 @@ class TranTypeRepositoryTest {
         }
     }
 
-    // =============================================================================================
-    // WIRING AND SOURCE-LEVEL GATES. The assertions that hold over the repository's own source text
-    // rather than its behaviour - including the one about a dependency it deliberately does NOT have.
-    // =============================================================================================
-
     @Nested
     @DisplayName("Wiring, structural contracts and the source-level gates")
     class SourceLevelGates {
-
         @Test
         @DisplayName("gate G3: the class is a @Repository the component scan will discover")
         void theStereotypeIsWhatTheContainerScansFor() {
@@ -2270,18 +1892,6 @@ class TranTypeRepositoryTest {
                     .isEmpty();
         }
 
-        /**
-         * Whether a type can be published through a {@code volatile} write without a lock: it must have
-         * no mutable state of its own.
-         *
-         * <p>A {@link String} qualifies, and so does a record whose every component is itself deeply
-         * immutable - which is what the statement memo is. Anything else does not, because a caller
-         * reading the field could then observe it mid-mutation, and that is precisely the shared mutable
-         * state practice B9 and gate G53 forbid.
-         *
-         * @param type the field's declared type
-         * @return whether it is safe to publish through a volatile write
-         */
         private static boolean isDeeplyImmutable(Class<?> type) {
             if (type == String.class || type.isPrimitive()) {
                 return true;
@@ -2332,13 +1942,6 @@ class TranTypeRepositoryTest {
         @Test
         @DisplayName("the CobolDecimal dependency is DELIBERATELY absent: CVTRA03Y has no numeric item")
         void theCobolDecimalDependencyIsDeliberatelyAbsent() throws ClassNotFoundException {
-            // Resolved by name rather than imported, precisely so this suite does not acquire the
-            // dependency it is asserting the absence of. The lookup also proves the type EXISTS, which
-            // is what makes this an omission rather than a class that merely has not been written:
-            // rule R2 gives the module a single truncating fixed-point seam, and CVTRA03Y declares
-            // nothing for it to apply to. TRAN-TYPE X(02), TRAN-TYPE-DESC X(50), FILLER X(08) - three
-            // items, all alphanumeric, no signed decimal, no scale, no rounding decision. The same
-            // deliberate omission appears in card.model.CardRecord and card.model.CardXrefRecord.
             Class<?> cobolDecimal = Class.forName("com.vsergeychik.carddemo.common.CobolDecimal");
             assertThat(cobolDecimal.getPackageName())
                     .as("the fixed-point seam exists and is used where a PICTURE declares a scale - "
@@ -2385,11 +1988,6 @@ class TranTypeRepositoryTest {
         void thisSuiteIsSelfContained() {
             String source = suiteSource();
 
-            // Each forbidden token is assembled from fragments rather than written out, so that
-            // stating the prohibition here does not itself plant the very text being prohibited.
-            // The harness package IS named in this file's prose, deliberately, to explain the
-            // boundary - so what is asserted is the absence of an IMPORT of it and of any read of a
-            // case resource, which is what self-containment actually means.
             String harnessPackage = "com.vsergeychik.carddemo." + "par" + "ity";
             String caseResourcePath = "/" + "par" + "ity" + "/";
             String platformDefault = "Charset." + "defaultCharset";
@@ -2414,34 +2012,16 @@ class TranTypeRepositoryTest {
                     .doesNotContain(unnamedEncoding);
         }
 
-        /**
-         * The repository's own source text, located by walking upwards to the module descriptor so the
-         * check is independent of the directory the build was launched from.
-         *
-         * @return the file's contents
-         */
         private static String repositorySource() {
             return moduleSource("app/java/src/main/java/com/vsergeychik/carddemo/transaction/"
                     + "TranTypeRepository.java");
         }
 
-        /**
-         * This suite's own source text, for the self-containment assertion.
-         *
-         * @return the file's contents
-         */
         private static String suiteSource() {
             return moduleSource("app/java/src/test/java/com/vsergeychik/carddemo/transaction/"
                     + "TranTypeRepositoryTest.java");
         }
 
-        /**
-         * Reads a repository-relative source file, searching upwards from the working directory.
-         *
-         * @param repositoryRelativePath the path from the repository root
-         * @return the file's contents, decoded as UTF-8
-         * @throws IllegalStateException if the file is not found at or above the working directory
-         */
         private static String moduleSource(String repositoryRelativePath) {
             Path candidate = Path.of("").toAbsolutePath();
             while (candidate != null) {

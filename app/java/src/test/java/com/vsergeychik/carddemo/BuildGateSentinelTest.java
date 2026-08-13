@@ -17,110 +17,33 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 /**
- * The build gate's sentinel: it proves that the suite the build claims to have run is actually the
- * suite this module contains.
- *
- * <h2>The failure mode this exists to close</h2>
- * <p>{@code mvn clean verify} is the single documented gating command, and its two halves can stand
- * down together and still report success. maven-surefire-plugin is content to find no test at all
- * unless {@code failIfNoTests} says otherwise; jacoco-maven-plugin's {@code check} goal
- * <em>skips its rules outright</em> when no execution data file was produced, which is precisely
- * what happens when nothing ran. A mis-scoped {@code <includes>}, a broken discovery configuration,
- * a renamed source root or a test-compile failure that was swallowed therefore yields a green build
- * over zero evidence - and for a parity gate stated as "diff count = 0", a suite that never ran
- * reports exactly the number the gate wants to see.
- *
- * <p>{@code failIfNoTests=true} in {@code app/java/pom.xml} closes the total case: <em>no</em> tests
- * fails the build. This class closes the partial case, which is the one that actually happens: the
- * suite ran, but it was a fraction of the module. The two are complementary and neither substitutes
- * for the other.
- *
- * <h2>How it checks, and why this way</h2>
- * <p>It enumerates the compiled {@code *Test.class} files in the module's own test output directory,
- * located through this class's own {@link URL} rather than through the process working directory, so
- * the check is hermetic and does not care where the build was launched from. Two assertions follow, and
- * <strong>neither is a count</strong>:
- * <ul>
- *   <li><strong>One gate per program that ships cases.</strong> The required set of parity suites is
- *       <em>generated</em> from the shipped corpus at {@code src/test/resources/parity/}: every program
- *       directory there must have a matching {@code <PROGRAM>ParityTest} in the build output. A
- *       hand-maintained list names what somebody remembered; a generated one cannot fall behind the
- *       corpus it is derived from, so adding a program is one directory and one class rather than a
- *       third edit somewhere else.</li>
- *   <li><strong>The named suites that carry the acceptance gates.</strong> The parity contract and the
- *       deterministic judge that computes the diff count, and the four foundational suites that pin
- *       numeric truncation, fixed-width byte layout, the IBM-supplied AID constants and the date
- *       utility's 80-byte contract. These carry gates that no parity case can carry for them.</li>
- * </ul>
- *
- * <h2>What this half cannot prove, and where the other half is</h2>
- * <p>This class runs <em>inside</em> the test run, so the only thing it can inspect is the build
- * output - which means it proves the suite was <strong>compiled</strong>. Compilation is not execution.
- * A suite can compile and never run, and then the parity gate reports the diff count of zero it wants
- * to see because nothing computed one. That claim needs the runner's own record of what it executed,
- * and that record is only complete after the run finishes, so it is checked in
- * {@link ExecutedSuiteInventoryVerification} - a second execution of the same surefire plugin, bound to
- * a later phase. The two are complementary: this one proves the module CONTAINS its suite, that one
- * proves the suite RAN. It used to be a floor of sixty compiled classes against the hundred and
- * ninety-four that exist, which proved neither.
- *
- * <p>Nothing here reads the wall clock, opens a network connection or writes a file, and there is no
- * static mutable state: the inventories are recomputed per test method from the build output.
+ * The build gate's sentinel: it proves that the suite the build claims to have run is actually the suite
+ * this module contains.
  */
 @DisplayName("Build gate sentinel - the suite that ran is the suite this module contains")
 class BuildGateSentinelTest {
-
-    /** The suffix maven-surefire-plugin's default includes match on. */
     private static final String TEST_CLASS_SUFFIX = "Test.class";
 
-    /** The suffix of a parity gate class, one per migrated COBOL program. */
     private static final String PARITY_TEST_SUFFIX = "ParityTest";
 
-    /** The package the parity gates live in. */
     private static final String PARITY_PACKAGE = "com.vsergeychik.carddemo.parity.";
 
-    /** The classpath resource directory holding one sub-directory of cases per program. */
     private static final String PARITY_RESOURCE_ROOT = "parity";
 
-    /**
-     * The one compiled {@code *ParityTest} that names no COBOL program.
-     *
-     * <p>{@code FieldDifferByteParityTest} is the differ's own byte-level self-test - it drives the judge
-     * against planted differences rather than a translated program - so it has no case directory and must
-     * not be required to have one.
-     */
     private static final String NON_PROGRAM_PARITY_SUITE = "FieldDifferByte";
 
-    /**
-     * The suites whose absence would empty the acceptance gates of meaning, named as fully qualified
-     * class names.
-     *
-     * <p>Each earns its place by the gate it carries, not by being important in general:
-     * {@code ParityCaseTest} and {@code FieldDifferTest} are the only checks on the case contract
-     * and on the deterministic judge that computes the diff count the module gate is stated in;
-     * {@code CobolDecimalTest} is the only check that rounding truncates toward zero rather than
-     * half-rounding; {@code FixedWidthCodecTest} is the only check on the byte-level pad, fill and
-     * sign-overpunch rules every record layout rests on; {@code CicsAidTest} pins the AID constants
-     * reproduced from IBM documentation because the copybook is absent from this repository; and
-     * {@code DateUtilityJobTest} pins the exact 80-byte composed message of the called date
-     * subprogram.
-     *
-     * <p>The list grows as the module does. It names the gate-carrying suites that exist, so adding
-     * an entry is part of adding such a suite rather than an afterthought - and an entry naming a
-     * suite that does not exist yet would fail the build for a reason no one can act on.
-     */
     private static final List<String> REQUIRED_SUITES = List.of(
         "com.vsergeychik.carddemo.parity.ParityCaseTest",
         "com.vsergeychik.carddemo.parity.FieldDifferTest",
         "com.vsergeychik.carddemo.common.CobolDecimalTest",
         "com.vsergeychik.carddemo.common.FixedWidthCodecTest",
         "com.vsergeychik.carddemo.common.CicsAidTest",
-        "com.vsergeychik.carddemo.util.DateUtilityJobTest");
+        "com.vsergeychik.carddemo.util.DateUtilityJobTest",
+        "com.vsergeychik.carddemo.SourceHygieneGateTest");
 
     @Nested
     @DisplayName("One gate per program that ships cases")
     class GatePerProgram {
-
         @Test
         @DisplayName("every program shipping a case directory has a compiled parity gate")
         void everyShippedProgramHasACompiledGate() {
@@ -172,7 +95,6 @@ class BuildGateSentinelTest {
     @Nested
     @DisplayName("Suites the acceptance gates depend on")
     class RequiredSuites {
-
         @Test
         @DisplayName("every named gate-carrying suite is present in the build output")
         void everyRequiredSuiteIsPresent() {
@@ -205,7 +127,6 @@ class BuildGateSentinelTest {
     @Nested
     @DisplayName("The generated inventory itself")
     class TheGeneratedInventory {
-
         @Test
         @DisplayName("the shipped programs are distinct, non-blank, and named as COBOL programs are")
         void theShippedProgramInventoryIsWellFormed() {
@@ -237,21 +158,12 @@ class BuildGateSentinelTest {
         }
     }
 
-    /**
-     * Every compiled test class in this module's test output directory, as fully qualified class
-     * names, sorted so a failure message reads the same way on every machine.
-     *
-     * @return the discovered class names, never {@code null}
-     */
     private static List<String> discoveredTestClasses() {
         Path root = testClassesRoot();
         try (Stream<Path> tree = Files.walk(root)) {
             List<String> names = new ArrayList<>();
             tree.filter(Files::isRegularFile)
                 .filter(path -> path.getFileName().toString().endsWith(TEST_CLASS_SUFFIX))
-                // A @Nested inner suite compiles to Outer$Inner.class. Counting those would inflate
-                // the number several fold and make the floor meaningless, so only top-level suites
-                // are counted - which is also the unit surefire discovers.
                 .filter(path -> !path.getFileName().toString().contains("$"))
                 .forEach(path -> names.add(toClassName(root, path)));
             names.sort(String::compareTo);
@@ -262,11 +174,6 @@ class BuildGateSentinelTest {
         }
     }
 
-    /**
-     * Every compiled parity gate, reduced to the program name it covers.
-     *
-     * @return the program names, sorted
-     */
     private static List<String> compiledParityGates() {
         return discoveredTestClasses().stream()
             .filter(name -> name.startsWith(PARITY_PACKAGE) && name.endsWith(PARITY_TEST_SUFFIX))
@@ -276,16 +183,6 @@ class BuildGateSentinelTest {
             .toList();
     }
 
-    /**
-     * Every program that ships a case directory, read from the classpath rather than from a list.
-     *
-     * <p>This is the generated half of the inventory, and generating it is the point: a hand-maintained
-     * list of programs would name what somebody remembered at the time, and a program added to the
-     * corpus without a matching edit would go unnoticed - which is exactly the omission this class
-     * exists to catch.
-     *
-     * @return the program names in ascending order, or empty when the corpus is not on the classpath
-     */
     private static List<String> programsShippingCases() {
         URL root = BuildGateSentinelTest.class.getClassLoader().getResource(PARITY_RESOURCE_ROOT);
         if (root == null) {
@@ -310,23 +207,11 @@ class BuildGateSentinelTest {
         }
     }
 
-    /**
-     * Converts a compiled class file under the test output root into its fully qualified class name.
-     *
-     * <p>The caller has already excluded nested suites, so every path reaching here names a
-     * top-level class.
-     */
     private static String toClassName(Path root, Path classFile) {
         String relative = root.relativize(classFile).toString().replace(File.separatorChar, '.');
         return relative.substring(0, relative.length() - ".class".length());
     }
 
-    /**
-     * The module's test output directory, located from this class's own code source rather than from
-     * the process working directory.
-     *
-     * @return the {@code target/test-classes} directory this class was loaded from
-     */
     private static Path testClassesRoot() {
         URL location = BuildGateSentinelTest.class.getProtectionDomain().getCodeSource().getLocation();
         try {

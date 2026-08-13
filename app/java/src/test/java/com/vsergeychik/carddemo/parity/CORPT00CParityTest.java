@@ -49,228 +49,35 @@ import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.MethodSource;
 
 /**
- * The parity gate for {@code app/cbl/CORPT00C.cbl} - twenty declarative cases, judged field by field,
- * with a required diff count of zero.
- *
- * <h2>Risk R-A: the baseline is statically derived, never captured</h2>
- *
- * <p>Every expected value in {@code src/test/resources/parity/CORPT00C/} was produced by <strong>reading
- * the COBOL</strong> - the seventeen {@code PIC X(80)} {@code VALUE} items of {@code 02 JOB-DATA-1} at
- * {@code :83-125}, the message literals at their own source lines, the symbolic map
- * {@code app/cpy-bms/CORPT00.CPY}, the mapset {@code app/bms/CORPT00.bms}, the queue definition at
- * {@code app/csd/CARDDEMO.CSD:499-505} and the job {@code app/jcl/TRANREPT.jcl} the emitted stream
- * submits. <strong>None of it was captured from a running COBOL program</strong>, because running one is
- * impossible in this environment. Practice B12 requires that limit to be stated where the expectations
- * live rather than absorbed silently, so it is stated here, and three of the recorded blockers land
- * directly on this program: there is no CICS emulator, so a program whose every {@code EXEC CICS} command
- * is {@code WRITEQ TD}, {@code SEND}, {@code RECEIVE}, {@code RETURN} or {@code XCTL} cannot be executed
- * at any level; the IBM-supplied {@code DFHAID} and {@code DFHBMSCA} copybooks it copies at {@code :148}
- * and {@code :149} are absent from this repository (risk R-D), so their constants are reproduced in
- * {@link CicsAid} and {@link BmsAttributes} from IBM CICS documentation; and no Language Environment
- * {@code CEE*} service exists, which is what {@code CSUTLDTC} - called from {@code :392} and {@code :412}
- * - is a wrapper around.
- *
- * <p>Because a statically derived expectation can encode a misreading where a captured one cannot, every
- * case's {@code description} names the source lines it was derived from, and the nested classes below
- * re-derive the widths, the offsets and the AID mapping <em>mechanically</em> from the published layouts
- * instead of restating them as literals.
- *
- * <h2>The documented substitution: Java has no transient data queue</h2>
- *
- * <p>{@code CORPT00C} submits its batch job with {@code EXEC CICS WRITEQ TD QUEUE('JOBS')} at
- * {@code :517}. Java has no transient data queue and no internal reader, so that command is reproduced
- * through an explicit outbound port, {@link JobSubmissionPort} - and this is a <strong>documented
- * substitution, not a silent one</strong>. What is substituted is the transport; what is <em>not</em>
- * substituted is a single byte of the content:
- *
- * <ul>
- *   <li>{@code app/csd/CARDDEMO.CSD:499-505} defines the queue as {@code TYPE(EXTRA)}
- *       {@code DDNAME(INREADER)} {@code TYPEFILE(OUTPUT)} {@code RECORDSIZE(80)}
- *       {@code RECORDFORMAT(FIXED)} {@code BLOCKFORMAT(UNBLOCKED)} {@code DISPOSITION(MOD)}
- *       {@code ERROROPTION(IGNORE)}. Every one of those attributes is asserted here: the width, one
- *       record per block with nothing between them, append rather than truncate, and an outcome
- *       <em>reported</em> to the caller rather than thrown at it.</li>
- *   <li>All seventeen records are pinned <strong>byte for byte and in emission order</strong>, each at
- *       exactly {@value ReportRequestController#JCL_RECORD_LENGTH} characters, through the parity case
- *       model itself - as writes to the dataset key {@code JOBS} against a single-span
- *       {@code JCL-RECORD PIC X(80)} layout. A record short by one byte fails, a record out of order
- *       fails, and a record the program never produced is reported as unexpected output. That is
- *       gate G42.</li>
- *   <li>Record fifteen is not merely a record: it <strong>is</strong> the {@code DATEPARM} record that
- *       {@link DateParmReader} consumes on the batch side, so {@link TheDateParmHandOff} reads it back
- *       through that reader's own twenty-one byte receiver and requires the range to be the one the
- *       request asked for. This is the single place in the migration where an online program's output
- *       is a batch program's input, and the round trip is the strongest available proof that the two
- *       halves agree.</li>
- * </ul>
- *
- * <h2>What the twenty cases pin</h2>
- *
- * <p><strong>This program accesses no dataset.</strong> It is the only one of the seventeen online
- * programs with no file command at all - it declares {@code WS-TRANSACT-FILE PIC X(08) VALUE 'TRANSACT'}
- * at {@code :40} and never opens it - so every case seeds nothing and the whole fingerprint is the
- * response, the emitted stream, the two message channels and the two {@code DISPLAY} statements.
- *
- * <p>Between them the cases drive: the {@code EIBCALEN = 0} guard; first entry, where
- * {@code MOVE LOW-VALUES TO CORPT0AO} clears all seventeen items; all three arms of the ordered
- * {@code EVALUATE EIBAID} including {@code WHEN OTHER}; all three arms of the ordered report-type
- * {@code EVALUATE} plus its {@code WHEN OTHER}; the monthly month-end derivation at a thirty-one day
- * month, a thirty-day month and December, where the arm's own year roll-over runs - the leap and common
- * February forms of that same derivation are pinned mechanically by {@link TheDateIntrinsics} rather
- * than by a case, so no fixture spends its scenario on them; the yearly arm, whose range is built from
- * literals alone and reaches neither date intrinsic; the first arm of the six-arm blank chain - its five
- * lower arms are pinned mechanically by {@link TheScreenContract} for the same reason, so no fixture
- * spends its scenario on them either; {@code FUNCTION NUMVAL-C} accepting an embedded space and
- * rejecting a non-conforming argument through <em>both</em> of its receivers; the character comparison
- * {@code SDTMMI > '12'}; all three
- * {@code CSUTLDTC} outcomes - converted, the tolerated {@code '2513'}, and rejected; the confirm prompt,
- * <em>both</em> spellings of the {@code 'Y' OR 'y'} arm, the {@code 'N'} arm, and a queue that refuses
- * the first record; and the success notice with {@code DFHGREEN} on {@code ERRMSGC}.
- *
- * <p>The unit is {@link ReportRequestController}, constructed as a <strong>plain Java object</strong>
- * and called through {@code mainPara} directly. There is no {@code MockMvc}, no
- * {@code TestRestTemplate}, no {@code WebTestClient}, no servlet container and no {@code JobLauncher}
- * anywhere in the path, so every decision this program makes is reached with nothing between the
- * assertion and the arithmetic (gate G51). The {@code transaction} package created no service beneath
- * this controller, which is why the controller itself is the unit and why the case model records it as
- * {@link UnitKind#CONTROLLER_POJO}.
- *
- * <p>No server-side state is created, read or relied upon: the communication area, the attention
- * identifier and the seventeen screen values all travel in the payload, and the response's
- * {@code navigation}, {@code nextProgram}, {@code nextMapset} and {@code nextMap} are compared as
- * ordinary fields (gates G37, G40). Nothing in this class is {@code static} and mutable (gate G53), no
- * import is a wildcard (gate G52), no {@code double} or {@code float} appears (gate G22), and no
- * {@code String} is encoded or decoded without a named code page (practice B8) - the code page is the
- * one the case declares, taken from {@link ParityHarness.Invocation#charset()}.
- *
- * <p>There is no monetary arithmetic in this program to compare - it declares
- * {@code WS-TRAN-AMT PIC +99999999.99} at {@code :77} and never references it, and its only two numeric
- * receivers are the unsigned integers {@code WS-NUM-99 PIC 99} and {@code WS-NUM-9999 PIC 9999}. Numeric
- * parity is therefore asserted where it <em>is</em> observable: the six
- * {@code COMPUTE ... FUNCTION NUMVAL-C} stores at {@code :305-327} go through
- * {@link CobolDecimal#storeAtPicture(BigDecimal, int, int)}, and because the keyword {@code ROUNDED}
- * appears zero times in this program they must <strong>truncate</strong> the fraction rather than round
- * it - so {@code 7.9} stores as {@code 7} and the map item shows {@code "07"}, never {@code "08"} (rule
- * R2, gate G24).
- *
- * @see ParityHarness for how a case is seeded, run and fingerprinted
- * @see FieldDiffer for the field-by-field comparison the diff count comes from
- * @see CSUTLDTCParityTest which owns the nine-token {@code CEEDAYS} table this class relies on
+ * The parity gate for {@code app/cbl/CORPT00C.cbl} - twenty declarative cases, judged field by field, with
+ * a required diff count of zero.
  */
 @DisplayName("CORPT00C parity - transaction CR00, and seventeen eighty-byte records for the reader")
 final class CORPT00CParityTest {
-
-    /**
-     * The program under test, which is also the name of its case directory:
-     * {@code src/test/resources/parity/CORPT00C/}.
-     */
     private static final String PROGRAM = "CORPT00C";
 
-    /**
-     * {@code CORPT00C} is a CICS online program and the migration gives it a controller with no service
-     * beneath it, so the unit a case reaches is the controller itself, constructed as a plain object.
-     */
     private static final UnitKind UNIT_KIND = UnitKind.CONTROLLER_POJO;
 
-    /**
-     * The dataset binding key the emitted records are recorded under.
-     *
-     * <p>{@code app/csd/CARDDEMO.CSD:499} defines {@code TDQUEUE(JOBS)}, so {@code JOBS} is the queue's
-     * own name rather than a name invented here, and it is a binding key rather than a dataset name -
-     * the destination the port actually appends to comes from {@code carddemo.job-submission} in
-     * configuration, and no mainframe dataset-name literal is written anywhere in this file (gate G46).
-     */
     private static final String QUEUE_DATASET = "JOBS";
 
-    /** {@code JCL-RECORD PIC X(80)} - {@code app/cbl/CORPT00C.cbl:79}, the one span of a queue record. */
     private static final String JCL_RECORD_FIELD = "JCL-RECORD";
 
-    /**
-     * One queue record as a fixed-width layout: a single {@code PIC X(80)} span and nothing else.
-     *
-     * <p>Eighty bytes is not this class's choice twice over - it is
-     * {@link ReportRequestController#JCL_RECORD_LENGTH}, which is itself {@code :79}'s declared width and
-     * the queue's {@code RECORDSIZE(80)}. {@link RecordLayout} runs a geometry self-check on
-     * construction, so declaring the layout here is what proves the span accounts for all eighty bytes;
-     * a mistyped width would fail this field's initialisation and name the offending descriptor.
-     */
     private static final RecordLayout JCL_RECORD_LAYOUT = RecordLayout.of(
             ReportRequestController.JCL_RECORD_LENGTH,
             FieldSpan.alphanumeric(JCL_RECORD_FIELD, 0, ReportRequestController.JCL_RECORD_LENGTH));
 
-    /**
-     * The symbolic-map length item {@code MOVE -1} writes into, expressed as the suffix the copybook
-     * itself uses rather than as a literal per field.
-     */
     private static final String LENGTH_ITEM_SUFFIX = "L";
 
-    /**
-     * {@code app/cpy/COCOM01Y.cpy} is 160 bytes, and the {@code XCTL} at {@code :549} and the
-     * {@code RETURN} at {@code :589} both pass exactly that area - this program declares no extension of
-     * its own, unlike the transaction-list screens.
-     */
     private static final int COMMAREA_LENGTH = NavigationContext.COMMAREA_LENGTH;
 
-    /**
-     * The case the {@code DATEPARM} hand-off is read off a real run of.
-     *
-     * <p>It has to be one that both selects the monthly report <em>and</em> confirms it, because the
-     * guard at {@code app/cbl/CORPT00C.cbl:464} sends the confirmation prompt and returns to CICS: an
-     * unconfirmed case hands the queue nothing at all, which is exactly what {@code case06} - the
-     * monthly arm's blank-confirm prompt - and {@code case20} - its {@code 'N'} refusal - are for.
-     * {@code case10} is the December monthly confirmation, so reading the hand-off off it carries the
-     * arm's own year-roll at {@code :225-227} through record fifteen as well.
-     *
-     * <p>Named here rather than written at the call site so that the case, the range it produces and the
-     * reason for the choice sit together, and so the precondition the test states can quote it.
-     */
     private static final String MONTHLY_CONFIRMED_CASE = ParityHarness.caseId(10);
 
-    /**
-     * The first day of the month {@link #MONTHLY_CONFIRMED_CASE}'s pinned clock falls in, which
-     * {@code :217-219} compose from {@code WS-CURDATE-YEAR}, {@code WS-CURDATE-MONTH} and the literal
-     * {@code '01'}.
-     *
-     * <p>The year is 2022 because that is the year every shipped case pins - the source revision this
-     * migration was derived from is stamped {@code Ver: CardDemo_v1.0-15-g27d6c6f-68 Date: 2022-07-19},
-     * which is also {@link ParityHarness#DEFAULT_PINNED_CLOCK}. {@code case10} pins
-     * {@code 2022-12-10T09:05:00}, so this pair and that fixture read the same instant and neither can
-     * drift without the other failing.
-     */
     private static final String MONTHLY_CONFIRMED_START = "2022-12-01";
 
-    /**
-     * The last day of that same month, which {@code :223-230} reach by moving 1 into the day, adding 1
-     * to the month - rolling the year, since the month is December - and subtracting a single day
-     * through {@code FUNCTION DATE-OF-INTEGER} of {@code FUNCTION INTEGER-OF-DATE}.
-     *
-     * <p>Note where the year ends up. The roll-over at {@code :226} carries it FORWARD to 2023 so that
-     * the intrinsic pair is applied to 1 January 2023, and the {@code - 1} at {@code :230} then carries
-     * it BACK, which is why the answer is a 2022 date and not a 2023 one.
-     */
     private static final String MONTHLY_CONFIRMED_END = "2022-12-31";
 
-    /**
-     * The value that confirms, taken from the controller's own constant rather than re-typed, so the
-     * precondition below cannot drift from the arm it is about ({@code :478}).
-     */
     private static final String CONFIRMED = ReportRequestController.CONFIRM_YES_UPPER;
 
-    // =================================================================================================
-    // The gate.
-    // =================================================================================================
-
-    /**
-     * The program's twenty cases, in ascending case order.
-     *
-     * <p>{@link ParityHarness#casesOf(String)} is the only loader used, and it refuses anything other
-     * than exactly {@code case01.json} through {@code case20.json} - a short set, a long set, or a
-     * directory holding a stray file all fail loudly there. The checks below state the count, the
-     * numbering and the unit kind a second time at the call site, so a reader of this class can see what
-     * the gate requires without following the call (gate G15).
-     *
-     * @return exactly twenty cases
-     */
     static List<ParityCase> cases() {
         List<ParityCase> loaded = ParityHarness.casesOf(PROGRAM);
 
@@ -322,16 +129,6 @@ final class CORPT00CParityTest {
         return loaded;
     }
 
-    /**
-     * Runs one case and requires the differ to find nothing.
-     *
-     * <p>The assertion is on the whole {@link DiffResult} rather than on a boolean, so a failure reports
-     * the count and then every difference the differ found, each naming the field, the expected value,
-     * the observed value and why the field matters. That rendering is the differ's work and is surfaced
-     * verbatim rather than summarised.
-     *
-     * @param parityCase one of the twenty cases
-     */
     @ParameterizedTest(name = "{0}")
     @MethodSource("cases")
     @DisplayName("field-for-field identical to app/cbl/CORPT00C.cbl")
@@ -351,32 +148,6 @@ final class CORPT00CParityTest {
                 .isTrue();
     }
 
-    // =================================================================================================
-    // The adapter: how a case reaches CORPT00C. No HTTP, no job launcher, no session (gates G37, G51).
-    // =================================================================================================
-
-    /**
-     * Constructs {@link ReportRequestController} as a plain object and calls its {@code MAIN-PARA}
-     * method once.
-     *
-     * <p>One invocation is one CICS task. The four constructor arguments are supplied explicitly and
-     * none of them is a mock of the unit's own logic:
-     *
-     * <ul>
-     *   <li>a real {@link DateUtilityJob}, because {@code CSUTLDTC} is a called subprogram and its
-     *       severity and message number are what {@code :396} and {@code :416} branch on. Stubbing it
-     *       would replace the decision under test with the decision the stub was told to make;</li>
-     *   <li>a capturing {@link CapturedJobsQueue}, which is the transient data queue's stand-in and
-     *       enforces the eighty-byte contract itself rather than trusting its caller;</li>
-     *   <li>the case's pinned clock, so the two header items {@code POPULATE-HEADER-INFO} builds at
-     *       {@code :613-628} and the month end the monthly arm derives at {@code :229-230} are
-     *       comparable byte for byte and the run is deterministic (practice B7);</li>
-     *   <li>the case's code page, never the platform default (practice B8).</li>
-     * </ul>
-     *
-     * @param invocation the clocked invocation the harness prepared
-     * @return the fingerprint of that one run
-     */
     private static ParityHarness.UnitOutcome execute(ParityHarness.Invocation invocation) {
         CapturedJobsQueue queue = new CapturedJobsQueue(invocation);
         ReportRequestController controller = new ReportRequestController(
@@ -391,25 +162,6 @@ final class CORPT00CParityTest {
         return fingerprintOf(invocation, state);
     }
 
-    /**
-     * Assembles the request from the three things {@code CORPT00C} is driven by.
-     *
-     * <p>{@code EIBCALEN = 0} is expressed by leaving the communication area absent, which is what the
-     * translation reads {@code :172} as: a request with no area cannot say who called, and that is the
-     * whole content of the condition. A case declaring {@code eibcalen: 0} therefore produces a request
-     * carrying no {@link NavigationContext} at all rather than one carrying a blank area, and the two are
-     * not the same state.
-     *
-     * <p>For a non-zero length the area is assembled through the codec from the field images the case
-     * declares and then parsed back by the domain type. That is
-     * {@code MOVE DFHCOMMAREA(1:EIBCALEN) TO CARDDEMO-COMMAREA} done the way the copybook describes it:
-     * the case names fields, the codec lays them out at their declared offsets and widths, and a field
-     * the case does not name keeps the initialised content its {@code PICTURE} gives it. Nothing here
-     * decides what a field means.
-     *
-     * @param invocation the invocation being run
-     * @return the inbound screen
-     */
     private static ReportRequestRequest requestOf(ParityHarness.Invocation invocation) {
         ReportRequestRequest request = ReportRequestRequest.empty();
         FixedWidthCodec codec = invocation.codec();
@@ -421,11 +173,6 @@ final class CORPT00CParityTest {
             request = request.withoutNavigationContext();
         }
 
-        // EIBAID. The case declares a DFHAID mnemonic, which is what a reader of the case needs to see;
-        // the payload projects the resolved five-character token, because that is what this screen's
-        // request DTO carries. An undeclared AID leaves the request's own initialised value - five
-        // spaces - which the translation reads as DFHNULL, the AID CICS reports when no key raised the
-        // interrupt and one that matches neither of the two arms :185 and :187 name.
         String token = aidTokenOf(invocation.aid());
         if (token != null) {
             request = request.withAid(token);
@@ -437,28 +184,6 @@ final class CORPT00CParityTest {
         return request;
     }
 
-    /**
-     * The one-character {@code EIBAID} image a {@code DFHAID} mnemonic resolves to, as the payload
-     * carries it.
-     *
-     * <p>One indirection, and it is deliberate: {@code DFHAID} is IBM-supplied and absent from this
-     * repository (risk R-D), so {@link CicsAid} is the single reproduction of it and the
-     * mnemonic-to-byte correspondence is read from there rather than restated. The byte is then rendered
-     * by {@link PfKeyResolver#aidImage(byte)} as the one character whose code point <em>is</em> that
-     * byte, which is the shape the payload carries.
-     *
-     * <p>It is <strong>not</strong> folded to a {@code CCARD-AID} token. {@code CORPT00C} does not copy
-     * {@code app/cpy/CSSTRPFY.cpy} - it tests {@code EIBAID} inline at {@code :184-195} - and that
-     * copybook maps {@code DFHPF13}-{@code DFHPF24} onto {@code 'PFK01'}-{@code 'PFK12'}, so a token
-     * cannot say which key of a pair was pressed. Carrying the byte also lets a case name any key at all,
-     * including {@code DFHPA3}, which the fold has no branch for; each such key matches neither of the
-     * program's two named values and so reaches {@code WHEN OTHER} at {@code :190}, which is exactly
-     * where it belongs.
-     *
-     * @param mnemonic the mnemonic the case declared, or {@code null} for a path that reads no AID
-     * @return the one-character image, or {@code null} when the case declared no AID
-     * @throws IllegalArgumentException if the mnemonic names no constant {@link CicsAid} reproduces
-     */
     private static String aidTokenOf(String mnemonic) {
         if (mnemonic == null) {
             return null;
@@ -473,18 +198,6 @@ final class CORPT00CParityTest {
                 + "same map, so this means they have drifted apart.");
     }
 
-    /**
-     * The screen field one {@code xxxI} item name refers to.
-     *
-     * <p>Resolved against {@link ReportRequestRequest.ScreenField#inputItem()} rather than against a
-     * seventeen-way table of literals, because the item name is derived from the {@code DFHMDF} label by
-     * the copybook's own suffix rule - so a resolution cannot disagree with the copybook, whereas
-     * seventeen hand-copied literals could.
-     *
-     * @param inputItem the {@code xxxI} name the case declared
-     * @return the field it names
-     * @throws IllegalArgumentException if the name is not one of the seventeen, listing the declared set
-     */
     private static ReportRequestRequest.ScreenField screenFieldOf(String inputItem) {
         List<String> declared = new ArrayList<>(ReportRequestRequest.FIELD_COUNT);
         for (ReportRequestRequest.ScreenField field : ReportRequestRequest.ScreenField.values()) {
@@ -499,63 +212,19 @@ final class CORPT00CParityTest {
                 + "attribute metadata and are not payload fields, so they are not settable from a case.");
     }
 
-    /**
-     * Requires the queue's own record of what it was handed to match the program's own record of what it
-     * handed over.
-     *
-     * <p>The two are kept independently on purpose. {@link ProgramState#submittedRecords()} is the
-     * program's account - it appends a record once the record has been handed over, whatever the queue
-     * then reported, because {@code DISPOSITION(MOD)} means there is no rollback. The queue's list is the
-     * transport's account. A translation that recorded a submission it never made, or made one it never
-     * recorded, would satisfy one of the two and not the other, and everything downstream of this - the
-     * seventeen pinned records included - is projected from the program's account.
-     *
-     * @param queue the capturing queue the run went through
-     * @param state the working storage as it stood when the task ended
-     */
     private static void requireQueueAgreesWithProgram(CapturedJobsQueue queue, ProgramState state) {
         assertThat(queue.records())
-                .as("the records the port was handed and the records WIRTE-JOBSUB-TDQ recorded must be "
+                .as("the records the queue ACCEPTED and the records WIRTE-JOBSUB-TDQ recorded must be "
                         + "the same list in the same order: app/cbl/CORPT00C.cbl:517 hands one record to "
-                        + "the queue per iteration of the loop at :498-508, and nothing else writes")
+                        + "the queue per iteration of the loop at :498-508, nothing else writes, and only "
+                        + "the DFHRESP(NORMAL) arm of the EVALUATE at :525-535 appended anything")
                 .containsExactlyElementsOf(state.submittedRecords());
+        assertThat(queue.attempts())
+                .as("and every hand-off is accounted for: a refused write is an attempt that appended "
+                        + "nothing, so the attempt count is the accepted count plus the refusals")
+                .isGreaterThanOrEqualTo(state.submittedRecords().size());
     }
 
-    // =================================================================================================
-    // Projecting the run into a fingerprint.
-    // =================================================================================================
-
-    /**
-     * Everything one execution of {@code CORPT00C} leaves behind that a case can compare.
-     *
-     * <p>Four channels, and the second is the one this program exists for:
-     *
-     * <ol>
-     *   <li>the online response - the screen, the navigation context, the next program, the mapset and
-     *       map, the cursor and the termination;</li>
-     *   <li>the eighty-byte records handed to the queue, in emission order, recorded against the
-     *       {@code JCL-RECORD} layout so the differ compares them as records rather than as one opaque
-     *       1,360-character string. They are recorded <em>only</em> when at least one was handed over:
-     *       the queue is {@code OPENTIME(INITIAL)} and this program issues no {@code OPEN}, so
-     *       "opened and wrote nothing" is not a state it can be in, and reporting the dataset with zero
-     *       rows would assert something the COBOL never does;</li>
-     *   <li>{@code WS-MESSAGE} at its declared {@code PIC X(80)} and {@code ERRMSGO} at its declared
-     *       {@code PIC X(78)}, reported as two separate channels. {@code MOVE WS-MESSAGE TO ERRMSGO} at
-     *       {@code :560} moves eighty characters into a seventy-eight character receiver, so the two
-     *       differ by the two bytes COBOL loses on the right, and reporting only one of them would make
-     *       that move unobservable;</li>
-     *   <li>the two {@code DISPLAY} statements - {@code :210}, which every {@code ENTER} path emits, and
-     *       {@code :529}, which only a refused write emits.</li>
-     * </ol>
-     *
-     * <p>The {@code RETURN-CODE} is reported as zero. {@code CORPT00C} is an online program: it sets no
-     * {@code RETURN-CODE} and contains no {@code CALL 'CEE3ABD'}, so zero is the value and it is stated
-     * rather than defaulted.
-     *
-     * @param invocation the invocation that was run
-     * @param state      the working storage as it stood when the task ended
-     * @return the recorded outcome
-     */
     private static ParityHarness.UnitOutcome fingerprintOf(ParityHarness.Invocation invocation,
                                                            ProgramState state) {
         ParityHarness.UnitOutcome.Builder recorder = invocation.recorder();
@@ -577,40 +246,9 @@ final class CORPT00CParityTest {
         return recorder.build();
     }
 
-    /**
-     * The response as the differ compares it.
-     *
-     * <p><strong>Why there is at most one send.</strong> {@code SEND-TRNRPT-SCREEN} ends
-     * {@code GO TO RETURN-TO-CICS} at {@code :580}, and {@code RETURN-TO-CICS} issues
-     * {@code EXEC CICS RETURN} - which ends the task. So a send never returns to its caller and no path
-     * through this program can send twice. The send count is still reported as a list, because the count
-     * is behaviour: a translation that lost the guard at {@code :445} would send the success notice on
-     * top of a rejection, and the list is where that shows up.
-     *
-     * <p><strong>Why a blank mapset is reported as none.</strong> {@code RETURN-TO-PREV-SCREEN} sends no
-     * map before transferring - the target program paints its own - so the response blanks its mapset and
-     * map rather than leaving them naming this screen. A blank is how the 3270 layer says "no map";
-     * {@code null} is how the case model says it, because {@link ParityCase.ExpectedResponse} validates a
-     * mapset name against a pattern a run of spaces cannot satisfy. Translating one to the other here
-     * keeps the case readable and loses nothing: the blank and the absence carry the same single fact.
-     *
-     * <p><strong>Why {@code ERRMSGC} is always reported.</strong> It is the one attribute item this
-     * program assigns - {@code MOVE DFHGREEN TO ERRMSGC OF CORPT0AO} at {@code :448}, on the success path
-     * only - so reporting it on every send is what proves the other nineteen paths leave it at the map's
-     * default colour. This program copies neither {@code CSSETATY} nor {@code CSSTRPFY}, so no field is
-     * recoloured red and no {@code '*'} is written into a blank one; an empty attribute map for the other
-     * sixty-seven items says exactly that (gate G38).
-     *
-     * @param codec the case's code page and move rules
-     * @param state the working storage as it stood when the task ended
-     * @return the observed response
-     */
     private static ObservedResponse observedResponseOf(FixedWidthCodec codec, ProgramState state) {
         ReportRequestResponse response = state.response();
 
-        // The 160 bytes the XCTL at :549 and the RETURN at :589 both pass, projected field by field.
-        // Statelessness (rule R6, gate G37) is what makes this comparable at all: the conversation state
-        // is in the payload, so it can be read off the response instead of out of a session.
         Map<String, String> navigation = new LinkedHashMap<>(codec.deserialise(
                 NavigationContext.LAYOUT, response.getNavigationContext().toFixedWidth(codec)));
 
@@ -631,33 +269,10 @@ final class CORPT00CParityTest {
                 terminationOf(state));
     }
 
-    /**
-     * A mapset or map name, or {@code null} where the program named none.
-     *
-     * @param reference the value the response carries
-     * @return the name, or {@code null} when it is absent or blank
-     */
     private static String namedOrNone(String reference) {
         return reference == null || reference.isBlank() ? null : reference;
     }
 
-    /**
-     * The symbolic-map length item {@code MOVE -1} was moved into, or {@code null} where the program
-     * requested no cursor.
-     *
-     * <p>COBOL positions the cursor by moving {@code -1} into a field's {@code xxxL} item, so the length
-     * item <em>is</em> the cursor and it is reported under that name rather than under the field's.
-     * {@code CORPT00C} issues that move at twenty-two sites and every {@code EXEC CICS SEND} it performs
-     * specifies {@code CURSOR}, which is what makes them meaningful. The field reported is the first in
-     * map declaration order whose length item holds {@code -1}, which is the one the terminal would place
-     * the cursor in.
-     *
-     * <p>The two paths that transfer control - {@code :174} and {@code :189} - send no map and request no
-     * cursor.
-     *
-     * @param state the working storage as it stood when the task ended
-     * @return the {@code xxxL} item name, or {@code null}
-     */
     private static String cursorLengthItemOf(ProgramState state) {
         for (ReportRequestRequest.ScreenField field : ReportRequestRequest.ScreenField.values()) {
             if (state.cursorRequestedOn(field)) {
@@ -667,19 +282,6 @@ final class CORPT00CParityTest {
         return null;
     }
 
-    /**
-     * How the task ended: {@code EXEC CICS XCTL} at {@code :548-551} or {@code EXEC CICS RETURN} at
-     * {@code :587-591}.
-     *
-     * <p>The two are not interchangeable and cannot both happen: an {@code XCTL} transfers and never
-     * comes back, so the {@code EXEC CICS RETURN} the source also writes at {@code :199-202} is
-     * unreachable - every arm above it has already returned or transferred. Neither happening is a defect
-     * rather than a third outcome, so it is refused here instead of being reported as one.
-     *
-     * @param state the working storage as it stood when the task ended
-     * @return the termination the run performed
-     * @throws IllegalStateException if the run performed both, or neither
-     */
     private static Termination terminationOf(ProgramState state) {
         if (state.transferred() && state.returned()) {
             throw new IllegalStateException("The run reported both EXEC CICS XCTL and EXEC CICS RETURN. "
@@ -698,47 +300,27 @@ final class CORPT00CParityTest {
                 + "task that ended in neither has lost its navigation entirely.");
     }
 
-    // =================================================================================================
-    // The transient data queue's stand-in.
-    // =================================================================================================
-
     /**
      * The capturing {@link JobSubmissionPort} every case runs through: the test-side reproduction of
      * {@code EXEC CICS WRITEQ TD QUEUE('JOBS')}.
-     *
-     * <p>Every attribute of {@code app/csd/CARDDEMO.CSD:499-505} is honoured rather than assumed:
-     *
-     * <ul>
-     *   <li><strong>{@code RECORDSIZE(80)} with {@code RECORDFORMAT(FIXED)}</strong> - the width is
-     *       enforced <em>here</em>, in the transport, rather than only in an expectation. A record of any
-     *       other length fails immediately and names the record's ordinal, which is what makes gate G42
-     *       a property of the port and not merely of the case files;</li>
-     *   <li><strong>the code page is named</strong> - the record is encoded through
-     *       {@link FixedWidthCodec#encodeImage(String, String)} with the case's charset, which refuses a
-     *       character the code page cannot represent instead of substituting {@code '?'} for it as
-     *       {@code String.getBytes()} would, and the encoded image is then required to be eighty
-     *       <em>bytes</em>. A single-byte code page is what makes the character check and the byte check
-     *       equivalent, and checking both is what proves it;</li>
-     *   <li><strong>{@code DISPOSITION(MOD)}</strong> - records accumulate and nothing is ever
-     *       truncated, so a refusal part way through leaves the earlier records standing;</li>
-     *   <li><strong>{@code ERROROPTION(IGNORE)}</strong> - a refusal is <em>reported</em> as the
-     *       {@code RESP} the program's own {@code EVALUATE WS-RESP-CD} at {@code :525} expects, and is
-     *       never thrown at the caller;</li>
-     *   <li><strong>{@code TYPEFILE(OUTPUT)}</strong> - there is no read operation, and none is invented.
-     *       </li>
-     * </ul>
-     *
-     * <p>Not {@code static} in any mutable sense: one instance belongs to one invocation, created inside
-     * {@link #execute(ParityHarness.Invocation)}, so twenty cases cannot see each other's records
-     * (practice B9).
      */
     private static final class CapturedJobsQueue implements JobSubmissionPort {
-
-        /** The invocation this queue serves, which owns the code page and any forced outcome. */
         private final ParityHarness.Invocation invocation;
 
-        /** Every record handed over, in order. Never truncated - {@code DISPOSITION(MOD)}. */
+        /**
+         * Every record the queue <strong>accepted</strong>, in order. Never truncated -
+         * {@code DISPOSITION(MOD)} - and never added to by a write the queue refused, because a refused
+         * {@code WRITEQ TD} appended nothing.
+         */
         private final List<String> records = new ArrayList<>();
+
+        /**
+         * How many records have been handed over, accepted or not.
+         *
+         * <p>Kept apart from {@link #records} so a diagnostic still names the ordinal of the hand-off it
+         * is describing after a refusal has left the accepted list one shorter than the attempt count.
+         */
+        private int attempts;
 
         /**
          * @param invocation the invocation being run; never {@code null}
@@ -751,17 +333,12 @@ final class CORPT00CParityTest {
         /**
          * {@code EXEC CICS WRITEQ TD QUEUE('JOBS') FROM(JCL-RECORD) LENGTH(LENGTH OF JCL-RECORD)}.
          *
-         * <p>The forced outcome is consumed <strong>on the first write rather than at construction</strong>,
-         * and that ordering is the point: the harness refuses a run that left a declared forced outcome
-         * unasked-for, so a case that declares one and takes a path which never writes fails loudly
-         * instead of passing while claiming to have exercised the refusal.
-         *
          * @param jclRecord the record the program has just filled
          * @return the {@code RESP} and {@code RESP2} the caller evaluates
          */
         @Override
         public WriteQueueOutcome writeQueueTd(String jclRecord) {
-            int ordinal = records.size() + 1;
+            int ordinal = ++attempts;
             assertThat(jclRecord)
                     .as("record %d handed to TDQUEUE(JOBS), which app/csd/CARDDEMO.CSD:499-505 declares "
                             + "RECORDSIZE(80) RECORDFORMAT(FIXED) BLOCKFORMAT(UNBLOCKED); JCL-RECORD is "
@@ -777,21 +354,33 @@ final class CORPT00CParityTest {
                             ReportRequestController.JCL_RECORD_LENGTH, invocation.charset().name())
                     .hasSize(ReportRequestController.JCL_RECORD_LENGTH);
 
-            records.add(jclRecord);
+            WriteQueueOutcome outcome = invocation.hasForcedOutcome(RepositoryOperation.WRITE)
+                    ? refusal(invocation.forcedOutcome(RepositoryOperation.WRITE))
+                    : WriteQueueOutcome.NORMAL;
 
-            if (invocation.hasForcedOutcome(RepositoryOperation.WRITE)) {
-                return refusal(invocation.forcedOutcome(RepositoryOperation.WRITE));
+            // The width and encoding checks above run on every hand-off, accepted or not: they are the
+            // transport's contract and a caller that offers a wrong-width record has broken it whatever
+            // the queue then reports. The record itself is appended only on DFHRESP(NORMAL), because that
+            // is the only arm of the EVALUATE at :525-535 on which the queue was appended to. Appending
+            // it regardless would make this stand-in disagree with the queue it stands in for, and would
+            // make the case files describe a queue holding a record it does not hold.
+            if (outcome.normal()) {
+                records.add(jclRecord);
             }
-            return WriteQueueOutcome.NORMAL;
+            return outcome;
+        }
+
+        List<String> records() {
+            return Collections.unmodifiableList(records);
         }
 
         /**
-         * The records handed over, in order.
+         * How many records were handed over, accepted or not.
          *
-         * @return an unmodifiable view
+         * @return the hand-off count
          */
-        List<String> records() {
-            return Collections.unmodifiableList(records);
+        int attempts() {
+            return attempts;
         }
 
         /**
@@ -822,20 +411,9 @@ final class CORPT00CParityTest {
         }
     }
 
-    // =================================================================================================
-    // Structural assertions. Each one re-derives a fact about the COBOL mechanically, so a case file that
-    // was transcribed wrongly is caught by something other than another transcription.
-    // =================================================================================================
-
-    /**
-     * The seventeen eighty-byte records of {@code 02 JOB-DATA-1} - {@code app/cbl/CORPT00C.cbl:83-125} -
-     * and the four points a request substitutes into them. This is gate G42 stated as geometry rather
-     * than as content.
-     */
     @Nested
     @DisplayName("the seventeen eighty-byte records and their four substitution points")
     class TheSkeleton {
-
         @Test
         @DisplayName("seventeen records, every one exactly eighty characters and eighty bytes")
         void theTemplateGeometryIsTheDeclaredGeometry() {
@@ -962,14 +540,9 @@ final class CORPT00CParityTest {
         }
     }
 
-    /**
-     * Record fifteen is the {@code DATEPARM} record {@link DateParmReader} consumes - the one place in
-     * this migration where an online program's output is a batch program's input.
-     */
     @Nested
     @DisplayName("skeleton record fifteen is the DATEPARM record CBTRN03C reads")
     class TheDateParmHandOff {
-
         @ParameterizedTest(name = "{0} .. {1} survives the hand-off")
         @CsvSource({
             "2026-08-01, 2026-08-31",
@@ -1015,11 +588,6 @@ final class CORPT00CParityTest {
             ParityCase parityCase =
                     ParityHarness.usAscii().load(PROGRAM, MONTHLY_CONFIRMED_CASE);
 
-            // Stated before the run rather than assumed by it. Only a CONFIRMED submission reaches the
-            // emit loop at app/cbl/CORPT00C.cbl:498-508, so a case that selected a report type without
-            // confirming it - case06 is the monthly arm's blank-confirm prompt, and case20 its 'N' -
-            // hands nothing over at all, and this test would then fail reporting a missing queue rather
-            // than the wrong case. Asserting the case's own received map says which shape is required.
             assertThat(parityCase.screenRequest().mapFields())
                     .as("%s has to select the monthly report AND confirm it: the guard at :464 sends the "
                             + "confirmation prompt and returns to CICS, so an unconfirmed case never "
@@ -1049,14 +617,9 @@ final class CORPT00CParityTest {
         }
     }
 
-    /**
-     * The two ordered {@code EVALUATE}s that decide what this program does, and the {@code EIBAID}
-     * mapping the first of them branches on (gate G30).
-     */
     @Nested
     @DisplayName("the ordered EVALUATEs, and the inline EIBAID tests")
     class TheOrderedDecisions {
-
         @Test
         @DisplayName("EVALUATE EIBAID names exactly two keys and defaults everything else")
         void theTwoNamedAidsAndTheDefault() {
@@ -1143,19 +706,6 @@ final class CORPT00CParityTest {
                     .isBlank();
         }
 
-        /**
-         * Runs one {@code PROCESS-ENTER-KEY} and reports which arm claimed it, by reading
-         * {@code WS-REPORT-NAME}.
-         *
-         * <p>The custom arm is driven with a well-formed range so that it reaches {@code :433}, which is
-         * where it assigns its name - after the edits rather than before, which is itself part of the
-         * behaviour.
-         *
-         * @param monthly {@code MONTHLYI}
-         * @param yearly  {@code YEARLYI}
-         * @param custom  {@code CUSTOMI}
-         * @return {@code WS-REPORT-NAME}, trimmed of the padding {@code PIC X(10)} adds
-         */
         private String reportOf(String monthly, String yearly, String custom) {
             ProgramState state = runEnter(request -> request
                     .withMonthly(monthly).withYearly(yearly).withCustom(custom)
@@ -1166,14 +716,9 @@ final class CORPT00CParityTest {
         }
     }
 
-    /**
-     * {@code FUNCTION DATE-OF-INTEGER} and {@code FUNCTION INTEGER-OF-DATE} - {@code :229-230} - and the
-     * month end the monthly arm derives from the pair.
-     */
     @Nested
     @DisplayName("the two date intrinsics and the month-end derivation")
     class TheDateIntrinsics {
-
         @Test
         @DisplayName("the anchors in both directions, and the undefined results")
         void theAnchorsAndTheUndefinedResults() {
@@ -1245,30 +790,24 @@ final class CORPT00CParityTest {
         }
     }
 
-    /**
-     * {@code FUNCTION NUMVAL-C} at {@code :305}, {@code :309}, {@code :313}, {@code :317}, {@code :321}
-     * and {@code :325} - gate G29, which requires the conversion to accept and reject exactly as COBOL
-     * does, verified against malformed arguments as well as valid ones.
-     */
     @Nested
     @DisplayName("FUNCTION NUMVAL-C: what it accepts, what it rejects, and what a rejection stores")
     class TheNumvalCIntrinsic {
-
         @ParameterizedTest(name = "NUMVAL-C(\"{0}\") = {1}")
         @CsvSource(quoteCharacter = '`', value = {
-            "`07`, 7",                      // a plain numeric
-            "`$ 1,234.56`, 1234.56",        // a currency sign with digit-grouping commas and a point
-            "`$1,234,567.89`, 1234567.89",  // more than one grouping comma
-            "` 7`, 7",                      // an embedded space, leading
-            "`7 `, 7",                      // and trailing
-            "`- $12`, -12",                 // a leading sign, a space, a currency sign
+            "`07`, 7",
+            "`$ 1,234.56`, 1234.56",
+            "`$1,234,567.89`, 1234567.89",
+            "` 7`, 7",
+            "`7 `, 7",
+            "`- $12`, -12",
             "`+7`, 7",
             "`-7`, -7",
-            "`7-`, -7",                     // a trailing sign
-            "`7CR`, -7",                    // and the two credit indicators
+            "`7-`, -7",
+            "`7CR`, -7",
             "`7DB`, -7",
-            "`.5`, 0.5",                    // no integer part
-            "`12.`, 12"                     // no fraction after the point
+            "`.5`, 0.5",
+            "`12.`, 12"
         })
         @DisplayName("accepts every argument form the intrinsic documents")
         void theAcceptedForms(String image, String expected) {
@@ -1283,16 +822,16 @@ final class CORPT00CParityTest {
 
         @ParameterizedTest(name = "NUMVAL-C(\"{0}\") does not conform and yields zero")
         @CsvSource(quoteCharacter = '`', value = {
-            "``",                           // an empty string
-            "`  `",                         // an all-spaces string
-            "`ab`",                         // no digit at all
-            "`1.2.3`",                      // a double decimal point
-            "`(5)`",                        // a negative in parentheses, which NUMVAL-C does not accept
-            "`$`",                          // a currency sign and nothing else
+            "``",
+            "`  `",
+            "`ab`",
+            "`1.2.3`",
+            "`(5)`",
+            "`$`",
             "`1a`",
-            "`-5-`",                        // a sign at both ends
-            "`1,,2`",                       // a doubled grouping comma
-            "`,5`"                          // a grouping comma with no digit before it
+            "`-5-`",
+            "`1,,2`",
+            "`,5`"
         })
         @DisplayName("rejects every malformed argument, and a rejection is zero")
         void theRejectedForms(String image) {
@@ -1400,19 +939,9 @@ final class CORPT00CParityTest {
         }
     }
 
-    /**
-     * The {@code CSUTLDTC} acceptance rule at {@code :396-406} and {@code :416-426}: severity
-     * {@code '0000'}, or a message number of {@code '2513'}, and nothing else.
-     *
-     * <p>{@code CSUTLDTCParityTest} owns the nine-token {@code CEEDAYS} table and the eighty-byte message
-     * layout; this class relies on it and asserts only the decision this program makes from the two
-     * fields it reads.
-     */
     @Nested
     @DisplayName("the CSUTLDTC acceptance rule: '0000', or message number '2513', and nothing else")
     class TheCsutldtcAcceptanceRule {
-
-        /** The subprogram as a service, exactly as the controller receives it. */
         private final DateUtilityJob dateUtility = new DateUtilityJob();
 
         @Test
@@ -1487,26 +1016,14 @@ final class CORPT00CParityTest {
             assertThat(endRejected.submittedRecords()).isEmpty();
         }
 
-        /**
-         * One {@code CALL 'CSUTLDTC' USING CSUTLDTC-DATE CSUTLDTC-DATE-FORMAT CSUTLDTC-RESULT}.
-         *
-         * @param date the ten-byte {@code 'YYYY-MM-DD'} group
-         * @return the typed result the controller reads two spans of
-         */
         private DateValidationResult validate(String date) {
             return dateUtility.validateDate(date, ReportRequestController.WS_DATE_FORMAT);
         }
     }
 
-    /**
-     * The conversation is pseudo-conversational and stays that way: no session, no static mutable state,
-     * and a communication area that travels in the payload at its declared width (gates G37, G53, rule
-     * R6).
-     */
     @Nested
     @DisplayName("statelessness: the conversation travels in the payload and nowhere else")
     class TheStatelessConversation {
-
         @Test
         @DisplayName("CARDDEMO-COMMAREA is exactly 160 bytes on the wire, in both directions")
         void theCommareaIsOneHundredAndSixtyBytes() {
@@ -1560,16 +1077,6 @@ final class CORPT00CParityTest {
             requireEveryStaticFieldFinal(ProgramState.class);
         }
 
-        /**
-         * Requires every {@code static} field a class declares to be {@code final}.
-         *
-         * <p>COBOL {@code WORKING-STORAGE} in a CICS program is per-task storage. A {@code static}
-         * mutable field is the one translation of it that would let two concurrent operators see each
-         * other's screen and would make a test's outcome depend on which test ran first, so it is refused
-         * mechanically rather than by convention (practice B9, gate G53).
-         *
-         * @param type the class to inspect
-         */
         private void requireEveryStaticFieldFinal(Class<?> type) {
             for (java.lang.reflect.Field field : type.getDeclaredFields()) {
                 if (!java.lang.reflect.Modifier.isStatic(field.getModifiers())
@@ -1585,14 +1092,9 @@ final class CORPT00CParityTest {
         }
     }
 
-    /**
-     * The seventeen payload fields, and the rejection literals the twenty cases do not each get a slot
-     * for. Every field traces to a {@code DFHMDF} definition and every literal to its source line.
-     */
     @Nested
     @DisplayName("the seventeen-field projection and the fifteen rejection sites")
     class TheScreenContract {
-
         @Test
         @DisplayName("both projections of the symbolic map declare seventeen fields, in one order")
         void theTwoProjectionsAgree() {
@@ -1728,13 +1230,6 @@ final class CORPT00CParityTest {
             assertThat(declined.submittedRecords()).isEmpty();
         }
 
-        /**
-         * The literal one arm of the blank chain moves into {@code WS-MESSAGE}, keyed by the field the arm
-         * tests.
-         *
-         * @param blanked the field the case blanked
-         * @return the literal that arm carries
-         */
         private String blankLiteralOf(String blanked) {
             return switch (blanked) {
                 case "SDTMM" -> ReportRequestController.MSG_START_DATE_MONTH_EMPTY;
@@ -1749,26 +1244,8 @@ final class CORPT00CParityTest {
         }
     }
 
-    // =================================================================================================
-    // Shared builders for the nested classes. A parity case reaches the unit through the harness; these
-    // reach it the same way, minus the case file, so a structural assertion can drive a path directly.
-    // =================================================================================================
-
-    /**
-     * The default pinned instant the nested classes run at: 9 August 2026, 14:05:06.
-     *
-     * <p>Fixed rather than current, so {@code FUNCTION CURRENT-DATE} is reproducible (practice B7). The
-     * date is deliberately mid-month and mid-year, so a month-end or year-end derivation that was wrong
-     * would differ from it rather than coincide with it.
-     */
     private static final String DEFAULT_INSTANT = "2026-08-09T14:05:06";
 
-    /**
-     * {@link ReportRequestController} wired as a plain object at a pinned instant.
-     *
-     * @param instant the ISO-8601 local date-time {@code FUNCTION CURRENT-DATE} must report
-     * @return the controller, with a real {@link DateUtilityJob} and a queue that accepts every record
-     */
     private static ReportRequestController controllerAt(String instant) {
         ParityHarness harness = ParityHarness.usAscii();
         return new ReportRequestController(new DateUtilityJob(),
@@ -1777,12 +1254,6 @@ final class CORPT00CParityTest {
                 harness.charset());
     }
 
-    /**
-     * A re-entered request: the state every invocation after the first arrives in, with the
-     * {@code ENTER} key pressed.
-     *
-     * @return the request, with {@code CDEMO-PGM-CONTEXT} set to re-enter
-     */
     private static ReportRequestRequest reenter() {
         ReportRequestRequest initial = ReportRequestRequest.empty();
         return initial
@@ -1790,12 +1261,6 @@ final class CORPT00CParityTest {
                 .withAid(PfKeyResolver.aidImage(CicsAid.DFHENTER));
     }
 
-    /**
-     * A well-formed custom range, for the arms that reject one field of it.
-     *
-     * @param request the request to fill
-     * @return the request with {@code CUSTOMI}, all six date parts and {@code CONFIRMI} set
-     */
     private static ReportRequestRequest customRange(ReportRequestRequest request) {
         return request.withCustom("Y")
                 .withSdtmm("07").withSdtdd("01").withSdtyyyy("2026")
@@ -1803,24 +1268,11 @@ final class CORPT00CParityTest {
                 .withConfirm("Y");
     }
 
-    /**
-     * Runs one {@code ENTER} task at {@link #DEFAULT_INSTANT}.
-     *
-     * @param screen how to fill the received map
-     * @return the working storage as it stood when the task ended
-     */
     private static ProgramState runEnter(
             java.util.function.UnaryOperator<ReportRequestRequest> screen) {
         return runEnterAt(DEFAULT_INSTANT, screen);
     }
 
-    /**
-     * Runs one {@code ENTER} task at a pinned instant.
-     *
-     * @param instant the instant {@code FUNCTION CURRENT-DATE} must report
-     * @param screen  how to fill the received map
-     * @return the working storage as it stood when the task ended
-     */
     private static ProgramState runEnterAt(String instant,
             java.util.function.UnaryOperator<ReportRequestRequest> screen) {
         return controllerAt(instant).mainPara(screen.apply(reenter()));
@@ -1829,19 +1281,10 @@ final class CORPT00CParityTest {
     /**
      * The queue the structural assertions run through: it enforces the eighty-byte contract and accepts
      * every record, which is what {@code DFHRESP(NORMAL)} means.
-     *
-     * <p>Separate from {@link CapturedJobsQueue} because that one takes its code page and its forced
-     * outcome from a {@link ParityHarness.Invocation}, and a structural assertion has no case behind it.
-     * Neither holds mutable static state.
      */
     private static final class AcceptingJobsQueue implements JobSubmissionPort {
-
-        /** The code page the record's byte width is measured in - named, never defaulted. */
         private final FixedWidthCodec codec;
 
-        /**
-         * @param codec the codec whose charset the records are encoded through; never {@code null}
-         */
         AcceptingJobsQueue(FixedWidthCodec codec) {
             this.codec = Objects.requireNonNull(codec, "A codec is required: the queue's RECORDSIZE is a "
                     + "byte count, so the code page has to be named");
@@ -1857,23 +1300,8 @@ final class CORPT00CParityTest {
         }
     }
 
-    /**
-     * A guard against a locale-sensitive comparison creeping into this class.
-     *
-     * <p>Every value here is a fixed-width COBOL image and every comparison is on bytes, so no test in
-     * this file may depend on the default locale. The constant is referenced by
-     * {@link #localeIsNotConsulted()} so it cannot be dropped as unused, and the assertion is that this
-     * class never asks the locale anything - which is a property a reader can check by grepping.
-     */
     private static final Locale COMPARISON_LOCALE = Locale.ROOT;
 
-    /**
-     * States, rather than merely intends, that no comparison in this file is locale-sensitive.
-     *
-     * <p>{@code MSG_START_DATE_INVALID_MONTH} carries a capital {@code M} where its sibling at
-     * {@code :340} carries a lower-case {@code d}; the difference is the source's and is preserved, and a
-     * case-insensitive or locale-folded comparison anywhere here would erase it.
-     */
     @Test
     @DisplayName("the source's own inconsistent capitalisation is preserved, not folded away")
     void localeIsNotConsulted() {
@@ -1888,4 +1316,3 @@ final class CORPT00CParityTest {
                 .isEqualTo("Start Date - Not a valid date...");
     }
 }
-

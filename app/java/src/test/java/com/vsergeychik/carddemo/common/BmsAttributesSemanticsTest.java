@@ -14,25 +14,12 @@ import org.junit.jupiter.api.Test;
 /**
  * Tests for {@link BmsAttributes}, the Java reproduction of the IBM-supplied {@code DFHBMSCA} and
  * {@code DFHATTR} copybooks, neither of which is present in this repository.
- *
- * <p>The load-bearing assertion is that every constant holds its <strong>EBCDIC</strong> byte.
- * {@code DFHRED} appears in IBM's listings as the character {@code '2'} only because EBCDIC
- * {@code '2'} is {@code 0xF2}; a Java {@code char} literal would have produced {@code 0x32} and the
- * wrong byte would reach the terminal. Each colour is therefore asserted against its explicit
- * hexadecimal value rather than against a character.
- *
- * <p>The tests also assert the deliberate <em>overlap</em> between the three attribute planes -
- * {@code DFHBMASF}, {@code DFHBLUE} and {@code DFHBLINK} are all {@code 0xF1} - because that is a
- * property of the 3270 data stream, not a defect, and a test asserting global uniqueness would be
- * asserting something false about the hardware.
  */
 @DisplayName("BmsAttributes - DFHBMSCA and DFHATTR reproduced as EBCDIC bytes")
 class BmsAttributesSemanticsTest {
-
     @Nested
     @DisplayName("Byte values - EBCDIC, never Unicode char literals")
     class ByteValues {
-
         @Test
         @DisplayName("the extended colour plane carries the architected 3270 colour codes")
         void theColourPlaneCarriesTheArchitectedCodes() {
@@ -100,7 +87,6 @@ class BmsAttributesSemanticsTest {
     @Nested
     @DisplayName("Mnemonic lookups - a hit names the constant, a miss falls back to hex")
     class MnemonicLookups {
-
         @Test
         @DisplayName("a known byte resolves to its DFH mnemonic in each plane")
         void knownBytesResolveToTheirMnemonics() {
@@ -121,10 +107,6 @@ class BmsAttributesSemanticsTest {
             assertThat(BmsAttributes.highlightMnemonic(unmapped)).isEqualTo("X'7B'");
         }
 
-        /**
-         * A cross-plane miss: {@code 0xF2} is a colour and a highlight, but not a field attribute, so
-         * the field-attribute lookup must fall back to hex rather than borrow another plane's name.
-         */
         @Test
         @DisplayName("a byte mapped in one plane is not borrowed by another")
         void planesDoNotBorrowEachOthersNames() {
@@ -138,7 +120,6 @@ class BmsAttributesSemanticsTest {
     @Nested
     @DisplayName("Basic field-attribute bit tests")
     class BitTests {
-
         @Test
         @DisplayName("isProtected() reads bit 0x20")
         void isProtectedReadsItsBit() {
@@ -155,10 +136,6 @@ class BmsAttributesSemanticsTest {
             assertThat(BmsAttributes.isNumeric(BmsAttributes.DFHBMPRO)).isFalse();
         }
 
-        /**
-         * Autoskip is protected <em>and</em> numeric together, so all three reachable shapes are
-         * driven: both bits set, protected without numeric, and neither.
-         */
         @Test
         @DisplayName("isAutoskip() requires both bits, and each half can veto alone")
         void isAutoskipRequiresBothBits() {
@@ -199,7 +176,6 @@ class BmsAttributesSemanticsTest {
     @Nested
     @DisplayName("Shape - a constant holder with no state and no instances")
     class Shape {
-
         @Test
         @DisplayName("every declared field is static and final")
         void everyFieldIsStaticAndFinal() {

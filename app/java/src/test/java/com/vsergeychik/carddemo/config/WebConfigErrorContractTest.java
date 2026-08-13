@@ -33,8 +33,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-import java.nio.charset.Charset;
-import java.nio.charset.StandardCharsets;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -54,67 +52,19 @@ import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.server.ResponseStatusException;
 
 /**
- * The error contract of {@link WebConfig.CobolErrorHandler}: what a failure tells a caller, and -
- * far more importantly - what it does not.
- *
- * <h2>What these tests exist to hold</h2>
- * Two properties, and both are security properties rather than convenience ones:
- *
- * <ul>
- *   <li><strong>No internal state crosses the trust boundary.</strong> An abend body may not carry
- *       the abending COBOL program's name, the {@code RETURN-CODE} it set, or the composed
- *       {@code ABENDING PROGRAM} sentence - which can quote a repository's or a dataset's own reason
- *       text. An unreadable-body response may not carry the parser's message, the offending property,
- *       the Java type it failed to bind, or a byte position.</li>
- *   <li><strong>Every failure answers in the same shape.</strong> A malformed body must not fall
- *       through to Spring Boot's default error envelope, which is both a different shape and a
- *       leakier one.</li>
- * </ul>
- *
- * <p>Each assertion below is written against the withheld value itself - it takes a real abend
- * carrying a real program name and reason, then asserts that neither string appears anywhere in the
- * serialised body. That is stronger than asserting the body equals a constant, because it keeps
- * holding if the body ever gains a field.
- *
- * <p>Plain JUnit throughout: no Spring context, no {@code MockMvc} and no servlet container. Every
- * decision the advice makes is reachable through a static method, which is exactly why it can be
- * driven this way.
+ * The error contract of {@link WebConfig.CobolErrorHandler}: what a failure tells a caller, and - far more
+ * importantly - what it does not.
  */
 @DisplayName("WebConfig.CobolErrorHandler - the failure bodies, and what they withhold")
 class WebConfigErrorContractTest {
-
-
-    /**
-     * The code page {@code application-test.yml} names under {@code carddemo.charset.dataset}, which is
-     * what {@code CobolCharsetConfig} publishes as the active dataset charset under this profile.
-     *
-     * <p>Stated here, and passed to the production customizer, because the inbound screen-text boundary
-     * judges every value against the page in force rather than against a page of its own choosing: a
-     * mapper built for a test has to name the same one the profile does or it is not the production
-     * mapper.
-     */
     private static final Charset TEST_PROFILE_CHARSET = StandardCharsets.US_ASCII;
 
-    /** The advice under test. It is stateless, so one instance serves every case here. */
     private final CobolErrorHandler handler = new CobolErrorHandler();
 
-    /** A program name that must never appear in a response body. */
     private static final String PROGRAM = "CBACT04C";
 
-    /** A reason string that must never appear in a response body. */
     private static final String REASON = "ACCTFILE VSAM open failed, dataset AWS.M2.ACCTDATA";
 
-    /**
-     * {@code ABEND-DATA} as {@code EXEC CICS SEND FROM(ABEND-DATA) LENGTH(LENGTH OF ABEND-DATA)} puts it
-     * on the wire: the four {@code CSMSG02Y} fields at their declared widths, joined with no separator,
-     * {@value SystemMessages#ABEND_DATA_LENGTH} characters in total.
-     *
-     * <p>Composed here rather than borrowed from the producing controller, so this test states the wire
-     * shape it expects instead of agreeing with whatever the producer happens to build.
-     *
-     * @param area the area to render
-     * @return the transmitted image
-     */
     private static String abendDataImage(final SystemMessages.AbendData area) {
         final SystemMessages.AbendData atWidth = area.toDeclaredWidths();
         return atWidth.abendCode() + atWidth.abendCulprit() + atWidth.abendReason()
@@ -124,7 +74,6 @@ class WebConfigErrorContractTest {
     @Nested
     @DisplayName("an abend answers 500 and withholds every internal value")
     class AbendMapping {
-
         @Test
         @DisplayName("the body is the stable code and the generic message")
         void bodyIsStableCodeAndGenericMessage() {
@@ -194,9 +143,6 @@ class WebConfigErrorContractTest {
         @Test
         @DisplayName("a CEE3ABD abend carries no source diagnostic, so the member is absent entirely")
         void aCee3abdAbendCarriesNoDiagnostic() {
-            // The nine CALL 'CEE3ABD' sites DISPLAY to SYSOUT and terminate; none transmits an area to
-            // a terminal, so there is nothing source-authored to publish and the body stays the two
-            // constants. Absent, not empty: an empty one would claim they transmitted a blank area.
             CobolErrorResponse body =
                     CobolErrorHandler.abendResponse(AbendException.standard(PROGRAM, 12, REASON));
 
@@ -206,9 +152,6 @@ class WebConfigErrorContractTest {
         @Test
         @DisplayName("the diagnostic the COBOL transmitted is published, because the operator read it")
         void aTransmittedDiagnosticIsPublished() {
-            // app/cbl/COCRDSLC.cbl:865-869 issues EXEC CICS SEND FROM(ABEND-DATA) before ABEND
-            // ABCODE('9999'), so those 134 bytes are observable behaviour. Replacing them with a
-            // constant changed what a caller sees.
             String transmitted = abendDataImage(SystemMessages.AbendData.spaces()
                     .withAbendCode("9999")
                     .withAbendCulprit("COCRDSLC")
@@ -225,7 +168,6 @@ class WebConfigErrorContractTest {
                     .contains("UNEXPECTED ABEND OCCURRED.")
                     .contains("COCRDSLC")
                     .startsWith("9999");
-            // And the status and the other two members are unchanged by its presence.
             assertThat(body.code()).isEqualTo(CobolErrorHandler.ABEND_CODE);
             assertThat(body.detail()).isEqualTo(CobolErrorHandler.ABEND_MESSAGE);
         }
@@ -233,8 +175,6 @@ class WebConfigErrorContractTest {
         @Test
         @DisplayName("publishing the diagnostic leaks no Java, JDBC or dataset text with it")
         void publishingTheDiagnosticLeaksNothingElse() {
-            // The triggering failure travels as the cause and is never rendered. This is the assertion
-            // that keeps the new member a source-authored projection rather than a detail slot.
             AbendException abend = AbendException
                     .withoutAbendParameters("COCRDSLC", 12, REASON,
                             new IllegalStateException("ORA-00942: table or view does not exist"))
@@ -292,8 +232,6 @@ class WebConfigErrorContractTest {
     @Nested
     @DisplayName("an unreadable request body answers 400 in the same shape")
     class UnreadableBodyMapping {
-
-        /** A parse message of the shape Jackson produces, naming a property and a type. */
         private static final String PARSER_TEXT =
                 "Cannot deserialize value of type `long` from String \"x\": "
                         + "at [Source: (String)\"{\"cardNum\":\"x\"}\"; line: 1, column: 13]";
@@ -370,7 +308,6 @@ class WebConfigErrorContractTest {
     @Nested
     @DisplayName("a rejected field still reports which field and why")
     class ValidationMapping {
-
         @Test
         @DisplayName("a constraint violation becomes one entry naming the property and the width")
         void constraintViolationBecomesFieldEntry() {
@@ -387,10 +324,6 @@ class WebConfigErrorContractTest {
         @Test
         @DisplayName("the violation's own message never reaches the caller")
         void theViolationMessageIsNotForwarded() {
-            // The DTOs in this module annotate every @Size with maintainer prose that names the
-            // symbolic-map item, its PICTURE clause and the copybook path and LINE NUMBER the width was
-            // read from. Forwarding it would publish the copybook inventory to an unauthenticated
-            // caller, one rejected field at a time.
             Provenance payload = new Provenance("NINECHARS");
 
             CobolErrorResponse body = CobolErrorHandler.validationResponse(violationsOf(payload));
@@ -410,8 +343,6 @@ class WebConfigErrorContractTest {
         void eachConstraintFamilyHasFixedText() {
             assertThat(CobolErrorHandler.publicConstraintText("Size", Map.of("max", 11)))
                     .isEqualTo("must be at most 11 characters");
-            // A @Size that states only a minimum leaves max at Integer.MAX_VALUE, which is not a width
-            // worth quoting back at a caller.
             assertThat(CobolErrorHandler.publicConstraintText("Size",
                     Map.of("max", Integer.MAX_VALUE)))
                     .isEqualTo("does not satisfy the length declared for its screen field");
@@ -427,8 +358,6 @@ class WebConfigErrorContractTest {
                     .isEqualTo("is outside the range declared for its screen field");
             assertThat(CobolErrorHandler.publicConstraintText("Pattern", Map.of()))
                     .isEqualTo("does not match the form declared for its screen field");
-            // Total by construction: a constraint annotation introduced later publishes the default
-            // rather than its own wording, so no future annotation can leak through this seam.
             assertThat(CobolErrorHandler.publicConstraintText("SomeFutureConstraint", Map.of()))
                     .isEqualTo("is not valid for its screen field");
             assertThat(CobolErrorHandler.publicConstraintText(null, Map.of()))
@@ -454,16 +383,6 @@ class WebConfigErrorContractTest {
             assertThat(answer.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
         }
 
-        /**
-         * The mapping is total over what a validator may hand it, and that matters here more than it
-         * usually would: this method runs while an error response is being built, so a failure inside it
-         * turns a {@code 400} the caller could act on into a {@code 500} that names an internal class.
-         *
-         * <p>A {@link ConstraintViolation} created programmatically rather than by a
-         * {@code @Size}-style annotation can carry no descriptor at all - the interface permits it - and
-         * a descriptor can carry no annotation. Both are answered with the same fixed default sentence
-         * as an unrecognised constraint.
-         */
         @Test
         @DisplayName("a violation carrying no descriptor, or none carrying an annotation, still answers")
         void aViolationWithNoConstraintMetadataIsStillAnswered() {
@@ -487,11 +406,6 @@ class WebConfigErrorContractTest {
                     assertThat(entry.message()).isEqualTo("is not valid for its screen field"));
         }
 
-        /**
-         * A field error that did not come from Bean Validation at all - a plain binding or conversion
-         * failure - has no constraint to read a bound from, and answers the default rather than reaching
-         * for arguments that are not there.
-         */
         @Test
         @DisplayName("a plain binding error carries no constraint, and is answered without one")
         void aPlainBindingErrorHasNoConstraintToRead() throws Exception {
@@ -510,10 +424,6 @@ class WebConfigErrorContractTest {
             });
         }
 
-        /**
-         * The other half of the same guard: a field error that <em>does</em> wrap a violation, but one
-         * whose descriptor is absent, must not fail while the bound is being read.
-         */
         @Test
         @DisplayName("a field error wrapping a violation with no descriptor reads no bound and answers")
         void aWrappedViolationWithNoDescriptorReadsNoBound() throws Exception {
@@ -528,7 +438,6 @@ class WebConfigErrorContractTest {
                     .isEqualTo("does not satisfy the length declared for its screen field"));
         }
 
-        /** A body-binding failure carrying exactly the errors given, as Spring would raise it. */
         private MethodArgumentNotValidException bindingFailure(FieldError... errors) throws Exception {
             BeanPropertyBindingResult binding =
                     new BeanPropertyBindingResult(new Screen("CU00", "1"), "screen");
@@ -540,7 +449,6 @@ class WebConfigErrorContractTest {
             return new MethodArgumentNotValidException(parameter, binding);
         }
 
-        /** Supplies a real {@link MethodParameter}; never invoked. */
         private static final class BindingHost {
             void handle(Screen screen) {
                 throw new UnsupportedOperationException(
@@ -556,21 +464,13 @@ class WebConfigErrorContractTest {
             }
         }
 
-        /**
-         * A minimal stand-in for a screen payload: two maximum-width character fields, the shape
-         * every request DTO in this module uses. Field-level constraints, so the property path the
-         * advice reports is the field name.
-         *
-         * @param trnName a {@code PIC X(4)} field
-         * @param usrIdIn a {@code PIC X(8)} field
-         */
         private record Screen(@Size(max = 4) String trnName, @Size(max = 8) String usrIdIn) {
         }
 
         /**
-         * A stand-in whose constraint message is written the way every request DTO in this module
-         * writes one: copybook path, line number and {@code PICTURE} clause, for the engineer
-         * maintaining the field rather than for a caller.
+         * A stand-in whose constraint message is written the way every request DTO in this module writes
+         * one: copybook path, line number and {@code PICTURE} clause, for the engineer maintaining the
+         * field rather than for a caller.
          *
          * @param usrIdIn a {@code PIC X(8)} field carrying provenance in its message
          */
@@ -581,46 +481,17 @@ class WebConfigErrorContractTest {
         }
     }
 
-    /**
-     * The other side of the same trust boundary: what the <em>server's own</em> log is told.
-     *
-     * <h2>Why an emitted diagnostic is a requirement rather than a nicety</h2>
-     * A handler that returns a response has <strong>handled</strong> the exception, so Spring's own
-     * resolver never logs it. Before these two diagnostics existed, a dataset outage and any unclaimed
-     * failure left no trace at all: the caller received a five-word sentence, and the operator received
-     * nothing to correlate it with - no exhausted pool, no revoked credential, no repository fault. The
-     * response is deliberately value-free, which makes the log the only place the event is recorded, and
-     * therefore makes its absence a hole rather than a style question.
-     *
-     * <h2>And why the log is still not a dumping ground</h2>
-     * Two properties are asserted together. The event must be emitted, at a level that matches what
-     * happened - {@code ERROR} for a unit of work that did not complete, {@code DEBUG} for a status the
-     * failure already carried, because an estate that logged every mistyped URL at {@code ERROR} would
-     * page an operator for a caller's typo and bury the failures that matter. And the event must carry
-     * nothing the failure did: a {@code DataAccessException}'s message quotes the statement it was
-     * executing, and this module's statements name the dataset and bind the record image (CWE-532).
-     */
     @Nested
     @DisplayName("the server's own diagnostics are emitted, and are still value-free")
     class ServerDiagnostics {
-
-        /** Text no log line may contain, standing for a quoted statement and its bound record image. */
         private static final String SENSITIVE_SQL =
                 "SELECT RECORD_IMAGE FROM \"AWS.M2.CARDDEMO.CARDDATA.VSAM.KSDS\" WHERE ? = 4111111111111111";
 
-        /** The logger the advice writes through; the name is the nested class's own. */
         private ch.qos.logback.classic.Logger adviceLogger() {
             return (ch.qos.logback.classic.Logger)
                     org.slf4j.LoggerFactory.getLogger(CobolErrorHandler.class);
         }
 
-        /**
-         * Runs the fixture with the advice's logger at {@code DEBUG} and a capturing appender attached,
-         * then restores both - so no other suite in the run sees a changed level.
-         *
-         * @param emit the call whose diagnostics are being captured
-         * @return the captured events, in order
-         */
         private List<ch.qos.logback.classic.spi.ILoggingEvent> captured(Runnable emit) {
             ch.qos.logback.classic.Logger logger = adviceLogger();
             ch.qos.logback.classic.Level previous = logger.getLevel();
@@ -717,25 +588,6 @@ class WebConfigErrorContractTest {
     @Nested
     @DisplayName("over HTTP - the advice actually intercepts a real binding failure")
     class OverHttp {
-
-        /**
-         * Stands the advice up over {@link ScreenBindingFixtureController}, the one-route fixture whose
-         * body binding these tests provoke failures in.
-         *
-         * <p>The fixture is a top-level class in {@code com.vsergeychik.carddemo.testsupport} rather
-         * than a class nested here, and the reason is component scope rather than style.
-         * {@code MockMvcBuilders.standaloneSetup} needs the fixture's {@code @RestController} - it is
-         * what registers the handler method and what writes the {@code String} return as a body - but
-         * {@code @RestController} carries {@code @Controller}, which is meta-annotated
-         * {@code @Component}. Nested here it sat inside {@code com.vsergeychik.carddemo.config}, one of
-         * {@code CardDemoApplication}'s eleven scanned packages, one scan-configuration change away
-         * from joining the seventeen controllers the deployed artifact publishes - which is precisely
-         * what happened to a sibling fixture in this same package. {@code CardDemoApplicationTest}
-         * now asserts that no class compiled from the test tree inside a scanned package carries a
-         * controller stereotype.
-         *
-         * @return the dispatcher, with the real advice and the production Jackson settings
-         */
         private MockMvc mockMvc() {
             MappingJackson2HttpMessageConverter converter =
                     new MappingJackson2HttpMessageConverter(productionLikeMapper());
@@ -745,11 +597,6 @@ class WebConfigErrorContractTest {
                     .build();
         }
 
-        /**
-         * An {@code ObjectMapper} carrying the two settings {@code application.yml} and
-         * {@link WebConfig#carddemoJacksonCustomizer(java.nio.charset.Charset)} apply in production,
-         * so the failures provoked here are the same failures a deployed request would provoke.
-         */
         private ObjectMapper productionLikeMapper() {
             Jackson2ObjectMapperBuilder builder = new Jackson2ObjectMapperBuilder();
             new WebConfig().carddemoJacksonCustomizer(TEST_PROFILE_CHARSET).customize(builder);
@@ -780,9 +627,6 @@ class WebConfigErrorContractTest {
                             .content("{\"trnName\":\"CU00\",\"pageNum\":1,\"notAField\":\"x\"}"))
                     .andExpect(status().isBadRequest())
                     .andExpect(jsonPath("$.code").value(CobolErrorHandler.MALFORMED_REQUEST_CODE))
-                    // The refused MEMBER is named, because a caller that cannot discover which member
-                    // of a 59-field screen was refused has to bisect its own payload to find out. Its
-                    // VALUE is still never echoed, and neither is Jackson's message, which quotes it.
                     .andExpect(jsonPath("$.fieldErrors[0].field").value("notAField"))
                     .andExpect(content().string(org.hamcrest.Matchers.not(
                             org.hamcrest.Matchers.containsString("CU00"))));

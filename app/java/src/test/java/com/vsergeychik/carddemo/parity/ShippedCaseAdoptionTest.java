@@ -30,67 +30,15 @@ import org.junit.jupiter.params.provider.MethodSource;
 
 /**
  * The guard that every shipped parity case is a case some suite actually runs.
- *
- * <h2>The defect this exists to prevent</h2>
- * <p>Five of the twenty-eight parity suites once built their twenty cases in Java - {@code case01()}
- * through {@code case20()}, private static methods returning a scenario - and never read their
- * {@code src/test/resources/parity/<PROGRAM>/} directory at all. One hundred of the five hundred and
- * sixty shipped case files were therefore <strong>non-operative</strong>: they were reviewed, they were
- * cited in reports, they were counted towards "twenty cases per program, 560 in total", and no assertion
- * anywhere read one. Worse, the two sets had drifted - the same ordinal named a different scenario on
- * each side - so a reader comparing them would have concluded that one was wrong, when in truth only one
- * was running.
- *
- * <p>Nothing in a green build reveals that. Each suite passed its own twenty, the resource files parsed
- * cleanly whenever anything happened to load them, and the count of files on disk was right. The failure
- * mode is silence, which is why the guard has to be an explicit assertion rather than a convention.
- *
- * <h2>What is asserted, and why reflection</h2>
- * <p>For every program directory under {@code parity/}:
- * <ol>
- *   <li>the directory holds exactly {@code case01} through {@code case20}, and all twenty bind through
- *       {@link ParityCase}'s canonical constructor - which {@link ParityHarness#casesOf(String)} already
- *       enforces, and this calls it so that a malformed file fails here too;</li>
- *   <li>the matching {@code <PROGRAM>ParityTest} class exists, and every {@code @MethodSource} supplier
- *       feeding one of its {@code @ParameterizedTest} methods is invoked;</li>
- *   <li>every {@link ParityCase} any of those suppliers yields is <strong>equal</strong> to the shipped
- *       case of the same identifier;</li>
- *   <li>and between them the suppliers yield <strong>all twenty</strong>.</li>
- * </ol>
- *
- * <p>Point 3 is the one that bites. A Java-built case is never equal to the shipped case it shadows:
- * every case file carries several kilobytes of description that no builder reproduces, so equality holds
- * only if the supplier's element came out of the resource. Point 4 closes the other half - a suite could
- * satisfy point 3 by running four of the twenty - and it is why the supplier is invoked rather than the
- * source text scanned. A grep for {@code casesOf} would pass on a class that called it and then ignored
- * the result.
- *
- * <p>Reflection is unavoidable here and is used narrowly: the suppliers are private static methods on
- * twenty-eight classes that share no interface, because each suite's parameter type is its own private
- * scenario record. Rather than requiring twenty-eight classes to expose a seam for this test, the seam
- * that already exists - the {@code @MethodSource} annotation JUnit itself resolves - is resolved the same
- * way. A suite whose supplier cannot be found or invoked fails loudly; nothing is skipped, because a
- * silently skipped program is exactly the defect being guarded against.
  */
 @DisplayName("Shipped case adoption - all 560 parity resources are executed, none is decorative")
 class ShippedCaseAdoptionTest {
-
-    /** The twenty-eight programs the migration covers, and therefore the directory count expected. */
     private static final int PROGRAM_COUNT = 28;
 
-    /** {@value #PROGRAM_COUNT} programs times {@link ParityHarness#CASES_PER_PROGRAM} cases each. */
     private static final int TOTAL_CASES = PROGRAM_COUNT * ParityHarness.CASES_PER_PROGRAM;
 
-    /** The suffix a program's suite class name carries. */
     private static final String SUITE_SUFFIX = "ParityTest";
 
-    /**
-     * Every program directory under {@code parity/} holds exactly twenty binding cases.
-     *
-     * <p>Asserted separately from adoption so that a directory problem reads as a directory problem: a
-     * nineteen-case program and a twenty-case program nobody runs are different faults with different
-     * fixes.
-     */
     @Test
     @DisplayName("28 programs, 20 cases each, 560 in total - and every one of them binds (G15)")
     void everyProgramShipsTwentyBindingCases() {
@@ -118,10 +66,6 @@ class ShippedCaseAdoptionTest {
         assertThat(loaded).isEqualTo(TOTAL_CASES);
     }
 
-    /**
-     * Every shipped case is yielded by its own suite's parameter supplier, and every case a supplier
-     * yields is the shipped one rather than a Java-built lookalike.
-     */
     @Test
     @DisplayName("every one of the 560 cases is executed by its suite, and no suite builds its own")
     void everySuiteRunsTheCasesItsProgramShips() {
@@ -167,9 +111,6 @@ class ShippedCaseAdoptionTest {
                 .isEmpty();
     }
 
-    /**
-     * @return {@code case01} through {@code case20}, in order
-     */
     private static List<String> expectedCaseIds() {
         List<String> identifiers = new ArrayList<>(ParityHarness.CASES_PER_PROGRAM);
         for (int ordinal = 1; ordinal <= ParityHarness.CASES_PER_PROGRAM; ordinal++) {
@@ -178,13 +119,6 @@ class ShippedCaseAdoptionTest {
         return List.copyOf(identifiers);
     }
 
-    /**
-     * The program directories that exist, read from the classpath rather than listed here so that a
-     * twenty-ninth program is covered the moment its directory appears.
-     *
-     * @return the program names, in directory order
-     * @throws IllegalStateException if the case root is absent from the classpath
-     */
     private static List<String> shippedPrograms() {
         URL root = Thread.currentThread().getContextClassLoader()
                 .getResource(ParityHarness.CASE_RESOURCE_ROOT);
@@ -209,12 +143,6 @@ class ShippedCaseAdoptionTest {
         return List.copyOf(programs);
     }
 
-    /**
-     * @param program the program name
-     * @return that program's suite class
-     * @throws IllegalStateException if no {@code <PROGRAM>ParityTest} class exists, which means a shipped
-     *                               program has no suite at all
-     */
     private static Class<?> suiteOf(String program) {
         String name = ShippedCaseAdoptionTest.class.getPackageName() + '.' + program + SUITE_SUFFIX;
         try {
@@ -227,15 +155,6 @@ class ShippedCaseAdoptionTest {
         }
     }
 
-    /**
-     * Invokes every {@code @MethodSource} supplier the suite's parameterized tests name, and collects
-     * every {@link ParityCase} they yield.
-     *
-     * @param suite the suite class
-     * @return the cases its suppliers yield, in supplier order
-     * @throws IllegalStateException if the suite names no supplier, or a named supplier cannot be found
-     *                               or invoked
-     */
     private static List<ParityCase> casesSuppliedBy(Class<?> suite) {
         Set<String> supplierNames = new LinkedHashSet<>();
         for (Method method : suite.getDeclaredMethods()) {
@@ -265,12 +184,6 @@ class ShippedCaseAdoptionTest {
         return List.copyOf(supplied);
     }
 
-    /**
-     * @param suite    the suite class
-     * @param supplier the supplier method name
-     * @return whatever it returned
-     * @throws IllegalStateException if the method is absent, or throws
-     */
     private static Object invoke(Class<?> suite, String supplier) {
         Method method;
         try {
@@ -289,17 +202,6 @@ class ShippedCaseAdoptionTest {
         }
     }
 
-    /**
-     * Extracts the cases from a supplier's return value, whatever shape the suite chose for it: a
-     * {@link Stream} or {@link Collection} of {@link ParityCase}, of {@link Arguments}, or of a wrapper
-     * record that carries a case.
-     *
-     * @param supplied the supplier's return value
-     * @param suite    the suite the supplier belongs to, named in the failure message
-     * @param supplier the supplier's method name, named in the failure message
-     * @return the cases found, in encounter order
-     * @throws IllegalStateException if an element neither is nor carries a case
-     */
     private static List<ParityCase> casesFrom(Object supplied, Class<?> suite, String supplier) {
         List<Object> elements = new ArrayList<>();
         if (supplied instanceof Stream<?> stream) {
@@ -324,18 +226,6 @@ class ShippedCaseAdoptionTest {
         return cases;
     }
 
-    /**
-     * Every case one supplied element is or carries.
-     *
-     * <p>Five shapes are recognised, because the twenty-eight suites use five: the case itself; a
-     * {@link Named} whose payload is unwrapped, which is how a suite gives its cases readable display
-     * names; an {@link Arguments} tuple, whose components are searched in turn; a record with a
-     * {@link ParityCase} component, which is the common wrapper; and any object with a no-argument
-     * accessor returning one.
-     *
-     * @param element one element a supplier yielded
-     * @return the cases found, empty when the element carries none
-     */
     private static List<ParityCase> casesIn(Object element) {
         if (element instanceof ParityCase declared) {
             return List.of(declared);
@@ -369,12 +259,6 @@ class ShippedCaseAdoptionTest {
         return List.of();
     }
 
-    /**
-     * @param accessor the accessor to call
-     * @param element  the element to call it on
-     * @return what it returned
-     * @throws IllegalStateException if the call fails
-     */
     private static Object read(Method accessor, Object element) {
         accessor.setAccessible(true);
         try {

@@ -18,25 +18,12 @@ import org.junit.jupiter.params.provider.ValueSource;
 /**
  * Tests for {@link FileStatus}, the single home of the COBOL {@code FILE STATUS} codes and their CICS
  * {@code RESP} equivalents.
- *
- * <p>The batch programs test a two-character {@code FILE STATUS} and abend on anything unexpected,
- * while the online programs test a numeric CICS {@code RESP}; both collapse into this one class so
- * that a caller's branch structure is unchanged from the COBOL. That makes two things worth
- * asserting hard: every discriminated outcome must be reachable for both input forms, and the
- * mapping must be a genuine round trip where the COBOL treats the two as equivalent.
- *
- * <p>The {@code toStatusImage} tests deserve particular attention. COBOL displays a status of
- * {@code '00'} through {@code '89'} as four characters with two leading zeros, but a {@code '9x'}
- * status carries a binary value in its second byte, which is why that case renders the second byte
- * as a three-digit decimal instead. Both limbs of that decision are driven here.
  */
 @DisplayName("FileStatus - COBOL FILE STATUS codes and CICS RESP equivalents")
 class FileStatusContractTest {
-
     @Nested
     @DisplayName("Constants")
     class Constants {
-
         @Test
         @DisplayName("the four batch status codes are the COBOL literals")
         void batchStatusCodes() {
@@ -83,7 +70,6 @@ class FileStatusContractTest {
     @Nested
     @DisplayName("toStatusImage - the two-limb COBOL display convention")
     class StatusImage {
-
         @ParameterizedTest(name = "status {0} renders as {1}")
         @CsvSource({"00,0000", "10,0010", "22,0022", "23,0023", "35,0035", "89,0089"})
         @DisplayName("a wholly numeric status below 90 renders with two leading zeros")
@@ -94,8 +80,6 @@ class FileStatusContractTest {
         @Test
         @DisplayName("a 9x status renders its second byte as a three-digit decimal")
         void nineSeriesStatusRendersBinarySecondByte() {
-            // COBOL treats the second byte of a '9x' status as binary, so '9' followed by the byte
-            // 0x01 displays as 9001, not 0090-something.
             assertThat(FileStatus.toStatusImage('9', (char) 1)).isEqualTo("9001");
             assertThat(FileStatus.toStatusImage('9', (char) 0)).isEqualTo("9000");
             assertThat(FileStatus.toStatusImage('9', (char) 255)).isEqualTo("9255");
@@ -105,7 +89,6 @@ class FileStatusContractTest {
         @Test
         @DisplayName("a non-numeric status also takes the binary limb")
         void nonNumericStatusTakesTheBinaryLimb() {
-            // Drives the !statusIsNumeric side of the decision for each operand position.
             assertThat(FileStatus.toStatusImage('A', (char) 5)).isEqualTo("A005");
             assertThat(FileStatus.toStatusImage('0', 'A')).hasSize(4).startsWith("0");
         }
@@ -113,8 +96,6 @@ class FileStatusContractTest {
         @Test
         @DisplayName("both digit-range guards are driven at their boundaries")
         void digitGuardBoundaries() {
-            // isSingleByteDigit is a compound range test, so each side of both comparisons is driven:
-            // '/' is just below '0' and ':' is just above '9'.
             assertThat(FileStatus.toStatusImage('/', '0')).hasSize(4);
             assertThat(FileStatus.toStatusImage(':', '0')).hasSize(4);
             assertThat(FileStatus.toStatusImage('0', '/')).hasSize(4);
@@ -133,7 +114,6 @@ class FileStatusContractTest {
     @Nested
     @DisplayName("toDisplayLine - the COBOL DISPLAY statement")
     class DisplayLine {
-
         @Test
         @DisplayName("the display line is the prefix followed by the four-character image")
         void displayLineShape() {
@@ -151,7 +131,6 @@ class FileStatusContractTest {
     @Nested
     @DisplayName("Individual status predicates")
     class Predicates {
-
         @Test
         @DisplayName("isOk is true only for 00")
         void isOk() {
@@ -184,8 +163,6 @@ class FileStatusContractTest {
         @Test
         @DisplayName("isOkOrNotFound accepts 00 and 23 and rejects everything else")
         void isOkOrNotFound() {
-            // A short-circuiting OR, so all three paths are driven: first limb true, second limb
-            // true, and neither.
             assertThat(FileStatus.isOkOrNotFound("00")).isTrue();
             assertThat(FileStatus.isOkOrNotFound("23")).isTrue();
             assertThat(FileStatus.isOkOrNotFound("10")).isFalse();
@@ -196,7 +173,6 @@ class FileStatusContractTest {
     @Nested
     @DisplayName("outcomeOfStatus - every discriminated outcome reachable from a batch status")
     class OutcomeOfStatus {
-
         @ParameterizedTest(name = "status {0} yields {1}")
         @CsvSource({"00,OK", "10,END_OF_FILE", "23,NOT_FOUND", "22,DUPLICATE", "35,OTHER",
                 "99,OTHER", "AB,OTHER"})
@@ -216,7 +192,6 @@ class FileStatusContractTest {
     @Nested
     @DisplayName("outcomeOfCicsResp - the online programs' RESP form")
     class OutcomeOfCicsResp {
-
         @ParameterizedTest(name = "RESP {0} yields {1}")
         @CsvSource({"0,OK", "20,END_OF_FILE", "13,NOT_FOUND", "14,DUPLICATE", "15,DUPLICATE",
                 "16,OTHER", "19,OTHER", "22,OTHER", "99,OTHER"})
@@ -244,7 +219,6 @@ class FileStatusContractTest {
     @Nested
     @DisplayName("Mapping between the batch and CICS forms")
     class Mapping {
-
         @ParameterizedTest(name = "RESP {0} maps to batch status {1}")
         @CsvSource({"0,00", "20,10", "13,23", "14,22", "15,22"})
         @DisplayName("every mapped RESP yields its batch status")
@@ -270,8 +244,6 @@ class FileStatusContractTest {
         @ValueSource(strings = {"22", "35", "99", "AB"})
         @DisplayName("a status with no single RESP yields an absent result - 22 is ambiguous")
         void unmappedBatchStatusYieldsEmpty(String status) {
-            // '22' deliberately has no reverse mapping: two distinct CICS conditions, DUPREC and
-            // DUPKEY, both produce it, so reversing it would have to invent a choice.
             assertThat(FileStatus.cicsRespOfBatchStatus(status)).isEmpty();
         }
 
@@ -300,7 +272,6 @@ class FileStatusContractTest {
     @Nested
     @DisplayName("Input guards - shared by every String entry point")
     class InputGuards {
-
         @Test
         @DisplayName("a null status is rejected")
         void nullStatusRejected() {
@@ -338,7 +309,6 @@ class FileStatusContractTest {
     @Nested
     @DisplayName("Outcome enum")
     class OutcomeEnum {
-
         @Test
         @DisplayName("there are exactly five outcomes")
         void fiveOutcomes() {
@@ -370,7 +340,6 @@ class FileStatusContractTest {
     @Nested
     @DisplayName("Class shape")
     class ClassShape {
-
         @Test
         @DisplayName("the holder is not instantiable outside reflection")
         void notInstantiable() throws ReflectiveOperationException {

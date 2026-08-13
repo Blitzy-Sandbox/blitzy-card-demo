@@ -17,8 +17,6 @@ import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.nio.charset.Charset;
-import java.nio.charset.StandardCharsets;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -28,41 +26,13 @@ import org.springframework.http.converter.json.Jackson2ObjectMapperBuilder;
 
 /**
  * {@link WebConfig.ScreenTextDeserializer} - the one place every inbound JSON string is judged.
- *
- * <p>The behaviour under test is what a caller may put into a {@code PIC X(n)} screen field over HTTP.
- * A 3270 sends the modified fields of a screen as graphic characters, so a TAB, a line feed, a DEL or a
- * null between data bytes describes a conversation that cannot have happened; before this class existed
- * such a value was stored verbatim into a parity-critical record, and a stored null became
- * indistinguishable from an unpainted field.
- *
- * <p>The second judgement is the code page: a {@code PIC X(n)} field is n bytes in a single-byte page,
- * so a character that page cannot encode is a value no {@code RECEIVE MAP} could have delivered either.
- * It is asked here, of every string of every body, against the page the deployment named - the state it
- * is in now. It used to be asked by three of the seventeen controllers over their own field lists, two
- * of them against a hard-coded {@code US-ASCII}, and by the other fourteen not at all.
- *
- * <p>Two properties matter equally and both are asserted here: the values a real conversation
- * <em>does</em> produce are accepted - which is why a response full of {@code LOW-VALUES} remains a
- * legal next request - and the member named in the refusal is the one the caller spelled.
  */
 @DisplayName("ScreenTextDeserializer - the screen-text judgement at the JSON boundary")
 class ScreenTextDeserializerTest {
-
-    /**
-     * The code page {@code application-test.yml} names under {@code carddemo.charset.dataset}, which is
-     * what {@code CobolCharsetConfig} publishes as the active dataset charset under this profile.
-     *
-     * <p>Stated here, and passed to the production customizer, because the inbound screen-text boundary
-     * judges every value against the page in force rather than against a page of its own choosing: a
-     * mapper built for a test has to name the same one the profile does or it is not the production
-     * mapper.
-     */
     private static final Charset TEST_PROFILE_CHARSET = StandardCharsets.US_ASCII;
 
-    /** A mapper carrying only this deserializer, so nothing else can account for an outcome. */
     private static final ObjectMapper MAPPER = mapper();
 
-    /** A payload value carrying a card number, to prove it is never echoed. */
     private static final String SENSITIVE = "4111111111111111";
 
     private static ObjectMapper mapper() {
@@ -72,29 +42,18 @@ class ScreenTextDeserializerTest {
         return new ObjectMapper().registerModule(module);
     }
 
-    /**
-     * Reads a JSON object into a map of strings, which is what a screen payload is.
-     *
-     * @param json the body
-     * @return the bound map
-     * @throws Exception if the body cannot be read for a reason other than the judgement
-     */
     private static Map<String, String> readFields(String json) throws Exception {
         return MAPPER.readValue(json, MAPPER.getTypeFactory()
                 .constructMapType(LinkedHashMap.class, String.class, String.class));
     }
 
-    /** A screen with a nested communication area, to prove nesting is judged and named. */
     record Screen(String fname, Nested nested, List<String> rows) {
-
-        /** The nested part. */
         record Nested(String acctid) { }
     }
 
     @Nested
     @DisplayName("What a terminal could have sent is accepted, byte for byte")
     class Accepted {
-
         @Test
         @DisplayName("an ordinary value passes through unchanged, with no trimming and no padding")
         void ordinaryValuesPassThrough() throws Exception {
@@ -136,17 +95,12 @@ class ScreenTextDeserializerTest {
     @Nested
     @DisplayName("A member that is not character data is refused rather than coerced")
     class NotCharacterData {
-
         @ParameterizedTest(name = "{0} is refused, not coerced")
         @ValueSource(strings = {"11", "1.5", "-1", "0", "true", "false"})
         @DisplayName("a number and a boolean are each refused: every payload member projects a PIC X(n) "
                 + "item, so it is character data or it is nothing. An object or an array is refused too, "
                 + "through Jackson's own unexpected-token path - see StructuredValues")
         void everyNonStringTokenIsRefused(String json) {
-            // The coercion this replaces was not harmless. 11 written into a PIC X(11) account filter
-            // arrived as two characters where the screen carries eleven, silently dropping the nine
-            // leading zeros that identify the record - a field image no RECEIVE MAP could deliver, on its
-            // way into a parity-critical record.
             assertThatExceptionOfType(ScreenInputRejectedException.class)
                     .isThrownBy(() -> unwrap("{\"acctsid\":" + json + "}"))
                     .satisfies(rejected -> {
@@ -192,7 +146,6 @@ class ScreenTextDeserializerTest {
     @Nested
     @DisplayName("A character the screen code page cannot represent is refused, on every request family")
     class Unrepresentable {
-
         @ParameterizedTest(name = "U+{0} is refused against US-ASCII")
         @ValueSource(strings = {"00D1", "00E9", "20AC", "4E2D"})
         @DisplayName("a character outside the stated single-byte code page is refused at the boundary, "
@@ -206,7 +159,6 @@ class ScreenTextDeserializerTest {
                         assertThat(rejected.member()).contains("acslnam");
                         assertThat(rejected.reason())
                                 .isEqualTo(ScreenInputRejectedException.Reason.UNSUPPORTED_CHARACTER);
-                        // The code page and the code point are diagnostics; the answer names neither.
                         assertThat(rejected.getMessage()).contains("U+" + hex).contains("US-ASCII");
                         assertThat(rejected.publicDetail())
                                 .doesNotContain("U+" + hex)
@@ -258,7 +210,6 @@ class ScreenTextDeserializerTest {
     @Nested
     @DisplayName("What a terminal could not have sent is refused, naming the member")
     class Refused {
-
         @ParameterizedTest(name = "U+{0} among data is refused")
         @ValueSource(strings = {"0000", "0009", "000A", "000D", "001B", "007F", "0085"})
         @DisplayName("every C0 control, DEL and C1 is refused when it sits among data")
@@ -334,16 +285,10 @@ class ScreenTextDeserializerTest {
     @Nested
     @DisplayName("A shape no screen field can carry is refused, not bound as an absent field")
     class RefusedShapes {
-
         @ParameterizedTest(name = "a screen field written as {0}")
         @ValueSource(strings = {"{}", "{\"a\":\"JOHN\"}", "[]", "[\"JOHN\"]", "[[\"JOHN\"]]"})
         @DisplayName("an object or an array where a PIC X(n) field belongs is refused")
         void aStructuredValueIsRefused(String shape) {
-            // The defect this closes: JsonParser#getValueAsString answers null for a structured token, so
-            // the value was bound as null - indistinguishable on the wire from a field the caller left
-            // unpainted - and the character judgement above never ran on anything. A 3270 sends the
-            // modified fields of a screen as graphic characters; it has no way to send a nested document,
-            // so the request describes a conversation that cannot have happened and must be refused.
             assertThatExceptionOfType(MismatchedInputException.class)
                     .isThrownBy(() -> readFields("{\"fname\":" + shape + "}"))
                     .satisfies(mismatch -> assertThat(mismatch.getTargetType()).isEqualTo(String.class));
@@ -352,9 +297,6 @@ class ScreenTextDeserializerTest {
         @Test
         @DisplayName("the refusal is a mapping failure, which is what makes it a 400 rather than a 500")
         void theRefusalIsAMappingFailure() {
-            // CobolErrorHandler.handleUnreadableRequestBody answers every JsonMappingException Spring
-            // wraps as 400 MALFORMED_REQUEST. A refusal that arrived as anything else would be answered
-            // by the catch-all instead, and a caller's malformed body would look like a server fault.
             assertThatExceptionOfType(JsonMappingException.class)
                     .isThrownBy(() -> readFields("{\"fname\":{\"a\":\"JOHN\"}}"));
         }
@@ -395,11 +337,6 @@ class ScreenTextDeserializerTest {
         @Test
         @DisplayName("the quoted forms still bind, so nothing a terminal can send stops binding")
         void scalarsStillBind() throws Exception {
-            // The control for the two refusals above. A screen field is character data, so the JSON a
-            // caller sends for one is a string: "11" is the eleven-byte account filter as the terminal
-            // transmits it, and it binds unchanged. Only the unquoted forms are refused - 11 would
-            // arrive as two characters where COACTUP's PIC X(11) carries eleven, dropping the leading
-            // zeros that identify the record - and a structured token is refused as a shape.
             assertThat(readFields("{\"acctsid\":\"11\",\"flag\":\"true\"}"))
                     .containsEntry("acctsid", "11")
                     .containsEntry("flag", "true");
@@ -409,7 +346,6 @@ class ScreenTextDeserializerTest {
     @Nested
     @DisplayName("What the configured code page cannot represent is refused, on every route")
     class CodePage {
-
         @Test
         @DisplayName("an accented letter US-ASCII cannot encode is refused, naming the member and the "
                 + "code point rather than the value")
@@ -482,7 +418,6 @@ class ScreenTextDeserializerTest {
     @Nested
     @DisplayName("The EIBAID member carries a byte, not screen text, so the code page does not judge it")
     class TheAttentionIdentifierMember {
-
         @Test
         @DisplayName("DFHPF3 travels as U+00F3 under US-ASCII, which cannot spell it - because it is a "
                 + "byte of the exec interface block and not a PIC X(n) field")
@@ -517,18 +452,6 @@ class ScreenTextDeserializerTest {
                     .satisfies(rejected -> assertThat(rejected.member()).contains("fname"));
         }
 
-        /**
-         * A one-member body carrying an {@code aid} image, written by a mapper rather than concatenated.
-         *
-         * <p>Concatenation cannot be used here: the AID space includes {@code X'5C'}, which is the
-         * backslash, so a hand-built literal would open a JSON escape sequence instead of carrying a
-         * byte. The value is written by Jackson so every one of the 192 bytes is escaped as JSON requires
-         * and the deserializer sees exactly the character a real client would have sent.
-         *
-         * @param image the one-character image
-         * @return the body
-         * @throws Exception if the body cannot be written
-         */
         private String bodyCarryingAid(String image) throws Exception {
             return MAPPER.writeValueAsString(Map.of("aid", image));
         }
@@ -573,7 +496,6 @@ class ScreenTextDeserializerTest {
     @Nested
     @DisplayName("A structured value where a screen field belongs goes through Jackson's own path")
     class StructuredValues {
-
         @ParameterizedTest(name = "{0} where a PIC X field belongs is a mapping failure")
         @ValueSource(strings = {"{\"fname\":{\"a\":\"B\"}}", "{\"fname\":[\"A\"]}"})
         @DisplayName("an object or an array is refused by Jackson's own unexpected-token handling, "
@@ -589,9 +511,6 @@ class ScreenTextDeserializerTest {
         @DisplayName("a number and a boolean are refused rather than coerced, because a screen field is "
                 + "character data or it is not a screen field")
         void scalarsAreRefusedRatherThanCoerced() {
-            // Coercion is what this boundary exists to stop: 42 written into a PIC X(n) field arrives as
-            // two characters where the screen carries n, and "true" is a word no operator typed. The
-            // refusal names the member and states the token shape in the diagnostic only.
             assertThatExceptionOfType(ScreenInputRejectedException.class)
                     .isThrownBy(() -> unwrap("{\"fname\":42}"))
                     .satisfies(rejected -> {
@@ -608,14 +527,10 @@ class ScreenTextDeserializerTest {
     @Nested
     @DisplayName("The deserializer itself, driven directly")
     class DirectlyDriven {
-
         @Test
         @DisplayName("a JSON null token returns null rather than a value, so \"an absent field is spaces "
                 + "on a terminal\" is left to the screen that owns the rule")
         void aNullTokenReturnsNull() throws Exception {
-            // Driven directly because a container may answer a null token from its own null provider
-            // without consulting the value deserializer at all; the documented behaviour of THIS method
-            // is what is asserted here.
             try (com.fasterxml.jackson.core.JsonParser parser =
                     MAPPER.getFactory().createParser("null")) {
                 parser.nextToken();
@@ -630,13 +545,10 @@ class ScreenTextDeserializerTest {
     @Nested
     @DisplayName("It is registered on the application's own mapper, not only on this test's")
     class Registration {
-
         @Test
         @DisplayName("the customizer WebConfig publishes installs it, so all seventeen routes are "
                 + "judged rather than the three that judge a code page")
         void theApplicationMapperCarriesIt() {
-            // A bare mapper accepts a control character, so the outcome below is attributable to the
-            // customizer and to nothing else in Spring's default configuration.
             assertThatCode(() -> new Jackson2ObjectMapperBuilder().build()
                     .readValue("\"A\\u0009B\"", String.class))
                     .doesNotThrowAnyException();
@@ -655,19 +567,6 @@ class ScreenTextDeserializerTest {
         }
     }
 
-    /**
-     * Reads a body into the given type and rethrows the screen-input refusal Jackson wrapped, so a test
-     * can assert on it directly.
-     *
-     * <p>Jackson wraps a deserializer's failure in a {@code JsonMappingException} carrying the original
-     * as its cause, which is exactly the shape {@code CobolErrorHandler.screenInputCause} unwraps at the
-     * boundary; unwrapping it here asserts the same relation from the other side.
-     *
-     * @param json the body
-     * @param type the type to bind
-     * @throws ScreenInputRejectedException when the body carries a value no terminal could have sent
-     * @throws RuntimeException             if the failure is anything else
-     */
     private static void unwrapInto(String json, Class<?> type) {
         try {
             MAPPER.readValue(json, type);
@@ -676,12 +575,6 @@ class ScreenTextDeserializerTest {
         }
     }
 
-    /**
-     * Reads a body as a screen's flat field map and rethrows the refusal Jackson wrapped.
-     *
-     * @param json the body
-     * @throws ScreenInputRejectedException when the body carries a value no terminal could have sent
-     */
     private static void unwrap(String json) {
         try {
             readFields(json);
@@ -690,12 +583,6 @@ class ScreenTextDeserializerTest {
         }
     }
 
-    /**
-     * The screen-input refusal inside a wrapped failure.
-     *
-     * @param failure the failure Jackson raised
-     * @return the refusal, rethrown as itself
-     */
     private static RuntimeException rootScreenInput(Throwable failure) {
         for (Throwable cause = failure; cause != null; cause = cause.getCause()) {
             if (cause instanceof ScreenInputRejectedException screenInput) {

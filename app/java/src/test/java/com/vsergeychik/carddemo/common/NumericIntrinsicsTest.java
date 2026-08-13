@@ -18,49 +18,12 @@ import org.junit.jupiter.params.provider.ValueSource;
 
 /**
  * The one implementation of the COBOL numeric-conversion intrinsics, under test.
- *
- * <p>Four programs in this estate convert a character field to a number, and before
- * {@link NumericIntrinsics} existed each carried its own scanner. Collapsing them concentrated the
- * risk: a defect here is now a defect in {@code CSUTLDPY}, {@code COACTUPC}, {@code COTRN02C} and
- * {@code CORPT00C} simultaneously. This suite is therefore written as the gate G29 firewall
- * ("accept and reject exactly as COBOL does") rather than as incidental coverage of a helper.
- *
- * <h2>What this suite is really guarding</h2>
- *
- * <p>The two intrinsics do not share a grammar, and the difference is the thing four separate
- * implementations were most likely to get wrong - and did:
- *
- * <ul>
- *   <li>{@code NUMVAL} admits <strong>no currency sign and no grouping comma</strong>.</li>
- *   <li>{@code NUMVAL-C} admits <strong>both</strong>.</li>
- *   <li>{@code CR} and {@code DB} belong to <strong>both</strong>, which is the half of the
- *       distinction that looks removable and is not.</li>
- * </ul>
- *
- * <p>Every one of those three claims is asserted below in the form "this argument conforms under one
- * intrinsic and does not conform under the other", because an assertion that merely converts a value
- * cannot distinguish a grammar that is right from a grammar that is generous.
- *
- * <h2>Provenance of the expected values</h2>
- *
- * <p>The legacy COBOL cannot be executed in this environment, so these expectations are
- * <em>statically derived</em> from the language definition of the intrinsics and from the four
- * calling programs' guards, not captured from a live run. The digit limit in particular is derived
- * rather than observed: it follows from the absence of any {@code ARITH}, {@code PROCESS} or
- * {@code CBL} option anywhere in {@code app/cbl}, {@code app/jcl}, {@code app/proc} or
- * {@code samples}, which leaves the {@code ARITH(COMPAT)} default in force.
  */
 @DisplayName("NumericIntrinsics - FUNCTION NUMVAL, NUMVAL-C and their TEST- companions (gate G29)")
 class NumericIntrinsicsTest {
-
-    // =================================================================================================
-    // The shape of the holder itself.
-    // =================================================================================================
-
     @Nested
     @DisplayName("the holder is a set of functions, not an object")
     class TheHolder {
-
         @Test
         @DisplayName("it cannot be instantiated, not even reflectively")
         void cannotBeInstantiatedEvenReflectively() throws ReflectiveOperationException {
@@ -93,14 +56,9 @@ class NumericIntrinsicsTest {
         }
     }
 
-    // =================================================================================================
-    // FUNCTION NUMVAL - the narrower grammar.
-    // =================================================================================================
-
     @Nested
     @DisplayName("FUNCTION NUMVAL")
     class Numval {
-
         @ParameterizedTest(name = "NUMVAL(\"{0}\") = {1}")
         @CsvSource({
             "'1234',            1234",
@@ -145,10 +103,6 @@ class NumericIntrinsicsTest {
             "-1,234", "1,234-"})
         @DisplayName("no comma of any kind is accepted: the grouping comma is a NUMVAL-C extension")
         void theCommaIsNotPartOfThisGrammar(String image) {
-            // The defect this class was created to fix. A single scanner shared between the two
-            // intrinsics had accepted the grouping comma under both, which made NUMVAL more generous
-            // than the language. Asserted as a family rather than as one case, because the previous
-            // implementation accepted several of these and rejected others for unrelated reasons.
             assertThat(NumericIntrinsics.testNumval(image)).isPositive();
             assertThat(NumericIntrinsics.numval(image)).isEqualByComparingTo(BigDecimal.ZERO);
         }
@@ -162,14 +116,9 @@ class NumericIntrinsicsTest {
         }
     }
 
-    // =================================================================================================
-    // FUNCTION NUMVAL-C - the wider grammar.
-    // =================================================================================================
-
     @Nested
     @DisplayName("FUNCTION NUMVAL-C")
     class NumvalC {
-
         @ParameterizedTest(name = "NUMVAL-C(\"{0}\") = {1}")
         @CsvSource({
             "'1234',            1234",
@@ -232,14 +181,9 @@ class NumericIntrinsicsTest {
         }
     }
 
-    // =================================================================================================
-    // The differences between the two, stated as differences.
-    // =================================================================================================
-
     @Nested
     @DisplayName("the two grammars differ in exactly two places, and agree everywhere else")
     class TheTwoGrammars {
-
         @ParameterizedTest(name = "\"{0}\" conforms under NUMVAL-C only")
         @ValueSource(strings = {"$1234", "$ 1234", "1,234", "1,234,567", "$1,234.56",
             "- $ 1,234.56"})
@@ -275,14 +219,9 @@ class NumericIntrinsicsTest {
         }
     }
 
-    // =================================================================================================
-    // Position reporting - CSUTLDPY moves the reported position into an operator message.
-    // =================================================================================================
-
     @Nested
     @DisplayName("the reported position is IBM's, one-based, with a length-plus-one no-digit case")
     class PositionReporting {
-
         @ParameterizedTest(name = "\"{0}\" is reported at its length plus one, {1}")
         @CsvSource({
             "'',        1",
@@ -294,8 +233,6 @@ class NumericIntrinsicsTest {
         })
         @DisplayName("an argument holding no digit is reported at its length plus one")
         void theNoDigitCase(String image, int expected) {
-            // There is no offending character to point at, so IBM reports one past the end. Both
-            // intrinsics share this rule.
             assertThat(NumericIntrinsics.testNumval(image)).isEqualTo(expected);
             assertThat(NumericIntrinsics.testNumvalC(image)).isEqualTo(expected);
         }
@@ -311,9 +248,6 @@ class NumericIntrinsicsTest {
         })
         @DisplayName("otherwise the one-based position of the first character in error is reported")
         void theOffendingCharacter(String image, int expected) {
-            // "$1234" is reported at 6 rather than at 1: NUMVAL has no currency-sign position, so the
-            // scan finds no digit before the '$', stops there, and the no-digit rule applies - length
-            // 5 plus one. That is the language's own consequence rather than a special case.
             assertThat(NumericIntrinsics.testNumval(image)).isEqualTo(expected);
         }
 
@@ -332,14 +266,9 @@ class NumericIntrinsicsTest {
         }
     }
 
-    // =================================================================================================
-    // The ARITH(COMPAT) digit limit.
-    // =================================================================================================
-
     @Nested
     @DisplayName("the argument may not carry more digits than the arithmetic mode allows")
     class TheDigitLimit {
-
         @Test
         @DisplayName("exactly MAXIMUM_DIGITS digits conform, and convert without loss")
         void theBoundaryConforms() {
@@ -367,8 +296,6 @@ class NumericIntrinsicsTest {
         @Test
         @DisplayName("the limit counts every digit, including leading zeros and fraction digits")
         void theLimitCountsEveryDigitCharacter() {
-            // A COBOL argument arrives as a fixed-width item, so leading zeros are digits that were
-            // really there. The limit is on the argument's digits, not on the value's magnitude.
             assertThat(NumericIntrinsics.testNumval("000000000000000000"))
                     .as("eighteen zeros are eighteen digits")
                     .isEqualTo(NumericIntrinsics.CONFORMS);
@@ -395,9 +322,6 @@ class NumericIntrinsicsTest {
         @Test
         @DisplayName("every field the four callers apply these to is far below the limit")
         void theLimitIsUnreachableThroughTheCallers() {
-            // Recorded so that a future screen widening is noticed here rather than in production:
-            // CSUTLDPY converts a two-character month and day, and the widest field any caller
-            // converts is the twelve-character transaction amount.
             assertThat(NumericIntrinsics.testNumval("12")).isEqualTo(NumericIntrinsics.CONFORMS);
             assertThat(NumericIntrinsics.testNumvalC("+00000012.34"))
                     .isEqualTo(NumericIntrinsics.CONFORMS);
@@ -405,14 +329,9 @@ class NumericIntrinsicsTest {
         }
     }
 
-    // =================================================================================================
-    // The Scan pair.
-    // =================================================================================================
-
     @Nested
     @DisplayName("a scan carries the value and the verdict as one object")
     class TheScan {
-
         @Test
         @DisplayName("one pass answers both questions, so they cannot come from different scans")
         void onePassAnswersBoth() {
@@ -449,19 +368,12 @@ class NumericIntrinsicsTest {
         }
     }
 
-    // =================================================================================================
-    // Null arguments.
-    // =================================================================================================
-
     @Nested
     @DisplayName("a null argument is a Java defect, not a value")
     class NullArguments {
-
         @Test
         @DisplayName("all six accessors refuse null rather than reading it as zero")
         void allSixAccessorsRefuseNull() {
-            // A COBOL item is never absent, so there is no COBOL behaviour to be faithful to here and
-            // treating null as zero would hide the defect that produced it.
             assertThatNullPointerException().isThrownBy(() -> NumericIntrinsics.numval(null));
             assertThatNullPointerException().isThrownBy(() -> NumericIntrinsics.testNumval(null));
             assertThatNullPointerException().isThrownBy(() -> NumericIntrinsics.numvalC(null));

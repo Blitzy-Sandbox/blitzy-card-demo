@@ -71,28 +71,9 @@ import static org.mockito.Mockito.when;
 
 /**
  * Unit contract for {@link CustomerFileReaderJob}, the batch shell around {@code CBCUS01C}.
- *
- * <h2>Why the name and the behaviour differ</h2>
- * <p>Rule R1 and practice B4 apply: the migration prompt names {@code CustomerRepository} and
- * {@code CustomerService}, but {@code CBCUS01C} is also the runnable program submitted by
- * {@code app/jcl/READCUST.jcl}. The job class preserves that runnable behaviour; assertions therefore
- * follow the JCL and COBOL, never an implication inferred from a Java class name.
- *
- * <h2>Provenance</h2>
- * <p>Per practice B12 and AAP section 0.7.6 risk R-A, COBOL cannot execute in this environment.
- * Every expectation below is statically derived from {@code READCUST.jcl}, {@code CBCUS01C.cbl},
- * {@code CARDDEMO.CSD} and {@code CVCUS01Y.cpy}. The reference trees remain read-only.
- *
- * <h2>Rules and dependencies</h2>
- * <p>{@code review_rules} returned exactly {@code No user rules provided.}; enterprise-grade AAP
- * practices B1-B12 therefore remain binding. This is plain JUnit 5, Mockito and AssertJ over Batch
- * core constructors already supplied by {@code spring-boot-starter-test} and the Batch starter.
- * The dedicated Batch testing-support artifact and its launcher helpers are intentionally absent:
- * the dependency set is closed, and the tasklet is directly reachable as gate G51 requires.
  */
 @DisplayName("CustomerFileReaderJob - READCUST STEP05 / CBCUS01C")
 class CustomerFileReaderJobTest {
-
     private static final int FIXTURE_RECORD_COUNT = 50;
     private static final int FIFTY_RECORD_LINE_COUNT = 102;
     private static final String FIXTURE_RESOURCE = "/fixtures/custdata.txt";
@@ -106,9 +87,7 @@ class CustomerFileReaderJobTest {
             "com", "vsergeychik", "carddemo", "customer", "CustomerFileReaderJobTest.java"));
     private static final Path POM = MODULE_DIRECTORY.resolve("pom.xml");
 
-    /** Ordered sink used to prove that one service-produced line becomes one job-produced line. */
     private static final class CapturedSysout implements SysoutSink {
-
         private final List<String> lines = new ArrayList<>();
 
         @Override
@@ -121,29 +100,23 @@ class CustomerFileReaderJobTest {
         }
     }
 
-    /** Provider used when a concrete infrastructure object must be supplied without a context. */
     private record PresentBean<T>(T bean) implements ObjectProvider<T> {
-
         @Override
         public T getObject() {
             return bean;
         }
     }
 
-    /** Provider used to exercise the production fallback to standard output. */
     private static final class AbsentBean<T> implements ObjectProvider<T> {
-
         @Override
         public T getObject() {
             throw new NoSuchBeanDefinitionException("no bean is declared in this plain unit test");
         }
     }
 
-    /** The two plain Batch objects passed to one direct tasklet invocation. */
     private record TaskletCall(StepContribution contribution, ChunkContext chunkContext) {
     }
 
-    /** Result of executing a real Batch job without a launcher or application context. */
     private record ExecutedJob(BatchConfig batchConfig,
                                JobExecution jobExecution,
                                StepExecution stepExecution,
@@ -166,13 +139,6 @@ class CustomerFileReaderJobTest {
         return contracts;
     }
 
-    /**
-     * Instantiates the real configuration while importing only the assigned dependency surface.
-     *
-     * <p>The fourth constructor type is the DD catalogue owned by another configuration class. It is
-     * discovered from {@link BatchConfig}'s verified public constructor rather than imported here,
-     * keeping this test's internal imports within its declared dependency list.
-     */
     private static BatchConfig batchConfig(JobRepository repository,
                                            PlatformTransactionManager transactionManager,
                                            JobContracts contracts) {
@@ -248,15 +214,6 @@ class CustomerFileReaderJobTest {
         sysout.display(CustomerService.END_OF_EXECUTION);
     }
 
-    /**
-     * A service that streams a clean run's line sequence to the destination it is handed and reports the
-     * record count, which is the shape the tasklet actually calls.
-     *
-     * <p>The lines are emitted through a streaming {@link Sysout} over the supplied sink rather than
-     * written to it directly, so the emission code below is the same code the capturing overloads use -
-     * {@code displayCustomerRecord} included - and the duplicate image of {@code L96} then {@code L78}
-     * cannot be faked into existence by the stub.
-     */
     private static CustomerService serviceReturning(List<String> records) {
         CustomerService service = mock(CustomerService.class);
         when(service.readAndPrintCustomerFileTo(any(SysoutSink.class))).thenAnswer(invocation -> {
@@ -274,13 +231,6 @@ class CustomerFileReaderJobTest {
                 CustomerService.ABENDING_PROGRAM);
     }
 
-    /**
-     * A service that streams the three lines a fatal read emits and then abends.
-     *
-     * <p>The lines reach the sink <em>before</em> the throw, which is what proves the streaming tasklet
-     * needs no {@code finally} to keep a failing run's output: on the mainframe those {@code DISPLAY}s
-     * are already spooled when {@code CEE3ABD} terminates the run.
-     */
     private static CustomerService serviceThrowing(AbendException abend) {
         CustomerService service = mock(CustomerService.class);
         when(service.readAndPrintCustomerFileTo(any(SysoutSink.class))).thenAnswer(invocation -> {
@@ -378,10 +328,6 @@ class CustomerFileReaderJobTest {
         }
     }
 
-    /**
-     * Removes comments and literals before keyword absence checks, so documentation may explain an
-     * excluded type without making the executable source appear to use it.
-     */
     private static String executableJava(String source) {
         StringBuilder code = new StringBuilder(source.length());
         boolean lineComment = false;
@@ -486,7 +432,6 @@ class CustomerFileReaderJobTest {
     @Nested
     @DisplayName("JobAndStepShape")
     class JobAndStepShape {
-
         @Test
         @DisplayName("the published Job and ordinary Step factory use the READCUST identities")
         void jobBeanAndStepCarryTheJclNames() throws ReflectiveOperationException {
@@ -498,7 +443,6 @@ class CustomerFileReaderJobTest {
             Method stepFactory =
                     CustomerFileReaderJob.class.getDeclaredMethod("customerFileReaderStep");
 
-            // READCUST.jcl:L1/L6: one published job executes one STEP05 program step.
             assertThat(CustomerFileReaderJob.class.getAnnotation(Configuration.class).value())
                     .isEqualTo(CustomerFileReaderJob.CONFIGURATION_BEAN_NAME);
             assertThat(jobFactory.getAnnotation(Bean.class)).isNotNull();
@@ -528,7 +472,6 @@ class CustomerFileReaderJobTest {
             String bytecode = compiledForm(CustomerFileReaderJob.class);
             String source = moduleSource(JOB_SOURCE);
 
-            // CBCUS01C:L74-L83 is one sequential pass; L96 and L78 must remain adjacent.
             assertThat(step).isInstanceOf(TaskletStep.class);
             assertThat(((TaskletStep) step).getTasklet())
                     .isNotInstanceOf(ChunkOrientedTasklet.class);
@@ -549,7 +492,6 @@ class CustomerFileReaderJobTest {
             String bytecode = compiledForm(CustomerFileReaderJob.class);
             String source = moduleSource(JOB_SOURCE);
 
-            // READCUST.jcl has one ungated EXEC and no scheduler, COND, retry or skip declaration.
             assertThat(bytecode).doesNotContain(
                     "org/springframework/scheduling/annotation/Scheduled",
                     "org/springframework/scheduling/Trigger",
@@ -572,7 +514,6 @@ class CustomerFileReaderJobTest {
             CustomerFileReaderJob subject =
                     subject(service, new CapturedSysout());
 
-            // Explicit launch mirrors submitting READCUST.jcl; context refresh must execute nothing.
             assertThat(shippedProperty("application.yml", "spring.batch.job.enabled"))
                     .isEqualTo(false);
             assertThat(shippedProperty("application-test.yml", "spring.batch.job.enabled"))
@@ -588,7 +529,6 @@ class CustomerFileReaderJobTest {
                     subject(mock(CustomerService.class), new CapturedSysout());
             JobParameters parameters = subject.jobParameters();
 
-            // READCUST.jcl:L6 has no PARM; its sole step also has no COND.
             assertThat(parameters.isEmpty()).isTrue();
             assertThat(parameters.getParameters()).isEmpty();
             assertThat(parameters.getParameters()).doesNotContainKey("parmDate");
@@ -598,7 +538,6 @@ class CustomerFileReaderJobTest {
             assertThat(((SimpleJob) subject.customerFileReaderJob()).getStepNames())
                     .containsExactly(CustomerService.STEP_NAME);
 
-            // READCUST.jcl:L9-L10 names DD CUSTFILE; Java resolves its location from YAML.
             assertThat(shippedProperty("application.yml",
                     "carddemo.datasets.CUSTFILE.dsname").toString())
                     .startsWith("${CARDDEMO_DATASET_CUSTFILE:")
@@ -612,18 +551,12 @@ class CustomerFileReaderJobTest {
         @DisplayName("absence of a sink bean resolves the service-owned standard-output sink, in the "
                 + "code page the service reads the customer master in")
         void standardOutputIsTheDeterministicFallback() {
-            // The service owns the code page, so the fallback is asked of the service rather than built
-            // here: a displayed record is the dataset's own 500 bytes (CBCUS01C:L78,L96), so the line has
-            // to be encoded in the code page the record was read in (practice B8). System.out is bound to
-            // file.encoding - a property of the JVM, not of the program - so it is not the stream
-            // underneath.
             CustomerService service = mock(CustomerService.class);
             when(service.datasetCharset()).thenReturn(StandardCharsets.US_ASCII);
             when(service.standardOutputSysoutSink()).thenCallRealMethod();
             CustomerFileReaderJob subject = subject(mockedScaffolding(jobContracts()),
                     service, new AbsentBean<>());
 
-            // READCUST.jcl:L11 assigns DISPLAY output to SYSOUT.
             assertThat(subject.sysoutSink())
                     .isInstanceOf(CustomerService.PrintStreamSysoutSink.class);
             PrintStream stream =
@@ -631,10 +564,6 @@ class CustomerFileReaderJobTest {
             assertThat(stream.charset()).isEqualTo(StandardCharsets.US_ASCII);
             assertThat(stream).isNotSameAs(System.out);
 
-            // The code page is asked for rather than assumed, and it is asked of the layer that decodes
-            // the dataset bytes - this class accepts no Charset of its own. Taking System.out instead
-            // would have taken whatever encoding the JVM picked for it, re-encoding every displayed
-            // record; the resolved stream is therefore deliberately not that global.
             verify(service, times(1)).datasetCharset();
         }
 
@@ -647,8 +576,6 @@ class CustomerFileReaderJobTest {
             CustomerFileReaderJob subject = subject(mockedScaffolding(jobContracts()),
                     service, new AbsentBean<>());
 
-            // Two reads of the accessor are two reads of one settled field, so the destination cannot
-            // change between two records of a run.
             assertThat(subject.sysoutSink()).isSameAs(subject.sysoutSink());
             verify(service, times(1)).datasetCharset();
         }
@@ -657,7 +584,6 @@ class CustomerFileReaderJobTest {
     @Nested
     @DisplayName("Delegation")
     class Delegation {
-
         @Test
         @DisplayName("CustomerService is the only decision-making collaborator")
         void onlyTheServiceOwnsProgramDecisions() {
@@ -675,7 +601,6 @@ class CustomerFileReaderJobTest {
                     .distinct()
                     .toList();
 
-            // G51: all CBCUS01C branches stay in the directly callable service, never in job plumbing.
             assertThat(decisionCollaborators).containsExactly(CustomerService.class);
             assertThat(constructor.getParameterTypes()).containsExactly(
                     BatchConfig.class, CustomerService.class, ObjectProvider.class);
@@ -702,7 +627,6 @@ class CustomerFileReaderJobTest {
             RepeatStatus status =
                     tasklet.execute(call.contribution(), call.chunkContext());
 
-            // CBCUS01C:L71, L96, L78 and L85: 1 + 50*2 + 1 lines, in that order.
             assertThat(status).isEqualTo(RepeatStatus.FINISHED);
             assertThat(call.contribution().getReadCount()).isEqualTo(FIXTURE_RECORD_COUNT);
             assertThat(sink.lines())
@@ -733,10 +657,6 @@ class CustomerFileReaderJobTest {
             Execution actual = subject(service, new CapturedSysout())
                     .readAndPrintCustomerFile(sysout);
 
-            // G51: the program is reachable from this job's own surface, capturing form included, so a
-            // caller that needs the line sequence does not have to launch a job to get it. The tasklet
-            // deliberately does not use this shape - it would retain the sequence - but the surface
-            // stays published and is a pure delegation.
             assertThat(actual).isSameAs(expected);
             verify(service, times(1)).readAndPrintCustomerFile(sysout);
             verifyNoMoreInteractions(service);
@@ -747,18 +667,12 @@ class CustomerFileReaderJobTest {
         void theTaskletRetainsNothing() {
             String source = moduleSource(JOB_SOURCE);
 
-            // READCUST.jcl puts no ceiling on the customer master and each record contributes two
-            // 500-character lines, so the run must not hold the sequence: the streaming entry point is
-            // called, and nothing here creates a capturing Sysout, reads its accumulated lines, or
-            // spools after end-of-file.
             assertThat(source)
                     .contains("customerService.readAndPrintCustomerFileTo(sysoutSink)")
                     .doesNotContain("new Sysout()")
                     .doesNotContain(".lines()")
                     .doesNotContain("private void spool(");
 
-            // No field and no local of the tasklet accumulates: the only per-run value it holds is the
-            // record count it reports as step metadata.
             assertThat(Arrays.stream(CustomerFileReaderJob.class.getDeclaredFields())
                     .filter(field -> !Modifier.isStatic(field.getModifiers()))
                     .map(field -> field.getGenericType().getTypeName()))
@@ -778,9 +692,6 @@ class CustomerFileReaderJobTest {
             Tasklet tasklet = subject(service, sink).customerFileDisplayTasklet();
             TaskletCall call = taskletCall();
 
-            // The stub writes its three lines and then throws, so anything the sink holds afterwards was
-            // written during the run rather than recovered from a retained copy - which is exactly why
-            // the tasklet needs no finally block to reproduce CEE3ABD leaving prior DISPLAYs spooled.
             AbendException thrown = catchThrowableOfType(AbendException.class,
                     () -> tasklet.execute(call.contribution(), call.chunkContext()));
 
@@ -795,7 +706,6 @@ class CustomerFileReaderJobTest {
     @Nested
     @DisplayName("ExitStatusContract")
     class ExitStatusContract {
-
         @Test
         @DisplayName("a successful real job completes and contributes process code zero")
         void successCompletesWithZero() throws Exception {
@@ -803,7 +713,6 @@ class CustomerFileReaderJobTest {
 
             ExecutedJob executed = executeJob(service);
 
-            // CBCUS01C:L87 GOBACK leaves RETURN-CODE at zero.
             assertThat(executed.stepExecution().getStatus()).isEqualTo(BatchStatus.COMPLETED);
             assertThat(executed.stepExecution().getExitStatus()).isEqualTo(ExitStatus.COMPLETED);
             assertThat(executed.jobExecution().getStatus()).isEqualTo(BatchStatus.COMPLETED);
@@ -829,7 +738,6 @@ class CustomerFileReaderJobTest {
             AbendException thrown = catchThrowableOfType(AbendException.class,
                     () -> tasklet.execute(call.contribution(), call.chunkContext()));
 
-            // CBCUS01C:L101 and L154-L158: return code 12, ABCODE 999, TIMING 0, then termination.
             assertThat(thrown).isSameAs(abend);
             assertThat(thrown.getProgram()).isEqualTo(CustomerService.PROGRAM_ID);
             assertThat(thrown.getReturnCode()).isEqualTo(AbendException.RETURN_CODE_IO_ERROR);
@@ -850,7 +758,6 @@ class CustomerFileReaderJobTest {
 
             ExecutedJob executed = executeJob(serviceThrowing(abend));
 
-            // CBCUS01C:L101 and L154-L158: failure metadata must retain the COBOL code.
             assertThat(executed.stepExecution().getStatus()).isEqualTo(BatchStatus.FAILED);
             assertThat(executed.jobExecution().getStatus()).isEqualTo(BatchStatus.FAILED);
             assertThat(executed.stepExecution().getExitStatus().getExitCode()).isEqualTo("12");
@@ -859,7 +766,6 @@ class CustomerFileReaderJobTest {
             assertThat(executed.jobExecution().getAllFailureExceptions()).contains(abend);
             assertThat(executed.sysout().lines()).containsExactlyElementsOf(abendLines());
 
-            // G35: the same non-zero code reaches a downstream COND decision and the process boundary.
             assertThat(executed.batchConfig().precedingExitCodeZeroDecider()
                     .decide(executed.jobExecution(), executed.stepExecution()))
                     .isEqualTo(BatchConfig.SKIP);
@@ -869,7 +775,6 @@ class CustomerFileReaderJobTest {
                     .getExitCode(new IllegalStateException("framework wrapper", abend)))
                     .isEqualTo(AbendException.RETURN_CODE_IO_ERROR);
 
-            // Module-wide values are 0/4/8/12; EOF 16 ends this program's loop normally.
             assertThat(List.of(AbendException.RETURN_CODE_OK,
                     AbendException.RETURN_CODE_WARNING,
                     AbendException.RETURN_CODE_ASSUMED_FAILURE,
@@ -883,13 +788,11 @@ class CustomerFileReaderJobTest {
     @Nested
     @DisplayName("AbsenceAssertions")
     class AbsenceAssertions {
-
         @Test
         @DisplayName("production dataset identity is absent and all locations come from configuration")
         void noProductionDatasetLiteralIsCompiledIntoTheJob() {
             String productionPrefix = "AWS.M2." + "CARDDEMO.";
 
-            // G46 / READCUST.jcl:L9-L10: the JCL owns the literal; application.yml owns the binding.
             assertThat(moduleSource(JOB_SOURCE)).doesNotContain(productionPrefix);
             assertThat(compiledForm(CustomerFileReaderJob.class)).doesNotContain(productionPrefix);
         }
@@ -902,7 +805,6 @@ class CustomerFileReaderJobTest {
                     .filter(field -> !field.isSynthetic())
                     .toList();
 
-            // G53/B9: a singleton configuration may retain no mutable per-run state.
             assertThat(fields).allSatisfy(field -> {
                 if (Modifier.isStatic(field.getModifiers())) {
                     assertThat(Modifier.isFinal(field.getModifiers()))
@@ -938,7 +840,6 @@ class CustomerFileReaderJobTest {
                     "StepBuilder" + "Factory",
                     "@Enable" + "BatchProcessing");
 
-            // B1/B2/G52: starter-test plus Batch core is the complete test surface.
             assertThat(testSource)
                     .doesNotContainPattern("(?m)^\\s*import\\s+(?:static\\s+)?[^;]*\\.\\*;\\s*$")
                     .doesNotContain(unavailableSupport.toArray(String[]::new))
@@ -957,7 +858,6 @@ class CustomerFileReaderJobTest {
             String wideBinaryKeyword = "dou" + "ble";
             String narrowBinaryKeyword = "flo" + "at";
 
-            // CVCUS01Y.cpy:L5-L23 has zero scaled pictures; G23/G24 are absence checks here.
             assertThat(executableSources)
                     .doesNotContainPattern("\\b" + wideBinaryKeyword + "\\b")
                     .doesNotContainPattern("\\b" + narrowBinaryKeyword + "\\b")
@@ -974,7 +874,6 @@ class CustomerFileReaderJobTest {
                     Path.of("app", "cpy", "CVCUS01Y.cpy"),
                     Path.of("app", "data", "ASCII", "custdata.txt"));
 
-            // B3/G5: oracle paths may be cited, but this test can only open app/java files.
             referenceFiles.forEach(reference ->
                     assertThatIllegalArgumentException()
                             .isThrownBy(() -> modulePath(reference))
@@ -986,14 +885,12 @@ class CustomerFileReaderJobTest {
     @Nested
     @DisplayName("StartupGuards")
     class StartupGuards {
-
         @Test
         @DisplayName("a contract pointing STEP05 at another program is refused")
         void wrongProgramIsRefused() {
             BatchConfig wrong = mockedScaffolding(jobContracts(
                     new StepContract(CustomerService.STEP_NAME, "CBACT01C", false)));
 
-            // READCUST.jcl:L6 fixes EXEC PGM=CBCUS01C.
             assertThatIllegalStateException()
                     .isThrownBy(() -> subject(wrong, mock(CustomerService.class),
                             new PresentBean<>(new CapturedSysout())))
@@ -1008,7 +905,6 @@ class CustomerFileReaderJobTest {
                     new StepContract(CustomerService.STEP_NAME,
                             CustomerService.PROGRAM_ID, true)));
 
-            // READCUST.jcl:L6 has no COND and no preceding step.
             assertThatIllegalStateException()
                     .isThrownBy(() -> subject(gated, mock(CustomerService.class),
                             new PresentBean<>(new CapturedSysout())))
@@ -1024,7 +920,6 @@ class CustomerFileReaderJobTest {
                             CustomerService.PROGRAM_ID, false),
                     new StepContract("STEP06", CustomerService.PROGRAM_ID, false))));
 
-            // READCUST.jcl contains one EXEC statement, at L6.
             assertThatIllegalStateException()
                     .isThrownBy(() -> subject(extra, mock(CustomerService.class),
                             new PresentBean<>(new CapturedSysout())))
@@ -1037,7 +932,6 @@ class CustomerFileReaderJobTest {
         void absentContractIsRefused() {
             BatchConfig absent = mockedScaffolding(new JobContracts());
 
-            // A missing READCUST contract cannot supply STEP05, its program or its empty parameters.
             assertThatIllegalStateException()
                     .isThrownBy(() -> subject(absent, mock(CustomerService.class),
                             new PresentBean<>(new CapturedSysout())));
@@ -1046,7 +940,6 @@ class CustomerFileReaderJobTest {
         @Test
         @DisplayName("the required sequence is exactly the shipped one-step contract")
         void requiredSequenceIsExact() {
-            // READCUST.jcl:L6 is the complete sequence, not merely one required member.
             assertThat(CustomerFileReaderJob.REQUIRED_STEPS)
                     .containsExactly(new StepContract(CustomerService.STEP_NAME,
                             CustomerService.PROGRAM_ID, false));

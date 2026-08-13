@@ -16,7 +16,6 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.http.converter.json.Jackson2ObjectMapperBuilder;
-import com.vsergeychik.carddemo.config.CobolCharsetConfig;
 import com.vsergeychik.carddemo.admin.AdminMenuService.AdminMenuInput;
 import com.vsergeychik.carddemo.admin.AdminMenuService.AdminMenuOutcome;
 import com.vsergeychik.carddemo.admin.AdminMenuService.ReceiveOutcome;
@@ -80,142 +79,23 @@ import org.springframework.web.bind.annotation.RequestBody;
 /**
  * The Spring MVC slice test for {@link AdminMenuController} - CSD transaction {@code CA00}, program
  * {@code app/cbl/COADM01C.cbl}, projected onto the single endpoint {@code GET /api/admin/menu}.
- *
- * <h2>What this file asserts, and what it deliberately does NOT</h2>
- *
- * <p>{@link AdminMenuController} holds <strong>no decision logic</strong>: it binds the payload,
- * calls {@link AdminMenuService#handle} once, and projects the outcome. Every branch
- * {@code COADM01C} makes - the {@code EIBCALEN = 0} diversion, the {@code ENTER}/{@code REENTER}
- * split, the ordered {@code EVALUATE EIBAID}, the option normalisation, the three-term validation,
- * the program-prefix test and the menu composition - is asserted in
- * {@code AdminMenuServiceTest}, which is therefore what carries package {@code admin}'s JaCoCo
- * {@code BRANCH >= 0.90} load (gates <strong>G51</strong> and <strong>G49</strong>).
- *
- * <p>So the service is <strong>stubbed</strong> here and its logic is never re-asserted. What is
- * left is exactly four things, and they are all observable behaviour no service test can see:
- *
- * <ol>
- *   <li>straight-line response assembly - the stubbed outcome projected onto
- *       {@link AdminMenuResponse};</li>
- *   <li>the one fixed-width operation the controller performs itself: the {@code PIC X(80)} to
- *       {@code PIC X(78)} <em>right</em>-truncation of the message image into {@code errMsg} through
- *       {@link FixedWidthCodec} ({@code app/cbl/COADM01C.cbl:177});</li>
- *   <li>the HTTP and JSON contract - member names, widths, and that space-padded {@code PIC X(n)}
- *       values survive the round trip (gate <strong>G9</strong>);</li>
- *   <li>statelessness (<strong>G37</strong>), the {@code ENTER}/{@code REENTER} split
- *       (<strong>G38</strong>), and {@code nextProgram}/{@code nextMapset}/{@code nextMap} standing
- *       in for {@code EXEC CICS XCTL} (<strong>G40</strong>).</li>
- * </ol>
- *
- * <h2>Why the service is stubbed with {@link MockitoSpyBean} and not {@code @MockitoBean}</h2>
- *
- * <p>The migration plan's test brief asks for {@code @MockitoBean AdminMenuService}. That cannot
- * work here, and the reason is in the production code rather than in this test:
- * {@code AdminMenuController}'s constructor <em>consumes</em> the service during construction -
- * {@code this.codec = this.adminMenuService.codec()} followed by
- * {@code codec.movePicX(SPACE, OPTION_LENGTH)} - so a collaborator that answers {@code null} to
- * {@code codec()} fails the context before any test method runs. A field-level bean override is
- * created bare and can only be stubbed in {@code @BeforeEach}, which is after the controller
- * singleton has already been built; the observed failure is
- * {@code NullPointerException: Cannot invoke FixedWidthCodec.movePicX(String, int) because
- * this.codec is null}.
- *
- * <p>{@link MockitoSpyBean} is used instead. It is a member of the same modern bean-override family
- * as {@code @MockitoBean} - so the deprecated {@code @MockBean} is still avoided, which is what
- * practice <strong>B2</strong> is actually after - and a spy answers {@code codec()} with the real,
- * immutable codec the constructor needs while every call to {@code handle} is stubbed with
- * {@code doReturn}. The stubbing seam, and therefore <strong>G51</strong>, is unchanged: no test
- * below asserts an outcome the service decided.
- *
- * <p>Outside the one Spring slice, the controller is constructed directly over a Mockito stub whose
- * {@code codec()} is answered at creation time, matching this module's established convention of
- * plain JUnit 5 with {@code MockMvcBuilders.standaloneSetup} where a full context earns nothing.
- *
- * <h2>Determinism</h2>
- *
- * <p>The {@link Clock} is fixed at {@code 2022-07-19T23:12:32Z}, which is
- * {@code COADM01C}'s own version footer ({@code app/cbl/COADM01C.cbl:267}), so the date and time
- * header is assertable byte for byte and the value documents where it came from (practice
- * <strong>B7</strong>). It carries {@link ZoneOffset#UTC}, so the suite is unaffected by the host
- * time zone.
- *
- * <h2>Gates and practices this file carries</h2>
- *
- * <p><strong>Applied:</strong> G5/B3 (the reference trees are read, never written, and nothing is
- * copied into test resources), G9, G37, G38, G40, G41, G49, G50, G51, G52 (no wildcard imports),
- * G53/B9 (no mutable static state - the only static values are an immutable {@code Clock}, an
- * immutable codec and interned strings), G54 (non-interactive), B1/B2 (nothing outside the closed
- * dependency set), B4 (this file only - no base class, no fixture utility, no second
- * {@code application-test.yml}), B5 (all twelve option slots preserved, and the
- * {@code app/cpy/COTTL01Y.cpy:21} title decoy left where it is), B6 (security posture untouched:
- * {@link SecUserRecord} is on the classpath and no test asserts a read of it), B7, B8 (named
- * {@code *_LENGTH} constants and an explicit {@link Charset} everywhere), B10 (no {@code @Disabled},
- * no stub test), B12 (every non-obvious literal carries its source line).
- *
- * <p><strong>Not applied, because they have no subject in {@code COADM01C}:</strong> G47 - the
- * program performs no file I/O at all, so there is no repository call site and no
- * file-status outcome to drive; G35 - it raises none of the nine abend sites; G22 to G29 -
- * it contains no arithmetic and no decimal {@code PICTURE}, so there is no numeric parity to
- * assert; G19 to G21, G43 to G46 and G48 - no persisted record, no optimistic concurrency, no DDL,
- * no dataset name and no statement subroutine.
- *
- * @see AdminMenuService the translated program, and where its branches are asserted
- * @see AdminMenuRequest the inbound projection of {@code 01 COADM1AI}
- * @see AdminMenuResponse the outbound projection of {@code 01 COADM1AO REDEFINES COADM1AI}
  */
 @DisplayName("AdminMenuController - GET /api/admin/menu, CSD transaction CA00, program COADM01C")
 class AdminMenuControllerTest {
-
-    // =================================================================================================
-    // Immutable fixtures. Every static below is deeply immutable - a fixed Clock, an immutable codec and
-    // interned strings - so none of them is the mutable static state G53 and practice B9 forbid. Nothing
-    // here is reassigned by a test, and no test can observe another's writes.
-    // =================================================================================================
-
-    /**
-     * The pinned instant: {@code COADM01C}'s own version footer, {@code 2022-07-19 23:12:32}
-     * ({@code app/cbl/COADM01C.cbl:267}). Choosing it means the expected header values below are
-     * self-documenting rather than arbitrary (practice B7).
-     */
     private static final Instant FIXED_INSTANT = Instant.parse("2022-07-19T23:12:32Z");
 
-    /** The clock every controller in this file is built over, fixed and zone-explicit (B7, B8). */
     private static final Clock FIXED_CLOCK = Clock.fixed(FIXED_INSTANT, ZoneOffset.UTC);
 
-    /**
-     * The code page the fixed-width work is done in, stated explicitly and never defaulted (B8).
-     *
-     * <p>{@code US-ASCII} is what {@link AdminMenuService#DEFAULT_MESSAGE_CHARSET_NAME} declares for
-     * the message images this screen composes. It is a property of the <em>record</em> layer only;
-     * the HTTP and JSON layer below is UTF-8 and says so.
-     */
     private static final Charset MESSAGE_CHARSET = StandardCharsets.US_ASCII;
 
-    /** The codec used to build expected images. {@link FixedWidthCodec} is immutable. */
     private static final FixedWidthCodec CODEC = new FixedWidthCodec(MESSAGE_CHARSET);
 
-    /** {@code CDEMO-TO-PROGRAM} for the first admin option: {@code app/cpy/COADM02Y.cpy:24-27}. */
     private static final String USER_LIST_PROGRAM = "COUSR00C";
 
-    /** The sign-on program {@code COADM01C:83} and {@code :97} both name. */
     private static final String SIGNON_PROGRAM = "COSGN00C";
 
-    /** The single {@code PIC X} pad character; a COBOL alphanumeric field has no absent state. */
     private static final String SPACE = " ";
 
-    // =================================================================================================
-    // Fixture builders. Instance-free and side-effect-free: each call returns a fresh value, so no test
-    // can hand another a mutated fixture.
-    // =================================================================================================
-
-    /**
-     * The dataset catalogue the real service needs, carrying only the {@code USRSEC} entry
-     * {@code app/cbl/COADM01C.cbl:39} declares and never reads.
-     *
-     * <p>{@link SecUserRecord#RECORD_LENGTH} is 80 because {@code app/cpy/CSUSR01Y.cpy} says so, and
-     * {@link AdminMenuService}'s constructor refuses a binding that disagrees. Present so the bean
-     * can be built; asserted by nothing (practice B6).
-     */
     private static DatasetBindings bindings() {
         DatasetBindings catalogue = new DatasetBindings();
         catalogue.put(AdminMenuService.USRSEC_DATASET_KEY,
@@ -233,27 +113,16 @@ class AdminMenuControllerTest {
         return catalogue;
     }
 
-    /**
-     * A Mockito stub of the decision core whose {@code codec()} is answered <em>at creation time</em>,
-     * because {@code AdminMenuController}'s constructor reads it while building
-     * {@code optionSpaces} and the cold-start request.
-     *
-     * <p>{@code handle} is left unstubbed on purpose: each test states the outcome it is projecting,
-     * so no test inherits another's. That is also what keeps this file inside G51 - the outcome is
-     * given, never computed here.
-     */
     private static AdminMenuService stubbedService() {
         AdminMenuService stub = mock(AdminMenuService.class);
         when(stub.codec()).thenReturn(CODEC);
         return stub;
     }
 
-    /** A controller over the given stub, on the fixed clock. */
     private static AdminMenuController controllerOver(final AdminMenuService service) {
         return new AdminMenuController(service, FIXED_CLOCK);
     }
 
-    /** The twelve {@code OPTN00nO} lines as {@code MOVE LOW-VALUES TO COADM1AO} leaves them. */
     private static List<String> blankOptionLines() {
         List<String> lines = new ArrayList<>(AdminMenuResponse.OPTION_LINE_COUNT);
         for (int slot = 1; slot <= AdminMenuResponse.OPTION_LINE_COUNT; slot++) {
@@ -262,18 +131,6 @@ class AdminMenuControllerTest {
         return lines;
     }
 
-    /**
-     * The four lines {@code BUILD-MENU-OPTIONS} can actually write, followed by eight spaces-filled
-     * slots.
-     *
-     * <p>{@code app/cbl/COADM01C.cbl:238-261} is an {@code EVALUATE WS-IDX} with arms
-     * {@code WHEN 1} to {@code WHEN 10} and a {@code WHEN OTHER CONTINUE} - there is <strong>no arm
-     * for 11 or 12 at all</strong>, so {@code OPTN011O} and {@code OPTN012O} are structurally
-     * unwritable by this program. They are carried anyway, because the map declares them
-     * ({@code app/cpy-bms/COADM01.CPY:120,126}); pruning them would be a change of wire format
-     * (practice B5). {@code CDEMO-ADMIN-OPT-COUNT} is 4 ({@code app/cpy/COADM02Y.cpy:20}), so slots
-     * 5 to 10 stay blank as well even though arms exist for them.
-     */
     private static List<String> paintedOptionLines() {
         List<String> lines = blankOptionLines();
         lines.set(0, CODEC.movePicX("01. User List (Security)", AdminMenuResponse.OPTION_LINE_LENGTH));
@@ -283,21 +140,6 @@ class AdminMenuControllerTest {
         return lines;
     }
 
-    /**
-     * An outcome exactly as {@link AdminMenuService} would hand one back, at the widths its own
-     * canonical constructor enforces: twelve lines of 40, an 80-character {@code WS-MESSAGE}, a
-     * two-character {@code OPTIONO} and an eight-character transfer target.
-     *
-     * @param optionLines the twelve {@code OPTN00nO} images
-     * @param message80   the {@code WS-MESSAGE} image, {@code PIC X(80)} - {@code COADM01C:38}
-     * @param colour      {@code ERRMSGC OF COADM1AO}: {@code COLOR=RED} from
-     *                    {@code app/bms/COADM01.bms:155}, overridden with {@code DFHGREEN} at
-     *                    {@code COADM01C:148}
-     * @param nextProgram the {@code XCTL} target, or spaces when the program returned to CICS
-     * @param reset       whether {@code MOVE LOW-VALUES TO COADM1AO} ran - {@code COADM01C:89}
-     * @param context     {@code CARDDEMO-COMMAREA}, handed back on every return - {@code :109}
-     * @return the outcome to stub {@code handle} with
-     */
     private static AdminMenuOutcome outcome(final List<String> optionLines,
             final String message80,
             final byte colour,
@@ -323,10 +165,6 @@ class AdminMenuControllerTest {
                 transferring ? ReceiveOutcome.NORMAL : ReceiveOutcome.NOT_PERFORMED);
     }
 
-    /**
-     * The first-entry paint: {@code COADM01C:87-90}, so the message is spaces, the output fields were
-     * cleared, and no transfer is named.
-     */
     private static AdminMenuOutcome paintedOutcome(final NavigationContext context) {
         return outcome(paintedOptionLines(),
                 CODEC.movePicX(SPACE, AdminMenuService.MESSAGE_LENGTH),
@@ -336,11 +174,6 @@ class AdminMenuControllerTest {
                 context);
     }
 
-    /**
-     * A re-entry that reports a message: the shape {@code COADM01C:130-133} and {@code :100-102}
-     * produce. {@code resetAllOutputFields} is false because only the first-entry path runs
-     * {@code MOVE LOW-VALUES}.
-     */
     private static AdminMenuOutcome reportingOutcome(final String message, final byte colour) {
         return outcome(paintedOptionLines(),
                 CODEC.movePicX(message, AdminMenuService.MESSAGE_LENGTH),
@@ -350,20 +183,6 @@ class AdminMenuControllerTest {
                 NavigationContext.empty().withPgmReenter());
     }
 
-    /**
-     * The {@code RETURN-TO-SIGNON-SCREEN} transfer: {@code app/cbl/COADM01C.cbl:165-167}, a bare
-     * {@code XCTL PROGRAM(CDEMO-TO-PROGRAM)} that names <strong>no {@code COMMAREA} option</strong>.
-     *
-     * <p>Distinct from the option transfer at {@code :142-145}, which does name one. The difference is the
-     * single boolean {@code nextProgramCarriesCommarea}, and it is the whole of what this path observably
-     * differs by - so the outcome is built positionally here rather than through
-     * {@link #outcome(List, String, byte, String, boolean, NavigationContext)}, which derives that flag
-     * from "a transfer was named" and therefore cannot express this case.
-     *
-     * @param context the communication area the program holds at the moment of the transfer; it still
-     *                holds all sixteen values, and the transfer simply does not pass them on
-     * @return the outcome to stub {@code handle} with
-     */
     private static AdminMenuOutcome signOnTransferOutcome(final NavigationContext context) {
         return new AdminMenuOutcome(paintedOptionLines(),
                 CODEC.movePicX(SPACE, AdminMenuService.MESSAGE_LENGTH),
@@ -381,14 +200,6 @@ class AdminMenuControllerTest {
                 ReceiveOutcome.NORMAL);
     }
 
-    /**
-     * The option transfer: {@code app/cbl/COADM01C.cbl:142-145}, which <em>does</em> name
-     * {@code COMMAREA(CARDDEMO-COMMAREA)}.
-     *
-     * @param nextProgram the option target
-     * @param context     the communication area, passed to the target
-     * @return the outcome to stub {@code handle} with
-     */
     private static AdminMenuOutcome optionTransferOutcome(final String nextProgram,
             final NavigationContext context) {
         return outcome(paintedOptionLines(),
@@ -399,13 +210,6 @@ class AdminMenuControllerTest {
                 context);
     }
 
-    /**
-     * Drives a specific request through a controller whose service is stubbed to return {@code outcome}.
-     *
-     * @param outcome the outcome the decision core is stubbed to return
-     * @param request the inbound payload
-     * @return the response envelope, never {@code null}
-     */
     private static ScreenResponse<AdminMenuResponse> answerFor(final AdminMenuOutcome outcome,
             final AdminMenuRequest request) {
         AdminMenuService service = stubbedService();
@@ -413,16 +217,6 @@ class AdminMenuControllerTest {
         return controllerOver(service).getAdminMenu(request);
     }
 
-    /**
-     * The module's <strong>production</strong> mapper, built through {@code WebConfig}'s own customizer.
-     *
-     * <p>Used where the assertion is about what actually reaches the wire - property inclusion above all.
-     * A bare {@code new ObjectMapper()} would answer a different question, because
-     * {@code spring.jackson.default-property-inclusion: always} is the setting that turns a {@code null}
-     * communication area into a stated {@code "navigationContext": null} rather than an omitted member.
-     *
-     * @return a mapper configured exactly as the running application's is, never {@code null}
-     */
     private static ObjectMapper productionMapper() {
         Jackson2ObjectMapperBuilder builder = new Jackson2ObjectMapperBuilder();
         new com.vsergeychik.carddemo.config.WebConfig()
@@ -430,7 +224,6 @@ class AdminMenuControllerTest {
         return builder.build();
     }
 
-    /** A payload whose twenty items are each space-filled to the width the map declares. */
     private static AdminMenuRequest blankScreen(final NavigationContext context, final byte aid) {
         String optionLine = CODEC.movePicX(SPACE, AdminMenuRequest.OPTION_LINE_LENGTH);
         return new AdminMenuRequest(CODEC.movePicX(SPACE, AdminMenuRequest.TRN_NAME_LENGTH),
@@ -447,12 +240,6 @@ class AdminMenuControllerTest {
                 aid);
     }
 
-    /**
-     * Drives one request through a controller whose service is stubbed to return {@code outcome}, and
-     * returns the whole envelope.
-     *
-     * <p>The stub is built per call, so nothing is shared between tests.
-     */
     private static ScreenResponse<AdminMenuResponse> answerFor(final AdminMenuOutcome outcome) {
         AdminMenuService service = stubbedService();
         doReturn(outcome).when(service).handle(any(AdminMenuInput.class));
@@ -460,12 +247,10 @@ class AdminMenuControllerTest {
                 blankScreen(NavigationContext.empty().withPgmReenter(), CicsAid.DFHENTER));
     }
 
-    /** The freshly painted screen: the shape {@code SEND-MENU-SCREEN} produces on first entry. */
     private static AdminMenuResponse paint() {
         return answerFor(paintedOutcome(NavigationContext.empty().withPgmReenter())).screen();
     }
 
-    /** A payload carrying a typed option, continuing the pseudo-conversation. */
     private static AdminMenuRequest withOption(final String option, final NavigationContext context) {
         AdminMenuRequest blank = blankScreen(context, CicsAid.DFHENTER);
         return new AdminMenuRequest(blank.trnName(), blank.title01(), blank.curDate(),
@@ -476,14 +261,9 @@ class AdminMenuControllerTest {
                 option, blank.errMsg(), context, blank.eibAid());
     }
 
-    // =================================================================================================
-    // Construction, and the seam an absent body goes through.
-    // =================================================================================================
-
     @Nested
     @DisplayName("Construction - two collaborators, both required, and no state of its own")
     class Construction {
-
         @Test
         @DisplayName("both arguments are required, and each message says what it is for")
         void bothArgumentsAreRequired() {
@@ -502,8 +282,6 @@ class AdminMenuControllerTest {
 
             controllerOver(service);
 
-            // AdminMenuController:276 reads it during construction - which is exactly why a bare bean
-            // override cannot stand in for this collaborator. See the class javadoc.
             verify(service).codec();
         }
 
@@ -534,19 +312,12 @@ class AdminMenuControllerTest {
         }
     }
 
-    // =================================================================================================
-    // The route, the handler signature, and what an absent body is taken to mean.
-    // =================================================================================================
-
     @Nested
     @DisplayName("The handler - one GET, one path, and EIBCALEN = 0 for an absent body")
     class TheHandlerContract {
-
         @Test
         @DisplayName("the mapping is the GET the plan assigns to transaction CA00")
         void theMappingIsTheAssignedOne() throws NoSuchMethodException {
-            // app/csd/CARDDEMO.CSD:327-328 defines TRANSACTION(CA00) PROGRAM(COADM01C); AAP 0.3.9 maps
-            // it to this resource.
             assertThat(AdminMenuController.ADMIN_MENU_PATH).isEqualTo("/api/admin/menu");
 
             Method handler = handlerMethod();
@@ -630,19 +401,12 @@ class AdminMenuControllerTest {
         }
     }
 
-    // =================================================================================================
-    // Gate G9 - every payload member traces to a DFHMDF definition and every width to an xxxI PICTURE.
-    // =================================================================================================
-
     @Nested
     @DisplayName("The payload contract (G9) - twenty members, at the widths the symbolic map declares")
     class ThePayloadContract {
-
         @Test
         @DisplayName("twenty named DFHMDF fields of twenty-eight, and twenty payload members")
         void twentyOfTwentyEightFieldsTravel() {
-            // app/bms/COADM01.bms declares 28 DFHMDF fields; the 8 unnamed ones are screen furniture
-            // ('Tran:' :29-33, 'Date:' :42-46, and so on) and never travel.
             assertThat(AdminMenuResponse.MAPSET_FIELD_COUNT).isEqualTo(28);
             assertThat(AdminMenuResponse.NAMED_MAP_FIELD_COUNT).isEqualTo(20);
             assertThat(AdminMenuResponse.UNNAMED_MAP_FIELD_COUNT).isEqualTo(8);
@@ -655,10 +419,6 @@ class AdminMenuControllerTest {
         @Test
         @DisplayName("the widths are the xxxI PICTURE clauses, in map order (B8: named constants only)")
         void theWidthsAreTheDeclaredOnes() {
-            // app/cpy-bms/COADM01.CPY, in the order the map declares: TRNNAMEI X(4) :24,
-            // TITLE01I X(40) :30, CURDATEI X(8) :36, PGMNAMEI X(8) :42, TITLE02I X(40) :48,
-            // CURTIMEI X(8) :54, OPTN001I..OPTN012I X(40) :60-:126, OPTIONI X(2) :132,
-            // ERRMSGI X(78) :138.
             List<Integer> expected = new ArrayList<>(List.of(AdminMenuRequest.TRN_NAME_LENGTH,
                     AdminMenuRequest.TITLE_LENGTH,
                     AdminMenuRequest.CUR_DATE_LENGTH,
@@ -718,7 +478,6 @@ class AdminMenuControllerTest {
         void theUnwritableSlotsStayPresentAndBlank() {
             AdminMenuResponse painted = paint();
 
-            // CDEMO-ADMIN-OPT-COUNT is 4 (app/cpy/COADM02Y.cpy:20), so L228-L229 iterates four times.
             assertThat(painted.optionLines().subList(0, 4)).noneMatch(String::isBlank);
             assertThat(painted.optionLines().subList(4, AdminMenuResponse.OPTION_LINE_COUNT))
                     .as("slots 5-10 have an EVALUATE arm but no data; 11-12 have no arm at all "
@@ -771,9 +530,6 @@ class AdminMenuControllerTest {
         @Test
         @DisplayName("option is the only editable field, so the header the client sends is overwritten")
         void onlyTheOptionIsEditable() {
-            // app/bms/COADM01.bms:145-149: OPTION is ATTRB=(FSET,IC,NORM,NUM,UNPROT), LENGTH=2,
-            // POS=(20,41). Every other named field is ASKIP, so a client cannot have typed into it -
-            // and POPULATE-HEADER-INFO (:202-221) rewrites the header from working storage regardless.
             AdminMenuService service = stubbedService();
             doReturn(paintedOutcome(NavigationContext.empty().withPgmReenter()))
                     .when(service).handle(any(AdminMenuInput.class));
@@ -795,7 +551,6 @@ class AdminMenuControllerTest {
             assertThat(painted.errMsg()).doesNotContain("tampered");
         }
 
-        /** {@code TRNNAMEO} to {@code trnName}: the map's item name as the DTO spells it. */
         private String memberNameOf(final String dfhmdfItem) {
             String withoutSuffix = dfhmdfItem.substring(0, dfhmdfItem.length() - 1);
             return switch (withoutSuffix) {
@@ -812,21 +567,12 @@ class AdminMenuControllerTest {
         }
     }
 
-
-    // =================================================================================================
-    // The one fixed-width operation the controller performs itself: PIC X(80) -> PIC X(78).
-    // =================================================================================================
-
     @Nested
     @DisplayName("The message image - WS-MESSAGE X(80) into ERRMSGO X(78), truncated on the RIGHT")
     class TheMessageTruncation {
-
         @Test
         @DisplayName("the two widths disagree by two bytes, and that is the whole point")
         void theTwoWidthsDisagree() {
-            // app/cbl/COADM01C.cbl:38 declares WS-MESSAGE PIC X(80); app/bms/COADM01.bms:156 declares
-            // ERRMSG LENGTH=78 and app/cpy-bms/COADM01.CPY:138 ERRMSGI PIC X(78). Line 177 moves one
-            // into the other, so COBOL discards two bytes on every send.
             assertThat(AdminMenuService.MESSAGE_LENGTH).isEqualTo(80);
             assertThat(AdminMenuResponse.ERR_MSG_LENGTH).isEqualTo(78);
         }
@@ -834,8 +580,6 @@ class AdminMenuControllerTest {
         @Test
         @DisplayName("a short message is right-space-padded to exactly 78, never trimmed")
         void aShortMessageIsPaddedNotTrimmed() {
-            // app/cbl/COADM01C.cbl:131-132 moves a 36-character literal into the 80-byte field, which
-            // line 177 then moves into the 78-byte one.
             String message = AdminMenuService.INVALID_OPTION_MESSAGE;
 
             AdminMenuResponse reported = answerFor(reportingOutcome(message,
@@ -852,8 +596,6 @@ class AdminMenuControllerTest {
         @Test
         @DisplayName("an eighty-byte image loses exactly its last two bytes - right, not left")
         void anEightyByteImageLosesItsLastTwoBytes() {
-            // A probe whose every position is identifiable: 'H' at 1, 'T' at 78, then '#' and '$' at
-            // 79 and 80. Right truncation keeps H..T; left truncation would keep '#' and '$'.
             String surviving = "H" + "-".repeat(76) + "T";
             String discarded = "#$";
             String probe = surviving + discarded;
@@ -878,9 +620,6 @@ class AdminMenuControllerTest {
         @Test
         @DisplayName("the codec, not String surgery, does it - and it is handed an explicit charset")
         void theCodecDoesItWithAnExplicitCharset() {
-            // B8: FixedWidthCodec takes a Charset and this file always names one; the platform default
-            // is never relied on. B11: the codec is hand-written, so the direction of every MOVE is
-            // explicit at the call site.
             assertThat(CODEC.charset())
                     .isEqualTo(MESSAGE_CHARSET)
                     .isEqualTo(Charset.forName(AdminMenuService.DEFAULT_MESSAGE_CHARSET_NAME));
@@ -906,9 +645,6 @@ class AdminMenuControllerTest {
         @Test
         @DisplayName("the colour the service chose is the colour the envelope publishes")
         void theColourIsCarriedThrough() {
-            // app/bms/COADM01.bms:155 declares COLOR=RED; app/cbl/COADM01C.cbl:148 overrides it with
-            // DFHGREEN on the coming-soon path. Which one applies is the service's decision, so this
-            // asserts carriage only.
             assertThat(answerFor(reportingOutcome(AdminMenuService.COMING_SOON_MESSAGE,
                     AdminMenuService.COMING_SOON_MESSAGE_COLOUR)).screenMetadata().messageColour())
                     .isEqualTo(BmsAttributes.unsigned(BmsAttributes.DFHGREEN));
@@ -918,25 +654,18 @@ class AdminMenuControllerTest {
         }
     }
 
-    // =================================================================================================
-    // The header fields, and the three literal traps around them.
-    // =================================================================================================
-
     @Nested
     @DisplayName("The header - the two identity literals, the two titles, and the date and time")
     class TheHeaderFields {
-
         @Test
         @DisplayName("TRNNAMEO is 'CA00' and PGMNAMEO is 'COADM01C' - L208-L209")
         void theTwoIdentityLiterals() {
             AdminMenuResponse painted = paint();
 
-            // app/cbl/COADM01C.cbl:37 WS-TRANID PIC X(04) VALUE 'CA00', moved at :208.
             assertThat(painted.trnName())
                     .isEqualTo(AdminMenuService.TRANSACTION_ID)
                     .isEqualTo("CA00")
                     .hasSize(AdminMenuResponse.TRN_NAME_LENGTH);
-            // app/cbl/COADM01C.cbl:36 WS-PGMNAME PIC X(08) VALUE 'COADM01C', moved at :209.
             assertThat(painted.pgmName())
                     .isEqualTo(AdminMenuService.PROGRAM_NAME)
                     .isEqualTo("COADM01C")
@@ -948,17 +677,12 @@ class AdminMenuControllerTest {
         void theActiveTitlesTravel() {
             AdminMenuResponse painted = paint();
 
-            // app/cpy/COTTL01Y.cpy:18-19 CCDA-TITLE01, forty characters with six leading and seven
-            // trailing spaces.
             assertThat(painted.title01())
                     .isEqualTo(ScreenTitles.CCDA_TITLE01)
                     .hasSize(ScreenTitles.TITLE_LENGTH)
                     .contains("AWS Mainframe Modernization")
                     .startsWith(SPACE)
                     .endsWith(SPACE);
-            // app/cpy/COTTL01Y.cpy:22 is the ACTIVE CCDA-TITLE02. Line 21 immediately above it holds a
-            // commented-out '  Credit Card Demo Application (CCDA)   ', also exactly forty characters.
-            // It is left exactly where it is, and must never be substituted for the active value.
             assertThat(painted.title02())
                     .isEqualTo(ScreenTitles.CCDA_TITLE02)
                     .hasSize(ScreenTitles.TITLE_LENGTH)
@@ -969,10 +693,6 @@ class AdminMenuControllerTest {
         @Test
         @DisplayName("the invalid-key text is CCDA-MSG-INVALID-KEY: not either thank-you literal")
         void theInvalidKeyTextIsNotConflated() {
-            // Three different literals, three different owners, and two different widths:
-            //   app/cpy/CSMSG01Y.cpy:20-21 CCDA-MSG-INVALID-KEY  PIC X(50), says "Invalid key"
-            //   app/cpy/CSMSG01Y.cpy:18-19 CCDA-MSG-THANK-YOU    PIC X(50), says "CardDemo"
-            //   app/cpy/COTTL01Y.cpy:23-24 CCDA-THANK-YOU        PIC X(40), says "CCDA"
             assertThat(SystemMessages.CCDA_MSG_INVALID_KEY)
                     .hasSize(SystemMessages.MESSAGE_LENGTH)
                     .isNotEqualTo(SystemMessages.CCDA_MSG_THANK_YOU)
@@ -980,8 +700,6 @@ class AdminMenuControllerTest {
             assertThat(SystemMessages.MESSAGE_LENGTH).isEqualTo(50);
             assertThat(ScreenTitles.CCDA_THANK_YOU).hasSize(ScreenTitles.TITLE_LENGTH);
 
-            // COADM01C:101 widens the 50-byte text into WS-MESSAGE X(80); line 177 then narrows it to
-            // the 78-byte map field, which is still wide enough to carry all fifty.
             AdminMenuResponse reported = answerFor(reportingOutcome(
                     SystemMessages.CCDA_MSG_INVALID_KEY, AdminMenuService.MAP_MESSAGE_COLOUR)).screen();
 
@@ -997,9 +715,6 @@ class AdminMenuControllerTest {
         void theDateAndTimeAreDeterministic() {
             AdminMenuResponse painted = paint();
 
-            // The clock is pinned to COADM01C's own footer, 2022-07-19 23:12:32 (:267). WS-CURDATE-YY
-            // is WS-CURDATE-YEAR(3:2), the last two digits of the year (:213), and the separators are
-            // the declared FILLER '/' at app/cpy/CSDAT01Y.cpy:32,34 and ':' at :38,40.
             assertThat(painted.curDate())
                     .isEqualTo("07/19/22")
                     .hasSize(DateHeader.WS_CURDATE_MM_DD_YY_LENGTH);
@@ -1028,20 +743,12 @@ class AdminMenuControllerTest {
         }
     }
 
-
-    // =================================================================================================
-    // Gates G38 and G50 - the ENTER / REENTER split, both user types, and the CSSETATY rule.
-    // =================================================================================================
-
     @Nested
     @DisplayName("ENTER versus REENTER (G38, G50) - both contexts carried, and no invented highlight")
     class EnterAndReenter {
-
         @Test
         @DisplayName("G50: CDEMO-PGM-ENTER and CDEMO-PGM-REENTER are both driven, true and false")
         void bothContextConditionNamesAreDriven() {
-            // app/cpy/COCOM01Y.cpy:29-31: CDEMO-PGM-CONTEXT PIC 9(01) with 88 CDEMO-PGM-ENTER VALUE 0
-            // and 88 CDEMO-PGM-REENTER VALUE 1.
             AdminMenuController controller = controllerOver(stubbedService());
             NavigationContext entering = NavigationContext.empty().withPgmEnter();
             NavigationContext reentering = NavigationContext.empty().withPgmReenter();
@@ -1062,9 +769,6 @@ class AdminMenuControllerTest {
         @Test
         @DisplayName("G50: both user-type condition names are carried, and neither is interpreted")
         void bothUserTypesAreCarriedUninterpreted() {
-            // app/cpy/COCOM01Y.cpy:27-28: 88 CDEMO-USRTYP-ADMIN VALUE 'A', 88 CDEMO-USRTYP-USER 'U'.
-            // COADM01C never tests either - it is the sign-on screen that routes on user type - so the
-            // controller must carry whichever arrives, unchanged.
             AdminMenuController controller = controllerOver(stubbedService());
             NavigationContext admin = NavigationContext.empty().withPgmReenter().withUserTypeAdmin();
             NavigationContext user = NavigationContext.empty().withPgmReenter().withUserTypeUser();
@@ -1127,9 +831,6 @@ class AdminMenuControllerTest {
                 final boolean reenter,
                 final boolean colourExpected,
                 final boolean asteriskExpected) {
-            // app/cpy/CSSETATY.cpy: DFHRED goes to the colour item when a field is NOT-OK or BLANK and
-            // the program is in REENTER context; the literal '*' additionally goes to the output item
-            // only when the field is BLANK. The REENTER state is an explicit parameter, never implied.
             FieldHighlight highlight = FieldAttributeSetter.resolveFromFlags(notOk, blank, reenter);
 
             assertThat(highlight.colourItemAssigned()).isEqualTo(colourExpected);
@@ -1146,8 +847,6 @@ class AdminMenuControllerTest {
         @Test
         @DisplayName("B5: this screen invents no highlight, because COADM01C copies no CSSETATY")
         void thisScreenAppliesNoHighlight() {
-            // The include appears in COACTUPC 39 times; it appears in COADM01C not at all. So whatever
-            // CSSETATY would do to a field, this screen does not do it, and no per-field quad travels.
             ScreenMetadata metadata = answerFor(reportingOutcome(
                     SystemMessages.CCDA_MSG_INVALID_KEY,
                     AdminMenuService.MAP_MESSAGE_COLOUR)).screenMetadata();
@@ -1173,7 +872,6 @@ class AdminMenuControllerTest {
             assertThat(entered).isEqualTo(CicsAid.DFHENTER);
             assertThat(exited).isEqualTo(CicsAid.DFHPF3);
             assertThat(unhandled).isEqualTo(CicsAid.DFHPF15);
-            // The two arms app/cbl/COADM01C.cbl:94 and :96 name, as the shared resolver classifies them.
             assertThat(PfKeyResolver.isEnter(entered)).isTrue();
             assertThat(PfKeyResolver.isPf3(exited)).isTrue();
             assertThat(PfKeyResolver.isEnter(unhandled)).isFalse();
@@ -1183,21 +881,14 @@ class AdminMenuControllerTest {
         }
     }
 
-    // =================================================================================================
-    // Gate G40 - EXEC CICS XCTL becomes response fields, resolved by the client.
-    // =================================================================================================
-
     @Nested
     @DisplayName("Navigation (G40) - XCTL as three response fields, and never a redirect")
     class Navigation {
-
         @Test
         @DisplayName("a painted screen names its own mapset and map - L180-L181")
         void aPaintedScreenNamesItsOwnMap() {
             AdminMenuResponse painted = paint();
 
-            // app/cbl/COADM01C.cbl:180-181 SEND MAP('COADM1A') MAPSET('COADM01'); the mapset is defined
-            // at app/csd/CARDDEMO.CSD:110.
             assertThat(painted.nextMapset())
                     .isEqualTo(AdminMenuResponse.MAPSET_NAME)
                     .isEqualTo("COADM01")
@@ -1219,13 +910,7 @@ class AdminMenuControllerTest {
         @ValueSource(strings = {USER_LIST_PROGRAM, SIGNON_PROGRAM})
         @DisplayName("the successor is echoed verbatim: the controller derives nothing")
         void theSuccessorIsEchoedVerbatim(final String target) {
-            // Two of the three XCTL shapes in this program: :143 XCTL PROGRAM(
-            // CDEMO-ADMIN-OPT-PGMNAME(WS-OPTION)) - option 1 is COUSR00C per app/cpy/COADM02Y.cpy:27 -
-            // and :166 XCTL PROGRAM(CDEMO-TO-PROGRAM) inside RETURN-TO-SIGNON-SCREEN, which :163
-            // defaults to COSGN00C.
             NavigationContext held = NavigationContext.empty().withPgmEnter().withToProgram(target);
-            // The two shapes differ in one boolean - :143 names COMMAREA and :166 does not - so each is
-            // built through the helper that states its own shape rather than through one that guesses.
             AdminMenuOutcome transferring = SIGNON_PROGRAM.equals(target)
                     ? signOnTransferOutcome(held)
                     : optionTransferOutcome(target, held);
@@ -1245,11 +930,6 @@ class AdminMenuControllerTest {
         @Test
         @DisplayName("the no-COMMAREA transfer hands back NO communication area, so sign-on cold-starts")
         void theSignOnTransferCarriesNoCommunicationArea() {
-            // app/cbl/COADM01C.cbl:165-167 RETURN-TO-SIGNON-SCREEN is a bare
-            // XCTL PROGRAM(CDEMO-TO-PROGRAM) with no COMMAREA option, so COSGN00C is entered with
-            // EIBCALEN = 0 and answers at app/cbl/COSGN00C.cbl:80-83 with its cold start. A response
-            // echoing an area would make the client send one on, and sign-on would run its re-entry path
-            // instead - a flow this transfer cannot reach on the mainframe.
             NavigationContext held = NavigationContext.empty().withPgmReenter().withUserTypeAdmin();
 
             AdminMenuResponse painted = answerFor(signOnTransferOutcome(held),
@@ -1266,8 +946,6 @@ class AdminMenuControllerTest {
         @Test
         @DisplayName("the option transfer DOES hand back the area, because :142-145 names COMMAREA")
         void theOptionTransferStillCarriesTheArea() {
-            // The contrast that makes the case above meaningful: both paths are XCTLs, and only one names
-            // COMMAREA. Collapsing the two would lose the distinction the source draws.
             NavigationContext held = NavigationContext.empty().withPgmReenter().withUserTypeAdmin();
 
             AdminMenuResponse painted = answerFor(optionTransferOutcome(USER_LIST_PROGRAM, held),
@@ -1279,9 +957,6 @@ class AdminMenuControllerTest {
         @Test
         @DisplayName("the painted RETURN still hands back the area, because :107-110 names COMMAREA")
         void thePaintedReturnStillCarriesTheArea() {
-            // Why the condition is not "nextProgramCarriesCommarea is false": that flag is also false
-            // here, yet EXEC CICS RETURN ... COMMAREA(CARDDEMO-COMMAREA) at :107-110 does pass the area.
-            // Only "a transfer was named AND it carries none" isolates the bare XCTL.
             NavigationContext held = NavigationContext.empty().withPgmReenter().withUserTypeAdmin();
 
             AdminMenuOutcome painted = paintedOutcome(held);
@@ -1300,9 +975,6 @@ class AdminMenuControllerTest {
         @Test
         @DisplayName("the wire says \"navigationContext\": null - a stated member, not an omitted one")
         void theWireStatesTheAbsenceRatherThanOmittingIt() throws Exception {
-            // spring.jackson.default-property-inclusion: always, so a null member is serialised rather
-            // than dropped. "There is no communication area" is a positive statement about this transfer,
-            // and an omitted member would leave a strict client unable to tell it was made.
             NavigationContext held = NavigationContext.empty().withPgmReenter().withUserTypeAdmin();
             ObjectMapper mapper = productionMapper();
 
@@ -1316,10 +988,6 @@ class AdminMenuControllerTest {
         @Test
         @DisplayName("a client following the transfer reaches sign-on's EIBCALEN = 0 cold start")
         void theClientFollowingTheTransferReachesTheColdStart() throws Exception {
-            // The end-to-end contract: what this response hands the client is exactly what makes the next
-            // call take COSGN00C's cold-start arm. The client re-supplies whatever navigationContext it
-            // was given, and null re-supplied is an absent communication area - which is how SignOnInput
-            // expresses EIBCALEN = 0.
             NavigationContext held = NavigationContext.empty().withPgmReenter().withUserTypeAdmin();
             ObjectMapper mapper = productionMapper();
 
@@ -1347,8 +1015,6 @@ class AdminMenuControllerTest {
             AdminMenuResponse painted = answerFor(paintedOutcome(outbound)).screen();
 
             assertThat(painted.navigationContext()).isEqualTo(outbound);
-            // app/cpy/COCOM01Y.cpy:19-44: 34 + 84 + 12 + 16 + 14 = 160 bytes, and :43-44 declare both
-            // CDEMO-LAST-MAP and CDEMO-LAST-MAPSET as PIC X(7).
             assertThat(outbound.toFixedWidth(CODEC)).hasSize(NavigationContext.COMMAREA_LENGTH);
             assertThat(NavigationContext.COMMAREA_LENGTH).isEqualTo(160);
             assertThat(painted.navigationContext().lastMap())
@@ -1359,22 +1025,13 @@ class AdminMenuControllerTest {
         }
     }
 
-
-    // =================================================================================================
-    // The wire, over MockMvc. Standalone rather than a context, matching this module's convention: the
-    // subject here is the JSON shape and the servlet-level facts, and both are observable without one.
-    // =================================================================================================
-
     @Nested
     @DisplayName("The wire - the screen stays flat, the padding survives, and nothing is stashed")
     class TheWire {
-
-        /** A fresh dispatcher per test; nothing is shared, so nothing can leak (G53). */
         private MockMvc mockMvcOver(final AdminMenuService service) {
             return MockMvcBuilders.standaloneSetup(controllerOver(service)).build();
         }
 
-        /** A stub answering one outcome, and the payload that reaches it. */
         private AdminMenuService serviceReturning(final AdminMenuOutcome outcome) {
             AdminMenuService service = stubbedService();
             doReturn(outcome).when(service).handle(any(AdminMenuInput.class));
@@ -1429,7 +1086,6 @@ class AdminMenuControllerTest {
                     .andExpect(jsonPath("$.screenMetadata.resetAllOutputFields").value(true))
                     .andExpect(jsonPath("$.screenMetadata.messageColour")
                             .value(BmsAttributes.unsigned(BmsAttributes.DFHRED)))
-                    // Neither is a DFHMDF field, so neither is a member of the screen itself.
                     .andExpect(jsonPath("$.messageColour").doesNotExist())
                     .andExpect(jsonPath("$.resetAllOutputFields").doesNotExist())
                     .andExpect(jsonPath("$.screen").doesNotExist());
@@ -1446,14 +1102,11 @@ class AdminMenuControllerTest {
                             .content(bodyOf(blankScreen(NavigationContext.empty().withPgmReenter(),
                                     CicsAid.DFHENTER))))
                     .andExpect(status().isOk())
-                    // Forty characters with leading AND trailing spaces, all of them intact.
                     .andExpect(jsonPath("$.title01").value(ScreenTitles.CCDA_TITLE01))
                     .andExpect(jsonPath("$.title02").value(ScreenTitles.CCDA_TITLE02))
-                    // Seventy-eight spaces: present, not null, not "", not dropped.
                     .andExpect(jsonPath("$.errmsg").exists())
                     .andExpect(jsonPath("$.errmsg")
                             .value(SPACE.repeat(AdminMenuResponse.ERR_MSG_LENGTH)))
-                    // A slot BUILD-MENU-OPTIONS never fills is still a member, and still forty wide.
                     .andExpect(jsonPath("$.optn005").exists())
                     .andExpect(jsonPath("$.optn005")
                             .value(SPACE.repeat(AdminMenuResponse.OPTION_LINE_LENGTH)))
@@ -1548,36 +1201,13 @@ class AdminMenuControllerTest {
         }
     }
 
-    // =================================================================================================
-    // The Spring MVC slice - the real dispatcher, the real WebConfig, and a spied decision core.
-    // =================================================================================================
-
-    /**
-     * The collaborators the slice needs: the real decision core, which {@link MockitoSpyBean} then
-     * wraps, and a fixed {@link Clock} that displaces {@code WebConfig}'s
-     * {@code Clock.systemDefaultZone()}.
-     *
-     * <p>Declared on the enclosing class because {@code @TestConfiguration} must be static and a
-     * {@code @Nested} class cannot hold a static member. It is imported by the slice below and by
-     * nothing else.
-     */
     @TestConfiguration
     static class SliceCollaborators {
-
-        /**
-         * The real service, so the spy over it answers {@code codec()} with a real codec - which
-         * {@code AdminMenuController}'s constructor requires. Its {@code handle} is stubbed per test.
-         */
         @Bean
         AdminMenuService adminMenuService() {
             return new AdminMenuService(bindings());
         }
 
-        /**
-         * The pinned clock. {@code @Primary} because {@code WebConfig} contributes a
-         * {@code Clock.systemDefaultZone()} bean and a header rendered from the wall clock cannot be
-         * asserted byte for byte (practice B7).
-         */
         @Bean
         @Primary
         Clock fixedClock() {
@@ -1586,27 +1216,11 @@ class AdminMenuControllerTest {
     }
 
     @Nested
-    // CobolCharsetConfig joins the slice because the web layer now depends on it: WebConfig's Jackson
-    // customizer takes the screen code page by bean name, so that an inbound screen value is judged
-    // against the code page this deployment states rather than against the platform default.
-    // @WebMvcTest loads web configuration only, so without this import the slice has no such bean - and
-    // the dependency is deliberately mandatory: a missing code page must fail the context, never quietly
-    // become a default. The profile's carddemo.charset.* properties are what it resolves.
     @WebMvcTest(AdminMenuController.class)
     @ActiveProfiles("test")
     @Import({SliceCollaborators.class, CobolCharsetConfig.class})
     @DisplayName("The Spring MVC slice - real dispatcher, real WebConfig, stubbed decision core")
     class TheSpringSlice {
-
-        /**
-         * The decision core, spied rather than mocked.
-         *
-         * <p>{@code @MockitoBean} is impossible here: {@code AdminMenuController}'s constructor calls
-         * {@code adminMenuService.codec()} while the bean is being created, and a bare override answers
-         * {@code null}, which fails the context before {@code @BeforeEach} can stub anything. A spy
-         * calls through for {@code codec()} and is stubbed for {@code handle}, so the controller still
-         * projects an outcome it did not compute (gate G51).
-         */
         @MockitoSpyBean
         private AdminMenuService service;
 
@@ -1670,10 +1284,6 @@ class AdminMenuControllerTest {
         @Test
         @DisplayName("Bean Validation rejects an option wider than the map's LENGTH=2")
         void beanValidationRejectsAnOverLongOption() throws Exception {
-            // app/bms/COADM01.bms:148 declares LENGTH=2 and app/cpy-bms/COADM01.CPY:132 OPTIONI
-            // PIC X(2), so @Size(max = OPTION_LENGTH) is the map's own constraint. The exhaustive
-            // per-field constraint set is AdminMenuRequestTest's subject; what is asserted here is that
-            // MVC honours @Valid on the handler at all.
             String tooWide = "1".repeat(AdminMenuRequest.OPTION_LENGTH + 1);
 
             mockMvc.perform(get(AdminMenuController.ADMIN_MENU_PATH)

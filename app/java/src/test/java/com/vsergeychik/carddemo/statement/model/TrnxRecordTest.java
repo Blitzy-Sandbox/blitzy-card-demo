@@ -31,128 +31,12 @@ import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 
 /**
  * Unit tests for {@link TrnxRecord}, the 350-byte {@code TRNX-RECORD} of {@code app/cpy/COSTM01.CPY}.
- *
- * <p>Plain JUnit 5 throughout: no Spring context and no {@code JobLauncher}, because every decision in
- * the class under test is reachable without either. That is deliberate - the parity work has to be able
- * to assert record geometry and arithmetic with nothing in the path that could perturb it.
- *
- * <h2>What these tests are the audit of</h2>
- * The fixed-width codecs in this module are hand-written precisely so that every byte offset stays
- * reviewable against its copybook. That only holds if something actually checks the offsets, and this
- * class is that check for {@code COSTM01}. The layout asserted below is transcribed
- * <strong>by hand from the copybook</strong>, field for field and offset for offset, so the arithmetic
- * verified here is the copybook's own arithmetic rather than a restatement of the implementation. Field
- * names are carried verbatim, hyphens and all.
- *
- * <p>Both charsets are named explicitly and never defaulted, and the geometry and codec behaviour are
- * driven under each: {@code IBM037} for EBCDIC data and {@code US-ASCII} for the text fixtures. This
- * matters because the pad bytes differ - a space is {@code 0x40} under {@code IBM037} and {@code 0x20}
- * under {@code US-ASCII} - so a hard-coded ASCII pad would corrupt an EBCDIC record.
- *
- * <h2>Governing standard: there are no project rules, so best practice is the bar</h2>
- * {@code review_rules} reports, in full, that <em>no user rules were provided</em> for this project.
- * That absence is not licence to lower the bar and no rule has been invented in its place: this file is
- * held instead to the twelve enterprise best-practice substitutes the technical specification declares
- * binding, <strong>B1</strong> through <strong>B12</strong>. The ones with teeth here are B8 (the code
- * page and the rounding mode are always named, and there is not one wildcard import), B9 (no mutable
- * static state - every shared expectation below is an immutable {@link String} constant and each
- * {@code byte[]} is built inside the method that uses it), B11 (every expected offset, width and byte
- * image is hand-written from the copybook rather than read back out of the implementation's own
- * descriptor table) and B12, immediately below.
- *
- * <h2>Provenance of every expected value (B12, risk R-A)</h2>
- * <strong>Every expectation in this class is derived statically</strong> - from
- * {@code app/cpy/COSTM01.CPY} and from the COBOL and JCL that read and build the record - and
- * <strong>none is captured from a COBOL execution</strong>. That is not a shortcut: executing the
- * legacy programs is impossible in this environment, with eight independently verified blockers on
- * record, so a statically derived baseline is the substitute and this comment is the disclosure that
- * makes the substitution visible rather than silent.
- *
- * <p>Nor is there a fixture to fall back on. {@code app/data/ASCII} contains <strong>no</strong>
- * dataset for {@code TRNXFILE} / {@code TRXFL}, because that file does not ship: it is
- * <em>manufactured</em> by the {@code SORT} step of {@code app/jcl/CREASTMT.JCL} out of
- * {@code TRANSACT}. So the byte images below are composed here, by hand, from the copybook - and where
- * field <em>values</em> are wanted the {@code CVTRA05Y}-shaped first row of
- * {@code app/data/ASCII/dailytran.txt} supplies them, reshaped by the very {@code OUTREC} the job
- * declares.
- *
- * <h2>350, 32 and 318 are corroborated four independent ways</h2>
- * None of the three geometry numbers rests on a single reading:
- * <ol>
- *   <li>{@code app/cpy/COSTM01.CPY}'s own {@code PICTURE} widths sum to 350, of which
- *       {@code TRNX-KEY} is {@code 16 + 16} and {@code TRNX-REST} the remaining 318;</li>
- *   <li>{@code app/cbl/CBSTM03B.CBL:58-63} splits the same record in its {@code FD} as
- *       {@code FD-TRNX-CARD X(16)} plus {@code FD-TRNX-ID X(16)} plus {@code FD-ACCT-DATA X(318)};</li>
- *   <li>{@code app/jcl/CREASTMT.JCL:30-32} defines the cluster with {@code KEYS(32 0)} - IDCAMS states
- *       length then offset, so 32 bytes at offset 0 - and {@code RECORDSIZE(350 350)};</li>
- *   <li>{@code app/cbl/CBSTM03A.CBL:230} declares the table slot the group is moved through as
- *       {@code WS-TRAN-REST PIC X(318)}.</li>
- * </ol>
- * The tests below assert all three against hand-written literals, so a transcription error in the
- * implementation cannot be absorbed by reading the implementation back.
- *
- * <h2>Gates enforced here</h2>
- * <ul>
- *   <li><strong>G19</strong> - the record is byte-identical in width to its copybook declaration: the
- *       spans sum to exactly 350, the key is 32 bytes at offset 0 and the remainder 318 at offset 32.</li>
- *   <li><strong>G21</strong> - the trailing {@code FILLER X(20)} is present and space-filled in every
- *       serialised record, with a negative case proving a layout that drops it is rejected rather than
- *       silently producing 330 bytes.</li>
- *   <li><strong>G22</strong> - no {@code double} and no {@code float} is reachable from the type: the
- *       amount accessor returns a {@link BigDecimal} and the two counters are {@code int}.</li>
- *   <li><strong>G23</strong> - {@code TRNX-AMT} always carries scale exactly 2.</li>
- *   <li><strong>G24</strong> - excess fractional digits truncate toward zero and never round, because
- *       {@code ROUNDED} appears zero times in all 28 COBOL programs - {@code grep -c ROUNDED} over
- *       {@code app/cbl/CBSTM03A.CBL} and {@code app/cbl/CBSTM03B.CBL} returns {@code 0} and
- *       {@code 0}. The only mentions of half-up and half-even anywhere in this file are the negative
- *       controls that <em>prove</em> the stored value differs from what either would produce.</li>
- *   <li><strong>G33</strong> - the 1-based to 0-based conversion is checked at both ends of the
- *       record, first byte and last, and byte 350 is proved to be outside it. This copybook declares
- *       no {@code OCCURS}, so the span boundary is where that off-by-one can bite.</li>
- *   <li><strong>G34</strong> - {@code COSTM01.CPY} declares no {@code REDEFINES} clause, so the
- *       obligation here is the equivalent one: {@code TRNX-KEY} and {@code TRNX-REST} are group views
- *       over the same storage as their children, and a write through either view round trips through
- *       the other.</li>
- *   <li><strong>G44</strong> - the type carries no persistence artefact: no entity or table mapping,
- *       no generated identifier and no version discriminator, because a version column would be the
- *       schema change this migration forbids.</li>
- *   <li><strong>G51</strong> - the logic is reachable directly, with no HTTP layer and no job launcher.</li>
- *   <li><strong>G52</strong> and <strong>G53</strong> - every import is explicit and the type declares
- *       no mutable static state.</li>
- * </ul>
- *
- * <h2>Fixture provenance</h2>
- * The field values used below are taken from the first record of {@code app/data/ASCII/dailytran.txt},
- * which is a {@code CVTRA06Y} record and therefore byte-identical in shape to the {@code CVTRA05Y}
- * {@code TRAN-RECORD} that {@code app/jcl/CREASTMT.JCL} sorts. Its amount image is
- * {@code 0000005047G}, that is {@code +504.77}. All 300 rows of that fixture carry a blank
- * {@code TRAN-PROC-TS}, since a <em>daily</em> transaction has not been processed yet, so the
- * {@code SORT}-derived off-by-two test supplies a fully populated 26-character process timestamp of its
- * own in order to make the legacy defect observable at all.
  */
 @DisplayName("TrnxRecord - COSTM01 TRNX-RECORD, 350 bytes, 32-byte composite key")
 class TrnxRecordTest {
-
-    // Both code pages are named at every call site below and neither is ever the platform default
-    // (practice B8). In production this choice is owned by
-    // com.vsergeychik.carddemo.config.CobolCharsetConfig, which resolves exactly these two roles from
-    // configuration - US-ASCII for the text fixtures and IBM037 for the EBCDIC datasets - so this
-    // class asserts the same pairing the application wires rather than a convenience of its own.
-
-    /** The text fixtures' code page. Named, never defaulted. */
     private static final Charset ASCII = StandardCharsets.US_ASCII;
 
-    /**
-     * The EBCDIC code page of the binary datasets. {@code IBM037} is supplied by the JDK's
-     * {@code jdk.charsets} module, so it is present on any ordinary JDK 21 but would be absent from a
-     * minimal {@code jlink} image that omitted that module - which is precisely why it is looked up by
-     * name here and asserted, rather than assumed.
-     */
     private static final Charset EBCDIC = Charset.forName("IBM037");
-
-    // ---------------------------------------------------------------------------------------------
-    // Field values from app/data/ASCII/dailytran.txt record 1.
-    // ---------------------------------------------------------------------------------------------
 
     private static final String FIXTURE_TRAN_ID = "0000000000683580";
     private static final String FIXTURE_TYPE_CD = "01";
@@ -167,34 +51,17 @@ class TrnxRecordTest {
     private static final String FIXTURE_CARD_NUM = "4859452612877065";
     private static final String FIXTURE_ORIG_TS = "2022-06-10 19:27:53.000000";
 
-    /**
-     * A fully populated 26-character process timestamp. The fixture's own is blank, so this is supplied
-     * to expose the {@code CREASTMT.JCL:54} off-by-two, which is invisible on a blank field.
-     */
     private static final String FULL_PROC_TS = "2022-07-18 04:11:09.123456";
 
-    // ---------------------------------------------------------------------------------------------
-    // Helpers. These reproduce the legacy layout and the legacy sort, not the implementation.
-    // ---------------------------------------------------------------------------------------------
-
-    /** COBOL {@code PIC X} placement: left justified, padded on the right, truncated on the right. */
     private static String picX(String value, int width) {
         String truncated = value.length() > width ? value.substring(0, width) : value;
         return truncated + " ".repeat(width - truncated.length());
     }
 
-    /** COBOL {@code PIC 9} placement: right justified, zero-filled on the left. */
     private static String pic9(String digits, int width) {
         return "0".repeat(width - digits.length()) + digits;
     }
 
-    /**
-     * Builds a 350-byte {@code CVTRA05Y TRAN-RECORD} image by absolute offset, in copybook order:
-     * {@code TRAN-ID X(16)}, {@code TYPE-CD X(02)}, {@code CAT-CD 9(04)}, {@code SOURCE X(10)},
-     * {@code DESC X(100)}, {@code AMT S9(09)V99} (11), {@code MERCHANT-ID 9(09)},
-     * {@code MERCHANT-NAME X(50)}, {@code MERCHANT-CITY X(50)}, {@code MERCHANT-ZIP X(10)},
-     * {@code CARD-NUM X(16)}, {@code ORIG-TS X(26)}, {@code PROC-TS X(26)}, {@code FILLER X(20)}.
-     */
     private static String tranRecordImage(String procTs) {
         String image = picX(FIXTURE_TRAN_ID, 16)
                 + picX(FIXTURE_TYPE_CD, 2)
@@ -214,75 +81,38 @@ class TrnxRecordTest {
         return image;
     }
 
-    /**
-     * Reproduces {@code app/jcl/CREASTMT.JCL:54} exactly:
-     * {@code OUTREC FIELDS=(1:263,16, 17:1,262, 279:279,50)}. DFSORT positions are 1-based and the
-     * output is blank-padded to {@code LRECL=350}.
-     *
-     * <p>The third clause is the defect: {@code TRAN-ORIG-TS} occupies 1-based bytes 279-304 and
-     * {@code TRAN-PROC-TS} 305-330, so copying 50 bytes from position 279 carries the whole original
-     * timestamp but only the first 24 characters of the process timestamp, and leaves output bytes
-     * 329-350 - which include the entire {@code FILLER X(20)} - blank.
-     */
     private static String applyCreastmtOutrec(String tranRecord) {
         char[] out = new char[TrnxRecord.RECORD_LENGTH];
         Arrays.fill(out, ' ');
-        tranRecord.getChars(262, 278, out, 0);      // 1:263,16
-        tranRecord.getChars(0, 262, out, 16);       // 17:1,262
-        tranRecord.getChars(278, 328, out, 278);    // 279:279,50 - 50 of 52 bytes
+        tranRecord.getChars(262, 278, out, 0);
+        tranRecord.getChars(0, 262, out, 16);
+        tranRecord.getChars(278, 328, out, 278);
         return new String(out);
     }
 
-    /** A record image of the declared width, filled with a repeated character. */
     private static byte[] filled(char character, int length, Charset charset) {
         return String.valueOf(character).repeat(length).getBytes(charset);
     }
 
-    // ---------------------------------------------------------------------------------------------
-    // The hand-composed TRNX-order image. Distinct from tranRecordImage() above, which is composed in
-    // CVTRA05Y order and then permuted by the legacy sort: this one is laid out directly in COSTM01's
-    // own field order, span by span, with a DIFFERENT repeated character in every character span. That
-    // is what makes it an independent check of the offsets - two spans transposed in the descriptor
-    // table would swap two distinguishable letters and fail, where a fixture-shaped image full of
-    // plausible text could still line up.
-    // ---------------------------------------------------------------------------------------------
-
-    /** {@code TRNX-AMT} as the 11-byte zoned image of {@code +1234.55}: digits 000001234 55, sign in 'E'. */
     private static final String COMPOSED_AMT_IMAGE = "0000012345E";
 
-    /**
-     * A 350-character {@code TRNX-RECORD} image written out span by span from
-     * {@code app/cpy/COSTM01.CPY}, with the offset and width of each span stated beside it.
-     *
-     * <p>Sums to 350 by construction and is checked as such by the test that consumes it, which is a
-     * self-check on the fixture rather than on the implementation.
-     */
     private static String composedTrnxImage() {
-        return "AAAAAAAAAAAAAAAA"                    // TRNX-CARD-NUM      X(16)  @  0
-                + "BBBBBBBBBBBBBBBB"                 // TRNX-ID            X(16)  @ 16
-                + "CC"                               // TRNX-TYPE-CD       X(02)  @ 32
-                + "0042"                             // TRNX-CAT-CD        9(04)  @ 34
-                + "EEEEEEEEEE"                       // TRNX-SOURCE        X(10)  @ 38
-                + "F".repeat(100)                     // TRNX-DESC          X(100) @ 48
-                + COMPOSED_AMT_IMAGE                 // TRNX-AMT      S9(09)V99   @148
-                + "000123456"                        // TRNX-MERCHANT-ID   9(09)  @159
-                + "H".repeat(50)                      // TRNX-MERCHANT-NAME X(50)  @168
-                + "I".repeat(50)                      // TRNX-MERCHANT-CITY X(50)  @218
-                + "JJJJJJJJJJ"                       // TRNX-MERCHANT-ZIP  X(10)  @268
-                + "K".repeat(26)                      // TRNX-ORIG-TS       X(26)  @278
-                + "L".repeat(26)                      // TRNX-PROC-TS       X(26)  @304
-                + " ".repeat(20);                     // FILLER             X(20)  @330 -> ends at 350
+        return "AAAAAAAAAAAAAAAA"
+                + "BBBBBBBBBBBBBBBB"
+                + "CC"
+                + "0042"
+                + "EEEEEEEEEE"
+                + "F".repeat(100)
+                + COMPOSED_AMT_IMAGE
+                + "000123456"
+                + "H".repeat(50)
+                + "I".repeat(50)
+                + "JJJJJJJJJJ"
+                + "K".repeat(26)
+                + "L".repeat(26)
+                + " ".repeat(20);
     }
 
-    /**
-     * A record whose {@code TRNX-AMT} span holds exactly {@code image}, every other byte left as the
-     * charset's space, so a decode of the amount is isolated from every other field.
-     *
-     * <p>The image is spliced at the copybook offset by absolute position and the whole 350 bytes are
-     * then handed to {@link TrnxRecord#wrap(byte[], Charset)}, which insists the width is already 350 -
-     * so a splice that landed in the wrong place would change the assertion rather than be adjusted
-     * away.
-     */
     private static TrnxRecord recordWithAmountImage(String image, Charset charset) {
         char[] span = new char[TrnxRecord.RECORD_LENGTH];
         Arrays.fill(span, ' ');
@@ -290,7 +120,6 @@ class TrnxRecordTest {
         return TrnxRecord.wrap(new String(span).getBytes(charset), charset);
     }
 
-    /** A populated record, every field written through the typed accessors. */
     private static TrnxRecord populated(Charset charset) {
         TrnxRecord record = TrnxRecord.newRecord(charset);
         record.writeTrnxCardNum(FIXTURE_CARD_NUM);
@@ -312,7 +141,6 @@ class TrnxRecordTest {
     @Nested
     @DisplayName("Geometry - the copybook's own arithmetic (gate G19)")
     class Geometry {
-
         @Test
         @DisplayName("the declared record length is 350, as RECORDSIZE(350 350) and the 16+16+318 FD split both confirm")
         void recordLengthIs350() {
@@ -471,7 +299,6 @@ class TrnxRecordTest {
     @Nested
     @DisplayName("Allocation and initialisation")
     class Allocation {
-
         @ParameterizedTest(name = "under {0}")
         @ValueSource(strings = {"US-ASCII", "IBM037"})
         @DisplayName("a new record is exactly 350 bytes with the declared charset")
@@ -530,7 +357,6 @@ class TrnxRecordTest {
     @Nested
     @DisplayName("decode - the COBOL alphanumeric group MOVE into a 350-byte receiver")
     class Decoding {
-
         @ParameterizedTest(name = "under {0}")
         @ValueSource(strings = {"US-ASCII", "IBM037"})
         @DisplayName("an oversized 1000-byte span keeps only its leading 350 bytes, per MOVE WS-M03B-FLDT TO TRNX-RECORD")
@@ -538,12 +364,6 @@ class TrnxRecordTest {
             Charset charset = Charset.forName(charsetName);
             byte[] expected = populated(charset).encode();
 
-            // CBSTM03B hands back a PIC X(1000) span and never decodes; CBSTM03A blanks it with
-            // MOVE SPACES TO WS-M03B-FLDT at :745 and :834 before each read, which is why a real
-            // trailing FILLER arrives blank. The 650 bytes past the receiver are filled here with a
-            // NON-space sentinel instead, which is deliberately more hostile than the job ever is: if
-            // one sentinel byte reached the record the truncation would be an illusion, and a
-            // space-filled tail could hide that.
             byte[] fldt = filled('#', 1000, charset);
             System.arraycopy(expected, 0, fldt, 0, TrnxRecord.RECORD_LENGTH);
 
@@ -590,10 +410,6 @@ class TrnxRecordTest {
         @ValueSource(ints = {349, 350, 351})
         @DisplayName("the receiver's own width is the boundary: one byte short pads, one byte over is ignored")
         void bothSidesOfTheWidthBoundaryAreAccepted(int width) {
-            // decode() is the alphanumeric group MOVE, so BOTH sides of the length test are legitimate
-            // input and both are exercised here: 349 takes the short-sender branch and is padded on the
-            // right, 350 takes neither, and 351 takes the truncating branch. Only the exact-width entry
-            // point wrap() treats a mismatch as a defect, which the Wrapping tests assert.
             byte[] source = filled('W', width, ASCII);
             if (width > TrnxRecord.RECORD_LENGTH) {
                 source[TrnxRecord.RECORD_LENGTH] = (byte) '!';
@@ -663,7 +479,6 @@ class TrnxRecordTest {
     @Nested
     @DisplayName("wrap - the strict, exact-width entry point")
     class Wrapping {
-
         @Test
         @DisplayName("exactly 350 bytes are accepted and copied defensively")
         void exactWidthIsAccepted() {
@@ -698,7 +513,6 @@ class TrnxRecordTest {
     @Nested
     @DisplayName("Serialisation - round trip byte identity (gate G21)")
     class Serialisation {
-
         @ParameterizedTest(name = "under {0}")
         @ValueSource(strings = {"US-ASCII", "IBM037"})
         @DisplayName("decode then encode returns a byte-for-byte identical 350-byte image, FILLER included")
@@ -764,22 +578,14 @@ class TrnxRecordTest {
         }
     }
 
-    /**
-     * The offset audit proper. Every span here carries its own repeated letter, so a descriptor sitting
-     * one byte out - or two spans transposed - changes a letter the assertion names, and the test fails
-     * with the field's own name in the message.
-     */
     @Nested
     @DisplayName("A hand-composed 350-byte image in COSTM01 field order (gates G19, G21)")
     class HandComposedImage {
-
         @Test
         @DisplayName("the composed image is itself exactly 350 characters, checked before it is used")
         void theComposedFixtureIsWellFormed() {
             String image = composedTrnxImage();
 
-            // A fixture that is not 350 characters would make every assertion below meaningless, so it
-            // is measured first. 16+16+2+4+10+100+11+9+50+50+10+26+26+20 = 350.
             assertThat(image).hasSize(350).hasSize(TrnxRecord.RECORD_LENGTH);
             assertThat(COMPOSED_AMT_IMAGE).hasSize(11).hasSize(TrnxRecord.TRNX_AMT_LENGTH);
         }
@@ -792,21 +598,21 @@ class TrnxRecordTest {
 
             TrnxRecord record = TrnxRecord.wrap(composedTrnxImage().getBytes(charset), charset);
 
-            assertThat(record.readTrnxCardNum()).isEqualTo("A".repeat(16));        // @  0, 16
-            assertThat(record.readTrnxId()).isEqualTo("B".repeat(16));             // @ 16, 16
-            assertThat(record.readTrnxTypeCd()).isEqualTo("CC");                   // @ 32,  2
-            assertThat(record.readTrnxCatCd()).isEqualTo(42);                      // @ 34,  4
-            assertThat(record.readTrnxSource()).isEqualTo("E".repeat(10));         // @ 38, 10
-            assertThat(record.readTrnxDesc()).isEqualTo("F".repeat(100));          // @ 48, 100
-            assertThat(record.readTrnxAmt()).isEqualByComparingTo("1234.55");      // @148, 11
+            assertThat(record.readTrnxCardNum()).isEqualTo("A".repeat(16));
+            assertThat(record.readTrnxId()).isEqualTo("B".repeat(16));
+            assertThat(record.readTrnxTypeCd()).isEqualTo("CC");
+            assertThat(record.readTrnxCatCd()).isEqualTo(42);
+            assertThat(record.readTrnxSource()).isEqualTo("E".repeat(10));
+            assertThat(record.readTrnxDesc()).isEqualTo("F".repeat(100));
+            assertThat(record.readTrnxAmt()).isEqualByComparingTo("1234.55");
             assertThat(record.readTrnxAmtImage()).isEqualTo(COMPOSED_AMT_IMAGE);
-            assertThat(record.readTrnxMerchantId()).isEqualTo(123456);             // @159,  9
-            assertThat(record.readTrnxMerchantName()).isEqualTo("H".repeat(50));   // @168, 50
-            assertThat(record.readTrnxMerchantCity()).isEqualTo("I".repeat(50));   // @218, 50
-            assertThat(record.readTrnxMerchantZip()).isEqualTo("J".repeat(10));    // @268, 10
-            assertThat(record.readTrnxOrigTs()).isEqualTo("K".repeat(26));         // @278, 26
-            assertThat(record.readTrnxProcTs()).isEqualTo("L".repeat(26));         // @304, 26
-            assertThat(record.readFiller()).isEqualTo(" ".repeat(20));             // @330, 20 -> 350
+            assertThat(record.readTrnxMerchantId()).isEqualTo(123456);
+            assertThat(record.readTrnxMerchantName()).isEqualTo("H".repeat(50));
+            assertThat(record.readTrnxMerchantCity()).isEqualTo("I".repeat(50));
+            assertThat(record.readTrnxMerchantZip()).isEqualTo("J".repeat(10));
+            assertThat(record.readTrnxOrigTs()).isEqualTo("K".repeat(26));
+            assertThat(record.readTrnxProcTs()).isEqualTo("L".repeat(26));
+            assertThat(record.readFiller()).isEqualTo(" ".repeat(20));
         }
 
         @ParameterizedTest(name = "under {0}")
@@ -821,7 +627,6 @@ class TrnxRecordTest {
             assertThat(record.encode()).hasSize(350).isEqualTo(image.getBytes(charset));
             assertThat(record.encode(charset)).isEqualTo(image.getBytes(charset));
             assertThat(record.recordImage()).hasSize(350).isEqualTo(image);
-            // The two group views partition the record with no gap and no overlap: 0..31 then 32..349.
             assertThat(record.readTrnxKey()).isEqualTo(image.substring(0, 32));
             assertThat(record.readTrnxRest()).isEqualTo(image.substring(32, 350));
             assertThat(record.readTrnxKey() + record.readTrnxRest()).isEqualTo(image);
@@ -835,9 +640,6 @@ class TrnxRecordTest {
             TrnxRecord ascii = TrnxRecord.wrap(image.getBytes(ASCII), ASCII);
             TrnxRecord ebcdic = TrnxRecord.wrap(image.getBytes(EBCDIC), EBCDIC);
 
-            // The BYTES differ - 'A' is 0x41 in US-ASCII and 0xC1 in IBM037 - so this is not a
-            // tautology: it proves the field values are read through the record's own declared code
-            // page and that no platform default leaks in anywhere (practice B8).
             assertThat(ascii.encode()).isNotEqualTo(ebcdic.encode());
             assertThat(ascii.readTrnxCardNum()).isEqualTo(ebcdic.readTrnxCardNum());
             assertThat(ascii.readTrnxDesc()).isEqualTo(ebcdic.readTrnxDesc());
@@ -849,19 +651,9 @@ class TrnxRecordTest {
         }
     }
 
-    /**
-     * Gate G33. {@code COSTM01.CPY} declares no {@code OCCURS} - the 51-by-10 {@code WS-TRNX-TABLE} is
-     * {@code CBSTM03A}'s working storage, not part of this record, and the module's 1-based table helper
-     * {@code FixedWidthRecord.occursElementOffsetOneBased} is therefore never reached from here. The
-     * same off-by-one nevertheless has a place to hide in a fixed-width record: the span boundary. COBOL
-     * counts byte positions from 1 and Java indexes from 0, so position 1 is index 0 and position 350 is
-     * index <strong>349</strong>. Both ends are asserted, and byte 350 is proved to be outside the
-     * record rather than merely unused.
-     */
     @Nested
     @DisplayName("Byte-index boundaries - 1-based COBOL positions against 0-based Java indexes (gate G33)")
     class ByteIndexBoundaries {
-
         @Test
         @DisplayName("the first byte is index 0 and belongs to TRNX-CARD-NUM, COBOL position 1")
         void theFirstByteIsIndexZero() {
@@ -880,8 +672,6 @@ class TrnxRecordTest {
         @Test
         @DisplayName("the last byte is index 349 and is the final byte of FILLER, COBOL position 350")
         void theLastByteIsIndexThreeFortyNine() {
-            // FILLER is not writable - COBOL cannot MOVE into an unnamed item - so the last byte is
-            // reached through a decoded image, which is exactly how a dataset row arrives.
             String image = composedTrnxImage().substring(0, 349) + "@";
             assertThat(image).hasSize(350);
 
@@ -910,8 +700,6 @@ class TrnxRecordTest {
             List<FieldSpan> spans = new ArrayList<>(TrnxRecord.layout().storageSpans());
             spans.add(FieldSpan.alphanumeric("BEYOND-THE-RECORD", 350, 1));
 
-            // A fifteenth storage span starting where FILLER ends would make the record 351 bytes, which
-            // is the same arithmetic failure a phantom sign byte on TRNX-AMT would produce.
             assertThatIllegalArgumentException()
                     .isThrownBy(() -> new RecordLayout(TrnxRecord.RECORD_LENGTH, spans))
                     .withMessageContaining("351")
@@ -921,8 +709,6 @@ class TrnxRecordTest {
             overreaching.add(FieldSpan.redefining("KEY-AND-ONE-BYTE-TOO-MANY", 349, 2,
                     TrnxRecord.TRNX_KEY.kind()));
 
-            // An overlay is allowed to redefine declared storage and nothing beyond it, so one that
-            // reaches byte 350 is rejected by the layout rather than silently reading past the area.
             assertThatIllegalArgumentException()
                     .isThrownBy(() -> new RecordLayout(TrnxRecord.RECORD_LENGTH, overreaching))
                     .withMessageContaining("351");
@@ -932,11 +718,6 @@ class TrnxRecordTest {
     @Nested
     @DisplayName("TRNX-AMT - zoned sign overpunch and truncation (gates G23, G24)")
     class Amount {
-
-        // The trailing character carries BOTH the low-order digit and the sign:
-        //   '{ABCDEFGHI' for digits 0-9 positive, '}JKLMNOPQR' for digits 0-9 negative.
-        // So a positive amount ending in 0 shows '{' and one ending in 9 shows 'I' - the field never
-        // grows a twelfth byte to hold a sign. Every image below is 11 characters.
         @ParameterizedTest(name = "{0} stores as the 11-byte image {1}")
         @CsvSource({
                 "504.77,        0000005047G",
@@ -1060,36 +841,14 @@ class TrnxRecordTest {
             }
         }
 
-        // -----------------------------------------------------------------------------------------
-        // The DECODE direction. Everything above starts from a BigDecimal and inspects the image the
-        // record stores; these start from an image the dataset could legitimately contain and assert
-        // the quantity it denotes. The two directions are not the same code path, and one of the
-        // images below cannot be produced by the write path at all: a PIC S9 field written by this
-        // module always carries an overpunch, whereas a stored span whose trailing character is a
-        // PLAIN digit is the unsigned zoned form - zone F - and is positive by definition. That form
-        // has to decode, because a signed picture read as unsigned still has to be readable.
-        //
-        // Which form the fixtures use was checked rather than assumed. Every signed span in
-        // app/data/ASCII carries an overpunch: TRAN-CAT-BAL S9(09)V99 - the same picture and the same
-        // 11-byte width as TRNX-AMT - ends in '{' in all 50 rows of tcatbal.txt; DIS-INT-RATE
-        // S9(04)V99 ends in '{' in all 51 rows of discgrp.txt, as 00000{, 00150{ or 00250{; and
-        // acctdata.txt row 1 stores 00000001940{, that is +194.00. So no fixture exercises the plain
-        // zone-F form, which is precisely why the case below is written by hand.
-        // -----------------------------------------------------------------------------------------
         @ParameterizedTest(name = "the stored image {0} denotes {1}")
         @CsvSource({
-                // Overpunched positive: 'E' is the low-order digit 5 with a positive sign.
                 "0000012345E,   1234.55",
-                // Overpunched negative: 'N' is the low-order digit 5 with a negative sign.
                 "0000012345N,  -1234.55",
-                // Plain trailing digit - the unsigned zoned form, positive with no sign position.
                 "00000123455,   1234.55",
-                // Positive zero and negative zero, the two distinct stored forms of nothing.
                 "0000000000{,   0.00",
                 "0000000000},   0.00",
-                // The smallest non-trivial positive value, which exercises both fraction positions.
                 "0000000001A,   0.11",
-                // The largest the picture can hold: nine integer digits and two fraction digits.
                 "99999999999,   999999999.99",
                 "9999999999R,  -999999999.99"
         })
@@ -1118,10 +877,6 @@ class TrnxRecordTest {
             TrnxRecord negativeZero = recordWithAmountImage("0000000000}", ASCII);
             TrnxRecord positiveZero = recordWithAmountImage("0000000000{", ASCII);
 
-            // COBOL stores the sign of a zero; a BigDecimal cannot hold it, so signum() is 0 for both
-            // and the two are equal as quantities. That is pinned rather than glossed over: the byte
-            // difference is real and it is the RAW IMAGE, not the decoded value, that a parity diff
-            // must compare if it is comparing storage.
             assertThat(negativeZero.readTrnxAmt()).isEqualByComparingTo(new BigDecimal("0.00"));
             assertThat(negativeZero.readTrnxAmt().scale()).isEqualTo(2);
             assertThat(negativeZero.readTrnxAmt().signum()).isZero();
@@ -1144,11 +899,6 @@ class TrnxRecordTest {
             TrnxRecord fromAscii = recordWithAmountImage(image, ASCII);
             TrnxRecord fromEbcdic = recordWithAmountImage(image, EBCDIC);
 
-            // The point of this test is that the two records hold DIFFERENT bytes for the same field:
-            // 'E' is 0x45 in US-ASCII and 0xC5 in IBM037, and the positive-zero overpunch '{' is 0x7B
-            // against 0xC0. If the overpunch table were ever applied to raw bytes instead of to
-            // characters decoded through the record's own code page, exactly one of these two would
-            // decode and the other would fail or silently drift.
             byte[] asciiSpan = fromAscii.readRawBytes(TrnxRecord.TRNX_AMT);
             byte[] ebcdicSpan = fromEbcdic.readRawBytes(TrnxRecord.TRNX_AMT);
             assertThat(asciiSpan).hasSize(11).isNotEqualTo(ebcdicSpan);
@@ -1165,8 +915,6 @@ class TrnxRecordTest {
             assertThat(fromEbcdic.readTrnxAmtImage()).isEqualTo(fromAscii.readTrnxAmtImage())
                     .isEqualTo(image);
 
-            // The same convergence on the two zeros, whose overpunch characters are the ones a code
-            // page is most likely to mangle.
             assertThat(recordWithAmountImage("0000000000{", EBCDIC).readTrnxAmt())
                     .isEqualByComparingTo(recordWithAmountImage("0000000000{", ASCII).readTrnxAmt());
             assertThat(recordWithAmountImage("0000000000}", EBCDIC).readTrnxAmt())
@@ -1176,8 +924,6 @@ class TrnxRecordTest {
         @Test
         @DisplayName("an unrecognised trailing character is reported, not read as a digit")
         void anUnrecognisedTrailingCharacterIsRejected() {
-            // 'Z' is in neither overpunch alphabet - '{ABCDEFGHI' positive, '}JKLMNOPQR' negative - and
-            // is not a digit, so it denotes nothing. Coercing it would invent an amount.
             TrnxRecord record = recordWithAmountImage("0000012345Z", ASCII);
 
             assertThatIllegalArgumentException().isThrownBy(record::readTrnxAmt);
@@ -1199,10 +945,6 @@ class TrnxRecordTest {
         @Test
         @DisplayName("the edit masks of the statement line belong to the writer, not to this record")
         void editedMasksAreNotThisTypesConcern() {
-            // app/cbl/CBSTM03A.CBL:137 declares ST-TRANAMT PIC Z(9).99- and :142 ST-TOTAL-TRAMT
-            // likewise; those are STMTFILE line templates owned by statement/StatementTextWriter and
-            // asserted by StatementTextWriterTest. This record stores the unedited zoned form only, and
-            // duplicating the mask assertions here would give two homes to one rule (practice B4).
             TrnxRecord record = TrnxRecord.newRecord(ASCII);
             record.writeTrnxAmt(new BigDecimal("-919.00"));
 
@@ -1215,17 +957,9 @@ class TrnxRecordTest {
         }
     }
 
-    /**
-     * The highest-value tests in this class. They encode the single design fact that a conventional
-     * value object would violate silently: after a wholesale group write, every typed accessor over the
-     * overwritten bytes must observe the <em>new</em> value, because
-     * {@code app/cbl/CBSTM03A.CBL:426-429} reads three fields straight after moving 318 bytes into
-     * {@code TRNX-REST}.
-     */
     @Nested
     @DisplayName("Read-through - typed accessors decode the live bytes, never a cached copy")
     class ReadThrough {
-
         @ParameterizedTest(name = "under {0}")
         @ValueSource(strings = {"US-ASCII", "IBM037"})
         @DisplayName("TRNX-AMT read straight after a wholesale TRNX-REST write reflects the new amount")
@@ -1240,10 +974,8 @@ class TrnxRecordTest {
             target.writeTrnxAmt(new BigDecimal("999.99"));
             assertThat(target.readTrnxAmt()).isEqualByComparingTo("999.99");
 
-            // MOVE WS-TRAN-REST (CR-JMP, TR-JMP) TO TRNX-REST   -- CBSTM03A.CBL:426-427
             target.writeTrnxRest(restImage);
 
-            // ADD TRNX-AMT TO WS-TOTAL-AMT                      -- CBSTM03A.CBL:429
             assertThat(target.readTrnxAmt())
                     .as("a cached decode would still report 999.99 and corrupt the statement total")
                     .isEqualByComparingTo("42.42");
@@ -1262,7 +994,6 @@ class TrnxRecordTest {
 
             target.writeTrnxRest(restImage);
 
-            // MOVE TRNX-DESC TO ST-TRANDT                       -- CBSTM03A.CBL:677
             assertThat(target.readTrnxDesc()).isEqualTo(picX("GROCERIES", 100));
         }
 
@@ -1302,7 +1033,6 @@ class TrnxRecordTest {
             assertThat(record.readTrnxCardNum()).isEqualTo(FIXTURE_CARD_NUM);
             assertThat(record.readTrnxId()).isEqualTo(FIXTURE_TRAN_ID);
 
-            // MOVE ... TO TRNX-CARD-NUM / TRNX-ID   -- CBSTM03A.CBL:421 and :424-425
             record.writeTrnxCardNum("0000000000000009");
             record.writeTrnxId("0000000000000007");
 
@@ -1327,25 +1057,21 @@ class TrnxRecordTest {
         @Test
         @DisplayName("the whole CBSTM03A sequence in order: write key, move the group, then read three fields back")
         void theCobolSequenceIsReproducedInOrder() {
-            // One record slot of WS-TRNX-TABLE, as 8500-READTRNX-READ would have filled it.
             TrnxRecord stored = TrnxRecord.newRecord(ASCII);
             stored.writeTrnxDesc("Purchase at Abshire-Lowe");
             stored.writeTrnxAmt(new BigDecimal("504.77"));
-            String tableSlot = stored.readTrnxRest();                       // :829
+            String tableSlot = stored.readTrnxRest();
 
             TrnxRecord target = TrnxRecord.newRecord(ASCII);
 
-            target.writeTrnxCardNum("4859452612877065");                    // :421
-            target.writeTrnxId("0000000000683580");                         // :424-425
-            target.writeTrnxRest(tableSlot);                                // :426-427
+            target.writeTrnxCardNum("4859452612877065");
+            target.writeTrnxId("0000000000683580");
+            target.writeTrnxRest(tableSlot);
 
-            // PERFORM 6000-WRITE-TRANS reads exactly these three, at :676, :677 and :678, out of the
-            // storage the group move above has just overwritten.
             assertThat(target.readTrnxId()).isEqualTo("0000000000683580");
             assertThat(target.readTrnxDesc()).isEqualTo(picX("Purchase at Abshire-Lowe", 100));
             assertThat(target.readTrnxAmt()).isEqualByComparingTo("504.77");
 
-            // ADD TRNX-AMT TO WS-TOTAL-AMT at :429 reads the amount a second time, after the write.
             assertThat(target.readTrnxAmt())
                     .as("a second read must agree with the first: nothing is consumed and nothing cached")
                     .isEqualByComparingTo("504.77");
@@ -1357,11 +1083,6 @@ class TrnxRecordTest {
         @Test
         @DisplayName("accumulating the amount reproduces ADD TRNX-AMT TO WS-TOTAL-AMT at scale 2, truncating")
         void accumulationMirrorsTheCobolAdd() {
-            // WS-TOTAL-AMT is declared PIC S9(9)V99 under 01 COMP3-VARIABLES COMP-3 at
-            // app/cbl/CBSTM03A.CBL:64-65. That is WORKING-STORAGE held in memory by the caller and never
-            // persisted, so no packed-decimal nibble handling is involved: it is modelled here as a
-            // BigDecimal accumulated through CobolDecimal at the same scale and the same rounding mode
-            // the record itself stores with.
             BigDecimal total = CobolDecimal.monetaryZero();
             assertThat(total.scale()).isEqualTo(2);
 
@@ -1371,9 +1092,6 @@ class TrnxRecordTest {
                 total = CobolDecimal.add(total, record.readTrnxAmt(), CobolDecimal.MONETARY_SCALE);
             }
 
-            // 504.77 - 919.00 + 0.01 + 1234.55 = 820.33. The last addend is 1234.55 and not 1234.56,
-            // because the third fraction digit was truncated on store: ROUNDED appears zero times in all
-            // 28 COBOL programs, and grep -c ROUNDED over CBSTM03A.CBL and CBSTM03B.CBL returns 0 and 0.
             assertThat(total).isEqualByComparingTo("820.33");
             assertThat(total.scale()).isEqualTo(2).isEqualTo(CobolDecimal.MONETARY_SCALE);
             assertThat(CobolDecimal.COBOL_ROUNDING).isEqualTo(RoundingMode.DOWN);
@@ -1406,19 +1124,16 @@ class TrnxRecordTest {
     @Nested
     @DisplayName("Wholesale span symmetry - CBSTM03A.CBL:829 followed by :426-427")
     class WholesaleSpans {
-
         @Test
         @DisplayName("reading TRNX-REST out and writing it back into a fresh record reproduces bytes 32 to 349")
         void restSpanRoundTripsThroughTheTable() {
             TrnxRecord source = populated(ASCII);
 
-            // MOVE TRNX-REST TO WS-TRAN-REST (CR-CNT, TR-CNT)   -- CBSTM03A.CBL:829
             String tableSlot = source.readTrnxRest();
             assertThat(tableSlot)
                     .as("WS-TRAN-REST is PIC X(318)")
                     .hasSize(TrnxRecord.TRNX_REST_LENGTH);
 
-            // MOVE WS-TRAN-REST (CR-JMP, TR-JMP) TO TRNX-REST   -- CBSTM03A.CBL:426-427
             TrnxRecord target = TrnxRecord.newRecord(ASCII);
             target.writeTrnxRest(tableSlot);
 
@@ -1489,15 +1204,9 @@ class TrnxRecordTest {
         }
     }
 
-    /**
-     * The provenance tests. These prove the class accepts, unaltered, exactly what
-     * {@code app/jcl/CREASTMT.JCL} actually produces - including a process timestamp two characters
-     * short, which is a real defect in the legacy job and is reproduced rather than repaired.
-     */
     @Nested
     @DisplayName("SORT-derived input - CREASTMT.JCL:54 reproduced, not corrected (practice B4)")
     class SortDerivedInput {
-
         @Test
         @DisplayName("a record reshaped by the legacy OUTREC decodes field for field")
         void sortDerivedRecordDecodesFieldForField() {
@@ -1576,7 +1285,6 @@ class TrnxRecordTest {
     @Nested
     @DisplayName("Field semantics - padding direction, truncation direction and untrimmed reads")
     class FieldSemantics {
-
         @Test
         @DisplayName("a PIC X read is never trimmed, because the padding is part of the field's value")
         void picXReadsAreNotTrimmed() {
@@ -1764,7 +1472,6 @@ class TrnxRecordTest {
     @Nested
     @DisplayName("Raw span access and diagnostics")
     class RawAccessAndDiagnostics {
-
         @Test
         @DisplayName("every declared span is readable as an untrimmed image and as bytes")
         void everyDeclaredSpanIsReadableRaw() {
@@ -1830,14 +1537,6 @@ class TrnxRecordTest {
         void toStringNamesTheKeyAmountAndCodePage() {
             TrnxRecord record = populated(ASCII);
 
-            // The transaction identifier and the code page identify the record; the card number is
-            // masked to its last four characters and the amount is withheld with its width.
-            //
-            // The withheld form is written out as a literal rather than read back from
-            // common.DiagnosticText: that class renders DiagnosticText.OMITTED followed by a colon and
-            // the withheld value's length, so an 11-byte amount image is exactly "<omitted>:11". Stating
-            // the expected 14 characters here keeps the assertion hand-written (practice B11) and keeps
-            // this test's dependencies to the record and the codec it is the audit of.
             assertThat(record.toString())
                     .startsWith("TrnxRecord[")
                     .as("the statement files carry a PAN; it must not reach a log line (CWE-532)")
@@ -1877,27 +1576,12 @@ class TrnxRecordTest {
         }
     }
 
-    /**
-     * Structural guards asserted <em>about the type itself</em> rather than about a value it produced.
-     *
-     * <p>These are the one legitimate use of reflection in this class. Practice B11 rules out a
-     * reflective loop that checks the record against its own descriptor table - such a test passes
-     * happily with a wrong offset - but every assertion here checks for an <strong>absence</strong>: a
-     * floating-point type that must not appear, a persistence annotation that must not be reachable, a
-     * mutable static that must not exist. An absence cannot be restated by hand span by span, and a
-     * reflective sweep is the only way to prove it holds for members nobody thought to look at.
-     */
     @Nested
     @DisplayName("Structural guards - gates G22, G44 and G53 asserted about the type itself")
     class StructuralGuards {
-
         @Test
         @DisplayName("G22: no double, float, Double or Float in any field, accessor, parameter or constructor")
         void noBinaryFloatingPointAnywhere() {
-            // TRNX-AMT is PIC S9(09)V99 and money is exact. A binary floating-point type cannot
-            // represent 504.77 at all, so a single double here would introduce a representation error
-            // into the statement total that no amount of scale handling downstream could remove. The
-            // forbidden set includes the wrappers, because autoboxing would smuggle the same defect in.
             List<Class<?>> forbidden = List.of(double.class, float.class, Double.class, Float.class);
 
             for (Field field : TrnxRecord.class.getDeclaredFields()) {
@@ -2004,8 +1688,6 @@ class TrnxRecordTest {
                 }
             }
 
-            // One Java type per copybook (gate G8), and not extensible into a variant carrying different
-            // geometry for the same 350 bytes.
             assertThat(Modifier.isFinal(TrnxRecord.class.getModifiers())).isTrue();
         }
 
@@ -2026,15 +1708,6 @@ class TrnxRecordTest {
         }
     }
 
-    /**
-     * Fails when any of the supplied annotations is one of the persistence or mapping annotations gate
-     * G44 forbids. Matched on the annotation's simple name so that no ORM dependency has to be present
-     * for the check to be meaningful - which is the point, since none is on the classpath and none may
-     * be added.
-     *
-     * @param annotations the annotations declared on the member under inspection
-     * @param subject     what is being inspected, so a failure names it
-     */
     private static void assertNoPersistenceAnnotation(Annotation[] annotations, String subject) {
         List<String> forbidden = List.of("Entity", "Table", "Id", "Column", "GeneratedValue",
                 "Version", "Embeddable", "MappedSuperclass", "JoinColumn", "SequenceGenerator");

@@ -52,142 +52,27 @@ import org.junit.jupiter.params.provider.ValueSource;
 /**
  * Verifies {@link TransactionListResponse}, the outbound payload of {@code GET /api/transactions}, against
  * the sources that define it.
- *
- * <h2>The sources this suite is transcribed from</h2>
- *
- * <ul>
- *   <li>{@code app/cpy-bms/COTRN00.CPY:373} - {@code 01 COTRN0AO REDEFINES COTRN0AI}, the symbolic
- *       output group: the 59 {@code xxxO} payload items, their widths, the leading 12-byte
- *       {@code TIOAPFX} {@code FILLER} and the per-field {@code FILLER PICTURE X(3)} +
- *       {@code xxxC}/{@code xxxP}/{@code xxxH}/{@code xxxV} attribute quad. Its {@code REDEFINES} pair,
- *       {@code 01 COTRN0AI} at {@code :17}, supplies the {@code xxxL}/{@code xxxF}/{@code xxxA} +
- *       {@code FILLER PICTURE X(4)} + {@code xxxI} shape that {@link RedefinesOverlay} transcribes
- *       independently and proves byte-identical.</li>
- *   <li>{@code app/bms/COTRN00.bms:450} -
- *       {@code ERRMSG DFHMDF ATTRB=(ASKIP,BRT,FSET), COLOR=RED, LENGTH=78, POS=(23,1)}, the error line's
- *       declared width, colour and attributes.</li>
- *   <li>{@code app/cbl/COTRN00C.cbl} - the behaviour. Specifically {@code :62-70}
- *       ({@code CDEMO-CT00-INFO}, the 58-byte browse cursor declared in place after
- *       {@code COPY COCOM01Y}), {@code :193} and {@code :519} (the only two
- *       {@code EXEC CICS XCTL PROGRAM(CDEMO-TO-PROGRAM)} sites), {@code :390-444}
- *       ({@code POPULATE-TRAN-DATA}'s ordered {@code EVALUATE WS-IDX}) and {@code :452-504}
- *       ({@code INITIALIZE-TRAN-DATA}'s).</li>
- *   <li>{@code app/cpy/CSSETATY.cpy:17-27} - the highlight rule, whose four reachable states
- *       {@link HighlightMatrix} drives.</li>
- *   <li>{@code app/csd/CARDDEMO.CSD} - {@code :145} {@code DEFINE MAPSET(COTRN00)}, {@code :257}
- *       {@code DEFINE PROGRAM(COTRN00C)} and {@code :419} {@code DEFINE TRANSACTION(CT00)
- *       PROGRAM(COTRN00C)}: the four identity literals this payload carries.</li>
- * </ul>
- *
- * <p>The expectations are transcribed from those sources rather than read back out of the class under
- * test, which is the whole point: the field names, the widths and the byte totals are all spelled out
- * independently, so a normalised suffix or a mistyped width fails here instead of agreeing with itself.
- * Nothing is read at run time either - the copybook, BMS, COBOL and CSD files are reference inputs and
- * this suite opens none of them, so it can neither be broken by nor break them.
- *
- * <h2>This class is not a naming-conflict case</h2>
- *
- * <p>{@code COTRN00C:5} declares {@code Function : List Transactions from TRANSACT file} and
- * {@code README.md:222} documents {@code CT00} as {@code Transaction List}, so for this one program the
- * mandated class name and the source behaviour <em>agree</em>. That is worth saying out loud because two
- * of its siblings in this very package are the opposite case: {@code README.md:223-224} documents
- * {@code CT01}/{@code COTRN01C} as Transaction <em>View</em> and {@code CT02}/{@code COTRN02C} as
- * Transaction <em>Add</em>, which is the reverse of the names {@code TransactionAddController} and
- * {@code TransactionViewController}. Nothing in this suite inherits that ambiguity, and no assertion
- * here should be copied to those two without re-reading their sources.
- *
- * <h2>Rules</h2>
- *
- * <p>{@code review_rules} returns exactly one line - <strong>no user rules were provided</strong> for
- * this project - and that single line is the whole document, so no project rule governs this file. Their
- * absence is not licence to lower the bar: the Agent Action Plan's own transformation rules and
- * enterprise-practice substitutes bind instead, and this suite is written to them. Named where they are
- * asserted, the ones it answers to are: behaviour from the source and never from the class name (R1);
- * fixed width as the wire format (R5); statelessness (R6); {@code String} payloads with no binary
- * floating point and no reachable rounding mode (R4, R2); reference inputs read-only and never opened at
- * run time (B3); the inconsistent field-name suffixes carried verbatim rather than tidied (B4); a fixed
- * {@link Clock} so every byte is deterministic (B7); explicit imports and named charsets (B8); no static
- * mutable state (B9); and no third-party copybook parser - the overlay arithmetic is transcribed by hand
- * so every offset is reviewable against the copybook (B11).
- *
- * <h2>Self-contained</h2>
- *
- * <p>This class extends nothing and shares nothing: there is no base class for this package and none is
- * to be introduced, so each of its screens' suites can be read on its own. It needs no Spring context,
- * no {@code MockMvc}, no repository, no {@code JobLauncher} and no datasource - the payload is a value
- * type and is asserted as one. The controller-level concerns ({@code EVALUATE EIBAID}, the ordered
- * ten-way selection and the page arithmetic) belong to the suite of the controller that owns them and
- * are deliberately not duplicated here.
  */
 @DisplayName("TransactionListResponse - the COTRN0AO projection of CICS transaction CT00")
 class TransactionListResponseTest {
-
-    /** The code page every test states explicitly; none relies on the platform default. */
     private static final Charset ASCII = StandardCharsets.US_ASCII;
 
-    /** The codec the paragraph reproductions and the image tests use. */
     private static final FixedWidthCodec CODEC = new FixedWidthCodec(ASCII);
 
-    /**
-     * The zone the header renderings are taken in, stated outright.
-     *
-     * <p>Practice B7. {@code ZoneId.systemDefault()} is never called here, and neither is any factory
-     * that would reach it: a header rendered in the host's zone would produce different bytes on a
-     * machine configured differently, which is exactly the non-determinism a byte-for-byte parity
-     * assertion cannot tolerate. Greenwich is chosen because it has no daylight-saving transition, so
-     * the instant below renders identically whatever the date happens to be when the suite runs.
-     */
     private static final ZoneId HEADER_ZONE = ZoneId.of("UTC");
 
-    /**
-     * The instant every header assertion is taken at: 18 July 2022, 03:04:05 Greenwich.
-     *
-     * <p>The date is the one {@code app/jcl/INTCALC.jcl} carries as {@code PARM='2022071800'}, so the
-     * whole suite reads against a date that exists in the sources rather than an arbitrary one. The
-     * time is deliberately single-digit in all three components, which is what makes the zero-filling
-     * of {@code WS-CURTIME-HH-MM-SS} visible: {@code 03:04:05} would read {@code 3:4:5} if any
-     * component were rendered without its leading zero.
-     */
     private static final Instant HEADER_INSTANT = Instant.parse("2022-07-18T03:04:05Z");
 
-    /**
-     * The fixed clock, immutable and shared.
-     *
-     * <p>{@link Clock#fixed(Instant, ZoneId)} has no mutable state and reports the same instant for
-     * ever, so this constant is safe to share across tests and satisfies practice B9's requirement
-     * that a static field be genuinely immutable rather than merely {@code final}.
-     * {@link DateHeader#from(FixedWidthCodec, Clock)} reads it exactly once per call and never calls
-     * {@code now()} of its own, so {@code CURDATEO} and {@code CURTIMEO} are as deterministic as any
-     * other field in the payload.
-     */
     private static final Clock FIXED_CLOCK = Clock.fixed(HEADER_INSTANT, HEADER_ZONE);
 
-    /** {@code WS-CURDATE-MM-DD-YY} at {@link #HEADER_INSTANT}: {@code MM/DD/YY}, eight characters. */
     private static final String EXPECTED_CURDATE = "07/18/22";
 
-    /** {@code WS-CURTIME-HH-MM-SS} at {@link #HEADER_INSTANT}: {@code HH:MM:SS}, eight characters. */
     private static final String EXPECTED_CURTIME = "03:04:05";
 
-    /**
-     * The date header every test uses, built from {@link #FIXED_CLOCK}.
-     *
-     * <p>A method rather than a constant so that each test gets its own instance and no test can
-     * observe another's, even though {@link DateHeader} is itself immutable.
-     *
-     * @return the header for {@link #HEADER_INSTANT}; never {@code null}
-     */
     private static DateHeader fixedHeader() {
         return DateHeader.from(CODEC, FIXED_CLOCK);
     }
 
-    /**
-     * The 59 payload item names, in copybook order, transcribed by hand from the {@code xxxO} items
-     * of {@code 01 COTRN0AO REDEFINES COTRN0AI} at {@code app/cpy-bms/COTRN00.CPY:373}.
-     *
-     * <p>The suffix widths differ between columns and are written out here exactly as the copybook
-     * spells them: {@code SEL} four digits, {@code TRNID}, {@code TDATE} and {@code TDESC} two, and
-     * {@code TAMT} three.
-     */
     private static final List<String> EXPECTED_ITEM_NAMES = List.of(
             "TRNNAMEO", "TITLE01O", "CURDATEO", "PGMNAMEO", "TITLE02O", "CURTIMEO", "PAGENUMO",
             "TRNIDINO",
@@ -203,10 +88,6 @@ class TransactionListResponseTest {
             "SEL0010O", "TRNID10O", "TDATE10O", "TDESC10O", "TAMT010O",
             "ERRMSGO");
 
-    /**
-     * The 59 declared widths, in the same order, transcribed from the {@code PIC X(n)} clauses and
-     * independently equal to the {@code DFHMDF LENGTH=} of the matching name-labelled field.
-     */
     private static final List<Integer> EXPECTED_WIDTHS = List.of(
             4, 40, 8, 8, 40, 8, 8, 16,
             1, 16, 8, 26, 12,
@@ -221,7 +102,6 @@ class TransactionListResponseTest {
             1, 16, 8, 26, 12,
             78);
 
-    /** Supplies {@code (itemName, width)} pairs for the field-by-field parameterised checks. */
     private static List<Arguments> declaredFields() {
         List<Arguments> arguments = new ArrayList<>();
         for (int index = 0; index < EXPECTED_ITEM_NAMES.size(); index++) {
@@ -230,14 +110,6 @@ class TransactionListResponseTest {
         return arguments;
     }
 
-    /**
-     * A response with every header field populated and every row filled, for the image tests.
-     *
-     * <p>The heading comes from {@link #fixedHeader()}, so the two clock fields carry the same bytes on
-     * every run and on every host.
-     *
-     * @return a fully populated response; never {@code null}
-     */
     private static TransactionListResponse fullyPopulated() {
         TransactionListResponse response = new TransactionListResponse();
         response.populateHeaderInfo(fixedHeader());
@@ -258,7 +130,6 @@ class TransactionListResponseTest {
     @Nested
     @DisplayName("The field set: exactly 59 named DFHMDF definitions, verbatim")
     class FieldSet {
-
         @Test
         @DisplayName("59 payload fields, reconciling as 8 header + 10 rows x 5 + 1 error line")
         void fieldCountReconciles() {
@@ -341,10 +212,6 @@ class TransactionListResponseTest {
                 + "TransactionListResponseTest#declaredFields")
         @DisplayName("every field starts unpainted at its declared width - never spaces, never null")
         void everyFieldStartsUnpainted(String itemName, int width) {
-            // MOVE LOW-VALUES TO COTRN0AO, app/cbl/COTRN00C.cbl:114. X'00' and not spaces: the two are
-            // different bytes, and COSGN00C.cbl:118 shows a sibling program whose predicate separates
-            // them. ERRMSGO is the one field this program paints with spaces, and it does so through
-            // clearErrorLine() at :102-103, not at construction.
             TransactionListResponse response = new TransactionListResponse();
             String prefix = itemName.substring(0, itemName.length() - 1);
             assertThat(response.payloadValue(prefix))
@@ -405,7 +272,6 @@ class TransactionListResponseTest {
     @Nested
     @DisplayName("Byte arithmetic: the group image is 1265 bytes and the layout proves it")
     class ByteArithmetic {
-
         @Test
         @DisplayName("the payload widths sum to 840 = 132 + 630 + 78")
         void payloadWidthsSum() {
@@ -483,7 +349,6 @@ class TransactionListResponseTest {
     @Nested
     @DisplayName("Identity: transaction CT00, program COTRN00C, mapset COTRN00, map COTRN0A")
     class Identity {
-
         @Test
         @DisplayName("the four names are the source literals")
         void names() {
@@ -521,7 +386,6 @@ class TransactionListResponseTest {
     @Nested
     @DisplayName("The page size is behaviour: exactly 10, tied to the row groups")
     class PageSize {
-
         @Test
         @DisplayName("PAGE_SIZE is 10 and equals the number of modelled rows")
         void pageSizeIsTen() {
@@ -553,7 +417,6 @@ class TransactionListResponseTest {
     @Nested
     @DisplayName("Rows are 1-based: rows 1 and 10 address the right fields")
     class RowAddressing {
-
         @ParameterizedTest(name = "row {0} addresses the five fields the copybook declares for it")
         @ValueSource(ints = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10})
         @DisplayName("every row's five prefixes are in copybook within-row order")
@@ -627,14 +490,10 @@ class TransactionListResponseTest {
     @Nested
     @DisplayName("POPULATE-TRAN-DATA and INITIALIZE-TRAN-DATA, statement for statement")
     class ParagraphReproductions {
-
         @Test
         @DisplayName("POPULATE-HEADER-INFO fills the six heading fields from the source moves")
         void populateHeaderInfo() {
             TransactionListResponse response = new TransactionListResponse();
-            // A LocalDateTime carries no zone, so this factory cannot reach the platform default
-            // either; the fixed-Clock path that DateHeader.from takes is asserted separately, in
-            // DeterministicHeaderClock.
             DateHeader header = DateHeader.of(CODEC, LocalDateTime.of(2022, 12, 25, 3, 4, 5));
             response.populateHeaderInfo(header);
             assertThat(response.getTitle01O()).isEqualTo(ScreenTitles.CCDA_TITLE01).hasSize(40);
@@ -823,7 +682,6 @@ class TransactionListResponseTest {
     @Nested
     @DisplayName("The attribute quad: metadata, and the CSSETATY highlight it receives")
     class Attributes {
-
         @Test
         @DisplayName("every field starts at low values, which is DFHDFCOL")
         void everyFieldStartsAtLowValues() {
@@ -947,7 +805,6 @@ class TransactionListResponseTest {
     @Nested
     @DisplayName("Navigation: one XCTL target for both transfer sites, resolved by the client")
     class Navigation {
-
         @Test
         @DisplayName("the mapset and map default to this screen's own names")
         void navigationDefaults() {
@@ -974,10 +831,6 @@ class TransactionListResponseTest {
             response.echoTransferTarget(context);
 
             assertThat(response.getNextProgram()).isEqualTo("COMEN01C");
-            // COTRN00C:188-195 and :512-521 state PROGRAM and COMMAREA and nothing else, and the program
-            // never writes CDEMO-LAST-MAP or CDEMO-LAST-MAPSET - so the target is handed no map or mapset
-            // and picks its own. Publishing THIS screen's COTRN00 / COTRN0A as the NEXT screen's told a
-            // client to paint the map it is leaving.
             assertThat(response.getNextMapset())
                     .isBlank()
                     .hasSize(NavigationContext.LAST_MAPSET_LENGTH);
@@ -992,8 +845,6 @@ class TransactionListResponseTest {
         @Test
         @DisplayName("a screen that is painted rather than transferred still names its own map and mapset")
         void aPaintedScreenKeepsItsOwnNames() {
-            // The default state is this screen's own triple, which is what a SEND publishes; only the
-            // XCTL projection blanks them, so the two outcomes stay distinguishable to a client.
             TransactionListResponse painted = new TransactionListResponse();
 
             assertThat(painted.getNextMapset()).isEqualTo(TransactionListResponse.MAPSET_NAME);
@@ -1020,7 +871,6 @@ class TransactionListResponseTest {
     @Nested
     @DisplayName("Statelessness: the commarea and the 58-byte cursor travel in the payload")
     class Statelessness {
-
         @Test
         @DisplayName("the commarea starts empty at exactly 160 bytes and is echoed unchanged")
         void commareaIsEchoed() {
@@ -1211,7 +1061,6 @@ class TransactionListResponseTest {
     @Nested
     @DisplayName("The 1265-byte COTRN0AO image")
     class FixedWidthImage {
-
         @Test
         @DisplayName("a blank response renders 1265 bytes with every FILLER emitted as spaces")
         void blankImage() {
@@ -1299,8 +1148,6 @@ class TransactionListResponseTest {
     @Nested
     @DisplayName("JSON: the space padding of a PIC X field survives a round trip untrimmed")
     class JsonRoundTrip {
-
-        /** A plain mapper with no configuration, since the module's policy lives in the web layer. */
         private final ObjectMapper mapper = new ObjectMapper();
 
         @Test
@@ -1378,9 +1225,6 @@ class TransactionListResponseTest {
             @SuppressWarnings("unchecked")
             Map<String, Object> members = mapper.readValue(json, Map.class);
             for (String itemName : EXPECTED_ITEM_NAMES) {
-                // The wire name is the item without its direction suffix, in lower case - what
-                // @JsonProperty pins per AAP 0.6.3. The Java field keeps the suffix, because that is the
-                // map view this type projects.
                 String member = itemName.substring(0, itemName.length() - 1).toLowerCase();
                 assertThat(members).as(itemName).containsKey(member);
             }
@@ -1391,7 +1235,6 @@ class TransactionListResponseTest {
     @Nested
     @DisplayName("Copying and diagnostics")
     class CopyingAndDiagnostics {
-
         @Test
         @DisplayName("the copy constructor copies the payload, the navigation and the attributes")
         void copyConstructor() {
@@ -1425,20 +1268,12 @@ class TransactionListResponseTest {
             String text = response.toString();
             assertThat(text).startsWith("COTRN0AO[");
 
-            // Every item is still NAMED - the name is what a difference is reported against and it
-            // carries no data, so nothing about diagnosability is given up.
             for (String itemName : EXPECTED_ITEM_NAMES) {
                 assertThat(text).as(itemName).contains(itemName + "='");
             }
             assertThat(text).contains("nextProgram=", "nextMapset=", "nextMap=",
                     "CDEMO-CT00-INFO[");
 
-            // Ten transaction identifiers beside ten dates, descriptions and amounts is one
-            // cardholder's financial history. The identifiers are masked and the descriptions reduced
-            // to their length, which detaches the rest from any subject (CWE-532).
-            // Every one of the eleven transaction identifiers is masked - the ten rows, the filter, and
-            // the two bounding the page in the appended cursor. Each is a TRANSACT key and the record it
-            // opens carries TRAN-CARD-NUM, so masking them is what detaches the rest of the page.
             for (int row = 1; row <= TransactionListResponse.ROW_COUNT; row++) {
                 String itemName = String.format("TRNID%02dO", row);
                 String stored = response.payloadFieldValues().get(itemName);
@@ -1453,10 +1288,6 @@ class TransactionListResponseTest {
                     .doesNotContain(response.getCursor().getTrnidFirst().strip())
                     .doesNotContain(response.getCursor().getTrnidLast().strip());
 
-            // The amounts, dates and descriptions stay legible: proving an amount matches the COBOL byte
-            // for byte is this migration's purpose, and with every identifier masked the page is
-            // attributable to nobody. TRAN-DESC describes a purchase rather than a person, and the
-            // single-transaction screen renders exactly this data plainly.
             assertThat(text)
                     .as("amounts, dates, descriptions and the selection flags stay legible")
                     .contains("TAMT001O='" + response.getTamt001O() + "'",
@@ -1464,7 +1295,6 @@ class TransactionListResponseTest {
                             "TDESC01O='" + response.getTdesc01O() + "'",
                             "SEL0001O='" + response.getSel0001O() + "'");
 
-            // The classification, asserted directly rather than inferred from a rendering.
             assertThat(TransactionListResponse.disclosureOf(null))
                     .as("an item nobody classified is withheld, not published")
                     .isEqualTo(SensitiveDiagnostics.Disclosure.REDACTED_VALUE);
@@ -1489,8 +1319,6 @@ class TransactionListResponseTest {
         void maskingIsRenderingOnly() {
             TransactionListResponse response = fullyPopulated();
 
-            // payloadFieldValues is the parity projection and is untouched: it is what the harness
-            // compares, so redaction cannot hide a difference from it.
             assertThat(response.payloadFieldValues().get("TRNID01O"))
                     .isEqualTo(response.getTrnid01O());
             assertThat(response.payloadFieldValues().get("TRNID01O"))
@@ -1514,15 +1342,9 @@ class TransactionListResponseTest {
         }
     }
 
-    // =================================================================================================
-    // B7 - the heading clock. CURDATEO and CURTIMEO are the only two fields whose value could otherwise
-    // come from outside the test, so the clock is injected and the zone is named.
-    // =================================================================================================
-
     @Nested
     @DisplayName("The heading clock is injected and fixed, so CURDATEO and CURTIMEO are deterministic")
     class DeterministicHeaderClock {
-
         @Test
         @DisplayName("a fixed Clock renders MM/DD/YY and HH:MM:SS at their declared widths")
         void fixedClockRendersTheTwoHeaderFields() {
@@ -1576,9 +1398,6 @@ class TransactionListResponseTest {
         @Test
         @DisplayName("the zone is an input, not an ambient default: a second zone renders differently")
         void theZoneIsStatedRatherThanInherited() {
-            // The same instant in a zone eleven hours ahead falls on the following day, so a suite
-            // that silently took ZoneId.systemDefault() would produce different bytes on a differently
-            // configured host. Both renderings here are deterministic because both zones are named.
             Clock elevenHoursAhead = Clock.fixed(HEADER_INSTANT, ZoneId.of("Australia/Sydney"));
             TransactionListResponse greenwich = new TransactionListResponse();
             TransactionListResponse sydney = new TransactionListResponse();
@@ -1614,44 +1433,15 @@ class TransactionListResponseTest {
         }
     }
 
-    // =================================================================================================
-    // G34 - the REDEFINES contract. This is the AO side of it, and the assertions below are the only
-    // ones in the suite that prove COTRN0AO and COTRN0AI are two views of ONE buffer rather than two
-    // buffers that happen to be the same size.
-    //
-    // The AI view is transcribed here from app/cpy-bms/COTRN00.CPY:17 rather than imported from the
-    // sibling request type: the sibling is not a dependency of this file, and an independent
-    // transcription is a stronger check in any case - if both views were read from the same Java
-    // constant they could only ever agree with each other.
-    // =================================================================================================
-
     @Nested
     @DisplayName("REDEFINES: COTRN0AO and COTRN0AI are two views of the same 1265 bytes")
     class RedefinesOverlay {
-
-        /** {@code xxxL COMP PIC S9(4)} - a two-byte binary halfword. */
         private static final int LENGTH_ITEM_WIDTH = 2;
 
-        /** {@code xxxF PICTURE X}, which {@code xxxA} redefines in place. */
         private static final int FLAG_ITEM_WIDTH = 1;
 
-        /** The AI view's per-field {@code FILLER PICTURE X(4)}, which the AO quad occupies. */
         private static final int INPUT_FILLER_WIDTH = 4;
 
-        /**
-         * The input view, transcribed from {@code 01 COTRN0AI} at {@code app/cpy-bms/COTRN00.CPY:17}.
-         *
-         * <p>One leading {@code FILLER PIC X(12)} for {@code TIOAPFX=YES}, then per field, in copybook
-         * order: {@code xxxL} (2), {@code xxxF} (1) with {@code xxxA} redefining that single byte,
-         * {@code FILLER PICTURE X(4)} and {@code xxxI PIC X(n)}.
-         *
-         * <p>{@link RecordLayout} refuses to be built unless the storage spans are contiguous from
-         * offset zero and sum to exactly the declared length, so the fact that this independently
-         * written layout accepts {@link TransactionListResponse#RECORD_LENGTH} is itself the assertion
-         * that the two views describe the same number of bytes.
-         *
-         * @return the validated 1265-byte input layout; never {@code null}
-         */
         private RecordLayout inputLayout() {
             List<FieldSpan> spans = new ArrayList<>();
             int cursor = 0;
@@ -1660,14 +1450,9 @@ class TransactionListResponseTest {
             for (int index = 0; index < EXPECTED_ITEM_NAMES.size(); index++) {
                 String itemName = EXPECTED_ITEM_NAMES.get(index);
                 String prefix = itemName.substring(0, itemName.length() - 1);
-                // xxxL is COMP PIC S9(4) - a binary halfword, not zoned DISPLAY digits. The codec has
-                // no binary kind because no persisted record in this system holds one, and none is
-                // needed: only the two bytes' position matters here, and they are read and written as
-                // raw bytes below. The span is therefore declared by width alone.
                 spans.add(FieldSpan.alphanumeric(prefix + "L", cursor, LENGTH_ITEM_WIDTH));
                 cursor += LENGTH_ITEM_WIDTH;
                 spans.add(FieldSpan.alphanumeric(prefix + "F", cursor, FLAG_ITEM_WIDTH));
-                // 02 FILLER REDEFINES xxxF. / 03 xxxA PICTURE X. - the same byte under a second name.
                 spans.add(FieldSpan.redefining(prefix + "A", cursor, FLAG_ITEM_WIDTH,
                         PictureKind.ALPHANUMERIC));
                 cursor += FLAG_ITEM_WIDTH;
@@ -1725,7 +1510,6 @@ class TransactionListResponseTest {
             FieldSpan payload = TransactionListResponse.LAYOUT.span(itemName);
             int fieldStart = payload.offset() - TransactionListResponse.FIELD_PREFIX_LENGTH;
 
-            // The four attribute items, in copybook order, at k+3, k+4, k+5 and k+6.
             List<String> quad = List.of(prefix + TransactionListResponse.COLOUR_ITEM_SUFFIX,
                     prefix + TransactionListResponse.PS_ITEM_SUFFIX,
                     prefix + TransactionListResponse.HIGHLIGHT_ITEM_SUFFIX,
@@ -1740,7 +1524,6 @@ class TransactionListResponseTest {
                 assertThat(item.length()).isEqualTo(TransactionListResponse.ATTRIBUTE_ITEM_LENGTH);
             }
 
-            // ... and those are exactly the four bytes the input view reserves as FILLER.
             int inputFillerStart = fieldStart + LENGTH_ITEM_WIDTH + FLAG_ITEM_WIDTH;
             assertThat(inputFillerStart)
                     .isEqualTo(fieldStart + TransactionListResponse.ATTRIBUTE_FILLER_LENGTH);
@@ -1785,23 +1568,19 @@ class TransactionListResponseTest {
             FixedWidthRecord buffer =
                     new FixedWidthRecord(TransactionListResponse.RECORD_LENGTH, ASCII);
 
-            // Write through the INPUT view ...
             buffer.writeSpan(input.span("TRNIDINI"), "0000000000000042");
             buffer.writeSpan(input.span("TDESC07I"), "written through COTRN0AI  ");
             buffer.writeSpan(input.span("ERRMSGI"), CODEC.movePicX("input side", 78));
 
-            // ... and read through the OUTPUT view.
             TransactionListResponse response = TransactionListResponse.readFrom(buffer);
             assertThat(response.getTrnidinO()).isEqualTo("0000000000000042");
             assertThat(response.getTdesc07O()).isEqualTo("written through COTRN0AI  ");
             assertThat(response.getErrmsgO()).isEqualTo(CODEC.movePicX("input side", 78));
 
-            // Now the other direction: write through the OUTPUT view ...
             response.setTrnidinO("0000000000000099");
             response.setTdesc07O("written through COTRN0AO  ");
             response.writeInto(buffer);
 
-            // ... and read through the INPUT view.
             assertThat(buffer.readSpan(input.span("TRNIDINI"))).isEqualTo("0000000000000099");
             assertThat(buffer.readSpan(input.span("TDESC07I")))
                     .isEqualTo("written through COTRN0AO  ");
@@ -1813,7 +1592,6 @@ class TransactionListResponseTest {
             RecordLayout input = inputLayout();
             FixedWidthRecord buffer =
                     new FixedWidthRecord(TransactionListResponse.RECORD_LENGTH, ASCII);
-            // -1 is the cursor-positioning value COTRN00C:242 moves into TRNIDINL; two bytes of it.
             byte[] cursorLength = {(byte) 0xFF, (byte) 0xFF};
             buffer.writeSpanBytes(input.span("TRNIDINL"), cursorLength);
             buffer.writeSpanBytes(input.span("TRNIDINF"), new byte[] {BmsAttributes.DFHBMFSE});
@@ -1874,8 +1652,6 @@ class TransactionListResponseTest {
                 String prefix = itemName.substring(0, itemName.length() - 1);
                 int fieldStart = TransactionListResponse.LAYOUT.span(itemName).offset()
                         - TransactionListResponse.FIELD_PREFIX_LENGTH;
-                // The output view's FILLER X(3) is the input view's xxxL + xxxF, which a blank record
-                // leaves as spaces; the four attribute bytes that follow carry the low value instead.
                 assertThat(image.substring(fieldStart,
                                 fieldStart + TransactionListResponse.ATTRIBUTE_FILLER_LENGTH))
                         .as("%s: the per-field FILLER X(3) at %d", prefix, fieldStart)
@@ -1889,26 +1665,11 @@ class TransactionListResponseTest {
         }
     }
 
-    // =================================================================================================
-    // The metadata-versus-payload boundary. Payload names and widths come from the xxxO items ONLY. The
-    // input view's xxxL / xxxF / xxxA triple and the output view's C / P / H / V quad are screen
-    // mechanics: they exist on the type, because BMS needs them, and they are not on the wire.
-    // =================================================================================================
-
     @Nested
     @DisplayName("The metadata boundary: 59 payload keys on the wire, and none of the 413 metadata names")
     class MetadataBoundary {
-
-        /** A plain mapper: the module's JSON policy lives in the web configuration, not here. */
         private final ObjectMapper mapper = new ObjectMapper();
 
-        /**
-         * Every symbolic-map item name that must <strong>not</strong> appear in the payload: for each of
-         * the 59 fields, the input view's {@code xxxL}, {@code xxxF} and {@code xxxA} and the output
-         * view's {@code xxxC}, {@code xxxP}, {@code xxxH} and {@code xxxV}.
-         *
-         * @return 59 x 7 = 413 names; never empty
-         */
         private Set<String> metadataItemNames() {
             Set<String> names = new LinkedHashSet<>();
             for (String itemName : EXPECTED_ITEM_NAMES) {
@@ -1943,7 +1704,6 @@ class TransactionListResponseTest {
         @DisplayName("not one of the 413 metadata names reaches the JSON, even when every quad is set")
         void noMetadataNameIsSerialised() throws Exception {
             TransactionListResponse response = fullyPopulated();
-            // Move a distinguishable value into all four items of all 59 quads, so a leak would show.
             for (String prefix : TransactionListResponse.fieldPrefixes()) {
                 response.putAttributes(prefix, new FieldAttributes(BmsAttributes.DFHRED,
                         (byte) 'P', BmsAttributes.DFHBLINK, (byte) 'V'));
@@ -2039,9 +1799,6 @@ class TransactionListResponseTest {
         @Test
         @DisplayName("a metadata name offered on the wire is rejected, not silently absorbed")
         void metadataNamesAreRejectedOnTheWayIn() {
-            // The colour item is not a payload member, so a caller cannot paint a field red by
-            // sending its name. Rejecting the document outright is the stronger outcome: ignoring
-            // the member would let a client believe it had been honoured.
             String withColourItem = "{\"trnidin\":\"0000000000000001\",\"trnidinC\":\"x\"}";
             String withLengthItem = "{\"trnidin\":\"0000000000000001\",\"trnidinL\":\"-1\"}";
 
@@ -2054,16 +1811,9 @@ class TransactionListResponseTest {
         }
     }
 
-    // =================================================================================================
-    // app/bms/COTRN00.bms:450 - ERRMSG DFHMDF ATTRB=(ASKIP,BRT,FSET), COLOR=RED, LENGTH=78, POS=(23,1).
-    // The map declares the error line's colour; CSSETATY's DFHRED is a separate, later decision, and the
-    // two must not be confused with one another.
-    // =================================================================================================
-
     @Nested
     @DisplayName("The error line: X(78), autoskip, and red because the mapset says so")
     class ErrorLineAttributes {
-
         @Test
         @DisplayName("ERRMSG is LENGTH=78 in the BMS and PIC X(78) in the symbolic map")
         void errorLineWidth() {
@@ -2083,9 +1833,6 @@ class TransactionListResponseTest {
         void errorLineIsOutputOnly() {
             TransactionListResponse response = new TransactionListResponse();
 
-            // ASKIP means the cursor skips the field, so there is nothing to receive from it and no
-            // ERRMSGL cursor-length to set. The type exposes the payload item and the quad, and no
-            // input-length accessor for any field - see ProhibitedConstructs for the API-wide sweep.
             assertThat(TransactionListResponse.LAYOUT.hasSpan("ERRMSGL"))
                     .as("the output view declares no xxxL item; that name belongs to COTRN0AI")
                     .isFalse();
@@ -2132,33 +1879,13 @@ class TransactionListResponseTest {
         }
     }
 
-    // =================================================================================================
-    // G38 - app/cpy/CSSETATY.cpy:17-27. Three conditions, four reachable states, and the state that
-    // matters most is the one where the highlight overwrites a payload value.
-    //
-    //   IF (FLG-x-NOT-OK OR FLG-x-BLANK) AND CDEMO-PGM-REENTER      <- CSSETATY.cpy:18-20
-    //       MOVE DFHRED TO (SCRNVAR2)C OF (MAPNAME3)O               <- :21-22
-    //       IF FLG-x-BLANK                                          <- :23
-    //           MOVE '*' TO (SCRNVAR2)O OF (MAPNAME3)O              <- :24-25
-    //       END-IF
-    //   END-IF
-    // =================================================================================================
-
     @Nested
     @DisplayName("The CSSETATY matrix: the highlight applies only in REENTER state")
     class HighlightMatrix {
-
-        /** The field the matrix is driven on: the only genuinely enterable field on this screen. */
         private static final String FIELD = "TRNIDIN";
 
-        /** A value already on the screen, so an overwrite is visible when it happens. */
         private static final String TYPED = "0000000000000007";
 
-        /**
-         * A response with {@link #FIELD} already carrying {@link #TYPED}.
-         *
-         * @return the response; never {@code null}
-         */
         private TransactionListResponse withTypedValue() {
             TransactionListResponse response = new TransactionListResponse();
             response.setTrnidinO(TYPED);
@@ -2356,22 +2083,12 @@ class TransactionListResponseTest {
         }
     }
 
-    // =================================================================================================
-    // G40 - EXEC CICS XCTL. COTRN00C has exactly two transfer sites and both are the COMMAREA-driven
-    // shape, so one response field serves both and the client, not the server, performs the transfer.
-    // =================================================================================================
-
     @Nested
     @DisplayName("Both XCTL sites - COTRN00C:193 and :519 - resolve through one nextProgram field")
     class TransferSites {
-
         @Test
         @DisplayName("COTRN00C:193, the row-selection transfer: CDEMO-TO-PROGRAM is COTRN01C")
         void theRowSelectionSite() {
-            // COTRN00C:186-193 - WHEN 'S' / WHEN 's':
-            //     MOVE 'COTRN01C' TO CDEMO-TO-PROGRAM   (:188)
-            //     MOVE 0          TO CDEMO-PGM-CONTEXT  (:191)
-            //     EXEC CICS XCTL PROGRAM(CDEMO-TO-PROGRAM) COMMAREA(CARDDEMO-COMMAREA)
             TransactionListResponse response = new TransactionListResponse();
             NavigationContext context = NavigationContext.empty()
                     .withToProgram("COTRN01C")
@@ -2396,12 +2113,6 @@ class TransactionListResponseTest {
         @Test
         @DisplayName("COTRN00C:519, RETURN-TO-PREV-SCREEN: the same field carries COSGN00C or COMEN01C")
         void theReturnSite() {
-            // COTRN00C:511-519:
-            //     IF CDEMO-TO-PROGRAM = LOW-VALUES OR SPACES
-            //         MOVE 'COSGN00C' TO CDEMO-TO-PROGRAM   (:512)
-            //     END-IF
-            //     MOVE ZEROS TO CDEMO-PGM-CONTEXT           (:517)
-            //     EXEC CICS XCTL PROGRAM(CDEMO-TO-PROGRAM) COMMAREA(CARDDEMO-COMMAREA)
             TransactionListResponse defaulted = new TransactionListResponse();
             defaulted.echoTransferTarget(NavigationContext.empty().withToProgram("COSGN00C"));
             assertThat(defaulted.getNextProgram())
@@ -2491,16 +2202,9 @@ class TransactionListResponseTest {
         }
     }
 
-    // =================================================================================================
-    // The two thank-you literals. COTTL01Y and CSMSG01Y each declare one, they are different lengths and
-    // different text, and they belong to different fields. Substituting one for the other is the kind of
-    // mistake that reads correctly and diffs wrong.
-    // =================================================================================================
-
     @Nested
     @DisplayName("Header titles X(40) and system messages X(50) are never substituted for each other")
     class TitleAndMessageTraps {
-
         @Test
         @DisplayName("the two thank-you literals differ in owner, width and wording")
         void theTwoThankYouLiteralsAreDistinct() {
@@ -2592,16 +2296,9 @@ class TransactionListResponseTest {
         }
     }
 
-    // =================================================================================================
-    // R5 - the direction of a cross-width MOVE. Three of the five row columns take a value from a wider
-    // or narrower source, and each direction is the codec's single implementation of the rule rather
-    // than a substring or a concatenation written at the call site.
-    // =================================================================================================
-
     @Nested
     @DisplayName("Cross-width moves go through the codec, so the truncation direction is deliberate")
     class CrossWidthMoves {
-
         @Test
         @DisplayName("TRAN-ID X(16) into TRNIDnnO X(16) is an exact, lossless move")
         void transactionIdIsExactlyTheSameWidth() {
@@ -2654,8 +2351,6 @@ class TransactionListResponseTest {
         @DisplayName("TAMT00nO is the twelve-character +99999999.99 edit form, never a raw number")
         void theAmountIsAnEditedImage() {
             TransactionListResponse response = new TransactionListResponse();
-            // WS-TRAN-AMT PIC +99999999.99 [COTRN00C:56]: sign, eight integer digits, point, two
-            // fraction digits.
             String edited = "+12345678.99";
 
             response.setRowAmount(3, edited);
@@ -2708,17 +2403,9 @@ class TransactionListResponseTest {
         }
     }
 
-    // =================================================================================================
-    // COTRN00C:390-444 - POPULATE-TRAN-DATA. Rows one and ten each perform one extra MOVE, into the
-    // browse cursor. Those two moves are what makes paging work, so both are asserted, and so is the
-    // fact that the eight rows between them perform neither.
-    // =================================================================================================
-
     @Nested
     @DisplayName("The browse cursor: row 1 seeds TRNID-FIRST, row 10 seeds TRNID-LAST, rows 2..9 neither")
     class CursorSeeding {
-
-        /** The blank a cursor identifier starts at: 16 spaces, never {@code null} and never empty. */
         private static final String UNSEEDED = "                ";
 
         @Test
@@ -2816,26 +2503,12 @@ class TransactionListResponseTest {
         }
     }
 
-    // =================================================================================================
-    // The negatives, asserted by reflection over the type's own API surface. Each one is a rule that is
-    // easy to break in a later edit and invisible in a passing functional test.
-    // =================================================================================================
-
     @Nested
     @DisplayName("Constructs this payload must never acquire")
     class ProhibitedConstructs {
-
-        /** The classes the sweeps cover: the payload and both of its nested types. */
         private static final List<Class<?>> TYPES = List.of(TransactionListResponse.class,
                 TransactionListCursor.class, FieldAttributes.class);
 
-        /**
-         * Every type name reachable from a declared field, method return type or method parameter of
-         * the given class.
-         *
-         * @param type the class to sweep
-         * @return the reachable type names; never empty
-         */
         private Set<String> apiSurfaceOf(Class<?> type) {
             Set<String> names = new LinkedHashSet<>();
             for (Field field : type.getDeclaredFields()) {
@@ -3018,8 +2691,6 @@ class TransactionListResponseTest {
             List<String> names = TransactionListResponse.payloadFieldNames();
             int firstRowStart = TransactionListResponse.HEADER_FIELD_COUNT;
 
-            // COBOL row 1 <-> Java list position 8 within the whole group, and position 0 within the
-            // row block; the row-addressed API takes the COBOL number, 1, and converts privately.
             assertThat(names.get(firstRowStart)).isEqualTo("SEL0001O");
             assertThat(names.get(firstRowStart + 1)).isEqualTo("TRNID01O");
             assertThat(TransactionListResponse.rowFieldNames(TransactionListResponse.FIRST_ROW).get(1))
@@ -3033,9 +2704,6 @@ class TransactionListResponseTest {
                     .as("row 10 is the LAST element - the high end of the off-by-one")
                     .isEqualTo("TRNID10O");
 
-            // The API is 1-based throughout, so the invalid indices are 0 and 11, and a caller who
-            // passed a 0-based position would be rejected at the low end rather than quietly reading
-            // the wrong row - which is the whole reason the bound is checked.
             TransactionListResponse response = new TransactionListResponse();
             assertThat(TransactionListResponse.FIRST_ROW).isEqualTo(1);
             assertThat(TransactionListResponse.LAST_ROW).isEqualTo(10);
@@ -3065,13 +2733,6 @@ class TransactionListResponseTest {
             }
         }
 
-        /**
-         * The simple names of a set of annotations, for name-based checks that do not require the
-         * annotation type to be on the classpath.
-         *
-         * @param annotations the annotations to name
-         * @return their simple names; possibly empty, never {@code null}
-         */
         private Set<String> annotationNames(Annotation[] annotations) {
             Set<String> names = new LinkedHashSet<>();
             for (Annotation annotation : annotations) {

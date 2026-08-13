@@ -20,9 +20,15 @@ import com.vsergeychik.carddemo.config.WebConfig.CobolErrorHandler.CobolErrorRes
 import com.vsergeychik.carddemo.config.WebConfig.JobSubmissionProperties;
 
 import com.zaxxer.hikari.HikariDataSource;
+import java.io.IOException;
 import java.io.InputStream;
+import java.io.UncheckedIOException;
+import java.net.URISyntaxException;
+import java.net.URL;
 import java.nio.charset.Charset;
 import java.nio.charset.IllegalCharsetNameException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.Clock;
@@ -30,7 +36,11 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import java.util.stream.Stream;
 import javax.sql.DataSource;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -68,70 +78,35 @@ import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.web.server.ResponseStatusException;
 
 /**
- * Decision-level tests for the configuration classes {@link CobolCharsetConfig},
- * {@link DataSourceConfig}, {@link BatchConfig} and {@link WebConfig}.
- *
- * <h2>Why these decisions in particular</h2>
- * The configuration package contains very little computation - it exists to bind values - but what it
- * does contain is all of the same kind: <em>a guard that refuses to let the application start on a
- * silently wrong default.</em> Each protects a constraint the migration depends on, and each shares
- * one property that makes a guard worth having here at all: the thing it prevents would not have
- * thrown. A wrong code page, a substituted driver or a wrong record width all produce running
- * software and wrong bytes, so startup is the only place the mistake is still cheap to see:
- *
- * <ul>
- *   <li>{@link CobolCharsetConfig#resolve(String, String)} refuses a blank, syntactically illegal or
- *       unsupported charset name rather than substituting the platform default, and every refusal
- *       names the property key that supplied the value. Decoding a fixed-width mainframe record in the wrong
- *       code page corrupts every byte of it without any error, so a loud failure at startup is the
- *       only safe behaviour. {@code IBM037} is the case that matters: it comes from the JDK's
- *       {@code jdk.charsets} module, which a trimmed runtime image omits.</li>
- *   <li>{@link DataSourceConfig#dataSource(DataSourceProperties)} refuses to build a
- *       {@link DataSource} with no URL, and refuses to publish one whose driver class cannot be
- *       determined or loaded - in particular it never substitutes the embedded database that sits on
- *       this classpath at test scope. No JDBC driver coordinate is pinned in this module by design -
- *       the datasets are VSAM and sequential files and there is no {@code EXEC SQL} anywhere in the
- *       COBOL estate - so the URL is a deployment-time input, and its absence has to be reported
- *       rather than defaulted.</li>
- *   <li>{@link DatasetBindings#binding(String)} refuses an unknown DD name rather than returning
- *       {@code null}. Every dataset name lives in {@code application.yml} and none is hard-coded in
- *       Java, so a typo in a DD name must fail where it is looked up.</li>
- *   <li>{@link DatasetBindings#validate()} refuses a catalogue that is not exactly the twenty-seven
- *       DD names the migrated code reads, or whose entries are internally incoherent. A width or
- *       location that is wrong reads and writes the wrong bytes without throwing, so the point of use
- *       is the worst place to discover it.</li>
- *   <li>{@link JobSubmissionProperties#validate()} refuses a job-submission destination that is
- *       relative, traversing, inside a read-only reference tree or outside its approved root, and
- *       refuses a byte contract that differs from {@code TDQUEUE(JOBS)} in
- *       {@code app/csd/CARDDEMO.CSD}. The destination is externally supplied and the writer appends
- *       to it in {@code MOD}, so a wrong value does not fail - it succeeds against the wrong
- *       file.</li>
- *   <li>{@link WebConfig.CobolErrorHandler} answers every failure family that carries no parity text
- *       with a fixed sentence rather than the exception's own message, while preserving the status an
- *       exception already carries. The failure it prevents is a disclosure, which likewise produces
- *       running software and a wrong response body rather than an error.</li>
- * </ul>
- *
- * <h2>Scope</h2>
- * These are plain unit tests: no Spring context is started, no {@code @SpringBootTest} is used and
- * nothing touches a network or a filesystem. Each of the three guards is driven on both sides, which
- * is what a threshold on branch coverage - rather than line coverage - actually asks for.
+ * Decision-level tests for the configuration classes {@link CobolCharsetConfig}, {@link DataSourceConfig},
+ * {@link BatchConfig} and {@link WebConfig}.
  */
 @DisplayName("config - the startup guards that refuse a silently wrong default")
 class ConfigBranchCoverageTest {
+    private static final String LOCATION = "SENTINEL.CATALOG.ENTRY";
 
     /**
-     * An obviously synthetic dataset location, used wherever a test needs a valid one and does not
-     * care what it is. It could not be mistaken for a default supplied from inside Java, which is the
-     * property several of these assertions turn on.
+     * A JCL {@code EXEC PGM=} step, as the job-contract group reads it out of the legacy decks.
      *
-     * <p>It is also a <em>well-formed</em> z/OS dataset name - three dot-separated qualifiers of eight
-     * characters or fewer - because a job-scoped {@code dsname} is now held to that grammar at startup,
-     * exactly as a global one always has been. A synthetic name that could never become a delimited
-     * SQL identifier would make every inline-override assertion below fail on the name rather than on
-     * the thing it is asserting.
+     * <p>Deliberately permissive about the surrounding syntax and strict about nothing else: JCL allows
+     * any run of blanks around {@code EXEC} and the operand may be followed by a comma, a blank or the
+     * end of the line, and a pattern that assumed one spelling would silently find fewer steps than the
+     * deck contains - which would make the derived job count agree with this module for the wrong
+     * reason. Case-insensitive because the decks are upper case but the filename extensions in this
+     * repository are not consistently either case.
      */
-    private static final String LOCATION = "SENTINEL.CATALOG.ENTRY";
+    private static final Pattern EXEC_PGM =
+            Pattern.compile("EXEC\\s+PGM\\s*=\\s*([A-Z0-9$#@]+)", Pattern.CASE_INSENSITIVE);
+
+    /**
+     * Where the build puts {@code app/jcl} and {@code app/proc} on the test classpath.
+     *
+     * <p>Both directories land under the one target path, which is what lets the derivation treat the
+     * estate as a single set of decks: {@code CBTRN03C} is invoked from {@code app/jcl/TRANREPT.jcl}
+     * and again from {@code app/proc/TRANREPT.prc}, and those two sites are one job, so nothing is
+     * gained by keeping the two directories apart here. No deck name collides across them.
+     */
+    private static final String JCL_ORACLE_RESOURCE = "/jcl-oracle";
 
     /**
      * What makes a {@code "default"} arm of the two {@code runnerFor} helpers below actually read
@@ -157,29 +132,10 @@ class ConfigBranchCoverageTest {
      */
     private static final String NO_ACTIVE_PROFILE = "";
 
-    /** The key both {@code runnerFor} helpers state, whichever profile an arm asks for. */
     private static final String ACTIVE_PROFILE_PROPERTY = "spring.profiles.active=";
 
-    /** The name an arm passes to {@code runnerFor} to ask for the base document on its own. */
     private static final String DEFAULT_PROFILE = "default";
 
-    /**
-     * An initializer that reproduces {@code SPRING_PROFILES_ACTIVE=<profile>} in the process
-     * environment, at the precedence position the real variable occupies.
-     *
-     * <p>Java cannot set its own environment variables, so the variable is reproduced as a
-     * {@link SystemEnvironmentPropertySource} - the source type that performs the
-     * {@code SPRING_PROFILES_ACTIVE} to {@code spring.profiles.active} relaxed-name mapping - inserted
-     * immediately above {@code systemProperties}. That position is what makes an assertion built on it
-     * discriminating: it outranks every configuration document, so an arm that never states its profile
-     * follows it, while it still loses to the inline value an arm that <em>does</em> state its profile
-     * installs. Both {@code runnerFor} helpers register it ahead of
-     * {@link ConfigDataApplicationContextInitializer}, because profile activation is resolved when the
-     * documents load and a source installed after that cannot change which document was chosen.
-     *
-     * @param profile the profile the imagined executor exported
-     * @return an initializer installing that variable
-     */
     private static ApplicationContextInitializer<ConfigurableApplicationContext>
             processEnvironmentActivating(String profile) {
         return context -> context.getEnvironment().getPropertySources().addBefore(
@@ -191,7 +147,6 @@ class ConfigBranchCoverageTest {
     @Nested
     @DisplayName("CobolCharsetConfig.resolve - never substitutes the platform default")
     class CharsetResolution {
-
         @Test
         @DisplayName("a supported charset name resolves to that charset")
         void supportedNameResolves() {
@@ -217,9 +172,6 @@ class ConfigBranchCoverageTest {
         @Test
         @DisplayName("a blank or null name fails as a configuration error naming the key")
         void blankOrNullNameFails() {
-            // Both take the same arm. The point of having this arm at all is the key: left to the
-            // JDK, an emptied property produced a bare IllegalCharsetNameException quoting only the
-            // empty name, which does not tell an operator which key to fix.
             for (String blank : new String[] { null, "", "   " }) {
                 assertThatIllegalStateException()
                         .isThrownBy(() -> CobolCharsetConfig.resolve(blank,
@@ -232,8 +184,6 @@ class ConfigBranchCoverageTest {
         @Test
         @DisplayName("a syntactically illegal name is wrapped, keeping the JDK failure as the cause")
         void syntacticallyIllegalNameIsWrapped() {
-            // The catch translates a diagnostic; it never recovers. One exception type covers every
-            // way a charset name can be unusable, and every message names the key and the value.
             assertThatIllegalStateException()
                     .isThrownBy(() -> CobolCharsetConfig.resolve("IBM 037",
                             CobolCharsetConfig.ASCII_CHARSET_PROPERTY))
@@ -268,7 +218,6 @@ class ConfigBranchCoverageTest {
     @Nested
     @DisplayName("DataSourceConfig.dataSource - the JDBC URL is a deployment-time input")
     class DataSourceGuard {
-
         @Test
         @DisplayName("a configured URL builds a pooled DataSource")
         void configuredUrlBuildsAPool() {
@@ -334,10 +283,6 @@ class ConfigBranchCoverageTest {
         @Test
         @DisplayName("a driver derived from a recognised URL scheme still has to be on the classpath")
         void aDerivedDriverMustAlsoBePresent() {
-            // The other half of the derived path: Spring Boot recognises this scheme and names a
-            // driver for it, but that driver is not a dependency of this module - so determination
-            // succeeds and presence does not. The diagnostic must point at the URL rather than at a
-            // driver property nobody set.
             DataSourceProperties properties = new DataSourceProperties();
             properties.setUrl("jdbc:postgresql://mainframe:5432/carddemo");
 
@@ -351,9 +296,6 @@ class ConfigBranchCoverageTest {
         @DisplayName("an unrecognised URL scheme with no driver named fails rather than substituting "
                 + "the embedded database on the classpath")
         void undeterminableDriverFailsRatherThanFallingBackToTheEmbeddedDatabase() {
-            // The whole point of the guard. Spring Boot's own determination would hand this
-            // deployment H2's driver, because H2 is on the classpath at test scope, and a byte-parity
-            // comparison against an empty in-memory database is worse than no comparison at all.
             DataSourceProperties properties = new DataSourceProperties();
             properties.setUrl("jdbc:carddemo-vsam://mainframe/PROD");
 
@@ -364,19 +306,9 @@ class ConfigBranchCoverageTest {
         }
     }
 
-    /**
-     * {@link DatasetBindings#validate()} - the catalogue-wide startup check.
-     *
-     * <p>Driven by direct call rather than through a context, so every arm is reachable without
-     * Spring. The context-level equivalents live in {@code DataSourceConfigTest}; these exist because
-     * the catalogue's validity rules are the kind of logic that has to be cheap to exercise
-     * exhaustively, and because two of them - the alternate-index relationship checks - are
-     * relationships between entries that no per-property constraint could express.
-     */
     @Nested
     @DisplayName("DatasetBindings.validate - a catalogue that could read the wrong bytes never starts")
     class DatasetCatalogueValidation {
-
         @Test
         @DisplayName("the complete, coherent catalogue validates")
         void aCompleteCatalogueValidates() {
@@ -398,9 +330,6 @@ class ConfigBranchCoverageTest {
                     .withMessageContaining("Missing: [TCATBALF]")
                     .withMessageContaining("Unexpected: [TCATBLAF]");
 
-            // An extra entry on top of a complete catalogue is rejected on its own account. It is not
-            // harmless: nothing in the module will ever read it, so it is either a dataset somebody
-            // added without a consumer or a name that was meant to replace one of the twenty-seven.
             DatasetBindings withAnExtra = validCatalogue();
             withAnExtra.put("SPAREDD", entry(LOCATION, "sequential", "FB", null, 50, null));
             assertThatIllegalStateException().isThrownBy(withAnExtra::validate)
@@ -429,8 +358,6 @@ class ConfigBranchCoverageTest {
             assertThatIllegalStateException()
                     .isThrownBy(withAcctdat(entry(LOCATION, "vsam", "FB", null, 50, null))::validate)
                     .withMessageContaining("its organization is 'vsam'");
-            // An absent organization is rejected for the same reason a wrong one is: the access path
-            // is not something to infer from the other components.
             assertThatIllegalStateException()
                     .isThrownBy(withAcctdat(entry(LOCATION, null, "FB", null, 50, null))::validate)
                     .withMessageContaining("its organization is 'null'");
@@ -455,14 +382,9 @@ class ConfigBranchCoverageTest {
         @Test
         @DisplayName("an absent record format and a block size of zero are both legitimate")
         void absentFormatAndZeroBlockSizeAreLegitimate() {
-            // Both are meaningful rather than merely unset: no DCB declares a format for some
-            // datasets, and BLKSIZE=0 explicitly asks for a system-determined block size. Rejecting
-            // either would force configuration to invent a value the JCL never states.
             assertThatNoException().isThrownBy(
                     withAcctdat(entry(LOCATION, "sequential", null, 0, 50, null))::validate);
 
-            // And a declared key length is legitimate in its own right - on an entry that is keyed,
-            // which is the only kind of entry a key length describes.
             assertThatNoException().isThrownBy(
                     withAcctdat(entry(LOCATION, "ksds", null, 0, 50, 11))::validate);
         }
@@ -491,7 +413,6 @@ class ConfigBranchCoverageTest {
                     .withMessageContaining("itself an alternate-index path");
         }
 
-        /** A complete, coherent catalogue: the 27 required DD names with valid components. */
         private DatasetBindings validCatalogue() {
             DatasetBindings bindings = new DatasetBindings();
             Map<String, String> bases = Map.of(
@@ -501,8 +422,6 @@ class ConfigBranchCoverageTest {
                 if (base != null) {
                     bindings.put(ddName, path(base));
                 } else if (bases.containsValue(ddName)) {
-                    // A cluster an alternate-index path indexes: indexed and keyed, because a path is
-                    // a second access path over the same records rather than a second dataset.
                     bindings.put(ddName, baseCluster());
                 } else {
                     bindings.put(ddName, entry(LOCATION, "sequential", "FB", null, 50, null));
@@ -511,58 +430,38 @@ class ConfigBranchCoverageTest {
             return bindings;
         }
 
-        /** The valid catalogue with the account master's entry replaced. */
         private DatasetBindings withAcctdat(DatasetBinding binding) {
             DatasetBindings bindings = validCatalogue();
             bindings.put("ACCTDAT", binding);
             return bindings;
         }
 
-        /** The valid catalogue with the card alternate-index path's entry replaced. */
         private DatasetBindings withCardaix(DatasetBinding binding) {
             DatasetBindings bindings = validCatalogue();
             bindings.put("CARDAIX", binding);
             return bindings;
         }
 
-        /** A non-path entry with the given components and no alternate-index relationship. */
         private static DatasetBinding entry(String dsname, String organization, String recordFormat,
                 Integer blockSize, int recordLength, Integer keyLength) {
             return new DatasetBinding(dsname, organization, false, recordFormat, blockSize,
                     recordLength, "CVACT01Y", keyLength, null, null, null);
         }
 
-        /**
-         * A valid alternate-index path entry over the named base.
-         *
-         * <p>A keyed entry declares where its key is: an alternate-index path is read by key, so the
-         * catalogue check requires a key length and a key span that lies inside the record.
-         */
         private static DatasetBinding path(String base) {
             return new DatasetBinding(LOCATION, "aix-path", false, "FB", null, 50, "CVACT02Y",
                     11, 0, base, "SENTINEL-ALT-KEY");
         }
 
-        /** A valid base cluster: indexed, and keyed, because a path may only index a KSDS. */
         private static DatasetBinding baseCluster() {
             return new DatasetBinding(LOCATION, "ksds", false, "FB", null, 50, "CVACT02Y",
                     11, 0, null, null);
         }
     }
 
-    /**
-     * {@link JobContracts#validate(DatasetBindings)} - the job-contract graph's startup check.
-     *
-     * <p>The same reasoning as the dataset catalogue, one layer up. A job whose contract is wrong does
-     * not throw when the job is built: it runs, against the wrong dataset or with the wrong step
-     * gating, and the first sign of trouble is output that does not match. These assertions drive every
-     * arm by direct call, including the two that need both catalogues at once - an alias is only
-     * meaningful relative to the global DD-name catalogue.
-     */
     @Nested
     @DisplayName("JobContracts.validate - a job that would run the wrong work never starts")
     class JobContractValidation {
-
         @Test
         @DisplayName("the nine source-derived jobs, each paired with its own program, validate")
         void theNineJobsValidate() {
@@ -584,6 +483,191 @@ class ConfigBranchCoverageTest {
             assertThatIllegalStateException().isThrownBy(() -> withATenth.validate(validCatalogue()))
                     .withMessageContaining("Missing: []")
                     .withMessageContaining("Unexpected: [date-utility-job]");
+        }
+
+        @Test
+        @DisplayName("the refusal cites the EXEC PGM= authority and gate G12, not a preference")
+        void theRefusalCitesTheSourceAuthority() {
+            // A reader arrives at this diagnostic for exactly one reason: the migration plan's summary
+            // total says ten. So the message has to answer that, and answering it means naming the
+            // authority for nine and the gate that forbids the only two candidates for a tenth. A
+            // message that merely restated the number would leave the next reader to invent the job
+            // this check exists to refuse.
+            JobContracts withATenth = validJobs();
+            withATenth.put("statement-generation-job-b", inventedJob("CBSTM03B"));
+
+            assertThatIllegalStateException().isThrownBy(() -> withATenth.validate(validCatalogue()))
+                    .withMessageContaining("EXEC PGM= step in app/jcl or app/proc")
+                    .withMessageContaining("untriggered CBTRN01C")
+                    .withMessageContaining("StatementGenerationJobB for CBSTM03B")
+                    .withMessageContaining("DateUtilityJob for CSUTLDTC")
+                    .withMessageContaining("gate G12")
+                    .withMessageContaining("No further EXEC PGM= exists to translate");
+        }
+
+        @Test
+        @DisplayName("the job inventory is derived from the transcribed steps, not chosen alongside "
+                + "them")
+        void theJobInventoryIsDerivedFromTheTranscribedSteps() {
+            // REQUIRED_JOBS and REQUIRED_STEPS are two hand-written maps over the same JCL, and a
+            // tenth job invented in one of them would look coherent on its own. Deriving the program
+            // set from the step transcription and comparing it against the pairing map removes that
+            // freedom: a tenth job key needs a tenth transcribed step sequence naming a tenth program,
+            // and the JCL has no such step to transcribe.
+            List<String> programsNamedByASteppedJob = JobContracts.REQUIRED_STEPS.values().stream()
+                    .flatMap(List::stream)
+                    .map(StepContract::program)
+                    .filter(program -> program.startsWith("CB"))
+                    .distinct()
+                    .sorted()
+                    .toList();
+
+            assertThat(programsNamedByASteppedJob)
+                    .as("every job's program is named by one of its own transcribed steps, and no "
+                            + "CardDemo program is stepped without being a job")
+                    .containsExactlyInAnyOrderElementsOf(
+                            JobContracts.REQUIRED_JOBS.values().stream().sorted().toList());
+            assertThat(JobContracts.REQUIRED_JOBS.values())
+                    .as("nine keys, nine distinct PROGRAM-IDs - a job may not be a second run of a "
+                            + "program another job already owns")
+                    .doesNotHaveDuplicates()
+                    .hasSize(9);
+            assertThat(JobContracts.REQUIRED_JOBS.values())
+                    .as("the two called subprograms carry names ending in Job and are a @Component "
+                            + "and a @Service, so neither may hold a job key (gate G12)")
+                    .doesNotContain("CBSTM03B", "CSUTLDTC");
+        }
+
+        @Test
+        @DisplayName("the eight JCL-invoked programs are exactly what EXEC PGM= names, read from the "
+                + "JCL itself")
+        void theEightJclInvokedProgramsAreExactlyWhatTheJclNames() {
+            // The one assertion in this suite that consults the immutable authority rather than a
+            // transcription of it. It is what turns "nine because this module says nine" into "nine
+            // because app/jcl and app/proc say eight and nothing invokes the ninth" - which is the
+            // whole answer to the plan's summary total of ten.
+            List<Path> decks = legacyJobDecks();
+            List<String> invoked = decks.stream()
+                    .flatMap(deck -> programsInvokedBy(deck).stream())
+                    .distinct()
+                    .sorted()
+                    .toList();
+
+            assertThat(invoked)
+                    .as("EXEC PGM= across app/jcl and app/proc names these CardDemo programs, and "
+                            + "CBTRN03C appearing in both TRANREPT.jcl and TRANREPT.prc is two sites "
+                            + "for one job")
+                    .containsExactly("CBACT01C", "CBACT02C", "CBACT03C", "CBACT04C", "CBCUS01C",
+                            "CBSTM03A", "CBTRN02C", "CBTRN03C");
+
+            List<String> jobPrograms = JobContracts.REQUIRED_JOBS.values().stream().sorted().toList();
+            assertThat(jobPrograms)
+                    .as("every invoked program has a job, so no JCL step is unmigrated")
+                    .containsAll(invoked);
+            assertThat(jobPrograms.stream().filter(program -> !invoked.contains(program)).toList())
+                    .as("exactly one job exists that no JCL invokes - the orphan CBTRN01C, which "
+                            + "migrates all the same (gate G13)")
+                    .containsExactly("CBTRN01C");
+            assertThat(invoked)
+                    .as("neither called subprogram has an EXEC PGM= anywhere, which is why gate G12 "
+                            + "makes them a @Component and a @Service rather than jobs")
+                    .doesNotContain("CBSTM03B", "CSUTLDTC");
+        }
+
+        /**
+         * The JCL and cataloged-procedure decks, as classpath resources.
+         *
+         * <p>The build copies {@code app/jcl} and {@code app/proc} into
+         * {@code target/test-classes/jcl-oracle/} through the third and fourth {@code <testResource>}
+         * entries in {@code app/java/pom.xml}, so the decks arrive here the same way the area-code
+         * copybook arrives at {@code AreaCodeLookupTest} - as immutable classpath resources rather
+         * than as files found by guessing at the working directory. That is not tidiness: this module
+         * has already had to fix one suite that located its oracle by walking up from wherever the
+         * process happened to start, which made a correct transcription fail under a different
+         * checkout layout. A classpath resource has no working directory and no parent to walk.
+         *
+         * <p>Absence is a <strong>build configuration failure</strong>, reported as one, and not a
+         * reason to skip the derivation - the same stance {@code AreaCodeLookupTest} takes for the
+         * same reason: a check that quietly stops running is worse than one that fails.
+         *
+         * <p>Reading rather than writing keeps practice B3 intact: {@code app/jcl} and
+         * {@code app/proc} are read-only parity reference, the build copies out of them, and nothing
+         * here can write back.
+         *
+         * @return every deck under {@code jcl-oracle/}, in stable order
+         */
+        private static List<Path> legacyJobDecks() {
+            URL oracle = ConfigBranchCoverageTest.class.getResource(JCL_ORACLE_RESOURCE);
+            if (oracle == null) {
+                throw new IllegalStateException("The parity oracle " + JCL_ORACLE_RESOURCE
+                        + " is absent from the test classpath. It is app/jcl and app/proc, copied "
+                        + "there by the third and fourth <testResource> entries in app/java/pom.xml, "
+                        + "and the batch job count is derived by counting EXEC PGM= across those "
+                        + "decks rather than against this module's transcription of them - so its "
+                        + "absence is a build configuration failure and not a reason to skip the "
+                        + "check.");
+            }
+            if (!"file".equals(oracle.getProtocol())) {
+                throw new IllegalStateException("The parity oracle " + JCL_ORACLE_RESOURCE + " is on "
+                        + "the classpath as " + oracle + ", which is not a directory this suite can "
+                        + "enumerate. Surefire puts target/test-classes on the classpath as a "
+                        + "directory; run the tests through Maven rather than from a packaged "
+                        + "artifact.");
+            }
+            Path directory;
+            try {
+                directory = Path.of(oracle.toURI());
+            } catch (URISyntaxException notAUsablePath) {
+                throw new IllegalStateException("The parity oracle " + JCL_ORACLE_RESOURCE + " is on "
+                        + "the classpath at " + oracle + ", which is not a usable path",
+                        notAUsablePath);
+            }
+            List<Path> decks;
+            try (Stream<Path> entries = Files.list(directory)) {
+                decks = entries.filter(Files::isRegularFile).sorted().toList();
+            } catch (IOException cannotList) {
+                throw new UncheckedIOException(directory + " could not be listed, so the job "
+                        + "inventory cannot be derived from the JCL", cannotList);
+            }
+            // A completeness claim over an empty set is not a claim at all, so an empty oracle
+            // directory has to fail here rather than let every assertion below pass vacuously.
+            assertThat(decks)
+                    .as("app/jcl holds 29 job decks and app/proc holds 2 cataloged procedures, all "
+                            + "copied onto the test classpath, and the derivation needs every one of "
+                            + "them")
+                    .hasSize(31);
+            return decks;
+        }
+
+        /**
+         * The CardDemo programs one deck invokes with {@code EXEC PGM=}.
+         *
+         * <p>Utility programs are excluded by the {@code CB} prefix rather than by an exclusion list:
+         * every batch program this migration owns is named {@code CBxxxxxC}, and {@code IDCAMS},
+         * {@code IEFBR14}, {@code SORT} and {@code SDSF} are step programs the JCL runs but the
+         * migration does not translate - {@code CREASTMT.JCL}'s delete/define and REPRO steps and
+         * {@code TRANREPT}'s sort are modelled as steps of their job, not as jobs.
+         *
+         * @param deck the JCL or procedure file to scan
+         * @return the distinct CardDemo program names it invokes, in encounter order
+         */
+        private static List<String> programsInvokedBy(Path deck) {
+            String text;
+            try {
+                text = Files.readString(deck, StandardCharsets.ISO_8859_1);
+            } catch (IOException unreadable) {
+                throw new UncheckedIOException(deck + " could not be read, so the job inventory "
+                        + "cannot be derived from the JCL", unreadable);
+            }
+            List<String> invoked = new ArrayList<>();
+            Matcher steps = EXEC_PGM.matcher(text);
+            while (steps.find()) {
+                String program = steps.group(1).toUpperCase(Locale.ROOT);
+                if (program.startsWith("CB") && !invoked.contains(program)) {
+                    invoked.add(program);
+                }
+            }
+            return invoked;
         }
 
         @Test
@@ -641,15 +725,9 @@ class ConfigBranchCoverageTest {
         @DisplayName("the exact ordered step tuple is required: a step added, dropped, reordered, "
                 + "re-pointed or gated differently is refused")
         void theStepSequenceMustBeExactlyTheOneTheJclDeclares() {
-            // Every arm below is individually well-formed - non-blank names, no duplicates, an ungated
-            // first step - so each one reaches the tuple comparison rather than tripping an earlier
-            // check. That is the point: these are the five deviations that used to start cleanly and
-            // do different work, which is precisely what the review found.
             String statementJob = "statement-generation-job-a";
             List<StepContract> shipped = JobContracts.REQUIRED_STEPS.get(statementJob);
 
-            // 1. A step dropped. CREASTMT's STEP030 is the IEFBR14 that deletes the statement files
-            //    before STEP040 recreates them; without it the job appends to the previous run's output.
             assertThatIllegalStateException()
                     .isThrownBy(() -> jobsWithSteps(statementJob, withoutStepNamed(shipped, "STEP030"))
                             .validate(validCatalogue()))
@@ -660,8 +738,6 @@ class ConfigBranchCoverageTest {
                             + "STEP020/IDCAMS [COND=(0,NE)], STEP030/IEFBR14 [COND=(0,NE)], "
                             + "STEP040/CBSTM03A [COND=(0,NE)]]");
 
-            // 2. A step added. CREASTMT has five steps and no sixth, so an extra one runs work the
-            //    mainframe job never ran.
             List<StepContract> withASixth = new ArrayList<>(shipped);
             withASixth.add(new StepContract("STEP050", "CBSTM03A", true));
             assertThatIllegalStateException()
@@ -671,8 +747,6 @@ class ConfigBranchCoverageTest {
                     .withMessageContaining("A step added, removed, reordered, re-pointed at another "
                             + "program or gated differently");
 
-            // 3. Two steps reordered. Running the REPRO load before the sort that produces its input
-            //    loads the previous run's extract - the concrete hazard the diagnostic names.
             List<StepContract> reordered = new ArrayList<>(shipped);
             Collections.swap(reordered, 1, 2);
             assertThatIllegalStateException()
@@ -683,16 +757,12 @@ class ConfigBranchCoverageTest {
                     .withMessageContaining("reordering CREASTMT's sort and its REPRO loads the "
                             + "previous run's data");
 
-            // 4. A step re-pointed at another program. STEP010 is DFSORT; naming IDCAMS there would
-            //    have the step attempt a utility function against a sort's DD names.
             assertThatIllegalStateException()
                     .isThrownBy(() -> jobsWithSteps(statementJob,
                             withProgramOfStepNamed(shipped, "STEP010", "IDCAMS"))
                             .validate(validCatalogue()))
                     .withMessageContaining("configured: [DELDEF01/IDCAMS, STEP010/IDCAMS, ");
 
-            // 5. A gate removed where CREASTMT declares one, and added where it declares none. Both
-            //    are single-bit changes and neither is visible in any other check.
             assertThatIllegalStateException()
                     .isThrownBy(() -> jobsWithSteps(statementJob,
                             withGateOfStepNamed(shipped, "STEP040", false))
@@ -705,8 +775,6 @@ class ConfigBranchCoverageTest {
                             .validate(validCatalogue()))
                     .withMessageContaining("STEP010/SORT [COND=(0,NE)]");
 
-            // The same comparison on a job whose whole sequence is one step: the reader job declared
-            // with the interest calculator's step name would open the right file under the wrong label.
             assertThatIllegalStateException()
                     .isThrownBy(() -> jobsWithSteps("account-balance-reader-job",
                             List.of(new StepContract("STEP15", "CBACT02C", false)))
@@ -719,10 +787,6 @@ class ConfigBranchCoverageTest {
         @DisplayName("every required job has a transcribed step sequence, so no job can escape the "
                 + "tuple check")
         void everyRequiredJobHasATranscribedSequence() {
-            // requireExactSequence dereferences REQUIRED_STEPS by job key. If the two maps ever drifted
-            // apart, the job with no entry would not be validated loosely - it would throw a
-            // NullPointerException at context refresh - so the invariant is asserted here rather than
-            // guarded by an unreachable branch in production code.
             assertThat(JobContracts.REQUIRED_STEPS.keySet())
                     .containsExactlyInAnyOrderElementsOf(JobContracts.REQUIRED_JOBS.keySet());
             JobContracts.REQUIRED_STEPS.forEach((jobKey, steps) -> {
@@ -771,10 +835,6 @@ class ConfigBranchCoverageTest {
         @DisplayName("the interest calculator's parameter value must be exactly the COBOL PIC X(10) "
                 + "width")
         void theParameterValueMustMatchTheCobolFieldWidth() {
-            // app/cbl/CBACT04C.cbl:178 declares PARM-DATE PIC X(10) and L476-L480 contributes its
-            // whole width to a fixed PIC X(16) TRAN-ID, so a value of any other length misplaces the
-            // generated suffix in every transaction the job writes - and nothing would fail at run
-            // time.
             for (String wrongWidth : new String[] { "202207180", "20220718000" }) {
                 assertThatIllegalArgumentException()
                         .isThrownBy(() -> jobsWith("account-interest-calc-job", interestCalcWith(
@@ -838,9 +898,6 @@ class ConfigBranchCoverageTest {
                             + "carddemo.jobs.account-balance-job.steps[0].program")
                     .withMessageContaining("the program from its EXEC PGM=");
 
-            // Both halves absent. One diagnostic naming both property paths, rather than one naming
-            // whichever half happened to be checked first: a reader fixing a partially written step
-            // needs to know everything that is missing from it, not the first thing.
             assertThatIllegalStateException()
                     .isThrownBy(() -> jobsWith("account-balance-job", new JobContract("CBACT01C",
                             List.of(), List.of(new StepContract(null, null, false)), null,
@@ -849,18 +906,6 @@ class ConfigBranchCoverageTest {
                             + "carddemo.jobs.account-balance-job.steps[0].program");
         }
 
-        /**
-         * The ordering defect the runtime review found, asserted where it actually happens.
-         *
-         * <p>{@code JobContracts.validate} runs at context refresh from a bean that nothing sequences
-         * ahead of the job beans, so a job class routinely reads its contract first - and reading it
-         * starts with a step lookup by name. When a step's {@code name} had been omitted, that lookup
-         * dereferenced it and the context failed with a bare
-         * {@code NullPointerException: Cannot invoke "String.equals(Object)"}, naming no property, no
-         * job and no missing element, from a stack that pointed at the job class rather than at the
-         * configuration. The accessor now checks step completeness before returning a contract, so the
-         * first consumer sees the same descriptive refusal the central validation gives.
-         */
         @Test
         @DisplayName("resolving a contract whose step omits its name is refused descriptively, not "
                 + "with a NullPointerException from the first lookup")
@@ -875,16 +920,12 @@ class ConfigBranchCoverageTest {
                     .withMessageContaining("carddemo.jobs.account-balance-job.steps[0].name")
                     .withMessageContaining("the name from the step label");
 
-            // And the lookup itself no longer dereferences a name it was given none of: it reports the
-            // step it cannot find, which is all a lookup can honestly say.
             JobContract incomplete = new JobContract("CBACT01C", List.of(),
                     List.of(new StepContract(null, "CBACT01C", false)), null, Map.of());
 
             assertThatIllegalStateException().isThrownBy(() -> incomplete.step("STEP05"))
                     .withMessageContaining("declares no step named 'STEP05'");
 
-            // A complete contract resolves through the same accessor untouched, so the check added in
-            // front of it costs a well-formed configuration nothing.
             assertThatNoException()
                     .isThrownBy(() -> validJobs().contract("account-balance-job"));
         }
@@ -923,12 +964,6 @@ class ConfigBranchCoverageTest {
         @DisplayName("an inline override whose dsname is a filesystem path is refused at startup, not "
                 + "when a job first opens it")
         void anInlineOverrideWithAFilesystemPathIsRefused() {
-            // A job-scoped dsname becomes a delimited SQL identifier exactly as a global one does, so
-            // it is held to the same z/OS dataset-name grammar. The point of checking it HERE is where
-            // the failure lands: TransactionReportJob resolves its TRANFILE binding while the bean is
-            // being constructed and StatementGenerationJobA resolves SORTOUT and INFILE the moment a
-            // utility step runs, so a path left unchecked fails the whole context, or fails deep inside
-            // a job, with a message about SQL rather than about the key that is wrong.
             assertThatIllegalStateException()
                     .isThrownBy(() -> jobsWithOverride("SORTIN",
                             inlineAt("/tmp/carddemo-test/transact-bkup.txt"))
@@ -941,8 +976,6 @@ class ConfigBranchCoverageTest {
         @DisplayName("an inline override may name a generation, because a GDG suffix is part of the "
                 + "grammar")
         void anInlineOverrideMayNameAGeneration() {
-            // The global catalogue binds DALYREJS, TRANREPT and SYSTRAN to GDG names, so the job-scoped
-            // grammar has to accept the same shape rather than a stricter one.
             assertThatNoException().isThrownBy(() -> jobsWithOverride("SORTIN",
                     inlineAt(LOCATION + "(+1)")).validate(validCatalogue()));
         }
@@ -1004,14 +1037,6 @@ class ConfigBranchCoverageTest {
                     .isEmpty();
         }
 
-        /**
-         * The nine required jobs, each with its own program and its own exact step sequence.
-         *
-         * <p>The sequences come from {@link JobContracts#REQUIRED_STEPS} rather than being written out
-         * here, because that map is the transcription of the JCL and a second hand-written copy of it
-         * in a test would be a second thing to keep in step. Sourcing the baseline from it means every
-         * deviation arm below is a deliberate, visible edit away from the shipped shape.
-         */
         private JobContracts validJobs() {
             JobContracts contracts = new JobContracts();
             JobContracts.REQUIRED_JOBS.keySet().forEach(jobKey -> contracts.put(jobKey,
@@ -1021,14 +1046,12 @@ class ConfigBranchCoverageTest {
             return contracts;
         }
 
-        /** The nine jobs with one entry replaced. */
         private JobContracts jobsWith(String jobKey, JobContract contract) {
             JobContracts contracts = validJobs();
             contracts.put(jobKey, contract);
             return contracts;
         }
 
-        /** The nine jobs with one job-scoped dataset override added to the statement job. */
         private JobContracts jobsWithOverride(String ddName, JobDatasetBinding override) {
             Map<String, JobDatasetBinding> overrides = new LinkedHashMap<>();
             overrides.put(ddName, override);
@@ -1036,18 +1059,15 @@ class ConfigBranchCoverageTest {
                     JobContracts.REQUIRED_STEPS.get("statement-generation-job-a"), null, overrides));
         }
 
-        /** The nine jobs with one job's step sequence replaced, everything else shipped-shape. */
         private JobContracts jobsWithSteps(String jobKey, List<StepContract> steps) {
             return jobsWith(jobKey, new JobContract(JobContracts.REQUIRED_JOBS.get(jobKey),
                     List.of(), steps, null, Map.of()));
         }
 
-        /** The given sequence without the step of that name. */
         private static List<StepContract> withoutStepNamed(List<StepContract> steps, String name) {
             return steps.stream().filter(step -> !step.name().equals(name)).toList();
         }
 
-        /** The given sequence with the named step re-pointed at another program. */
         private static List<StepContract> withProgramOfStepNamed(List<StepContract> steps, String name,
                 String program) {
             return steps.stream()
@@ -1057,7 +1077,6 @@ class ConfigBranchCoverageTest {
                     .toList();
         }
 
-        /** The given sequence with the named step's COND=(0,NE) gate set as stated. */
         private static List<StepContract> withGateOfStepNamed(List<StepContract> steps, String name,
                 boolean gated) {
             return steps.stream()
@@ -1067,25 +1086,16 @@ class ConfigBranchCoverageTest {
                     .toList();
         }
 
-        /** The shipped contract for the given job key: no parameters, its transcribed step sequence. */
         private static JobContract job(String jobKey) {
             return new JobContract(JobContracts.REQUIRED_JOBS.get(jobKey), List.of(),
                     JobContracts.REQUIRED_STEPS.get(jobKey), null, Map.of());
         }
 
-        /**
-         * A contract for a job key this migration does not recognise.
-         *
-         * <p>It cannot source a step sequence from {@link JobContracts#REQUIRED_STEPS}, because the whole
-         * point of the arm that uses it is that the key has no entry there. The key-set check runs first
-         * and rejects it, so the step sequence is never examined.
-         */
         private static JobContract inventedJob(String program) {
             return new JobContract(program, List.of(),
                     List.of(new StepContract("STEP05", program, false)), null, Map.of());
         }
 
-        /** The interest calculator's contract carrying the given parameter value. */
         private static JobContract interestCalcWith(String parmDateValue) {
             return new JobContract("CBACT04C",
                     List.of(new JobParameterContract(BatchConfig.PARM_DATE_PARAMETER, "string",
@@ -1093,31 +1103,26 @@ class ConfigBranchCoverageTest {
                     JobContracts.REQUIRED_STEPS.get(JobContracts.PARAMETERISED_JOB), null, Map.of());
         }
 
-        /** An override that is purely an alias of a global entry. */
         private static JobDatasetBinding alias(String globalKey) {
             return new JobDatasetBinding(globalKey, null, null, false, null, null, null, null, null, null,
                     null, null);
         }
 
-        /** An override that declares its own dataset inline, with the given record width. */
         private static JobDatasetBinding inline(int recordLength) {
             return new JobDatasetBinding(null, LOCATION, "sequential", false, "FB", null,
                     recordLength, "CVTRA05Y", null, null, null, null);
         }
 
-        /** An inline override with a valid width and the given block size. */
         private static JobDatasetBinding inlineWithBlockSize(int blockSize) {
             return new JobDatasetBinding(null, LOCATION, "sequential", false, "FB", blockSize, 350,
                     "CVTRA05Y", null, null, null, null);
         }
 
-        /** An inline override with a valid width, at the given dataset name. */
         private static JobDatasetBinding inlineAt(String dsname) {
             return new JobDatasetBinding(null, dsname, "sequential", false, "FB", 0, 350,
                     "CVTRA05Y", null, null, null, null);
         }
 
-        /** A complete, coherent dataset catalogue for aliases to resolve through. */
         private DatasetBindings validCatalogue() {
             DatasetBindings bindings = new DatasetBindings();
             Map<String, String> bases = Map.of(
@@ -1139,25 +1144,15 @@ class ConfigBranchCoverageTest {
         }
     }
 
-    /**
-     * {@link BatchConfig.ParmDateJobParametersValidator} - the launch-time width check.
-     *
-     * <p>The same width rule as the configured contract, enforced at the other end: a job launched
-     * programmatically supplies its own parameters, and those must satisfy the COBOL field's width just
-     * as a configured value does. Both ends matter because a job can be launched either way.
-     */
     @Nested
     @DisplayName("ParmDateJobParametersValidator - the PARM lands in a PIC X(10) field")
     class ParmDateValidation {
-
-        /** The validator under test; stateless, so one instance serves every assertion here. */
         private final JobParametersValidator validator =
                 new BatchConfig.ParmDateJobParametersValidator();
 
         @Test
         @DisplayName("the JCL's own value is accepted")
         void theJclValueIsAccepted() throws JobParametersInvalidException {
-            // app/jcl/INTCALC.jcl:22 - PARM='2022071800'.
             validator.validate(new JobParametersBuilder()
                     .addString(BatchConfig.PARM_DATE_PARAMETER, "2022071800")
                     .toJobParameters());
@@ -1199,9 +1194,6 @@ class ConfigBranchCoverageTest {
         @DisplayName("the width rule is scoped to parmDate, because a width belongs to a field rather "
                 + "than to parameters in general")
         void theWidthRuleIsScopedToParmDate() {
-            // A future parameter, if the estate ever grew one, would carry its own COBOL field's width
-            // and not this one's - so a differently-named parameter is checked for type and value but
-            // not for ten characters. Asserting that keeps the rule honest rather than incidental.
             assertThat(new JobParameterContract("reportDate", "string", "2022-07-18")
                     .requireStringValue())
                     .isEqualTo("2022-07-18");
@@ -1214,29 +1206,14 @@ class ConfigBranchCoverageTest {
         @DisplayName("the declared width is 10, taken from the COBOL field and not from the JCL "
                 + "literal")
         void theDeclaredWidthIsTen() {
-            // Both agree, which is the point: the field is PIC X(10) and the JCL supplies 10
-            // characters. Pinning the constant means a future edit cannot quietly widen one without
-            // the other.
             assertThat(BatchConfig.PARM_DATE_WIDTH).isEqualTo(10);
             assertThat("2022071800".length()).isEqualTo(BatchConfig.PARM_DATE_WIDTH);
         }
     }
 
-    /**
-     * The <em>shipped</em> configuration documents, validated exactly as the application validates
-     * them.
-     *
-     * <p>The one group in this file that starts a Spring context, and it earns the exception. Every
-     * other assertion here proves the guards behave correctly for a configuration handed to them; this
-     * one proves the configuration this module actually ships passes those guards - which is a
-     * different claim, and the one a deployment depends on. Both catalogues are strict now, so a
-     * mis-typed key or an incoherent entry in either document would fail here rather than in
-     * production.
-     */
     @Nested
     @DisplayName("the shipped documents - both catalogues bind and validate under both profiles")
     class TheShippedConfigurationDocuments {
-
         @ParameterizedTest(name = "the {0} profile binds 27 datasets and 9 jobs, and both validate")
         @ValueSource(strings = { "default", "test" })
         @DisplayName("both shipped profiles satisfy the strict catalogues")
@@ -1270,8 +1247,6 @@ class ConfigBranchCoverageTest {
                         .isEqualTo(JobSubmissionProperties.TDQ_RECORD_FORMAT);
                 assertThat(port.blockFormat()).isEqualTo(JobSubmissionProperties.TDQ_BLOCK_FORMAT);
                 assertThat(port.disposition()).isEqualTo(JobSubmissionProperties.TDQ_DISPOSITION);
-                // The byte contract is transcribed from the CSD and is identical in both profiles.
-                // The two PATHS are not, and deliberately so - see the two tests below.
                 assertThatNoException().isThrownBy(port::validate);
             });
         }
@@ -1283,19 +1258,9 @@ class ConfigBranchCoverageTest {
                 assertThat(context).hasNotFailed();
                 JobSubmissionProperties port = context.getBean(JobSubmissionProperties.class);
 
-                // Neither key is defaulted. They used to fall back to ${java.io.tmpdir}/carddemo - a
-                // shared, world-writable, predictably named location, which is exactly where a planted
-                // symbolic link at the destination or at a directory above it does the most damage
-                // (CWE-59, CWE-367). The fallbacks were removed rather than replaced: the root has to
-                // be provisioned by the operator, whose permissions on it are the control.
                 assertThat(port.approvedRoot()).isEmpty();
                 assertThat(port.destination()).isEmpty();
 
-                // An unconfigured port still starts - sixteen of the seventeen screens have nothing to
-                // do with the internal reader - and fails CLOSED at the moment of use: the writer finds
-                // no destination and reports NOTOPEN, which is the condition ERROROPTION(IGNORE)
-                // reports and which app/cbl/CORPT00C.cbl:525-535 already handles by displaying
-                // 'Unable to write TDQ (JOBS)'.
                 assertThatNoException().isThrownBy(port::validate);
                 assertThat(new ReportRequestController.InternalReaderJobSubmissionPort(port)
                         .writeQueueTd(ReportRequestController.JOB_LINE_01).resp())
@@ -1311,10 +1276,6 @@ class ConfigBranchCoverageTest {
                 JobSubmissionProperties port = context.getBean(JobSubmissionProperties.class);
 
                 assertThatNoException().isThrownBy(port::validate);
-                // Compared with Path's own segment-wise operations rather than AssertJ's path
-                // assertions: those canonicalise through toRealPath, which would require the
-                // destination to already exist on disk. Nothing here touches the filesystem, exactly
-                // as the validation itself does not.
                 Path resolved = port.destinationPath();
                 assertThat(resolved.isAbsolute()).isTrue();
                 assertThat(resolved.startsWith(port.approvedRootPath())).isTrue();
@@ -1340,8 +1301,6 @@ class ConfigBranchCoverageTest {
                     .startsWith("jdbc:h2:mem:carddemo_test_")
                     .contains("DB_CLOSE_DELAY=-1")
                     .contains("DB_CLOSE_ON_EXIT=FALSE"));
-            // The whole point: two contexts, two databases. schema-h2.sql has no IF NOT EXISTS, so
-            // a shared name plus initialize-schema: always would fail the second refresh.
             assertThat(urls.get(0)).isNotEqualTo(urls.get(1));
         }
 
@@ -1355,12 +1314,8 @@ class ConfigBranchCoverageTest {
                 String runId = context.getEnvironment().getProperty("carddemo.test.run-id");
 
                 assertThat(workDir).contains("clone-" + cloneId).contains("run-" + runId);
-                // Stable, not random: every reference to work-dir must land in one directory, so
-                // the run's thirty-odd outputs cannot scatter.
                 assertThat(context.getEnvironment().getProperty("carddemo.test.work-dir"))
                         .isEqualTo(workDir);
-                // The Maven build supplies the run id as a system property, which outranks the
-                // profile's literal default; outside Maven the honest fallback stands.
                 assertThat(runId).isNotBlank();
                 assertThat(cloneId).isNotBlank();
 
@@ -1370,23 +1325,6 @@ class ConfigBranchCoverageTest {
             });
         }
 
-        /**
-         * The {@code default} arm reads the default document, whatever the surrounding process says.
-         *
-         * <p>The two parameterised assertions above claim to validate <em>both</em> shipped documents.
-         * They only do so while the {@code default} arm sees {@code application.yml} alone, and a runner
-         * does not get that for free - it inherits the JVM's system properties and the process
-         * environment. Under {@code -Dspring.profiles.active=test}, or an executor exporting
-         * {@code SPRING_PROFILES_ACTIVE=test}, the {@code default} arm would load the fixture profile
-         * too and both parameterised cases would validate the same document, twice, with nothing failing
-         * to report the loss of coverage. That silence is what makes this assertion worth its lines.
-         *
-         * <p>The dataset location is the probe because it is the component the two documents most
-         * plainly disagree about: {@code application.yml} names the mainframe cluster, and
-         * {@code application-test.yml} repoints all twenty-seven entries under a
-         * {@code CARDDEMO.TEST} qualifier. Both leak routes are reproduced, since they are neutralised
-         * by different precedence rules.
-         */
         @Test
         @DisplayName("the default arm reads the default document under an externally activated "
                 + "profile, by system property or by environment variable")
@@ -1409,51 +1347,15 @@ class ConfigBranchCoverageTest {
             assertThat(observed.get(0))
                     .as("the shipped default location, not the fixture profile's")
                     .doesNotStartWith("CARDDEMO.TEST.");
-            // And the two documents really do differ here, which is what makes the check above a
-            // check rather than a tautology.
             runnerFor("test").run(context -> assertThat(
                     context.getBean(DatasetBindings.class).binding("ACCTDAT").dsname())
                     .startsWith("CARDDEMO.TEST."));
         }
 
-        /**
-         * Builds a runner over the real {@code application.yml}, optionally activating a profile.
-         *
-         * <p>{@link RandomValuePropertySource} is installed because the test profile's datasource URL
-         * carries a {@code ${random.uuid}} to give each context its own database.
-         * {@code SpringApplication} adds that source itself, but a hand-built context does not get
-         * it - so a runner that omitted it would fail to resolve the placeholder and would look like
-         * a configuration defect rather than a missing test fixture.
-         *
-         * @param profile {@code "default"} for the base document alone, otherwise the profile to
-         *                activate on top of it
-         * @return the configured runner
-         */
         private ApplicationContextRunner runnerFor(String profile) {
-            // No inherited environment to reproduce: the runner's own environment is the subject.
             return runnerFor(profile, context -> { });
         }
 
-        /**
-         * The same runner, with an inherited environment installed before the documents are read.
-         *
-         * <p>Both arms state {@value ConfigBranchCoverageTest#ACTIVE_PROFILE_PROPERTY} - the
-         * {@code default} arm by stating that there is no profile - for the reason set out on
-         * {@link ConfigBranchCoverageTest#NO_ACTIVE_PROFILE}. Saying it rather than omitting it is what
-         * keeps the {@code default}/{@code test} pairs above two documents instead of one document
-         * twice.
-         *
-         * <p>The overload exists so
-         * {@link #theDefaultArmReadsTheDefaultDocumentUnderAnExternallyActivatedProfile()} exercises
-         * <em>this</em> runner rather than a copy: a copy would let someone drop the property here and
-         * leave that assertion green.
-         *
-         * @param profile              {@code "default"} for the base document alone, otherwise the
-         *                             profile to activate on top of it
-         * @param inheritedEnvironment installs whatever the surrounding process is imagined to have
-         *                             supplied; a no-op for ordinary use
-         * @return the configured runner
-         */
         private ApplicationContextRunner runnerFor(String profile,
                 ApplicationContextInitializer<ConfigurableApplicationContext> inheritedEnvironment) {
             return new ApplicationContextRunner()
@@ -1468,19 +1370,11 @@ class ConfigBranchCoverageTest {
                             + (DEFAULT_PROFILE.equals(profile) ? NO_ACTIVE_PROFILE : profile));
         }
 
-        /**
-         * Binds {@code spring.datasource} without building a pool, so the URL can be read as the
-         * profile resolved it.
-         */
         @Configuration
         @EnableConfigurationProperties(DataSourceProperties.class)
         static class BoundDataSourceProperties {
         }
 
-        /**
-         * The three strict bound types on their own, with no datasource, batch or web infrastructure
-         * in the context - so a failure here can only be about the configuration documents.
-         */
         @Configuration
         @EnableConfigurationProperties({
             DatasetBindings.class, JobContracts.class, JobSubmissionProperties.class })
@@ -1491,7 +1385,6 @@ class ConfigBranchCoverageTest {
     @Nested
     @DisplayName("DatasetBindings.binding - an unknown DD name fails where it is looked up")
     class DatasetBindingLookup {
-
         private static final DatasetBinding ACCTDAT = new DatasetBinding(
                 "AWS.M2.CARDDEMO.ACCTDATA.VSAM.KSDS", "KSDS", false, "F", null, 300,
                 "CVACT01Y", 11, null, null, null);
@@ -1557,22 +1450,9 @@ class ConfigBranchCoverageTest {
         }
     }
 
-    /**
-     * The error mapping's two obligations: publish no message a library or driver wrote, and do not
-     * change a status an exception already decided.
-     *
-     * <p>Every assertion here uses a deliberately conspicuous message on the exception it constructs,
-     * so a leak shows up as that exact token appearing in a response body rather than as a subtle
-     * difference in wording.
-     */
     @Nested
     @DisplayName("CobolErrorHandler - publishes fixed text, and preserves a status it did not choose")
     class SanitizedErrorResponses {
-
-        /**
-         * A token no fixed message contains, planted in every exception message these tests build. If
-         * it ever reaches a response body, a handler read the exception instead of a constant.
-         */
         private static final String LEAK = "SENTINEL-INTERNAL-DETAIL";
 
         private final CobolErrorHandler handler = new CobolErrorHandler();
@@ -1643,9 +1523,6 @@ class ConfigBranchCoverageTest {
         @Test
         @DisplayName("a configuration failure surfacing at request time discloses no configuration")
         void aConfigurationFailureIsSanitized() {
-            // The shape DatasetBindings.binding throws for an unknown DD name: its message lists every
-            // configured DD name, which is the dataset inventory. Correct at startup, where an operator
-            // reads it; not something to publish to a caller if it ever surfaces mid-request.
             IllegalStateException configurationFault = new IllegalStateException(
                     "No dataset binding is configured for DD name '" + LEAK + "'");
 
@@ -1731,25 +1608,12 @@ class ConfigBranchCoverageTest {
         }
     }
 
-    /**
-     * The job-submission port's contract. Two things are being protected: the four values transcribed
-     * from {@code TDQUEUE(JOBS)}, which are what make the emitted bytes match the CICS write, and the
-     * externally supplied destination, which the writer appends to in {@code MOD}.
-     */
     @Nested
     @DisplayName("JobSubmissionProperties.validate - the CSD byte contract and a safe destination")
     class JobSubmissionContract {
-
         private static final String ROOT = "/var/carddemo";
         private static final String TARGET = "/var/carddemo/inreader/JOBS";
 
-        /**
-         * Builds a contract that differs from the shipped one only in the two paths.
-         *
-         * @param root   the approved root
-         * @param target the destination
-         * @return the contract
-         */
         private JobSubmissionProperties paths(String root, String target) {
             return new JobSubmissionProperties("JOBS", "INREADER", "US-ASCII",
                     JobSubmissionProperties.TDQ_RECORD_LENGTH,
@@ -1758,38 +1622,16 @@ class ConfigBranchCoverageTest {
                     JobSubmissionProperties.TDQ_DISPOSITION, root, target);
         }
 
-        /**
-         * Builds a contract whose byte contract is overridden and whose paths are valid.
-         *
-         * @param length the record length
-         * @param format the record format
-         * @param block  the block format
-         * @param mode   the disposition
-         * @return the contract
-         */
         private JobSubmissionProperties bytes(int length, String format, String block, String mode) {
             return new JobSubmissionProperties("JOBS", "INREADER", "US-ASCII", length, format,
                     block, mode, ROOT, TARGET);
         }
 
-        /**
-         * Builds a contract whose queue identifiers are overridden and whose everything else is valid.
-         *
-         * @param queueName the queue name
-         * @param ddName    the DD name
-         * @return the contract
-         */
         private JobSubmissionProperties identity(String queueName, String ddName) {
             return new JobSubmissionProperties(queueName, ddName, "US-ASCII", 80, "FIXED",
                     "UNBLOCKED", "MOD", ROOT, TARGET);
         }
 
-        /**
-         * Builds a contract whose code page is overridden and whose everything else is valid.
-         *
-         * @param charset the code page
-         * @return the contract
-         */
         private JobSubmissionProperties charset(String charset) {
             return new JobSubmissionProperties("JOBS", "INREADER", charset, 80, "FIXED",
                     "UNBLOCKED", "MOD", ROOT, TARGET);
@@ -1799,10 +1641,6 @@ class ConfigBranchCoverageTest {
         @ValueSource(strings = { "JOBSX", "JOB", "SUBMIT", "INREADER" })
         @DisplayName("a queue name that is not the CSD's TDQUEUE(JOBS) refuses startup")
         void aForeignQueueNameRefusesStartup(String foreign) {
-            // CORPT00C names the queue in the program text - EXEC CICS WRITEQ TD QUEUE('JOBS') at
-            // CORPT00C.cbl:L517-L523 - so it is not a deployment choice. A profile that renamed it would
-            // send the records somewhere the program never wrote to, and every write would still report
-            // NORMAL because the port cannot tell one destination from another.
             assertThatIllegalStateException().isThrownBy(identity(foreign, "INREADER")::validate)
                     .withMessageContaining("queue-name")
                     .withMessageContaining("JOBS");
@@ -1821,7 +1659,6 @@ class ConfigBranchCoverageTest {
         @CsvSource({ "JOBS,INREADER", "jobs,inreader", "Jobs,InReader", " JOBS , INREADER " })
         @DisplayName("the CSD identifiers are matched without regard to case or surrounding space")
         void theCsdIdentifiersAreMatchedCaseInsensitively(String queueName, String ddName) {
-            // A YAML document may carry either case; what must not vary is WHICH queue is addressed.
             assertThatNoException().isThrownBy(identity(queueName, ddName)::validate);
         }
 
@@ -1856,8 +1693,6 @@ class ConfigBranchCoverageTest {
         @DisplayName("a variable-width code page is refused, because an 80-byte record needs one byte "
                 + "per character")
         void aMultiByteCodePageIsRefused(String multiByte) {
-            // RECORDSIZE(80) counts bytes. In a variable-width encoding, 80 characters of JCL is not 80
-            // bytes, so the record the internal reader reads would not be the record CORPT00C composed.
             assertThatIllegalStateException().isThrownBy(charset(multiByte)::validate)
                     .withMessageContaining("charset");
         }
@@ -1879,8 +1714,6 @@ class ConfigBranchCoverageTest {
             JobSubmissionProperties port = paths(ROOT, TARGET);
 
             assertThat(port.approvedRootPath()).isEqualTo(Paths.get(ROOT));
-            // Compared as path algebra, not with AssertJ's startsWith, which resolves real paths and so
-            // would assert something about this machine's filesystem rather than about the contract.
             assertThat(port.destinationPath().startsWith(port.approvedRootPath())).isTrue();
         }
 
@@ -2117,20 +1950,9 @@ class ConfigBranchCoverageTest {
                             .hasMessageContaining("read-only reference tree"));
         }
 
-        /**
-         * The port contract and the bean that validates it, with nothing else in the context - so a
-         * failure here can only come from the binding or from the validation.
-         */
         @Configuration
         @EnableConfigurationProperties(JobSubmissionProperties.class)
         static class PortOnly {
-
-            /**
-             * Publishes the startup validator, mirroring {@code WebConfig}'s own bean.
-             *
-             * @param properties the bound contract
-             * @return the validator
-             */
             @Bean
             WebConfig.JobSubmissionValidator jobSubmissionValidator(
                     JobSubmissionProperties properties) {
@@ -2161,67 +1983,19 @@ class ConfigBranchCoverageTest {
         void theTwoPathsAreComparableAsNames() {
             JobSubmissionProperties port = paths(ROOT, TARGET);
 
-            // The writer re-proves containment immediately before it opens the destination, and it does
-            // so by comparing these two paths. That comparison is only sound if both sides normalize
-            // the same way and neither touches the filesystem, which is what this pins: the accessors
-            // are pure, so they answer identically whether or not the tree exists yet.
             assertThat(port.destinationPath().startsWith(port.approvedRootPath())).isTrue();
             assertThat(port.approvedRootPath().relativize(port.destinationPath()))
                     .isEqualTo(Paths.get("inreader", "JOBS"));
         }
     }
 
-    /**
-     * The four configuration classes wired together, under each shipped profile.
-     *
-     * <p>Every other group here drives one guard in isolation, which is the right way to prove a
-     * decision. This one answers a different question: whether the four classes still form a working
-     * context <em>together</em>, with the real configuration documents behind them. The application
-     * entry class does not exist yet - it belongs to a later part of the build - so this slice is the
-     * largest context that can be assembled today, and it covers the wiring that a full context would
-     * otherwise be the first thing to exercise.
-     *
-     * <p>Both profiles are asserted, and they are expected to behave <em>differently</em>: the default
-     * profile must refuse to start, because it supplies no JDBC URL and the URL is a deployment-time
-     * input rather than something to default; the test profile must start completely, on a database
-     * of its own.
-     */
     @Nested
     @DisplayName("the config package as a whole - both profiles behave as designed")
     class TheConfigurationPackageWiresUp {
-
-        /**
-         * Builds a runner over the real configuration documents with all four config classes.
-         *
-         * @param profile {@code "default"} for the base document alone, otherwise the profile to
-         *                activate
-         * @return the configured runner
-         */
         private ApplicationContextRunner runnerFor(String profile) {
-            // No inherited environment to reproduce: the runner's own environment is the subject.
             return runnerFor(profile, context -> { });
         }
 
-        /**
-         * The same runner, with an inherited environment installed before the documents are read.
-         *
-         * <p>Both arms state {@value ConfigBranchCoverageTest#ACTIVE_PROFILE_PROPERTY} - the
-         * {@code default} arm by stating that there is no profile - for the reason set out on
-         * {@link ConfigBranchCoverageTest#NO_ACTIVE_PROFILE}. Without it the default arm inherits
-         * whatever profile the surrounding build was given, finds the fixture profile's own URL, and
-         * starts: the assertion below would then report that the shipped default
-         * document supplies a URL, which is the opposite of what it is there to establish.
-         *
-         * <p>The overload exists so
-         * {@link #theDefaultArmStillRefusesToStartUnderAnExternallyActivatedProfile()} exercises
-         * <em>this</em> runner rather than a copy.
-         *
-         * @param profile              {@code "default"} for the base document alone, otherwise the
-         *                             profile to activate
-         * @param inheritedEnvironment installs whatever the surrounding process is imagined to have
-         *                             supplied; a no-op for ordinary use
-         * @return the configured runner
-         */
         private ApplicationContextRunner runnerFor(String profile,
                 ApplicationContextInitializer<ConfigurableApplicationContext> inheritedEnvironment) {
             return new ApplicationContextRunner()
@@ -2240,26 +2014,11 @@ class ConfigBranchCoverageTest {
         @Test
         @DisplayName("the default profile refuses to start without a deployment-supplied JDBC URL")
         void theDefaultProfileRefusesToStartWithoutAUrl() {
-            // Not a defect: no JDBC driver coordinate is pinned in this module, the datasets are VSAM
-            // and sequential files, and the URL is supplied at deployment. Refusing is the designed
-            // outcome, and it must refuse rather than fall back to the H2 driver on the test
-            // classpath.
             runnerFor(DEFAULT_PROFILE).run(context -> assertThat(context).getFailure()
                     .rootCause()
                     .hasMessageContaining("spring.datasource.url"));
         }
 
-        /**
-         * The refusal above is a property of the shipped document, not of the machine that ran the
-         * build.
-         *
-         * <p>It is the assertion in this file most exposed to an inherited profile: the fixture profile
-         * supplies a URL of its own, so a {@code default} arm that quietly loaded it would start
-         * cleanly, this assertion would fail, and the failure would read as though
-         * {@code application.yml} had grown a URL - a defect reported against the configuration when
-         * the configuration is correct and the harness is not. Both leak routes are reproduced, because
-         * they are neutralised by different precedence rules.
-         */
         @Test
         @DisplayName("the default arm still refuses to start under an externally activated profile, "
                 + "by system property or by environment variable")
@@ -2281,28 +2040,22 @@ class ConfigBranchCoverageTest {
             runnerFor("test").run(context -> {
                 assertThat(context).hasNotFailed();
 
-                // CobolCharsetConfig: three named code pages, the active one profile-supplied.
                 assertThat(context).hasBean("carddemoEbcdicCharset");
                 assertThat(context).hasBean("carddemoAsciiCharset");
                 assertThat(context.getBean("carddemoDatasetCharset", Charset.class))
                         .isEqualTo(Charset.forName("US-ASCII"));
 
-                // DataSourceConfig: a real pool on this context's own database, plus the strict
-                // 27-entry catalogue.
                 HikariDataSource pool = (HikariDataSource) context.getBean(DataSource.class);
                 assertThat(pool.getJdbcUrl()).startsWith("jdbc:h2:mem:carddemo_test_");
                 assertThat(pool.getDriverClassName()).isEqualTo("org.h2.Driver");
                 assertThat(context.getBean(DatasetBindings.class))
                         .hasSize(DatasetBindings.REQUIRED_DD_NAMES.size());
 
-                // BatchConfig: the nine validated job contracts and the transaction manager.
                 assertThat(context.getBean(JobContracts.class))
                         .hasSize(JobContracts.REQUIRED_JOBS.size());
                 assertThat(context).hasSingleBean(PlatformTransactionManager.class);
                 assertThat(context).hasBean("jobContractValidator");
 
-                // WebConfig: the single Clock, the Jackson customizer, the advice, and the validated
-                // job-submission port.
                 assertThat(context).hasSingleBean(Clock.class);
                 assertThat(context).hasSingleBean(Jackson2ObjectMapperBuilderCustomizer.class);
                 assertThat(context).hasSingleBean(CobolErrorHandler.class);
@@ -2313,11 +2066,6 @@ class ConfigBranchCoverageTest {
         }
     }
 
-    /**
-     * An empty HTTP request body, for constructing a parse failure without a servlet container.
-     *
-     * @return a request carrying no headers and an empty body
-     */
     private static HttpInputMessage emptyRequest() {
         return new HttpInputMessage() {
             @Override

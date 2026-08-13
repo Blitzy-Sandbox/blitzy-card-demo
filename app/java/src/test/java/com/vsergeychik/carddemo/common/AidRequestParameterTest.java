@@ -38,51 +38,9 @@ import org.springframework.web.bind.annotation.RequestParam;
 /**
  * {@link AidRequestParameter} - the shared name of the {@code EIBAID} query parameter, and the rule for
  * reading it.
- *
- * <h2>What this class is defending</h2>
- * Runtime testing found that the five online routes which accepted the attention identifier as a query
- * parameter had each spelled the parameter for themselves - three {@code eibaid}, two {@code eibAid} -
- * and Spring MVC discards a query parameter no handler declares. A caller that used a sibling screen's
- * spelling therefore had its key <strong>silently ignored</strong>: the request executed as
- * {@link CicsAid#DFHENTER}, so an operator's {@code PF3} exit came back as a validation screen with
- * nothing in the response saying the key had not been understood. On
- * {@code GET /api/cards/{cardNum}} that was the whole story, because that screen's request record
- * declares no {@code CCARD-AID} member and the query parameter is its only channel for the key.
- *
- * <p>So there are two things to hold, and this class holds both:
- *
- * <ul>
- *   <li>the folding rule itself - which of two spellings carried the value, and what happens when they
- *       disagree;</li>
- *   <li><strong>uniformity across the surface</strong> - every handler that binds the parameter binds
- *       both accepted names and no third spelling. That is the assertion which stops the defect coming
- *       back on the next screen, and it is deliberately written against the live
- *       {@code @RequestParam} annotations rather than against a list of names kept in a test.</li>
- * </ul>
- *
- * <p>Nothing here asserts anything about an AID <em>value</em>. Whether a byte names a key a screen
- * handles is the program's decision: {@code app/cbl/COCRDSLC.cbl:299-308} and
- * {@code app/cbl/COCRDLIC.cbl:378-380} both coerce an unrecognised identifier to {@code ENTER} rather
- * than rejecting it, and each controller's own test suite covers that.
  */
 @DisplayName("AidRequestParameter - one name for EIBAID across the whole online surface")
 final class AidRequestParameterTest {
-
-    /**
-     * Every handler that binds the {@code EIBAID} query parameter, named by the route it serves.
-     *
-     * <p>Twelve entries, which is every route that declares the parameter. Five already had it; the
-     * other seven gained it when the attention identifier stopped being read from a folded
-     * {@code CCARD-AID} token - the token cannot express {@code PF13} to {@code PF24}, because
-     * {@code app/cpy/CSSTRPFY.cpy:54-77} folds them onto {@code PFK01} to {@code PFK12}, and none of
-     * those programs copies that copybook, so each of them tests {@code EIBAID} inline and therefore
-     * treats {@code PF15} differently from {@code PF3} on the mainframe. A raw byte is the only carrier
-     * that can say which was pressed.
-     *
-     * <p>A thirteenth screen that binds the parameter and is not listed here is not a failure of this
-     * test - the reflection below reads the annotations of whatever is listed - but adding the entry is
-     * how the next screen inherits the guard.
-     */
     private static final Map<String, Method> HANDLERS = handlers();
 
     private static Map<String, Method> handlers() {
@@ -115,7 +73,6 @@ final class AidRequestParameterTest {
                                     com.vsergeychik.carddemo.transaction.dto.TransactionAddRequest.class,
                                     Integer.class, Integer.class)),
 
-                    // The seven whose only channel for the key used to be the lossy token.
                     Map.entry("POST /api/signon",
                             SignOnController.class.getDeclaredMethod("signOn",
                                     com.vsergeychik.carddemo.user.dto.SignOnRequest.class,
@@ -149,12 +106,10 @@ final class AidRequestParameterTest {
         }
     }
 
-    /** Feeds the parameterized uniformity tests. */
     private static List<String> routes() {
         return HANDLERS.keySet().stream().sorted().toList();
     }
 
-    /** The names bound by {@code @RequestParam} on one handler, in declaration order. */
     private static List<String> boundParameterNames(String route) {
         List<String> names = new ArrayList<>();
         for (Parameter parameter : HANDLERS.get(route).getParameters()) {
@@ -169,7 +124,6 @@ final class AidRequestParameterTest {
     @Nested
     @DisplayName("the names themselves")
     class Names {
-
         @Test
         @DisplayName("the canonical name is the all-lower-case spelling three routes already required")
         void canonicalNameIsTheMajorityForm() {
@@ -236,7 +190,6 @@ final class AidRequestParameterTest {
     @Nested
     @DisplayName("resolve - folding two spellings into the one value the caller stated")
     class Resolve {
-
         @Test
         @DisplayName("neither name present is null, which every caller already reads as 'no key named'")
         void neitherPresentIsNull() {
@@ -264,8 +217,6 @@ final class AidRequestParameterTest {
         @Test
         @DisplayName("both present and equal by value rather than by identity")
         void bothPresentAndEqualAcrossTheIntegerCache() {
-            // Above 127 the two boxes are distinct objects, so a reference comparison would have made
-            // this a contradiction. 243 is DFHPF3, the very key the defect was found with.
             Integer canonical = Integer.valueOf(243);
             Integer alternate = Integer.valueOf(243);
             assertThat(canonical).isNotSameAs(alternate);
@@ -305,7 +256,6 @@ final class AidRequestParameterTest {
     @Nested
     @DisplayName("uniformity - the assertion that stops the divergence coming back")
     class Uniformity {
-
         @ParameterizedTest(name = "{0}")
         @MethodSource("com.vsergeychik.carddemo.common.AidRequestParameterTest#routes")
         @DisplayName("the route binds both accepted spellings of the EIBAID parameter")
@@ -361,9 +311,6 @@ final class AidRequestParameterTest {
                     "POST /api/users",
                     "PUT /api/users/{userId}");
 
-            // Read from the live annotations rather than from each controller's constant: the constants
-            // are package-private, as they should be, and the annotation is what Spring actually binds
-            // by. Every route must name the canonical spelling character for character.
             for (String route : routes()) {
                 assertThat(boundParameterNames(route))
                         .as("the canonical name is stated once, in AidRequestParameter, and never "
@@ -378,8 +325,6 @@ final class AidRequestParameterTest {
             for (String route : routes()) {
                 List<String> unexpected = boundParameterNames(route).stream()
                         .filter(name -> !AidRequestParameter.ACCEPTED_NAMES.contains(name))
-                        // eibcalen is the other exec interface block value this module accepts, and it
-                        // was already uniform across every route that takes it.
                         .filter(name -> !"eibcalen".equals(name))
                         .toList();
 
@@ -416,7 +361,6 @@ final class AidRequestParameterTest {
     @Nested
     @DisplayName("requireAidByte - narrowing the stated value to the one byte it names")
     class RequireAidByte {
-
         @ParameterizedTest(name = "{0} narrows to the byte 0x{1}")
         @CsvSource({"0, 00", "1, 01", "13, 0D", "127, 7F", "128, 80", "193, C1", "243, F3",
             "252, FC", "255, FF"})
@@ -429,8 +373,6 @@ final class AidRequestParameterTest {
         @Test
         @DisplayName("the AIDs above 127 arrive unsigned and compare equal to their CicsAid constants")
         void theHighAidsSurviveTheNarrowing() {
-            // This is the whole reason the parameter is unsigned: DFHPF13 is 0xC1, which Java's byte
-            // renders as -63 and a query string cannot spell.
             assertThat(AidRequestParameter.requireAidByte(Byte.toUnsignedInt(CicsAid.DFHPF13)))
                     .isEqualTo(CicsAid.DFHPF13);
             assertThat(AidRequestParameter.requireAidByte(Byte.toUnsignedInt(CicsAid.DFHPF17)))
@@ -487,8 +429,6 @@ final class AidRequestParameterTest {
     @Nested
     @DisplayName("requireTokenAgreement - a payload token may restate the byte, never contradict it")
     class RequireTokenAgreement {
-
-        /** The code page is stated explicitly, never taken from the platform (practice B8). */
         private final FixedWidthCodec codec =
                 new FixedWidthCodec(java.nio.charset.StandardCharsets.US_ASCII);
 
@@ -523,8 +463,6 @@ final class AidRequestParameterTest {
         @CsvSource({"13, 01", "15, 03", "17, 05", "24, 12"})
         @DisplayName("a folded upper key agrees with the token CSSTRPFY itself would store for it")
         void aFoldedByteAgreesWithItsFoldedToken(int pfNumber, String foldedOnto) {
-            // The token is a value the copybook produces, so 'PFK05' is a truthful restatement of PF17.
-            // The byte still wins, which is what lets COUSR03C reach WHEN OTHER - see its own suite.
             byte upper = aidByte("DFHPF" + pfNumber);
             AidRequestParameter.requireTokenAgreement("aid", upper,
                     PfKeyResolver.AidKey.valueOf("PFK" + foldedOnto).token(), codec);
@@ -548,7 +486,6 @@ final class AidRequestParameterTest {
             assertThatThrownBy(() -> AidRequestParameter.requireTokenAgreement("aid",
                     CicsAid.DFHPA3, PfKeyResolver.AidKey.ENTER.token(), codec))
                     .isInstanceOf(ScreenInputRejectedException.class);
-            // But no token beside it is still fine: nothing is being contradicted.
             AidRequestParameter.requireTokenAgreement("aid", CicsAid.DFHPA3, null, codec);
         }
 
@@ -563,8 +500,6 @@ final class AidRequestParameterTest {
         @Test
         @DisplayName("the comparison is at PIC X(5) and never by trimming, so padding is honoured")
         void theComparisonIsAtTheDeclaredWidth() {
-            // 'PA1  ' carries two significant trailing spaces; a trimming comparison would accept
-            // 'PA1' for PA2's byte just as readily.
             AidRequestParameter.requireTokenAgreement("aid", CicsAid.DFHPA1, "PA1", codec);
             assertThatThrownBy(() -> AidRequestParameter.requireTokenAgreement("aid",
                     CicsAid.DFHPA2, "PA1", codec))
@@ -601,7 +536,6 @@ final class AidRequestParameterTest {
     @Nested
     @DisplayName("requireStatedAid - the composed rule the six routes call")
     class RequireStatedAid {
-
         private final FixedWidthCodec codec =
                 new FixedWidthCodec(java.nio.charset.StandardCharsets.US_ASCII);
 
@@ -637,7 +571,6 @@ final class AidRequestParameterTest {
         }
     }
 
-    /** The {@link CicsAid} constant of a given name, read reflectively so the name is the source. */
     private static byte aidByte(String constantName) {
         try {
             return CicsAid.class.getDeclaredField(constantName).getByte(null);

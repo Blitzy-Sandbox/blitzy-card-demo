@@ -1,6 +1,5 @@
 package com.vsergeychik.carddemo.user;
 
-import com.vsergeychik.carddemo.config.CobolCharsetConfig;
 import com.vsergeychik.carddemo.common.BmsAttributes;
 import com.vsergeychik.carddemo.common.CicsAid;
 import com.vsergeychik.carddemo.common.FieldAttributeSetter;
@@ -11,6 +10,7 @@ import com.vsergeychik.carddemo.common.NavigationContext;
 import com.vsergeychik.carddemo.common.PfKeyResolver;
 import com.vsergeychik.carddemo.common.ScreenInputRejectedException;
 import com.vsergeychik.carddemo.common.ScreenFieldImage;
+import com.vsergeychik.carddemo.common.ScreenMetadata;
 import com.vsergeychik.carddemo.common.ScreenTitles;
 import com.vsergeychik.carddemo.common.SensitiveDiagnostics;
 import com.vsergeychik.carddemo.common.SystemMessages;
@@ -88,145 +88,33 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 /**
  * {@link SignOnController}, the HTTP adapter over {@code app/cbl/COSGN00C.cbl} - CSD transaction
  * {@code CC00}.
- *
- * <h2>Why this class exists, given the controller makes no decisions</h2>
- *
- * <p>{@link SignOnService} carries every branch of the program and is tested directly in
- * {@code SignOnServiceTest}. What is left here is nonetheless observable behaviour that no service test
- * can see: which HTTP method and path the screen is reached at, what an absent body is taken to mean,
- * how the ten {@code COSGN0AO} output items are projected at their exact declared widths, how the three
- * distinct CICS exits are told apart by a stateless client, and - the two things that have no
- * {@code DFHMDF} field to travel in - that the cursor request and the full-repaint instruction actually
- * reach the caller.
- *
- * <p>Three properties are asserted here that are the whole reason the split exists:
- *
- * <ul>
- *   <li><strong>The controller decides nothing.</strong> Every service result in this class is a
- *       Mockito stub or an immutable outcome fixture. {@link TheServiceContract} and
- *       {@link TheSpringSlice} prove the adapter merely translates, delegates once and projects that
- *       supplied outcome; repository reads, password comparison, upper-casing, message selection and
- *       role determination remain exclusively in {@code SignOnServiceTest}.</li>
- *   <li><strong>HTTP tests stop at the wire.</strong> {@code MockMvc} appears in {@link TheWire} for a
- *       lightweight shape check and in {@link TheSpringSlice} for the real dispatcher, configured
- *       Jackson mapper, validation advice and statelessness. Branch decisions remain plain service
- *       outcomes, never dispatcher behaviour.</li>
- *   <li><strong>The password never comes back.</strong> Asserted structurally, over the response
- *       record's components, and over the serialised JSON.</li>
- * </ul>
- *
- * <h2>Where every expectation below comes from</h2>
- *
- * <p>The reference is read, never run. COBOL cannot be executed in this environment - eight blockers
- * are recorded in the plan's special analysis as risk R-A, among them a disabled indexed-file handler,
- * absent Language Environment {@code CEE*} services and no CICS emulator - so every value asserted here
- * is <strong>statically derived</strong> from the cited lines rather than captured from a live run
- * (practice B12). The citations are exact, so each one can be checked against the file:
- *
- * <table border="1">
- *   <caption>The reference lines this class asserts against</caption>
- *   <tr><th>Source</th><th>What it fixes</th></tr>
- *   <tr><td>{@code app/csd/CARDDEMO.CSD:378-379}</td>
- *       <td>{@code DEFINE TRANSACTION(CC00) … PROGRAM(COSGN00C)} - the one route</td></tr>
- *   <tr><td>{@code app/cbl/COSGN00C.cbl:80-83}</td>
- *       <td>{@code IF EIBCALEN = 0} - the cold start, its {@code LOW-VALUES} and its
- *           {@code MOVE -1 TO USERIDL}</td></tr>
- *   <tr><td>{@code app/cbl/COSGN00C.cbl:85-95}</td>
- *       <td>{@code EVALUATE EIBAID} - three arms, and only {@code DFHENTER} and {@code DFHPF3} are
- *           named</td></tr>
- *   <tr><td>{@code app/cbl/COSGN00C.cbl:132-137}</td>
- *       <td>{@code MOVE FUNCTION UPPER-CASE} - the service's, which is why the controller passes the
- *           two credential fields through verbatim</td></tr>
- *   <tr><td>{@code app/cbl/COSGN00C.cbl:149}</td>
- *       <td>{@code MOVE WS-MESSAGE TO ERRMSGO} - eighty into seventy-eight, truncating on the
- *           right</td></tr>
- *   <tr><td>{@code app/cbl/COSGN00C.cbl:198-204}</td>
- *       <td><strong>two separate</strong> {@code EXEC CICS ASSIGN} statements - {@code APPLID} at
- *           {@code :198-200}, then {@code SYSID} at {@code :202-204}</td></tr>
- *   <tr><td>{@code app/cpy-bms/COSGN00.CPY:17-60}</td>
- *       <td>the {@code xxxI} declarations, and so the eleven payload names and their widths -
- *           {@code CURTIMEI PIC X(9)} at {@code :54} among them</td></tr>
- *   <tr><td>{@code app/bms/COSGN00.bms}</td>
- *       <td>37 {@code DFHMDF} definitions of which 11 carry a name label</td></tr>
- * </table>
- *
- * <h2>Two divergences documented rather than corrected (practice B4)</h2>
- *
- * <ol>
- *   <li><strong>{@code DFHATTR} is not in this program's compile at all.</strong>
- *       {@code app/cbl/COSGN00C.cbl:59} reads {@code *COPY DFHATTR.} - an asterisk in the indicator
- *       column, so the line is a comment and the copybook contributes nothing. The plan's
- *       "{@code DFHATTR}: 2 consumers" is a <em>textual</em> count that includes commented lines.
- *       Nothing here asserts {@code DFHATTR}-specific attribute behaviour. {@code DFHAID} and
- *       {@code DFHBMSCA} at {@code :57-58} <em>are</em> copied, so {@code common.CicsAid} and
- *       {@code common.BmsAttributes} are legitimately in play.</li>
- *   <li><strong>Eleven output items, eleven response members.</strong> {@code app/cpy-bms/COSGN00.CPY}
- *       declares 11 {@code xxxO} items and {@link SignOnResponse} carries all 11. {@code USERIDO} and
- *       {@code PASSWDO} have no {@code MOVE} into them anywhere in {@code COSGN00C}, and are painted
- *       all the same: {@code 01 COSGN0AO REDEFINES COSGN0AI} at CPY {@code :85} makes each of them the
- *       same span as its {@code xxxI} counterpart, so {@code EXEC CICS RECEIVE MAP} at {@code :110-115}
- *       fills them and the {@code SEND} at {@code :151-157} transmits them. An error repaint therefore
- *       comes back with the typed user id still in the field. The credential is on the wire because the
- *       program puts it there and appears in no rendering, which {@link TheCredential} holds apart.</li>
- * </ol>
  */
 @DisplayName("SignOnController - the HTTP surface of COSGN00C, transaction CC00")
 class SignOnControllerTest {
-
-    /** A single-byte code page, named explicitly rather than taken from the platform. */
     private static final Charset CODE_PAGE = StandardCharsets.US_ASCII;
 
-    /**
-     * A pinned instant, so the two header fields are assertable byte for byte.
-     *
-     * <p>Chosen as the version stamp {@code app/cbl/COSGN00C.cbl:259} carries. At {@link ZoneOffset#UTC}
-     * it renders {@code 07/19/22} into {@code CURDATEO} and {@code 23:12:33} into the nine-character
-     * {@code CURTIMEO}.
-     */
     private static final Clock FIXED_CLOCK =
             Clock.fixed(Instant.parse("2022-07-19T23:12:33Z"), ZoneOffset.UTC);
 
-    /** The {@code MM/DD/YY} rendering {@link #FIXED_CLOCK} produces, {@code WS-CURDATE-MM-DD-YY}. */
     private static final String EXPECTED_CURDATE = "07/19/22";
 
-    /**
-     * The {@code CURTIMEO} image {@link #FIXED_CLOCK} produces: {@code HH:MM:SS} in eight characters,
-     * right-padded by the {@code MOVE} at {@code app/cbl/COSGN00C.cbl:196} into a {@code PIC X(9)}
-     * receiver.
-     */
     private static final String EXPECTED_CURTIME = "23:12:33 ";
 
-    /** An obviously fake eight-character plaintext fixture; never a credential or environment secret. */
     private static final String STORED_PASSWORD = "PASSWORD";
 
-    /**
-     * The two overlay spans as a {@code RECEIVE MAP} would leave them, for the fixtures that repaint or
-     * transfer after receiving the map.
-     *
-     * <p>{@code 01 COSGN0AO REDEFINES COSGN0AI} at {@code app/cpy-bms/COSGN00.CPY:85} makes
-     * {@code USERIDI}/{@code USERIDO} and {@code PASSWDI}/{@code PASSWDO} one span each, so these are the
-     * images {@code EXEC CICS SEND MAP ... FROM(COSGN0AO)} re-transmits. Both are exactly their declared
-     * width, as CICS delivers them.
-     */
     private static final MapInputArea RECEIVED_MAP_AREA =
             MapInputArea.received("ADMIN001", STORED_PASSWORD);
 
-    /** A configured application identifier, exactly {@code PIC X(8)}. */
-    /**
-     * {@code carddemo.cics.applid} as {@code application-test.yml} pins it, and as all twenty
-     * {@code COSGN00C} parity cases expect it.
-     */
     private static final String PROFILE_APPLID = "CICSAWS1";
 
-    /**
-     * {@code carddemo.cics.sysid} as the profile pins it, brought to the map's {@code PIC X(8)} by the
-     * {@code MOVE} rule - four characters and four trailing spaces.
-     */
     private static final String PROFILE_SYSID = "AWS1    ";
 
+    /**
+     * A configured application identifier at exactly {@value SignOnController#APPLID_SOURCE_LENGTH}
+     * characters - the widest {@code EXEC CICS ASSIGN APPLID} can report, so the boundary value.
+     */
     private static final String APPLID = "CICSAWSC";
 
-    /** A configured system identifier, deliberately shorter than {@code PIC X(8)}. */
     private static final String SYSID = "AWSC";
 
     private SignOnService decisionCore;
@@ -239,18 +127,10 @@ class SignOnControllerTest {
         controller = new SignOnController(decisionCore, FIXED_CLOCK, APPLID, SYSID, CODE_PAGE);
     }
 
-    // =================================================================================================
-    // Helpers.
-    // =================================================================================================
-
     private static String spaces(int width) {
         return " ".repeat(width);
     }
 
-    /**
-     * A payload continuing the pseudo-conversation: a communication area is present, so
-     * {@code EIBCALEN} is non-zero and {@code app/cbl/COSGN00C.cbl:85} decides.
-     */
     private static SignOnRequest submitted(String userId, String password, String aidToken) {
         return new SignOnRequest(spaces(SignOnRequest.TRNNAME_LENGTH),
                 spaces(SignOnRequest.TITLE01_LENGTH),
@@ -267,20 +147,10 @@ class SignOnControllerTest {
                 aidToken);
     }
 
-    /**
-     * Every value an {@code EIBAID} byte can take, stated unsigned - all 256 of them.
-     *
-     * <p>The whole space is driven rather than the sixteen {@code CSSTRPFY} names, because the payload
-     * carries the byte itself and therefore has to carry any byte a terminal can present, including the
-     * twelve high function keys the {@code CCARD-AID} token folds and the bytes it names not at all.
-     *
-     * @return the unsigned values {@code 0} through {@code 255}
-     */
     static java.util.stream.IntStream everyAidByte() {
         return java.util.stream.IntStream.rangeClosed(0, 255);
     }
 
-    /** The ENTER key, the arm {@code app/cbl/COSGN00C.cbl:86-87} takes. */
     private static SignOnRequest enterKey(String userId, String password) {
         return submitted(userId, password, PfKeyResolver.aidImage(CicsAid.DFHENTER));
     }
@@ -289,13 +159,6 @@ class SignOnControllerTest {
         return controller.performSignOn(request).screen();
     }
 
-    /**
-     * An outcome that paints nothing, for asserting the projection in isolation.
-     *
-     * <p>The canonical constructor enforces that a sign-on succeeds exactly when the task left through
-     * an {@code XCTL} and that only an {@code XCTL} names a target, so a non-signed-on outcome must
-     * carry {@link Termination#RETURN_TRANSID} and a blank target.
-     */
     private static SignOnOutcome outcomeWithMessage(String eightyCharacterMessage,
             CursorField cursorField,
             boolean screenPainted) {
@@ -316,13 +179,6 @@ class SignOnControllerTest {
                 Optional.empty());
     }
 
-    /**
-     * A service result that repaints the sign-on map with one of the five source messages.
-     *
-     * <p>The message is first moved into {@code WS-MESSAGE PIC X(80)}. The controller then performs the
-     * separate 80-to-78 move into {@code ERRMSGO}; keeping both moves visible prevents a test fixture
-     * from hiding which layer owns the truncation.
-     */
     private static SignOnOutcome repaintOutcome(String message,
             CursorField cursorField,
             NavigationContext navigationContext) {
@@ -344,9 +200,6 @@ class SignOnControllerTest {
                 Optional.empty());
     }
 
-    /**
-     * The service result for {@code EIBCALEN = 0}: a full initial paint, no receive and no read.
-     */
     private static SignOnOutcome coldStartOutcome() {
         return new SignOnOutcome(false,
                 spaces(SignOnService.ROLE_LENGTH),
@@ -365,9 +218,6 @@ class SignOnControllerTest {
                 Optional.empty());
     }
 
-    /**
-     * The service result for the {@code DFHPF3} plain-text exit.
-     */
     private static SignOnOutcome plainTextOutcome(NavigationContext navigationContext) {
         FixedWidthCodec codec = new FixedWidthCodec(CODE_PAGE);
         return new SignOnOutcome(false,
@@ -387,9 +237,6 @@ class SignOnControllerTest {
                 Optional.empty());
     }
 
-    /**
-     * The service result for the source's {@code WHEN OTHER} arm.
-     */
     private static SignOnOutcome invalidKeyOutcome(NavigationContext navigationContext,
             Optional<PfKeyResolver.AidKey> resolvedAid) {
         FixedWidthCodec codec = new FixedWidthCodec(CODE_PAGE);
@@ -410,10 +257,6 @@ class SignOnControllerTest {
                 Optional.empty());
     }
 
-    /**
-     * A successful service result for proving that role and navigation values are projected rather
-     * than recomputed by the controller.
-     */
     private static SignOnOutcome signedOnOutcome(String role,
             String nextProgram,
             NavigationContext inbound) {
@@ -437,13 +280,8 @@ class SignOnControllerTest {
                 Optional.empty());
     }
 
-    /**
-     * Test-only beans for the MVC slice. The production {@link WebConfig} clock remains present; this
-     * immutable primary bean displaces it so date and time assertions can never depend on wall time.
-     */
     @TestConfiguration
     static class SliceCollaborators {
-
         @Bean
         @Primary
         Clock fixedClock() {
@@ -451,14 +289,9 @@ class SignOnControllerTest {
         }
     }
 
-    // =================================================================================================
-    // The route.
-    // =================================================================================================
-
     @Nested
     @DisplayName("The route - one transaction, one mapping")
     class TheRoute {
-
         @Test
         @DisplayName("the path is POST /api/signon, per CARDDEMO.CSD:378")
         void thePathIsTheOneTheCsdDefines() {
@@ -521,14 +354,9 @@ class SignOnControllerTest {
         }
     }
 
-    // =================================================================================================
-    // The inbound symbolic-map contract.
-    // =================================================================================================
-
     @Nested
     @DisplayName("The request contract - eleven xxxI fields, their exact names and widths")
     class TheRequestContract {
-
         private SignOnRequest fullyPopulatedRequest() {
             return new SignOnRequest("CC00",
                     ScreenTitles.CCDA_TITLE01,
@@ -642,14 +470,9 @@ class SignOnControllerTest {
         }
     }
 
-    // =================================================================================================
-    // Construction.
-    // =================================================================================================
-
     @Nested
     @DisplayName("Construction - constructor injection only, every collaborator required")
     class Construction {
-
         @Test
         @DisplayName("every argument is required")
         void everyArgumentIsRequired() {
@@ -690,16 +513,100 @@ class SignOnControllerTest {
         }
 
         @Test
-        @DisplayName("an over-long identifier is truncated on the right, not the left")
-        void anOverLongIdentifierIsTruncatedOnTheRight() {
+        @DisplayName("an identifier wider than its ASSIGN statement is refused, not truncated")
+        void anOverLongIdentifierIsRefused() {
+            // The PIC X move rule truncates on the right, and that is correct for a field an operator
+            // types into - deliberateShorteningUsesThePicXDirection covers exactly that. These two
+            // fields are not typed: they stand in for EXEC CICS ASSIGN, which reports at most 8
+            // characters of APPLID and at most 4 of SYSID. Truncating a longer configured value would
+            // paint a name no execution of COSGN00C could have produced into one of the eleven fields a
+            // field-for-field diff compares, and the result would be indistinguishable from a
+            // legitimately shorter name - so it is refused before the move.
+            Assertions.assertThatIllegalStateException().isThrownBy(() ->
+                            new SignOnController(decisionCore, FIXED_CLOCK, "ABCDEFGHI", SYSID,
+                                    CODE_PAGE))
+                    .withMessageContaining(SignOnController.APPLID_PROPERTY)
+                    .withMessageContaining(SignOnController.APPLID_ENVIRONMENT_VARIABLE)
+                    .withMessageContaining("9 characters")
+                    .withMessageContaining("at most " + SignOnController.APPLID_SOURCE_LENGTH)
+                    .withMessageContaining("ABCDEFGHI");
+            Assertions.assertThatIllegalStateException().isThrownBy(() ->
+                            new SignOnController(decisionCore, FIXED_CLOCK, APPLID, "AWSC1",
+                                    CODE_PAGE))
+                    .withMessageContaining(SignOnController.SYSID_PROPERTY)
+                    .withMessageContaining(SignOnController.SYSID_ENVIRONMENT_VARIABLE)
+                    .withMessageContaining("5 characters")
+                    .withMessageContaining("at most " + SignOnController.SYSID_SOURCE_LENGTH);
+
+            verifyNoInteractions(decisionCore);
+        }
+
+        @Test
+        @DisplayName("the SYSID limit is the four characters ASSIGN reports, not the eight the field "
+                + "holds")
+        void theSysIdLimitIsTheSourceWidthAndNotTheFieldWidth() {
             when(decisionCore.handle(any(SignOnInput.class))).thenReturn(coldStartOutcome());
-            SignOnController wide = new SignOnController(decisionCore, FIXED_CLOCK,
-                    "ABCDEFGHIJ", "KLMNOPQRST", CODE_PAGE);
 
-            SignOnResponse painted = wide.signOn(null, null, null).screen();
+            // The trap this test exists for: app/cpy-bms/COSGN00.CPY:134 declares SYSIDO PIC X(8) and
+            // app/bms/COSGN00.bms:89-93 gives the field eight columns, so validating against the field
+            // width would accept five, six, seven or eight characters. EXEC CICS ASSIGN SYSID at
+            // app/cbl/COSGN00C.cbl:202-204 reports four.
+            Assertions.assertThat(SignOnController.SYSID_SOURCE_LENGTH).isEqualTo(4);
+            Assertions.assertThat(SignOnResponse.SYSID_LENGTH)
+                    .as("the field really is wider than the value, which is why the two numbers are "
+                            + "separate constants")
+                    .isEqualTo(8);
 
+            SignOnResponse painted = new SignOnController(decisionCore, FIXED_CLOCK, APPLID, "AWS1",
+                    CODE_PAGE).signOn(null, null, null).screen();
+            Assertions.assertThat(painted.sysId())
+                    .as("four characters accepted, then space-filled to the field width by the MOVE")
+                    .isEqualTo("AWS1    ");
+
+            for (String tooWide : List.of("AWS12", "AWS123", "AWS1234", "AWS12345")) {
+                Assertions.assertThatIllegalStateException().isThrownBy(() ->
+                                new SignOnController(decisionCore, FIXED_CLOCK, APPLID, tooWide,
+                                        CODE_PAGE))
+                        .withMessageContaining(SignOnController.SYSID_PROPERTY);
+            }
+        }
+
+        @Test
+        @DisplayName("an identifier the configured code page cannot encode is refused, and the check "
+                + "is relative to that code page rather than to ASCII")
+        void anUnrepresentableIdentifierIsRefused() {
+            // 'A' with a diaeresis is unencodable in US-ASCII and encodable in IBM037, so the same
+            // value is refused under one code page and accepted under the other. That is the point: the
+            // check asks the configured encoder rather than assuming a character set.
+            String accented = "CICSAW\u00c4";
+
+            Assertions.assertThatIllegalStateException().isThrownBy(() ->
+                            new SignOnController(decisionCore, FIXED_CLOCK, accented, SYSID,
+                                    StandardCharsets.US_ASCII))
+                    .withMessageContaining(SignOnController.APPLID_PROPERTY)
+                    .withMessageContaining(SignOnController.APPLID_ENVIRONMENT_VARIABLE)
+                    .withMessageContaining("U+00C4")
+                    .withMessageContaining(StandardCharsets.US_ASCII.name());
+
+            when(decisionCore.handle(any(SignOnInput.class))).thenReturn(coldStartOutcome());
+            Assertions.assertThatNoException().isThrownBy(() ->
+                    new SignOnController(decisionCore, FIXED_CLOCK, accented, SYSID,
+                            Charset.forName("IBM037")));
+        }
+
+        @Test
+        @DisplayName("the widest value each ASSIGN statement can report is accepted, so the refusal "
+                + "costs nothing at the boundary")
+        void theBoundaryWidthsAreAccepted() {
+            when(decisionCore.handle(any(SignOnInput.class))).thenReturn(coldStartOutcome());
+
+            SignOnResponse painted = new SignOnController(decisionCore, FIXED_CLOCK, "ABCDEFGH", "WXYZ",
+                    CODE_PAGE).signOn(null, null, null).screen();
+
+            Assertions.assertThat("ABCDEFGH").hasSize(SignOnController.APPLID_SOURCE_LENGTH);
+            Assertions.assertThat("WXYZ").hasSize(SignOnController.SYSID_SOURCE_LENGTH);
             Assertions.assertThat(painted.applId()).isEqualTo("ABCDEFGH");
-            Assertions.assertThat(painted.sysId()).isEqualTo("KLMNOPQR");
+            Assertions.assertThat(painted.sysId()).isEqualTo("WXYZ    ");
         }
 
         @ParameterizedTest(name = "a region identity of [{0}] is refused")
@@ -707,12 +614,6 @@ class SignOnControllerTest {
         @DisplayName("an unconfigured region is refused at construction rather than painting spaces "
                 + "into a field every parity case compares")
         void anUnconfiguredRegionIsRefused(String unconfigured) {
-            // The two fields are 2 of the 11 named DFHMDF items of app/bms/COSGN00.bms, and all twenty
-            // COSGN00C parity cases expect a real region name in them. Spaces there are not a neutral
-            // default: on the wire they are indistinguishable from a region that answered nothing, so a
-            // missing deployment input would become a wrong screen that nobody notices. An invented
-            // literal is no better - that is fabricated data inside a field-for-field diff - so the only
-            // honest answer is to refuse to start.
             Assertions.assertThatIllegalStateException().isThrownBy(() ->
                             new SignOnController(decisionCore, FIXED_CLOCK, unconfigured, SYSID,
                                     CODE_PAGE))
@@ -729,15 +630,26 @@ class SignOnControllerTest {
         @DisplayName("the refusal names what to set and offers no default to fall back on")
         void theRefusalNamesWhatToSet() {
             Assertions.assertThatIllegalStateException().isThrownBy(() ->
-                            SignOnController.requireRegionIdentity("", SignOnController.APPLID_PROPERTY,
+                            SignOnController.requireRegionIdentity("",
+                                    SignOnController.APPLID_SOURCE_LENGTH, CODE_PAGE,
+                                    SignOnController.APPLID_PROPERTY,
                                     SignOnController.APPLID_ENVIRONMENT_VARIABLE))
                     .withMessageContaining("holds no text")
                     .withMessageContaining("no default");
             Assertions.assertThatNullPointerException().isThrownBy(() ->
                             SignOnController.requireRegionIdentity(null,
+                                    SignOnController.SYSID_SOURCE_LENGTH, CODE_PAGE,
                                     SignOnController.SYSID_PROPERTY,
                                     SignOnController.SYSID_ENVIRONMENT_VARIABLE))
                     .withMessageContaining(SignOnController.SYSID_ENVIRONMENT_VARIABLE);
+            Assertions.assertThatNullPointerException()
+                    .as("the code page is the authority for the representability arm, so it is required "
+                            + "here too and never defaulted from the platform")
+                    .isThrownBy(() -> SignOnController.requireRegionIdentity(APPLID,
+                            SignOnController.APPLID_SOURCE_LENGTH, null,
+                            SignOnController.APPLID_PROPERTY,
+                            SignOnController.APPLID_ENVIRONMENT_VARIABLE))
+                    .withMessageContaining(SignOnController.APPLID_PROPERTY);
         }
 
         @Test
@@ -750,20 +662,14 @@ class SignOnControllerTest {
 
             SignOnResponse painted = configured.signOn(null, null, null).screen();
 
-            // The exact pair application-test.yml pins and all twenty COSGN00C parity cases expect.
             Assertions.assertThat(painted.applId()).isEqualTo("CICSAWS1");
             Assertions.assertThat(painted.sysId()).isEqualTo("AWS1    ");
         }
     }
 
-    // =================================================================================================
-    // The attention-identifier read, COSGN00C:85.
-    // =================================================================================================
-
     @Nested
     @DisplayName("The AID read - the payload's one character IS the EIBAID byte COSGN00C:85 compares")
     class TheAidDecode {
-
         @ParameterizedTest
         @MethodSource("com.vsergeychik.carddemo.user.SignOnControllerTest#everyAidByte")
         @DisplayName("every one of the 256 AID bytes round-trips through the payload's image")
@@ -810,8 +716,6 @@ class SignOnControllerTest {
         @Test
         @DisplayName("a CCARD-AID token is not a byte: PF3's own token reaches WHEN OTHER, not :88")
         void aFoldedTokenIsNoLongerDecoded() {
-            // CSSTRPFY folds PF3 and PF15 both onto 'PFK03'. COSGN00C does not copy CSSTRPFY, so a
-            // token cannot state which was pressed and is not the input carrier at all.
             Assertions.assertThat(PfKeyResolver.AidKey.PFK03.token()).isEqualTo("PFK03");
             Assertions.assertThat(controller.toEibAid("PFK03")).isEqualTo(CicsAid.DFHNULL);
             Assertions.assertThat(controller.toEibAid("PA1  ")).isEqualTo(CicsAid.DFHNULL);
@@ -881,14 +785,9 @@ class SignOnControllerTest {
         }
     }
 
-    // =================================================================================================
-    // The controller/service seam.
-    // =================================================================================================
-
     @Nested
     @DisplayName("The service contract - translate, invoke once, and project without deciding")
     class TheServiceContract {
-
         private SignOnService decisionCore;
 
         private SignOnController adapter;
@@ -991,14 +890,9 @@ class SignOnControllerTest {
         }
     }
 
-    // =================================================================================================
-    // The cold start, COSGN00C:80-83.
-    // =================================================================================================
-
     @Nested
     @DisplayName("The cold start - IF EIBCALEN = 0 at COSGN00C:80, not the re-enter flag")
     class ColdStart {
-
         @Test
         @DisplayName("an absent body is delegated as EIBCALEN zero and projects the initial paint")
         void anAbsentBodyPaintsAndReadsNothing() {
@@ -1080,14 +974,9 @@ class SignOnControllerTest {
         }
     }
 
-    // =================================================================================================
-    // The communication-area program-context byte.
-    // =================================================================================================
-
     @Nested
     @DisplayName("CDEMO-PGM-CONTEXT - both 88 states and the shared highlight gate")
     class TheProgramContextByte {
-
         private SignOnRequest requestWith(NavigationContext context) {
             return new SignOnRequest(spaces(SignOnRequest.TRNNAME_LENGTH),
                     spaces(SignOnRequest.TITLE01_LENGTH),
@@ -1157,15 +1046,9 @@ class SignOnControllerTest {
         }
     }
 
-    // =================================================================================================
-    // The three EIBAID exits as controller projections. The service outcome is always stubbed.
-    // =================================================================================================
-
     @Nested
     @DisplayName("The raw EIBAID byte - lossless transport for a program that never copied CSSTRPFY")
     class TheRawAidByte {
-
-        /** The byte the service was actually given, which is what {@code :85} evaluates. */
         private byte eibAidHandedToTheService() {
             ArgumentCaptor<SignOnInput> input = ArgumentCaptor.forClass(SignOnInput.class);
             verify(decisionCore).handle(input.capture());
@@ -1181,10 +1064,6 @@ class SignOnControllerTest {
         @Test
         @DisplayName("a raw PF3 byte reaches :88, and a raw PF15 byte reaches WHEN OTHER instead")
         void pf15IsNotPf3() {
-            // The whole point. COSGN00C tests EIBAID inline at :85-95 and has no DFHPF15 clause, so on
-            // the terminal PF15 falls to WHEN OTHER at :91. A five-character token cannot say PF15 -
-            // CSSTRPFY folds it onto 'PFK03' - so before the byte existed this distinction was lost and
-            // PF15 took the thank-you exit.
             controller.performSignOn(submitted("ADMIN001", STORED_PASSWORD, null),
                     Byte.toUnsignedInt(CicsAid.DFHPF3));
             Assertions.assertThat(eibAidHandedToTheService()).isEqualTo(CicsAid.DFHPF3);
@@ -1259,12 +1138,6 @@ class SignOnControllerTest {
         @Test
         @DisplayName("no stated byte leaves the payload's own statement standing, unnarrowed")
         void aTokenOnlyRequestIsUnchanged() {
-            // With no byte on the parameter the payload's aid member is the only statement, and that
-            // member is the one-character image of EIBAID - not a CCARD-AID token. 'PFK03' is five
-            // characters, so it states no byte, and COSGN00C - which does not copy CSSTRPFY - is handed
-            // DFHNULL and takes WHEN OTHER at :91-94. Decoding the token would have to choose between
-            // the DFHPF3 and DFHPF15 it folds together, and choosing DFHPF3 would send a PF15 press
-            // down :88's thank-you exit.
             controller.performSignOn(
                     submitted("ADMIN001", STORED_PASSWORD, PfKeyResolver.AidKey.PFK03.token()));
 
@@ -1308,7 +1181,6 @@ class SignOnControllerTest {
             verify(decisionCore, never()).handle(any(SignOnInput.class));
         }
 
-        /** A {@link CicsAid} constant by name, so the copybook name is what the test states. */
         private static byte aidByteNamed(String constantName) {
             try {
                 return CicsAid.class.getDeclaredField(constantName).getByte(null);
@@ -1321,7 +1193,6 @@ class SignOnControllerTest {
     @Nested
     @DisplayName("The AID projections - decode, delegate once, and project the supplied exit")
     class TheAidProjections {
-
         @Test
         @DisplayName("PF3 projects the eighty-byte SEND TEXT with no map and no next program")
         void pf3ProjectsTheTerminalOutcome() {
@@ -1422,14 +1293,9 @@ class SignOnControllerTest {
         }
     }
 
-    // =================================================================================================
-    // The screen contract - eleven named DFHMDF fields at their exact declared widths.
-    // =================================================================================================
-
     @Nested
     @DisplayName("The screen contract - COSGN00.CPY widths, POPULATE-HEADER-INFO at :177-204")
     class TheScreenContract {
-
         @Test
         @DisplayName("37 DFHMDF fields become 11 named items and all 11 are response map members")
         void thePublishedFieldCensusCoversTheWholeScreen() {
@@ -1449,6 +1315,20 @@ class SignOnControllerTest {
                             "CURTIMEO", "APPLIDO", "SYSIDO", "USERIDO", "PASSWDO", "ERRMSGO");
             Assertions.assertThat(SignOnResponse.PASSWD_FIELD).isEqualTo("PASSWDO");
             Assertions.assertThat(SignOnResponse.PASSWD_LENGTH).isEqualTo(8);
+
+            // The screen census and the wire census differ by exactly one, and that one is the
+            // credential span. The screen keeps it because the datastream carries it; the payload does
+            // not, because an HTTP body has no DRK attribute to withhold it with.
+            Assertions.assertThat(SignOnResponse.WIRE_WITHHELD_FIELD)
+                    .isEqualTo(SignOnResponse.PASSWD_FIELD);
+            Assertions.assertThat(SignOnResponse.WIRE_FIELD_COUNT)
+                    .isEqualTo(SignOnResponse.MAP_FIELD_COUNT - 1)
+                    .isEqualTo(10);
+            Assertions.assertThat(SignOnResponse.WIRE_FIELDS)
+                    .hasSize(SignOnResponse.WIRE_FIELD_COUNT)
+                    .doesNotContain(SignOnResponse.PASSWD_FIELD)
+                    .containsExactly("TRNNAMEO", "TITLE01O", "CURDATEO", "PGMNAMEO", "TITLE02O",
+                            "CURTIMEO", "APPLIDO", "SYSIDO", "USERIDO", "ERRMSGO");
         }
 
         @Test
@@ -1579,14 +1459,9 @@ class SignOnControllerTest {
         }
     }
 
-    // =================================================================================================
-    // The cursor request - MOVE -1 TO xxxL, carried as metadata and never as a payload field.
-    // =================================================================================================
-
     @Nested
     @DisplayName("The cursor request - MOVE -1 TO USERIDL / PASSWDL")
     class TheCursorRequest {
-
         @ParameterizedTest
         @EnumSource(CursorField.class)
         @DisplayName("every cursor target projects to a DFHMDF label, or to null for NONE")
@@ -1639,19 +1514,52 @@ class SignOnControllerTest {
         }
     }
 
-    // =================================================================================================
-    // The credential - transmitted where the map transmits it, and logged nowhere.
-    //
-    // COSGN0AO REDEFINES COSGN0AI (app/cpy-bms/COSGN00.CPY:85) makes PASSWDI and PASSWDO one eight-byte
-    // span, so EXEC CICS RECEIVE MAP at :110-115 fills the span that EXEC CICS SEND MAP ... FROM(COSGN0AO)
-    // at :151-157 transmits. The password therefore DOES travel back on an error repaint - dark, because
-    // bms L175 declares ATTRB=(DRK,FSET,UNPROT), but transmitted. These tests hold that apart from
-    // disclosure: the value is on the wire because the program puts it there, and in no rendering.
-    // =================================================================================================
-
     @Nested
-    @DisplayName("The credential - carried where the map carries it, never in a rendering")
+    @DisplayName("The credential - carried where the map carries it, never on a wire or in a rendering")
     class TheCredential {
+        @Test
+        @DisplayName("no response path publishes the typed credential, and the DRK fact is published "
+                + "in its place")
+        void noResponsePathPublishesTheCredential() throws Exception {
+            // Three shapes of ending, and the credential must be absent from all three payloads: the
+            // cold start (nothing typed), the error repaint (the overlay holds what was typed and the
+            // SEND really does re-transmit it), and the successful transfer (no SEND at all).
+            when(decisionCore.handle(any(SignOnInput.class))).thenReturn(coldStartOutcome());
+            String coldStart = new ObjectMapper()
+                    .writeValueAsString(controller.signOn(null, null, null));
+
+            when(decisionCore.handle(any(SignOnInput.class))).thenReturn(repaintOutcome(
+                    SignOnService.MSG_WRONG_PASSWORD,
+                    CursorField.PASSWORD,
+                    NavigationContext.empty()));
+            var repaintEnvelope = controller.performSignOn(enterKey("ADMIN001", STORED_PASSWORD));
+            String repaint = new ObjectMapper().writeValueAsString(repaintEnvelope);
+
+            when(decisionCore.handle(any(SignOnInput.class))).thenReturn(signedOnOutcome(
+                    NavigationContext.USER_TYPE_ADMIN,
+                    SignOnResponse.NEXT_PROGRAM_ADMIN,
+                    NavigationContext.empty()));
+            String signedOn = new ObjectMapper()
+                    .writeValueAsString(controller.performSignOn(enterKey("ADMIN001",
+                            STORED_PASSWORD)));
+
+            Assertions.assertThat(List.of(coldStart, repaint, signedOn))
+                    .as("the value appears in no payload, and no payload has a member for it")
+                    .allSatisfy(body -> Assertions.assertThat(body)
+                            .doesNotContain(STORED_PASSWORD)
+                            .doesNotContain("\"passwd\""));
+            Assertions.assertThat(repaintEnvelope.screen().passwd())
+                    .as("while in-process the overlay still holds it, because the SEND transmits it "
+                            + "and the parity corpus pins it")
+                    .isEqualTo(STORED_PASSWORD);
+            Assertions.assertThat(repaintEnvelope.screenMetadata().nonDisplayFields())
+                    .as("app/bms/COSGN00.bms:175 declares ATTRB=(DRK,...); a 3270 reads that off the "
+                            + "mapset and a REST client cannot, so the fact is published here")
+                    .containsExactly(ScreenMetadata.PASSWORD_FIELD_LABEL);
+            Assertions.assertThat(repaint)
+                    .as("and the declaration itself does reach the client")
+                    .contains("nonDisplayFields");
+        }
 
         @Test
         @DisplayName("the response record projects PASSWDO, so all 11 named fields are present")
@@ -1668,26 +1576,44 @@ class SignOnControllerTest {
         }
 
         @Test
-        @DisplayName("JSON carries all eleven map-derived properties, PASSWD among them")
+        @DisplayName("JSON carries ten of the eleven map-derived properties, and PASSWDO is the one "
+                + "it withholds")
         void everySerialisedMapPropertyIsPresent() {
             var json = new ObjectMapper().valueToTree(SignOnResponse.empty());
-            // The wire names: each screen field's xxxI item in lower case, which @JsonProperty pins
-            // per AAP 0.6.3. The Java components keep camel case, and that is not what a caller sees.
             List<String> mapProperties = List.of("trnname", "title01", "curdate", "pgmname",
-                    "title02", "curtime", "applid", "sysid", "userid", "passwd", "errmsg");
+                    "title02", "curtime", "applid", "sysid", "userid", "errmsg");
 
-            Assertions.assertThat(mapProperties).hasSize(SignOnResponse.MAP_FIELD_COUNT);
+            Assertions.assertThat(mapProperties).hasSize(SignOnResponse.WIRE_FIELD_COUNT);
             for (String property : mapProperties) {
+                if (property.equals("passwd")) {
+                    // app/bms/COSGN00.bms:174-180 declares PASSWD ATTRB=(DRK,..). The span is on the
+                    // model - the record component and the field census both keep it, which
+                    // theResponseProjectsThePasswordSpan above asserts - but JSON has no DRK, so the
+                    // member is declared WRITE_ONLY and is absent from the serialized response.
+                    Assertions.assertThat(json.has(property))
+                            .as("the DRK credential is not emitted")
+                            .isFalse();
+                    continue;
+                }
                 Assertions.assertThat(json.has(property))
-                        .as("%s is one of the eleven projected xxxO items", property)
+                        .as("%s is one of the ten projected xxxO items a caller receives", property)
                         .isTrue();
             }
-            Assertions.assertThat(json.has("password"))
-                    .as("the item is PASSWDO, so the wire name is passwd and nothing else")
-                    .isFalse();
+            // CWE-200/CWE-522. The screen image keeps PASSWDO, because COSGN0AO REDEFINES COSGN0AI puts
+            // the received span inside the area the SEND transmits and a field-for-field diff has to
+            // report it. The response body does not: the component is bound WRITE_ONLY, so no spelling
+            // of the credential reaches a caller, and the non-display fact is published as metadata
+            // instead.
+            for (String withheld : List.of("passwd", "password", "pwd", "secusrpwd")) {
+                Assertions.assertThat(json.has(withheld))
+                        .as("%s must not be a property of the serialised response", withheld)
+                        .isFalse();
+            }
+            Assertions.assertThat(SignOnResponse.WIRE_WITHHELD_FIELD)
+                    .isEqualTo(SignOnResponse.PASSWD_FIELD);
             Assertions.assertThat(json.size())
-                    .as("eleven map fields, role, program, mapset, map, plainText and the commarea")
-                    .isEqualTo(17);
+                    .as("ten map fields, role, program, mapset, map, plainText and the commarea")
+                    .isEqualTo(16);
         }
 
         @Test
@@ -1761,8 +1687,6 @@ class SignOnControllerTest {
         @Test
         @DisplayName("the service outcome withholds the span from its rendering too")
         void theOutcomeRenderingWithholdsTheSpan() {
-            // A distinctive image rather than STORED_PASSWORD, because the outcome's rendering names
-            // CursorField.PASSWORD and the assertion would then pass or fail on an enum constant.
             String typed = "ZQX7PW  ";
             SignOnOutcome repaint = new SignOnOutcome(false,
                     " ",
@@ -1801,14 +1725,9 @@ class SignOnControllerTest {
         }
     }
 
-    // =================================================================================================
-    // Statelessness - practice B9 and rule R6.
-    // =================================================================================================
-
     @Nested
     @DisplayName("Statelessness - no session, no mutable state, nothing survives a call")
     class Statelessness {
-
         @Test
         @DisplayName("every field is final, and every static field is final")
         void everyFieldIsFinal() {
@@ -1871,14 +1790,9 @@ class SignOnControllerTest {
         }
     }
 
-    // =================================================================================================
-    // The wire.
-    // =================================================================================================
-
     @Nested
     @DisplayName("The wire - POST /api/signon over HTTP")
     class TheWire {
-
         private MockMvc mockMvc() {
             return MockMvcBuilders.standaloneSetup(controller).build();
         }
@@ -1944,11 +1858,15 @@ class SignOnControllerTest {
             keys.forEachRemaining(seen::add);
 
             Assertions.assertThat(seen)
-                    .as("the seventeen screen members stay at the top level, plus the metadata envelope")
+                    .as("sixteen of the seventeen screen members stay at the top level, plus the "
+                            + "metadata envelope; PASSWDO is the one the wire withholds")
                     .containsExactlyInAnyOrder("trnname", "title01", "curdate", "pgmname", "title02",
-                            "curtime", "applid", "sysid", "userid", "passwd", "errmsg", "role",
+                            "curtime", "applid", "sysid", "userid", "errmsg", "role",
                             "nextProgram", "nextMapset", "nextMap", "plainText", "navigationContext",
                             "screenMetadata");
+            Assertions.assertThat(seen)
+                    .as("the credential span is in the screen image and on no wire - CWE-200, CWE-522")
+                    .doesNotContain("passwd");
             Assertions.assertThat(seen)
                     .as("no xxxL length item, xxxF/xxxA attribute item or xxxC/xxxP/xxxH/xxxV output "
                             + "attribute item may become a payload member (gate G9)")
@@ -1964,27 +1882,12 @@ class SignOnControllerTest {
         }
     }
 
-    // =================================================================================================
-    // The production-equivalent Spring MVC slice.
-    // =================================================================================================
-
     @Nested
-    // CobolCharsetConfig joins the slice because the web layer now depends on it: WebConfig's Jackson
-    // customizer takes the screen code page by bean name, so that an inbound screen value is judged
-    // against the code page this deployment states rather than against the platform default.
-    // @WebMvcTest loads web configuration only, so without this import the slice has no such bean - and
-    // the dependency is deliberately mandatory: a missing code page must fail the context, never quietly
-    // become a default. The profile's carddemo.charset.* properties are what it resolves.
     @WebMvcTest(SignOnController.class)
     @ActiveProfiles("test")
-    // CobolCharsetConfig comes with the slice because WebConfig now depends on it: the inbound
-    // screen-text boundary judges every value against the ACTIVE code page, so the page has to be
-    // in the context. Importing the real configuration rather than stubbing a Charset bean means
-    // the slice judges against the page application-test.yml names, exactly as the deployment does.
     @Import({SliceCollaborators.class, CobolCharsetConfig.class})
     @DisplayName("The Spring MVC slice - dispatcher, WebConfig, validation and a mocked service")
     class TheSpringSlice {
-
         @MockitoBean
         private SignOnService decisionCore;
 
@@ -2030,10 +1933,6 @@ class SignOnControllerTest {
                     .andExpect(jsonPath("$.title02").value(ScreenTitles.CCDA_TITLE02))
                     .andExpect(jsonPath("$.curdate").value(EXPECTED_CURDATE))
                     .andExpect(jsonPath("$.curtime").value(EXPECTED_CURTIME))
-                    // The region identity the 'test' profile pins, which is the pair every COSGN00C
-                    // parity case expects. Before application-test.yml declared carddemo.cics.*, this
-                    // slice painted eight spaces into both fields while the harness compared against a
-                    // region name - the same screen answered two different ways.
                     .andExpect(jsonPath("$.applid").value(PROFILE_APPLID))
                     .andExpect(jsonPath("$.sysid").value(PROFILE_SYSID))
                     .andExpect(jsonPath("$.errmsg").value(spaces(SignOnResponse.ERRMSG_LENGTH)));
@@ -2157,21 +2056,9 @@ class SignOnControllerTest {
         }
     }
 
-    // =================================================================================================
-    // Bean wiring.
-    //
-    // The module does not use @SpringBootTest - CardDemoApplicationTest records why: the DataSource is
-    // configuration-bound to a site-specific mainframe driver, so a full refresh cannot succeed here.
-    // That leaves the one runtime risk this controller actually carries untested by everything above:
-    // the @Autowired constructor resolves two @Value placeholders, and a placeholder that cannot be
-    // resolved fails the context at startup rather than at compile time. So a real Spring container is
-    // refreshed here with just this bean and its two collaborators.
-    // =================================================================================================
-
     @Nested
     @DisplayName("Bean wiring - the @Autowired constructor and its two @Value placeholders")
     class Wiring {
-
         private AnnotationConfigApplicationContext contextWith(Map<String, Object> properties) {
             AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext();
             context.getEnvironment().getPropertySources()
@@ -2187,11 +2074,6 @@ class SignOnControllerTest {
         @Test
         @DisplayName("with no CICS properties configured the refresh FAILS, naming the unresolved key")
         void theRefreshFailsWhenTheRegionIsNotConfigured() {
-            // The placeholders are bare - ${carddemo.cics.applid}, no default - exactly as
-            // CobolCharsetConfig binds the three code pages, and for the same reason: a value that
-            // decides what a compared field contains must not be defaultable. So a deployment that
-            // declares neither the property nor CARDDEMO_CICS_APPLID does not start, and the failure
-            // names the key rather than surfacing later as eight spaces on the sign-on screen.
             Assertions.assertThatExceptionOfType(BeanCreationException.class)
                     .isThrownBy(() -> contextWith(Map.of()).close())
                     .havingRootCause()
@@ -2245,8 +2127,6 @@ class SignOnControllerTest {
                     .isEqualTo("carddemo.cics.applid");
             Assertions.assertThat(SignOnController.SYSID_PROPERTY)
                     .isEqualTo("carddemo.cics.sysid");
-            // The relaxed spellings application.yml binds each key to, so the diagnostic a deployment
-            // reads names the variable it actually has to export.
             Assertions.assertThat(SignOnController.APPLID_ENVIRONMENT_VARIABLE)
                     .isEqualTo("CARDDEMO_CICS_APPLID");
             Assertions.assertThat(SignOnController.SYSID_ENVIRONMENT_VARIABLE)

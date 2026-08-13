@@ -13,26 +13,16 @@ import org.springframework.boot.autoconfigure.jdbc.DataSourceProperties;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 /**
- * Tests for {@link DataSourceConfig}: the pooled {@link DataSource}, the module-wide
- * {@link JdbcTemplate} and the DD-name-keyed dataset catalogue.
- *
- * <p>No application context is started. Every method on the class is reachable with plain arguments,
- * which is what lets the fail-fast on an unconfigured JDBC URL - the behaviour that protects a
- * deployment from silently coming up against the wrong backend - be asserted directly.
- *
- * <p>{@code review_rules} returns exactly one line - "No user rules provided." - so no user rule
- * governs this file.
+ * Tests for {@link DataSourceConfig}: the pooled {@link DataSource}, the module-wide {@link JdbcTemplate}
+ * and the DD-name-keyed dataset catalogue.
  */
 @DisplayName("DataSourceConfig - one DataSource, one JdbcTemplate, one dataset catalogue")
 class DataSourceConfigWiringTest {
-
-    /** An in-memory URL, sufficient for the builder to derive a driver from the test classpath. */
     private static final String H2_URL = "jdbc:h2:mem:datasourceconfigtest";
 
     @Nested
     @DisplayName("The DataSource is configuration-bound and refuses to guess")
     class DataSourceBinding {
-
         @Test
         @DisplayName("A configured URL yields a pooled DataSource")
         void aConfiguredUrlYieldsAPooledDataSource() {
@@ -89,12 +79,6 @@ class DataSourceConfigWiringTest {
 
             JdbcTemplate template = config.jdbcTemplate(dataSource);
 
-            // Nothing is configured on it, deliberately: AAP 0.8.6 introduces no connection tuning and
-            // AAP 0.4.2 specifies a plain JdbcTemplate. A template that capped rows or cancelled
-            // statements would change what a program observes - a truncated browse is a short file, and
-            // a cancelled statement is a failure the COBOL has no arm for. Compared against a bare
-            // instance rather than against literals, so each assertion states "untouched" rather than
-            // restating whatever Spring's own defaults happen to be.
             JdbcTemplate untouched = new JdbcTemplate();
             assertThat(template.getDataSource()).isSameAs(dataSource);
             assertThat(template.getFetchSize()).isEqualTo(untouched.getFetchSize());
@@ -106,12 +90,6 @@ class DataSourceConfigWiringTest {
     @Nested
     @DisplayName("The dataset catalogue resolves by exact DD name and never defaults")
     class Catalogue {
-
-        /**
-         * A binding shaped like a real one.
-         *
-         * @return the account-master-shaped binding
-         */
         private static DatasetBinding accountShapedBinding() {
             return new DatasetBinding("TEST.M2.ACCTDATA.VSAM.KSDS", "ksds", false, "F", 0, 300,
                     "CVACT01Y", 11, null, null, null);

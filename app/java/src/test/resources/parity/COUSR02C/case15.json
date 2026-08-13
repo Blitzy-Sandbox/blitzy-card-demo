@@ -1,7 +1,7 @@
 {
   "program": "COUSR02C",
   "caseId": "case15",
-  "description": "PF5 with a LOWER-CASE user id, which drives the folder's most consequential inherited defect. Three things happen in one invocation and all three must be preserved.\n\nFirst, 'user0001' does not match the stored 'USER0001': the key comparison is byte-exact and COUSR02C folds no case, so READ-USER-SEC-FILE takes its DFHRESP(NOTFND) arm at :340-345, issues 'User ID NOT found...' and sets the error flag.\n\nSecond - and this is the defect - UPDATE-USER-INFO does NOT re-test the error flag after the read. The IF NOT ERR-FLG-ON at :215 was evaluated BEFORE the read, and the four change tests at :219-234 and the USR-MODIFIED gate at :236 all sit inside that same block, so they run regardless of the read having failed. The comparisons are made against a SEC-USER-DATA area the failed read did not populate, they differ from the screen, USR-MODIFIED-YES is set, and UPDATE-USER-SEC-FILE is performed.\n\nThird, that REWRITE has no record held for update, so it fails: the outcome is forced as OTHER with RESP 16, DFHRESP(INVREQ), and the WHEN OTHER arm at :383-389 DISPLAYs the RESP and REAS pair and issues 'Unable to Update User...'. Two sends, two screen messages, one DISPLAY line, and USRSEC unchanged - the empty expectedWrites list records that the rewrite was attempted and rejected rather than performed.",
+  "description": "PF5 with a LOWER-CASE user id, which drives the folder's most consequential inherited defect. Three things happen in one invocation and all three must be preserved.\n\nFirst, 'user0001' does not match the stored 'USER0001': the key comparison is byte-exact and COUSR02C folds no case, so READ-USER-SEC-FILE takes its DFHRESP(NOTFND) arm at :340-345, issues 'User ID NOT found...' and sets the error flag.\n\nSecond - and this is the defect - UPDATE-USER-INFO does NOT re-test the error flag after the read. The IF NOT ERR-FLG-ON at :215 was evaluated BEFORE the read, and the four change tests at :219-234 and the USR-MODIFIED gate at :236 all sit inside that same block, so they run regardless of the read having failed. The comparisons are made against a SEC-USER-DATA area the failed read did not populate, they differ from the screen, USR-MODIFIED-YES is set, and UPDATE-USER-SEC-FILE is performed.\n\nThird, that REWRITE has no record held for update, so it fails - and NOTHING FORCES IT. EXEC CICS REWRITE at :360-366 carries no RIDFLD, which in CICS is not an omission but the definition of the command: it replaces the record the READ ... UPDATE at :322-331 is holding. The read took its NOTFND arm, so this task holds nothing, and a rewrite with nothing held is an invalid request - DFHRESP(INVREQ) = 16 with RESP2 zero, and the file is never touched. The forcedOutcomes map therefore declares only the read: the refusal on the rewrite ARISES from the absent hold rather than being injected, which is what makes this case an assertion about the translation instead of an assertion about the fixture. The WHEN OTHER arm at :383-389 then DISPLAYs the RESP and REAS pair and issues 'Unable to Update User...'. Note what a keyed rewrite would have done here instead: 'user0001' names no row, so it would have answered NOTFND and painted 'User ID NOT found...' a SECOND time - and had another task added that key in the interval, it would have replaced a record this task never read. Two sends, two screen messages, one DISPLAY line, and USRSEC unchanged - the empty expectedWrites list records that the rewrite was attempted and rejected rather than performed, and expectedFinalState pins all ten rows byte for byte so 'untouched' is asserted rather than assumed.",
   "unitKind": "CONTROLLER_POJO",
   "inputs": {
     "USRSEC": {
@@ -59,11 +59,6 @@
       "readForUpdate": {
         "outcome": "NOT_FOUND",
         "resp": 13,
-        "resp2": 0
-      },
-      "rewrite": {
-        "outcome": "OTHER",
-        "resp": 16,
         "resp2": 0
       }
     }

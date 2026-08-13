@@ -15,32 +15,12 @@ import org.junit.jupiter.params.provider.ValueSource;
 
 /**
  * Unit tests for {@link CicsResponse}, the {@code RESP}/{@code RESP2} pair a dataset outcome carries.
- *
- * <h2>What is being pinned</h2>
- *
- * <p>{@code app/cbl/COACTUPC.cbl:L3703-L3710} issues its read with
- * {@code RESP(WS-RESP-CD) RESP2(WS-REAS-CD)} and captures <em>both</em> values, and
- * {@code L3722-L3729} renders both into the message the operator reads. The pair therefore has to be a
- * value the repositories carry, not a number one of them recomputes and another guesses at. These tests
- * pin three properties of that value:
- *
- * <ul>
- *   <li>the reason code is {@link FileStatus#NO_REASON_CODE} wherever the condition genuinely carries no
- *       further reason, rather than being left to a caller's assumption;</li>
- *   <li>a value that is not a reason code - a vendor error number, a row count, a record width - cannot
- *       be put where the reason code belongs, because those are exactly the quantities that were being
- *       reported as reason codes and are not one;</li>
- *   <li>the rendering carries two numbers and nothing else, so no record content can reach a log line
- *       through it.</li>
- * </ul>
  */
 @DisplayName("CicsResponse - the RESP and RESP2 pair, carried rather than derived")
 class CicsResponseTest {
-
     @Nested
     @DisplayName("The pair for a batch FILE STATUS")
     class FromBatchStatus {
-
         @ParameterizedTest(name = "status ''{0}'' translates to RESP {1}")
         @CsvSource({
             "00, 0",
@@ -60,8 +40,6 @@ class CicsResponseTest {
         @Test
         @DisplayName("a status with no single CICS counterpart reports no response, not a wrong one")
         void anAmbiguousStatusReportsNoResponse() {
-            // FileStatus.cicsRespOfBatchStatus reports the ambiguity rather than resolving it, and this
-            // type carries that emptiness through instead of substituting a plausible number.
             CicsResponse response = CicsResponse.ofBatchStatus(FileStatus.DUPLICATE);
 
             assertThat(response.resp()).isEmpty();
@@ -82,7 +60,6 @@ class CicsResponseTest {
     @Nested
     @DisplayName("The pair a deployment's adapter reported")
     class Reported {
-
         @Test
         @DisplayName("both values are carried verbatim, and neither is derived from the other")
         void bothValuesAreCarriedVerbatim() {
@@ -135,7 +112,6 @@ class CicsResponseTest {
     @Nested
     @DisplayName("The pair for an outcome CICS has no name for")
     class None {
-
         @Test
         @DisplayName("neither a response nor a reason, and the same instance every time")
         void neitherAResponseNorAReason() {
@@ -152,11 +128,9 @@ class CicsResponseTest {
     @Nested
     @DisplayName("The rendering the COBOL message uses")
     class Rendering {
-
         @Test
         @DisplayName("two numbers, spelled as COACTUPC spells them")
         void twoNumbers() {
-            // ' Resp:' ERROR-RESP ' Reas:' ERROR-RESP2 - app/cbl/COACTUPC.cbl:L3722-L3729.
             assertThat(CicsResponse.reported(FileStatus.NOTFND, 0).describe()).isEqualTo("Resp:13 Reas:0");
             assertThat(CicsResponse.reported(FileStatus.LENGERR, 150).describe())
                     .isEqualTo("Resp:22 Reas:150");

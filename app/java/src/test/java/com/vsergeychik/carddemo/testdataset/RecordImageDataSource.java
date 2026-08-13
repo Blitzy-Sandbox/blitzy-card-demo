@@ -28,125 +28,36 @@ import javax.sql.DataSource;
 /**
  * A {@link DataSource} over a {@link RecordImageStore}: the DDL-free stand-in for the record-image
  * relations a site's gateway presents.
- *
- * <h2>What it replaces, and what it deliberately does not</h2>
- * <p>It replaces the storage engine and <strong>nothing above it</strong>. A test that uses this still
- * runs the real {@code JdbcTemplate}, the real repository, {@code DatasetRelation}'s real composed
- * statements, {@code RecordImageForm}'s real {@code getString}/{@code getBytes} choice, the real
- * {@code DatasetUnitOfWork} and a real {@code JdbcTransactionManager}. Only {@code CREATE TABLE}
- * disappears, which is the point: gate <strong>G44</strong> forbids DDL anywhere in this module, and a
- * relation here is <em>declared in a map</em> rather than created in a database.
- *
- * <p>It is not a SQL engine. {@link RecordImageStatement} recognises the closed set of statement shapes
- * this module composes and refuses everything else with a loud failure, so a change to a composed
- * statement cannot silently return a different answer to a parity case.
- *
- * <h2>Transactions</h2>
- * <p>{@code auto-commit} is on by default, as the shipped pool leaves it off and Spring turns it off per
- * transaction. A connection that has {@code auto-commit} turned off keeps a private copy of <em>only the
- * relations it has modified</em>; {@code commit} publishes those over whatever the store holds at that
- * moment, and {@code rollback} discards them. Because {@code DataSourceTransactionManager} obtains a
- * <strong>second</strong> connection for a {@code REQUIRES_NEW} boundary, that boundary keeps its own
- * copies and publishes independently of the enclosing one - which is exactly the durability the
- * {@code RECOVERY(NONE)} datasets require, and exactly what the {@code persistVerb} and
- * {@code persistDisposition} suites assert.
- *
- * <p><strong>Reads are READ_COMMITTED, which is what {@code getTransactionIsolation} reports and what the
- * shipped pool over a real engine gives.</strong> A relation this unit of work has not modified is read
- * from the store as it stands, so a {@code REQUIRES_NEW} boundary that has already committed is
- * <em>visible</em> to the enclosing transaction that suspended for it. That visibility is load-bearing:
- * {@code CBTRN02C} posts two daily records against one category balance, and the second record's
- * {@code 2700-UPDATE-TCATBAL} reads the balance the first record's own boundary already committed
- * ({@code app/cbl/CBTRN02C.cbl:440-442}). A frozen whole-store snapshot would hand the second read the
- * pre-run balance and lose one increment, which is not what the mainframe does and not what the durability
- * suites assert. A relation this unit of work <em>has</em> modified is read from its own private copy, so
- * uncommitted work is visible to its own author and to nobody else.
- *
- * <p>Declaring and withdrawing a relation act on the shared store immediately and are not part of any
- * overlay, which matches the implicit commit a real engine performs around a schema change.
- *
- * <h2>Threading</h2>
- * <p>The store synchronizes its own state and each connection owns its private copies, so two suites
- * sharing one store see a consistent view. A connection is not itself thread-safe, which is the JDBC contract.
  */
 public final class RecordImageDataSource implements DataSource {
-
-    /**
-     * The record-image column's name, as a gateway presenting a fixed-width dataset is expected to offer
-     * it and as the shipped dataset bindings expect to discover it.
-     */
     public static final String RECORD_IMAGE_COLUMN = "RECORD_IMAGE";
 
-    /**
-     * The product name this store reports.
-     *
-     * <p>Deliberately not the name of any real engine. Spring builds its exception translator from the
-     * product name, and naming a real one would have it apply that engine's vendor error codes to codes
-     * this store invents. An unrecognised name makes Spring fall back to translating by {@code SQLSTATE}
-     * class, which is the same classification {@code BackendDiagnostic} performs, so a failure raised here
-     * is sorted the way a driver's would be.
-     */
     public static final String PRODUCT_NAME = "CardDemo record-image store";
 
     private final RecordImageStore store;
 
-    /**
-     * Wires a data source over a new, empty store.
-     */
     public RecordImageDataSource() {
         this(new RecordImageStore());
     }
 
-    /**
-     * Wires a data source over an existing store, so two data sources can share one set of relations.
-     *
-     * @param store the store to serve; must not be {@code null}
-     * @throws NullPointerException if {@code store} is {@code null}
-     */
     public RecordImageDataSource(RecordImageStore store) {
         this.store = Objects.requireNonNull(store, "A record-image data source serves a store of rows");
     }
 
-    /**
-     * The relations this data source serves, for declaring, seeding and reading back.
-     *
-     * @return the store; never {@code null}
-     */
     public RecordImageStore store() {
         return store;
     }
 
-
-
-    /**
-     * Declares a relation whose record-image column carries the given name, and returns this data source.
-     *
-     * @param dsname     the dataset name
-     * @param columnName the record-image column's name, as metadata will report it
-     * @param form       how the record image is presented
-     * @param width      the record width
-     * @return this data source
-     */
     public RecordImageDataSource define(String dsname, String columnName, ColumnForm form, int width) {
         store.define(dsname, columnName, form, width);
         return this;
     }
 
-    /**
-     * Declares a relation that refuses a duplicate record image, standing in for a unique key.
-     *
-     * @param dsname     the dataset name
-     * @param columnName the record-image column's name
-     * @param form       how the record image is presented
-     * @param width      the record width
-     * @return this data source
-     */
     public RecordImageDataSource defineUnique(String dsname, String columnName, ColumnForm form,
             int width) {
         store.defineUnique(dsname, columnName, form, width);
         return this;
     }
-
 
     @Override
     public Connection getConnection() {
@@ -166,13 +77,10 @@ public final class RecordImageDataSource implements DataSource {
 
     @Override
     public void setLogWriter(PrintWriter out) {
-        // A store that logs nothing has nowhere to send a log writer, and discarding it is what a
-        // driver that does not log does.
     }
 
     @Override
     public void setLoginTimeout(int seconds) {
-        // There is no login, so there is nothing to time out.
     }
 
     @Override
@@ -198,24 +106,13 @@ public final class RecordImageDataSource implements DataSource {
         return iface.isInstance(this);
     }
 
-    // =================================================================================================
-    // The JDBC surface. Implemented through dynamic proxies so that the handful of methods this module's
-    // JdbcTemplate, transaction manager and RecordImageForm actually call are answered explicitly, and
-    // everything else on these interfaces answers with a type-appropriate default rather than failing.
-    // Throwing on an unanticipated call would make the double brittle against a framework upgrade; the
-    // statement grammar is where strictness belongs, and RecordImageStatement is strict.
-    // =================================================================================================
-
-    /** One connection: its auto-commit flag, its pending relations, and the statements prepared here. */
     private static final class ConnectionHandler implements InvocationHandler {
-
         private final RecordImageStore store;
 
         private boolean autoCommit = true;
 
         private boolean closed;
 
-        /** The relations this unit of work has modified, by dataset name; {@code null} outside one. */
         private Map<String, Relation> pending;
 
         ConnectionHandler(RecordImageStore store) {
@@ -234,14 +131,11 @@ public final class RecordImageDataSource implements DataSource {
                 case "setAutoCommit":
                     autoCommit = (Boolean) args[0];
                     if (autoCommit) {
-                        // Turning auto-commit back on ends any unit of work, as JDBC requires.
                         pending = null;
                     }
                     return null;
                 case "commit":
                     if (pending != null) {
-                        // Published over the store as it stands, not over the state it held when this
-                        // unit of work began, so a boundary that committed in the meantime is kept.
                         Map<String, Relation> committing = store.snapshot();
                         committing.putAll(pending);
                         store.publish(committing);
@@ -283,26 +177,12 @@ public final class RecordImageDataSource implements DataSource {
             }
         }
 
-
         private Object preparedStatement(Object connection, String sql) {
             return Proxy.newProxyInstance(RecordImageDataSource.class.getClassLoader(),
                     new Class<?>[] {PreparedStatement.class},
                     new StatementHandler(this, connection, sql));
         }
 
-        /**
-         * Applies a mutation to this unit of work's private copies, or straight to the store when there
-         * is no unit of work.
-         *
-         * <p>The mutation runs over the store as it stands with this unit of work's own pending relations
-         * laid on top, so it reads committed rows from elsewhere and its own uncommitted rows from itself.
-         * Every relation it leaves different from the committed one becomes pending, and only pending
-         * relations are published on commit.
-         *
-         * @param mutation the mutation
-         * @return how many rows it affected
-         * @throws SQLException if the mutation refuses
-         */
         int mutate(Mutation mutation) throws SQLException {
             if (autoCommit) {
                 Map<String, Relation> immediate = store.snapshot();
@@ -311,8 +191,6 @@ public final class RecordImageDataSource implements DataSource {
                 return affected;
             }
             Map<String, Relation> committed = store.snapshot();
-            // Copies, because the mutation modifies the row lists in place: sharing them with the
-            // committed map would make every comparison below report "unchanged" and publish nothing.
             Map<String, Relation> working = new LinkedHashMap<>();
             committed.forEach((dsname, relation) -> working.put(dsname, relation.copy()));
             if (pending != null) {
@@ -330,17 +208,6 @@ public final class RecordImageDataSource implements DataSource {
             return affected;
         }
 
-        /**
-         * Whether two states of one relation hold the same record images in the same order.
-         *
-         * <p>Compared element by element rather than with {@code List.equals} because a binary relation
-         * holds {@code byte[]} images, whose identity equality would report every state as different and
-         * make every read of a relation a pending write of it.
-         *
-         * @param before the committed state
-         * @param now    the state after a mutation
-         * @return whether the mutation left it unchanged
-         */
         private static boolean sameRows(Relation before, Relation now) {
             List<Object> was = before.rows();
             List<Object> is = now.rows();
@@ -361,20 +228,10 @@ public final class RecordImageDataSource implements DataSource {
             return true;
         }
 
-        /** Whether the named relation refuses a duplicate record image. */
         boolean refusesDuplicates(String dsname) {
             return store.refusesDuplicates(dsname);
         }
 
-        /**
-         * Reads this unit of work's own copy of a relation it has modified, and the store's committed
-         * state of every other relation - which is what READ_COMMITTED means and what
-         * {@code getTransactionIsolation} reports.
-         *
-         * @param dsname the dataset name
-         * @return the relation as this connection sees it
-         * @throws SQLException if the relation was never declared
-         */
         Relation read(String dsname) throws SQLException {
             if (pending != null) {
                 Relation own = pending.get(dsname);
@@ -386,15 +243,11 @@ public final class RecordImageDataSource implements DataSource {
         }
     }
 
-    /** A mutation over a set of relations, returning how many rows it affected. */
     private interface Mutation {
-
         int applyTo(Map<String, Relation> relations) throws SQLException;
     }
 
-    /** One prepared statement: its plan, its bound operands and the rows it produced. */
     private static final class StatementHandler implements InvocationHandler {
-
         private final ConnectionHandler connection;
 
         private final Object connectionProxy;
@@ -415,7 +268,6 @@ public final class RecordImageDataSource implements DataSource {
             this.pendingSql = sql;
         }
 
-        /** The statement text handed to {@code prepareStatement}, recognised lazily on first execution. */
         private final String pendingSql;
 
         @Override
@@ -475,7 +327,6 @@ public final class RecordImageDataSource implements DataSource {
             }
         }
 
-        /** {@code execute} serves both shapes, so it dispatches on what the plan asks for. */
         private Object executeEither(Object[] args) throws SQLException {
             RecordImageStatement resolved = resolve(args);
             if (resolved.kind() == RecordImageStatement.Kind.SELECT
@@ -558,7 +409,6 @@ public final class RecordImageDataSource implements DataSource {
             });
         }
 
-        /** Applies the plan's filter and ordering to a relation's rows. */
         private List<Object> select(RecordImageStatement resolved, List<Object> rows) {
             List<Object> selected = new ArrayList<>();
             if (resolved.filter() != RecordImageStatement.Filter.NEVER) {
@@ -576,7 +426,6 @@ public final class RecordImageDataSource implements DataSource {
             return selected;
         }
 
-        /** Whether one row satisfies the plan's filter, with the first operand at {@code firstIndex}. */
         private boolean matches(RecordImageStatement resolved, Object row, int firstIndex) {
             switch (resolved.filter()) {
                 case NONE:
@@ -596,9 +445,6 @@ public final class RecordImageDataSource implements DataSource {
                             || RecordImagePredicate.compareImages(row, operand(firstIndex)) >= 0;
                 case BEFORE_OR_MATCHING:
                     if (row == null) {
-                        // NULL is not less than anything and NULL LIKE ? is unknown, so neither arm of
-                        // this predicate selects an unreadable row - unlike the arms above, which name
-                        // IS NULL explicitly.
                         return false;
                     }
                     return RecordImagePredicate.compareImages(row, operand(firstIndex)) < 0
@@ -621,17 +467,13 @@ public final class RecordImageDataSource implements DataSource {
             return operands.get(index);
         }
 
-        /** A bound operand or a stored image as text, whichever form it arrived in. */
         private static String text(Object value) {
             if (value instanceof byte[] bytes) {
-                // A binary relation's operands are bound as bytes; comparing them as ISO-8859-1 text is
-                // lossless in both directions because that charset maps every byte to one character.
                 return new String(bytes, java.nio.charset.StandardCharsets.ISO_8859_1);
             }
             return String.valueOf(value);
         }
 
-        /** Whether a relation already holds an image equal to the one offered. */
         private static boolean holdsImage(Relation relation, Object image) {
             for (Object row : relation.rows()) {
                 if (row == null ? image == null
@@ -664,14 +506,6 @@ public final class RecordImageDataSource implements DataSource {
             }
         }
 
-        /**
-         * The parameter metadata Spring reads when it binds a {@code null} whose SQL type it was not told.
-         *
-         * <p>Every positional parameter of every statement this module composes carries a record image or
-         * a key pattern, so the honest answer is one string-typed parameter per placeholder. Reporting it
-         * lets {@code StatementCreatorUtils} take its ordinary {@code setNull} path instead of failing on
-         * absent metadata.
-         */
         private Object parameterMetaData() {
             int declared = plan == null ? 1 : plan.operandCount();
             return Proxy.newProxyInstance(RecordImageDataSource.class.getClassLoader(),
@@ -709,9 +543,7 @@ public final class RecordImageDataSource implements DataSource {
         }
     }
 
-    /** One result set: its rows, its cursor, and the metadata that names its single column. */
     private static final class ResultSetHandler implements InvocationHandler {
-
         private final Relation relation;
 
         private final List<Object> rows;
@@ -859,7 +691,6 @@ public final class RecordImageDataSource implements DataSource {
         }
     }
 
-    /** The database metadata Spring reads to choose an exception translator. */
     private static Object databaseMetaData() {
         return Proxy.newProxyInstance(RecordImageDataSource.class.getClassLoader(),
                 new Class<?>[] {DatabaseMetaData.class},
@@ -904,17 +735,6 @@ public final class RecordImageDataSource implements DataSource {
         throw new SQLException("A " + PRODUCT_NAME + " object is not a " + iface.getName());
     }
 
-    /**
-     * The answer for a JDBC method this store does not implement.
-     *
-     * <p>A type-appropriate empty answer rather than a failure, and deliberately: the strictness that
-     * matters lives in {@link RecordImageStatement}, which refuses an unrecognised <em>statement</em>. A
-     * framework that asks a capability question this store has not anticipated should hear "no" and take
-     * its ordinary path, not have the run fail.
-     *
-     * @param returnType the method's return type
-     * @return {@code false}, zero, or {@code null} as the type requires
-     */
     private static Object defaultValue(Class<?> returnType) {
         if (!returnType.isPrimitive()) {
             return null;

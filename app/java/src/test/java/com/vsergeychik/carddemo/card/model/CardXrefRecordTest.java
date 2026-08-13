@@ -36,136 +36,41 @@ import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 
 /**
  * Unit tests for {@link CardXrefRecord}, the one Java type for {@code app/cpy/CVACT03Y.cpy}'s
- * {@code 01 CARD-XREF-RECORD} - exactly 50 bytes, and the most widely shared cross-reference layout
- * in the system.
- *
- * <p>Plain JUnit 5. No Spring context, no {@code @SpringBootTest}, no {@code MockMvc}: the class
- * under test is an immutable value type whose only collaborators are the two fixed-width classes in
- * {@code common}, so every decision inside it is reachable directly and every assertion here is
- * deterministic.
- *
- * <h2>Why a regression in this one type matters module-wide</h2>
- * Twelve of the twenty-eight programs {@code COPY CVACT03Y} - {@code CBACT03C}, {@code CBACT04C},
- * {@code CBSTM03A}, {@code CBTRN01C}, {@code CBTRN02C}, {@code CBTRN03C}, {@code COACTUPC},
- * {@code COACTVWC}, {@code COBIL00C}, {@code COCRDSLC}, {@code COCRDUPC} and {@code COTRN02C} -
- * and eleven of those twelve consumers live outside the {@code card} package. A single moved offset
- * here therefore radiates across the whole module, which is why every span below is asserted by its
- * literal offset and length rather than by a derived total.
- *
- * <p>The full 50-byte image is directly observable legacy output, not an internal detail:
- * {@code app/cbl/CBACT03C.cbl:78} and {@code :96} both execute {@code DISPLAY CARD-XREF-RECORD},
- * sending the entire record area - trailing {@code FILLER} spaces included - to {@code SYSOUT}. The
- * emitted width and byte content are exactly what the {@code CBACT03C} parity cases compare.
- *
- * <h2>The expected values are the copybook's and the fixture's, never the implementation's</h2>
- * Every offset, length, total and field value asserted below was transcribed by hand from
- * {@code app/cpy/CVACT03Y.cpy}:
- * <pre>
- *   *****************************************************************
- *   *    Data-structure for card xref (RECLN 50)
- *   *****************************************************************
- *    01 CARD-XREF-RECORD.
- *        05  XREF-CARD-NUM                     PIC X(16).
- *        05  XREF-CUST-ID                      PIC 9(09).
- *        05  XREF-ACCT-ID                      PIC 9(11).
- *        05  FILLER                            PIC X(14).
- * </pre>
- * 16 + 9 + 11 + 14 = 50, the {@code RECLN 50} the copybook's own header declares, with the four
- * spans starting at 0, 16, 25 and 36. The reference sources - {@code app/cpy/CVACT03Y.cpy},
- * {@code app/data/ASCII/cardxref.txt}, {@code app/csd/CARDDEMO.CSD} and {@code app/cbl/CBACT03C.cbl}
- * - are cited here as the binding contract and are <strong>never opened at runtime</strong>: they
- * are the parity oracle and are read-only. Runtime seeding uses the derived classpath copy
- * {@code src/test/resources/fixtures/cardxref.txt} instead.
- *
- * <h2>A deliberate, documented tension: {@code RECORDFORMAT(V)} against a fixed 50</h2>
- * {@code app/csd/CARDDEMO.CSD} declares {@code RECORDFORMAT(V)} for both cross-reference access
- * paths - at L43 for the {@code CCXREF} base cluster and at L69 for the {@code CXACAIX} alternate
- * index - while the batch JCL declares those datasets {@code RECFM=F} or {@code FB}. The two
- * disagree in the legacy definitions themselves. Per the migration's data-access ruling the Java
- * layer treats record length as <strong>copybook-fixed regardless</strong>, so every assertion below
- * asserts a fixed 50 and nothing here ever treats the record as variable-length. The disagreement is
- * recorded rather than repaired: "fixing" a legacy definition would be scope creep, and the CSD is
- * read-only reference material.
- *
- * <h2>Acceptance gates enforced directly by this file</h2>
- * <ul>
- *   <li><strong>G8</strong> - one Java type per copybook: {@code CardXrefRecord} is the sole type
- *       for {@code CVACT03Y}, and its four-span shape is asserted to match the copybook exactly.</li>
- *   <li><strong>G16</strong> / risk <strong>R-F</strong> - the 36-byte fixture row is widened to 50
- *       by the shared normaliser before any comparison, and a short row is rejected by the model.</li>
- *   <li><strong>G19</strong> - a serialised record is exactly 50 bytes.</li>
- *   <li><strong>G21</strong> - the trailing {@code FILLER X(14)} is present and space-filled.</li>
- *   <li><strong>G22</strong> - no {@code double} or {@code float} anywhere, asserted structurally.</li>
- *   <li><strong>G44</strong> - no persistence artefact: no entity annotation, no version column.</li>
- *   <li><strong>G49</strong> - both sides of every branch in {@code CardXrefRecord} are driven.</li>
- *   <li><strong>G52</strong> - every type imported explicitly; no wildcard import.</li>
- *   <li><strong>G53</strong> - no mutable static state and no dependence on execution order.</li>
- *   <li><strong>G54</strong> - runs non-interactively, with no clock, locale, network or
- *       platform-default-charset dependence.</li>
- * </ul>
- * No user rules were provided for this project, so the governing standard here is enterprise best
- * practice as codified by the migration plan itself - directives B1 through B12 - and this file cites
- * those directives rather than reproducing them.
+ * {@code 01 CARD-XREF-RECORD} - exactly 50 bytes, and the most widely shared cross-reference layout in the
+ * system.
  */
 @DisplayName("CardXrefRecord - CVACT03Y CARD-XREF-RECORD, 50 bytes, 12 consumers")
 class CardXrefRecordTest {
-
-    /** The code page of the nine text fixtures under {@code app/data/ASCII}, named explicitly (B8). */
     private static final Charset ASCII = StandardCharsets.US_ASCII;
 
-    /** The canonical name of the EBCDIC code page of the datasets under {@code app/data/EBCDIC}. */
     private static final String EBCDIC_NAME = "IBM037";
 
-    /**
-     * The EBCDIC code page, resolved fail-fast rather than assumed. Immutable, so this constant is
-     * not mutable static state (G53).
-     */
     private static final Charset EBCDIC = requireEbcdicCharset();
 
-    /** The derived fixture on the test classpath. The reference data itself is never opened (B3). */
     private static final String FIXTURE = "/fixtures/cardxref.txt";
 
-    /** Every row of the fixture is this wide, which is also {@code FILLER}'s offset. Risk R-F. */
     private static final int FIXTURE_ROW_WIDTH = 36;
 
-    /** The fixture holds exactly this many cross-reference records. */
     private static final int FIXTURE_ROW_COUNT = 50;
 
-    /**
-     * Row 1 of {@code app/data/ASCII/cardxref.txt}, verbatim - 36 bytes, because the fixture omits
-     * the trailing {@code FILLER X(14)} that the copybook declares.
-     */
     private static final String FIXTURE_ROW_1 = "050002445376574000000005000000000050";
 
-    /** Row 2 of the fixture, verbatim. */
     private static final String FIXTURE_ROW_2 = "068358619817151600000002700000000027";
 
-    /** Row 3 of the fixture, verbatim. */
     private static final String FIXTURE_ROW_3 = "092387719324733000000000200000000002";
 
-    /** The three field values row 1 encodes, read off the row by hand rather than from the model. */
     private static final String ROW_1_CARD_NUM = "0500024453765740";
 
     private static final int ROW_1_CUST_ID = 50;
 
     private static final long ROW_1_ACCT_ID = 50L;
 
-    /** The trailing {@code FILLER}'s content: fourteen spaces, because the copybook declares no VALUE. */
     private static final String FOURTEEN_SPACES = "              ";
 
     private final FixedWidthCodec asciiCodec = new FixedWidthCodec(ASCII);
 
     private final FixedWidthCodec ebcdicCodec = new FixedWidthCodec(EBCDIC);
 
-    /**
-     * Resolves {@code IBM037} and fails with an actionable message if it is absent.
-     *
-     * <p>{@code IBM037} ships in the JDK's {@code jdk.charsets} module and is present in the verified
-     * toolchain, OpenJDK 21.0.11. If it is genuinely missing, the run is on a cut-down runtime and the
-     * fix is to install a full JDK - so this fails loudly, mirroring the charset configuration's own
-     * fail-fast posture, rather than being skipped through an assumption. A skipped charset test would
-     * report green while leaving every EBCDIC pad byte unverified (B7).
-     */
     private static Charset requireEbcdicCharset() {
         if (!Charset.isSupported(EBCDIC_NAME)) {
             throw new IllegalStateException("Charset " + EBCDIC_NAME + " is required to verify that "
@@ -177,19 +82,10 @@ class CardXrefRecordTest {
         return Charset.forName(EBCDIC_NAME);
     }
 
-    /** A representative record, used wherever the particular field values do not matter. */
     private static CardXrefRecord sample() {
         return new CardXrefRecord(ROW_1_CARD_NUM, ROW_1_CUST_ID, ROW_1_ACCT_ID);
     }
 
-    /**
-     * Reads every row of the classpath fixture as text, exactly as stored and deliberately
-     * <strong>un-widened</strong>, so that any test needing the copybook's declared width has to
-     * normalise through the shared codec explicitly.
-     *
-     * <p>A fresh list is returned on every call, so no state is shared between test methods and no
-     * test depends on another having run first (G53).
-     */
     private static List<String> fixtureRows() {
         List<String> rows = new ArrayList<>();
         try (InputStream stream = CardXrefRecordTest.class.getResourceAsStream(FIXTURE)) {
@@ -211,11 +107,6 @@ class CardXrefRecordTest {
         return rows;
     }
 
-    /**
-     * The {@code PIC X(16)} padding cases, supplied as arguments rather than as CSV because the
-     * expected images are made entirely of significant trailing spaces, and a CSV column's whitespace
-     * handling is exactly the kind of implicit behaviour that should not decide an assertion (B8).
-     */
     private static List<Arguments> cardNumberPaddingCases() {
         return List.of(Arguments.of("", " ".repeat(16)),
                 Arguments.of("0", "0" + " ".repeat(15)),
@@ -224,11 +115,6 @@ class CardXrefRecordTest {
                 Arguments.of("0123456789012345", "0123456789012345"));
     }
 
-    /**
-     * Every stored fixture row, as {@code @ParameterizedTest} arguments, so that all
-     * {@value #FIXTURE_ROW_COUNT} rows are driven individually and a failure names the offending row
-     * rather than aborting the whole set at the first one.
-     */
     private static List<Arguments> fixtureRowCases() {
         List<Arguments> cases = new ArrayList<>();
         List<String> rows = fixtureRows();
@@ -238,15 +124,6 @@ class CardXrefRecordTest {
         return cases;
     }
 
-    /**
-     * Widens a stored fixture row to the copybook's declared width through the single shared
-     * normaliser, {@link FixedWidthCodec#padToDeclaredWidth(byte[], int)}.
-     *
-     * <p>This is the whole of risk <strong>R-F</strong> and gate <strong>G16</strong>, and it is
-     * expressed as a call rather than as arithmetic on purpose. The rule has exactly one home - the
-     * codec, plus the parity harness that uses it - and re-implementing a right-pad in this file
-     * would let a broken production normaliser sit behind green tests (B11).
-     */
     private byte[] widenThroughTheSharedNormaliser(String storedRow) {
         return asciiCodec.padToDeclaredWidth(storedRow.getBytes(ASCII), CardXrefRecord.RECORD_LENGTH);
     }
@@ -254,7 +131,6 @@ class CardXrefRecordTest {
     @Nested
     @DisplayName("Declared geometry - the copybook's own arithmetic (G8, G19)")
     class DeclaredGeometry {
-
         @Test
         @DisplayName("RECLN 50: the four declared spans sum to exactly the declared record length")
         void spansSumToTheDeclaredRecordLength() {
@@ -269,7 +145,6 @@ class CardXrefRecordTest {
             assertThat(CardXrefRecord.LAYOUT.recordLength())
                     .as("the layout's declared length must equal RECORD_LENGTH")
                     .isEqualTo(CardXrefRecord.RECORD_LENGTH);
-            // Spelled out as the copybook spells it, so a reader can check it against L5-L8 by eye.
             assertThat(sum).isEqualTo(16 + 9 + 11 + 14).isEqualTo(50);
         }
 
@@ -281,7 +156,6 @@ class CardXrefRecordTest {
                             CardXrefRecord.XREF_CUST_ID,
                             CardXrefRecord.XREF_ACCT_ID,
                             CardXrefRecord.FILLER);
-            // CVACT03Y declares no REDEFINES at all, so none may be invented here (B4).
             assertThat(CardXrefRecord.LAYOUT.redefinitions()).isEmpty();
         }
 
@@ -315,7 +189,6 @@ class CardXrefRecordTest {
             assertThat(span.kind())
                     .as("%s at offset %d carries the %s picture", cobolName, offset, kind)
                     .isEqualTo(kind);
-            // No 05-item of CVACT03Y declares a VALUE, and none is a REDEFINES overlay.
             assertThat(span.hasInitialValue())
                     .as("%s declares no VALUE in the copybook", cobolName)
                     .isFalse();
@@ -359,8 +232,6 @@ class CardXrefRecordTest {
             assertThat(CardXrefRecord.XREF_CARD_NUM_LENGTH).isEqualTo(16);
             assertThat(CardXrefRecord.XREF_CUST_ID_OFFSET).isEqualTo(16);
             assertThat(CardXrefRecord.XREF_CUST_ID_LENGTH).isEqualTo(9);
-            // Twenty-five, not sixteen: CVACT02Y's CardRecord puts ITS account id at 16 because it
-            // has no customer id in between. Reading this one at 16 would return a plausible number.
             assertThat(CardXrefRecord.XREF_ACCT_ID_OFFSET).isEqualTo(25);
             assertThat(CardXrefRecord.XREF_ACCT_ID_LENGTH).isEqualTo(11);
             assertThat(CardXrefRecord.FILLER_OFFSET).isEqualTo(36);
@@ -394,7 +265,6 @@ class CardXrefRecordTest {
                     .isEqualTo(CardXrefRecord.XREF_CUST_ID_NAME);
             assertThat(CardXrefRecord.XREF_ACCT_ID.name())
                     .isEqualTo(CardXrefRecord.XREF_ACCT_ID_NAME);
-            // Names are the parity differ's keys, so they are looked up case-sensitively and exactly.
             assertThat(CardXrefRecord.LAYOUT.hasSpan("XREF-CARD-NUM")).isTrue();
             assertThat(CardXrefRecord.LAYOUT.hasSpan("xref-card-num")).isFalse();
             assertThat(CardXrefRecord.LAYOUT.hasSpan("XREF_CARD_NUM")).isFalse();
@@ -407,15 +277,11 @@ class CardXrefRecordTest {
             assertThat(CardXrefRecord.FILLER.kind().filler()).isTrue();
             assertThat(CardXrefRecord.FILLER.endOffsetExclusive())
                     .isEqualTo(CardXrefRecord.RECORD_LENGTH);
-            // No VALUE in the copybook, so the FILLER's content is the code page's space byte.
             assertThat(CardXrefRecord.FILLER.hasInitialValue()).isFalse();
-            // FILLER is not a referable COBOL name, so it is not resolvable by name.
             assertThat(CardXrefRecord.LAYOUT.hasSpan("FILLER")).isFalse();
             assertThatIllegalArgumentException()
                     .isThrownBy(() -> CardXrefRecord.LAYOUT.span("FILLER"))
                     .withMessageContaining("FILLER is not referable");
-            // 36 is exactly the declared width less the trailing FILLER, which is why the fixture is
-            // 36 bytes wide - risk R-F, addressed in full in the fixture group below.
             assertThat(CardXrefRecord.RECORD_LENGTH - CardXrefRecord.FILLER_LENGTH)
                     .isEqualTo(CardXrefRecord.FILLER_OFFSET)
                     .isEqualTo(FIXTURE_ROW_WIDTH);
@@ -430,16 +296,12 @@ class CardXrefRecordTest {
             assertThat(CardXrefRecord.XREF_ACCT_ID_MAX_VALUE)
                     .as("PIC 9(11) holds eleven nines")
                     .isEqualTo(99_999_999_999L);
-            // PIC 9(11) genuinely exceeds the int range, which is why the account id is a long while
-            // the customer id is an int. Neither is ever a binary floating-point primitive (G22).
             assertThat(CardXrefRecord.XREF_ACCT_ID_MAX_VALUE).isGreaterThan(Integer.MAX_VALUE);
         }
 
         @Test
         @DisplayName("The layout self-check passes for the copybook's own descriptor set")
         void layoutSelfCheckPassesForTheCopybooksDescriptors() {
-            // Re-declaring the identical set proves the self-check accepts it, and that LAYOUT is not
-            // merely a field that happened to initialise before any verification ran.
             RecordLayout reDeclared = RecordLayout.of(CardXrefRecord.RECORD_LENGTH,
                     CardXrefRecord.XREF_CARD_NUM,
                     CardXrefRecord.XREF_CUST_ID,
@@ -455,13 +317,9 @@ class CardXrefRecordTest {
     @Nested
     @DisplayName("The total-width self-check must also FAIL - a passing check proves nothing alone")
     class LayoutSelfCheckRejections {
-
         @Test
         @DisplayName("Dropping the trailing FILLER is rejected: 36 declared against a record length of 50")
         void droppingTheTrailingFillerIsRejected() {
-            // The single most consequential transcription error this layout can suffer. Without the
-            // FILLER the record would be 36 bytes, silently shifting every subsequent byte offset in
-            // the entire dataset - which is precisely the shape of the fixture deviation, risk R-F.
             assertThatIllegalArgumentException()
                     .isThrownBy(() -> RecordLayout.of(CardXrefRecord.RECORD_LENGTH,
                             CardXrefRecord.XREF_CARD_NUM,
@@ -475,7 +333,6 @@ class CardXrefRecordTest {
         @Test
         @DisplayName("A gap between two spans is rejected: every byte must be declared")
         void aGapBetweenSpansIsRejected() {
-            // Omitting XREF-CUST-ID leaves bytes [16, 25) undeclared.
             assertThatIllegalArgumentException()
                     .isThrownBy(() -> RecordLayout.of(CardXrefRecord.RECORD_LENGTH,
                             CardXrefRecord.XREF_CARD_NUM,
@@ -488,7 +345,6 @@ class CardXrefRecordTest {
         @Test
         @DisplayName("An overlap between two spans is rejected unless declared as a REDEFINES overlay")
         void anOverlapBetweenSpansIsRejected() {
-            // XREF-CUST-ID mistyped one byte early, at 15 instead of 16, overlapping the card number.
             FieldSpan overlapping = FieldSpan.unsignedNumeric(CardXrefRecord.XREF_CUST_ID_NAME,
                     15, CardXrefRecord.XREF_CUST_ID_LENGTH);
 
@@ -538,19 +394,6 @@ class CardXrefRecordTest {
     @Nested
     @DisplayName("Two keys, one 50-byte record - the base KSDS and the alternate index")
     class TwoKeysOneRecord {
-
-        // app/csd/CARDDEMO.CSD is unambiguous about the two access paths, in its own words:
-        //   L37  DEFINE FILE(CCXREF)
-        //   L38  DESCRIPTION(CARD TO ACCOUNT XREF)
-        //   L39  DSNAME(AWS.M2.CARDDEMO.CARDXREF.VSAM.KSDS)          <- base cluster, card-number key
-        //   L63  DEFINE FILE(CXACAIX)
-        //   L64  DESCRIPTION(ALTERNATE INDEX TO CCXREF VIA ACCOUNT KEY)
-        //   L65  DSNAME(AWS.M2.CARDDEMO.CARDXREF.VSAM.AIX.PATH)      <- a PATH over that same base
-        // Both address ONE record in ONE dataset through two access paths. The alternate index is
-        // never a second table and never a second record type, so this model exposes two key
-        // accessors over one 50-byte span rather than modelling two entities. (Whether a repository
-        // honours that is gate G45, asserted at the repository level, not here.)
-
         @Test
         @DisplayName("The CCXREF base key is XREF-CARD-NUM: 16 bytes at offset 0")
         void baseKeyIsTheCardNumberAtOffsetZero() {
@@ -574,8 +417,6 @@ class CardXrefRecordTest {
         @Test
         @DisplayName("The CXACAIX alternate key is XREF-ACCT-ID: 11 bytes at offset 25, not 16")
         void alternateIndexKeyIsTheAccountIdAtOffsetTwentyFive() {
-            // Three deliberately distinguishable field values, so a wrong offset cannot coincidentally
-            // produce the right answer.
             CardXrefRecord record = new CardXrefRecord("1111222233334444", 555_555_555, 77_777_777_777L);
             byte[] image = record.encode(ASCII);
 
@@ -589,8 +430,6 @@ class CardXrefRecordTest {
                     .isEqualTo("77777777777")
                     .hasSize(11);
 
-            // Offset 16 is where CVACT02Y's CardRecord keeps ITS account id. Here it is the customer
-            // id: reading the account id from 16 compiles, type-checks, and returns a wrong number.
             assertThat(new String(image, 16, 9, ASCII)).isEqualTo("555555555");
             assertThat(new String(image, 16, 11, ASCII)).isNotEqualTo("77777777777");
         }
@@ -611,9 +450,6 @@ class CardXrefRecordTest {
         @Test
         @DisplayName("XREF-CARD-NUM is a String, never a numeric type: the leading zero is data")
         void cardNumberIsAStringSoLeadingZerosSurvive() throws NoSuchMethodException {
-            // Structural first: the accessor's STATIC type is not numeric. A long or a BigInteger here
-            // would reduce 0500024453765740 to 500024453765740 - silent data loss that no compiler
-            // catches and that breaks every keyed read on the base KSDS.
             Class<?> baseKeyType = CardXrefRecord.class.getMethod("cardNumberKey").getReturnType();
             Class<?> cardNumType = CardXrefRecord.class.getMethod("xrefCardNum").getReturnType();
 
@@ -625,11 +461,9 @@ class CardXrefRecordTest {
                     .as("XREF-CARD-NUM is PIC X(16) - alphanumeric, not numeric")
                     .isFalse();
 
-            // Then behaviourally: the leading zero survives a full round trip through the bytes.
             CardXrefRecord decoded = CardXrefRecord.decode(sample().encode(ASCII), ASCII);
             assertThat(decoded.xrefCardNum()).startsWith("0").isEqualTo(ROW_1_CARD_NUM);
             assertThat(decoded.cardNumberKey()).startsWith("0").isEqualTo(ROW_1_CARD_NUM);
-            // The loss a numeric type would have caused, made explicit.
             assertThat(Long.toString(Long.parseLong(ROW_1_CARD_NUM))).doesNotStartWith("0");
         }
 
@@ -638,8 +472,6 @@ class CardXrefRecordTest {
         void theTwoKeysAreDistinct() throws NoSuchMethodException {
             CardXrefRecord record = new CardXrefRecord("0000000000000050", 50, 50L);
 
-            // Both happen to denote 50 here, yet one is a 16-character image and the other an
-            // 11-digit number: the picture, not the value, is what makes them different kinds of key.
             assertThat(record.cardNumberKey()).isEqualTo("0000000000000050").hasSize(16);
             assertThat(record.accountIdAlternateIndexKey()).isEqualTo(50L);
             assertThat(CardXrefRecord.class.getMethod("accountIdAlternateIndexKey").getReturnType())
@@ -651,7 +483,6 @@ class CardXrefRecordTest {
     @Nested
     @DisplayName("Encoding - always the complete 50-byte image, FILLER included (G19, G21)")
     class Encoding {
-
         @Test
         @DisplayName("A freshly serialised image is exactly 50 bytes, by every encode route")
         void serialisedWidthIsAlwaysFifty() {
@@ -683,17 +514,14 @@ class CardXrefRecordTest {
         void fillerIsEmittedAsFourteenSpaces() {
             byte[] image = sample().encode(ASCII);
 
-            // The total width is the immediate tripwire: dropping the FILLER makes this 36.
             assertThat(image)
                     .as("a record missing its FILLER would be %d bytes, not %d",
                             FIXTURE_ROW_WIDTH, CardXrefRecord.RECORD_LENGTH)
                     .hasSize(CardXrefRecord.RECORD_LENGTH);
-            // Then the slice, so the diagnosis is unambiguous rather than "the width is wrong".
             assertThat(new String(image, CardXrefRecord.FILLER_OFFSET,
                     CardXrefRecord.FILLER_LENGTH, ASCII))
                     .isEqualTo(FOURTEEN_SPACES)
                     .hasSize(14);
-            // And byte by byte, so a failure names the exact offset that diverged (B11).
             for (int offset = CardXrefRecord.FILLER_OFFSET;
                  offset < CardXrefRecord.RECORD_LENGTH;
                  offset++) {
@@ -715,8 +543,6 @@ class CardXrefRecordTest {
                  offset++) {
                 assertThat(ascii[offset]).as("US-ASCII space at offset %d", offset)
                         .isEqualTo((byte) 0x20);
-                // A hard-coded 0x20 here would corrupt every pad byte of an EBCDIC record, which is
-                // exactly why the charset is a parameter and never a platform default (B8).
                 assertThat(ebcdic[offset]).as("IBM037 space at offset %d", offset)
                         .isEqualTo((byte) 0x40);
             }
@@ -805,13 +631,6 @@ class CardXrefRecordTest {
     @Nested
     @DisplayName("COBOL MOVE truncation direction - opposite for PIC X and PIC 9")
     class MoveSemantics {
-
-        // The model's constructor deliberately REJECTS an over-wide value rather than reshaping it,
-        // because an out-of-range argument is a defect in the caller. Where a real COBOL MOVE is being
-        // translated, truncation IS the faithful behaviour, and it is applied at the call site through
-        // the codec so the direction is a visible, deliberate choice - never a plain Java assignment,
-        // which would neither pad nor truncate and would leave the defect invisible.
-
         @Test
         @DisplayName("PIC X(16) truncates on the RIGHT: 20 characters keep the FIRST 16")
         void alphanumericMoveTruncatesOnTheRight() {
@@ -824,10 +643,8 @@ class CardXrefRecordTest {
                     .as("a PIC X receiver is filled from its leftmost position and discards the rest")
                     .isEqualTo("0123456789012345")
                     .hasSize(16);
-            // The truncated value is then storable, and lands at offset 0 exactly as moved.
             byte[] image = new CardXrefRecord(moved, 0, 0L).encode(ASCII);
             assertThat(new String(image, 0, 16, ASCII)).isEqualTo("0123456789012345");
-            // Whereas handing the untruncated value straight to the model is rejected, not reshaped.
             assertThatIllegalArgumentException()
                     .isThrownBy(() -> new CardXrefRecord(sending, 0, 0L))
                     .withMessageContaining("movePicX");
@@ -867,12 +684,9 @@ class CardXrefRecordTest {
         void theTwoMoveRulesDisagree() {
             String sending = "1234567890123";
 
-            // Same sending value, same receiver width, opposite surviving digits.
             assertThat(asciiCodec.movePicX(sending, 11)).isEqualTo("12345678901");
             assertThat(asciiCodec.movePic9(sending, 11)).isEqualTo("34567890123");
             assertThat(asciiCodec.movePicX(sending, 11)).isNotEqualTo(asciiCodec.movePic9(sending, 11));
-            // A plain Java assignment would do neither: it keeps all 13 characters, which cannot be
-            // stored in an 11-byte span at all.
             assertThat(sending).hasSize(13);
             assertThat(sending.length()).isNotEqualTo(11);
         }
@@ -892,7 +706,6 @@ class CardXrefRecordTest {
     @Nested
     @DisplayName("Decoding - the declared width only, PIC X untrimmed, PIC 9 digits only")
     class Decoding {
-
         @Test
         @DisplayName("A 50-byte record decodes to its three named fields at their copybook offsets")
         void decodesAllThreeFields() {
@@ -913,8 +726,6 @@ class CardXrefRecordTest {
 
             CardXrefRecord decoded = CardXrefRecord.decode(stored, ASCII);
 
-            // The parity differ compares this field byte for byte, so trimming here would discard the
-            // very bytes it is meant to compare.
             assertThat(decoded.xrefCardNum())
                     .isEqualTo("ABC             ")
                     .hasSize(CardXrefRecord.XREF_CARD_NUM_LENGTH);
@@ -954,10 +765,6 @@ class CardXrefRecordTest {
         @Test
         @DisplayName("A 36-byte span is rejected by the model and its message names the shared normaliser")
         void aShortSpanIsRejectedAndPointsAtTheNormaliser() {
-            // The failing side of the model's own width self-check, driven by the exact width the
-            // fixture actually has. The model must NOT self-heal a short row: widening belongs to
-            // FixedWidthCodec and to the parity harness, so that the correction has one home. This is
-            // risk R-F, and gate G16 requires the right-pad to happen before any comparison.
             FixedWidthRecord tooNarrow = new FixedWidthRecord(FIXTURE_ROW_WIDTH, ASCII);
 
             assertThat(tooNarrow.recordLength()).isEqualTo(FIXTURE_ROW_WIDTH);
@@ -975,7 +782,6 @@ class CardXrefRecordTest {
 
             assertThat(exact.recordLength()).isEqualTo(CardXrefRecord.RECORD_LENGTH);
             CardXrefRecord decoded = CardXrefRecord.decodeSpan(exact, asciiCodec);
-            // An INITIALIZEd area: PIC X spans are spaces, PIC 9 spans are zeros.
             assertThat(decoded.xrefCardNum()).isEqualTo(" ".repeat(16));
             assertThat(decoded.xrefCustId()).isZero();
             assertThat(decoded.xrefAcctId()).isZero();
@@ -991,8 +797,6 @@ class CardXrefRecordTest {
             byte[] spacesInNumeric =
                     (ROW_1_CARD_NUM + "         " + "00000000050" + FOURTEEN_SPACES).getBytes(ASCII);
 
-            // Silently yielding zero would hide a misaligned span behind a plausible value, which is
-            // the hardest class of parity defect to trace.
             assertThatIllegalArgumentException()
                     .isThrownBy(() -> CardXrefRecord.decode(custIdCorrupt, ASCII));
             assertThatIllegalArgumentException()
@@ -1007,8 +811,6 @@ class CardXrefRecordTest {
             byte[] stored = sample().encode(ASCII);
             FixedWidthRecord wrapped = asciiCodec.wrap(stored, CardXrefRecord.LAYOUT);
 
-            // The casts choose between the Charset and the codec overload for a literal null; the
-            // first argument of decode needs none, because decodeSpan is named rather than overloaded.
             assertThatNullPointerException()
                     .isThrownBy(() -> CardXrefRecord.decode(stored, (Charset) null));
             assertThatNullPointerException()
@@ -1028,7 +830,6 @@ class CardXrefRecordTest {
     @Nested
     @DisplayName("Round trip - serialise, decode, re-serialise must be byte-identical")
     class RoundTrip {
-
         @Test
         @DisplayName("A 50-byte image survives decode then re-encode unchanged, byte for byte")
         void imageSurvivesDecodeThenReEncode() {
@@ -1036,7 +837,6 @@ class CardXrefRecordTest {
 
             byte[] reEncoded = CardXrefRecord.decode(stored, ASCII).encode(ASCII);
 
-            // Compared as bytes, not as trimmed strings, and never by reflective deep equality (B11).
             assertThat(reEncoded).isEqualTo(stored).hasSize(CardXrefRecord.RECORD_LENGTH);
             for (int offset = 0; offset < CardXrefRecord.RECORD_LENGTH; offset++) {
                 assertThat(reEncoded[offset])
@@ -1052,8 +852,6 @@ class CardXrefRecordTest {
 
             CardXrefRecord reDecoded = CardXrefRecord.decode(original.encode(ASCII), ASCII);
 
-            // Field by field on purpose: a recursive or reflective comparison would pass even if the
-            // fields had been silently swapped into differently named members.
             assertThat(reDecoded.xrefCardNum()).isEqualTo(original.xrefCardNum());
             assertThat(reDecoded.xrefCustId()).isEqualTo(original.xrefCustId());
             assertThat(reDecoded.xrefAcctId()).isEqualTo(original.xrefAcctId());
@@ -1081,7 +879,6 @@ class CardXrefRecordTest {
     @Nested
     @DisplayName("The 36-byte fixture and the shared 36-to-50 right pad (G16, risk R-F)")
     class ShortFixtureRows {
-
         @Test
         @DisplayName("The fixture really is 50 rows of 36 bytes, so the deviation is measured not assumed")
         void theFixtureIsFiftyRowsOfThirtySixBytes() {
@@ -1095,11 +892,6 @@ class CardXrefRecordTest {
                         .as("row %d of %s", index + 1, FIXTURE)
                         .hasSize(FIXTURE_ROW_WIDTH);
             }
-            // Risk R-F, asserted rather than described: app/data/ASCII/cardxref.txt carries 36 bytes
-            // per record where app/cpy/CVACT03Y.cpy declares 50, because the fixture omits the
-            // trailing FILLER X(14). This test also polices the derivation of the classpath copy - a
-            // fixture that had been "helpfully" pre-padded to 50 would fail right here, and the
-            // reference data must never be rewritten because it is the parity oracle.
             assertThat(FIXTURE_ROW_WIDTH)
                     .isEqualTo(CardXrefRecord.RECORD_LENGTH - CardXrefRecord.FILLER_LENGTH)
                     .isEqualTo(CardXrefRecord.FILLER_OFFSET);
@@ -1114,11 +906,6 @@ class CardXrefRecordTest {
             byte[] raw = FIXTURE_ROW_1.getBytes(ASCII);
             assertThat(raw).hasSize(FIXTURE_ROW_WIDTH);
 
-            // Gate G16 / risk R-F: the 36-to-50 right pad is owned by FixedWidthCodec and by the parity
-            // harness - never by this test and never by CardXrefRecord - and it must be applied before
-            // any field-for-field comparison. Re-implementing the pad here would let this test pass
-            // while the production normaliser was wrong, which is the precise failure mode directive
-            // B11 exists to prevent, so this file contains no padding code of its own at all.
             byte[] widened = asciiCodec.padToDeclaredWidth(raw, CardXrefRecord.RECORD_LENGTH);
 
             assertThat(widened)
@@ -1153,7 +940,6 @@ class CardXrefRecordTest {
                     CardXrefRecord.FILLER))
                     .as("the FILLER the normaliser appended reads back as fourteen spaces")
                     .isEqualTo(FOURTEEN_SPACES);
-            // A round trip through the model must not reintroduce the 36-byte deviation.
             assertThat(decoded.encode(asciiCodec))
                     .isEqualTo(widened)
                     .hasSize(CardXrefRecord.RECORD_LENGTH);
@@ -1164,9 +950,6 @@ class CardXrefRecordTest {
         void anUnwidenedRowIsRejected() {
             byte[] raw = FIXTURE_ROW_1.getBytes(ASCII);
 
-            // The binding ruling: widening is the caller's deliberate, visible act at the boundary.
-            // If the model quietly tolerated 36 bytes, every field after the missing span would drift
-            // in any dataset that genuinely was 50 bytes wide.
             assertThatIllegalArgumentException()
                     .isThrownBy(() -> CardXrefRecord.decode(raw, ASCII))
                     .withMessageContaining("36")
@@ -1195,8 +978,6 @@ class CardXrefRecordTest {
             byte[] widened = widenThroughTheSharedNormaliser(storedRow);
             CardXrefRecord decoded = CardXrefRecord.decode(widened, asciiCodec);
 
-            // The expected values come from the row itself, sliced at the copybook's own offsets, so
-            // this is an independent check on the transcription rather than a restatement of the model.
             assertThat(decoded.xrefCardNum())
                     .as("XREF-CARD-NUM of row %d, bytes [0, 16)", rowNumber)
                     .isEqualTo(storedRow.substring(0, 16));
@@ -1243,14 +1024,9 @@ class CardXrefRecordTest {
     @Nested
     @DisplayName("The code page is always a parameter, never the platform default")
     class CharsetIsAlwaysAParameter {
-
         @Test
         @DisplayName("IBM037 is present in the verified toolchain, asserted rather than assumed away")
         void ibm037IsPresent() {
-            // Asserted with an actionable message instead of Assumptions.assumeTrue, so the run stays
-            // deterministic: a skipped charset test reports green while leaving every EBCDIC pad byte
-            // unverified (B7). IBM037 ships in the JDK's jdk.charsets module and OpenJDK 21.0.11 is the
-            // verified toolchain for this module.
             assertThat(Charset.isSupported(EBCDIC_NAME))
                     .as("%s must be available; it ships in the JDK's jdk.charsets module, so if this "
                             + "fails the runtime is a cut-down JDK and the fix is to install a full "
@@ -1268,11 +1044,8 @@ class CardXrefRecordTest {
             byte[] ascii = record.encode(ASCII);
             byte[] ebcdic = record.encode(EBCDIC);
 
-            // If the charset parameter were ignored, or a platform default were consulted, these two
-            // images would be identical and this assertion would collapse.
             assertThat(ascii).isNotEqualTo(ebcdic);
             assertThat(ascii).hasSameSizeAs(ebcdic).hasSize(CardXrefRecord.RECORD_LENGTH);
-            // The measured pad and digit bytes of the two code pages.
             assertThat(ascii[0]).as("US-ASCII '0'").isEqualTo((byte) 0x30);
             assertThat(ebcdic[0]).as("IBM037 '0'").isEqualTo((byte) 0xF0);
             assertThat(ascii[CardXrefRecord.FILLER_OFFSET]).as("US-ASCII space").isEqualTo((byte) 0x20);
@@ -1288,7 +1061,6 @@ class CardXrefRecordTest {
             assertThat(CardXrefRecord.decode(record.encode(EBCDIC), EBCDIC)).isEqualTo(record);
             assertThat(CardXrefRecord.decode(record.encode(asciiCodec), asciiCodec)).isEqualTo(record);
             assertThat(CardXrefRecord.decode(record.encode(ebcdicCodec), ebcdicCodec)).isEqualTo(record);
-            // And the codecs really do carry the code page they were constructed with.
             assertThat(asciiCodec.charset()).isEqualTo(ASCII);
             assertThat(ebcdicCodec.charset()).isEqualTo(EBCDIC);
         }
@@ -1327,7 +1099,6 @@ class CardXrefRecordTest {
     @Nested
     @DisplayName("Construction - every PICTURE bound enforced at the boundary, both sides driven")
     class Construction {
-
         @Test
         @DisplayName("The three fields are held exactly as supplied, with no normalisation")
         void holdsTheSuppliedFieldsVerbatim() {
@@ -1336,7 +1107,6 @@ class CardXrefRecordTest {
             assertThat(record.xrefCardNum()).isEqualTo(ROW_1_CARD_NUM);
             assertThat(record.xrefCustId()).isEqualTo(ROW_1_CUST_ID);
             assertThat(record.xrefAcctId()).isEqualTo(ROW_1_ACCT_ID);
-            // No trimming, no upper-casing, no re-formatting: the value is the bytes.
             assertThat(new CardXrefRecord("  ABC  ", 0, 0L).xrefCardNum()).isEqualTo("  ABC  ");
         }
 
@@ -1371,7 +1141,6 @@ class CardXrefRecordTest {
             assertThatNullPointerException()
                     .isThrownBy(() -> new CardXrefRecord(null, 0, 0L))
                     .withMessageContaining("XREF-CARD-NUM");
-            // The sanctioned way to say "blank": an empty string, which encodes as sixteen spaces.
             assertThat(new CardXrefRecord("", 0, 0L).xrefCardNum()).isEmpty();
         }
 
@@ -1411,7 +1180,6 @@ class CardXrefRecordTest {
     @Nested
     @DisplayName("Value semantics - what the parity differ and 9300-CHECK-CHANGE-IN-REC both rely on")
     class ValueSemantics {
-
         @Test
         @DisplayName("An instance equals itself, and equals a separately built instance of equal fields")
         void equalFieldsMeanEqualRecords() {
@@ -1421,7 +1189,6 @@ class CardXrefRecordTest {
             assertThat(one.equals(one)).as("reflexive: the identity short circuit").isTrue();
             assertThat(one).isEqualTo(other).hasSameHashCodeAs(other);
             assertThat(other).as("symmetric").isEqualTo(one);
-            // Repeated hashing of equal instances is stable, which is what caching them relies on.
             assertThat(one.hashCode()).isEqualTo(one.hashCode()).isEqualTo(other.hashCode());
         }
 
@@ -1464,8 +1231,6 @@ class CardXrefRecordTest {
         @Test
         @DisplayName("Padding participates in equality, because padding is data in a PIC X field")
         void paddingParticipatesInEquality() {
-            // The COBOL 9300-CHECK-CHANGE-IN-REC comparison is byte-for-byte, so a trimmed value and a
-            // padded value are genuinely different records and must not compare equal.
             assertThat(new CardXrefRecord("ABC", 1, 1L))
                     .isNotEqualTo(new CardXrefRecord("ABC             ", 1, 1L));
             assertThat(new CardXrefRecord("", 1, 1L))
@@ -1480,19 +1245,11 @@ class CardXrefRecordTest {
             assertThat(rendered)
                     .isNotNull()
                     .startsWith("CARD-XREF-RECORD[")
-                    // All three fields are masked: this record exists to link a card number to a
-                    // customer and an account, so rendering it in full published that association. A
-                    // value at or below the revealed length is masked entirely rather than disclosed.
                     .contains(CardXrefRecord.XREF_CARD_NUM_NAME + "='***'")
                     .contains(CardXrefRecord.XREF_CUST_ID_NAME + "=*****0050")
                     .contains(CardXrefRecord.XREF_ACCT_ID_NAME + "=*******0050")
                     .endsWith("]");
-            // 'ABC' is masked entirely rather than shown, because showing four of three characters
-            // would disclose the whole of a short identifier while looking as though it had been
-            // masked - the most misleading of the available outcomes.
             assertThat(rendered).doesNotContain("ABC");
-            // No clock, no identity hash, no locale-dependent formatting: the same record always
-            // renders identically, which is what makes a failure message reproducible (B7).
             assertThat(rendered).isEqualTo(new CardXrefRecord("ABC", 50, 50L).toString());
             assertThat(sample().toString()).isNotNull().doesNotContain("@");
         }
@@ -1500,10 +1257,6 @@ class CardXrefRecordTest {
         @Test
         @DisplayName("a control character in the retained suffix cannot forge a second log line")
         void theRetainedSuffixCannotForgeALogLine() {
-            // XREF-CARD-NUM is PIC X(16), so this record holds whatever the CCXREF dataset holds and
-            // nothing here validates it as digits. The mask covers the first twelve characters; the four
-            // it reveals are exactly where a stored CR or LF survives, and appending them raw to a
-            // string documented as safe to log lets the dataset append a log entry of its own (CWE-117).
             String rendered = new CardXrefRecord("411111111111\r\nOK", 50, 50L).toString();
 
             assertThat(rendered)
@@ -1514,8 +1267,6 @@ class CardXrefRecordTest {
             assertThat(rendered.lines())
                     .as("this rendering is documented as safe to log, which means one line")
                     .hasSize(1);
-            // Lossless and rendering-only: the stored image is byte-identical to what was supplied,
-            // because the parity harness reads it by name and must see the real bytes.
             assertThat(new CardXrefRecord("411111111111\r\nOK", 50, 50L).xrefCardNum())
                     .isEqualTo("411111111111\r\nOK");
         }
@@ -1524,13 +1275,9 @@ class CardXrefRecordTest {
     @Nested
     @DisplayName("Structural guards - gates G8, G22, G44 and G53 asserted about the type itself")
     class StructuralGuards {
-
         @Test
         @DisplayName("G22: no double, float, Double or Float in any field, accessor or constructor")
         void noBinaryFloatingPointAnywhere() {
-            // CVACT03Y declares no COMP-3, no signed picture and no V scale, so there is nothing here
-            // to round and the module's decimal helper is deliberately absent from this type's
-            // dependency graph. A single double would put a representation error into a key field.
             for (Field field : CardXrefRecord.class.getDeclaredFields()) {
                 assertThat(field.getType())
                         .as("declared field %s", field.getName())
@@ -1603,7 +1350,6 @@ class CardXrefRecordTest {
                     .as("COBOL WORKING-STORAGE must never become a mutable static field: it would break "
                             + "request isolation and make every test order-dependent")
                     .isEmpty();
-            // The three instance fields are final, so a decoded record is safe to share without copying.
             for (Field field : CardXrefRecord.class.getDeclaredFields()) {
                 if (!Modifier.isStatic(field.getModifiers())) {
                     assertThat(Modifier.isFinal(field.getModifiers()))
@@ -1611,7 +1357,6 @@ class CardXrefRecordTest {
                             .isTrue();
                 }
             }
-            // One type per copybook, and it is not extensible into a variant with different geometry.
             assertThat(Modifier.isFinal(CardXrefRecord.class.getModifiers())).isTrue();
         }
 
@@ -1621,8 +1366,6 @@ class CardXrefRecordTest {
             List<FieldSpan> spans = CardXrefRecord.LAYOUT.spans();
 
             assertThat(spans).hasSize(4);
-            // Publishing the layout cannot leak mutable state, so a repository or the parity differ may
-            // read the field geometry without this type growing a parallel reflection surface.
             assertThatExceptionOfType(UnsupportedOperationException.class)
                     .isThrownBy(() -> spans.add(CardXrefRecord.FILLER));
             assertThatExceptionOfType(UnsupportedOperationException.class)

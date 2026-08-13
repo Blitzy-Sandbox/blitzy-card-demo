@@ -33,55 +33,20 @@ import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 
 /**
- * Tests for the error boundary in {@link WebConfig.CobolErrorHandler}, and for the configuration that
- * makes it the <em>only</em> boundary.
- *
- * <h2>What is being protected</h2>
- * The width and shape guards throughout this module - in {@link FixedWidthCodec}, in the record models
- * and in the request DTOs - are handed the value they are judging. That is unavoidable: a guard cannot
- * decide that seventeen characters will not fit a {@code PIC X(16)} field without holding the
- * seventeen characters. What is avoidable is those characters reaching an HTTP response body, because
- * the values flowing through these spans are card numbers, account identifiers, government-issued
- * identifiers and EFT account numbers.
- *
- * <p>Two things together prevent it, and both are asserted here. First, no guard message contains the
- * value any more - it names the field, its declared width and the category of the failure. Second,
- * {@code application.yml} publishes none of the framework's own error attributes, so an exception this
- * advice never chose to answer cannot have its text published by the fallback error page instead.
- *
- * <h2>Why the second half needs testing too</h2>
- * A sanitised message is one edit away from being unsanitised, and a guard added next year will not
- * know about this rule. Turning the framework attributes off is the barrier that does not depend on
- * every future author remembering, which is why the shipped configuration is asserted rather than
- * assumed - and asserted against the real {@code application.yml} on the classpath rather than a
- * copy of its values.
- *
- * <p>Plain JUnit 5: no application context, no {@code MockMvc}, no servlet container. Every handler
- * has a package-private static builder for exactly this reason.
+ * Tests for the error boundary in {@link WebConfig.CobolErrorHandler}, and for the configuration that makes
+ * it the only boundary.
  */
 @DisplayName("WebConfig error boundary - a failure is reported without echoing what failed")
 class WebConfigErrorBoundaryTest {
-
-    /** A card number shaped like a real one, used to prove it never appears in a message. */
     private static final String PAN = "4111111111111111";
 
-    /** The advice under test. It is stateless, so one instance serves every case. */
     private static final CobolErrorHandler HANDLER = new CobolErrorHandler();
 
-    /** A codec over the fixture code page, for driving the guards that used to echo their input. */
     private static final FixedWidthCodec CODEC = new FixedWidthCodec(StandardCharsets.US_ASCII);
 
-    /**
-     * Builds an unreadable-body failure whose cause carries a Jackson mapping path.
-     *
-     * @param fieldNames the field names to place on the path, outermost first
-     * @return the failure, with a cause Jackson would have produced
-     */
     private static HttpMessageNotReadableException unreadableAt(final String... fieldNames) {
         JsonMappingException mapping =
                 JsonMappingException.from((JsonParser) null, "unexpected token at " + PAN);
-        // prependPath builds the path from the inside out, so walk the names backwards to end up
-        // with the caller's order.
         for (int index = fieldNames.length - 1; index >= 0; index--) {
             mapping.prependPath(Object.class, fieldNames[index]);
         }
@@ -89,13 +54,6 @@ class WebConfigErrorBoundaryTest {
                 mock(HttpInputMessage.class));
     }
 
-    /**
-     * Reads one property from the real {@code application.yml} on the test classpath.
-     *
-     * @param key the property name
-     * @return the configured value, or {@code null} when the key is absent
-     * @throws IOException if the resource cannot be read
-     */
     private static Object shippedProperty(final String key) throws IOException {
         List<PropertySource<?>> sources = new YamlPropertySourceLoader()
                 .load("application.yml", new ClassPathResource("application.yml"));
@@ -106,7 +64,6 @@ class WebConfigErrorBoundaryTest {
     @Nested
     @DisplayName("The shipped configuration publishes no framework error attribute")
     class ShippedConfiguration {
-
         @ParameterizedTest(name = "server.error.{0} is never")
         @ValueSource(strings = {"include-message", "include-binding-errors", "include-stacktrace"})
         @DisplayName("All three error attributes are off, so no exception text is ever published")
@@ -123,8 +80,6 @@ class WebConfigErrorBoundaryTest {
             List<PropertySource<?>> sources = new YamlPropertySourceLoader()
                     .load("application-test.yml", new ClassPathResource("application-test.yml"));
 
-            // The test profile must not carry its own server.error.* values at all: overriding them
-            // would mean tests exercise a different error boundary from the one that ships.
             assertThat(sources).isNotEmpty();
             assertThat(sources.get(0).getProperty("server.error.include-message")).isNull();
             assertThat(sources.get(0).getProperty("server.error.include-binding-errors")).isNull();
@@ -135,14 +90,9 @@ class WebConfigErrorBoundaryTest {
     @Nested
     @DisplayName("An unreadable request body reports the field, never the payload")
     class UnreadableBody {
-
         @Test
         @DisplayName("It reports 400 and names each field on Jackson's mapping path")
         void itNamesEachFieldOnThePath() {
-            // The one envelope a client is answered with: 400, the reason phrase, the fixed
-            // malformed-request detail, and one entry per named field. The field names travel to the
-            // caller as well as to the log, which is what makes a MALFORMED_REQUEST answer actionable;
-            // what still never travels is anything Jackson quoted from the payload.
             ResponseEntity<CobolErrorResponse> response =
                     new CobolErrorHandler().handleUnreadableRequestBody(unreadableAt("cardNumber"));
 
@@ -167,7 +117,6 @@ class WebConfigErrorBoundaryTest {
         void jacksonsOwnMessageIsNeverCopied() {
             HttpMessageNotReadableException unreadable = unreadableAt("cardNumber");
 
-            // Both the exception and its cause quote the payload; neither reaches the body.
             assertThat(unreadable.getMessage()).contains(PAN);
             CobolErrorResponse body = CobolErrorHandler.malformedRequestResponse(unreadable);
 
@@ -206,8 +155,6 @@ class WebConfigErrorBoundaryTest {
         void aPathElementWhoseFieldNameIsBlankContributesNothing() {
             HttpMessageNotReadableException blankNamed = unreadableAt("   ");
 
-            // A blank name would render as an entry a caller cannot act on, so it is dropped for the
-            // same reason an array index is: there is no field to report.
             assertThat(CobolErrorHandler.malformedRequestResponse(blankNamed).fieldErrors())
                     .isEmpty();
         }
@@ -238,11 +185,6 @@ class WebConfigErrorBoundaryTest {
         @DisplayName("A screen value refused at the JSON boundary is answered as the refusal it is, not "
                 + "as a malformed body: the body parsed perfectly well")
         void aScreenInputRefusalIsUnwrapped() {
-            // ScreenTextDeserializer can only fail through Jackson, so its refusal arrives wrapped.
-            // Answering MALFORMED_REQUEST would be wrong twice over - the body was well formed, and the
-            // caller would be told to check its shape rather than which member carries the bad
-            // character - so the handler unwraps it and gives the one answer this module gives for a
-            // screen value it refuses, from wherever it was raised.
             ScreenInputRejectedException refusal =
                     ScreenInputRejectedException.controlCharacter("fname", 0x09);
             JsonMappingException mapping =
@@ -281,16 +223,9 @@ class WebConfigErrorBoundaryTest {
     @Nested
     @DisplayName("A parameter of the wrong type reports neither its value nor its Java type")
     class TypeMismatch {
-
         @Test
         @DisplayName("The MVC subclass takes the same fixed answer as any other conversion failure")
         void theSubclassTakesTheFixedAnswer() {
-            // MethodArgumentTypeMismatchException extends TypeMismatchException, and there is exactly
-            // ONE handler for the family. There used to be a narrower one for the MVC subclass, and
-            // because closest-match resolution preferred it, a caller who put a word where a number
-            // belonged was told the field is "not a valid Long" - the internal Java type of a screen
-            // field, published to an unauthenticated caller. The narrower handler is gone, so the
-            // subclass and the superclass now answer identically.
             MethodArgumentTypeMismatchException mismatch = new MethodArgumentTypeMismatchException(
                     PAN, Long.class, "acctId", null, new NumberFormatException(PAN));
 
@@ -312,8 +247,6 @@ class WebConfigErrorBoundaryTest {
             assertThat(mismatch.getValue()).isEqualTo(PAN);
             ResponseEntity<CobolErrorResponse> response = HANDLER.handleTypeMismatch(mismatch);
 
-            // The name is the one the route publishes and the caller typed into the URL, so it is
-            // already known to them and discloses nothing; the value and the Java type are not.
             assertThat(response.getBody()).isNotNull();
             assertThat(response.getBody().fieldErrors()).singleElement()
                     .satisfies(field -> assertThat(field.field()).isEqualTo("acctId"));
@@ -336,7 +269,6 @@ class WebConfigErrorBoundaryTest {
     @Nested
     @DisplayName("A value a domain guard rejected is answered without the value")
     class RejectedValue {
-
         @Test
         @DisplayName("It reports 400 - the caller supplied the value, so it is not a server fault")
         void itReportsBadRequest() {
@@ -355,11 +287,6 @@ class WebConfigErrorBoundaryTest {
         @Test
         @DisplayName("A guard anywhere in the module is covered, not only the sanitised ones")
         void aGuardAnywhereInTheModuleIsCovered() {
-            // This is the barrier that does not depend on every guard in the module having been
-            // reworded, and it is why the sanitising is defence in depth rather than the fix. Even a
-            // guard whose message still quotes the value it judged - and several do, in packages this
-            // checkpoint did not touch - cannot get that value into a response body, because the
-            // handler never reads the message.
             IllegalArgumentException stillQuotesItsInput =
                     new IllegalArgumentException("CARD-NUM is PIC 9(16), so it cannot hold " + PAN);
 
@@ -386,11 +313,7 @@ class WebConfigErrorBoundaryTest {
             assertThat(response.getBody().code()).isEqualTo(CobolErrorHandler.REJECTED_VALUE_CODE);
             assertThat(response.getBody().fieldErrors()).singleElement()
                     .satisfies(field -> {
-                        // The lowercase JSON member the caller sent, not the uppercase COBOL label:
-                        // one vocabulary across every arm of the envelope.
                         assertThat(field.field()).isEqualTo("acslnam");
-                        // The FIXED public sentence, which is the exception's publicDetail() and NOT its
-                        // message. The two are different texts on purpose.
                         assertThat(field.message()).isEqualTo(refusal.publicDetail());
                     });
             assertThat(response.getBody().detail()).isEqualTo(refusal.publicDetail())
@@ -401,9 +324,6 @@ class WebConfigErrorBoundaryTest {
         @DisplayName("The published answer names the member and NOTHING internal - no code page, no "
                 + "symbolic item, no PICTURE, no code point, no 3270 mechanics")
         void theScreenInputAnswerDisclosesNothingInternal() {
-            // Every internal fact below is genuinely present in the exception's own message, which is
-            // why this assertion is about the RESPONSE and not about the exception: the diagnostic is
-            // for the server log, and what the boundary publishes is the fixed sentence.
             ScreenInputRejectedException refusal = ScreenInputRejectedException.unrepresentable(
                     "acslnam", "ACSLNAMI", StandardCharsets.US_ASCII, 0x00D1);
             assertThat(refusal.getMessage())
@@ -429,8 +349,6 @@ class WebConfigErrorBoundaryTest {
                 + "factory added later cannot widen the answer by wording its diagnostic differently")
         void everyReasonPublishesAFixedInternalsFreeSentence(
                 final ScreenInputRejectedException.Reason reason) {
-            // Driven from the enum rather than from a list of factories, so a reason added later is
-            // covered the moment it exists.
             for (String member : new String[] {"acslnam", "eibaid", "usridin"}) {
                 ResponseEntity<CobolErrorResponse> response =
                         HANDLER.handleRejectedValue(refusalWith(reason, member));
@@ -451,14 +369,6 @@ class WebConfigErrorBoundaryTest {
             }
         }
 
-        /**
-         * One refusal per {@link ScreenInputRejectedException.Reason}, built through the public factory
-         * that produces it, so the enum drives real refusals rather than a hand-made stand-in.
-         *
-         * @param reason the reason to produce
-         * @param member the member to name
-         * @return the refusal; never {@code null}
-         */
         private static ScreenInputRejectedException refusalWith(
                 final ScreenInputRejectedException.Reason reason, final String member) {
             return switch (reason) {
@@ -472,6 +382,12 @@ class WebConfigErrorBoundaryTest {
                         ScreenInputRejectedException.outsideRange(member, "one EIBAID byte", 0, 255);
                 case CONTRADICTORY_SPELLINGS -> ScreenInputRejectedException
                         .contradictorySpellings(member, "eibAid", "one EIBAID");
+                case CONFLICTING_KEY ->
+                        ScreenInputRejectedException.conflictingKey(member, CardDetails.CARDID_LENGTH);
+                case UNAUTHENTIC_STATE ->
+                        ScreenInputRejectedException.unauthenticStateToken(member);
+                case STATE_NAMES_ANOTHER_RECORD ->
+                        ScreenInputRejectedException.stateTokenNamesAnotherRecord(member);
             };
         }
 
@@ -489,7 +405,6 @@ class WebConfigErrorBoundaryTest {
                         .as("every constructor must be private so the factories are the only producers")
                         .isTrue();
             }
-            // And the value genuinely does not reach the body, even for a member whose span holds a PAN.
             ResponseEntity<CobolErrorResponse> response = HANDLER.handleRejectedValue(
                     ScreenInputRejectedException.tooWide("cardNumber", "CARDSIDI PIC X(16)",
                             CardDetails.CARDID_LENGTH, PAN.length() + 3));
@@ -527,8 +442,6 @@ class WebConfigErrorBoundaryTest {
         @Test
         @DisplayName("The body cannot carry the exception's text, whatever the exception says")
         void theBodyCannotCarryTheExceptionsText() {
-            // The builder takes no argument at all, so there is no path by which a guard added later
-            // could widen this response by wording its message differently.
             CobolErrorResponse first = CobolErrorHandler.rejectedValueResponse();
             CobolErrorResponse second = CobolErrorHandler.rejectedValueResponse();
 
@@ -562,7 +475,6 @@ class WebConfigErrorBoundaryTest {
     @Nested
     @DisplayName("The guards themselves no longer hold the value in their message - F15")
     class GuardsDoNotEchoValues {
-
         @Test
         @DisplayName("CardXrefRecord reports an over-wide XREF-CARD-NUM by length, not by content")
         void cardXrefRecordReportsAnOverWideKeyByLength() {
@@ -674,12 +586,6 @@ class WebConfigErrorBoundaryTest {
                     .doesNotContain("'" + image + "'");
         }
 
-        /**
-         * Runs an operation expected to fail and returns the failure's message.
-         *
-         * @param operation the operation to run
-         * @return the message of whatever it threw
-         */
         private static String catchMessage(final Runnable operation) {
             try {
                 operation.run();

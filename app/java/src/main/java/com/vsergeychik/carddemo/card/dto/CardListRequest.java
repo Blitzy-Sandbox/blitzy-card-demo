@@ -22,241 +22,13 @@ import java.util.Optional;
 /**
  * Inbound REST payload for {@code GET /api/cards} - the credit card list screen.
  *
- * <p><strong>Provenance.</strong> This type is the 1:1 projection of one BMS screen and nothing
- * else:
- *
- * <ul>
- *   <li>CSD transaction {@code CCLI}, program {@code COCRDLIC} - {@code app/cbl/COCRDLIC.cbl},
- *       1,459 lines.</li>
- *   <li>Symbolic map {@code app/cpy-bms/COCRDLI.CPY}, 560 lines - the authority for every payload
- *       field <em>name</em> and every payload field <em>length</em>.</li>
- *   <li>Mapset {@code app/bms/COCRDLI.bms}, 344 lines - the authority for which fields exist at
- *       all.</li>
- * </ul>
- *
- * <p>There is no design system and no component library in this project, so the BMS layer <em>is</em>
- * the presentation contract and it binds with the same force a design system would: every payload
- * member below traces to a name-labelled {@code DFHMDF} definition, and every declared width traces
- * to an {@code xxxI} {@code PICTURE} clause. That traceability is what gate G9 asserts, and every
- * field's Javadoc names its {@code DFHMDF} label, its {@code xxxI} item and its {@code .CPY} line so
- * a reviewer can check each one against the map directly.
- *
- * <h2>The projection rule</h2>
- *
- * <p>The input group {@code 01 CCRDLIAI.} opens at {@code COCRDLI.CPY:17} with
- * {@code 02 FILLER PIC X(12)} - the {@code TIOAPFX=YES} prefix - and then repeats, per screen field:
- *
- * <pre>
- *   02  xxxL    COMP  PIC  S9(4).      2 bytes, a binary halfword
- *   02  xxxF    PICTURE X.             1 byte
- *   02  FILLER REDEFINES xxxF.         overlay, 0 additional bytes
- *     03 xxxA   PICTURE X.
- *   02  FILLER  PICTURE X(4).          4 bytes
- *   02  xxxI    PIC X(n).              n bytes - THE PAYLOAD FIELD
- * </pre>
- *
- * <p>Stride is therefore {@code 7 + n}. Only the {@code xxxI} items become payload members of
- * <em>this</em> type; the mirrored {@code xxxO} items of {@code 01 CCRDLIAO REDEFINES CCRDLIAI.}
- * ({@code COCRDLI.CPY:289}, also 45 of them) are the response's concern. The {@code xxxL},
- * {@code xxxF} and {@code xxxA} items are validation and highlight metadata, never JSON payload
- * members: {@code xxxL} is the input length CICS reports and {@code xxxA} is the attribute view that
- * {@code common/FieldAttributeSetter} addresses. Both are carried here as deliberately
- * non-serialised {@link FieldMetadata}.
- *
- * <p>{@code app/bms/COCRDLI.bms} declares <strong>72</strong> {@code DFHMDF} entries of which
- * <strong>45 are name-labelled</strong>. The remaining 27 are unnamed - literal {@code INITIAL}
- * screen furniture such as {@code INITIAL='Tran:'} and zero-length attribute stoppers - and get no
- * Java field.
- *
- * <h2>The row-1 asymmetry</h2>
- *
- * <p><strong>Row 1 carries four fields; rows 2 through 7 carry five.</strong> This is the single
- * most likely thing to be silently "tidied" into a uniform 7x5 array, so it is enforced
- * structurally here rather than left to a comment: row 1 is a {@link FirstListRow}, which has no
- * {@code crdStp} accessor at all, and rows 2 to 7 are {@link StopperListRow}, whose {@code crdStp}
- * component sits <em>second</em>.
- *
- * <p>Verified twice against the source:
- *
- * <ol>
- *   <li>{@code 02 CRDSEL1I PIC X(1).} at {@code app/cpy-bms/COCRDLI.CPY:78} is followed
- *       <em>immediately</em> by {@code 02 ACCTNO1L COMP PIC S9(4).} at {@code :79}. There is no
- *       {@code CRDSTP1}. {@code CRDSTP2} through {@code CRDSTP7} all exist, each immediately after
- *       its own {@code CRDSELn} - lines 108, 138, 168, 198, 228 and 258 respectively.</li>
- *   <li>A search for {@code CRDSTP1} returns zero hits in both {@code app/cpy-bms/COCRDLI.CPY} and
- *       {@code app/bms/COCRDLI.bms}.</li>
- * </ol>
- *
- * <p>The mapset shows why. Every row places an attribute stopper at column 14. For rows 2 to 7 that
- * stopper is a <em>named</em> field, {@code CRDSTPn DFHMDF ATTRB=(ASKIP,DRK,FSET) LENGTH=1
- * POS=(line,14)}. For row 1 the same stopper is <em>unnamed</em> -
- * {@code DFHMDF LENGTH=0, POS=(11,14)} at {@code app/bms/COCRDLI.bms:145-146} - so it never reaches
- * the symbolic map.
- *
- * <p>The 45-field count only reconciles with the asymmetry present:
- * <strong>9 header + 4 (row 1) + 6 x 5 (rows 2-7) + 2 footer = 45</strong>. A model that produces 46
- * or 44 has the asymmetry wrong.
- *
- * <h2>Geometry</h2>
- *
- * <p>Data bytes: header {@code 4+40+8+8+40+8+3+11+16 = 138}; row 1 {@code 1+11+16+1 = 29}; rows 2-7
- * {@code (1+1+11+16+1) x 6 = 180}; footer {@code 45+78 = 123}; total {@code 470}. The whole input
- * group image is therefore {@code 12 + 45 x 7 + 470 = }<strong>797</strong> bytes - see
- * {@link #GROUP_LENGTH}, which is expressed as that computed sum so the arithmetic cannot drift.
- *
- * <p>No {@code FixedWidthRecord.RecordLayout} is declared for the group. A layout would have to
- * describe each {@code xxxL} as a two-byte binary halfword, and {@code FixedWidthRecord.PictureKind}
- * deliberately models only zoned {@code DISPLAY} and character categories. Declaring a binary
- * halfword as though it were character or zoned data would put a false statement in the layout, so
- * the geometry is proved by computed constants and asserted by the unit test instead. The one
- * genuinely zoned, genuinely fixed-width table on this screen - the 196-byte row array - does use
- * {@link FixedWidthRecord#occursElementOffsetOneBased} for its offsets.
- *
- * <h2>Page size and the paging cursor</h2>
- *
- * <p>Page size is exactly {@value #PAGE_SIZE} and is behaviour, not configuration.
- * {@code app/cbl/COCRDLIC.cbl:177-178} declares
- * {@code 05 WS-MAX-SCREEN-LINES PIC S9(4) COMP VALUE 7}. {@link #PAGE_SIZE} is a compile-time
- * constant with no configuration path: no {@code @Value}, no {@code application.yml} key, no system
- * property and no request parameter can change it.
- *
- * <p>The cursor travels in the payload, never in server-side state.
- * {@code app/cbl/COCRDLIC.cbl:229-248} declares {@code 01 WS-THIS-PROGCOMMAREA.} as two 27-byte key
- * groups plus four one-byte indicators - <strong>58 bytes</strong> - and {@link PageCursor} is its
- * exact projection. The program transports it by appending it to the CICS communication area behind
- * {@code CARDDEMO-COMMAREA} ({@code COCRDLIC.cbl:327-331} inbound, {@code :610-612} outbound), which
- * is precisely why a stateless REST projection has to carry it in the request body.
- *
- * <p>One verified subtlety, recorded rather than reconciled away. {@code COCRDLIC.cbl:252} declares
- * {@code 05 WS-SCREEN-DATA.} - level 05, which is <em>superior</em> to the level 10 items above it,
- * so by COBOL level-number rules it is a direct subordinate of {@code 01 WS-THIS-PROGCOMMAREA} and
- * not a separate record. {@code LENGTH OF WS-THIS-PROGCOMMAREA} is consequently
- * {@code 58 + 196 = }{@value #PROG_COMMAREA_LENGTH} bytes: the paging cursor proper followed by the
- * 196-byte screen row array. Both are modelled here - {@link PageCursor} and
- * {@link ScreenRowTable} - and {@link #PROG_COMMAREA_LENGTH} records the combined width.
- *
- * <h2>OCCURS is 1-based</h2>
- *
- * <p>Three separate seven-element COBOL tables stand behind this one screen, and all three are
- * 1-based:
- *
- * <ol>
- *   <li>{@code WS-SCREEN-ROWS OCCURS 7 TIMES} - {@code COCRDLIC.cbl:252-260}, 28 bytes per row,
- *       196 in total. Modelled as {@link ScreenRowTable}.</li>
- *   <li>{@code WS-EDIT-SELECT PIC X(1) OCCURS 7 TIMES} - {@code COCRDLIC.cbl:72-82}, whose backing
- *       {@code WS-EDIT-SELECT-FLAGS PIC X(7)} carries {@code VALUE LOW-VALUES}. Modelled as
- *       {@link SelectionFlags}.</li>
- *   <li>{@code WS-EDIT-SELECT-ERRORS OCCURS 7 TIMES} - {@code COCRDLIC.cbl:83-88}, per-row highlight
- *       metadata. Modelled as {@link SelectionErrorFlags} and, like {@code xxxA}, kept off the
- *       wire.</li>
- * </ol>
- *
- * <p>Every 1-based to 0-based conversion in this file goes through a named helper -
- * {@link #javaIndexOf(int)} or {@link FixedWidthRecord#occursElementOffsetOneBased} - and is never
- * written inline. COBOL index 1 and COBOL index 7 are both addressable and both correct through
- * every accessor exposed here.
- *
- * <h2>Fields this screen does not have</h2>
- *
- * <p>There is <strong>no {@code FKEYS} field</strong> anywhere in {@code COCRDLI}. Its sibling card
- * maps do have one - 75 bytes in {@code COCRDSL}, 21 in {@code COCRDUP} - but here the function-key
- * legend is an unnamed {@code DFHMDF ... POS=(24,1) INITIAL='  F3=Exit F7=Backward  F8=Forward'}, so
- * it is screen furniture and gets no field.
- *
- * <p>{@code INFOMSG} and {@code ERRMSG} are <strong>45 and 78</strong> bytes here where both
- * {@code COCRDSL} and {@code COCRDUP} declare 40 and 80, and {@code PAGENO X(3)} exists only on this
- * map, sitting between {@code CURTIME} and {@code ACCTSID}. Those divergences are the contract. They
- * are the reason this folder declares no shared header base class: any such base would collapse them
- * and break gate G9.
- *
- * <h2>The names on the wire</h2>
- *
- * <p>All forty-five payload members travel under the names {@code app/cpy-bms/COCRDLI.CPY} declares,
- * with only the {@code I} suffix of the input view dropped: {@code TRNNAMEI} is {@code trnname},
- * {@code ACCTSIDI} is {@code acctsid}, and each of the 34 row items is its own member -
- * {@code crdsel1}, {@code acctno1}, {@code crdnum1}, {@code crdsts1}, then {@code crdsel2},
- * {@code crdstp2} and so on to {@code crdsts7}. {@link CardListResponse} names its 34 identically
- * with an {@code O} suffix, so a client can echo the pair member for member.
- *
- * <p>The rows are deliberately <em>not</em> a nested array. A generic {@code rows} list would carry a
- * name no {@code DFHMDF} declares, would give the seven rows indices where the screen gives them
- * numbers, and - because row 1 has one fewer member than the rest - would need a wire-level
- * discriminator to say which shape each element had. {@link #getRows()} remains as the internal store
- * and is {@link JsonIgnore ignored}; the 34 accessor pairs are the contract.
- *
- * <h2>Two source facts recorded, not corrected</h2>
- *
- * <ol>
- *   <li>{@code COCRDLI DFHMSD LANG=COBOL, MODE=INOUT, STORAGE=AUTO, TIOAPFX=YES, TYPE=&amp;&amp;SYSPARM}
- *       ({@code app/bms/COCRDLI.bms:20-24}) carries <em>no</em> {@code CTRL=} and <em>no</em>
- *       {@code EXTATT=}. It is {@code CCRDLIA DFHMDI CTRL=(FREEKB),
- *       DSATTS=(COLOR,HILIGHT,PS,VALIDN), MAPATTS=(COLOR,HILIGHT,PS,VALIDN), SIZE=(24,80)}
- *       ({@code :25-28}) that carries them. {@code SIZE=(24,80)} is confirmed. The summary that
- *       places {@code CTRL=(ALARM,FREEKB)} and {@code EXTATT=YES} on the {@code DFHMSD} of all
- *       seventeen mapsets does not hold for this one.</li>
- *   <li>{@code app/cbl/COCRDLIC.cbl:274} reads {@code *COPY COCRDSL.} - commented out - while
- *       {@code COPY COCRDLI.} at {@code :276} is live. {@code COCRDLIC} therefore has no
- *       {@code COCRDSL} data area, even though the card-select screen is one of its navigation
- *       targets. Documented; not "restored".</li>
- * </ol>
- *
- * <h2>Deliberate omissions</h2>
- *
- * <ul>
- *   <li><strong>No filter validation beyond declared width.</strong> Every constraint here is a
- *       {@code @Size(max = ...)} taken from an {@code xxxI} {@code PICTURE} clause. No
- *       {@code @NotBlank}, no {@code @Pattern}, no digit or range check. {@code COCRDLIC} runs its
- *       own filter edits through {@code WS-EDIT-ACCT-FLAG} and {@code WS-EDIT-CARD-FLAG}
- *       ({@code :61-68}), three-state flags whose {@code NOT-OK} / {@code ISVALID} / {@code BLANK}
- *       levels decide which message appears and in what order. Pre-empting them in the framework
- *       would change that, which is a parity violation.</li>
- *   <li><strong>No masking and no redaction.</strong> This payload carries up to seven full 16-digit
- *       card numbers and seven account identifiers in the clear, exactly as the symbolic map does.
- *       Adding masking would be an unrequested behaviour change, and so would adding any new
- *       exposure. Every {@code @JsonIgnore} in this file falls into one of exactly three categories,
- *       and none withholds a screen field: the three non-map members the COBOL declares but the map
- *       does not carry - {@link #getScreenRowTable()}, {@link #getSelectionErrorFlags()} and
- *       {@link #getFieldMetadata()}; derived predicates and counts such as {@link #isReenter()}
- *       or {@link #payloadFieldCount()}, which are conclusions about the payload rather than part of
- *       it; and {@link #getRows()}, the internal store the 34 numbered row members are windows onto,
- *       which is withheld precisely so that those 34 are the only way the rows travel.
- *       <strong>Not one of the forty-five payload members is annotated</strong>, and no value
- *       anywhere is masked, truncated or substituted.</li>
- *   <li><strong>No server-side state.</strong> No {@code HttpSession}, no
- *       {@code @SessionAttributes}, no cache, no static mutable field, no {@code ThreadLocal}.
- *       Nothing here outlives the request; carrying the whole cursor in the body is what makes
- *       stateless paging possible.</li>
- *   <li><strong>No persistence and no arithmetic.</strong> There is no JPA annotation and no DDL,
- *       and no field on this screen is scaled or monetary, so there is no {@code BigDecimal} and no
- *       rounding mode anywhere in this file.</li>
- * </ul>
- *
- * <p>Instances are mutable and constructible with no Spring context, so controller tests,
- * {@code MockMvc} tests and the {@code COCRDLIC} parity cases can all build one directly and assert
- * the first and the last row. This class is not thread-safe; a request-scoped payload has no need to
- * be, and making it so would hide the sharing bugs that defensive copying is here to prevent.
- *
- * <h2>Members this request tolerates without declaring</h2>
- *
- * <p>The {@code @JsonIgnoreProperties} below names the members the paired response carries that this
- * request does not declare. They are tolerated so a client can send the body it was just handed straight
- * back: rule R6 and gate G37 put the whole conversation in the payload, which makes the next request the
- * previous response. {@code ignoreUnknown} stays at its default of {@code false}, so every <em>other</em>
- * unrecognised name is still refused with the offending field named in the error envelope. Each tolerated
- * member is recomputed by the server on every path, so the value that arrives here is discarded and
- * cannot steer a branch. The names live in {@link com.vsergeychik.carddemo.common.ResponseOnlyMembers},
- * which explains each one.
+ * <p>The {@code xxxL}, {@code xxxF} and {@code xxxA} items are validation and highlight metadata, never
+ * JSON payload members: {@code xxxL} is the input length CICS reports and {@code xxxA} is the attribute
+ * view that {@code common/FieldAttributeSetter} addresses.
  */
 @JsonPropertyOrder({
-        // The forty-five xxxI items in the order app/cpy-bms/COCRDLI.CPY declares them: the nine
-        // header and key fields first, then the seven detail rows top to bottom, then the two
-        // message lines. Left implicit, reflection put infomsg and errmsg tenth and eleventh --
-        // ahead of the rows they annotate -- and interleaved the transport members into the middle
-        // of the screen.
         "trnname", "title01", "curdate", "pgmname", "title02", "curtime", "pageno", "acctsid",
         "cardsid",
-        // Row 1 has no CRDSTP field: app/bms/COCRDLI.bms gives only rows 2 through 7 a select-stop
-        // attribute field, so the four-item shape here is the map's shape and not an omission.
         "crdsel1", "acctno1", "crdnum1", "crdsts1",
         "crdsel2", "crdstp2", "acctno2", "crdnum2", "crdsts2",
         "crdsel3", "crdstp3", "acctno3", "crdnum3", "crdsts3",
@@ -265,8 +37,6 @@ import java.util.Optional;
         "crdsel6", "crdstp6", "acctno6", "crdnum6", "crdsts6",
         "crdsel7", "crdstp7", "acctno7", "crdnum7", "crdsts7",
         "infomsg", "errmsg",
-        // Transport extensions after the map: the page-7 browse cursor, the per-row selection
-        // flags, CVCRD01Y's screen state and the CARDDEMO-COMMAREA.
         "pageCursor", "selectionFlags", "cardScreenState", "navigationContext"})
 @JsonIgnoreProperties({
         ResponseOnlyMembers.NEXT_PROGRAM,
@@ -274,130 +44,109 @@ import java.util.Optional;
         ResponseOnlyMembers.NEXT_MAP,
         ResponseOnlyMembers.SCREEN_METADATA})
 public class CardListRequest {
-
-    // =================================================================================================
-    // DECLARED WIDTHS - one named constant per name-labelled DFHMDF field, in symbolic-map source
-    // order, each taken from its xxxI PICTURE clause in app/cpy-bms/COCRDLI.CPY. These are the only
-    // authority for a payload field's length, and they are named rather than inlined so that a width
-    // can be checked against the map in one place (practice B8).
-    // =================================================================================================
-
-    /** {@code TRNNAME} - {@code 02 TRNNAMEI PIC X(4).}, {@code COCRDLI.CPY:24}. */
+    /**
+     * {@code TRNNAME} - {@code 02 TRNNAMEI PIC X(4).}, {@code COCRDLI.CPY:24}.
+     */
     public static final int TRNNAME_LENGTH = 4;
 
-    /** {@code TITLE01} - {@code 02 TITLE01I PIC X(40).}, {@code COCRDLI.CPY:30}. */
+    /**
+     * {@code TITLE01} - {@code 02 TITLE01I PIC X(40).}, {@code COCRDLI.CPY:30}.
+     */
     public static final int TITLE01_LENGTH = 40;
 
-    /** {@code CURDATE} - {@code 02 CURDATEI PIC X(8).}, {@code COCRDLI.CPY:36}. */
+    /**
+     * {@code CURDATE} - {@code 02 CURDATEI PIC X(8).}, {@code COCRDLI.CPY:36}.
+     */
     public static final int CURDATE_LENGTH = 8;
 
-    /** {@code PGMNAME} - {@code 02 PGMNAMEI PIC X(8).}, {@code COCRDLI.CPY:42}. */
+    /**
+     * {@code PGMNAME} - {@code 02 PGMNAMEI PIC X(8).}, {@code COCRDLI.CPY:42}.
+     */
     public static final int PGMNAME_LENGTH = 8;
 
-    /** {@code TITLE02} - {@code 02 TITLE02I PIC X(40).}, {@code COCRDLI.CPY:48}. */
+    /**
+     * {@code TITLE02} - {@code 02 TITLE02I PIC X(40).}, {@code COCRDLI.CPY:48}.
+     */
     public static final int TITLE02_LENGTH = 40;
 
-    /** {@code CURTIME} - {@code 02 CURTIMEI PIC X(8).}, {@code COCRDLI.CPY:54}. */
+    /**
+     * {@code CURTIME} - {@code 02 CURTIMEI PIC X(8).}, {@code COCRDLI.CPY:54}.
+     */
     public static final int CURTIME_LENGTH = 8;
 
     /**
-     * {@code PAGENO} - {@code 02 PAGENOI PIC X(3).}, {@code COCRDLI.CPY:60}. Unique to this mapset,
-     * and positioned between {@code CURTIME} and {@code ACCTSID}.
+     * {@code PAGENO} - {@code 02 PAGENOI PIC X(3).}, {@code COCRDLI.CPY:60}.
      */
     public static final int PAGENO_LENGTH = 3;
 
-    /** {@code ACCTSID} - {@code 02 ACCTSIDI PIC X(11).}, {@code COCRDLI.CPY:66}. */
+    /**
+     * {@code ACCTSID} - {@code 02 ACCTSIDI PIC X(11).}, {@code COCRDLI.CPY:66}.
+     */
     public static final int ACCTSID_LENGTH = 11;
 
-    /** {@code CARDSID} - {@code 02 CARDSIDI PIC X(16).}, {@code COCRDLI.CPY:72}. */
+    /**
+     * {@code CARDSID} - {@code 02 CARDSIDI PIC X(16).}, {@code COCRDLI.CPY:72}.
+     */
     public static final int CARDSID_LENGTH = 16;
 
     /**
-     * {@code CRDSELn} - {@code 02 CRDSELnI PIC X(1).}; row 1 at {@code COCRDLI.CPY:78}, rows 2-7 at
-     * lines 102, 132, 162, 192, 222 and 252.
+     * {@code CRDSELn} - {@code 02 CRDSELnI PIC X(1).}; row 1 at {@code COCRDLI.CPY:78}, rows 2-7 at lines
+     * 102, 132, 162, 192, 222 and 252.
      */
     public static final int CRDSEL_LENGTH = 1;
 
     /**
      * {@code CRDSTPn} - {@code 02 CRDSTPnI PIC X(1).}, the row attribute stopper at column 14.
-     * Present for rows 2-7 only, at {@code COCRDLI.CPY} lines 108, 138, 168, 198, 228 and 258.
-     * <strong>There is no {@code CRDSTP1}.</strong>
      */
     public static final int CRDSTP_LENGTH = 1;
 
     /**
-     * {@code ACCTNOn} - {@code 02 ACCTNOnI PIC X(11).}; row 1 at {@code COCRDLI.CPY:84}, rows 2-7 at
-     * lines 114, 144, 174, 204, 234 and 264.
+     * {@code ACCTNOn} - {@code 02 ACCTNOnI PIC X(11).}; row 1 at {@code COCRDLI.CPY:84}, rows 2-7 at lines
+     * 114, 144, 174, 204, 234 and 264.
      */
     public static final int ACCTNO_LENGTH = 11;
 
     /**
-     * {@code CRDNUMn} - {@code 02 CRDNUMnI PIC X(16).}; row 1 at {@code COCRDLI.CPY:90}, rows 2-7 at
-     * lines 120, 150, 180, 210, 240 and 270.
+     * {@code CRDNUMn} - {@code 02 CRDNUMnI PIC X(16).}; row 1 at {@code COCRDLI.CPY:90}, rows 2-7 at lines
+     * 120, 150, 180, 210, 240 and 270.
      */
     public static final int CRDNUM_LENGTH = 16;
 
     /**
-     * {@code CRDSTSn} - {@code 02 CRDSTSnI PIC X(1).}; row 1 at {@code COCRDLI.CPY:96}, rows 2-7 at
-     * lines 126, 156, 186, 216, 246 and 276.
+     * {@code CRDSTSn} - {@code 02 CRDSTSnI PIC X(1).}; row 1 at {@code COCRDLI.CPY:96}, rows 2-7 at lines
+     * 126, 156, 186, 216, 246 and 276.
      */
     public static final int CRDSTS_LENGTH = 1;
 
     /**
-     * {@code INFOMSG} - {@code 02 INFOMSGI PIC X(45).}, {@code COCRDLI.CPY:282}. Forty-five bytes
-     * here; {@code COCRDSL} and {@code COCRDUP} both declare forty.
+     * {@code INFOMSG} - {@code 02 INFOMSGI PIC X(45).}, {@code COCRDLI.CPY:282}.
      */
     public static final int INFOMSG_LENGTH = 45;
 
     /**
-     * {@code ERRMSG} - {@code 02 ERRMSGI PIC X(78).}, {@code COCRDLI.CPY:288}. Seventy-eight bytes
-     * here; {@code COCRDSL} and {@code COCRDUP} both declare eighty.
+     * {@code ERRMSG} - {@code 02 ERRMSGI PIC X(78).}, {@code COCRDLI.CPY:288}.
      */
     public static final int ERRMSG_LENGTH = 78;
 
-    // =================================================================================================
-    // PAGE SIZE - behaviour, not configuration (gate G39). Declared before the geometry constants
-    // because they are expressed in terms of it: the screen holds exactly one page of rows, so the row
-    // band's width and the field count both derive from this one value.
-    // =================================================================================================
-
     /**
      * Rows the card list shows per page: exactly seven.
-     *
-     * <p>{@code app/cbl/COCRDLIC.cbl:177-178} declares
-     * {@code 05 WS-MAX-SCREEN-LINES PIC S9(4) COMP VALUE 7}, and the mapset places the seven detail
-     * rows on screen lines 11 through 17. The value is behaviour rather than a tuning knob: changing
-     * it would change which records a given page returns and would therefore break parity. It is a
-     * compile-time constant with no configuration path - no {@code @Value}, no
-     * {@code application.yml} key, no system property and no request parameter reaches it.
-     *
-     * <p>The sibling screens use different, equally fixed page sizes: ten for the transaction list
-     * ({@code COTRN00C}) and ten for the user list ({@code COUSR00C}). Seven is specific to this one.
      */
     public static final int PAGE_SIZE = 7;
 
     /**
-     * Detail rows the screen declares, which is one page: {@value #PAGE_SIZE}. Named separately from
-     * {@link #PAGE_SIZE} because it is the {@code OCCURS 7 TIMES} count of the three tables behind the
-     * screen ({@code COCRDLIC.cbl:76}, {@code :86} and {@code :255}) rather than a paging policy, even
-     * though the two values are necessarily equal.
+     * Detail rows the screen declares, which is one page: {@value #PAGE_SIZE}.
      */
     public static final int SCREEN_ROW_COUNT = PAGE_SIZE;
 
     /**
-     * The lowest valid COBOL subscript for any of the three seven-element tables. COBOL subscripts
-     * start at 1; there is no index 0.
+     * The lowest valid COBOL subscript for any of the three seven-element tables.
      */
     public static final int FIRST_ROW_NUMBER = 1;
 
-    /** The highest valid COBOL subscript for any of the three seven-element tables. */
+    /**
+     * The highest valid COBOL subscript for any of the three seven-element tables.
+     */
     public static final int LAST_ROW_NUMBER = SCREEN_ROW_COUNT;
-
-    // =================================================================================================
-    // GROUP GEOMETRY - the shape of 01 CCRDLIAI. Every composite below is written as the sum of its
-    // parts rather than as a literal, so a mistyped width fails the arithmetic instead of quietly
-    // agreeing with a hard-coded total.
-    // =================================================================================================
 
     /**
      * The {@code 02 FILLER PIC X(12).} that opens {@code 01 CCRDLIAI.} at
@@ -406,61 +155,47 @@ public class CardListRequest {
     public static final int TIOAPFX_LENGTH = 12;
 
     /**
-     * The {@code 02 xxxL COMP PIC S9(4).} length item: a two-byte binary halfword carrying the input
-     * length CICS reports for the field. Metadata, never a payload member.
+     * The {@code 02 xxxL COMP PIC S9(4).} length item: a two-byte binary halfword carrying the input length
+     * CICS reports for the field.
      */
     public static final int LENGTH_ITEM_LENGTH = 2;
 
-    /** The {@code 02 xxxF PICTURE X.} flag item: one byte. Metadata, never a payload member. */
+    /**
+     * The {@code 02 xxxF PICTURE X.} flag item: one byte.
+     */
     public static final int FLAG_ITEM_LENGTH = 1;
 
     /**
-     * The {@code 03 xxxA PICTURE X.} attribute item. It sits inside
-     * {@code 02 FILLER REDEFINES xxxF.} and so consumes <strong>no</strong> additional storage - it
-     * is an overlay of the flag byte, which is why the per-field stride is 7 and not 8.
+     * The {@code 03 xxxA PICTURE X.} attribute item.
      */
     public static final int ATTRIBUTE_ITEM_LENGTH = 0;
 
-    /** The {@code 02 FILLER PICTURE X(4).} that precedes each {@code xxxI} item. */
+    /**
+     * The {@code 02 FILLER PICTURE X(4).} that precedes each {@code xxxI} item.
+     */
     public static final int RESERVED_FILLER_LENGTH = 4;
 
-    /**
-     * Bytes each field costs on top of its own declared width: {@code 2 + 1 + 0 + 4 = 7}. The full
-     * per-field stride in the group image is {@code FIELD_OVERHEAD_LENGTH + n}.
-     */
     public static final int FIELD_OVERHEAD_LENGTH =
             LENGTH_ITEM_LENGTH + FLAG_ITEM_LENGTH + ATTRIBUTE_ITEM_LENGTH + RESERVED_FILLER_LENGTH;
 
-    /** Payload members contributed by the header band: {@code TRNNAME} through {@code CARDSID}. */
     public static final int HEADER_FIELD_COUNT = 9;
 
-    /**
-     * Payload members contributed by row 1: {@code CRDSEL1}, {@code ACCTNO1}, {@code CRDNUM1} and
-     * {@code CRDSTS1}. <strong>Four</strong> - there is no {@code CRDSTP1}.
-     */
     public static final int FIRST_ROW_FIELD_COUNT = 4;
 
-    /**
-     * Payload members contributed by each of rows 2 through 7: {@code CRDSELn}, {@code CRDSTPn},
-     * {@code ACCTNOn}, {@code CRDNUMn} and {@code CRDSTSn}. <strong>Five</strong>.
-     */
     public static final int STOPPER_ROW_FIELD_COUNT = 5;
 
-    /** Payload members contributed by the footer band: {@code INFOMSG} and {@code ERRMSG}. */
     public static final int FOOTER_FIELD_COUNT = 2;
 
     /**
-     * The total payload member count, {@code 9 + 4 + 6 x 5 + 2 = }<strong>45</strong>, matching the
-     * 45 {@code xxxI} items in {@code app/cpy-bms/COCRDLI.CPY} and the 45 name-labelled
-     * {@code DFHMDF} entries of the 72 in {@code app/bms/COCRDLI.bms}. The count only reconciles with
-     * the row-1 asymmetry present.
+     * The total payload member count, {@code 9 + 4 + 6 x 5 + 2 =}45, matching the 45 {@code xxxI} items in
+     * {@code app/cpy-bms/COCRDLI.CPY} and the 45 name-labelled {@code DFHMDF} entries of the 72 in
+     * {@code app/bms/COCRDLI.bms}.
      */
     public static final int FIELD_COUNT = HEADER_FIELD_COUNT
             + FIRST_ROW_FIELD_COUNT
             + STOPPER_ROW_FIELD_COUNT * (SCREEN_ROW_COUNT - 1)
             + FOOTER_FIELD_COUNT;
 
-    /** Header data bytes: {@code 4 + 40 + 8 + 8 + 40 + 8 + 3 + 11 + 16 = 138}. */
     public static final int HEADER_DATA_LENGTH = TRNNAME_LENGTH
             + TITLE01_LENGTH
             + CURDATE_LENGTH
@@ -471,71 +206,63 @@ public class CardListRequest {
             + ACCTSID_LENGTH
             + CARDSID_LENGTH;
 
-    /** Row 1 data bytes: {@code 1 + 11 + 16 + 1 = 29}. No {@code CRDSTP} term. */
     public static final int FIRST_ROW_DATA_LENGTH =
             CRDSEL_LENGTH + ACCTNO_LENGTH + CRDNUM_LENGTH + CRDSTS_LENGTH;
 
-    /** Data bytes for one of rows 2 through 7: {@code 1 + 1 + 11 + 16 + 1 = 30}. */
     public static final int STOPPER_ROW_DATA_LENGTH =
             CRDSEL_LENGTH + CRDSTP_LENGTH + ACCTNO_LENGTH + CRDNUM_LENGTH + CRDSTS_LENGTH;
 
-    /** Data bytes for rows 2 through 7 together: {@code 30 x 6 = 180}. */
     public static final int STOPPER_ROWS_DATA_LENGTH =
             STOPPER_ROW_DATA_LENGTH * (SCREEN_ROW_COUNT - 1);
 
-    /** Footer data bytes: {@code 45 + 78 = 123}. */
     public static final int FOOTER_DATA_LENGTH = INFOMSG_LENGTH + ERRMSG_LENGTH;
 
-    /** All payload data bytes: {@code 138 + 29 + 180 + 123 = 470}. */
     public static final int PAYLOAD_DATA_LENGTH = HEADER_DATA_LENGTH
             + FIRST_ROW_DATA_LENGTH
             + STOPPER_ROWS_DATA_LENGTH
             + FOOTER_DATA_LENGTH;
 
-    /**
-     * The whole {@code 01 CCRDLIAI.} group image: {@code 12 + 45 x 7 + 470 = }<strong>797</strong>
-     * bytes. {@code 01 CCRDLIAO REDEFINES CCRDLIAI.} occupies the same 797 bytes, which is why its
-     * per-field overhead - {@code FILLER X(3)} plus four one-byte attribute items - also sums to 7.
-     */
     public static final int GROUP_LENGTH =
             TIOAPFX_LENGTH + FIELD_COUNT * FIELD_OVERHEAD_LENGTH + PAYLOAD_DATA_LENGTH;
 
-    // =================================================================================================
-    // CURSOR AND TABLE GEOMETRY - 01 WS-THIS-PROGCOMMAREA, app/cbl/COCRDLIC.cbl:229-260.
-    // =================================================================================================
-
-    /** {@code 15 WS-CA-LAST-CARD-NUM PIC X(16).} / {@code 15 WS-CA-FIRST-CARD-NUM PIC X(16).}. */
+    /**
+     * {@code 15 WS-CA-LAST-CARD-NUM PIC X(16).} / {@code 15 WS-CA-FIRST-CARD-NUM PIC X(16).}.
+     */
     public static final int CURSOR_CARD_NUM_LENGTH = 16;
 
     /**
-     * {@code 15 WS-CA-LAST-CARD-ACCT-ID PIC 9(11).} /
-     * {@code 15 WS-CA-FIRST-CARD-ACCT-ID PIC 9(11).}. Scale-free unsigned zoned digits, so the Java
-     * carrier is an integral type and never a floating-point one.
+     * {@code 15 WS-CA-LAST-CARD-ACCT-ID PIC 9(11).} / {@code 15 WS-CA-FIRST-CARD-ACCT-ID PIC 9(11).}.
      */
     public static final int CURSOR_ACCT_ID_LENGTH = 11;
 
     /**
      * One key group - {@code 10 WS-CA-LAST-CARDKEY.} at {@code COCRDLIC.cbl:230} and
-     * {@code 10 WS-CA-FIRST-CARDKEY.} at {@code :233} - is {@code 16 + 11 = 27} bytes. The groups are
-     * modelled as groups because {@code COCRDLIC.cbl:1268} moves one onto the other wholesale:
-     * {@code MOVE WS-CA-FIRST-CARDKEY TO WS-CA-LAST-CARDKEY}.
+     * {@code 10 WS-CA-FIRST-CARDKEY.} at {@code :233} - is {@code 16 + 11 = 27} bytes.
      */
     public static final int CARD_KEY_LENGTH = CURSOR_CARD_NUM_LENGTH + CURSOR_ACCT_ID_LENGTH;
 
-    /** {@code 10 WS-CA-SCREEN-NUM PIC 9(1).}, {@code COCRDLIC.cbl:237}. */
+    /**
+     * {@code 10 WS-CA-SCREEN-NUM PIC 9(1).}, {@code COCRDLIC.cbl:237}.
+     */
     public static final int SCREEN_NUM_LENGTH = 1;
 
-    /** {@code 10 WS-CA-LAST-PAGE-DISPLAYED PIC 9(1).}, {@code COCRDLIC.cbl:239}. */
+    /**
+     * {@code 10 WS-CA-LAST-PAGE-DISPLAYED PIC 9(1).}, {@code COCRDLIC.cbl:239}.
+     */
     public static final int LAST_PAGE_DISPLAYED_LENGTH = 1;
 
-    /** {@code 10 WS-CA-NEXT-PAGE-IND PIC X(1).}, {@code COCRDLIC.cbl:242}. */
+    /**
+     * {@code 10 WS-CA-NEXT-PAGE-IND PIC X(1).}, {@code COCRDLIC.cbl:242}.
+     */
     public static final int NEXT_PAGE_IND_LENGTH = 1;
 
-    /** {@code 10 WS-RETURN-FLAG PIC X(1).}, {@code COCRDLIC.cbl:246}. */
+    /**
+     * {@code 10 WS-RETURN-FLAG PIC X(1).}, {@code COCRDLIC.cbl:246}.
+     */
     public static final int RETURN_FLAG_LENGTH = 1;
 
     /**
-     * The paging cursor proper: {@code 27 + 27 + 1 + 1 + 1 + 1 = }<strong>58</strong> bytes, spanning
+     * The paging cursor proper: {@code 27 + 27 + 1 + 1 + 1 + 1 =}58 bytes, spanning
      * {@code app/cbl/COCRDLIC.cbl:229-248}.
      */
     public static final int CURSOR_LENGTH = CARD_KEY_LENGTH
@@ -545,201 +272,143 @@ public class CardListRequest {
             + NEXT_PAGE_IND_LENGTH
             + RETURN_FLAG_LENGTH;
 
-    /** {@code 30 WS-ROW-ACCTNO PIC X(11).}, {@code COCRDLIC.cbl:258}. */
+    /**
+     * {@code 30 WS-ROW-ACCTNO PIC X(11).}, {@code COCRDLIC.cbl:258}.
+     */
     public static final int SCREEN_ROW_ACCTNO_LENGTH = 11;
 
-    /** {@code 30 WS-ROW-CARD-NUM PIC X(16).}, {@code COCRDLIC.cbl:259}. */
+    /**
+     * {@code 30 WS-ROW-CARD-NUM PIC X(16).}, {@code COCRDLIC.cbl:259}.
+     */
     public static final int SCREEN_ROW_CARD_NUM_LENGTH = 16;
 
-    /** {@code 30 WS-ROW-CARD-STATUS PIC X(1).}, {@code COCRDLIC.cbl:260}. */
+    /**
+     * {@code 30 WS-ROW-CARD-STATUS PIC X(1).}, {@code COCRDLIC.cbl:260}.
+     */
     public static final int SCREEN_ROW_CARD_STATUS_LENGTH = 1;
 
     /**
-     * One element of {@code 15 WS-SCREEN-ROWS OCCURS 7 TIMES.}: {@code 11 + 16 + 1 = 28} bytes. The
-     * source states the arithmetic itself in the comment at {@code COCRDLIC.cbl:250} -
-     * "28 CHARS X 7 ROWS = 196".
+     * One element of {@code 15 WS-SCREEN-ROWS OCCURS 7 TIMES.}: {@code 11 + 16 + 1 = 28} bytes.
      */
     public static final int SCREEN_ROW_LENGTH = SCREEN_ROW_ACCTNO_LENGTH
             + SCREEN_ROW_CARD_NUM_LENGTH
             + SCREEN_ROW_CARD_STATUS_LENGTH;
 
     /**
-     * {@code 10 WS-ALL-ROWS PIC X(196).}, {@code COCRDLIC.cbl:253}: {@code 28 x 7 = }<strong>196</strong>
-     * bytes, redefined at {@code :254-260} as the seven-element row table.
+     * {@code 10 WS-ALL-ROWS PIC X(196).}, {@code COCRDLIC.cbl:253}: {@code 28 x 7 =}196 bytes, redefined at
+     * {@code :254-260} as the seven-element row table.
      */
     public static final int SCREEN_DATA_LENGTH = SCREEN_ROW_LENGTH * SCREEN_ROW_COUNT;
 
     /**
-     * The full {@code 01 WS-THIS-PROGCOMMAREA} group image: {@code 58 + 196 = }<strong>254</strong>
-     * bytes.
-     *
-     * <p>{@code app/cbl/COCRDLIC.cbl:252} declares {@code 05 WS-SCREEN-DATA.} at level 05, which is
-     * superior to the level 10 items declared above it, so by COBOL level-number rules it is a direct
-     * subordinate of {@code 01 WS-THIS-PROGCOMMAREA} rather than a record of its own. Both
-     * {@code MOVE DFHCOMMAREA(LENGTH OF CARDDEMO-COMMAREA + 1: LENGTH OF WS-THIS-PROGCOMMAREA)} at
-     * {@code :329-331} and the mirroring outbound move at {@code :610-612} therefore transport 254
-     * bytes, not 58.
-     *
-     * <p>Recorded here because the difference is real and load-bearing: the cursor is what the client
-     * must round-trip, and the 196-byte row table is re-derived from the file on every pass -
-     * {@code MOVE LOW-VALUES TO WS-ALL-ROWS} at {@code :1124} and {@code :1266} clears it before each
-     * browse.
+     * The full {@code 01 WS-THIS-PROGCOMMAREA} group image: {@code 58 + 196 =}254 bytes.
      */
     public static final int PROG_COMMAREA_LENGTH = CURSOR_LENGTH + SCREEN_DATA_LENGTH;
 
     /**
      * {@code WS-EDIT-SELECT-FLAGS PIC X(7)} and {@code WS-EDIT-SELECT-ERROR-FLAGS PIC X(7)} -
-     * {@code COCRDLIC.cbl:72} and {@code :83}. Seven bytes, one per screen row.
+     * {@code COCRDLIC.cbl:72} and {@code :83}.
      */
     public static final int SELECT_FLAGS_LENGTH = SCREEN_ROW_COUNT;
 
-    // =================================================================================================
-    // COBOL FIGURATIVE CONSTANTS AND 88-LEVEL LITERALS.
-    //
-    // SPACES, LOW-VALUES and Java null are three different things and nothing in this file conflates
-    // them. LOW-VALUES is binary zero - U+0000 - whichever code page is in force, and it is the
-    // declared "off" state of WS-EDIT-SELECT-FLAGS, WS-CA-NEXT-PAGE-IND and WS-RETURN-FLAG.
-    // =================================================================================================
-
-    /** The one-character rendering of {@code LOW-VALUES}: binary zero. */
+    /**
+     * The one-character rendering of {@code LOW-VALUES}: binary zero.
+     */
     public static final char LOW_VALUE = '\u0000';
 
-    /** A single space, the other value {@code 88 SELECT-BLANK} accepts. */
+    /**
+     * A single space, the other value {@code 88 SELECT-BLANK} accepts.
+     */
     public static final char SPACE = ' ';
 
-    /** {@code 88 VIEW-REQUESTED-ON VALUE 'S'.}, {@code app/cbl/COCRDLIC.cbl:78}. */
+    /**
+     * {@code 88 VIEW-REQUESTED-ON VALUE 'S'.}, {@code app/cbl/COCRDLIC.cbl:78}.
+     */
     public static final char SELECT_VIEW = 'S';
 
-    /** {@code 88 UPDATE-REQUESTED-ON VALUE 'U'.}, {@code app/cbl/COCRDLIC.cbl:79}. */
+    /**
+     * {@code 88 UPDATE-REQUESTED-ON VALUE 'U'.}, {@code app/cbl/COCRDLIC.cbl:79}.
+     */
     public static final char SELECT_UPDATE = 'U';
 
-    /** {@code 88 WS-ROW-SELECT-ERROR VALUE '1'.}, {@code app/cbl/COCRDLIC.cbl:88}. */
+    /**
+     * {@code 88 WS-ROW-SELECT-ERROR VALUE '1'.}, {@code app/cbl/COCRDLIC.cbl:88}.
+     */
     public static final char ROW_SELECT_ERROR = '1';
 
-    /** {@code 88 CA-FIRST-PAGE VALUE 1.}, {@code app/cbl/COCRDLIC.cbl:238}. */
+    /**
+     * {@code 88 CA-FIRST-PAGE VALUE 1.}, {@code app/cbl/COCRDLIC.cbl:238}.
+     */
     public static final int FIRST_PAGE_SCREEN_NUM = 1;
 
-    /** {@code 88 CA-LAST-PAGE-SHOWN VALUE 0.}, {@code app/cbl/COCRDLIC.cbl:240}. */
+    /**
+     * {@code 88 CA-LAST-PAGE-SHOWN VALUE 0.}, {@code app/cbl/COCRDLIC.cbl:240}.
+     */
     public static final int LAST_PAGE_SHOWN = 0;
 
-    /** {@code 88 CA-LAST-PAGE-NOT-SHOWN VALUE 9.}, {@code app/cbl/COCRDLIC.cbl:241}. */
+    /**
+     * {@code 88 CA-LAST-PAGE-NOT-SHOWN VALUE 9.}, {@code app/cbl/COCRDLIC.cbl:241}.
+     */
     public static final int LAST_PAGE_NOT_SHOWN = 9;
 
-    /** {@code 88 CA-NEXT-PAGE-EXISTS VALUE 'Y'.}, {@code app/cbl/COCRDLIC.cbl:244}. */
+    /**
+     * {@code 88 CA-NEXT-PAGE-EXISTS VALUE 'Y'.}, {@code app/cbl/COCRDLIC.cbl:244}.
+     */
     public static final char NEXT_PAGE_EXISTS = 'Y';
 
-    /** {@code 88 WS-RETURN-FLAG-ON VALUE '1'.}, {@code app/cbl/COCRDLIC.cbl:248}. */
+    /**
+     * {@code 88 WS-RETURN-FLAG-ON VALUE '1'.}, {@code app/cbl/COCRDLIC.cbl:248}.
+     */
     public static final char RETURN_FLAG_ON = '1';
 
     /**
-     * The value {@link SelectionFlags#selectedRowNumber()} reports when no row carries a
-     * {@code SELECT-OK} action. {@code 10 I-SELECTED PIC S9(4) COMP VALUE 0.} at
-     * {@code app/cbl/COCRDLIC.cbl:92-93}, reset by {@code MOVE ZERO TO I-SELECTED} at {@code :1097},
-     * and {@code 88 DETAIL-WAS-REQUESTED VALUES 1 THRU 7.} at {@code :94} deliberately excludes it.
+     * The value {@link SelectionFlags#selectedRowNumber()} reports when no row carries a {@code SELECT-OK}
+     * action.
      */
     public static final int NO_ROW_SELECTED = 0;
 
-    /** Transaction identifier this screen runs under - {@code LIT-THISTRANID}, {@code COCRDLIC.cbl:181-182}. */
+    /**
+     * Transaction identifier this screen runs under - {@code LIT-THISTRANID}, {@code COCRDLIC.cbl:181-182}.
+     */
     public static final String TRANSACTION_ID = "CCLI";
 
-    /** Program this screen belongs to - {@code LIT-THISPGM}, {@code COCRDLIC.cbl:179-180}. */
+    /**
+     * Program this screen belongs to - {@code LIT-THISPGM}, {@code COCRDLIC.cbl:179-180}.
+     */
     public static final String PROGRAM_NAME = "COCRDLIC";
 
-    /** Mapset this screen belongs to - {@code LIT-THISMAPSET}, {@code COCRDLIC.cbl:183-184}. */
+    /**
+     * Mapset this screen belongs to - {@code LIT-THISMAPSET}, {@code COCRDLIC.cbl:183-184}.
+     */
     public static final String MAPSET_NAME = "COCRDLI";
 
-    /** Map this screen belongs to - {@code LIT-THISMAP}, {@code COCRDLIC.cbl:185-186}. */
+    /**
+     * Map this screen belongs to - {@code LIT-THISMAP}, {@code COCRDLIC.cbl:185-186}.
+     */
     public static final String MAP_NAME = "CCRDLIA";
 
-    // =================================================================================================
-    // NESTED TYPES
-    //
-    // Everything the screen needs is declared here rather than in sibling files: the row element, the
-    // paging cursor, the row table and the three metadata carriers. Records are used for the value
-    // types because they are immutable and their component list IS the field list, which is exactly the
-    // property the row-1 asymmetry needs. The outer type stays a normal class because a request payload
-    // is populated field by field.
-    // =================================================================================================
-
-    /**
-     * One detail row of the card list.
-     *
-     * <p>The hierarchy is sealed and has exactly two permitted implementations because the screen has
-     * exactly two row shapes. Row 1 is a {@link FirstListRow} with four members; rows 2 through 7 are
-     * {@link StopperListRow} with five. {@code FirstListRow} has no {@code crdStp} accessor of any
-     * kind - not an empty one, not a {@code null}-returning one, none - so row 1's absent
-     * {@code CRDSTP1} is a fact about the type system here and not a convention someone has to
-     * remember.
-     *
-     * <p>To read the stopper without knowing which shape you hold, use
-     * {@link CardListRequest#stopperOf(int)}, which pattern-matches over the two permitted types and
-     * returns an empty {@link Optional} for row 1.
-     *
-     * @see CardListRequest#FIRST_ROW_FIELD_COUNT
-     * @see CardListRequest#STOPPER_ROW_FIELD_COUNT
-     */
     public sealed interface ListRow permits FirstListRow, StopperListRow {
-
-        /**
-         * {@code CRDSELn} - the row action code the operator typed. {@code PIC X(1)}.
-         *
-         * @return the selection character, space-padded to one byte; never {@code null}
-         */
         String crdSel();
 
-        /**
-         * {@code ACCTNOn} - the account number displayed on the row. {@code PIC X(11)}.
-         *
-         * @return the account number, space-padded to eleven bytes; never {@code null}
-         */
         String acctNo();
 
-        /**
-         * {@code CRDNUMn} - the card number displayed on the row. {@code PIC X(16)}.
-         *
-         * @return the card number, space-padded to sixteen bytes; never {@code null}
-         */
         String crdNum();
 
-        /**
-         * {@code CRDSTSn} - the active status displayed on the row. {@code PIC X(1)}.
-         *
-         * @return the status character, space-padded to one byte; never {@code null}
-         */
         String crdSts();
 
-        /**
-         * How many payload members this row shape contributes: four for row 1, five for rows 2
-         * through 7. Exposed so the asymmetry is assertable rather than merely documented.
-         *
-         * @return {@value CardListRequest#FIRST_ROW_FIELD_COUNT} or
-         *         {@value CardListRequest#STOPPER_ROW_FIELD_COUNT}
-         */
         @JsonIgnore
         int memberCount();
 
-        /**
-         * How many data bytes this row shape occupies in the {@code 01 CCRDLIAI.} group image: 29 for
-         * row 1, 30 for rows 2 through 7.
-         *
-         * @return {@value CardListRequest#FIRST_ROW_DATA_LENGTH} or
-         *         {@value CardListRequest#STOPPER_ROW_DATA_LENGTH}
-         */
         @JsonIgnore
         int dataLength();
 
-        /**
-         * Whether this row declares the named attribute stopper {@code CRDSTPn}.
-         *
-         * @return {@code false} for row 1 only
-         */
         @JsonIgnore
         boolean hasStopper();
 
         /**
-         * Re-renders every member at its declared width using the codec's {@code PIC X} move, so a
-         * value that arrived short or long is padded or truncated exactly as a COBOL alphanumeric
-         * {@code MOVE} would do it - on the right, with spaces.
+         * Re-renders every member at its declared width using the codec's {@code PIC X} move, so a value
+         * that arrived short or long is padded or truncated exactly as a COBOL alphanumeric {@code MOVE}
+         * would do it - on the right, with spaces.
          *
          * @param codec the fixed-width codec whose charset governs the pad byte; never {@code null}
          * @return a row of the same shape with every member exactly its declared width
@@ -747,32 +416,17 @@ public class CardListRequest {
          */
         ListRow normalised(FixedWidthCodec codec);
 
-        // There is deliberately NO @JsonCreator on this interface and no Map-based row reader.
-        //
-        // A creator taking Map<String, String> was the previous shape and it defeated the module's
-        // fail-on-unknown-properties setting: Jackson hands a creator whatever keys the body carried, so
-        // a misspelt "crdSell" or an invented "crdExp" was bound into the map, read by nobody, and
-        // silently dropped. The row then looked valid while a field the client believed it had set had
-        // never arrived - the worst failure mode for a screen contract, because nothing anywhere reports
-        // it. A map creator also has to guess the row shape from the keys present, which made the
-        // presence of crdStp a wire-level discriminator rather than a property of the copybook.
-        //
-        // The 34 numbered accessor pairs on CardListRequest replace it. They are typed, they are named
-        // exactly as COCRDLI.CPY:78-276 names them, and an unknown row key now reaches the mapper's own
-        // unknown-property handling instead of a permissive map. The shape is decided by position - row 1
-        // is a FirstListRow, rows 2 through 7 are StopperListRow - which is what the copybook decides,
-        // and setRow(int, ListRow) enforces it.
+        // They are typed, they are named exactly as COCRDLI.CPY:78-276 names them, and an unknown row key
+        // now reaches the mapper's own unknown-property handling instead of a permissive map.
     }
 
     /**
      * Row 1 of the card list: {@code CRDSEL1}, {@code ACCTNO1}, {@code CRDNUM1}, {@code CRDSTS1}.
      *
-     * <p><strong>Four components, and deliberately no {@code crdStp}.</strong>
-     * {@code app/cpy-bms/COCRDLI.CPY:78} declares {@code 02 CRDSEL1I PIC X(1).} and line 79 goes
+     * <p>{@code app/cpy-bms/COCRDLI.CPY:78} declares {@code 02 CRDSEL1I PIC X(1).} and line 79 goes
      * straight on to {@code 02 ACCTNO1L COMP PIC S9(4).}; the mapset's row-1 attribute stopper at
      * {@code POS=(11,14)} is unnamed ({@code app/bms/COCRDLI.bms:145-146}) and so never reaches the
-     * symbolic map. Serialised, this row therefore has four JSON members where every other row has
-     * five - which is what the screen actually sends.
+     * symbolic map.
      *
      * @param crdSel {@code CRDSEL1} - {@code 02 CRDSEL1I PIC X(1).}, {@code COCRDLI.CPY:78}
      * @param acctNo {@code ACCTNO1} - {@code 02 ACCTNO1I PIC X(11).}, {@code COCRDLI.CPY:84}
@@ -783,15 +437,6 @@ public class CardListRequest {
                                @Size(max = ACCTNO_LENGTH) String acctNo,
                                @Size(max = CRDNUM_LENGTH) String crdNum,
                                @Size(max = CRDSTS_LENGTH) String crdSts) implements ListRow {
-
-        /**
-         * Rejects {@code null} in any member. A screen field is always present in the transmitted
-         * map - it may hold spaces or {@code LOW-VALUES}, but it is never absent - so {@code null}
-         * here is a transcription error rather than an empty field, and letting it through would turn
-         * a missing value into a {@link NullPointerException} much further downstream.
-         *
-         * @throws NullPointerException if any member is {@code null}
-         */
         public FirstListRow {
             Objects.requireNonNull(crdSel, "CRDSEL1 is required; a blank row field holds spaces or "
                     + "LOW-VALUES, never null");
@@ -804,8 +449,8 @@ public class CardListRequest {
         }
 
         /**
-         * A row 1 whose every member is space-filled to its declared width - the state the map is in
-         * before any card is written into it.
+         * A row 1 whose every member is space-filled to its declared width - the state the map is in before
+         * any card is written into it.
          *
          * @return the blank row, never {@code null}
          */
@@ -828,11 +473,6 @@ public class CardListRequest {
             return FIRST_ROW_DATA_LENGTH;
         }
 
-        /**
-         * {@inheritDoc}
-         *
-         * @return always {@code false}: row 1 has no {@code CRDSTP1}
-         */
         @Override
         @JsonIgnore
         public boolean hasStopper() {
@@ -854,17 +494,6 @@ public class CardListRequest {
      * Rows 2 through 7 of the card list: {@code CRDSELn}, {@code CRDSTPn}, {@code ACCTNOn},
      * {@code CRDNUMn}, {@code CRDSTSn}.
      *
-     * <p><strong>Five components, with {@code crdStp} second - not last.</strong> The declaration
-     * order in the symbolic map is {@code CRDSELn} then {@code CRDSTPn} then {@code ACCTNOn}, verified
-     * at {@code app/cpy-bms/COCRDLI.CPY} lines 102/108/114 for row 2 and repeating every 30 lines
-     * through row 7 at 252/258/264. Every byte offset in the group image depends on that position, so
-     * placing {@code crdStp} last would be as wrong as omitting it.
-     *
-     * <p>{@code CRDSTPn} is the row's attribute stopper at screen column 14, declared
-     * {@code DFHMDF ATTRB=(ASKIP,DRK,FSET) LENGTH=1 POS=(line,14)}. It is a real transmitted field
-     * because it is name-labelled, which is exactly what distinguishes it from row 1's unnamed
-     * equivalent.
-     *
      * @param crdSel {@code CRDSELn} - {@code 02 CRDSELnI PIC X(1).}
      * @param crdStp {@code CRDSTPn} - {@code 02 CRDSTPnI PIC X(1).}, second in the row
      * @param acctNo {@code ACCTNOn} - {@code 02 ACCTNOnI PIC X(11).}
@@ -876,12 +505,6 @@ public class CardListRequest {
                                  @Size(max = ACCTNO_LENGTH) String acctNo,
                                  @Size(max = CRDNUM_LENGTH) String crdNum,
                                  @Size(max = CRDSTS_LENGTH) String crdSts) implements ListRow {
-
-        /**
-         * Rejects {@code null} in any member, for the same reason {@link FirstListRow} does.
-         *
-         * @throws NullPointerException if any member is {@code null}
-         */
         public StopperListRow {
             Objects.requireNonNull(crdSel, "CRDSELn is required; a blank row field holds spaces or "
                     + "LOW-VALUES, never null");
@@ -920,11 +543,6 @@ public class CardListRequest {
             return STOPPER_ROW_DATA_LENGTH;
         }
 
-        /**
-         * {@inheritDoc}
-         *
-         * @return always {@code true}: rows 2 through 7 each declare a named {@code CRDSTPn}
-         */
         @Override
         @JsonIgnore
         public boolean hasStopper() {
@@ -944,40 +562,25 @@ public class CardListRequest {
     }
 
     /**
-     * One of the two 27-byte browse keys of the paging cursor -
-     * {@code 10 WS-CA-LAST-CARDKEY.} at {@code app/cbl/COCRDLIC.cbl:230} and
-     * {@code 10 WS-CA-FIRST-CARDKEY.} at {@code :233}.
+     * One of the two 27-byte browse keys of the paging cursor - {@code 10 WS-CA-LAST-CARDKEY.} at
+     * {@code app/cbl/COCRDLIC.cbl:230} and {@code 10 WS-CA-FIRST-CARDKEY.} at {@code :233}.
      *
-     * <pre>
-     *   15  WS-CA-xxxx-CARD-NUM      PIC X(16).
-     *   15  WS-CA-xxxx-CARD-ACCT-ID  PIC 9(11).
-     * </pre>
-     *
-     * <p>Modelled as a group rather than as two loose fields because the program moves one key onto
-     * the other wholesale: {@code MOVE WS-CA-FIRST-CARDKEY TO WS-CA-LAST-CARDKEY} at
-     * {@code COCRDLIC.cbl:1268}. With the group present that is one assignment; flattened, it would be
-     * two that could drift apart.
-     *
-     * <p>{@code acctId} is {@code PIC 9(11)} - scale-free unsigned zoned digits - so it is carried as
-     * a {@code long}. There is no {@code double}, no {@code float} and no {@code BigDecimal} anywhere
-     * on this screen, because no field on it is scaled. Rendering to and from the eleven-byte zoned
-     * image goes through the codec, never through {@code Long.parseLong}.
+     * <p>Rendering to and from the eleven-byte zoned image goes through the codec, never through
+     * {@code Long.parseLong}.
      *
      * @param cardNum {@code WS-CA-*-CARD-NUM}, {@code PIC X(16)}; never {@code null}
-     * @param acctId  {@code WS-CA-*-CARD-ACCT-ID}, {@code PIC 9(11)}; never negative, and never above
-     *                eleven digits
+     * @param acctId {@code WS-CA-*-CARD-ACCT-ID}, {@code PIC 9(11)}; never negative, and never above eleven
+     *     digits
      */
     public record CardKey(@Size(max = CURSOR_CARD_NUM_LENGTH) String cardNum, long acctId) {
-
-        /** The largest value {@code PIC 9(11)} can hold: eleven nines. */
+        /**
+         * The largest value {@code PIC 9(11)} can hold: eleven nines.
+         */
         public static final long MAX_ACCT_ID = 99_999_999_999L;
 
         /**
          * Validates the key at construction: an unsigned zoned field cannot hold a negative value and
          * cannot hold more digits than it declares, so either would silently corrupt the image.
-         *
-         * @throws NullPointerException     if {@code cardNum} is {@code null}
-         * @throws IllegalArgumentException if {@code acctId} is negative or exceeds eleven digits
          */
         public CardKey {
             Objects.requireNonNull(cardNum, "WS-CA-*-CARD-NUM is required; a blank key holds spaces "
@@ -995,9 +598,7 @@ public class CardListRequest {
 
         /**
          * The key state produced by {@code INITIALIZE WS-THIS-PROGCOMMAREA} -
-         * {@code app/cbl/COCRDLIC.cbl:317} and {@code :338}. COBOL's {@code INITIALIZE} sets
-         * alphanumeric items to spaces and numeric items to zero, so the card number is sixteen spaces
-         * and the account identifier is zero.
+         * {@code app/cbl/COCRDLIC.cbl:317} and {@code :338}.
          *
          * @return the initialised key, never {@code null}
          */
@@ -1006,9 +607,7 @@ public class CardListRequest {
         }
 
         /**
-         * The key state produced by {@code MOVE LOW-VALUES} into the card number span. Distinct from
-         * {@link #initialised()}, which yields spaces: the two are different byte images and this class
-         * never treats them as interchangeable.
+         * The key state produced by {@code MOVE LOW-VALUES} into the card number span.
          *
          * @return the low-value key, never {@code null}
          */
@@ -1027,8 +626,8 @@ public class CardListRequest {
         }
 
         /**
-         * The card number rendered at its declared sixteen-byte width through the codec's
-         * {@code PIC X} move.
+         * The card number rendered at its declared sixteen-byte width through the codec's {@code PIC X}
+         * move.
          *
          * @param codec the fixed-width codec; never {@code null}
          * @return the sixteen-byte image
@@ -1042,8 +641,8 @@ public class CardListRequest {
 
         /**
          * The account identifier rendered as eleven zero-filled zoned digits through the codec's
-         * {@code PIC 9} move - the same right-justified, zero-padded placement a COBOL numeric
-         * {@code MOVE} performs.
+         * {@code PIC 9} move - the same right-justified, zero-padded placement a COBOL numeric {@code MOVE}
+         * performs.
          *
          * @param codec the fixed-width codec; never {@code null}
          * @return the eleven-byte image
@@ -1056,13 +655,13 @@ public class CardListRequest {
         }
 
         /**
-         * Rebuilds a key from its two fixed-width spans, decoding the account identifier through the
-         * codec rather than through {@code Long.parseLong} so that a zoned image with an overpunched
-         * sign or embedded pad bytes is handled by the one component that knows the encoding.
+         * Rebuilds a key from its two fixed-width spans, decoding the account identifier through the codec
+         * rather than through {@code Long.parseLong} so that a zoned image with an overpunched sign or
+         * embedded pad bytes is handled by the one component that knows the encoding.
          *
-         * @param codec        the fixed-width codec; never {@code null}
+         * @param codec the fixed-width codec; never {@code null}
          * @param cardNumImage the sixteen-byte card number span; never {@code null}
-         * @param acctIdImage  the eleven-byte zoned account identifier span; never {@code null}
+         * @param acctIdImage the eleven-byte zoned account identifier span; never {@code null}
          * @return the decoded key
          * @throws NullPointerException if any argument is {@code null}
          */
@@ -1075,11 +674,6 @@ public class CardListRequest {
                     codec.decodePic9(acctIdImage));
         }
 
-        /**
-         * The declared width of this group.
-         *
-         * @return {@value CardListRequest#CARD_KEY_LENGTH}
-         */
         @JsonIgnore
         public int declaredLength() {
             return CARD_KEY_LENGTH;
@@ -1087,67 +681,20 @@ public class CardListRequest {
     }
 
     /**
-     * The 58-byte paging cursor - {@code 01 WS-THIS-PROGCOMMAREA.},
-     * {@code app/cbl/COCRDLIC.cbl:229-248}.
+     * The 58-byte paging cursor - {@code 01 WS-THIS-PROGCOMMAREA.}, {@code app/cbl/COCRDLIC.cbl:229-248}.
      *
-     * <pre>
-     *   10 WS-CA-LAST-CARDKEY.                                     27
-     *      15  WS-CA-LAST-CARD-NUM        PIC X(16).
-     *      15  WS-CA-LAST-CARD-ACCT-ID    PIC 9(11).
-     *   10 WS-CA-FIRST-CARDKEY.                                    27
-     *      15  WS-CA-FIRST-CARD-NUM       PIC X(16).
-     *      15  WS-CA-FIRST-CARD-ACCT-ID   PIC 9(11).
-     *   10 WS-CA-SCREEN-NUM               PIC 9(1).                 1
-     *      88 CA-FIRST-PAGE                  VALUE 1.
-     *   10 WS-CA-LAST-PAGE-DISPLAYED      PIC 9(1).                 1
-     *      88 CA-LAST-PAGE-SHOWN             VALUE 0.
-     *      88 CA-LAST-PAGE-NOT-SHOWN         VALUE 9.
-     *   10 WS-CA-NEXT-PAGE-IND            PIC X(1).                 1
-     *      88 CA-NEXT-PAGE-NOT-EXISTS        VALUE LOW-VALUES.
-     *      88 CA-NEXT-PAGE-EXISTS            VALUE 'Y'.
-     *   10 WS-RETURN-FLAG                 PIC X(1).                 1
-     *      88 WS-RETURN-FLAG-OFF             VALUE LOW-VALUES.
-     *      88 WS-RETURN-FLAG-ON              VALUE '1'.
-     *                                                              --
-     *                                                              58
-     * </pre>
-     *
-     * <p>This is the whole of what makes paging stateless. CICS carries it by appending it to the
-     * communication area behind {@code CARDDEMO-COMMAREA} ({@code COCRDLIC.cbl:327-331} on the way in,
-     * {@code :610-612} on the way out), and the REST projection carries it in the request body for the
-     * same reason: nothing about a page position may live on the server between calls.
-     *
-     * <p><strong>{@code LOW-VALUES} is not a space and is not {@code null}.</strong> Both
-     * {@code CA-NEXT-PAGE-NOT-EXISTS} and {@code WS-RETURN-FLAG-OFF} test {@code LOW-VALUES}
-     * specifically, so {@link #isNextPageNotExists()} and {@link #isReturnFlagOff()} are true only for
-     * binary zero. That has a consequence worth stating plainly: after
-     * {@code INITIALIZE WS-THIS-PROGCOMMAREA} ({@code :317}, {@code :338}) those two bytes hold a
-     * <em>space</em>, because that is what COBOL's {@code INITIALIZE} writes into an alphanumeric item -
-     * so immediately after initialisation neither the "off" nor the "on" condition holds for either
-     * flag. {@link #initialised()} reproduces exactly that state. It is
-     * {@code SET CA-NEXT-PAGE-NOT-EXISTS TO TRUE} at {@code :1216} and {@code :1235} that actually
-     * writes {@code LOW-VALUES}.
-     *
-     * <p>{@code WS-RETURN-FLAG} deserves one note. {@code app/cpy/CVCRD01Y.cpy:25-27} declares a field
-     * of identical shape, {@code CCARD-RETURN-FLAG} with the same two {@code 88}-levels - but it is
-     * <strong>commented out</strong> there. The live field is this one, declared in {@code COCRDLIC}
-     * itself, and it belongs on this cursor. The commented-out copybook field stays commented out.
-     *
-     * @param lastCardKey        {@code WS-CA-LAST-CARDKEY}, the high-water browse key of the page just
-     *                           shown; never {@code null}
-     * @param firstCardKey       {@code WS-CA-FIRST-CARDKEY}, the low-water browse key of the page just
-     *                           shown; never {@code null}
-     * @param screenNum          {@code WS-CA-SCREEN-NUM PIC 9(1)}, the 1-based page number rendered
-     *                           into {@code PAGENO} by {@code MOVE WS-CA-SCREEN-NUM TO PAGENOO} at
-     *                           {@code COCRDLIC.cbl:667}. Zero is a legitimate value - {@code :1177}
-     *                           tests {@code IF WS-CA-SCREEN-NUM = 0} before
-     *                           {@code ADD +1 TO WS-CA-SCREEN-NUM}
-     * @param lastPageDisplayed  {@code WS-CA-LAST-PAGE-DISPLAYED PIC 9(1)}, 0 when the final page has
-     *                           been shown and 9 when it has not
-     * @param nextPageInd        {@code WS-CA-NEXT-PAGE-IND PIC X(1)}, {@code LOW-VALUES} for none or
-     *                           {@code 'Y'}; never {@code null}
-     * @param returnFlag         {@code WS-RETURN-FLAG PIC X(1)}, {@code LOW-VALUES} for off or
-     *                           {@code '1'} for on; never {@code null}
+     * @param lastCardKey {@code WS-CA-LAST-CARDKEY}, the high-water browse key of the page just shown;
+     *     never {@code null}
+     * @param firstCardKey {@code WS-CA-FIRST-CARDKEY}, the low-water browse key of the page just shown;
+     *     never {@code null}
+     * @param screenNum {@code WS-CA-SCREEN-NUM PIC 9(1)}, the 1-based page number rendered into
+     *     {@code PAGENO} by {@code MOVE WS-CA-SCREEN-NUM TO PAGENOO} at {@code COCRDLIC.cbl:667}
+     * @param lastPageDisplayed {@code WS-CA-LAST-PAGE-DISPLAYED PIC 9(1)}, 0 when the final page has been
+     *     shown and 9 when it has not
+     * @param nextPageInd {@code WS-CA-NEXT-PAGE-IND PIC X(1)}, {@code LOW-VALUES} for none or {@code 'Y'};
+     *     never {@code null}
+     * @param returnFlag {@code WS-RETURN-FLAG PIC X(1)}, {@code LOW-VALUES} for off or {@code '1'} for on;
+     *     never {@code null}
      */
     public record PageCursor(@Valid CardKey lastCardKey,
                              @Valid CardKey firstCardKey,
@@ -1155,19 +702,11 @@ public class CardListRequest {
                              int lastPageDisplayed,
                              @Size(max = NEXT_PAGE_IND_LENGTH) String nextPageInd,
                              @Size(max = RETURN_FLAG_LENGTH) String returnFlag) {
-
-        /** The largest value a {@code PIC 9(1)} item can hold. */
+        /**
+         * The largest value a {@code PIC 9(1)} item can hold.
+         */
         public static final int MAX_SINGLE_DIGIT = 9;
 
-        /**
-         * Validates the cursor at construction. The two {@code PIC 9(1)} items physically cannot hold
-         * a negative value or a value above nine, and a one-byte indicator cannot hold more than one
-         * character, so any of those would mean the image is already wrong.
-         *
-         * @throws NullPointerException     if any reference member is {@code null}
-         * @throws IllegalArgumentException if either single-digit item is outside 0 to 9, or if either
-         *                                  indicator is longer than one character
-         */
         public PageCursor {
             Objects.requireNonNull(lastCardKey, "WS-CA-LAST-CARDKEY is required; use "
                     + "CardKey.initialised() for the post-INITIALIZE state");
@@ -1197,9 +736,7 @@ public class CardListRequest {
 
         /**
          * The state produced by {@code INITIALIZE WS-THIS-PROGCOMMAREA} on its own -
-         * {@code app/cbl/COCRDLIC.cbl:317} and {@code :338}. Spaces in the alphanumeric spans, zeros in
-         * the numeric ones, and therefore <em>neither</em> {@code 88}-level true for either one-byte
-         * indicator.
+         * {@code app/cbl/COCRDLIC.cbl:317} and {@code :338}.
          *
          * @return the initialised cursor, never {@code null}
          */
@@ -1214,10 +751,7 @@ public class CardListRequest {
 
         /**
          * The state the program actually enters the screen in: {@code INITIALIZE} followed by
-         * {@code SET CA-FIRST-PAGE TO TRUE} and {@code SET CA-LAST-PAGE-NOT-SHOWN TO TRUE}. That pair
-         * appears twice - at {@code app/cbl/COCRDLIC.cbl:324-325} for a cold start
-         * ({@code EIBCALEN = 0}) and again at {@code :341-342} when control arrives from the menu -
-         * and both times it means page 1 with the final page not yet reached.
+         * {@code SET CA-FIRST-PAGE TO TRUE} and {@code SET CA-LAST-PAGE-NOT-SHOWN TO TRUE}.
          *
          * @return the first-page cursor, never {@code null}
          */
@@ -1228,8 +762,7 @@ public class CardListRequest {
         }
 
         /**
-         * {@code 88 CA-FIRST-PAGE VALUE 1.} - {@code app/cbl/COCRDLIC.cbl:238}. Tested at {@code :440},
-         * {@code :445}, {@code :502} (negated) and {@code :902}.
+         * {@code 88 CA-FIRST-PAGE VALUE 1.} - {@code app/cbl/COCRDLIC.cbl:238}.
          *
          * @return {@code true} when the page number is exactly 1
          */
@@ -1251,10 +784,6 @@ public class CardListRequest {
         /**
          * {@code 88 CA-LAST-PAGE-NOT-SHOWN VALUE 9.} - {@code app/cbl/COCRDLIC.cbl:241}.
          *
-         * <p>Note that this is not the negation of {@link #isLastPageShown()}: the item is
-         * {@code PIC 9(1)} and the two condition names claim only the values 0 and 9, so any of 1
-         * through 8 satisfies neither. The predicates are kept independent for that reason.
-         *
          * @return {@code true} when the value is exactly 9
          */
         @JsonIgnore
@@ -1263,11 +792,11 @@ public class CardListRequest {
         }
 
         /**
-         * {@code 88 CA-NEXT-PAGE-NOT-EXISTS VALUE LOW-VALUES.} -
-         * {@code app/cbl/COCRDLIC.cbl:243}, set at {@code :1216} and {@code :1235}.
+         * {@code 88 CA-NEXT-PAGE-NOT-EXISTS VALUE LOW-VALUES.} - {@code app/cbl/COCRDLIC.cbl:243}, set at
+         * {@code :1216} and {@code :1235}.
          *
-         * @return {@code true} only when the byte is binary zero - never for a space and never for an
-         *         empty string
+         * @return {@code true} only when the byte is binary zero - never for a space and never for an empty
+         *     string
          */
         @JsonIgnore
         public boolean isNextPageNotExists() {
@@ -1417,9 +946,8 @@ public class CardListRequest {
         }
 
         /**
-         * Reproduces {@code SET CA-NEXT-PAGE-NOT-EXISTS TO TRUE} -
-         * {@code app/cbl/COCRDLIC.cbl:1216}, {@code :1235} - which writes {@code LOW-VALUES} and not a
-         * space.
+         * Reproduces {@code SET CA-NEXT-PAGE-NOT-EXISTS TO TRUE} - {@code app/cbl/COCRDLIC.cbl:1216},
+         * {@code :1235} - which writes {@code LOW-VALUES} and not a space.
          *
          * @return a cursor whose next-page indicator is binary zero
          */
@@ -1448,72 +976,70 @@ public class CardListRequest {
                     nextPageInd, CardScreenState.lowValues(RETURN_FLAG_LENGTH));
         }
 
-        /**
-         * The declared width of the cursor.
-         *
-         * @return {@value CardListRequest#CURSOR_LENGTH}
-         */
         @JsonIgnore
         public int declaredLength() {
             return CURSOR_LENGTH;
         }
 
-        // ---------------------------------------------------------------------------------------------
-        // The 58-byte image of 01 WS-THIS-PROGCOMMAREA, app/cbl/COCRDLIC.cbl:229-248.
-        //
-        // This is a parity artefact and it lives here, on the one cursor type, because there is one
-        // area: COCRDLIC.cbl:1078-1082 returns it as the trailing part of the communication area and
-        // :331-334 reads it back on the next invocation, so the bytes the response writes are the bytes
-        // the request receives. A second implementation on the response side could drift from this one
-        // by a byte and nothing would notice until a page turned wrongly.
-        //
-        // The two group items are written through their own CardKey, so the 27-byte grouping that
-        // COCRDLIC.cbl:1268 relies on - MOVE WS-CA-FIRST-CARDKEY TO WS-CA-LAST-CARDKEY, a wholesale
-        // group move - is expressed in the layout rather than implied by adjacency.
-        // ---------------------------------------------------------------------------------------------
+        // This is a parity artefact and it lives here, on the one cursor type, because there is one area:
+        // COCRDLIC.cbl:1078-1082 returns it as the trailing part of the communication area and :331-334
+        // reads it back on the next invocation, so the bytes the response writes are the bytes the request
+        // receives.
 
-        /** {@code 15 WS-CA-LAST-CARD-NUM PIC X(16).}, {@code app/cbl/COCRDLIC.cbl:231}. */
+        /**
+         * {@code 15 WS-CA-LAST-CARD-NUM PIC X(16).}, {@code app/cbl/COCRDLIC.cbl:231}.
+         */
         public static final FieldSpan LAST_CARD_NUM_SPAN = FieldSpan.alphanumeric(
                 "WS-CA-LAST-CARD-NUM", 0, CURSOR_CARD_NUM_LENGTH);
 
-        /** {@code 15 WS-CA-LAST-CARD-ACCT-ID PIC 9(11).}, {@code app/cbl/COCRDLIC.cbl:232}. */
+        /**
+         * {@code 15 WS-CA-LAST-CARD-ACCT-ID PIC 9(11).}, {@code app/cbl/COCRDLIC.cbl:232}.
+         */
         public static final FieldSpan LAST_CARD_ACCT_ID_SPAN = FieldSpan.unsignedNumeric(
                 "WS-CA-LAST-CARD-ACCT-ID", CURSOR_CARD_NUM_LENGTH, CURSOR_ACCT_ID_LENGTH);
 
-        /** {@code 15 WS-CA-FIRST-CARD-NUM PIC X(16).}, {@code app/cbl/COCRDLIC.cbl:234}. */
+        /**
+         * {@code 15 WS-CA-FIRST-CARD-NUM PIC X(16).}, {@code app/cbl/COCRDLIC.cbl:234}.
+         */
         public static final FieldSpan FIRST_CARD_NUM_SPAN = FieldSpan.alphanumeric(
                 "WS-CA-FIRST-CARD-NUM", CARD_KEY_LENGTH, CURSOR_CARD_NUM_LENGTH);
 
-        /** {@code 15 WS-CA-FIRST-CARD-ACCT-ID PIC 9(11).}, {@code app/cbl/COCRDLIC.cbl:235}. */
+        /**
+         * {@code 15 WS-CA-FIRST-CARD-ACCT-ID PIC 9(11).}, {@code app/cbl/COCRDLIC.cbl:235}.
+         */
         public static final FieldSpan FIRST_CARD_ACCT_ID_SPAN = FieldSpan.unsignedNumeric(
                 "WS-CA-FIRST-CARD-ACCT-ID", CARD_KEY_LENGTH + CURSOR_CARD_NUM_LENGTH,
                 CURSOR_ACCT_ID_LENGTH);
 
-        /** {@code 10 WS-CA-SCREEN-NUM PIC 9(1).}, {@code app/cbl/COCRDLIC.cbl:237}. */
+        /**
+         * {@code 10 WS-CA-SCREEN-NUM PIC 9(1).}, {@code app/cbl/COCRDLIC.cbl:237}.
+         */
         public static final FieldSpan SCREEN_NUM_SPAN = FieldSpan.unsignedNumeric(
                 "WS-CA-SCREEN-NUM", CARD_KEY_LENGTH + CARD_KEY_LENGTH, SCREEN_NUM_LENGTH);
 
-        /** {@code 10 WS-CA-LAST-PAGE-DISPLAYED PIC 9(1).}, {@code app/cbl/COCRDLIC.cbl:239}. */
+        /**
+         * {@code 10 WS-CA-LAST-PAGE-DISPLAYED PIC 9(1).}, {@code app/cbl/COCRDLIC.cbl:239}.
+         */
         public static final FieldSpan LAST_PAGE_DISPLAYED_SPAN = FieldSpan.unsignedNumeric(
                 "WS-CA-LAST-PAGE-DISPLAYED", CARD_KEY_LENGTH + CARD_KEY_LENGTH + SCREEN_NUM_LENGTH,
                 LAST_PAGE_DISPLAYED_LENGTH);
 
-        /** {@code 10 WS-CA-NEXT-PAGE-IND PIC X(1).}, {@code app/cbl/COCRDLIC.cbl:242}. */
+        /**
+         * {@code 10 WS-CA-NEXT-PAGE-IND PIC X(1).}, {@code app/cbl/COCRDLIC.cbl:242}.
+         */
         public static final FieldSpan NEXT_PAGE_IND_SPAN = FieldSpan.alphanumeric(
                 "WS-CA-NEXT-PAGE-IND",
                 CARD_KEY_LENGTH + CARD_KEY_LENGTH + SCREEN_NUM_LENGTH + LAST_PAGE_DISPLAYED_LENGTH,
                 NEXT_PAGE_IND_LENGTH);
 
-        /** {@code 10 WS-RETURN-FLAG PIC X(1).}, {@code app/cbl/COCRDLIC.cbl:246}. */
+        /**
+         * {@code 10 WS-RETURN-FLAG PIC X(1).}, {@code app/cbl/COCRDLIC.cbl:246}.
+         */
         public static final FieldSpan RETURN_FLAG_SPAN = FieldSpan.alphanumeric("WS-RETURN-FLAG",
                 CARD_KEY_LENGTH + CARD_KEY_LENGTH + SCREEN_NUM_LENGTH + LAST_PAGE_DISPLAYED_LENGTH
                         + NEXT_PAGE_IND_LENGTH,
                 RETURN_FLAG_LENGTH);
 
-        /**
-         * The complete {@value CardListRequest#CURSOR_LENGTH}-byte geometry, in declaration order and
-         * with no gaps.
-         */
         public static final RecordLayout LAYOUT = RecordLayout.of(CURSOR_LENGTH,
                 LAST_CARD_NUM_SPAN,
                 LAST_CARD_ACCT_ID_SPAN,
@@ -1526,13 +1052,6 @@ public class CardListRequest {
 
         /**
          * Renders the area as its {@value CardListRequest#CURSOR_LENGTH}-byte fixed-width image.
-         *
-         * <p>The four {@code PIC 9} items are zero-filled on the left by
-         * {@link FixedWidthCodec#writePic9(FixedWidthRecord, FieldSpan, long)} and the four
-         * {@code PIC X} items are space-padded on the right by
-         * {@link FixedWidthCodec#writePicX(FixedWidthRecord, FieldSpan, String)}; neither rule has a
-         * second implementation anywhere, and no value is produced with {@code String.valueOf} or
-         * consumed with {@code Long.parseLong}.
          *
          * @param charset the code page to encode into, named explicitly by the caller
          * @return a fresh array of exactly {@value CardListRequest#CURSOR_LENGTH} bytes
@@ -1559,18 +1078,16 @@ public class CardListRequest {
         /**
          * Rebuilds the area from its {@value CardListRequest#CURSOR_LENGTH}-byte image.
          *
-         * <p>The numeric spans must hold digits. An image whose numeric spans are {@code LOW-VALUES} -
-         * which no image produced by {@link #toFixedWidth(Charset)} ever is, because the zeros are
-         * encoded as digits - is rejected rather than read as zero, since tolerating it would hide a
-         * truncated or misaligned payload.
+         * <p>An image whose numeric spans are {@code LOW-VALUES} - which no image produced by
+         * {@link #toFixedWidth(Charset)} ever is, because the zeros are encoded as digits - is rejected
+         * rather than read as zero, since tolerating it would hide a truncated or misaligned payload.
          *
-         * @param bytes   exactly {@value CardListRequest#CURSOR_LENGTH} bytes
+         * @param bytes exactly {@value CardListRequest#CURSOR_LENGTH} bytes
          * @param charset the code page the image is encoded in, named explicitly by the caller
          * @return the cursor the image describes; never {@code null}
-         * @throws NullPointerException     if {@code bytes} or {@code charset} is {@code null}
+         * @throws NullPointerException if {@code bytes} or {@code charset} is {@code null}
          * @throws IllegalArgumentException if {@code bytes.length} is not
-         *                                  {@value CardListRequest#CURSOR_LENGTH}, or a numeric span
-         *                                  does not hold digits
+         *     {@value CardListRequest#CURSOR_LENGTH}, or a numeric span does not hold digits
          */
         public static PageCursor fromFixedWidth(byte[] bytes, Charset charset) {
             Objects.requireNonNull(bytes, "An image is required to rebuild WS-THIS-PROGCOMMAREA");
@@ -1589,23 +1106,6 @@ public class CardListRequest {
                     record.readSpan(RETURN_FLAG_SPAN));
         }
 
-        /**
-         * Refuses a key whose card number is wider than the span that has to hold it.
-         *
-         * <p>{@link FixedWidthCodec#writePicX(FixedWidthRecord, FieldSpan, String)} applies the
-         * {@code PIC X} move rule, which discards the overflow on the right - correct for a screen
-         * field receiving a {@code MOVE}, and wrong here. This is a commarea group being transcribed
-         * whole into a {@value CardListRequest#CURSOR_LENGTH}-byte parity image, and a card number
-         * arriving four digits too long is a payload that is already wrong: truncating it would write a
-         * different card number into the image and the next page would browse from it. It is refused,
-         * naming the item, its declared width and the length supplied - never the value itself, which
-         * is a card number and does not belong in an exception message.
-         *
-         * @param key       the key about to be written
-         * @param cobolName the copybook name of the card-number item, for the failure message
-         * @throws IllegalArgumentException if the card number is wider than
-         *                                  {@value CardListRequest#CURSOR_CARD_NUM_LENGTH}
-         */
         private static void requireKeyFits(CardKey key, String cobolName) {
             if (key.cardNum().length() > CURSOR_CARD_NUM_LENGTH) {
                 throw new IllegalArgumentException(cobolName + " is PIC X("
@@ -1617,32 +1117,19 @@ public class CardListRequest {
     }
 
     /**
-     * One element of the 196-byte browse result table - {@code 20 WS-EACH-ROW.} /
-     * {@code 25 WS-EACH-CARD.} at {@code app/cbl/COCRDLIC.cbl:256-260}.
+     * One element of the 196-byte browse result table - {@code 20 WS-EACH-ROW.} / {@code 25 WS-EACH-CARD.}
+     * at {@code app/cbl/COCRDLIC.cbl:256-260}.
      *
-     * <pre>
-     *   30 WS-ROW-ACCTNO        PIC X(11).
-     *   30 WS-ROW-CARD-NUM      PIC X(16).
-     *   30 WS-ROW-CARD-STATUS   PIC X(1).
-     *                                        --
-     *                                        28
-     * </pre>
-     *
-     * <p>The source states the arithmetic in its own comment at {@code :250}: "28 CHARS X 7 ROWS = 196".
-     *
-     * @param acctNo     {@code WS-ROW-ACCTNO PIC X(11)}; never {@code null}
-     * @param cardNum    {@code WS-ROW-CARD-NUM PIC X(16)}; never {@code null}
+     * @param acctNo {@code WS-ROW-ACCTNO PIC X(11)}; never {@code null}
+     * @param cardNum {@code WS-ROW-CARD-NUM PIC X(16)}; never {@code null}
      * @param cardStatus {@code WS-ROW-CARD-STATUS PIC X(1)}; never {@code null}
      */
     public record ScreenRow(@Size(max = SCREEN_ROW_ACCTNO_LENGTH) String acctNo,
                             @Size(max = SCREEN_ROW_CARD_NUM_LENGTH) String cardNum,
                             @Size(max = SCREEN_ROW_CARD_STATUS_LENGTH) String cardStatus) {
-
         /**
-         * Rejects {@code null} in any member: a cleared row holds {@code LOW-VALUES}
-         * bytes, which is a value and not an absence.
-         *
-         * @throws NullPointerException if any member is {@code null}
+         * Rejects {@code null} in any member: a cleared row holds {@code LOW-VALUES} bytes, which is a
+         * value and not an absence.
          */
         public ScreenRow {
             Objects.requireNonNull(acctNo, "WS-ROW-ACCTNO is required; a cleared row holds "
@@ -1656,7 +1143,7 @@ public class CardListRequest {
         /**
          * The row state produced by {@code MOVE LOW-VALUES TO WS-ALL-ROWS} -
          * {@code app/cbl/COCRDLIC.cbl:1124} and {@code :1266}, which the program performs immediately
-         * before each browse. Binary zero throughout, not spaces.
+         * before each browse.
          *
          * @return the cleared row, never {@code null}
          */
@@ -1667,8 +1154,8 @@ public class CardListRequest {
         }
 
         /**
-         * Whether every byte of every member is binary zero, that is whether this row is still in the
-         * state {@code MOVE LOW-VALUES TO WS-ALL-ROWS} left it in.
+         * Whether every byte of every member is binary zero, that is whether this row is still in the state
+         * {@code MOVE LOW-VALUES TO WS-ALL-ROWS} left it in.
          *
          * @return {@code true} when the row has not been written to since it was cleared
          */
@@ -1679,11 +1166,6 @@ public class CardListRequest {
                     && isEvery(cardStatus, LOW_VALUE, SCREEN_ROW_CARD_STATUS_LENGTH);
         }
 
-        /**
-         * The declared width of one element.
-         *
-         * @return {@value CardListRequest#SCREEN_ROW_LENGTH}
-         */
         @JsonIgnore
         public int declaredLength() {
             return SCREEN_ROW_LENGTH;
@@ -1694,29 +1176,13 @@ public class CardListRequest {
      * The seven-element browse result table - {@code 10 WS-ALL-ROWS PIC X(196).} redefined as
      * {@code 15 WS-SCREEN-ROWS OCCURS 7 TIMES.} at {@code app/cbl/COCRDLIC.cbl:253-260}.
      *
-     * <p>This is the first of the three seven-element 1-based tables behind the screen. It is the one
-     * that carries the record data the browse read, and the program clears it with
-     * {@code MOVE LOW-VALUES TO WS-ALL-ROWS} before every pass ({@code :1124}, {@code :1266}) - so it
-     * is derived state, re-read from the card file on each request, and is therefore deliberately kept
-     * off the JSON wire. What must round-trip is the {@link PageCursor}; the rows are recomputed from
-     * it.
-     *
-     * <p>Byte offsets come from {@link FixedWidthRecord#occursElementOffsetOneBased} and are never
-     * computed inline, and {@link #row(int)} takes the COBOL subscript, 1 through 7. There is no index
-     * 0 and there is no index 8.
+     * <p>Byte offsets come from {@link FixedWidthRecord#occursElementOffsetOneBased} and are never computed
+     * inline, and {@link #row(int)} takes the COBOL subscript, 1 through 7.
      *
      * @param rows exactly {@value CardListRequest#SCREEN_ROW_COUNT} elements, in screen order; copied
-     *             defensively, so the list this record holds can never be reached from outside
+     *     defensively, so the list this record holds can never be reached from outside
      */
     public record ScreenRowTable(List<ScreenRow> rows) {
-
-        /**
-         * Copies the element list defensively and checks the occurrence count, because a table of the
-         * wrong length would skew every offset derived from it.
-         *
-         * @throws NullPointerException     if {@code rows} is {@code null} or holds {@code null}
-         * @throws IllegalArgumentException if {@code rows} does not hold exactly seven elements
-         */
         public ScreenRowTable {
             Objects.requireNonNull(rows, "WS-SCREEN-ROWS requires its element list");
             if (rows.size() != SCREEN_ROW_COUNT) {
@@ -1742,7 +1208,7 @@ public class CardListRequest {
         }
 
         /**
-         * Addresses one element by its <strong>COBOL</strong> subscript.
+         * Addresses one element by its COBOL subscript.
          *
          * @param cobolRowNumber the subscript, 1 through {@value CardListRequest#SCREEN_ROW_COUNT}
          * @return the addressed row, never {@code null}
@@ -1756,9 +1222,9 @@ public class CardListRequest {
          * Replaces one element, addressed by its COBOL subscript, returning a new table.
          *
          * @param cobolRowNumber the subscript, 1 through {@value CardListRequest#SCREEN_ROW_COUNT}
-         * @param replacement    the row to place there; never {@code null}
+         * @param replacement the row to place there; never {@code null}
          * @return a new table with that one element replaced
-         * @throws NullPointerException      if {@code replacement} is {@code null}
+         * @throws NullPointerException if {@code replacement} is {@code null}
          * @throws IndexOutOfBoundsException if {@code cobolRowNumber} is outside 1 to 7
          */
         public ScreenRowTable withRow(int cobolRowNumber, ScreenRow replacement) {
@@ -1771,7 +1237,7 @@ public class CardListRequest {
         /**
          * The absolute 0-based byte offset of one element within the 196-byte table, computed by
          * {@link FixedWidthRecord#occursElementOffsetOneBased} so the 1-based to 0-based shift is named
-         * rather than open-coded. Subscript 1 yields 0 and subscript 7 yields 168.
+         * rather than open-coded.
          *
          * @param cobolRowNumber the subscript, 1 through {@value CardListRequest#SCREEN_ROW_COUNT}
          * @return the element's byte offset within {@code WS-ALL-ROWS}
@@ -1782,11 +1248,6 @@ public class CardListRequest {
                     SCREEN_ROW_COUNT, cobolRowNumber);
         }
 
-        /**
-         * The declared width of the whole table.
-         *
-         * @return {@value CardListRequest#SCREEN_DATA_LENGTH}
-         */
         @JsonIgnore
         public int declaredLength() {
             return SCREEN_DATA_LENGTH;
@@ -1796,44 +1257,14 @@ public class CardListRequest {
     /**
      * The seven row action codes - {@code app/cbl/COCRDLIC.cbl:72-82}.
      *
-     * <pre>
-     *   05 WS-EDIT-SELECT-FLAGS                PIC X(7) VALUE LOW-VALUES.
-     *   05 WS-EDIT-SELECT-ARRAY REDEFINES WS-EDIT-SELECT-FLAGS.
-     *      10 WS-EDIT-SELECT                   PIC X(1) OCCURS 7 TIMES.
-     *         88 SELECT-OK                     VALUES 'S', 'U'.
-     *         88 VIEW-REQUESTED-ON             VALUE 'S'.
-     *         88 UPDATE-REQUESTED-ON           VALUE 'U'.
-     *         88 SELECT-BLANK                  VALUES ' ', LOW-VALUES.
-     * </pre>
-     *
-     * <p>All <strong>four</strong> condition names are modelled, not just the two that name a single
-     * action. {@code SELECT-OK} is the union of {@code 'S'} and {@code 'U'} and is what
-     * {@code 2250-EDIT-ARRAY} tests first; {@code SELECT-BLANK} accepts <em>both</em> a space
-     * <em>and</em> {@code LOW-VALUES}, which is why an operator who cleared a field and an operator who
-     * never touched it are treated alike.
-     *
-     * <p>The backing item carries {@code VALUE LOW-VALUES}, so a freshly built table holds seven binary
-     * zero bytes - not seven spaces, and certainly not {@code null}. {@link #lowValues()} is that state.
-     *
-     * <p>The table is populated straight from the payload: {@code MOVE CRDSELnI OF CCRDLIAI TO
-     * WS-EDIT-SELECT(n)} for n = 1 through 7 at {@code app/cbl/COCRDLIC.cbl:972-978}. It is retained as
-     * its own carrier because the program then evaluates it independently of the map fields, and
-     * because the outbound {@code MOVE WS-EDIT-SELECT(n) TO CRDSELnO} at {@code :683-738} shows the same
-     * table driving the response.
+     * <p>{@code SELECT-OK} is the union of {@code 'S'} and {@code 'U'} and is what {@code 2250-EDIT-ARRAY}
+     * tests first; {@code SELECT-BLANK} accepts both a space and {@code LOW-VALUES}, which is why an
+     * operator who cleared a field and an operator who never touched it are treated alike.
      *
      * @param flags exactly {@value CardListRequest#SELECT_FLAGS_LENGTH} characters, one per row, in row
-     *              order
+     *     order
      */
     public record SelectionFlags(@Size(max = SELECT_FLAGS_LENGTH) String flags) {
-
-        /**
-         * Validates the table at construction. The backing item is {@code PIC X(7)}
-         * redefined as {@code OCCURS 7 TIMES}, so a table of any other length would skew
-         * every subscript derived from it.
-         *
-         * @throws NullPointerException     if {@code flags} is {@code null}
-         * @throws IllegalArgumentException if {@code flags} is not exactly seven characters long
-         */
         public SelectionFlags {
             Objects.requireNonNull(flags, "WS-EDIT-SELECT-FLAGS is required; its declared VALUE is "
                     + "LOW-VALUES, which is seven bytes and not null");
@@ -1853,26 +1284,17 @@ public class CardListRequest {
             return new SelectionFlags(CardScreenState.lowValues(SELECT_FLAGS_LENGTH));
         }
 
-        /**
-         * Seven spaces. Offered alongside {@link #lowValues()} precisely because the two are different
-         * byte images that {@code SELECT-BLANK} happens to treat alike - a similarity that must never
-         * become a conflation.
-         *
-         * @return the space-filled table, never {@code null}
-         */
         public static SelectionFlags spacesFilled() {
             return new SelectionFlags(spaces(SELECT_FLAGS_LENGTH));
         }
 
         /**
          * Builds the table from the seven {@code CRDSELn} payload fields, reproducing
-         * {@code MOVE CRDSELnI OF CCRDLIAI TO WS-EDIT-SELECT(n)} at
-         * {@code app/cbl/COCRDLIC.cbl:972-978}. An empty {@code CRDSELn} contributes a space, which is
-         * how a one-byte alphanumeric {@code MOVE} from an empty source pads.
+         * {@code MOVE CRDSELnI OF CCRDLIAI TO WS-EDIT-SELECT(n)} at {@code app/cbl/COCRDLIC.cbl:972-978}.
          *
          * @param rows the seven detail rows in screen order; never {@code null}, exactly seven elements
          * @return the populated table
-         * @throws NullPointerException     if {@code rows} is {@code null} or holds {@code null}
+         * @throws NullPointerException if {@code rows} is {@code null} or holds {@code null}
          * @throws IllegalArgumentException if {@code rows} does not hold exactly seven elements
          */
         public static SelectionFlags fromRows(List<ListRow> rows) {
@@ -1904,8 +1326,7 @@ public class CardListRequest {
         }
 
         /**
-         * {@code 88 SELECT-OK VALUES 'S', 'U'.} - {@code app/cbl/COCRDLIC.cbl:77}. The first arm of the
-         * {@code EVALUATE TRUE} at {@code :1100-1114}.
+         * {@code 88 SELECT-OK VALUES 'S', 'U'.} - {@code app/cbl/COCRDLIC.cbl:77}.
          *
          * @param cobolRowNumber the subscript, 1 through 7
          * @return {@code true} when the row carries {@code 'S'} or {@code 'U'}
@@ -1939,12 +1360,10 @@ public class CardListRequest {
         }
 
         /**
-         * {@code 88 SELECT-BLANK VALUES ' ', LOW-VALUES.} - {@code app/cbl/COCRDLIC.cbl:80-82}. The
-         * second arm of the {@code EVALUATE TRUE} at {@code :1100-1114}, and the reason an untouched
-         * row is not an error.
+         * {@code 88 SELECT-BLANK VALUES ' ', LOW-VALUES.} - {@code app/cbl/COCRDLIC.cbl:80-82}.
          *
          * @param cobolRowNumber the subscript, 1 through 7
-         * @return {@code true} when the row carries a space <em>or</em> binary zero
+         * @return {@code true} when the row carries a space or binary zero
          * @throws IndexOutOfBoundsException if {@code cobolRowNumber} is outside 1 to 7
          */
         public boolean isSelectBlank(int cobolRowNumber) {
@@ -1956,7 +1375,7 @@ public class CardListRequest {
          * Replaces one row's action code, addressed by its COBOL subscript.
          *
          * @param cobolRowNumber the subscript, 1 through 7
-         * @param value          the replacement action character
+         * @param value the replacement action character
          * @return a new table with that one character replaced
          * @throws IndexOutOfBoundsException if {@code cobolRowNumber} is outside 1 to 7
          */
@@ -1967,21 +1386,10 @@ public class CardListRequest {
         }
 
         /**
-         * {@code I-SELECTED} as {@code 2250-EDIT-ARRAY} leaves it -
-         * {@code app/cbl/COCRDLIC.cbl:1097-1115}.
-         *
-         * <p>The COBOL is {@code MOVE ZERO TO I-SELECTED} followed by
-         * {@code PERFORM VARYING I FROM 1 BY 1 UNTIL I > 7} with
-         * {@code EVALUATE TRUE / WHEN SELECT-OK(I) / MOVE I TO I-SELECTED}. The assignment is
-         * unconditional within that arm and the loop does not stop, so the value that survives is the
-         * <em>last</em> qualifying subscript, and it is zero when none qualifies.
-         *
-         * <p>This reproduces that one assignment and nothing else. Deciding that more than one action
-         * is an error, setting {@code WS-ROW-CRDSELECT-ERROR}, and choosing the message are the
-         * service's work, not a payload's.
+         * {@code I-SELECTED} as {@code 2250-EDIT-ARRAY} leaves it - {@code app/cbl/COCRDLIC.cbl:1097-1115}.
          *
          * @return the 1-based subscript of the last selected row, or
-         *         {@value CardListRequest#NO_ROW_SELECTED} when no row is selected
+         *     {@value CardListRequest#NO_ROW_SELECTED} when no row is selected
          */
         @JsonIgnore
         public int selectedRowNumber() {
@@ -2005,17 +1413,11 @@ public class CardListRequest {
         }
 
         /**
-         * {@code 88 DETAIL-WAS-REQUESTED VALUES 1 THRU 7.} evaluated over an arbitrary
-         * {@code I-SELECTED} value - {@code app/cbl/COCRDLIC.cbl:92-94}.
+         * {@code 88 DETAIL-WAS-REQUESTED VALUES 1 THRU 7.} evaluated over an arbitrary {@code I-SELECTED}
+         * value - {@code app/cbl/COCRDLIC.cbl:92-94}.
          *
-         * <p>The condition is declared on {@code 10 I-SELECTED PIC S9(4) COMP}, a signed four-digit
-         * binary halfword, so its domain is far wider than 1 to 7 and the range test is a genuine
-         * two-sided check rather than a formality. Exposing it over the full domain keeps that faithful
-         * and keeps the COBOL numbering on the wire: a caller carries the subscript as 1 through 7 and
-         * converts to a Java index only at the array boundary, in {@link #javaIndexOf(int)}.
-         *
-         * @param iSelected the {@code I-SELECTED} value to test; any {@code int}, including 0 and
-         *                  values above 7
+         * @param iSelected the {@code I-SELECTED} value to test; any {@code int}, including 0 and values
+         *     above 7
          * @return {@code true} when {@code iSelected} lies in the inclusive range 1 to 7
          */
         public static boolean isDetailRequested(int iSelected) {
@@ -2023,9 +1425,7 @@ public class CardListRequest {
         }
 
         /**
-         * How many rows carry a {@code SELECT-OK} action. {@code 2250-EDIT-ARRAY} derives the same
-         * count with {@code INSPECT ... TALLYING} before deciding whether more than one action was
-         * requested.
+         * How many rows carry a {@code SELECT-OK} action.
          *
          * @return the count, 0 through 7
          */
@@ -2042,8 +1442,7 @@ public class CardListRequest {
 
         /**
          * The absolute 0-based byte offset of one element within the seven-byte table, via
-         * {@link FixedWidthRecord#occursElementOffsetOneBased}. Subscript 1 yields 0 and subscript 7
-         * yields 6.
+         * {@link FixedWidthRecord#occursElementOffsetOneBased}.
          *
          * @param cobolRowNumber the subscript, 1 through 7
          * @return the element's byte offset
@@ -2054,11 +1453,6 @@ public class CardListRequest {
                     SELECT_FLAGS_LENGTH, cobolRowNumber);
         }
 
-        /**
-         * The declared width of the table.
-         *
-         * @return {@value CardListRequest#SELECT_FLAGS_LENGTH}
-         */
         @JsonIgnore
         public int declaredLength() {
             return SELECT_FLAGS_LENGTH;
@@ -2068,35 +1462,9 @@ public class CardListRequest {
     /**
      * The seven per-row highlight flags - {@code app/cbl/COCRDLIC.cbl:83-88}.
      *
-     * <pre>
-     *   05 WS-EDIT-SELECT-ERROR-FLAGS          PIC X(7).
-     *   05 WS-EDIT-SELECT-ERROR-FLAGX REDEFINES WS-EDIT-SELECT-ERROR-FLAGS.
-     *      10 WS-EDIT-SELECT-ERRORS OCCURS 7 TIMES.
-     *         20 WS-ROW-CRDSELECT-ERROR        PIC X(1).
-     *            88 WS-ROW-SELECT-ERROR        VALUE '1'.
-     * </pre>
-     *
-     * <p>The third of the three seven-element tables, and the one that decides which row gets
-     * highlighted. The program sets it in two places: as a whole, by copying the action codes and
-     * translating them with {@code INSPECT ... REPLACING ALL 'S' BY '1' ALL 'U' BY '1' CHARACTERS BY
-     * '0'} when more than one action was requested ({@code :1088-1093}); and element by element with
-     * {@code MOVE '1' TO WS-ROW-CRDSELECT-ERROR(I)} at {@code :1104} and {@code :1110}. It is then read
-     * at {@code :755-826}, once per row, to decide the outbound attribute.
-     *
-     * <p>Because it feeds {@code common/FieldAttributeSetter} and never the map, it is highlight
-     * metadata and is kept off the JSON wire in exactly the way the {@code xxxA} attribute items are.
-     *
      * @param flags exactly {@value CardListRequest#SELECT_FLAGS_LENGTH} characters, one per row
      */
     public record SelectionErrorFlags(@Size(max = SELECT_FLAGS_LENGTH) String flags) {
-
-        /**
-         * Validates the table at construction, for the same reason
-         * {@link SelectionFlags} does: seven bytes, one per screen row.
-         *
-         * @throws NullPointerException     if {@code flags} is {@code null}
-         * @throws IllegalArgumentException if {@code flags} is not exactly seven characters long
-         */
         public SelectionErrorFlags {
             Objects.requireNonNull(flags, "WS-EDIT-SELECT-ERROR-FLAGS is required");
             if (flags.length() != SELECT_FLAGS_LENGTH) {
@@ -2106,20 +1474,13 @@ public class CardListRequest {
             }
         }
 
-        /**
-         * Seven spaces. The item declares no {@code VALUE} clause, so unlike
-         * {@code WS-EDIT-SELECT-FLAGS} its content is whatever the program puts there; spaces are the
-         * neutral starting point, and no row is highlighted until a {@code '1'} is written.
-         *
-         * @return the space-filled table, never {@code null}
-         */
         public static SelectionErrorFlags none() {
             return new SelectionErrorFlags(spaces(SELECT_FLAGS_LENGTH));
         }
 
         /**
-         * {@code 88 WS-ROW-SELECT-ERROR VALUE '1'.} - {@code app/cbl/COCRDLIC.cbl:88}, tested per row
-         * at {@code :755}, {@code :768}, {@code :780}, {@code :792}, {@code :803}, {@code :815} and
+         * {@code 88 WS-ROW-SELECT-ERROR VALUE '1'.} - {@code app/cbl/COCRDLIC.cbl:88}, tested per row at
+         * {@code :755}, {@code :768}, {@code :780}, {@code :792}, {@code :803}, {@code :815} and
          * {@code :826}.
          *
          * @param cobolRowNumber the subscript, 1 through {@value CardListRequest#SELECT_FLAGS_LENGTH}
@@ -2131,8 +1492,8 @@ public class CardListRequest {
         }
 
         /**
-         * Reproduces {@code MOVE '1' TO WS-ROW-CRDSELECT-ERROR(I)} -
-         * {@code app/cbl/COCRDLIC.cbl:1104} and {@code :1110}.
+         * Reproduces {@code MOVE '1' TO WS-ROW-CRDSELECT-ERROR(I)} - {@code app/cbl/COCRDLIC.cbl:1104} and
+         * {@code :1110}.
          *
          * @param cobolRowNumber the subscript, 1 through 7
          * @return a new table with that row flagged
@@ -2146,14 +1507,9 @@ public class CardListRequest {
 
         /**
          * Reproduces {@code MOVE WS-EDIT-SELECT-FLAGS TO WS-EDIT-SELECT-ERROR-FLAGS} followed by
-         * {@code INSPECT WS-EDIT-SELECT-ERROR-FLAGS REPLACING ALL 'S' BY '1' ALL 'U' BY '1'
-         * CHARACTERS BY '0'} - {@code app/cbl/COCRDLIC.cbl:1088-1093}, the branch taken when the
-         * operator marked more than one row.
-         *
-         * <p>The {@code INSPECT} order matters and is preserved: the two {@code REPLACING ALL} clauses
-         * are applied to {@code 'S'} and {@code 'U'} first, and only the characters they did not
-         * replace fall through to {@code CHARACTERS BY '0'}. Every byte therefore ends as {@code '1'}
-         * or {@code '0'} and none is left as it was.
+         * {@code INSPECT WS-EDIT-SELECT-ERROR-FLAGS REPLACING ALL 'S' BY '1' ALL 'U' BY '1' CHARACTERS BY '0'}
+         * - {@code app/cbl/COCRDLIC.cbl:1088-1093}, the branch taken when the operator marked more than one
+         * row.
          *
          * @param selectionFlags the action codes to translate; never {@code null}
          * @return the translated highlight table
@@ -2184,11 +1540,6 @@ public class CardListRequest {
                     SELECT_FLAGS_LENGTH, cobolRowNumber);
         }
 
-        /**
-         * The declared width of the table.
-         *
-         * @return {@value CardListRequest#SELECT_FLAGS_LENGTH}
-         */
         @JsonIgnore
         public int declaredLength() {
             return SELECT_FLAGS_LENGTH;
@@ -2196,39 +1547,17 @@ public class CardListRequest {
     }
 
     /**
-     * The {@code xxxL}, {@code xxxF} and {@code xxxA} items of one screen field, projected as
-     * metadata.
+     * The {@code xxxL}, {@code xxxF} and {@code xxxA} items of one screen field, projected as metadata.
      *
-     * <p>For every field the symbolic map declares three items besides the data item itself:
-     *
-     * <ul>
-     *   <li>{@code 02 xxxL COMP PIC S9(4).} - the input length CICS reports. Zero means the operator
-     *       left the field untouched, which is the presence signal the program's filter edits key
-     *       off.</li>
-     *   <li>{@code 02 xxxF PICTURE X.} - the flag byte.</li>
-     *   <li>{@code 03 xxxA PICTURE X.} - a {@code REDEFINES} view of that same byte, consuming no
-     *       additional storage. This is the item {@code common/FieldAttributeSetter} writes when it
-     *       applies the error highlight.</li>
-     * </ul>
-     *
-     * <p>None of the three is a payload member. They are validation and highlight metadata, and they
-     * are held here deliberately non-serialised - promoting any of them to a JSON member would add a
-     * field with no name-labelled {@code DFHMDF} behind it and break gate G9.
-     *
-     * @param dfhmdfName     the field's {@code DFHMDF} label, verbatim - {@code TRNNAME},
-     *                       {@code CRDSEL3}, {@code ERRMSG} and so on
-     * @param inputLength    the {@code xxxL} value; never negative
-     * @param attributeByte  the {@code xxxF} byte, viewed through {@code xxxA}
+     * @param dfhmdfName the field's {@code DFHMDF} label, verbatim - {@code TRNNAME}, {@code CRDSEL3},
+     *     {@code ERRMSG} and so on
+     * @param inputLength the {@code xxxL} value; never negative
+     * @param attributeByte the {@code xxxF} byte, viewed through {@code xxxA}
      */
     public record FieldMetadata(String dfhmdfName, int inputLength, char attributeByte) {
-
         /**
-         * Validates the descriptor at construction, so metadata that cannot be traced
-         * back to a name-labelled {@code DFHMDF} entry is rejected where it is written.
-         *
-         * @throws NullPointerException     if {@code dfhmdfName} is {@code null}
-         * @throws IllegalArgumentException if {@code dfhmdfName} is blank or {@code inputLength} is
-         *                                  negative
+         * Validates the descriptor at construction, so metadata that cannot be traced back to a
+         * name-labelled {@code DFHMDF} entry is rejected where it is written.
          */
         public FieldMetadata {
             Objects.requireNonNull(dfhmdfName, "The DFHMDF label is required; metadata with no field "
@@ -2250,7 +1579,7 @@ public class CardListRequest {
          *
          * @param dfhmdfName the field's {@code DFHMDF} label; never {@code null} or blank
          * @return the untouched-field metadata
-         * @throws NullPointerException     if {@code dfhmdfName} is {@code null}
+         * @throws NullPointerException if {@code dfhmdfName} is {@code null}
          * @throws IllegalArgumentException if {@code dfhmdfName} is blank
          */
         public static FieldMetadata untouched(String dfhmdfName) {
@@ -2268,202 +1597,66 @@ public class CardListRequest {
         }
     }
 
-    // =================================================================================================
-    // PAYLOAD - the header band, 9 of the 45 members. Each is PIC X(n) and therefore a String, held at
-    // or below its declared width and space-padded to it on the way out; nothing is trimmed on the way
-    // in, because the COBOL does not trim.
-    //
-    // Every constraint is a @Size(max = ...) taken from the field's own xxxI PICTURE clause, and there
-    // is nothing else: no @NotBlank, no @Pattern, no digit check. COCRDLIC owns its filter edits.
-    // =================================================================================================
-
-    /** {@code TRNNAME} - {@code 02 TRNNAMEI PIC X(4).}, {@code app/cpy-bms/COCRDLI.CPY:24}. */
     @Size(max = TRNNAME_LENGTH)
     private String trnname;
 
-    /** {@code TITLE01} - {@code 02 TITLE01I PIC X(40).}, {@code app/cpy-bms/COCRDLI.CPY:30}. */
     @Size(max = TITLE01_LENGTH)
     private String title01;
 
-    /**
-     * {@code CURDATE} - {@code 02 CURDATEI PIC X(8).}, {@code app/cpy-bms/COCRDLI.CPY:36}. The mapset
-     * seeds it with {@code INITIAL='mm/dd/yy'}.
-     */
     @Size(max = CURDATE_LENGTH)
     private String curdate;
 
-    /** {@code PGMNAME} - {@code 02 PGMNAMEI PIC X(8).}, {@code app/cpy-bms/COCRDLI.CPY:42}. */
     @Size(max = PGMNAME_LENGTH)
     private String pgmname;
 
-    /** {@code TITLE02} - {@code 02 TITLE02I PIC X(40).}, {@code app/cpy-bms/COCRDLI.CPY:48}. */
     @Size(max = TITLE02_LENGTH)
     private String title02;
 
-    /**
-     * {@code CURTIME} - {@code 02 CURTIMEI PIC X(8).}, {@code app/cpy-bms/COCRDLI.CPY:54}. The mapset
-     * seeds it with {@code INITIAL='hh:mm:ss'}.
-     */
     @Size(max = CURTIME_LENGTH)
     private String curtime;
 
-    /**
-     * {@code PAGENO} - {@code 02 PAGENOI PIC X(3).}, {@code app/cpy-bms/COCRDLI.CPY:60}.
-     *
-     * <p>Unique to this mapset among the three card screens, and positioned between {@code CURTIME} and
-     * {@code ACCTSID}; that position is part of the contract. The outbound value is the cursor's page
-     * number - {@code MOVE WS-CA-SCREEN-NUM TO PAGENOO OF CCRDLIAO} at {@code app/cbl/COCRDLIC.cbl:667}.
-     */
     @Size(max = PAGENO_LENGTH)
     private String pageno;
 
-    /**
-     * {@code ACCTSID} - {@code 02 ACCTSIDI PIC X(11).}, {@code app/cpy-bms/COCRDLI.CPY:66}. The account
-     * filter, declared {@code ATTRB=(FSET,IC,NORM,UNPROT)} so it is operator-enterable and holds the
-     * cursor. {@code app/cbl/COCRDLIC.cbl:969} moves it into {@code CC-ACCT-ID} of the
-     * {@link CardScreenState} work area.
-     */
     @Size(max = ACCTSID_LENGTH)
     private String acctsid;
 
-    /**
-     * {@code CARDSID} - {@code 02 CARDSIDI PIC X(16).}, {@code app/cpy-bms/COCRDLI.CPY:72}. The card
-     * filter, declared {@code ATTRB=(FSET,NORM,UNPROT)}. {@code app/cbl/COCRDLIC.cbl:970} moves it into
-     * {@code CC-CARD-NUM} of the {@link CardScreenState} work area.
-     */
     @Size(max = CARDSID_LENGTH)
     private String cardsid;
 
-    // =================================================================================================
-    // PAYLOAD - the detail rows, 34 of the 45 members: 4 for row 1 and 5 for each of rows 2 through 7.
-    // =================================================================================================
-
-    /**
-     * The seven detail rows in screen order, occupying screen lines 11 through 17.
-     *
-     * <p>Element 0 is always a {@link FirstListRow} and elements 1 through 6 are always
-     * {@link StopperListRow}; {@link #setRows(List)} and {@link #setRow(int, ListRow)} both enforce
-     * that, so the row-1 asymmetry cannot be broken by a caller. Address rows by their COBOL subscript
-     * through {@link #row(int)}.
-     */
     @Valid
     private List<ListRow> rows;
 
-    // =================================================================================================
-    // PAYLOAD - the footer band, the last 2 of the 45 members.
-    // =================================================================================================
-
-    /**
-     * {@code INFOMSG} - {@code 02 INFOMSGI PIC X(45).}, {@code app/cpy-bms/COCRDLI.CPY:282}.
-     * Forty-five bytes on this map where {@code COCRDSL} and {@code COCRDUP} declare forty; the
-     * divergence is the contract. Populated outbound by {@code MOVE WS-INFO-MSG TO INFOMSGO} at
-     * {@code app/cbl/COCRDLIC.cbl:670} and {@code :928}.
-     */
     @Size(max = INFOMSG_LENGTH)
     private String infomsg;
 
-    /**
-     * {@code ERRMSG} - {@code 02 ERRMSGI PIC X(78).}, {@code app/cpy-bms/COCRDLI.CPY:288}.
-     * Seventy-eight bytes on this map where {@code COCRDSL} and {@code COCRDUP} declare eighty.
-     * Declared {@code ATTRB=(ASKIP,BRT,FSET) COLOR=RED} at {@code app/bms/COCRDLI.bms:331}.
-     */
     @Size(max = ERRMSG_LENGTH)
     private String errmsg;
 
-    // =================================================================================================
-    // CARRIERS - the four members that are not map fields but must still travel in the payload, because
-    // CICS carried them in the communication area and a stateless server has nowhere else to put them
-    // (rule R6, gate G37).
-    // =================================================================================================
-
-    /**
-     * The 58-byte paging cursor, {@code 01 WS-THIS-PROGCOMMAREA} of
-     * {@code app/cbl/COCRDLIC.cbl:229-248}. Never {@code null}.
-     */
     @Valid
     private PageCursor pageCursor;
 
-    /**
-     * The seven row action codes, {@code WS-EDIT-SELECT OCCURS 7 TIMES} of
-     * {@code app/cbl/COCRDLIC.cbl:75-82}. Never {@code null}.
-     */
     @Valid
     private SelectionFlags selectionFlags;
 
-    /**
-     * The {@code CC-WORK-AREA} of {@code app/cpy/CVCRD01Y.cpy}, copied by
-     * {@code app/cbl/COCRDLIC.cbl:221}: the attention identifier, the next program, mapset and map, the
-     * two 75-byte message fields and the account, card and customer work keys. Never {@code null}.
-     */
     private CardScreenState cardScreenState;
 
-    /**
-     * The {@code CARDDEMO-COMMAREA} of {@code app/cpy/COCOM01Y.cpy}, copied by
-     * {@code app/cbl/COCRDLIC.cbl:227}. Its {@code CDEMO-PGM-CONTEXT} distinguishes {@code ENTER} from
-     * {@code REENTER}, which is what gates the {@code CSSETATY} error highlight - see
-     * {@link #isReenter()}.
-     *
-     * <p><strong>{@code null} is meaningful here, and it is not the same as an empty area.</strong>
-     * {@code app/cbl/COCRDLIC.cbl:315} tests {@code IF EIBCALEN = 0} and takes a branch nothing else
-     * reaches: lines 316-324 {@code INITIALIZE CARDDEMO-COMMAREA} and {@code WS-THIS-PROGCOMMAREA},
-     * move this program's own transaction and program names into {@code CDEMO-FROM-TRANID} and
-     * {@code CDEMO-FROM-PROGRAM}, {@code SET CDEMO-USRTYP-USER TO TRUE}, {@code SET CDEMO-PGM-ENTER TO
-     * TRUE}, record the map and mapset, and {@code SET CA-FIRST-PAGE TO TRUE}. Line 327 takes the
-     * opposite branch and moves {@code DFHCOMMAREA} in. Substituting
-     * {@link NavigationContext#empty()} for an absent area would report {@code EIBCALEN} as
-     * {@value NavigationContext#COMMAREA_LENGTH} and send the request down the wrong branch, so the
-     * member stays nullable and carries no presence constraint. {@link #hasNavigationContext()} is the
-     * discriminator.
-     */
     @Valid
     private NavigationContext navigationContext;
 
-    // =================================================================================================
-    // NON-SERIALISED METADATA - modelled because the COBOL declares it, kept off the wire because it is
-    // not a map field. Promoting any of it to a JSON member would add a payload field with no
-    // name-labelled DFHMDF behind it.
-    // =================================================================================================
-
-    /**
-     * The 196-byte browse result table, {@code WS-SCREEN-ROWS OCCURS 7 TIMES} of
-     * {@code app/cbl/COCRDLIC.cbl:253-260}.
-     *
-     * <p>Off the wire because it is derived: {@code MOVE LOW-VALUES TO WS-ALL-ROWS} clears it before
-     * each browse ({@code :1124}, {@code :1266}) and the browse then refills it from the card file. The
-     * client round-trips the {@link PageCursor}; the rows are recomputed from it.
-     */
     @JsonIgnore
     private ScreenRowTable screenRowTable;
 
-    /**
-     * The seven per-row highlight flags, {@code WS-EDIT-SELECT-ERRORS OCCURS 7 TIMES} of
-     * {@code app/cbl/COCRDLIC.cbl:83-88}. Off the wire for the same reason the {@code xxxA} attribute
-     * items are: it feeds {@code common/FieldAttributeSetter}, not the map.
-     */
     @JsonIgnore
     private SelectionErrorFlags selectionErrorFlags;
 
-    /**
-     * The {@code xxxL} length items and {@code xxxF}/{@code xxxA} attribute items, keyed by
-     * {@code DFHMDF} label. Off the wire; see {@link FieldMetadata}.
-     */
     @JsonIgnore
     private Map<String, FieldMetadata> fieldMetadata;
-
-    // =================================================================================================
-    // CONSTRUCTION - no Spring context, no builder, no generated accessors. A parity test, a controller
-    // test and a MockMvc test all build one of these the same way (practice B10).
-    // =================================================================================================
 
     /**
      * A blank request in the state the screen is first painted in: every map field space-filled to its
      * declared width, seven blank rows of the correct shapes, a first-page cursor, a low-value selection
      * table, a fresh {@link CardScreenState} and an empty {@link NavigationContext}.
-     *
-     * <p>Note the two different notions of "empty" in play, kept apart on purpose. The map fields are
-     * <em>spaces</em>. The selection table is {@code LOW-VALUES}, because
-     * {@code WS-EDIT-SELECT-FLAGS PIC X(7) VALUE LOW-VALUES} says so. The row table is also
-     * {@code LOW-VALUES}, because {@code MOVE LOW-VALUES TO WS-ALL-ROWS} says so.
      */
     public CardListRequest() {
         this.trnname = spaces(TRNNAME_LENGTH);
@@ -2481,22 +1674,12 @@ public class CardListRequest {
         this.pageCursor = PageCursor.firstPage();
         this.selectionFlags = SelectionFlags.lowValues();
         this.cardScreenState = new CardScreenState();
-        // Absence, not an initialised area. EIBCALEN = 0 is what COCRDLIC.cbl:315 tests for, and a
-        // request nobody has passed a communication area to has not been passed one.
         this.navigationContext = null;
         this.screenRowTable = ScreenRowTable.lowValues();
         this.selectionErrorFlags = SelectionErrorFlags.none();
         this.fieldMetadata = new LinkedHashMap<>();
     }
 
-    /**
-     * Copy constructor. Every mutable part is copied rather than shared: the row list is rebuilt, the
-     * metadata map is rebuilt, and {@link CardScreenState} - the one mutable carrier - is copied through
-     * its own copy constructor. The record-valued members are immutable and are shared safely.
-     *
-     * @param other the request to copy; never {@code null}
-     * @throws NullPointerException if {@code other} is {@code null}
-     */
     public CardListRequest(CardListRequest other) {
         Objects.requireNonNull(other, "A CardListRequest is required to copy from");
         this.trnname = other.trnname;
@@ -2520,121 +1703,50 @@ public class CardListRequest {
         this.fieldMetadata = new LinkedHashMap<>(other.fieldMetadata);
     }
 
-    // =================================================================================================
-    // HEADER BAND ACCESSORS - 9 of the 45 payload members, hand-written so the copybook-to-field
-    // correspondence stays visible at the point of use (no Lombok, AAP 0.5.6).
-    // =================================================================================================
-
-    /**
-     * The {@code TRNNAME} payload member.
-     *
-     * @return {@code TRNNAME}, {@code PIC X(4)}; never {@code null}
-     */
     public String getTrnname() {
         return trnname;
     }
 
-    /**
-     * Replaces the {@code TRNNAME} payload member.
-     *
-     * @param trnname {@code TRNNAME}, {@code PIC X(4)}; never {@code null}
-     * @throws NullPointerException if {@code trnname} is {@code null}
-     */
     public void setTrnname(String trnname) {
         this.trnname = requireField(trnname, "TRNNAME");
     }
 
-    /**
-     * The {@code TITLE01} payload member.
-     *
-     * @return {@code TITLE01}, {@code PIC X(40)}; never {@code null}
-     */
     public String getTitle01() {
         return title01;
     }
 
-    /**
-     * Replaces the {@code TITLE01} payload member.
-     *
-     * @param title01 {@code TITLE01}, {@code PIC X(40)}; never {@code null}
-     * @throws NullPointerException if {@code title01} is {@code null}
-     */
     public void setTitle01(String title01) {
         this.title01 = requireField(title01, "TITLE01");
     }
 
-    /**
-     * The {@code CURDATE} payload member.
-     *
-     * @return {@code CURDATE}, {@code PIC X(8)}; never {@code null}
-     */
     public String getCurdate() {
         return curdate;
     }
 
-    /**
-     * Replaces the {@code CURDATE} payload member.
-     *
-     * @param curdate {@code CURDATE}, {@code PIC X(8)}; never {@code null}
-     * @throws NullPointerException if {@code curdate} is {@code null}
-     */
     public void setCurdate(String curdate) {
         this.curdate = requireField(curdate, "CURDATE");
     }
 
-    /**
-     * The {@code PGMNAME} payload member.
-     *
-     * @return {@code PGMNAME}, {@code PIC X(8)}; never {@code null}
-     */
     public String getPgmname() {
         return pgmname;
     }
 
-    /**
-     * Replaces the {@code PGMNAME} payload member.
-     *
-     * @param pgmname {@code PGMNAME}, {@code PIC X(8)}; never {@code null}
-     * @throws NullPointerException if {@code pgmname} is {@code null}
-     */
     public void setPgmname(String pgmname) {
         this.pgmname = requireField(pgmname, "PGMNAME");
     }
 
-    /**
-     * The {@code TITLE02} payload member.
-     *
-     * @return {@code TITLE02}, {@code PIC X(40)}; never {@code null}
-     */
     public String getTitle02() {
         return title02;
     }
 
-    /**
-     * Replaces the {@code TITLE02} payload member.
-     *
-     * @param title02 {@code TITLE02}, {@code PIC X(40)}; never {@code null}
-     * @throws NullPointerException if {@code title02} is {@code null}
-     */
     public void setTitle02(String title02) {
         this.title02 = requireField(title02, "TITLE02");
     }
 
-    /**
-     * The {@code CURTIME} payload member.
-     *
-     * @return {@code CURTIME}, {@code PIC X(8)}; never {@code null}
-     */
     public String getCurtime() {
         return curtime;
     }
 
-    /**
-     * Replaces the {@code CURTIME} payload member.
-     *
-     * @param curtime {@code CURTIME}, {@code PIC X(8)}; never {@code null}
-     * @throws NullPointerException if {@code curtime} is {@code null}
-     */
     public void setCurtime(String curtime) {
         this.curtime = requireField(curtime, "CURTIME");
     }
@@ -2649,12 +1761,6 @@ public class CardListRequest {
         return pageno;
     }
 
-    /**
-     * Replaces the {@code PAGENO} payload member.
-     *
-     * @param pageno {@code PAGENO}, {@code PIC X(3)}; never {@code null}
-     * @throws NullPointerException if {@code pageno} is {@code null}
-     */
     public void setPageno(String pageno) {
         this.pageno = requireField(pageno, "PAGENO");
     }
@@ -2668,12 +1774,6 @@ public class CardListRequest {
         return acctsid;
     }
 
-    /**
-     * Replaces the {@code ACCTSID} payload member.
-     *
-     * @param acctsid {@code ACCTSID}, {@code PIC X(11)}; never {@code null}
-     * @throws NullPointerException if {@code acctsid} is {@code null}
-     */
     public void setAcctsid(String acctsid) {
         this.acctsid = requireField(acctsid, "ACCTSID");
     }
@@ -2687,43 +1787,16 @@ public class CardListRequest {
         return cardsid;
     }
 
-    /**
-     * Replaces the {@code CARDSID} payload member.
-     *
-     * @param cardsid {@code CARDSID}, {@code PIC X(16)}; never {@code null}
-     * @throws NullPointerException if {@code cardsid} is {@code null}
-     */
     public void setCardsid(String cardsid) {
         this.cardsid = requireField(cardsid, "CARDSID");
     }
 
-    // =================================================================================================
-    // THE 34 NUMBERED DETAIL-ROW MEMBERS, one accessor pair per xxxI item of
-    // app/cpy-bms/COCRDLI.CPY:78-276, in copybook order.
-    //
-    // These ARE the wire contract for the rows. AAP 0.3.9 requires every payload field to map 1:1 to a
-    // DFHMDF definition and every width to a symbolic-map PICTURE clause, so the copybook's own names
-    // are the property names - CRDSEL1I becomes crdsel1, ACCTNO1I becomes acctno1, and so on, dropping
-    // only the I suffix that distinguishes the input view from the output view, exactly as the header
-    // members trnname, acctsid and cardsid already do. CardListResponse names its own 34 the same way
-    // with an O suffix, so the pair round-trips member for member.
-    //
-    // ROW 1 HAS NO crdstp1, AND THAT ASYMMETRY IS THE CONTRACT. app/cpy-bms/COCRDLI.CPY:78 declares
-    // 02 CRDSEL1I PIC X(1). and line 79 goes straight on to 02 ACCTNO1L COMP PIC S9(4).; the mapset's
-    // row-1 stopper at POS=(11,14) is unnamed (app/bms/COCRDLI.bms:145-146) and so never reaches the
-    // symbolic map. Declaring a 35th pair would make the payload 46 members and put one byte of phantom
-    // data in the middle of the group, shifting every field after it.
-    //
-    // Each pair is a named window onto the one store - the seven-element row list - so the two views
-    // cannot disagree. The setters rebuild through setRow(int, ListRow), which is where the shape
-    // invariant is enforced, and they store the value verbatim: no pad, no trim, no truncation.
-    // =================================================================================================
-
-    // ---- Row 1: 4 members, COCRDLI.CPY:78-96 - no CRDSTP1 ----
+    // app/cpy-bms/COCRDLI.CPY:78 declares 02 CRDSEL1I PIC X(1). and line 79 goes straight on to 02 ACCTNO1L
+    // COMP PIC S9(4).; the mapset's row-1 stopper at POS=(11,14) is unnamed (app/bms/COCRDLI.bms:145-146)
+    // and so never reaches the symbolic map.
 
     /**
-     * {@code CRDSEL1} - {@code 02 CRDSEL1I PIC X({@value #CRDSEL_LENGTH}).} at
-     * {@code app/cpy-bms/COCRDLI.CPY:78}. The selection character the operator typed beside row 1.
+     * {@code CRDSEL1} - {@code 02 CRDSEL1I PIC X(1).} at {@code app/cpy-bms/COCRDLI.CPY:78}.
      *
      * @return {@code CRDSEL1}, at most {@value #CRDSEL_LENGTH} characters; never {@code null}
      */
@@ -2734,9 +1807,9 @@ public class CardListRequest {
     /**
      * Replaces {@code CRDSEL1}, rebuilding row 1's {@link FirstListRow} around the new value.
      *
-     * @param value {@code CRDSEL1}, {@code PIC X({@value #CRDSEL_LENGTH})}; never {@code null}
-     * @throws NullPointerException if {@code value} is {@code null} - a blank screen field holds
-     *                              spaces or {@code LOW-VALUES}, never {@code null}
+     * @param value {@code CRDSEL1}, {@code PIC X(1)}; never {@code null}
+     * @throws NullPointerException if {@code value} is {@code null} - a blank screen field holds spaces or
+     *     {@code LOW-VALUES}, never {@code null}
      */
     public void setCrdsel1(String value) {
         FirstListRow row = firstRow();
@@ -2744,8 +1817,7 @@ public class CardListRequest {
     }
 
     /**
-     * {@code ACCTNO1} - {@code 02 ACCTNO1I PIC X({@value #ACCTNO_LENGTH}).} at
-     * {@code app/cpy-bms/COCRDLI.CPY:84}. The account number shown on row 1.
+     * {@code ACCTNO1} - {@code 02 ACCTNO1I PIC X(11).} at {@code app/cpy-bms/COCRDLI.CPY:84}.
      *
      * @return {@code ACCTNO1}, at most {@value #ACCTNO_LENGTH} characters; never {@code null}
      */
@@ -2756,9 +1828,9 @@ public class CardListRequest {
     /**
      * Replaces {@code ACCTNO1}, rebuilding row 1's {@link FirstListRow} around the new value.
      *
-     * @param value {@code ACCTNO1}, {@code PIC X({@value #ACCTNO_LENGTH})}; never {@code null}
-     * @throws NullPointerException if {@code value} is {@code null} - a blank screen field holds
-     *                              spaces or {@code LOW-VALUES}, never {@code null}
+     * @param value {@code ACCTNO1}, {@code PIC X(11)}; never {@code null}
+     * @throws NullPointerException if {@code value} is {@code null} - a blank screen field holds spaces or
+     *     {@code LOW-VALUES}, never {@code null}
      */
     public void setAcctno1(String value) {
         FirstListRow row = firstRow();
@@ -2766,8 +1838,7 @@ public class CardListRequest {
     }
 
     /**
-     * {@code CRDNUM1} - {@code 02 CRDNUM1I PIC X({@value #CRDNUM_LENGTH}).} at
-     * {@code app/cpy-bms/COCRDLI.CPY:90}. 
+     * {@code CRDNUM1} - {@code 02 CRDNUM1I PIC X(16).} at {@code app/cpy-bms/COCRDLI.CPY:90}.
      *
      * @return {@code CRDNUM1}, at most {@value #CRDNUM_LENGTH} characters; never {@code null}
      */
@@ -2778,9 +1849,9 @@ public class CardListRequest {
     /**
      * Replaces {@code CRDNUM1}, rebuilding row 1's {@link FirstListRow} around the new value.
      *
-     * @param value {@code CRDNUM1}, {@code PIC X({@value #CRDNUM_LENGTH})}; never {@code null}
-     * @throws NullPointerException if {@code value} is {@code null} - a blank screen field holds
-     *                              spaces or {@code LOW-VALUES}, never {@code null}
+     * @param value {@code CRDNUM1}, {@code PIC X(16)}; never {@code null}
+     * @throws NullPointerException if {@code value} is {@code null} - a blank screen field holds spaces or
+     *     {@code LOW-VALUES}, never {@code null}
      */
     public void setCrdnum1(String value) {
         FirstListRow row = firstRow();
@@ -2788,8 +1859,7 @@ public class CardListRequest {
     }
 
     /**
-     * {@code CRDSTS1} - {@code 02 CRDSTS1I PIC X({@value #CRDSTS_LENGTH}).} at
-     * {@code app/cpy-bms/COCRDLI.CPY:96}. The active status shown on row 1.
+     * {@code CRDSTS1} - {@code 02 CRDSTS1I PIC X(1).} at {@code app/cpy-bms/COCRDLI.CPY:96}.
      *
      * @return {@code CRDSTS1}, at most {@value #CRDSTS_LENGTH} characters; never {@code null}
      */
@@ -2800,20 +1870,17 @@ public class CardListRequest {
     /**
      * Replaces {@code CRDSTS1}, rebuilding row 1's {@link FirstListRow} around the new value.
      *
-     * @param value {@code CRDSTS1}, {@code PIC X({@value #CRDSTS_LENGTH})}; never {@code null}
-     * @throws NullPointerException if {@code value} is {@code null} - a blank screen field holds
-     *                              spaces or {@code LOW-VALUES}, never {@code null}
+     * @param value {@code CRDSTS1}, {@code PIC X(1)}; never {@code null}
+     * @throws NullPointerException if {@code value} is {@code null} - a blank screen field holds spaces or
+     *     {@code LOW-VALUES}, never {@code null}
      */
     public void setCrdsts1(String value) {
         FirstListRow row = firstRow();
         setRow(1, new FirstListRow(row.crdSel(), row.acctNo(), row.crdNum(), value));
     }
 
-    // ---- Row 2: 5 members, COCRDLI.CPY:102-126 ----
-
     /**
-     * {@code CRDSEL2} - {@code 02 CRDSEL2I PIC X({@value #CRDSEL_LENGTH}).} at
-     * {@code app/cpy-bms/COCRDLI.CPY:102}. The selection character the operator typed beside row 2.
+     * {@code CRDSEL2} - {@code 02 CRDSEL2I PIC X(1).} at {@code app/cpy-bms/COCRDLI.CPY:102}.
      *
      * @return {@code CRDSEL2}, at most {@value #CRDSEL_LENGTH} characters; never {@code null}
      */
@@ -2824,9 +1891,9 @@ public class CardListRequest {
     /**
      * Replaces {@code CRDSEL2}, rebuilding row 2's {@link StopperListRow} around the new value.
      *
-     * @param value {@code CRDSEL2}, {@code PIC X({@value #CRDSEL_LENGTH})}; never {@code null}
-     * @throws NullPointerException if {@code value} is {@code null} - a blank screen field holds
-     *                              spaces or {@code LOW-VALUES}, never {@code null}
+     * @param value {@code CRDSEL2}, {@code PIC X(1)}; never {@code null}
+     * @throws NullPointerException if {@code value} is {@code null} - a blank screen field holds spaces or
+     *     {@code LOW-VALUES}, never {@code null}
      */
     public void setCrdsel2(String value) {
         StopperListRow row = stopperRow(2);
@@ -2834,9 +1901,7 @@ public class CardListRequest {
     }
 
     /**
-     * {@code CRDSTP2} - {@code 02 CRDSTP2I PIC X({@value #CRDSTP_LENGTH}).} at
-     * {@code app/cpy-bms/COCRDLI.CPY:108}. The named attribute stopper that terminates row 2's selection
-     * field.
+     * {@code CRDSTP2} - {@code 02 CRDSTP2I PIC X(1).} at {@code app/cpy-bms/COCRDLI.CPY:108}.
      *
      * @return {@code CRDSTP2}, at most {@value #CRDSTP_LENGTH} characters; never {@code null}
      */
@@ -2847,9 +1912,9 @@ public class CardListRequest {
     /**
      * Replaces {@code CRDSTP2}, rebuilding row 2's {@link StopperListRow} around the new value.
      *
-     * @param value {@code CRDSTP2}, {@code PIC X({@value #CRDSTP_LENGTH})}; never {@code null}
-     * @throws NullPointerException if {@code value} is {@code null} - a blank screen field holds
-     *                              spaces or {@code LOW-VALUES}, never {@code null}
+     * @param value {@code CRDSTP2}, {@code PIC X(1)}; never {@code null}
+     * @throws NullPointerException if {@code value} is {@code null} - a blank screen field holds spaces or
+     *     {@code LOW-VALUES}, never {@code null}
      */
     public void setCrdstp2(String value) {
         StopperListRow row = stopperRow(2);
@@ -2857,8 +1922,7 @@ public class CardListRequest {
     }
 
     /**
-     * {@code ACCTNO2} - {@code 02 ACCTNO2I PIC X({@value #ACCTNO_LENGTH}).} at
-     * {@code app/cpy-bms/COCRDLI.CPY:114}. The account number shown on row 2.
+     * {@code ACCTNO2} - {@code 02 ACCTNO2I PIC X(11).} at {@code app/cpy-bms/COCRDLI.CPY:114}.
      *
      * @return {@code ACCTNO2}, at most {@value #ACCTNO_LENGTH} characters; never {@code null}
      */
@@ -2869,9 +1933,9 @@ public class CardListRequest {
     /**
      * Replaces {@code ACCTNO2}, rebuilding row 2's {@link StopperListRow} around the new value.
      *
-     * @param value {@code ACCTNO2}, {@code PIC X({@value #ACCTNO_LENGTH})}; never {@code null}
-     * @throws NullPointerException if {@code value} is {@code null} - a blank screen field holds
-     *                              spaces or {@code LOW-VALUES}, never {@code null}
+     * @param value {@code ACCTNO2}, {@code PIC X(11)}; never {@code null}
+     * @throws NullPointerException if {@code value} is {@code null} - a blank screen field holds spaces or
+     *     {@code LOW-VALUES}, never {@code null}
      */
     public void setAcctno2(String value) {
         StopperListRow row = stopperRow(2);
@@ -2879,9 +1943,7 @@ public class CardListRequest {
     }
 
     /**
-     * {@code CRDNUM2} - {@code 02 CRDNUM2I PIC X({@value #CRDNUM_LENGTH}).} at
-     * {@code app/cpy-bms/COCRDLI.CPY:120}. The card number shown on row 2, in the clear exactly as the map
-     * carries it.
+     * {@code CRDNUM2} - {@code 02 CRDNUM2I PIC X(16).} at {@code app/cpy-bms/COCRDLI.CPY:120}.
      *
      * @return {@code CRDNUM2}, at most {@value #CRDNUM_LENGTH} characters; never {@code null}
      */
@@ -2892,9 +1954,9 @@ public class CardListRequest {
     /**
      * Replaces {@code CRDNUM2}, rebuilding row 2's {@link StopperListRow} around the new value.
      *
-     * @param value {@code CRDNUM2}, {@code PIC X({@value #CRDNUM_LENGTH})}; never {@code null}
-     * @throws NullPointerException if {@code value} is {@code null} - a blank screen field holds
-     *                              spaces or {@code LOW-VALUES}, never {@code null}
+     * @param value {@code CRDNUM2}, {@code PIC X(16)}; never {@code null}
+     * @throws NullPointerException if {@code value} is {@code null} - a blank screen field holds spaces or
+     *     {@code LOW-VALUES}, never {@code null}
      */
     public void setCrdnum2(String value) {
         StopperListRow row = stopperRow(2);
@@ -2902,8 +1964,7 @@ public class CardListRequest {
     }
 
     /**
-     * {@code CRDSTS2} - {@code 02 CRDSTS2I PIC X({@value #CRDSTS_LENGTH}).} at
-     * {@code app/cpy-bms/COCRDLI.CPY:126}. The active status shown on row 2.
+     * {@code CRDSTS2} - {@code 02 CRDSTS2I PIC X(1).} at {@code app/cpy-bms/COCRDLI.CPY:126}.
      *
      * @return {@code CRDSTS2}, at most {@value #CRDSTS_LENGTH} characters; never {@code null}
      */
@@ -2914,20 +1975,17 @@ public class CardListRequest {
     /**
      * Replaces {@code CRDSTS2}, rebuilding row 2's {@link StopperListRow} around the new value.
      *
-     * @param value {@code CRDSTS2}, {@code PIC X({@value #CRDSTS_LENGTH})}; never {@code null}
-     * @throws NullPointerException if {@code value} is {@code null} - a blank screen field holds
-     *                              spaces or {@code LOW-VALUES}, never {@code null}
+     * @param value {@code CRDSTS2}, {@code PIC X(1)}; never {@code null}
+     * @throws NullPointerException if {@code value} is {@code null} - a blank screen field holds spaces or
+     *     {@code LOW-VALUES}, never {@code null}
      */
     public void setCrdsts2(String value) {
         StopperListRow row = stopperRow(2);
         setRow(2, new StopperListRow(row.crdSel(), row.crdStp(), row.acctNo(), row.crdNum(), value));
     }
 
-    // ---- Row 3: 5 members, COCRDLI.CPY:132-156 ----
-
     /**
-     * {@code CRDSEL3} - {@code 02 CRDSEL3I PIC X({@value #CRDSEL_LENGTH}).} at
-     * {@code app/cpy-bms/COCRDLI.CPY:132}. The selection character the operator typed beside row 3.
+     * {@code CRDSEL3} - {@code 02 CRDSEL3I PIC X(1).} at {@code app/cpy-bms/COCRDLI.CPY:132}.
      *
      * @return {@code CRDSEL3}, at most {@value #CRDSEL_LENGTH} characters; never {@code null}
      */
@@ -2938,9 +1996,9 @@ public class CardListRequest {
     /**
      * Replaces {@code CRDSEL3}, rebuilding row 3's {@link StopperListRow} around the new value.
      *
-     * @param value {@code CRDSEL3}, {@code PIC X({@value #CRDSEL_LENGTH})}; never {@code null}
-     * @throws NullPointerException if {@code value} is {@code null} - a blank screen field holds
-     *                              spaces or {@code LOW-VALUES}, never {@code null}
+     * @param value {@code CRDSEL3}, {@code PIC X(1)}; never {@code null}
+     * @throws NullPointerException if {@code value} is {@code null} - a blank screen field holds spaces or
+     *     {@code LOW-VALUES}, never {@code null}
      */
     public void setCrdsel3(String value) {
         StopperListRow row = stopperRow(3);
@@ -2948,9 +2006,7 @@ public class CardListRequest {
     }
 
     /**
-     * {@code CRDSTP3} - {@code 02 CRDSTP3I PIC X({@value #CRDSTP_LENGTH}).} at
-     * {@code app/cpy-bms/COCRDLI.CPY:138}. The named attribute stopper that terminates row 3's selection
-     * field.
+     * {@code CRDSTP3} - {@code 02 CRDSTP3I PIC X(1).} at {@code app/cpy-bms/COCRDLI.CPY:138}.
      *
      * @return {@code CRDSTP3}, at most {@value #CRDSTP_LENGTH} characters; never {@code null}
      */
@@ -2961,9 +2017,9 @@ public class CardListRequest {
     /**
      * Replaces {@code CRDSTP3}, rebuilding row 3's {@link StopperListRow} around the new value.
      *
-     * @param value {@code CRDSTP3}, {@code PIC X({@value #CRDSTP_LENGTH})}; never {@code null}
-     * @throws NullPointerException if {@code value} is {@code null} - a blank screen field holds
-     *                              spaces or {@code LOW-VALUES}, never {@code null}
+     * @param value {@code CRDSTP3}, {@code PIC X(1)}; never {@code null}
+     * @throws NullPointerException if {@code value} is {@code null} - a blank screen field holds spaces or
+     *     {@code LOW-VALUES}, never {@code null}
      */
     public void setCrdstp3(String value) {
         StopperListRow row = stopperRow(3);
@@ -2971,8 +2027,7 @@ public class CardListRequest {
     }
 
     /**
-     * {@code ACCTNO3} - {@code 02 ACCTNO3I PIC X({@value #ACCTNO_LENGTH}).} at
-     * {@code app/cpy-bms/COCRDLI.CPY:144}. The account number shown on row 3.
+     * {@code ACCTNO3} - {@code 02 ACCTNO3I PIC X(11).} at {@code app/cpy-bms/COCRDLI.CPY:144}.
      *
      * @return {@code ACCTNO3}, at most {@value #ACCTNO_LENGTH} characters; never {@code null}
      */
@@ -2983,9 +2038,9 @@ public class CardListRequest {
     /**
      * Replaces {@code ACCTNO3}, rebuilding row 3's {@link StopperListRow} around the new value.
      *
-     * @param value {@code ACCTNO3}, {@code PIC X({@value #ACCTNO_LENGTH})}; never {@code null}
-     * @throws NullPointerException if {@code value} is {@code null} - a blank screen field holds
-     *                              spaces or {@code LOW-VALUES}, never {@code null}
+     * @param value {@code ACCTNO3}, {@code PIC X(11)}; never {@code null}
+     * @throws NullPointerException if {@code value} is {@code null} - a blank screen field holds spaces or
+     *     {@code LOW-VALUES}, never {@code null}
      */
     public void setAcctno3(String value) {
         StopperListRow row = stopperRow(3);
@@ -2993,9 +2048,7 @@ public class CardListRequest {
     }
 
     /**
-     * {@code CRDNUM3} - {@code 02 CRDNUM3I PIC X({@value #CRDNUM_LENGTH}).} at
-     * {@code app/cpy-bms/COCRDLI.CPY:150}. The card number shown on row 3, in the clear exactly as the map
-     * carries it.
+     * {@code CRDNUM3} - {@code 02 CRDNUM3I PIC X(16).} at {@code app/cpy-bms/COCRDLI.CPY:150}.
      *
      * @return {@code CRDNUM3}, at most {@value #CRDNUM_LENGTH} characters; never {@code null}
      */
@@ -3006,9 +2059,9 @@ public class CardListRequest {
     /**
      * Replaces {@code CRDNUM3}, rebuilding row 3's {@link StopperListRow} around the new value.
      *
-     * @param value {@code CRDNUM3}, {@code PIC X({@value #CRDNUM_LENGTH})}; never {@code null}
-     * @throws NullPointerException if {@code value} is {@code null} - a blank screen field holds
-     *                              spaces or {@code LOW-VALUES}, never {@code null}
+     * @param value {@code CRDNUM3}, {@code PIC X(16)}; never {@code null}
+     * @throws NullPointerException if {@code value} is {@code null} - a blank screen field holds spaces or
+     *     {@code LOW-VALUES}, never {@code null}
      */
     public void setCrdnum3(String value) {
         StopperListRow row = stopperRow(3);
@@ -3016,8 +2069,7 @@ public class CardListRequest {
     }
 
     /**
-     * {@code CRDSTS3} - {@code 02 CRDSTS3I PIC X({@value #CRDSTS_LENGTH}).} at
-     * {@code app/cpy-bms/COCRDLI.CPY:156}. The active status shown on row 3.
+     * {@code CRDSTS3} - {@code 02 CRDSTS3I PIC X(1).} at {@code app/cpy-bms/COCRDLI.CPY:156}.
      *
      * @return {@code CRDSTS3}, at most {@value #CRDSTS_LENGTH} characters; never {@code null}
      */
@@ -3028,20 +2080,17 @@ public class CardListRequest {
     /**
      * Replaces {@code CRDSTS3}, rebuilding row 3's {@link StopperListRow} around the new value.
      *
-     * @param value {@code CRDSTS3}, {@code PIC X({@value #CRDSTS_LENGTH})}; never {@code null}
-     * @throws NullPointerException if {@code value} is {@code null} - a blank screen field holds
-     *                              spaces or {@code LOW-VALUES}, never {@code null}
+     * @param value {@code CRDSTS3}, {@code PIC X(1)}; never {@code null}
+     * @throws NullPointerException if {@code value} is {@code null} - a blank screen field holds spaces or
+     *     {@code LOW-VALUES}, never {@code null}
      */
     public void setCrdsts3(String value) {
         StopperListRow row = stopperRow(3);
         setRow(3, new StopperListRow(row.crdSel(), row.crdStp(), row.acctNo(), row.crdNum(), value));
     }
 
-    // ---- Row 4: 5 members, COCRDLI.CPY:162-186 ----
-
     /**
-     * {@code CRDSEL4} - {@code 02 CRDSEL4I PIC X({@value #CRDSEL_LENGTH}).} at
-     * {@code app/cpy-bms/COCRDLI.CPY:162}. The selection character the operator typed beside row 4.
+     * {@code CRDSEL4} - {@code 02 CRDSEL4I PIC X(1).} at {@code app/cpy-bms/COCRDLI.CPY:162}.
      *
      * @return {@code CRDSEL4}, at most {@value #CRDSEL_LENGTH} characters; never {@code null}
      */
@@ -3052,9 +2101,9 @@ public class CardListRequest {
     /**
      * Replaces {@code CRDSEL4}, rebuilding row 4's {@link StopperListRow} around the new value.
      *
-     * @param value {@code CRDSEL4}, {@code PIC X({@value #CRDSEL_LENGTH})}; never {@code null}
-     * @throws NullPointerException if {@code value} is {@code null} - a blank screen field holds
-     *                              spaces or {@code LOW-VALUES}, never {@code null}
+     * @param value {@code CRDSEL4}, {@code PIC X(1)}; never {@code null}
+     * @throws NullPointerException if {@code value} is {@code null} - a blank screen field holds spaces or
+     *     {@code LOW-VALUES}, never {@code null}
      */
     public void setCrdsel4(String value) {
         StopperListRow row = stopperRow(4);
@@ -3062,9 +2111,7 @@ public class CardListRequest {
     }
 
     /**
-     * {@code CRDSTP4} - {@code 02 CRDSTP4I PIC X({@value #CRDSTP_LENGTH}).} at
-     * {@code app/cpy-bms/COCRDLI.CPY:168}. The named attribute stopper that terminates row 4's selection
-     * field.
+     * {@code CRDSTP4} - {@code 02 CRDSTP4I PIC X(1).} at {@code app/cpy-bms/COCRDLI.CPY:168}.
      *
      * @return {@code CRDSTP4}, at most {@value #CRDSTP_LENGTH} characters; never {@code null}
      */
@@ -3075,9 +2122,9 @@ public class CardListRequest {
     /**
      * Replaces {@code CRDSTP4}, rebuilding row 4's {@link StopperListRow} around the new value.
      *
-     * @param value {@code CRDSTP4}, {@code PIC X({@value #CRDSTP_LENGTH})}; never {@code null}
-     * @throws NullPointerException if {@code value} is {@code null} - a blank screen field holds
-     *                              spaces or {@code LOW-VALUES}, never {@code null}
+     * @param value {@code CRDSTP4}, {@code PIC X(1)}; never {@code null}
+     * @throws NullPointerException if {@code value} is {@code null} - a blank screen field holds spaces or
+     *     {@code LOW-VALUES}, never {@code null}
      */
     public void setCrdstp4(String value) {
         StopperListRow row = stopperRow(4);
@@ -3085,8 +2132,7 @@ public class CardListRequest {
     }
 
     /**
-     * {@code ACCTNO4} - {@code 02 ACCTNO4I PIC X({@value #ACCTNO_LENGTH}).} at
-     * {@code app/cpy-bms/COCRDLI.CPY:174}. The account number shown on row 4.
+     * {@code ACCTNO4} - {@code 02 ACCTNO4I PIC X(11).} at {@code app/cpy-bms/COCRDLI.CPY:174}.
      *
      * @return {@code ACCTNO4}, at most {@value #ACCTNO_LENGTH} characters; never {@code null}
      */
@@ -3097,9 +2143,9 @@ public class CardListRequest {
     /**
      * Replaces {@code ACCTNO4}, rebuilding row 4's {@link StopperListRow} around the new value.
      *
-     * @param value {@code ACCTNO4}, {@code PIC X({@value #ACCTNO_LENGTH})}; never {@code null}
-     * @throws NullPointerException if {@code value} is {@code null} - a blank screen field holds
-     *                              spaces or {@code LOW-VALUES}, never {@code null}
+     * @param value {@code ACCTNO4}, {@code PIC X(11)}; never {@code null}
+     * @throws NullPointerException if {@code value} is {@code null} - a blank screen field holds spaces or
+     *     {@code LOW-VALUES}, never {@code null}
      */
     public void setAcctno4(String value) {
         StopperListRow row = stopperRow(4);
@@ -3107,9 +2153,7 @@ public class CardListRequest {
     }
 
     /**
-     * {@code CRDNUM4} - {@code 02 CRDNUM4I PIC X({@value #CRDNUM_LENGTH}).} at
-     * {@code app/cpy-bms/COCRDLI.CPY:180}. The card number shown on row 4, in the clear exactly as the map
-     * carries it.
+     * {@code CRDNUM4} - {@code 02 CRDNUM4I PIC X(16).} at {@code app/cpy-bms/COCRDLI.CPY:180}.
      *
      * @return {@code CRDNUM4}, at most {@value #CRDNUM_LENGTH} characters; never {@code null}
      */
@@ -3120,9 +2164,9 @@ public class CardListRequest {
     /**
      * Replaces {@code CRDNUM4}, rebuilding row 4's {@link StopperListRow} around the new value.
      *
-     * @param value {@code CRDNUM4}, {@code PIC X({@value #CRDNUM_LENGTH})}; never {@code null}
-     * @throws NullPointerException if {@code value} is {@code null} - a blank screen field holds
-     *                              spaces or {@code LOW-VALUES}, never {@code null}
+     * @param value {@code CRDNUM4}, {@code PIC X(16)}; never {@code null}
+     * @throws NullPointerException if {@code value} is {@code null} - a blank screen field holds spaces or
+     *     {@code LOW-VALUES}, never {@code null}
      */
     public void setCrdnum4(String value) {
         StopperListRow row = stopperRow(4);
@@ -3130,8 +2174,7 @@ public class CardListRequest {
     }
 
     /**
-     * {@code CRDSTS4} - {@code 02 CRDSTS4I PIC X({@value #CRDSTS_LENGTH}).} at
-     * {@code app/cpy-bms/COCRDLI.CPY:186}. The active status shown on row 4.
+     * {@code CRDSTS4} - {@code 02 CRDSTS4I PIC X(1).} at {@code app/cpy-bms/COCRDLI.CPY:186}.
      *
      * @return {@code CRDSTS4}, at most {@value #CRDSTS_LENGTH} characters; never {@code null}
      */
@@ -3142,20 +2185,17 @@ public class CardListRequest {
     /**
      * Replaces {@code CRDSTS4}, rebuilding row 4's {@link StopperListRow} around the new value.
      *
-     * @param value {@code CRDSTS4}, {@code PIC X({@value #CRDSTS_LENGTH})}; never {@code null}
-     * @throws NullPointerException if {@code value} is {@code null} - a blank screen field holds
-     *                              spaces or {@code LOW-VALUES}, never {@code null}
+     * @param value {@code CRDSTS4}, {@code PIC X(1)}; never {@code null}
+     * @throws NullPointerException if {@code value} is {@code null} - a blank screen field holds spaces or
+     *     {@code LOW-VALUES}, never {@code null}
      */
     public void setCrdsts4(String value) {
         StopperListRow row = stopperRow(4);
         setRow(4, new StopperListRow(row.crdSel(), row.crdStp(), row.acctNo(), row.crdNum(), value));
     }
 
-    // ---- Row 5: 5 members, COCRDLI.CPY:192-216 ----
-
     /**
-     * {@code CRDSEL5} - {@code 02 CRDSEL5I PIC X({@value #CRDSEL_LENGTH}).} at
-     * {@code app/cpy-bms/COCRDLI.CPY:192}. The selection character the operator typed beside row 5.
+     * {@code CRDSEL5} - {@code 02 CRDSEL5I PIC X(1).} at {@code app/cpy-bms/COCRDLI.CPY:192}.
      *
      * @return {@code CRDSEL5}, at most {@value #CRDSEL_LENGTH} characters; never {@code null}
      */
@@ -3166,9 +2206,9 @@ public class CardListRequest {
     /**
      * Replaces {@code CRDSEL5}, rebuilding row 5's {@link StopperListRow} around the new value.
      *
-     * @param value {@code CRDSEL5}, {@code PIC X({@value #CRDSEL_LENGTH})}; never {@code null}
-     * @throws NullPointerException if {@code value} is {@code null} - a blank screen field holds
-     *                              spaces or {@code LOW-VALUES}, never {@code null}
+     * @param value {@code CRDSEL5}, {@code PIC X(1)}; never {@code null}
+     * @throws NullPointerException if {@code value} is {@code null} - a blank screen field holds spaces or
+     *     {@code LOW-VALUES}, never {@code null}
      */
     public void setCrdsel5(String value) {
         StopperListRow row = stopperRow(5);
@@ -3176,9 +2216,7 @@ public class CardListRequest {
     }
 
     /**
-     * {@code CRDSTP5} - {@code 02 CRDSTP5I PIC X({@value #CRDSTP_LENGTH}).} at
-     * {@code app/cpy-bms/COCRDLI.CPY:198}. The named attribute stopper that terminates row 5's selection
-     * field.
+     * {@code CRDSTP5} - {@code 02 CRDSTP5I PIC X(1).} at {@code app/cpy-bms/COCRDLI.CPY:198}.
      *
      * @return {@code CRDSTP5}, at most {@value #CRDSTP_LENGTH} characters; never {@code null}
      */
@@ -3189,9 +2227,9 @@ public class CardListRequest {
     /**
      * Replaces {@code CRDSTP5}, rebuilding row 5's {@link StopperListRow} around the new value.
      *
-     * @param value {@code CRDSTP5}, {@code PIC X({@value #CRDSTP_LENGTH})}; never {@code null}
-     * @throws NullPointerException if {@code value} is {@code null} - a blank screen field holds
-     *                              spaces or {@code LOW-VALUES}, never {@code null}
+     * @param value {@code CRDSTP5}, {@code PIC X(1)}; never {@code null}
+     * @throws NullPointerException if {@code value} is {@code null} - a blank screen field holds spaces or
+     *     {@code LOW-VALUES}, never {@code null}
      */
     public void setCrdstp5(String value) {
         StopperListRow row = stopperRow(5);
@@ -3199,8 +2237,7 @@ public class CardListRequest {
     }
 
     /**
-     * {@code ACCTNO5} - {@code 02 ACCTNO5I PIC X({@value #ACCTNO_LENGTH}).} at
-     * {@code app/cpy-bms/COCRDLI.CPY:204}. The account number shown on row 5.
+     * {@code ACCTNO5} - {@code 02 ACCTNO5I PIC X(11).} at {@code app/cpy-bms/COCRDLI.CPY:204}.
      *
      * @return {@code ACCTNO5}, at most {@value #ACCTNO_LENGTH} characters; never {@code null}
      */
@@ -3211,9 +2248,9 @@ public class CardListRequest {
     /**
      * Replaces {@code ACCTNO5}, rebuilding row 5's {@link StopperListRow} around the new value.
      *
-     * @param value {@code ACCTNO5}, {@code PIC X({@value #ACCTNO_LENGTH})}; never {@code null}
-     * @throws NullPointerException if {@code value} is {@code null} - a blank screen field holds
-     *                              spaces or {@code LOW-VALUES}, never {@code null}
+     * @param value {@code ACCTNO5}, {@code PIC X(11)}; never {@code null}
+     * @throws NullPointerException if {@code value} is {@code null} - a blank screen field holds spaces or
+     *     {@code LOW-VALUES}, never {@code null}
      */
     public void setAcctno5(String value) {
         StopperListRow row = stopperRow(5);
@@ -3221,9 +2258,7 @@ public class CardListRequest {
     }
 
     /**
-     * {@code CRDNUM5} - {@code 02 CRDNUM5I PIC X({@value #CRDNUM_LENGTH}).} at
-     * {@code app/cpy-bms/COCRDLI.CPY:210}. The card number shown on row 5, in the clear exactly as the map
-     * carries it.
+     * {@code CRDNUM5} - {@code 02 CRDNUM5I PIC X(16).} at {@code app/cpy-bms/COCRDLI.CPY:210}.
      *
      * @return {@code CRDNUM5}, at most {@value #CRDNUM_LENGTH} characters; never {@code null}
      */
@@ -3234,9 +2269,9 @@ public class CardListRequest {
     /**
      * Replaces {@code CRDNUM5}, rebuilding row 5's {@link StopperListRow} around the new value.
      *
-     * @param value {@code CRDNUM5}, {@code PIC X({@value #CRDNUM_LENGTH})}; never {@code null}
-     * @throws NullPointerException if {@code value} is {@code null} - a blank screen field holds
-     *                              spaces or {@code LOW-VALUES}, never {@code null}
+     * @param value {@code CRDNUM5}, {@code PIC X(16)}; never {@code null}
+     * @throws NullPointerException if {@code value} is {@code null} - a blank screen field holds spaces or
+     *     {@code LOW-VALUES}, never {@code null}
      */
     public void setCrdnum5(String value) {
         StopperListRow row = stopperRow(5);
@@ -3244,8 +2279,7 @@ public class CardListRequest {
     }
 
     /**
-     * {@code CRDSTS5} - {@code 02 CRDSTS5I PIC X({@value #CRDSTS_LENGTH}).} at
-     * {@code app/cpy-bms/COCRDLI.CPY:216}. The active status shown on row 5.
+     * {@code CRDSTS5} - {@code 02 CRDSTS5I PIC X(1).} at {@code app/cpy-bms/COCRDLI.CPY:216}.
      *
      * @return {@code CRDSTS5}, at most {@value #CRDSTS_LENGTH} characters; never {@code null}
      */
@@ -3256,20 +2290,17 @@ public class CardListRequest {
     /**
      * Replaces {@code CRDSTS5}, rebuilding row 5's {@link StopperListRow} around the new value.
      *
-     * @param value {@code CRDSTS5}, {@code PIC X({@value #CRDSTS_LENGTH})}; never {@code null}
-     * @throws NullPointerException if {@code value} is {@code null} - a blank screen field holds
-     *                              spaces or {@code LOW-VALUES}, never {@code null}
+     * @param value {@code CRDSTS5}, {@code PIC X(1)}; never {@code null}
+     * @throws NullPointerException if {@code value} is {@code null} - a blank screen field holds spaces or
+     *     {@code LOW-VALUES}, never {@code null}
      */
     public void setCrdsts5(String value) {
         StopperListRow row = stopperRow(5);
         setRow(5, new StopperListRow(row.crdSel(), row.crdStp(), row.acctNo(), row.crdNum(), value));
     }
 
-    // ---- Row 6: 5 members, COCRDLI.CPY:222-246 ----
-
     /**
-     * {@code CRDSEL6} - {@code 02 CRDSEL6I PIC X({@value #CRDSEL_LENGTH}).} at
-     * {@code app/cpy-bms/COCRDLI.CPY:222}. The selection character the operator typed beside row 6.
+     * {@code CRDSEL6} - {@code 02 CRDSEL6I PIC X(1).} at {@code app/cpy-bms/COCRDLI.CPY:222}.
      *
      * @return {@code CRDSEL6}, at most {@value #CRDSEL_LENGTH} characters; never {@code null}
      */
@@ -3280,9 +2311,9 @@ public class CardListRequest {
     /**
      * Replaces {@code CRDSEL6}, rebuilding row 6's {@link StopperListRow} around the new value.
      *
-     * @param value {@code CRDSEL6}, {@code PIC X({@value #CRDSEL_LENGTH})}; never {@code null}
-     * @throws NullPointerException if {@code value} is {@code null} - a blank screen field holds
-     *                              spaces or {@code LOW-VALUES}, never {@code null}
+     * @param value {@code CRDSEL6}, {@code PIC X(1)}; never {@code null}
+     * @throws NullPointerException if {@code value} is {@code null} - a blank screen field holds spaces or
+     *     {@code LOW-VALUES}, never {@code null}
      */
     public void setCrdsel6(String value) {
         StopperListRow row = stopperRow(6);
@@ -3290,9 +2321,7 @@ public class CardListRequest {
     }
 
     /**
-     * {@code CRDSTP6} - {@code 02 CRDSTP6I PIC X({@value #CRDSTP_LENGTH}).} at
-     * {@code app/cpy-bms/COCRDLI.CPY:228}. The named attribute stopper that terminates row 6's selection
-     * field.
+     * {@code CRDSTP6} - {@code 02 CRDSTP6I PIC X(1).} at {@code app/cpy-bms/COCRDLI.CPY:228}.
      *
      * @return {@code CRDSTP6}, at most {@value #CRDSTP_LENGTH} characters; never {@code null}
      */
@@ -3303,9 +2332,9 @@ public class CardListRequest {
     /**
      * Replaces {@code CRDSTP6}, rebuilding row 6's {@link StopperListRow} around the new value.
      *
-     * @param value {@code CRDSTP6}, {@code PIC X({@value #CRDSTP_LENGTH})}; never {@code null}
-     * @throws NullPointerException if {@code value} is {@code null} - a blank screen field holds
-     *                              spaces or {@code LOW-VALUES}, never {@code null}
+     * @param value {@code CRDSTP6}, {@code PIC X(1)}; never {@code null}
+     * @throws NullPointerException if {@code value} is {@code null} - a blank screen field holds spaces or
+     *     {@code LOW-VALUES}, never {@code null}
      */
     public void setCrdstp6(String value) {
         StopperListRow row = stopperRow(6);
@@ -3313,8 +2342,7 @@ public class CardListRequest {
     }
 
     /**
-     * {@code ACCTNO6} - {@code 02 ACCTNO6I PIC X({@value #ACCTNO_LENGTH}).} at
-     * {@code app/cpy-bms/COCRDLI.CPY:234}. The account number shown on row 6.
+     * {@code ACCTNO6} - {@code 02 ACCTNO6I PIC X(11).} at {@code app/cpy-bms/COCRDLI.CPY:234}.
      *
      * @return {@code ACCTNO6}, at most {@value #ACCTNO_LENGTH} characters; never {@code null}
      */
@@ -3325,9 +2353,9 @@ public class CardListRequest {
     /**
      * Replaces {@code ACCTNO6}, rebuilding row 6's {@link StopperListRow} around the new value.
      *
-     * @param value {@code ACCTNO6}, {@code PIC X({@value #ACCTNO_LENGTH})}; never {@code null}
-     * @throws NullPointerException if {@code value} is {@code null} - a blank screen field holds
-     *                              spaces or {@code LOW-VALUES}, never {@code null}
+     * @param value {@code ACCTNO6}, {@code PIC X(11)}; never {@code null}
+     * @throws NullPointerException if {@code value} is {@code null} - a blank screen field holds spaces or
+     *     {@code LOW-VALUES}, never {@code null}
      */
     public void setAcctno6(String value) {
         StopperListRow row = stopperRow(6);
@@ -3335,9 +2363,7 @@ public class CardListRequest {
     }
 
     /**
-     * {@code CRDNUM6} - {@code 02 CRDNUM6I PIC X({@value #CRDNUM_LENGTH}).} at
-     * {@code app/cpy-bms/COCRDLI.CPY:240}. The card number shown on row 6, in the clear exactly as the map
-     * carries it.
+     * {@code CRDNUM6} - {@code 02 CRDNUM6I PIC X(16).} at {@code app/cpy-bms/COCRDLI.CPY:240}.
      *
      * @return {@code CRDNUM6}, at most {@value #CRDNUM_LENGTH} characters; never {@code null}
      */
@@ -3348,9 +2374,9 @@ public class CardListRequest {
     /**
      * Replaces {@code CRDNUM6}, rebuilding row 6's {@link StopperListRow} around the new value.
      *
-     * @param value {@code CRDNUM6}, {@code PIC X({@value #CRDNUM_LENGTH})}; never {@code null}
-     * @throws NullPointerException if {@code value} is {@code null} - a blank screen field holds
-     *                              spaces or {@code LOW-VALUES}, never {@code null}
+     * @param value {@code CRDNUM6}, {@code PIC X(16)}; never {@code null}
+     * @throws NullPointerException if {@code value} is {@code null} - a blank screen field holds spaces or
+     *     {@code LOW-VALUES}, never {@code null}
      */
     public void setCrdnum6(String value) {
         StopperListRow row = stopperRow(6);
@@ -3358,8 +2384,7 @@ public class CardListRequest {
     }
 
     /**
-     * {@code CRDSTS6} - {@code 02 CRDSTS6I PIC X({@value #CRDSTS_LENGTH}).} at
-     * {@code app/cpy-bms/COCRDLI.CPY:246}. The active status shown on row 6.
+     * {@code CRDSTS6} - {@code 02 CRDSTS6I PIC X(1).} at {@code app/cpy-bms/COCRDLI.CPY:246}.
      *
      * @return {@code CRDSTS6}, at most {@value #CRDSTS_LENGTH} characters; never {@code null}
      */
@@ -3370,20 +2395,17 @@ public class CardListRequest {
     /**
      * Replaces {@code CRDSTS6}, rebuilding row 6's {@link StopperListRow} around the new value.
      *
-     * @param value {@code CRDSTS6}, {@code PIC X({@value #CRDSTS_LENGTH})}; never {@code null}
-     * @throws NullPointerException if {@code value} is {@code null} - a blank screen field holds
-     *                              spaces or {@code LOW-VALUES}, never {@code null}
+     * @param value {@code CRDSTS6}, {@code PIC X(1)}; never {@code null}
+     * @throws NullPointerException if {@code value} is {@code null} - a blank screen field holds spaces or
+     *     {@code LOW-VALUES}, never {@code null}
      */
     public void setCrdsts6(String value) {
         StopperListRow row = stopperRow(6);
         setRow(6, new StopperListRow(row.crdSel(), row.crdStp(), row.acctNo(), row.crdNum(), value));
     }
 
-    // ---- Row 7: 5 members, COCRDLI.CPY:252-276 ----
-
     /**
-     * {@code CRDSEL7} - {@code 02 CRDSEL7I PIC X({@value #CRDSEL_LENGTH}).} at
-     * {@code app/cpy-bms/COCRDLI.CPY:252}. The selection character the operator typed beside row 7.
+     * {@code CRDSEL7} - {@code 02 CRDSEL7I PIC X(1).} at {@code app/cpy-bms/COCRDLI.CPY:252}.
      *
      * @return {@code CRDSEL7}, at most {@value #CRDSEL_LENGTH} characters; never {@code null}
      */
@@ -3394,9 +2416,9 @@ public class CardListRequest {
     /**
      * Replaces {@code CRDSEL7}, rebuilding row 7's {@link StopperListRow} around the new value.
      *
-     * @param value {@code CRDSEL7}, {@code PIC X({@value #CRDSEL_LENGTH})}; never {@code null}
-     * @throws NullPointerException if {@code value} is {@code null} - a blank screen field holds
-     *                              spaces or {@code LOW-VALUES}, never {@code null}
+     * @param value {@code CRDSEL7}, {@code PIC X(1)}; never {@code null}
+     * @throws NullPointerException if {@code value} is {@code null} - a blank screen field holds spaces or
+     *     {@code LOW-VALUES}, never {@code null}
      */
     public void setCrdsel7(String value) {
         StopperListRow row = stopperRow(7);
@@ -3404,9 +2426,7 @@ public class CardListRequest {
     }
 
     /**
-     * {@code CRDSTP7} - {@code 02 CRDSTP7I PIC X({@value #CRDSTP_LENGTH}).} at
-     * {@code app/cpy-bms/COCRDLI.CPY:258}. The named attribute stopper that terminates row 7's selection
-     * field.
+     * {@code CRDSTP7} - {@code 02 CRDSTP7I PIC X(1).} at {@code app/cpy-bms/COCRDLI.CPY:258}.
      *
      * @return {@code CRDSTP7}, at most {@value #CRDSTP_LENGTH} characters; never {@code null}
      */
@@ -3417,9 +2437,9 @@ public class CardListRequest {
     /**
      * Replaces {@code CRDSTP7}, rebuilding row 7's {@link StopperListRow} around the new value.
      *
-     * @param value {@code CRDSTP7}, {@code PIC X({@value #CRDSTP_LENGTH})}; never {@code null}
-     * @throws NullPointerException if {@code value} is {@code null} - a blank screen field holds
-     *                              spaces or {@code LOW-VALUES}, never {@code null}
+     * @param value {@code CRDSTP7}, {@code PIC X(1)}; never {@code null}
+     * @throws NullPointerException if {@code value} is {@code null} - a blank screen field holds spaces or
+     *     {@code LOW-VALUES}, never {@code null}
      */
     public void setCrdstp7(String value) {
         StopperListRow row = stopperRow(7);
@@ -3427,8 +2447,7 @@ public class CardListRequest {
     }
 
     /**
-     * {@code ACCTNO7} - {@code 02 ACCTNO7I PIC X({@value #ACCTNO_LENGTH}).} at
-     * {@code app/cpy-bms/COCRDLI.CPY:264}. The account number shown on row 7.
+     * {@code ACCTNO7} - {@code 02 ACCTNO7I PIC X(11).} at {@code app/cpy-bms/COCRDLI.CPY:264}.
      *
      * @return {@code ACCTNO7}, at most {@value #ACCTNO_LENGTH} characters; never {@code null}
      */
@@ -3439,9 +2458,9 @@ public class CardListRequest {
     /**
      * Replaces {@code ACCTNO7}, rebuilding row 7's {@link StopperListRow} around the new value.
      *
-     * @param value {@code ACCTNO7}, {@code PIC X({@value #ACCTNO_LENGTH})}; never {@code null}
-     * @throws NullPointerException if {@code value} is {@code null} - a blank screen field holds
-     *                              spaces or {@code LOW-VALUES}, never {@code null}
+     * @param value {@code ACCTNO7}, {@code PIC X(11)}; never {@code null}
+     * @throws NullPointerException if {@code value} is {@code null} - a blank screen field holds spaces or
+     *     {@code LOW-VALUES}, never {@code null}
      */
     public void setAcctno7(String value) {
         StopperListRow row = stopperRow(7);
@@ -3449,9 +2468,7 @@ public class CardListRequest {
     }
 
     /**
-     * {@code CRDNUM7} - {@code 02 CRDNUM7I PIC X({@value #CRDNUM_LENGTH}).} at
-     * {@code app/cpy-bms/COCRDLI.CPY:270}. The card number shown on row 7, in the clear exactly as the map
-     * carries it.
+     * {@code CRDNUM7} - {@code 02 CRDNUM7I PIC X(16).} at {@code app/cpy-bms/COCRDLI.CPY:270}.
      *
      * @return {@code CRDNUM7}, at most {@value #CRDNUM_LENGTH} characters; never {@code null}
      */
@@ -3462,9 +2479,9 @@ public class CardListRequest {
     /**
      * Replaces {@code CRDNUM7}, rebuilding row 7's {@link StopperListRow} around the new value.
      *
-     * @param value {@code CRDNUM7}, {@code PIC X({@value #CRDNUM_LENGTH})}; never {@code null}
-     * @throws NullPointerException if {@code value} is {@code null} - a blank screen field holds
-     *                              spaces or {@code LOW-VALUES}, never {@code null}
+     * @param value {@code CRDNUM7}, {@code PIC X(16)}; never {@code null}
+     * @throws NullPointerException if {@code value} is {@code null} - a blank screen field holds spaces or
+     *     {@code LOW-VALUES}, never {@code null}
      */
     public void setCrdnum7(String value) {
         StopperListRow row = stopperRow(7);
@@ -3472,8 +2489,7 @@ public class CardListRequest {
     }
 
     /**
-     * {@code CRDSTS7} - {@code 02 CRDSTS7I PIC X({@value #CRDSTS_LENGTH}).} at
-     * {@code app/cpy-bms/COCRDLI.CPY:276}. The active status shown on row 7.
+     * {@code CRDSTS7} - {@code 02 CRDSTS7I PIC X(1).} at {@code app/cpy-bms/COCRDLI.CPY:276}.
      *
      * @return {@code CRDSTS7}, at most {@value #CRDSTS_LENGTH} characters; never {@code null}
      */
@@ -3484,78 +2500,40 @@ public class CardListRequest {
     /**
      * Replaces {@code CRDSTS7}, rebuilding row 7's {@link StopperListRow} around the new value.
      *
-     * @param value {@code CRDSTS7}, {@code PIC X({@value #CRDSTS_LENGTH})}; never {@code null}
-     * @throws NullPointerException if {@code value} is {@code null} - a blank screen field holds
-     *                              spaces or {@code LOW-VALUES}, never {@code null}
+     * @param value {@code CRDSTS7}, {@code PIC X(1)}; never {@code null}
+     * @throws NullPointerException if {@code value} is {@code null} - a blank screen field holds spaces or
+     *     {@code LOW-VALUES}, never {@code null}
      */
     public void setCrdsts7(String value) {
         StopperListRow row = stopperRow(7);
         setRow(7, new StopperListRow(row.crdSel(), row.crdStp(), row.acctNo(), row.crdNum(), value));
     }
 
-    // =================================================================================================
-    // FOOTER BAND ACCESSORS - the last 2 of the 45 payload members.
-    // =================================================================================================
-
     /**
      * The {@code INFOMSG} payload member - the informational line.
      *
-     * @return {@code INFOMSG}, {@code PIC X(45)} - 45 here, 40 on the sibling card maps; never
-     *         {@code null}
+     * @return {@code INFOMSG}, {@code PIC X(45)} - 45 here, 40 on the sibling card maps; never {@code null}
      */
     public String getInfomsg() {
         return infomsg;
     }
 
-    /**
-     * Replaces the {@code INFOMSG} payload member.
-     *
-     * @param infomsg {@code INFOMSG}, {@code PIC X(45)}; never {@code null}
-     * @throws NullPointerException if {@code infomsg} is {@code null}
-     */
     public void setInfomsg(String infomsg) {
         this.infomsg = requireField(infomsg, "INFOMSG");
     }
 
-    /**
-     * The {@code ERRMSG} payload member - the error line.
-     *
-     * @return {@code ERRMSG}, {@code PIC X(78)} - 78 here, 80 on the sibling card maps; never
-     *         {@code null}
-     */
     public String getErrmsg() {
         return errmsg;
     }
 
-    /**
-     * Replaces the {@code ERRMSG} payload member.
-     *
-     * @param errmsg {@code ERRMSG}, {@code PIC X(78)}; never {@code null}
-     * @throws NullPointerException if {@code errmsg} is {@code null}
-     */
     public void setErrmsg(String errmsg) {
         this.errmsg = requireField(errmsg, "ERRMSG");
     }
 
-    // =================================================================================================
-    // DETAIL ROW ACCESSORS - the remaining 34 payload members, and the place the asymmetry is enforced.
-    // =================================================================================================
-
     /**
-     * The seven detail rows in screen order, as an unmodifiable snapshot. Row 1 is at index 0 and is a
-     * {@link FirstListRow}; rows 2 through 7 are at indices 1 to 6 and are {@link StopperListRow}.
+     * The seven detail rows in screen order, as an unmodifiable snapshot.
      *
-     * <p>The returned list cannot be modified and is not backed by this request's own list, so no caller
-     * can reach the internal state through it.
-     *
-     * <p><strong>Not a wire member.</strong> The rows travel as the 34 numbered members
-     * {@code crdsel1} through {@code crdsts7}, which are the names
-     * {@code app/cpy-bms/COCRDLI.CPY:78-276} declares; this list is the internal store behind them and
-     * is {@link JsonIgnore ignored} in both directions. Publishing it as well would put a second,
-     * differently shaped copy of the same 34 values on the wire under a name no {@code DFHMDF}
-     * declares, and would leave the two able to disagree.
-     *
-     * @return an unmodifiable list of exactly {@value #SCREEN_ROW_COUNT} rows; never {@code null}
+     * @return an unmodifiable list of exactly {@link #SCREEN_ROW_COUNT} rows; never {@code null}
      */
     @JsonIgnore
     public List<ListRow> getRows() {
@@ -3565,14 +2543,10 @@ public class CardListRequest {
     /**
      * Replaces all seven rows, enforcing the shape invariant.
      *
-     * <p>The check is the whole point of this method: index 0 must be a {@link FirstListRow} and
-     * indices 1 through 6 must be {@link StopperListRow}. A uniform seven-row list of one shape is
-     * rejected, which is what stops the row-1 asymmetry from being "tidied away" by a caller.
-     *
-     * @param rows exactly {@value #SCREEN_ROW_COUNT} rows in screen order; never {@code null}
-     * @throws NullPointerException     if {@code rows} is {@code null} or holds {@code null}
-     * @throws IllegalArgumentException if the list is not exactly seven long, or if any row has the
-     *                                  wrong shape for its position
+     * @param rows exactly {@link #SCREEN_ROW_COUNT} rows in screen order; never {@code null}
+     * @throws NullPointerException if {@code rows} is {@code null} or holds {@code null}
+     * @throws IllegalArgumentException if the list is not exactly seven long, or if any row has the wrong
+     *     shape for its position
      */
     public void setRows(List<ListRow> rows) {
         Objects.requireNonNull(rows, "The detail row list is required; use CardListRequest() for the "
@@ -3590,10 +2564,9 @@ public class CardListRequest {
     }
 
     /**
-     * One detail row, addressed by its <strong>COBOL</strong> subscript. Subscript 1 is row 1 and
-     * subscript 7 is row 7; there is no subscript 0.
+     * One detail row, addressed by its COBOL subscript.
      *
-     * @param cobolRowNumber the subscript, 1 through {@value #SCREEN_ROW_COUNT}
+     * @param cobolRowNumber the subscript, 1 through {@link #SCREEN_ROW_COUNT}
      * @return the addressed row; never {@code null}
      * @throws IndexOutOfBoundsException if {@code cobolRowNumber} is outside 1 to 7
      */
@@ -3605,11 +2578,11 @@ public class CardListRequest {
      * Replaces one detail row, addressed by its COBOL subscript, enforcing the shape invariant for that
      * position.
      *
-     * @param cobolRowNumber the subscript, 1 through {@value #SCREEN_ROW_COUNT}
-     * @param row            the replacement; a {@link FirstListRow} for subscript 1 and a
-     *                       {@link StopperListRow} for subscripts 2 through 7
-     * @throws NullPointerException      if {@code row} is {@code null}
-     * @throws IllegalArgumentException  if {@code row} has the wrong shape for {@code cobolRowNumber}
+     * @param cobolRowNumber the subscript, 1 through {@link #SCREEN_ROW_COUNT}
+     * @param row the replacement; a {@link FirstListRow} for subscript 1 and a {@link StopperListRow} for
+     *     subscripts 2 through 7
+     * @throws NullPointerException if {@code row} is {@code null}
+     * @throws IllegalArgumentException if {@code row} has the wrong shape for {@code cobolRowNumber}
      * @throws IndexOutOfBoundsException if {@code cobolRowNumber} is outside 1 to 7
      */
     public void setRow(int cobolRowNumber, ListRow row) {
@@ -3628,31 +2601,18 @@ public class CardListRequest {
         return (FirstListRow) rows.get(javaIndexOf(FIRST_ROW_NUMBER));
     }
 
-    /**
-     * Row 7, at its exact type. Provided alongside {@link #firstRow()} because gate G33 requires the
-     * first and the last element of every seven-element table to be independently assertable.
-     *
-     * @return row 7; never {@code null}
-     */
     @JsonIgnore
     public StopperListRow lastRow() {
         return (StopperListRow) rows.get(javaIndexOf(LAST_ROW_NUMBER));
     }
 
     /**
-     * Rows 2 through 7 at their exact type, so the numbered {@code CRDSTPn} accessors can read and
-     * rebuild the five-member shape without casting at each of the thirty call sites.
+     * Rows 2 through 7 at their exact type, so the numbered {@code CRDSTPn} accessors can read and rebuild
+     * the five-member shape without casting at each of the thirty call sites.
      *
-     * <p>The cast is safe by construction rather than by hope: {@link #setRows(List)} and
-     * {@link #setRow(int, ListRow)} are the only ways the list is ever written and both run
-     * {@code requireCorrectShape}, so a subscript of 2 through 7 always holds a
-     * {@link StopperListRow}. Subscript 1 is rejected here rather than allowed to fail as a
-     * {@link ClassCastException}, because row 1 has no {@code CRDSTP1} and asking for its stopper is a
-     * programming error worth naming.
-     *
-     * @param cobolRowNumber the subscript, 2 through {@value #SCREEN_ROW_COUNT}
+     * @param cobolRowNumber the subscript, 2 through {@link #SCREEN_ROW_COUNT}
      * @return the addressed row at its five-member type; never {@code null}
-     * @throws IllegalArgumentException  if {@code cobolRowNumber} is {@value #FIRST_ROW_NUMBER}
+     * @throws IllegalArgumentException if {@code cobolRowNumber} is {@value #FIRST_ROW_NUMBER}
      * @throws IndexOutOfBoundsException if {@code cobolRowNumber} is outside 1 to 7
      */
     @JsonIgnore
@@ -3668,12 +2628,7 @@ public class CardListRequest {
     /**
      * The named attribute stopper of one row, or an empty {@link Optional} for row 1.
      *
-     * <p>This is the safe way to read {@code CRDSTPn} without knowing the row's shape. It is an
-     * exhaustive pattern switch over the sealed hierarchy, so there is no {@code default} arm and no
-     * possibility of a third shape appearing unnoticed: if a row type were ever added, this method would
-     * stop compiling.
-     *
-     * @param cobolRowNumber the subscript, 1 through {@value #SCREEN_ROW_COUNT}
+     * @param cobolRowNumber the subscript, 1 through {@link #SCREEN_ROW_COUNT}
      * @return the one-byte stopper for rows 2 through 7, or {@link Optional#empty()} for row 1
      * @throws IndexOutOfBoundsException if {@code cobolRowNumber} is outside 1 to 7
      */
@@ -3685,9 +2640,7 @@ public class CardListRequest {
     }
 
     /**
-     * The number of payload members the seven rows contribute together:
-     * {@code 4 + 6 x 5 = 34}. Derived by asking each row for its own member count rather than by
-     * arithmetic on a constant, so the assertion tests the model and not a restatement of it.
+     * The number of payload members the seven rows contribute together: {@code 4 + 6 x 5 = 34}.
      *
      * @return 34 for a correctly shaped request
      */
@@ -3702,8 +2655,8 @@ public class CardListRequest {
 
     /**
      * The total number of payload members this request carries:
-     * {@code 9 header + 34 rows + 2 footer = }{@value #FIELD_COUNT}, matching the 45 {@code xxxI} items
-     * of {@code app/cpy-bms/COCRDLI.CPY} and the 45 name-labelled {@code DFHMDF} entries of
+     * {@code 9 header + 34 rows + 2 footer =}{@link #FIELD_COUNT}, matching the 45 {@code xxxI} items of
+     * {@code app/cpy-bms/COCRDLI.CPY} and the 45 name-labelled {@code DFHMDF} entries of
      * {@code app/bms/COCRDLI.bms}.
      *
      * @return 45 for a correctly shaped request
@@ -3714,8 +2667,7 @@ public class CardListRequest {
     }
 
     /**
-     * The data bytes the seven rows contribute to the group image: {@code 29 + 180 = 209}. Derived from
-     * the rows themselves for the same reason {@link #rowFieldCount()} is.
+     * The data bytes the seven rows contribute to the group image: {@code 29 + 180 = 209}.
      *
      * @return 209 for a correctly shaped request
      */
@@ -3728,10 +2680,6 @@ public class CardListRequest {
         return total;
     }
 
-    // =================================================================================================
-    // CARRIER ACCESSORS.
-    // =================================================================================================
-
     /**
      * The paging cursor, carried in the payload rather than in server-side state.
      *
@@ -3741,12 +2689,6 @@ public class CardListRequest {
         return pageCursor;
     }
 
-    /**
-     * Replaces the paging cursor.
-     *
-     * @param pageCursor the paging cursor; never {@code null}
-     * @throws NullPointerException if {@code pageCursor} is {@code null}
-     */
     public void setPageCursor(PageCursor pageCursor) {
         this.pageCursor = Objects.requireNonNull(pageCursor, "The paging cursor is required; use "
                 + "PageCursor.firstPage() for the state COCRDLIC enters the screen in");
@@ -3782,9 +2724,8 @@ public class CardListRequest {
     }
 
     /**
-     * A defensive copy of the {@code CC-WORK-AREA} carrier, so mutating what you get back cannot reach
-     * this request's own state. {@link CardScreenState} is the one mutable carrier here, which is
-     * exactly why it is copied on the way out as well as on the way in.
+     * A defensive copy of the {@code CC-WORK-AREA} carrier, so mutating what you get back cannot reach this
+     * request's own state.
      *
      * @return a copy of the card screen state; never {@code null}
      */
@@ -3816,26 +2757,16 @@ public class CardListRequest {
     /**
      * Replaces the {@code CARDDEMO-COMMAREA} carrier, storing {@code null} verbatim.
      *
-     * <p>{@code null} is accepted and preserved rather than replaced with
-     * {@link NavigationContext#empty()}. An empty area is a <em>present</em> area whose fields happen
-     * to be blank and whose {@code EIBCALEN} is {@value NavigationContext#COMMAREA_LENGTH}; an absent
-     * one reports {@code 0} and is what {@code app/cbl/COCRDLIC.cbl:315} branches on. Conflating them
-     * deletes that branch.
-     *
-     * @param navigationContext the {@code CARDDEMO-COMMAREA} carrier, or {@code null} where none
-     *                          travelled with the request
+     * @param navigationContext the {@code CARDDEMO-COMMAREA} carrier, or {@code null} where none travelled
+     *     with the request
      */
     public void setNavigationContext(NavigationContext navigationContext) {
         this.navigationContext = navigationContext;
     }
 
     /**
-     * Whether a communication area travelled with this request - the Java reading of {@code EIBCALEN}
-     * being non-zero at {@code app/cbl/COCRDLIC.cbl:315}.
-     *
-     * <p>Not a JSON property: it is derived from {@link #getNavigationContext()}, which is already on
-     * the wire as {@code null} or as an object. Emitting it as well would let a payload assert a
-     * presence that contradicts the member it travels with.
+     * Whether a communication area travelled with this request - the Java reading of {@code EIBCALEN} being
+     * non-zero at {@code app/cbl/COCRDLIC.cbl:315}.
      *
      * @return {@code true} when {@link #getNavigationContext()} is present
      */
@@ -3845,12 +2776,8 @@ public class CardListRequest {
     }
 
     /**
-     * The length CICS would report in {@code EIBCALEN}:
-     * {@value NavigationContext#COMMAREA_LENGTH} when a communication area travelled with this request
-     * and {@code 0} when none did.
-     *
-     * <p>Reported rather than assumed. It is the number {@code app/cbl/COCRDLIC.cbl:315} tests, so a
-     * caller reproducing that test needs the real value and not a plausible one.
+     * The length CICS would report in {@code EIBCALEN}: {@value NavigationContext#COMMAREA_LENGTH} when a
+     * communication area travelled with this request and {@code 0} when none did.
      *
      * @return {@value NavigationContext#COMMAREA_LENGTH} or {@code 0}
      */
@@ -3863,11 +2790,6 @@ public class CardListRequest {
      * {@code CDEMO-PGM-CONTEXT PIC 9(01)} as carried by the communication area, or
      * {@value NavigationContext#PGM_CONTEXT_ENTER} where no area travelled.
      *
-     * <p>The fallback is the arm an uninitialised area takes, and it is not observable in the COBOL:
-     * lines 316-324 {@code SET CDEMO-PGM-ENTER TO TRUE} themselves on the cold-start branch. A caller
-     * that must tell an absent area from a present one holding
-     * {@value NavigationContext#PGM_CONTEXT_ENTER} asks {@link #hasNavigationContext()}.
-     *
      * @return the program context, or {@value NavigationContext#PGM_CONTEXT_ENTER} when absent
      */
     @JsonIgnore
@@ -3878,17 +2800,10 @@ public class CardListRequest {
     }
 
     /**
-     * {@code 88 CDEMO-PGM-ENTER VALUE 0.} - first entry, so the screen is painted rather than
-     * validated.
-     *
-     * <p>False when no communication area travelled. That is not the same claim as
-     * {@link #getPgmContext()} returning {@value NavigationContext#PGM_CONTEXT_ENTER}: the condition
-     * name is a test over a field, and there is no field to test. Together with
-     * {@link #isReenter()} this gives three states, not two, which is what the cold-start branch
-     * requires.
+     * {@code 88 CDEMO-PGM-ENTER VALUE 0.} - first entry, so the screen is painted rather than validated.
      *
      * @return {@code true} when a communication area travelled and its {@code CDEMO-PGM-CONTEXT} is
-     *         {@value NavigationContext#PGM_CONTEXT_ENTER}
+     *     {@value NavigationContext#PGM_CONTEXT_ENTER}
      */
     @JsonIgnore
     public boolean isEnter() {
@@ -3896,27 +2811,16 @@ public class CardListRequest {
     }
 
     /**
-     * {@code 88 CDEMO-PGM-REENTER VALUE 1.} - re-entry, so what the operator typed is validated and,
-     * on failure, highlighted.
-     *
-     * <p>This is the flag that gates the {@code CSSETATY} error highlight, which is why it is explicit
-     * on the request rather than inferred from whether any field happens to be populated.
-     *
-     * <p>Deliberately <strong>not</strong> {@code !isEnter()}. {@code CDEMO-PGM-CONTEXT} is
-     * {@code PIC 9(01)} with two condition names over it rather than an enumeration, so a third digit
-     * makes both false - and an absent area makes both false as well.
+     * {@code 88 CDEMO-PGM-REENTER VALUE 1.} - re-entry, so what the operator typed is validated and, on
+     * failure, highlighted.
      *
      * @return {@code true} when a communication area travelled and its {@code CDEMO-PGM-CONTEXT} is
-     *         {@value NavigationContext#PGM_CONTEXT_REENTER}
+     *     {@value NavigationContext#PGM_CONTEXT_REENTER}
      */
     @JsonIgnore
     public boolean isReenter() {
         return hasNavigationContext() && navigationContext.isReenter();
     }
-
-    // =================================================================================================
-    // NON-SERIALISED METADATA ACCESSORS.
-    // =================================================================================================
 
     /**
      * The {@code WS-SCREEN-ROWS} browse result table, deliberately off the wire.
@@ -3961,8 +2865,8 @@ public class CardListRequest {
     }
 
     /**
-     * An unmodifiable snapshot of the per-field {@code xxxL}/{@code xxxF}/{@code xxxA} metadata, keyed
-     * by {@code DFHMDF} label and in insertion order.
+     * An unmodifiable snapshot of the per-field {@code xxxL}/{@code xxxF}/{@code xxxA} metadata, keyed by
+     * {@code DFHMDF} label and in insertion order.
      *
      * @return the metadata map; never {@code null}, possibly empty
      */
@@ -3975,7 +2879,7 @@ public class CardListRequest {
      * Replaces the whole metadata map with a defensive copy.
      *
      * @param fieldMetadata the metadata, keyed by {@code DFHMDF} label; never {@code null} and never
-     *                      holding {@code null}
+     *     holding {@code null}
      * @throws NullPointerException if {@code fieldMetadata} is {@code null} or holds {@code null}
      */
     public void setFieldMetadata(Map<String, FieldMetadata> fieldMetadata) {
@@ -3995,7 +2899,7 @@ public class CardListRequest {
      * Records the {@code xxxL}/{@code xxxF}/{@code xxxA} metadata for one field.
      *
      * @param metadata the metadata, whose {@link FieldMetadata#dfhmdfName()} is used as the key; never
-     *                 {@code null}
+     *     {@code null}
      * @throws NullPointerException if {@code metadata} is {@code null}
      */
     public void putFieldMetadata(FieldMetadata metadata) {
@@ -4003,34 +2907,13 @@ public class CardListRequest {
         fieldMetadata.put(metadata.dfhmdfName(), metadata);
     }
 
-    /**
-     * The metadata recorded for one field, if any.
-     *
-     * @param dfhmdfName the field's {@code DFHMDF} label; never {@code null}
-     * @return the metadata, or {@link Optional#empty()} when none was recorded
-     * @throws NullPointerException if {@code dfhmdfName} is {@code null}
-     */
     public Optional<FieldMetadata> fieldMetadataOf(String dfhmdfName) {
         Objects.requireNonNull(dfhmdfName, "A DFHMDF label is required to look up field metadata");
         return Optional.ofNullable(fieldMetadata.get(dfhmdfName));
     }
 
-    // =================================================================================================
-    // FIXED-WIDTH NORMALISATION - every cross-width move goes through the codec's explicit PIC X
-    // helper, never through plain Java assignment, so the direction of truncation and the pad byte are
-    // chosen deliberately per target PICTURE rather than inherited from the platform (practice B11).
-    // =================================================================================================
-
     /**
      * A copy of this request with all forty-five payload members re-rendered at their declared widths.
-     *
-     * <p>Each field goes through {@link FixedWidthCodec#movePicX(String, int)}, which pads on the right
-     * with the charset's space byte and truncates on the right - exactly what a COBOL alphanumeric
-     * {@code MOVE} into a narrower {@code PIC X} item does. No field is trimmed, because the COBOL does
-     * not trim.
-     *
-     * <p>The carriers and the non-serialised metadata are copied across unchanged; each of them owns its
-     * own widths.
      *
      * @param codec the fixed-width codec whose charset governs the pad byte; never {@code null}
      * @return a normalised copy, never {@code null}
@@ -4059,25 +2942,12 @@ public class CardListRequest {
         return normalised;
     }
 
-    // =================================================================================================
-    // 1-BASED TO 0-BASED CONVERSION - the single place the shift happens, named for what it is. AAP
-    // 0.7.2 calls OCCURS indexing the top defect risk of the whole migration, and the reason it is
-    // named rather than inlined is that "rows.get(n - 1)" scattered through a file is exactly how the
-    // off-by-one gets in.
-    // =================================================================================================
-
     /**
      * Converts a 1-based COBOL row subscript into the 0-based Java index of the same element.
      *
-     * <p>Subscript 1 maps to index 0 and subscript {@value #SCREEN_ROW_COUNT} maps to index
-     * {@code SCREEN_ROW_COUNT - 1}. There is no subscript 0 and there is no subscript 8; both are
-     * rejected rather than clamped, because a silently clamped subscript would read the wrong row and
-     * report success.
-     *
-     * @param cobolRowNumber the COBOL subscript, 1 through {@value #SCREEN_ROW_COUNT} inclusive
+     * @param cobolRowNumber the COBOL subscript, 1 through {@link #SCREEN_ROW_COUNT} inclusive
      * @return the corresponding 0-based Java index
-     * @throws IndexOutOfBoundsException if {@code cobolRowNumber} is outside 1 to
-     *                                   {@value #SCREEN_ROW_COUNT}
+     * @throws IndexOutOfBoundsException if {@code cobolRowNumber} is outside 1 to {@link #SCREEN_ROW_COUNT}
      */
     public static int javaIndexOf(int cobolRowNumber) {
         if (cobolRowNumber < FIRST_ROW_NUMBER || cobolRowNumber > LAST_ROW_NUMBER) {
@@ -4090,14 +2960,13 @@ public class CardListRequest {
     }
 
     /**
-     * Converts a 0-based Java index back into the 1-based COBOL subscript of the same element - the
-     * inverse of {@link #javaIndexOf(int)}, provided so that a diagnostic or a test can report the
-     * subscript the COBOL would use.
+     * Converts a 0-based Java index back into the 1-based COBOL subscript of the same element - the inverse
+     * of {@link #javaIndexOf(int)}, provided so that a diagnostic or a test can report the subscript the
+     * COBOL would use.
      *
      * @param javaIndex the Java index, 0 through {@code SCREEN_ROW_COUNT - 1} inclusive
      * @return the corresponding 1-based COBOL subscript
-     * @throws IndexOutOfBoundsException if {@code javaIndex} is outside 0 to
-     *                                   {@code SCREEN_ROW_COUNT - 1}
+     * @throws IndexOutOfBoundsException if {@code javaIndex} is outside 0 to {@code SCREEN_ROW_COUNT - 1}
      */
     public static int cobolRowNumberOf(int javaIndex) {
         if (javaIndex < 0 || javaIndex >= SCREEN_ROW_COUNT) {
@@ -4108,16 +2977,6 @@ public class CardListRequest {
         return javaIndex + FIRST_ROW_NUMBER;
     }
 
-    // =================================================================================================
-    // INTERNAL HELPERS.
-    // =================================================================================================
-
-    /**
-     * The seven blank rows of the correct shapes: one {@link FirstListRow} followed by six
-     * {@link StopperListRow}.
-     *
-     * @return a mutable list of exactly seven correctly shaped blank rows
-     */
     private static List<ListRow> blankRows() {
         List<ListRow> blank = new ArrayList<>(SCREEN_ROW_COUNT);
         blank.add(FirstListRow.blank());
@@ -4127,17 +2986,6 @@ public class CardListRequest {
         return blank;
     }
 
-    /**
-     * Checks that a row has the shape its position requires, and returns it so the check can be used
-     * inline.
-     *
-     * @param cobolRowNumber the position, 1 through {@value #SCREEN_ROW_COUNT}
-     * @param row            the candidate row
-     * @return {@code row}, unchanged
-     * @throws NullPointerException     if {@code row} is {@code null}
-     * @throws IllegalArgumentException if a {@link StopperListRow} is offered for row 1 or a
-     *                                 {@link FirstListRow} for rows 2 through 7
-     */
     private static ListRow requireCorrectShape(int cobolRowNumber, ListRow row) {
         Objects.requireNonNull(row, "A detail row is required for screen row " + cobolRowNumber);
         boolean stopperExpected = cobolRowNumber != FIRST_ROW_NUMBER;
@@ -4153,25 +3001,18 @@ public class CardListRequest {
         return row;
     }
 
-    /**
-     * Rejects {@code null} for a map field, naming the {@code DFHMDF} label in the message.
-     *
-     * @param value      the candidate value
-     * @param dfhmdfName the field's {@code DFHMDF} label
-     * @return {@code value}, unchanged
-     * @throws NullPointerException if {@code value} is {@code null}
-     */
     private static String requireField(String value, String dfhmdfName) {
         return Objects.requireNonNull(value, dfhmdfName + " is required; a blank screen field holds "
                 + "spaces or LOW-VALUES, never null");
     }
 
     /**
-     * A run of spaces of the given length - the state {@code INITIALIZE} and a
-     * {@code MOVE SPACES} leave an alphanumeric item in. Deliberately distinct from
-     * {@link CardScreenState#lowValues(int)}: spaces are 0x20 under US-ASCII and 0x40 under IBM037,
-     * whereas {@code LOW-VALUES} is 0x00 under both, and this file never treats the two as the same
-     * thing.
+     * A run of spaces of the given length - the state {@code INITIALIZE} and a {@code MOVE SPACES} leave an
+     * alphanumeric item in.
+     *
+     * <p>Deliberately distinct from {@link CardScreenState#lowValues(int)}: spaces are 0x20 under US-ASCII
+     * and 0x40 under IBM037, whereas {@code LOW-VALUES} is 0x00 under both, and this file never treats the
+     * two as the same thing.
      *
      * @param length the declared width; at least 1
      * @return a string of exactly {@code length} spaces
@@ -4186,15 +3027,11 @@ public class CardListRequest {
     }
 
     /**
-     * Whether a span is exactly its declared width and holds nothing but the given character - the test
-     * a COBOL {@code 88}-level against a figurative constant performs.
+     * Whether a span is exactly its declared width and holds nothing but the given character - the test a
+     * COBOL {@code 88}-level against a figurative constant performs.
      *
-     * <p>The width check is deliberate. A COBOL field is always exactly as wide as it is declared, so a
-     * shorter Java string is not a partially filled field, it is a wrong one, and reporting
-     * {@code LOW-VALUES} for it would be a false positive.
-     *
-     * @param span           the value to test
-     * @param expected       the character every byte must equal
+     * @param span the value to test
+     * @param expected the character every byte must equal
      * @param declaredLength the field's declared width
      * @return {@code true} only when the span is exactly {@code declaredLength} long and uniform
      */
@@ -4210,14 +3047,8 @@ public class CardListRequest {
         return true;
     }
 
-    // =================================================================================================
-    // VALUE SEMANTICS - so that a parity case can compare a decoded request against an expected one in
-    // a single assertion, field by field, rather than forty-five at a time.
-    // =================================================================================================
-
     /**
-     * Value equality across every payload member, every carrier and every metadata table. Two requests
-     * are equal when they would produce byte-identical group images and carry identical state.
+     * Value equality across every payload member, every carrier and every metadata table.
      *
      * @param other the object to compare against
      * @return {@code true} when {@code other} is a {@code CardListRequest} with identical state
@@ -4264,19 +3095,11 @@ public class CardListRequest {
     }
 
     /**
-     * A diagnostic summary of the request's <em>shape</em>: the transaction, the map, the payload member
-     * count, the group width and the row shapes.
-     *
-     * <p>Field <em>content</em> is not included, and that is not masking - no value is altered,
-     * abbreviated or substituted anywhere in this class, and the JSON projection carries all forty-five
-     * fields exactly as the symbolic map declares them. It is simply that this screen's payload holds up
-     * to seven full card numbers and seven account identifiers, and a value that lands in a log because
-     * a diagnostic was interpolated somewhere is a value nobody chose to log. The sibling
-     * {@link CardScreenState} in this package takes the same position for the same reason.
+     * A diagnostic summary of the request's shape: the transaction, the map, the payload member count, the
+     * group width and the row shapes.
      *
      * @return for example
-     *         {@code CardListRequest[tranid=CCLI, map=CCRDLIA, payloadFields=45, groupLength=797,
-     *         rows=4+6x5, page=1]}
+     *     {@code CardListRequest[tranid=CCLI, map=CCRDLIA, payloadFields=45, groupLength=797, rows=4+6x5, page=1]}
      */
     @Override
     public String toString() {

@@ -2,6 +2,7 @@ package com.vsergeychik.carddemo.card;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.catchThrowableOfType;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -32,6 +33,7 @@ import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.NavigationContext;
 import com.vsergeychik.carddemo.common.PfKeyResolver;
+import com.vsergeychik.carddemo.common.ScreenInputRejectedException;
 import com.vsergeychik.carddemo.common.ScreenResponse;
 import com.vsergeychik.carddemo.common.ScreenTitles;
 import com.vsergeychik.carddemo.common.SystemMessages;
@@ -61,119 +63,18 @@ import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
 /**
  * {@link CardSelectController} - the {@code COCRDSLC} / {@code CCDL} credit-card detail screen.
- *
- * <p><strong>The unit and where it comes from.</strong> Program {@code app/cbl/COCRDSLC.cbl}, 887 lines,
- * reached through CICS transaction {@code CCDL} - {@code DEFINE TRANSACTION(CCDL)} at
- * {@code app/csd/CARDDEMO.CSD:347}, routed to {@code PROGRAM(COCRDSLC)} by the {@code TRANSID(CCDL)} at
- * {@code :223}. Its screen is mapset {@code COCRDSL} ({@code app/bms/COCRDSL.bms}), map {@code CCRDSLA},
- * and its symbolic map is {@code app/cpy-bms/COCRDSL.CPY}. Those four names - program, transaction, mapset
- * and map - are the whole provenance of every expectation below.
- *
- * <p><strong>The class name diverges from the behaviour, deliberately (rule R1, AAP §0.8.4).</strong> The
- * migration plan mandates the name {@code CardSelectController}; the source's own header reads
- * "Function: Accept and process credit card detail request" ({@code app/cbl/COCRDSLC.cbl:4}), and
- * {@code README.md:L213-231} documents {@code CCDL} as a <em>view</em>. So this is a <strong>detail
- * view</strong>, not a selector: it takes one card number, reads one record and paints one screen. Rule R1
- * settles the tension in one direction only - <em>the name comes from the plan, the behaviour comes from
- * the source</em> - which means nothing here tests a "select" capability, because the program has none, and
- * the class is not renamed either. It is one of sixteen catalogued divergences, and the register exists
- * precisely so no reader is misled by a class name.
- *
- * <p><strong>No user rules govern this file.</strong> {@code review_rules} answers with exactly one line -
- * "No user rules provided" - and that line is the entire document. Their absence is not licence to lower
- * the bar: the binding standard is enterprise best practice as the plan codifies it in AAP §0.10.2
- * <strong>B1-B12</strong>, together with the absolutes of §0.8.9. The practices that actually bite
- * here are <strong>B1/B2</strong> (nothing outside the closed test stack, no version literal anywhere),
- * <strong>B3</strong> (the COBOL, copybooks, BMS and CSD are cited as the contract and never read at
- * runtime), <strong>B4</strong> (conflicts are documented, never silently resolved), <strong>B5</strong>
- * (defects and dead code are preserved and pinned), <strong>B6</strong> (no card number, account id or
- * customer id is masked, including in failure text), <strong>B7</strong> (a fixed {@link Clock}, so the
- * screen is reproducible), <strong>B8</strong> (no wildcard import, an explicit {@link Charset}, no
- * dataset name), <strong>B9</strong> (no static mutable state) and <strong>B11</strong> (widths
- * asserted against the symbolic map, never by reflective deep-equality).
- *
- * <p><strong>The gates this file answers for.</strong> <strong>G9</strong> every payload member traces to a
- * named {@code DFHMDF} field, at the width its {@code xxxI}/{@code xxxO} item declares;
- * <strong>G30</strong> the five {@code WHEN}s run in source order with {@code WHEN OTHER} last;
- * <strong>G34</strong> the three {@code CVCRD01Y} {@code REDEFINES} pairs round-trip over one backing span;
- * <strong>G37</strong> no server-side session state;
- * <strong>G38</strong> both {@code ENTER} and {@code REENTER}, with the error mark applied only on
- * re-entry; <strong>G40</strong> the single {@code XCTL} site resolves to a {@code nextProgram} response
- * field; <strong>G45</strong> {@code CARDAIX} is a second finder on the base repository, never a second
- * table; <strong>G47</strong> every {@link FileStatus} outcome is driven at each call site;
- * <strong>G50</strong> both states of every {@code 88}-level this program touches;
- * <strong>G51</strong> decisions are asserted where they live, with no servlet layer in the path;
- * <strong>G52</strong> no wildcard imports; <strong>G53</strong> no static mutable state; and
- * <strong>G54</strong> the suite runs non-interactively.
- *
- * <p><strong>The preserved defect, named up front.</strong> {@code COCRDSLC:177-178} declares
- * {@code LIT-CCLISTMAP PIC X(7) VALUE 'CCRDSLA'} - the literal that is supposed to name the <em>card
- * list</em> program's map, holding <em>this</em> program's map instead. The card list's own map is
- * {@code 'CCRDLIA'} ({@code app/cbl/COCRDLIC.cbl:185-186}), and the sibling literal
- * {@code LIT-CCLISTMAPSET} at {@code :175-176} is correctly {@code 'COCRDLI'} - so only the map literal is
- * wrong. It is preserved verbatim (practice <strong>B5</strong>) and pinned by
- * {@code cclistmapKeepsItsDefect()}: correcting it would be an unrequested behaviour change. The defect is
- * <em>latent</em>, and that is a measured fact rather than a hope - a search of the program for
- * {@code LIT-CCLISTMAP} finds only the declaration at {@code :177}, because the two comparisons at
- * {@code :505} and {@code :527} both read {@code LIT-CCLISTMAPSET}. No paragraph reads the wrong value, so
- * nothing observable depends on it today, and it must still not be tidied away.
- *
- * <p>Every test that asserts a <em>decision</em> instantiates the controller <strong>directly</strong>
- * with a mocked {@link CardRepository} and a fixed {@link Clock}. There is no Spring context, no
- * {@code MockMvc} and no {@code JobLauncher} in the decision path, which is gate <strong>G51</strong>: the
- * arithmetic and the guard chains are asserted where they live, and a failure names the paragraph rather
- * than an HTTP status.
- *
- * <p>The single exception is {@link HttpWiring}, and it is an exception only in mechanism, not in
- * principle. It uses {@code MockMvcBuilders.standaloneSetup} to assert the <em>transport</em> contract and
- * nothing else - that the mapping routes, that the path variable and the optional query parameters bind,
- * that the status codes are right, and that the body serialises to the shape the symbolic map defines. Not
- * one branch of the program is asserted through it, so no behaviour has a slower or less attributable
- * second home.
- *
- * <p>The clock is fixed for the same reason the controller takes one: {@code 1100-SCREEN-INIT} reads
- * {@code FUNCTION CURRENT-DATE} twice, and a screen that carried a live clock could not be compared
- * byte-for-byte against anything.
- *
- * <p>Expectations here are <strong>statically derived</strong> from {@code app/cbl/COCRDSLC.cbl},
- * {@code app/cpy-bms/COCRDSL.CPY}, {@code app/bms/COCRDSL.bms}, {@code app/cpy/CVCRD01Y.cpy} and
- * {@code app/cpy/CVACT02Y.cpy}. The legacy COBOL cannot be executed in this environment (risk R-A), so no
- * captured baseline exists and none is claimed - each assertion cites the line it was read from so it can
- * be checked against the source by eye.
  */
 @DisplayName("CardSelectController - COCRDSLC, transaction CCDL, the credit-card detail screen")
 class CardSelectControllerTest {
-
-    /** A fixed instant, so both {@code FUNCTION CURRENT-DATE} reads see the same second. */
     private static final Clock FIXED_CLOCK =
             Clock.fixed(Instant.parse("2022-07-19T23:12:33Z"), ZoneOffset.UTC);
 
-    /** US-ASCII: the fixtures' code page, and the one the parity harness seeds from. */
     private static final Charset CHARSET = StandardCharsets.US_ASCII;
 
-    /** A sixteen-digit card number, at its declared {@code PIC X(16)} width. */
     private static final String CARD_NUMBER = "4111111111111111";
 
-    /** An eleven-digit account id, at its declared {@code PIC X(11)} width. */
     private static final String ACCOUNT_ID = "00000000011";
 
-    /**
-     * The map the <em>card list</em> program declares as its own - {@code LIT-THISMAP PIC X(7)} at
-     * {@code app/cbl/COCRDLIC.cbl:185}.
-     *
-     * <p>Declared here for one reason only: it is the truthful inbound value of
-     * {@code CDEMO-LAST-MAP}, because {@code COCRDLIC} moves its own {@code LIT-THISMAP} into that
-     * commarea field at its :322, :391, :426, :525, :590 and :608 before transferring control here.
-     * Fixtures that model "arrived from the card list" therefore carry it.
-     *
-     * <p><strong>This is emphatically not a correction of
-     * {@link CardSelectController#LIT_CCLISTMAP}.</strong> That literal is wrong in the source and
-     * stays wrong (practice B5); {@code cclistmapKeepsItsDefect()} pins it. The two are kept apart by
-     * name so no future edit can confuse "the value COCRDLIC declares" with "the value COCRDSLC
-     * declares for COCRDLIC". {@code COCRDSLC} never reads {@code CDEMO-LAST-MAP} at all - it reads
-     * only {@code CDEMO-LAST-MAPSET}, at :505 and :527 - so this value is behaviourally inert and is
-     * present purely so the commarea fixtures describe the real system.
-     */
     private static final String CARD_LIST_OWN_MAP = "CCRDLIA";
 
     private CardRepository repository;
@@ -185,11 +86,6 @@ class CardSelectControllerTest {
         controller = new CardSelectController(repository, FIXED_CLOCK, CHARSET);
     }
 
-    // =================================================================================================
-    // Helpers
-    // =================================================================================================
-
-    /** A card record whose expiry is the {@code YYYY-MM-DD} form {@code CVACT02Y} declares. */
     private static CardRecord card() {
         return CardRecord.moving(CARD_NUMBER, 11L, 123, "JOHN Q PUBLIC", "2026-04-30", "Y",
                 new FixedWidthCodec(CHARSET));
@@ -205,7 +101,6 @@ class CardSelectControllerTest {
         return request;
     }
 
-    /** A commarea in the {@code CDEMO-PGM-ENTER} state, arriving from the card list. */
     private static NavigationContext fromCardList() {
         return NavigationContext.empty()
                 .withFromProgram(CardSelectControllerAccess.CCLIST_PGM)
@@ -215,9 +110,9 @@ class CardSelectControllerTest {
                 .withCardNum(Long.parseLong(CARD_NUMBER));
     }
 
-    /** The literals under test, named once so a typo fails in one place. */
     private static final class CardSelectControllerAccess {
         static final String THIS_PGM = "COCRDSLC";
+        static final String CARDSID_MEMBER = "cardsid";
         static final String THIS_TRANID = "CCDL";
         static final String CCLIST_PGM = "COCRDLIC";
         static final String CCLIST_MAPSET = "COCRDLI";
@@ -235,16 +130,6 @@ class CardSelectControllerTest {
         return task;
     }
 
-    /**
-     * The screen inside the envelope the mapping returns.
-     *
-     * <p>The handler answers {@link ScreenResponse}, which serialises the screen unwrapped at the top
-     * level of the JSON with the presentation metadata beside it. A test that wants the screen says so
-     * here once rather than at every call site.
-     *
-     * @param answer the mapping's return value
-     * @return the screen; never {@code null}
-     */
     private static CardSelectResponse screenOf(
             ResponseEntity<ScreenResponse<CardSelectResponse>> answer) {
         ScreenResponse<CardSelectResponse> envelope = answer.getBody();
@@ -253,7 +138,6 @@ class CardSelectControllerTest {
         return envelope.screen();
     }
 
-    /** A task with storage initialised, as {@code :254-256} leaves it. */
     private Conversation initialisedTask(NavigationContext commarea) {
         Conversation task = new Conversation();
         controller.initializeStorage(request("", "", commarea), task);
@@ -261,16 +145,12 @@ class CardSelectControllerTest {
         return task;
     }
 
-    // =================================================================================================
-
     @Nested
     @DisplayName("The literals, at the widths app/cbl/COCRDSLC.cbl:162-190 declares them")
     class Literals {
-
         @Test
         @DisplayName("LIT-THISMAPSET is EIGHT characters with a trailing space, and is not normalised")
         void thisMapsetKeepsItsEighthByte() {
-            // :167-168 - PIC X(8) VALUE 'COCRDSL '. COCRDLIC declares its own as X(7); this one does not.
             assertThat(CardSelectController.LIT_THISMAPSET).isEqualTo("COCRDSL ").hasSize(8);
             assertThat(CardSelectController.LIT_THISMAP).isEqualTo("CCRDSLA").hasSize(7);
         }
@@ -278,11 +158,6 @@ class CardSelectControllerTest {
         @Test
         @DisplayName("LIT-CCLISTMAP is the source's wrong value 'CCRDSLA' and is NOT corrected")
         void cclistmapKeepsItsDefect() {
-            // :177-178 - the card list's map is really the one COCRDLIC declares at its :185, not this
-            // one. Correcting the literal would be a behaviour change, so the defect is preserved and
-            // pinned here so nobody "fixes" it later. Equality to the source's own value is the strongest
-            // form of that guard: it rules out the corrected spelling and every other spelling at once,
-            // which is why no separate isNotEqualTo is needed.
             assertThat(CardSelectController.LIT_CCLISTMAP).isEqualTo("CCRDSLA").hasSize(7);
             assertThat(CardSelectController.LIT_CCLISTMAP).isNotEqualTo(CARD_LIST_OWN_MAP);
             assertThat(CardSelectController.LIT_CCLISTMAPSET).isEqualTo("COCRDLI");
@@ -301,7 +176,6 @@ class CardSelectControllerTest {
         @Test
         @DisplayName("the CICS file names are the base cluster and its alternate-index path")
         void fileNames() {
-            // :187-190. Eight characters each, and a logical key rather than a dataset name (gate G46).
             assertThat(CardSelectController.LIT_CARDFILENAME).isEqualTo("CARDDAT ").hasSize(8);
             assertThat(CardSelectController.LIT_CARDFILENAME_ACCT_PATH).isEqualTo("CARDAIX ")
                     .hasSize(8);
@@ -310,8 +184,6 @@ class CardSelectControllerTest {
         @Test
         @DisplayName("WS-RETURN-MSG-OFF is 75 SPACES, not LOW-VALUES")
         void returnMessageOffIsSpaces() {
-            // :135 - 88 WS-RETURN-MSG-OFF VALUE SPACES. The similarly named CCARD-RETURN-MSG-OFF in
-            // CVCRD01Y:30 is LOW-VALUES and belongs to a field this program never touches.
             assertThat(CardSelectController.WS_RETURN_MSG_OFF).hasSize(75).isEqualTo(" ".repeat(75));
             assertThat(CardSelectController.WS_RETURN_MSG_OFF)
                     .isNotEqualTo(CardScreenState.lowValues(75));
@@ -336,7 +208,6 @@ class CardSelectControllerTest {
                     .startsWith("Did not find this account in cards database");
             assertThat(CardSelectController.UNEXPECTED_DATA_SCENARIO).hasSize(75)
                     .startsWith("UNEXPECTED DATA SCENARIO");
-            // Dead, and still exact.
             assertThat(CardSelectController.SEARCHED_ACCT_MESSAGE).hasSize(75)
                     .startsWith("Account number must be a non zero 11 digit number");
             assertThat(CardSelectController.SEARCHED_CARD_NOT_NUMERIC).hasSize(75)
@@ -361,7 +232,6 @@ class CardSelectControllerTest {
     @Nested
     @DisplayName("INITIALIZE - spaces and zeros, never null (app/cbl/COCRDSLC.cbl:254-256)")
     class Initialize {
-
         @Test
         @DisplayName("the two edit flags become SPACES, which makes both filters read as BLANK")
         void editFlagsStartBlank() {
@@ -380,8 +250,6 @@ class CardSelectControllerTest {
         void inputFlagSatisfiesNoConditionName() {
             Conversation task = initialisedTask(NavigationContext.empty());
 
-            // :52-54 declare '0', '1' and LOW-VALUES. A space is none of them, and that is the state
-            // INITIALIZE actually produces.
             assertThat(task.inputOk()).isFalse();
             assertThat(task.inputError()).isFalse();
             assertThat(task.inputPending()).isFalse();
@@ -428,12 +296,8 @@ class CardSelectControllerTest {
         void theDeclaredOnlyAreasAreAllocated() {
             Conversation task = initialisedTask(NavigationContext.empty());
 
-            // COPY CSUSR01Y at :227 and COPY CVCUS01Y at :240 are LIVE, unlike CVACT01Y at :231 and
-            // CVACT03Y at :237. A live COPY allocates storage, so the areas exist (practice B5)...
             assertThat(task.secUserData).isEqualTo(SecUserRecord.blank());
             assertThat(task.customerRecord).isNotNull();
-            // ...and nothing in this program reads them. In particular no password is compared here:
-            // COCRDSLC performs no authentication, and none is added (practice B6).
             assertThat(task.secUserData.secUsrPwd()).isBlank();
             assertThat(task.secUserData.secUsrType()).isBlank();
         }
@@ -443,7 +307,6 @@ class CardSelectControllerTest {
         void deadFlagsAreStillModelled() {
             Conversation task = initialisedTask(NavigationContext.empty());
 
-            // :63-65 WS-RETURN-FLAG. Declared by the source, tested by nothing (practice B5).
             assertThat(task.wsReturnFlagOff()).isFalse();
             assertThat(task.wsReturnFlagOn()).isFalse();
             task.wsReturnFlag = CardSelectController.WS_RETURN_FLAG_ON;
@@ -458,7 +321,6 @@ class CardSelectControllerTest {
     @Nested
     @DisplayName("The commarea restore (app/cbl/COCRDSLC.cbl:268-279)")
     class CommareaRestore {
-
         @Test
         @DisplayName("EIBCALEN = 0 discards the commarea entirely")
         void noCommareaResets() {
@@ -501,10 +363,6 @@ class CardSelectControllerTest {
         @Test
         @DisplayName("the else arm splits at the 1-based offsets (1:160) and (161:12), losing nothing")
         void theSplitRoundTripsEveryField() {
-            // Every member is supplied AT ITS DECLARED WIDTH, because that is the state a commarea is
-            // actually in when it crosses an EXEC CICS RETURN: it is a fixed-width area, so a short
-            // value has already been padded by the MOVE that put it there. Supplying the padded form is
-            // what makes the round trip an identity, and what makes a shifted offset visible.
             NavigationContext passed = NavigationContext.empty()
                     .withFromProgram(CardSelectControllerAccess.CCLIST_PGM)
                     .withFromTranid("CCLI")
@@ -527,8 +385,6 @@ class CardSelectControllerTest {
 
             controller.restoreCommarea(task, CardSelectController.PASSED_COMMAREA_LENGTH);
 
-            // Every one of the sixteen members survives the byte split, which is what proves the two
-            // offsets: a wrong one would shift every field after it.
             assertThat(task.carddemoCommarea).isEqualTo(passed);
             assertThat(task.thisProgCommarea.caFromProgram()).isEqualTo("COCRDLIC");
             assertThat(task.thisProgCommarea.caFromTranid()).isEqualTo("CCLI");
@@ -545,7 +401,6 @@ class CardSelectControllerTest {
 
             controller.restoreCommarea(task, CardSelectController.PASSED_COMMAREA_LENGTH);
 
-            // The value is intact and the field is at its width: that IS the COBOL MOVE, not a defect.
             assertThat(task.carddemoCommarea.custFname())
                     .hasSize(NavigationContext.CUST_FNAME_LENGTH)
                     .startsWith("JOHN");
@@ -630,10 +485,6 @@ class CardSelectControllerTest {
         @DisplayName("Every non-zero length a caller can state is preserved as it arrived, because "
                 + ":268 tests EIBCALEN against zero and against nothing else")
         void everyRealLengthIsPreserved(int stated) {
-            // The two the legacy path really produces are 160 - COCRDLIC's XCTL passes
-            // CARDDEMO-COMMAREA alone [app/cbl/COCRDLIC.cbl:538-540] - and 2000, this program's own
-            // COMMON-RETURN passing WS-COMMAREA PIC X(2000). An acceptance set of {0, 172} answered 400
-            // to both.
             CardSelectRequest continuing = new CardSelectRequest();
             continuing.initializeMapArea();
             continuing.setNavigationContext(NavigationContext.empty());
@@ -672,7 +523,6 @@ class CardSelectControllerTest {
     @Nested
     @DisplayName("YYYY-STORE-PFKEY and the invalid-AID coercion (app/cbl/COCRDSLC.cbl:284-299)")
     class AttentionIdentifier {
-
         @ParameterizedTest(name = "EIBAID 0x{0} resolves to {1}")
         @CsvSource({"7D,ENTER", "F3,PFK03", "6D,CLEAR", "6C,'PA1  '", "7C,PFK12", "C3,PFK03"})
         @DisplayName("a recognised AID byte is stored as its five-character token")
@@ -688,13 +538,10 @@ class CardSelectControllerTest {
         @DisplayName("an UNRECOGNISED byte stores NOTHING: the copybook has no WHEN OTHER")
         void unrecognisedAidStoresNothing() {
             Conversation task = initialisedTask(NavigationContext.empty());
-            // DFHPA3 (0x6B) is a real AID that CSSTRPFY deliberately does not test.
             assertThat(PfKeyResolver.resolve(CicsAid.DFHPA3)).isEmpty();
 
             controller.storePfKeyYYYY(task, CicsAid.DFHPA3);
 
-            // Left exactly as INITIALIZE left it - five spaces - because the EVALUATE neither defaults
-            // nor pre-clears.
             assertThat(task.ccWorkArea.getCcardAid()).isEqualTo("     ");
             assertThat(task.ccWorkArea.aidKey()).isEmpty();
         }
@@ -729,29 +576,18 @@ class CardSelectControllerTest {
                 "     "})
         @DisplayName("every other key becomes ENTER - the least obvious behaviour in the program")
         void invalidKeysAreCoercedToEnter(String token) {
-            // PFK07 and PFK08 are in this list on purpose. The CARD LIST program accepts them - they
-            // are its page-backward and page-forward keys - and this program does not: :292-293 tests
-            // CCARD-AID-ENTER and CCARD-AID-PFK03 and nothing else, which is a NARROWER valid set than
-            // the sibling screen's. An operator who pages on the list and then presses the same key on
-            // the detail screen gets a repaint, not a page and not an error.
             Conversation task = initialisedTask(NavigationContext.empty());
             task.ccWorkArea.setCcardAid(token);
 
             controller.coerceInvalidAid(task);
 
             assertThat(task.ccWorkArea.isCcardAidEnter()).isTrue();
-            // :297-299 rewrites the AID and NOT the flag, so the flag is left reading INVALID.
             assertThat(task.pfkInvalid()).isTrue();
         }
 
         @Test
         @DisplayName("PF13-PF24 FOLD onto PFK01-PFK12, so PF15 exits and PF19 and PF20 repaint")
         void theHighFunctionKeysFoldOntoTheLowTokens() {
-            // CSSTRPFY.cpy L54-77 gives the upper twelve function keys the SAME twelve tokens as the
-            // lower twelve, which is why this program - whose whole AID vocabulary is those tokens -
-            // treats PF15 exactly as it treats PF3. Enumerated rather than computed, because the
-            // copybook enumerates it: the fold is data, and a modular-arithmetic shortcut here would
-            // stop being a translation of the source and start being a guess about it.
             byte[] upper = {CicsAid.DFHPF13, CicsAid.DFHPF14, CicsAid.DFHPF15, CicsAid.DFHPF16,
                     CicsAid.DFHPF17, CicsAid.DFHPF18, CicsAid.DFHPF19, CicsAid.DFHPF20,
                     CicsAid.DFHPF21, CicsAid.DFHPF22, CicsAid.DFHPF23, CicsAid.DFHPF24};
@@ -766,7 +602,6 @@ class CardSelectControllerTest {
                 controller.storePfKeyYYYY(high, upper[index]);
                 controller.storePfKeyYYYY(low, lower[index]);
 
-                // The two bytes are different keys on the keyboard and one token in the work area.
                 assertThat(upper[index]).isNotEqualTo(lower[index]);
                 assertThat(high.ccWorkArea.getCcardAid())
                         .as("PF%d and PF%d must store one token", index + 13, index + 1)
@@ -774,17 +609,12 @@ class CardSelectControllerTest {
                         .hasSize(PfKeyResolver.AID_TOKEN_LENGTH);
             }
 
-            // And the fold reaches the decision, not just the work area. PF15 folds onto PFK03, so it
-            // is one of the two keys :292-293 accepts and it is NOT rewritten.
             Conversation pf15 = initialisedTask(NavigationContext.empty());
             controller.storePfKeyYYYY(pf15, CicsAid.DFHPF15);
             controller.coerceInvalidAid(pf15);
             assertThat(pf15.ccWorkArea.isCcardAidPfk03()).isTrue();
             assertThat(pf15.pfkValid()).isTrue();
 
-            // PF19 and PF20 fold onto PFK07 and PFK08 - the card list's paging keys, which this screen
-            // does not accept - so both become ENTER and repaint. Asserted here rather than left to the
-            // coercion table above, so this test proves everything its name claims.
             for (byte paging : new byte[] {CicsAid.DFHPF19, CicsAid.DFHPF20}) {
                 Conversation task = initialisedTask(NavigationContext.empty());
                 controller.storePfKeyYYYY(task, paging);
@@ -798,7 +628,6 @@ class CardSelectControllerTest {
     @Nested
     @DisplayName("EVALUATE TRUE - five arms, first match wins (app/cbl/COCRDSLC.cbl:304-381, gate G30)")
     class Dispatcher {
-
         @Test
         @DisplayName("PF3 with no caller transfers to the MAIN MENU and records this screen as caller")
         void pf3WithNoCallerGoesToTheMenu() {
@@ -816,10 +645,8 @@ class CardSelectControllerTest {
                     .isEqualTo(CardSelectControllerAccess.THIS_PGM);
             assertThat(task.carddemoCommarea.fromTranid().strip())
                     .isEqualTo(CardSelectControllerAccess.THIS_TRANID);
-            // :331-334 - XCTL becomes a response field (gate G40)
             assertThat(response.getNextProgram().strip())
                     .isEqualTo(CardSelectControllerAccess.MENU_PGM);
-            // The map is NOT sent on this arm, so the fifteen items stay LOW-VALUES.
             assertThat(response.getTitle01o()).isEqualTo(CardScreenState.lowValues(40));
             verifyNoInteractions(repository);
         }
@@ -876,11 +703,8 @@ class CardSelectControllerTest {
             Conversation task = runMain(request(CARD_NUMBER, ACCOUNT_ID, commarea),
                     CardSelectController.PASSED_COMMAREA_LENGTH, CicsAid.DFHPF3, response);
 
-            // :326 - SET CDEMO-USRTYP-USER TO TRUE, with no guard. Practice B6: reproduced, not
-            // "hardened" and not corrected.
             assertThat(task.carddemoCommarea.isUser()).isTrue();
             assertThat(task.carddemoCommarea.isAdmin()).isFalse();
-            // :327-329
             assertThat(task.carddemoCommarea.isEnter()).isTrue();
             assertThat(task.carddemoCommarea.lastMapset()).isEqualTo("COCRDSL");
             assertThat(task.carddemoCommarea.lastMap()).isEqualTo("CCRDSLA");
@@ -896,13 +720,11 @@ class CardSelectControllerTest {
             Conversation task = runMain(request("", "", fromCardList()),
                     CardSelectController.PASSED_COMMAREA_LENGTH, CicsAid.DFHENTER, response);
 
-            // :341-343 - the criteria come from the COMMAREA, through the NUMERIC redefinitions
             assertThat(task.inputOk()).isTrue();
             assertThat(task.ccWorkArea.getCcAcctId()).isEqualTo(ACCOUNT_ID);
             assertThat(task.ccWorkArea.getCcCardNum()).isEqualTo(CARD_NUMBER);
             assertThat(task.foundCardsForAccount()).isTrue();
             verify(repository).readByCardNumber(CARD_NUMBER);
-            // The screen was painted from the record
             assertThat(response.getCrdnameo().strip()).isEqualTo("JOHN Q PUBLIC");
             assertThat(response.getExpyearo()).isEqualTo("2026");
             assertThat(response.getExpmono()).isEqualTo("04");
@@ -924,8 +746,6 @@ class CardSelectControllerTest {
                     CardSelectController.PASSED_COMMAREA_LENGTH, CicsAid.DFHENTER,
                     new CardSelectResponse());
 
-            // Writing through CC-ACCT-ID-N PIC 9(11), not CC-ACCT-ID PIC X(11): "00000000042", never
-            // "42         ".
             assertThat(task.ccWorkArea.getCcAcctId()).isEqualTo("00000000042");
             assertThat(task.ccWorkArea.getCcCardNum()).isEqualTo("0000000000000007");
         }
@@ -936,16 +756,13 @@ class CardSelectControllerTest {
             CardSelectResponse response = new CardSelectResponse();
             NavigationContext commarea = NavigationContext.empty()
                     .withFromProgram(CardSelectControllerAccess.MENU_PGM)
-                    .withPgmReenter()   // so the commarea is kept, then ENTER is what dispatches
+                    .withPgmReenter()
                     .withAcctId(11L);
 
-            // Re-entry from the menu keeps the commarea; the AID decides the arm.
             Conversation task = runMain(request(CARD_NUMBER, ACCOUNT_ID,
                     commarea.withPgmEnter().withFromProgram("COBIL00C")),
                     CardSelectController.PASSED_COMMAREA_LENGTH, CicsAid.DFHENTER, response);
 
-            // No read at all: this arm gathers criteria rather than using them (gate G30 - the bare arm
-            // is only reachable because the qualified arm was tested first).
             verifyNoInteractions(repository);
             assertThat(task.foundCardsForAccount()).isFalse();
             assertThat(response.getTitle01o()).isEqualTo(ScreenTitles.CCDA_TITLE01);
@@ -1005,7 +822,6 @@ class CardSelectControllerTest {
 
             assertThat(task.inputError()).isTrue();
             verifyNoInteractions(repository);
-            // Both blank, so the unguarded cross-field rule wins.
             assertThat(task.wsReturnMsg).isEqualTo(CardSelectController.NO_SEARCH_CRITERIA_RECEIVED);
             assertThat(response.getErrmsgo().strip()).isEqualTo("No input received");
         }
@@ -1014,23 +830,19 @@ class CardSelectControllerTest {
         @DisplayName("WHEN OTHER puts '0001' in ABEND-CODE and the text in the RETURN message")
         void whenOtherUsesTheReturnMessageNotTheAbendMessage() {
             CardSelectResponse response = new CardSelectResponse();
-            // A context that is neither ENTER (0) nor REENTER (1).
             NavigationContext commarea = NavigationContext.empty()
                     .withFromProgram("COBIL00C").withPgmContext(7);
 
             Conversation task = runMain(request(CARD_NUMBER, ACCOUNT_ID, commarea),
                     CardSelectController.PASSED_COMMAREA_LENGTH, CicsAid.DFHENTER, response);
 
-            // :374-376
             assertThat(task.abendData.abendCulprit().strip())
                     .isEqualTo(CardSelectControllerAccess.THIS_PGM);
             assertThat(task.abendData.abendCode()).isEqualTo("0001");
             assertThat(task.abendData.abendReason()).isBlank();
-            // :377-378 - the text goes to WS-RETURN-MSG, NOT to ABEND-MSG. COCRDUPC differs.
             assertThat(task.wsReturnMsg).isEqualTo(CardSelectController.UNEXPECTED_DATA_SCENARIO);
             assertThat(task.abendData.abendMsg()).isBlank();
             assertThat(response.getErrmsgo().strip()).isEqualTo("UNEXPECTED DATA SCENARIO");
-            // SEND TEXT paints no map, and the RETURN carries no commarea.
             assertThat(response.getTitle01o()).isEqualTo(CardScreenState.lowValues(40));
             verifyNoInteractions(repository);
         }
@@ -1044,7 +856,6 @@ class CardSelectControllerTest {
             Conversation task = runMain(request(CARD_NUMBER, ACCOUNT_ID, commarea),
                     CardSelectController.PASSED_COMMAREA_LENGTH, CicsAid.DFHPF12, response);
 
-            // PF12 was coerced to ENTER, so the PF3 arm is not taken; the context matches no other arm.
             assertThat(task.ccWorkArea.isCcardAidEnter()).isTrue();
             assertThat(task.wsReturnMsg).isEqualTo(CardSelectController.UNEXPECTED_DATA_SCENARIO);
         }
@@ -1053,7 +864,6 @@ class CardSelectControllerTest {
     @Nested
     @DisplayName("2200-EDIT-MAP-INPUTS and the two field edits (app/cbl/COCRDSLC.cbl:608-720)")
     class Edits {
-
         private Conversation editWith(String acctsid, String cardsid, NavigationContext commarea) {
             Conversation task = initialisedTask(commarea);
             task.wsReturnMsg = CardSelectController.WS_RETURN_MSG_OFF;
@@ -1141,10 +951,8 @@ class CardSelectControllerTest {
             String afterAccount = task.wsReturnMsg;
             controller.editCard2220(task);
 
-            // IF WS-RETURN-MSG-OFF at :696 sees a message already placed, so it leaves it.
             assertThat(afterAccount).isEqualTo(CardSelectController.WS_PROMPT_FOR_ACCT);
             assertThat(task.wsReturnMsg).isEqualTo(CardSelectController.WS_PROMPT_FOR_ACCT);
-            // ...but INPUT-ERROR and the flag were still set unconditionally.
             assertThat(task.inputError()).isTrue();
             assertThat(task.flgCardfilterBlank()).isTrue();
         }
@@ -1154,15 +962,12 @@ class CardSelectControllerTest {
         void theCrossFieldRuleOverwrites() {
             Conversation task = editWith("", "", NavigationContext.empty());
 
-            // :637-640 has no IF WS-RETURN-MSG-OFF, so it replaces the account prompt.
             assertThat(task.wsReturnMsg).isEqualTo(CardSelectController.NO_SEARCH_CRITERIA_RECEIVED);
         }
 
         @Test
         @DisplayName("SIXTEEN ZEROS is 'not supplied' for the card filter, through the PIC 9 view")
         void sixteenZerosIsBlank() {
-            // :693 - the third arm of the not-supplied test, CC-CARD-NUM-N EQUAL ZEROS, reading the same
-            // sixteen bytes as PIC 9(16). A supplied but meaningless card number.
             Conversation task = editWith(ACCOUNT_ID, "0000000000000000", NavigationContext.empty());
 
             assertThat(task.inputError()).isTrue();
@@ -1174,8 +979,6 @@ class CardSelectControllerTest {
         @Test
         @DisplayName("a NON-NUMERIC account with a message already standing keeps it, flag set regardless")
         void nonNumericAccountWithAMessageAlreadySet() {
-            // :668-672 - the guard covers only the message. INPUT-ERROR and FLG-ACCTFILTER-NOT-OK are
-            // set unconditionally, so the failure is recorded even though the text does not change.
             Conversation task = initialisedTask(NavigationContext.empty());
             task.ccWorkArea.setCcAcctId("ABCDEFGHIJK");
             task.wsReturnMsg = CardSelectController.NO_SEARCH_CRITERIA_RECEIVED;
@@ -1190,7 +993,6 @@ class CardSelectControllerTest {
         @Test
         @DisplayName("a BLANK account with a message already standing keeps it, flag set regardless")
         void blankAccountWithAMessageAlreadySet() {
-            // :656-658 - the same nesting on the other arm of 2210.
             Conversation task = initialisedTask(NavigationContext.empty());
             task.ccWorkArea.setCcAcctIdToLowValues();
             task.wsReturnMsg = CardSelectController.XREF_READ_ERROR;
@@ -1205,7 +1007,6 @@ class CardSelectControllerTest {
         @Test
         @DisplayName("a NON-NUMERIC card with a message already standing keeps it, flag set regardless")
         void nonNumericCardWithAMessageAlreadySet() {
-            // :709-713 - 2220's equivalent guard.
             Conversation task = initialisedTask(NavigationContext.empty());
             task.ccWorkArea.setCcCardNum("ABCDEFGHIJKLMNOP");
             task.wsReturnMsg = CardSelectController.WS_PROMPT_FOR_ACCT;
@@ -1223,7 +1024,6 @@ class CardSelectControllerTest {
             Conversation task = editWith("00000000042", "0000000000000007",
                     NavigationContext.empty());
 
-            // Both reach a numeric receiver, by two different routes (:676 vs :717).
             assertThat(task.carddemoCommarea.acctId()).isEqualTo(42L);
             assertThat(task.carddemoCommarea.cardNum()).isEqualTo(7L);
         }
@@ -1236,11 +1036,9 @@ class CardSelectControllerTest {
             controller.processInputs2000(request("", "", NavigationContext.empty()), task);
 
             assertThat(task.ccWorkArea.getCcardNextProg()).isEqualTo("COCRDSLC");
-            // :589 - X(8) into X(7) drops the trailing space.
             assertThat(task.ccWorkArea.getCcardNextMapset()).isEqualTo("COCRDSL").hasSize(7);
             assertThat(task.ccWorkArea.getCcardNextMap()).isEqualTo("CCRDSLA").hasSize(7);
             assertThat(task.ccWorkArea.getCcardErrorMsg()).hasSize(75);
-            // 2100-RECEIVE-MAP records a NORMAL response and no reason code.
             assertThat(task.wsRespCd).isEqualTo(FileStatus.NORMAL);
             assertThat(task.wsReasCd).isEqualTo(CardRepository.NO_REASON_CODE);
         }
@@ -1249,7 +1047,6 @@ class CardSelectControllerTest {
     @Nested
     @DisplayName("9100-GETCARD-BYACCTCARD - the base read (app/cbl/COCRDSLC.cbl:736-773)")
     class BaseRead {
-
         private Conversation readWith(CardReadResult result, String priorMessage) {
             when(repository.readByCardNumber(anyString())).thenReturn(result);
             Conversation task = initialisedTask(NavigationContext.empty());
@@ -1266,7 +1063,6 @@ class CardSelectControllerTest {
                     CardSelectController.WS_RETURN_MSG_OFF);
 
             assertThat(task.wsCardRidCardnum).isEqualTo(CARD_NUMBER);
-            // The account key was never assigned, so it still holds INITIALIZE's eleven zeros.
             assertThat(task.wsCardRidAcctId).isEqualTo("00000000000");
             verify(repository).readByCardNumber(CARD_NUMBER);
         }
@@ -1302,7 +1098,6 @@ class CardSelectControllerTest {
             Conversation task = readWith(CardReadResult.notFound(),
                     CardSelectController.WS_PROMPT_FOR_ACCT);
 
-            // The IF WS-RETURN-MSG-OFF nesting at :759-761: the message is guarded, the flags are not.
             assertThat(task.wsReturnMsg).isEqualTo(CardSelectController.WS_PROMPT_FOR_ACCT);
             assertThat(task.inputError()).isTrue();
             assertThat(task.flgAcctfilterNotOk()).isTrue();
@@ -1315,10 +1110,8 @@ class CardSelectControllerTest {
             Conversation withPrior = readWith(CardReadResult.failed(FileStatus.INVREQ),
                     CardSelectController.WS_PROMPT_FOR_ACCT);
 
-            // :764-766 guards FLG-ACCTFILTER-NOT-OK, so with a message already set the flag is NOT set...
             assertThat(withPrior.flgAcctfilterNotOk()).isFalse();
             assertThat(withPrior.flgAcctfilterBlank()).isTrue();
-            // ...while :767-771 is unguarded, so the file-error message DOES replace the prompt.
             assertThat(withPrior.wsReturnMsg).startsWith("File Error: READ");
             assertThat(withPrior.inputError()).isTrue();
         }
@@ -1359,13 +1152,10 @@ class CardSelectControllerTest {
 
             controller.recordFileError(task, CardSelectController.LIT_CARDFILENAME);
 
-            // 'File Error: '(12) + 'READ    '(8) + ' on '(4) + 'CARDDAT  '(9)
-            //   + ' returned RESP '(15) + '000000013 '(10) + ',RESP2 '(7) + '000000000 '(10) + 5 spaces
             String expected80 = "File Error: " + "READ    " + " on " + "CARDDAT  "
                     + " returned RESP " + "000000013 " + ",RESP2 " + "000000000 " + "     ";
             assertThat(expected80).hasSize(80);
             assertThat(controller.fileErrorMessage(task)).isEqualTo(expected80);
-            // The MOVE into WS-RETURN-MSG X(75) discards the trailing five.
             assertThat(task.wsReturnMsg).hasSize(75).isEqualTo(expected80.substring(0, 75));
             assertThat(task.errorOpname).isEqualTo("READ    ");
             assertThat(task.errorFile).isEqualTo("CARDDAT  ");
@@ -1389,7 +1179,6 @@ class CardSelectControllerTest {
     @Nested
     @DisplayName("9150-GETCARD-BYACCT - dead code, translated and proven (COCRDSLC:779-809)")
     class AlternateIndexRead {
-
         @Test
         @DisplayName("9000-READ-DATA does NOT call it: the source performs 9100 only")
         void readDataDoesNotReachIt() {
@@ -1414,7 +1203,6 @@ class CardSelectControllerTest {
             controller.getCardByAcct9150(task);
 
             assertThat(task.foundCardsForAccount()).isTrue();
-            // The key is INITIALIZE's eleven zeros, because :739's MOVE is commented out.
             verify(repository).readByAccountIdViaAltIndex("00000000000");
         }
 
@@ -1424,7 +1212,6 @@ class CardSelectControllerTest {
             when(repository.readByAccountIdViaAltIndex(anyString()))
                     .thenReturn(CardReadResult.notFound());
             Conversation task = initialisedTask(NavigationContext.empty());
-            // An earlier message is standing, which in 9100 would have been preserved.
             task.wsReturnMsg = CardSelectController.WS_PROMPT_FOR_ACCT;
 
             controller.getCardByAcct9150(task);
@@ -1453,27 +1240,16 @@ class CardSelectControllerTest {
         @Test
         @DisplayName("CARDAIX is a SECOND FINDER over the SAME 150 bytes, never a second table (G45)")
         void theAlternateIndexIsAPathOverTheSameCluster() {
-            // app/csd/CARDDEMO.CSD:13-14 defines FILE(CARDAIX) over the card data cluster's
-            // .VSAM.AIX.PATH, and :25-26 defines FILE(CARDDAT) over the .VSAM.KSDS itself. A PATH is an
-            // access route, not a copy: the same record, reached by a different key. The industry default
-            // for this shape is two tables joined by an account column, and the plan forbids it outright
-            // (no schema change, gate G45), so what has to be provable is that both routes land on one
-            // row - and the strongest available statement of that is that all 150 bytes agree.
             CardRecord row = card();
             String image = row.encodeToImage(CHARSET);
             assertThat(image).hasSize(CardRecord.RECORD_LENGTH);
 
-            // Route one: the base cluster, keyed on the sixteen-character card number - 9100's read.
             when(repository.readByCardNumber(CARD_NUMBER)).thenReturn(cardRead(row));
             Conversation byCard = initialisedTask(NavigationContext.empty());
             byCard.ccWorkArea.setCcCardNum(CARD_NUMBER);
             controller.getCardByAcctCard9100(byCard);
             CardRecord fromBase = byCard.cardRecord.orElseThrow();
 
-            // Route two: the alternate-index path, keyed on THAT record's own eleven-digit account id -
-            // 9150's read. The key is taken from the row the first read returned rather than restated,
-            // so the two routes are provably asking for the same row and not two coincidentally equal
-            // ones.
             String alternateKey = fromBase.cardAcctIdImage(new FixedWidthCodec(CHARSET));
             assertThat(alternateKey).hasSize(11).isEqualTo("00000000011");
             when(repository.readByAccountIdViaAltIndex(alternateKey)).thenReturn(cardRead(row));
@@ -1482,22 +1258,15 @@ class CardSelectControllerTest {
             controller.getCardByAcct9150(byAccount);
             CardRecord fromPath = byAccount.cardRecord.orElseThrow();
 
-            // Byte-for-byte, the whole record - not field-by-field equality, which a second table with
-            // the same columns would also satisfy.
             assertThat(fromPath.encodeToImage(CHARSET))
                     .hasSize(CardRecord.RECORD_LENGTH)
                     .isEqualTo(fromBase.encodeToImage(CHARSET))
                     .isEqualTo(image);
 
-            // ONE repository served both reads: these are the only two interactions, and they are on the
-            // single instance the constructor took. A second dataset would have needed a second
-            // collaborator, and Construction.everyCollaboratorIsRequired pins that there is exactly one.
             verify(repository).readByCardNumber(CARD_NUMBER);
             verify(repository).readByAccountIdViaAltIndex(alternateKey);
             verifyNoMoreInteractions(repository);
 
-            // And the two CICS file names are what the source names at :187-190 - a base and a path over
-            // it, eight characters each, carrying no dataset name into Java (gate G46).
             assertThat(CardSelectController.LIT_CARDFILENAME)
                     .isEqualTo(CardRepository.BASE_CICS_FILE_NAME);
             assertThat(CardSelectController.LIT_CARDFILENAME_ACCT_PATH)
@@ -1507,40 +1276,20 @@ class CardSelectControllerTest {
         }
     }
 
-    /**
-     * The three {@code REDEFINES} pairs of {@code app/cpy/CVCRD01Y.cpy} - gate <strong>G34</strong>.
-     *
-     * <p>{@code CC-ACCT-ID X(11)} / {@code CC-ACCT-ID-N 9(11)},
-     * {@code CC-CARD-NUM X(16)} / {@code CC-CARD-NUM-N 9(16)} and
-     * {@code CC-CUST-ID X(09)} / {@code CC-CUST-ID-N 9(9)}. Three, not one: the migration plan's §0.3.3
-     * mentions only the account pair, and the copybook declares all three, each with {@code VALUE SPACES}
-     * on the alphanumeric side.
-     *
-     * <p>The point of a {@code REDEFINES} is that there is <strong>one span of bytes and two ways to read
-     * it</strong>. Two of the three are written through their numeric side by the from-the-card-list arm at
-     * {@code app/cbl/COCRDSLC.cbl:342-343}, and read back through their alphanumeric side by
-     * {@code 1200-SETUP-SCREEN-VARS} at {@code :465} and {@code :471} - so if the two views were separate
-     * storage with a conversion between them, the screen would show whatever the conversion produced rather
-     * than the bytes the {@code MOVE} left. That is the failure this group exists to rule out.
-     */
     @Nested
     @DisplayName("The three CVCRD01Y REDEFINES pairs - one span, two views (gate G34)")
     class WorkAreaRedefines {
-
         @Test
         @DisplayName("a write through the NUMERIC view is visible byte-for-byte through the CHARACTER view")
         void theNumericWriteIsVisibleAsCharacters() {
             CardScreenState workArea = new CardScreenState();
 
-            // MOVE CDEMO-ACCT-ID TO CC-ACCT-ID-N  (:342) - PIC 9(11), so zero-filled on the LEFT.
             workArea.setCcAcctIdN(11L);
             assertThat(workArea.getCcAcctId()).isEqualTo("00000000011").hasSize(11);
 
-            // MOVE CDEMO-CARD-NUM TO CC-CARD-NUM-N (:343) - PIC 9(16), same rule at its own width.
             workArea.setCcCardNumN(Long.parseLong(CARD_NUMBER));
             assertThat(workArea.getCcCardNum()).isEqualTo(CARD_NUMBER).hasSize(16);
 
-            // The third pair, which this program never writes but the copybook still declares.
             workArea.setCcCustIdN(9L);
             assertThat(workArea.getCcCustId()).isEqualTo("000000009").hasSize(9);
         }
@@ -1558,8 +1307,6 @@ class CardSelectControllerTest {
             assertThat(workArea.getCcCardNumN()).isEqualTo(Long.parseLong(CARD_NUMBER));
             assertThat(workArea.getCcCustIdN()).isEqualTo(9L);
 
-            // Round trip: the characters that went in are the characters that come back out. A conversion
-            // step would show itself here as a re-formatted value.
             assertThat(workArea.getCcAcctId()).isEqualTo("00000000011");
             assertThat(workArea.getCcCardNum()).isEqualTo(CARD_NUMBER);
             assertThat(workArea.getCcCustId()).isEqualTo("000000009");
@@ -1570,22 +1317,13 @@ class CardSelectControllerTest {
         void theSpanIsNotANumberInDisguise() {
             CardScreenState workArea = new CardScreenState();
 
-            // The character view stores non-digits verbatim, at the declared width. An implementation that
-            // kept a long and rendered it on demand could not do this at all - which is the whole reason
-            // the source can test IS NOT NUMERIC at :665 and :706 and get a useful answer.
             workArea.setCcAcctId("0000000001A");
             assertThat(workArea.getCcAcctId()).isEqualTo("0000000001A").hasSize(11);
             assertThat(workArea.isCcAcctIdNumeric()).isFalse();
 
-            // And the numeric view over those same bytes refuses rather than coercing them to 1 or 0.
-            // The COBOL never reaches it in this state, because :665 tests IS NOT NUMERIC first and
-            // leaves through 2210-EDIT-ACCOUNT-EXIT; the refusal is what keeps a silent coercion from
-            // being possible if that ordering were ever disturbed.
             assertThatThrownBy(workArea::getCcAcctIdN)
                     .isInstanceOf(IllegalArgumentException.class);
 
-            // The character view also refuses a value wider than its PICTURE rather than truncating it
-            // into a different account.
             assertThatThrownBy(() -> workArea.setCcAcctId("000000000111"))
                     .isInstanceOf(IllegalArgumentException.class);
         }
@@ -1595,8 +1333,6 @@ class CardSelectControllerTest {
         void theInitialStateIsSpacesOnEveryPair() {
             CardScreenState workArea = new CardScreenState();
 
-            // 004400-004900: each alphanumeric side carries VALUE SPACES, so an untouched work area holds
-            // its width in spaces - not LOW-VALUES, and not zeros.
             assertThat(workArea.getCcAcctId()).isEqualTo(" ".repeat(11));
             assertThat(workArea.getCcCardNum()).isEqualTo(" ".repeat(16));
             assertThat(workArea.getCcCustId()).isEqualTo(" ".repeat(9));
@@ -1604,12 +1340,6 @@ class CardSelectControllerTest {
             assertThat(workArea.isCcCardNumSpaces()).isTrue();
             assertThat(workArea.isCcAcctIdLowValues()).isFalse();
 
-            // Reading a numeric view over spaces is undefined on the mainframe, which is exactly why
-            // 2210-EDIT-ACCOUNT tests the two CHARACTER states first - "IF CC-ACCT-ID EQUAL LOW-VALUES OR
-            // CC-ACCT-ID EQUAL SPACES OR CC-ACCT-ID-N EQUAL ZEROS" at :651-653 - and leaves through
-            // 2210-EDIT-ACCOUNT-EXIT before the numeric arm can matter. The order is the safety property,
-            // so it is asserted as an order: the space test answers true while the numeric test is still
-            // untried.
             assertThat(workArea.isCcAcctIdSpaces()).isTrue();
             assertThat(workArea.isCcCardNumSpaces()).isTrue();
         }
@@ -1619,7 +1349,6 @@ class CardSelectControllerTest {
         void lowValuesIsItsOwnState() {
             CardScreenState workArea = new CardScreenState();
 
-            // MOVE LOW-VALUES TO CC-ACCT-ID (:617) and TO CC-CARD-NUM (:624).
             workArea.setCcAcctIdToLowValues();
             workArea.setCcCardNumToLowValues();
 
@@ -1627,7 +1356,6 @@ class CardSelectControllerTest {
             assertThat(workArea.isCcAcctIdSpaces()).isFalse();
             assertThat(workArea.isCcCardNumLowValues()).isTrue();
             assertThat(workArea.isCcCardNumSpaces()).isFalse();
-            // Distinguishable in the bytes, not merely in a flag.
             assertThat(workArea.getCcAcctId()).isEqualTo(CardScreenState.lowValues(11))
                     .isNotEqualTo(" ".repeat(11));
         }
@@ -1636,8 +1364,6 @@ class CardSelectControllerTest {
         @DisplayName("the from-the-card-list arm writes TWO of the three pairs, and the screen reads them "
                 + "back through the character view")
         void theDispatcherWritesThroughTheNumericViewAndTheScreenReadsTheCharacters() {
-            // The end-to-end statement of why this gate matters: :342-343 write numerically, :465 and
-            // :471 read alphanumerically, and one span is what makes those two agree.
             when(repository.readByCardNumber(anyString())).thenReturn(cardRead(card()));
             CardSelectResponse response = new CardSelectResponse();
 
@@ -1648,8 +1374,6 @@ class CardSelectControllerTest {
             assertThat(task.ccWorkArea.getCcCardNum()).isEqualTo(CARD_NUMBER);
             assertThat(response.getAcctsido()).isEqualTo(ACCOUNT_ID);
             assertThat(response.getCardsido()).isEqualTo(CARD_NUMBER);
-            // CC-CUST-ID is the pair this program leaves alone: it is declared, never written here, and
-            // therefore still reads as its VALUE SPACES.
             assertThat(task.ccWorkArea.getCcCustId()).isEqualTo(" ".repeat(9));
         }
     }
@@ -1657,12 +1381,10 @@ class CardSelectControllerTest {
     @Nested
     @DisplayName("The painted screen (app/cbl/COCRDSLC.cbl:427-577)")
     class Screen {
-
         @Test
         @DisplayName("1100-SCREEN-INIT blanks the group with LOW-VALUES, then writes the header")
         void screenInit() {
             CardSelectResponse response = new CardSelectResponse();
-            // A stale value at the item's declared width, so 1100's blanking is visibly what removed it.
             response.setCrdnameo("STALE VALUE FROM AN EARLIER TURN".repeat(2)
                     .substring(0, CardSelectResponse.CRDNAMEO_LENGTH));
             Conversation task = initialisedTask(NavigationContext.empty());
@@ -1674,7 +1396,6 @@ class CardSelectControllerTest {
             assertThat(response.getTitle02o()).isEqualTo(ScreenTitles.CCDA_TITLE02);
             assertThat(response.getTrnnameo()).isEqualTo("CCDL");
             assertThat(response.getPgmnameo()).isEqualTo("COCRDSLC");
-            // The fixed clock, formatted mm/dd/yy and hh:mm:ss by CSDAT01Y's own compositions.
             assertThat(response.getCurdateo()).hasSize(8).isEqualTo("07/19/22");
             assertThat(response.getCurtimeo()).hasSize(8).isEqualTo("23:12:33");
             assertThat(task.dateHeader).isNotNull();
@@ -1691,7 +1412,6 @@ class CardSelectControllerTest {
 
             assertThat(task.promptForInput()).isTrue();
             assertThat(response.getInfomsgo()).isEqualTo(CardSelectController.WS_PROMPT_FOR_INPUT);
-            // Neither ACCTSIDO nor CARDSIDO was written, so both stay LOW-VALUES - not blank.
             assertThat(response.getAcctsido()).isEqualTo(CardScreenState.lowValues(11));
             assertThat(response.getCardsido()).isEqualTo(CardScreenState.lowValues(16));
         }
@@ -1709,9 +1429,7 @@ class CardSelectControllerTest {
             controller.setupScreenVars1200(response, task,
                     CardSelectController.PASSED_COMMAREA_LENGTH);
 
-            // CDEMO-ACCT-ID is non-zero, so CC-ACCT-ID is shown.
             assertThat(response.getAcctsido()).isEqualTo(ACCOUNT_ID);
-            // CDEMO-CARD-NUM is zero, so CARDSIDO is blanked - even though CC-CARD-NUM holds a value.
             assertThat(response.getCardsido()).isEqualTo(CardScreenState.lowValues(16));
         }
 
@@ -1723,12 +1441,10 @@ class CardSelectControllerTest {
             task.cardRecord = Optional.of(card());
             controller.screenInit1100(response, task);
 
-            // The record is present but FOUND-CARDS-FOR-ACCOUNT was never set, so nothing is projected.
             controller.setupScreenVars1200(response, task,
                     CardSelectController.PASSED_COMMAREA_LENGTH);
             assertThat(response.getCrdnameo()).isEqualTo(CardScreenState.lowValues(50));
 
-            // Set the message and it is.
             task.wsInfoMsg = CardSelectController.FOUND_CARDS_FOR_ACCOUNT;
             controller.setupScreenVars1200(response, task,
                     CardSelectController.PASSED_COMMAREA_LENGTH);
@@ -1762,7 +1478,6 @@ class CardSelectControllerTest {
 
             assertThat(response.getExpyearo()).isEqualTo("2026");
             assertThat(response.getExpmono()).isEqualTo("04");
-            // The REDEFINES also names a day, which this map has no field for - and none is invented.
             assertThat(task.cardExpiraionDateX).isEqualTo("2026-04-30");
             assertThat(card().cardExpiraionDateDay()).isEqualTo("30");
         }
@@ -1805,9 +1520,6 @@ class CardSelectControllerTest {
                     .isEqualTo(BmsAttributes.DFHDFCOL);
             assertThat(BmsAttributes.isProtected(BmsAttributes.DFHBMPRF)).isTrue();
 
-            // And the byte reaches the client. It is written into xxxA of the INPUT group, so the
-            // projection has to be given that area: reading the output group's never-written xxxP
-            // reported x'00' for every field and lost the protection entirely.
             ScreenMetadata metadata = response.screenMetadata(request);
             assertThat(metadata.fields().get("ACCTSID").protection())
                     .isEqualTo(BmsAttributes.unsigned(BmsAttributes.DFHBMPRF));
@@ -1816,7 +1528,6 @@ class CardSelectControllerTest {
             assertThat(metadata.fields().get("ACCTSID").colour())
                     .isEqualTo(BmsAttributes.unsigned(BmsAttributes.DFHDFCOL));
 
-            // Without an input area there is nothing to merge, and the output group's own byte stands.
             assertThat(response.screenMetadata().fields().get("ACCTSID").protection()).isZero();
         }
 
@@ -1834,12 +1545,9 @@ class CardSelectControllerTest {
 
             assertThat(request.metadata(CardSelectRequest.ScreenField.ACCTSID).getAttribute())
                     .isEqualTo(BmsAttributes.DFHBMFSE);
-            // No ELSE on the colour block, so it stays as MOVE LOW-VALUES left it.
             assertThat(response.attributes(CardSelectResponse.ScreenField.ACCTSID).getColour())
                     .isEqualTo((byte) 0x00);
 
-            // The unprotected byte reaches the client too, which is what makes the two arms
-            // distinguishable from outside the program.
             assertThat(response.screenMetadata(request).fields().get("ACCTSID").protection())
                     .isEqualTo(BmsAttributes.unsigned(BmsAttributes.DFHBMFSE));
         }
@@ -1847,15 +1555,6 @@ class CardSelectControllerTest {
         @Test
         @DisplayName("the list's MAPSET without the list's PROGRAM does NOT protect - the AND needs both")
         void theMapsetAloneIsNotEnoughToProtect() {
-            // :505-506 and :527-528 are one condition with two conjuncts:
-            //   IF CDEMO-LAST-MAPSET EQUAL LIT-CCLISTMAPSET
-            //   AND CDEMO-FROM-PROGRAM EQUAL LIT-CCLISTPGM
-            // The sibling tests drive both-true and first-false. This one drives the third state -
-            // FIRST TRUE, SECOND FALSE - which is the only way to tell an AND from an OR, and it is
-            // reachable in the real system: the menu can transfer here while CDEMO-LAST-MAPSET still
-            // carries the card list's mapset from an earlier turn, because nothing clears it on the way.
-            // Getting it wrong would protect a criterion the operator still has to type, and the screen
-            // would simply refuse input with no message explaining why.
             CardSelectRequest request = request(CARD_NUMBER, ACCOUNT_ID, NavigationContext.empty());
             CardSelectResponse response = new CardSelectResponse();
             Conversation task = initialisedTask(NavigationContext.empty()
@@ -1866,12 +1565,10 @@ class CardSelectControllerTest {
 
             controller.setupScreenAttrs1300(request, response, task);
 
-            // Unprotected, exactly as the ELSE at :509-511 requires.
             assertThat(request.metadata(CardSelectRequest.ScreenField.ACCTSID).getAttribute())
                     .isEqualTo(BmsAttributes.DFHBMFSE);
             assertThat(request.metadata(CardSelectRequest.ScreenField.CARDSID).getAttribute())
                     .isEqualTo(BmsAttributes.DFHBMFSE);
-            // And the :527-531 colour block, which has no ELSE, left the colour alone.
             assertThat(response.attributes(CardSelectResponse.ScreenField.ACCTSID).getColour())
                     .isEqualTo((byte) 0x00);
             assertThat(response.attributes(CardSelectResponse.ScreenField.CARDSID).getColour())
@@ -1883,7 +1580,6 @@ class CardSelectControllerTest {
         void notOkIsColouredEvenOnFirstEntry() {
             CardSelectRequest request = request(CARD_NUMBER, ACCOUNT_ID, NavigationContext.empty());
             CardSelectResponse response = new CardSelectResponse();
-            // ENTER, not REENTER: the guard CSSETATY applies is absent here (:533-539).
             Conversation task = initialisedTask(
                     NavigationContext.empty().withFromProgram("COBIL00C").withPgmEnter());
             task.wsEditAcctFlag = CardSelectController.FLG_FILTER_NOT_OK;
@@ -1902,7 +1598,6 @@ class CardSelectControllerTest {
         void blankIsMarkedOnlyOnReentry() {
             CardSelectRequest request = request(CARD_NUMBER, ACCOUNT_ID, NavigationContext.empty());
 
-            // ENTER: nothing is marked and nothing is coloured.
             CardSelectResponse onEnter = new CardSelectResponse();
             Conversation enterTask = initialisedTask(
                     NavigationContext.empty().withFromProgram("COBIL00C").withPgmEnter());
@@ -1913,7 +1608,6 @@ class CardSelectControllerTest {
             assertThat(onEnter.attributes(CardSelectResponse.ScreenField.ACCTSID).getColour())
                     .isEqualTo((byte) 0x00);
 
-            // REENTER: both are marked and both go red.
             CardSelectResponse onReenter = new CardSelectResponse();
             Conversation reenterTask = initialisedTask(
                     NavigationContext.empty().withFromProgram("COBIL00C").withPgmReenter());
@@ -1933,14 +1627,12 @@ class CardSelectControllerTest {
             Conversation task = initialisedTask(
                     NavigationContext.empty().withFromProgram("COBIL00C"));
 
-            // Arm 1 - the account filter is not ok
             CardSelectRequest onAcct = request(CARD_NUMBER, ACCOUNT_ID, NavigationContext.empty());
             task.wsEditAcctFlag = CardSelectController.FLG_FILTER_NOT_OK;
             task.wsEditCardFlag = CardSelectController.FLG_FILTER_ISVALID;
             controller.setupScreenAttrs1300(onAcct, response, task);
             assertThat(onAcct.metadata(CardSelectRequest.ScreenField.ACCTSID).isCursorHere()).isTrue();
 
-            // Arm 1 again - the account filter is blank
             CardSelectRequest onBlankAcct =
                     request(CARD_NUMBER, ACCOUNT_ID, NavigationContext.empty());
             task.wsEditAcctFlag = CardSelectController.FLG_FILTER_BLANK;
@@ -1948,7 +1640,6 @@ class CardSelectControllerTest {
             assertThat(onBlankAcct.metadata(CardSelectRequest.ScreenField.ACCTSID).isCursorHere())
                     .isTrue();
 
-            // Arm 2 - the account filter is fine, the card filter is not
             CardSelectRequest onCard = request(CARD_NUMBER, ACCOUNT_ID, NavigationContext.empty());
             task.wsEditAcctFlag = CardSelectController.FLG_FILTER_ISVALID;
             task.wsEditCardFlag = CardSelectController.FLG_FILTER_NOT_OK;
@@ -1956,7 +1647,6 @@ class CardSelectControllerTest {
             assertThat(onCard.metadata(CardSelectRequest.ScreenField.CARDSID).isCursorHere()).isTrue();
             assertThat(onCard.metadata(CardSelectRequest.ScreenField.ACCTSID).isCursorHere()).isFalse();
 
-            // Arm 2 again - the card filter is blank
             CardSelectRequest onBlankCard =
                     request(CARD_NUMBER, ACCOUNT_ID, NavigationContext.empty());
             task.wsEditCardFlag = CardSelectController.FLG_FILTER_BLANK;
@@ -1964,7 +1654,6 @@ class CardSelectControllerTest {
             assertThat(onBlankCard.metadata(CardSelectRequest.ScreenField.CARDSID).isCursorHere())
                     .isTrue();
 
-            // WHEN OTHER - both fine, and the cursor still lands on the account filter
             CardSelectRequest onDefault = request(CARD_NUMBER, ACCOUNT_ID, NavigationContext.empty());
             task.wsEditCardFlag = CardSelectController.FLG_FILTER_ISVALID;
             controller.setupScreenAttrs1300(onDefault, response, task);
@@ -2023,7 +1712,6 @@ class CardSelectControllerTest {
     @Nested
     @DisplayName("COMMON-RETURN and the dead trailing guard (COCRDSLC:386-406)")
     class Terminals {
-
         @Test
         @DisplayName("COMMON-RETURN reassembles a 2000-byte commarea with the trailer at offset 161")
         void commonReturnAssemblesTheCommarea() {
@@ -2036,7 +1724,6 @@ class CardSelectControllerTest {
 
             assertThat(task.wsCommarea).hasSize(2000);
             assertThat(task.wsCommarea.substring(160, 172)).isEqualTo("COCRDLICCCLI");
-            // The 1828 bytes beyond what was written stay as INITIALIZE left them.
             assertThat(task.wsCommarea.substring(172)).isBlank();
             assertThat(task.ccWorkArea.getCcardErrorMsg())
                     .isEqualTo(CardSelectController.WS_PROMPT_FOR_ACCT);
@@ -2048,7 +1735,6 @@ class CardSelectControllerTest {
         void theTrailingGuardBothWays() {
             CardSelectRequest request = request(CARD_NUMBER, ACCOUNT_ID, NavigationContext.empty());
 
-            // Unreachable from main0000 - every EVALUATE arm terminates - so it is driven directly.
             CardSelectResponse painted = new CardSelectResponse();
             Conversation withError = initialisedTask(NavigationContext.empty());
             withError.wsInputFlag = CardSelectController.INPUT_ERROR;
@@ -2091,7 +1777,6 @@ class CardSelectControllerTest {
 
             controller.sendLongText(response, task);
 
-            // Truncated into the 80-character receiver, which is the only place a SEND TEXT can land.
             assertThat(response.getErrmsgo()).hasSize(80).startsWith("DIAGNOSTIC");
             assertThat(task.returned).isTrue();
         }
@@ -2100,7 +1785,6 @@ class CardSelectControllerTest {
     @Nested
     @DisplayName("HANDLE ABEND and ABEND-ROUTINE (COCRDSLC:250-252, :857-878)")
     class Abend {
-
         @Test
         @DisplayName("a repository failure is routed to the handler and surfaces as an AbendException")
         void aFailureBecomesAnAbend() {
@@ -2129,7 +1813,6 @@ class CardSelectControllerTest {
             }
 
             assertThat(abend).isNotNull();
-            // standard(...) would have stamped 999. This program issues EXEC CICS ABEND ABCODE('9999').
             assertThat(abend.hasAbendCode()).isFalse();
             assertThat(abend.hasTiming()).isFalse();
             assertThat(abend.getReturnCode()).isEqualTo(AbendException.RETURN_CODE_IO_ERROR);
@@ -2155,7 +1838,6 @@ class CardSelectControllerTest {
         void theDefaultTextIsGuardedByLowValues() {
             Conversation onSpaces = initialisedTask(NavigationContext.empty());
             controller.abendRoutine(onSpaces, new CardSelectResponse(), new IllegalStateException());
-            // CSMSG02Y declares VALUE SPACES, so the guard does NOT fire and the field stays blank.
             assertThat(onSpaces.abendData.abendMsg()).isBlank();
             assertThat(onSpaces.abendData.abendCulprit().strip()).isEqualTo("COCRDSLC");
 
@@ -2171,9 +1853,6 @@ class CardSelectControllerTest {
         @Test
         @DisplayName("the abend carries the 134 bytes :865-869 transmits, so the SEND is not lost")
         void theAbendCarriesTheTransmittedArea() {
-            // EXEC CICS SEND FROM(ABEND-DATA) LENGTH(LENGTH OF ABEND-DATA) runs before the ABEND, so on
-            // a terminal the operator reads those bytes. They travel with the exception and the error
-            // handler publishes them; discarding them changed observable behaviour.
             Conversation task = initialisedTask(NavigationContext.empty());
             task.abendData = SystemMessages.AbendData.spaces().withAbendMsg("SPECIFIC DIAGNOSIS");
 
@@ -2201,8 +1880,6 @@ class CardSelectControllerTest {
             assertThat(image.substring(SystemMessages.ABEND_CODE_LENGTH,
                     SystemMessages.ABEND_CODE_LENGTH + SystemMessages.ABEND_CULPRIT_LENGTH))
                     .isEqualTo("COCRDSLC");
-            // Short values are padded on the right by the PIC X move, not trimmed away, so the group is
-            // the same number of bytes the terminal received however little was written into it.
             assertThat(image.charAt(SystemMessages.ABEND_CODE_LENGTH
                     + SystemMessages.ABEND_CULPRIT_LENGTH)).isEqualTo('R');
             assertThat(image).endsWith(" ".repeat(SystemMessages.ABEND_MSG_LENGTH - 1));
@@ -2250,7 +1927,6 @@ class CardSelectControllerTest {
     @Nested
     @DisplayName("The HTTP contract - GET /api/cards/{cardNum}")
     class HttpContract {
-
         @Test
         @DisplayName("a cold start with no body answers 200 and prompts for input")
         void coldStart() {
@@ -2285,13 +1961,6 @@ class CardSelectControllerTest {
             assertThat(body.getCardsido()).isEqualTo(CARD_NUMBER);
             assertThat(body.getCrdnameo().strip()).isEqualTo("JOHN Q PUBLIC");
             assertThat(body.getInfomsgo()).isEqualTo(CardSelectController.FOUND_CARDS_FOR_ACCOUNT);
-            // The twelve-byte trailer COMMON-RETURN appends comes back, so the next turn can restore it.
-            //
-            // It comes back CARRYING WHAT ARRIVED. COCRDSLC never writes CA-FROM-PROGRAM or
-            // CA-FROM-TRANID: the only three statements that name WS-THIS-PROGCOMMAREA are the
-            // INITIALIZE at :272, the restore at :277-278 and the echo at :398-400. The area is a
-            // pass-through carrier for the calling program's identity, and reproducing that means
-            // returning it unchanged rather than stamping this program's own literals into it.
             assertThat(body.getThisProgCommarea().caFromProgram()).isEqualTo("COCRDLIC");
             assertThat(body.getThisProgCommarea().caFromTranid()).isEqualTo("CCLI");
         }
@@ -2310,8 +1979,6 @@ class CardSelectControllerTest {
         @Test
         @DisplayName("PF3 over HTTP answers 200 with a nextProgram and never touches the file")
         void pf3OverHttp() {
-            // 243, not -13: EIBAID travels as the UNSIGNED value of the byte, which is what the
-            // 0..255 guard requires and what a query string can carry.
             ResponseEntity<ScreenResponse<CardSelectResponse>> answer = controller.viewCardDetail(
                     CARD_NUMBER, null, Byte.toUnsignedInt(CicsAid.DFHPF3), null, null);
 
@@ -2328,7 +1995,6 @@ class CardSelectControllerTest {
                     .isInstanceOf(IllegalArgumentException.class)
                     .hasMessageContaining("CARDSID");
 
-            // Nothing was read: the refusal happens before the PIC X move and before the repository.
             verifyNoInteractions(repository);
         }
 
@@ -2344,37 +2010,39 @@ class CardSelectControllerTest {
         }
 
         @Test
-        @DisplayName("a body naming a DIFFERENT card is superseded by the URI on a first entry, and "
-                + "kept exactly as it arrived on a re-entry")
+        @DisplayName("a body naming a DIFFERENT card is REFUSED, on a first entry and on a re-entry "
+                + "alike, because the URI is the card this resource reads")
         void aContradictingCardNumberIsRefused() {
             // A first entry: :268-303 either paints the prompt (EIBCALEN zero) or reads CDEMO-CARD-NUM
-            // from the commarea. Either way the typed field is not what the source consults, so the URI
-            // is what the projection writes into it.
-            CardSelectRequest firstEntry =
-                    controller.bind(CARD_NUMBER, request("4000000000000002", ACCOUNT_ID, null));
-            assertThat(firstEntry.getCardsid()).isEqualTo(CARD_NUMBER);
+            // from the commarea. A re-entry: :597-627 edits CARDSIDI and :685-719 reads on it. Either
+            // way the request states its key twice and disagrees with itself, and honouring the body
+            // would let GET /api/cards/A answer with B's sixteen digits, account, name, status and
+            // expiry. Refused before the PIC X move and before any repository call.
+            ScreenInputRejectedException firstEntry = catchThrowableOfType(
+                    ScreenInputRejectedException.class,
+                    () -> controller.bind(CARD_NUMBER, request("4000000000000002", ACCOUNT_ID, null)));
+            assertThat(firstEntry).isNotNull();
+            assertThat(firstEntry.member()).contains(CardSelectControllerAccess.CARDSID_MEMBER);
+            assertThat(firstEntry.reason())
+                    .isEqualTo(ScreenInputRejectedException.Reason.CONFLICTING_KEY);
+            assertThat(firstEntry.getMessage()).as("neither card number is ever echoed")
+                    .doesNotContain("4000000000000002");
+            assertThat(firstEntry.publicDetail()).doesNotContain("4000000000000002");
 
-            // A re-entry: :597-627 edits CARDSIDI and :685-719 reads on it, so typing another card
-            // number over the painted screen is the source-valid action. Nothing is substituted and
-            // nothing is refused.
-            CardSelectRequest reentry = controller.bind(CARD_NUMBER,
+            assertThatThrownBy(() -> controller.bind(CARD_NUMBER,
                     request("4000000000000002", ACCOUNT_ID, NavigationContext.empty()
                             .withFromProgram(CardSelectControllerAccess.THIS_PGM)
                             .withFromTranid(CardSelectControllerAccess.THIS_TRANID)
-                            .withPgmReenter()));
-            assertThat(reentry.getCardsid()).isEqualTo("4000000000000002");
+                            .withPgmReenter())))
+                    .isInstanceOf(ScreenInputRejectedException.class);
 
             verifyNoInteractions(repository);
         }
 
         @Test
-        @DisplayName("the asterisk COCRDSLC paints for 'no criterion' survives a re-entry and is "
-                + "seeded over only on a first entry")
+        @DisplayName("the asterisk COCRDSLC paints for 'no criterion' AGREES with any URI, on a first "
+                + "entry and on a re-entry, and the URI's key is what the field then carries")
         void theAsteriskNoCriterionImageAgrees() {
-            // app/cbl/COCRDSLC.cbl:543,549 MOVE '*' TO the output fields when nothing was supplied and
-            // :615,622 read = '*' back as exactly that, so an asterisk names no card. On a re-entry the
-            // source's own edit at :615 is what answers it; on a first entry the field is not consulted
-            // at all, so the URI supplies it.
             CardSelectRequest bound = controller.bind(CARD_NUMBER, request("*", ACCOUNT_ID, null));
             assertThat(bound.getCardsid()).isEqualTo(CARD_NUMBER);
 
@@ -2383,15 +2051,12 @@ class CardSelectControllerTest {
                             .withFromProgram(CardSelectControllerAccess.THIS_PGM)
                             .withFromTranid(CardSelectControllerAccess.THIS_TRANID)
                             .withPgmReenter()));
-            assertThat(reentry.getCardsid()).isEqualTo("*");
+            assertThat(reentry.getCardsid()).isEqualTo(CARD_NUMBER);
         }
 
         @Test
         @DisplayName("a commarea naming a DIFFERENT card cannot make the first-entry arm read it")
         void aContradictingCarriedCardNumberCannotBeRead() {
-            // app/cbl/COCRDSLC.cbl:339-348 - the arrival-from-the-card-list arm reads CDEMO-CARD-NUM and
-            // never the typed field, so an unprojected commarea would be the identity that wins here.
-            // 9100-GETCARD-BYACCTCARD keys the read on the card number alone.
             when(repository.readByCardNumber(anyString())).thenReturn(cardRead(card()));
             NavigationContext otherCard = fromCardList().withCardNum(4_000_000_000_000_002L);
 
@@ -2423,8 +2088,6 @@ class CardSelectControllerTest {
         })
         @DisplayName("the PIC X(16) path crosses into PIC 9(16) as the number it spells, or zero")
         void thePathCrossesIntoTheNumericCarrier(String path, long expected) {
-            // CARDSID is PIC X(16) and CDEMO-CARD-NUM is PIC 9(16). Anything the numeric item cannot hold
-            // becomes its unset value, which cannot name a card the URI does not.
             assertThat(CardSelectController.carriedCardNumber(path)).isEqualTo(expected);
         }
 
@@ -2435,8 +2098,6 @@ class CardSelectControllerTest {
             when(repository.readByCardNumber(anyString()))
                     .thenReturn(cardRead(card()));
 
-            // A continuing conversation, because a cold start paints an initialised map and echoes no
-            // filter at all - :268's EIBCALEN = 0 arm discards what was typed.
             ResponseEntity<ScreenResponse<CardSelectResponse>> answer = controller.viewCardDetail(
                     CARD_NUMBER, request(stated, ACCOUNT_ID, fromCardList()), null, null, null);
 
@@ -2449,9 +2110,6 @@ class CardSelectControllerTest {
             when(repository.readByCardNumber(anyString()))
                     .thenReturn(cardRead(card()));
 
-            // A client that sends {} leaves every member null, because Jackson sets only what the JSON
-            // names. A COBOL alphanumeric field has no null state, so binding fills them at their
-            // declared widths rather than defending against null at every later read.
             CardSelectRequest bound = controller.bind(CARD_NUMBER, new CardSelectRequest());
 
             assertThat(bound.getCardsid()).isEqualTo(CARD_NUMBER);
@@ -2474,17 +2132,12 @@ class CardSelectControllerTest {
         @DisplayName("an EIBAID outside 0..255 is refused rather than narrowed to another key, through "
                 + "either accepted spelling")
         void anOutOfRangeAidIsRefused() {
-            // The message names the canonical parameter rather than a literal, because the two accepted
-            // spellings are one parameter and the canonical one is what a caller is pointed at.
             assertThatThrownBy(() -> controller.viewCardDetail(CARD_NUMBER, null, 499, null, null))
                     .isInstanceOf(IllegalArgumentException.class)
                     .hasMessageContaining(CardSelectController.EIBAID_PARAM);
             assertThatThrownBy(() -> controller.viewCardDetail(CARD_NUMBER, null, -14, null, null))
                     .isInstanceOf(IllegalArgumentException.class);
 
-            // And through the canonical spelling, which is the parameter this route did not bind before:
-            // an out-of-range value sent that way used to be discarded by Spring and the request executed
-            // as ENTER.
             assertThatThrownBy(() -> controller.viewCardDetail(CARD_NUMBER, null, null, null, 499))
                     .isInstanceOf(IllegalArgumentException.class)
                     .hasMessageContaining(CardSelectController.EIBAID_PARAM);
@@ -2545,11 +2198,6 @@ class CardSelectControllerTest {
         @Test
         @DisplayName("the fifteen widths tile 01 CCRDSLAO exactly: 12 + 15 x 7 + 387 = 504 (gate G9)")
         void theWidthArithmeticOfTheSymbolicMap() {
-            // app/cpy-bms/COCRDSL.CPY:17-108. The group is a 12-byte TIOAPFX FILLER, then for each of the
-            // fifteen fields a 7-byte prefix - xxxL COMP PIC S9(4) is 2, xxxF PICTURE X (with its xxxA
-            // REDEFINES) is 1, and the reserved FILLER PICTURE X(4) is 4 - then the xxxI/xxxO data item.
-            // Summing the arithmetic rather than restating 504 is what makes an omitted FILLER impossible:
-            // drop one and the total stops matching the copybook.
             int dataWidth = 0;
             for (CardSelectResponse.ScreenField field : CardSelectResponse.ScreenField.values()) {
                 dataWidth += field.length();
@@ -2567,14 +2215,6 @@ class CardSelectControllerTest {
         @Test
         @DisplayName("this map has NO EXPDAY and NO PAGENO, and neither is invented (gate G9)")
         void theTwoFieldsThisMapDoesNotHave() {
-            // EXPDAY exists only on COCRDUP, the update screen. The expiry REDEFINES at
-            // app/cbl/COCRDSLC.cbl:85-90 names a day and :477-484 moves only the month and the year onto
-            // this map, so the day is read and then deliberately not shown. PAGENO belongs to the paged
-            // screens - COCRDLI, COTRN00, COUSR00 - and a detail view has no pages.
-            //
-            // A response field for either would be a new feature, so their absence is a contract, and a
-            // contract worth asserting: this is the shape of mistake a copy-paste from the sibling screen
-            // makes, and it would pass every other test in this file.
             for (CardSelectResponse.ScreenField field : CardSelectResponse.ScreenField.values()) {
                 assertThat(field.dfhmdfLabel()).isNotEqualTo("EXPDAY").isNotEqualTo("PAGENO");
                 assertThat(field.cobolName()).isNotEqualTo("EXPDAYO").isNotEqualTo("PAGENOO");
@@ -2589,7 +2229,6 @@ class CardSelectControllerTest {
     @Nested
     @DisplayName("Construction - statelessness and explicit wiring")
     class Construction {
-
         @Test
         @DisplayName("every collaborator is required, and the failure says why")
         void everyCollaboratorIsRequired() {
@@ -2619,13 +2258,11 @@ class CardSelectControllerTest {
 
             CardSelectResponse first = controller.handle(request("", "", fromCardList()),
                     CardSelectController.PASSED_COMMAREA_LENGTH, CicsAid.DFHENTER);
-            // A second, unrelated cold start on the SAME controller instance.
             CardSelectResponse second = controller.handle(
                     request(CARD_NUMBER, ACCOUNT_ID, NavigationContext.empty()),
                     CardSelectController.NO_COMMAREA_LENGTH, CicsAid.DFHENTER);
 
             assertThat(first.getCrdnameo().strip()).isEqualTo("JOHN Q PUBLIC");
-            // Nothing from the first call leaked into the second.
             assertThat(second.getCrdnameo()).isEqualTo(CardScreenState.lowValues(50));
             assertThat(second.getInfomsgo()).isEqualTo(CardSelectController.WS_PROMPT_FOR_INPUT);
         }
@@ -2651,35 +2288,15 @@ class CardSelectControllerTest {
         }
     }
 
-    /**
-     * The HTTP contract, and <strong>only</strong> the HTTP contract: that
-     * {@code GET /api/cards/{cardNum}} routes, that the path variable and the optional query
-     * parameters bind, that the status codes are what the migration plan specifies, and that the body
-     * serialises to the JSON shape the symbolic map defines.
-     *
-     * <p>Deliberately thin. Every decision this controller makes is asserted by the groups above,
-     * which instantiate the class directly with a mocked repository and no servlet layer in the path
-     * (gate G51, practice B10). Re-asserting behaviour through {@code MockMvc} would only make the same
-     * assertions slower and harder to attribute, so nothing here tests a branch - these tests fail only
-     * if the wiring between HTTP and the controller is wrong.
-     *
-     * <p>{@code MockMvcBuilders.standaloneSetup} rather than a Spring context, matching the module's
-     * established pattern in {@code WebConfigErrorContractTest}: it exercises the real
-     * annotation-driven routing, the real parameter binding and the real Jackson serialisation without
-     * paying for a context refresh. {@code CobolErrorHandler} is registered so the advice that maps an
-     * {@link AbendException} is genuinely in the chain rather than assumed.
-     */
     @Nested
     @DisplayName("The HTTP contract - routing, binding, status and JSON shape only")
     class HttpWiring {
-
         private MockMvc mockMvc() {
             return MockMvcBuilders.standaloneSetup(controller)
                     .setControllerAdvice(new WebConfig.CobolErrorHandler())
                     .build();
         }
 
-        /** The bound request as a client would send it. */
         private String body(CardSelectRequest request) throws Exception {
             return new ObjectMapper().writeValueAsString(request);
         }
@@ -2698,16 +2315,10 @@ class CardSelectControllerTest {
                             .content(body(sent)))
                     .andExpect(status().isOk())
                     .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
-                    // The path variable reached CARDSIDI and came back on CARDSIDO at its X(16) width.
                     .andExpect(jsonPath("$.cardsid").value(CARD_NUMBER))
                     .andExpect(jsonPath("$.acctsid").value(ACCOUNT_ID))
-                    // The whole 01 CCRDSLAI bound, so the commarea the body carried is the one that ran
-                    // and came back. CDEMO-FROM-PROGRAM is rewritten only on the transfer arm, at :324,
-                    // so on the paint path it still names the program that called this one.
                     .andExpect(jsonPath("$.navigationContext.fromProgram")
                             .value(CardSelectControllerAccess.CCLIST_PGM))
-                    // And the twelve-byte trailer of :200-203 is on the wire (finding F2), carrying what
-                    // arrived: initialised here, because this body sent none.
                     .andExpect(jsonPath("$.thisProgCommarea.caFromProgram").exists())
                     .andExpect(jsonPath("$.thisProgCommarea.caFromTranid").exists());
         }
@@ -2715,9 +2326,6 @@ class CardSelectControllerTest {
         @Test
         @DisplayName("over HTTP, a commarea naming another card cannot make the URI answer with it")
         void theUriIsTheOnlyIdentityOverHttp() throws Exception {
-            // The defect this pins is only reachable through the HTTP binder, because the source-level
-            // seam is driven with an already-bound request: /api/cards/A with a context naming card B
-            // used to read and paint B.
             when(repository.readByCardNumber(anyString()))
                     .thenReturn(cardRead(card()));
             CardSelectRequest sent =
@@ -2746,14 +2354,11 @@ class CardSelectControllerTest {
                             .contentType(MediaType.APPLICATION_JSON)
                             .content(body(request("", ACCOUNT_ID, fromCardList()))))
                     .andExpect(status().isOk())
-                    // Finding F3: the quads the COBOL writes are published rather than dropped, and they
-                    // are NOT siblings of the fifteen values.
                     .andExpect(jsonPath("$.screenMetadata.fields.ERRMSG.colour").exists())
                     .andExpect(jsonPath("$.screenMetadata.fields.ACCTSID.protection").exists())
                     .andExpect(jsonPath("$.screenMetadata.messageColour").exists())
                     .andExpect(jsonPath("$.errmsgc").doesNotExist())
                     .andExpect(jsonPath("$.acctsidp").doesNotExist())
-                    // The screen itself is still at the top level, unwrapped.
                     .andExpect(jsonPath("$.cardsid").value(CARD_NUMBER));
         }
 
@@ -2771,8 +2376,6 @@ class CardSelectControllerTest {
             when(repository.readByCardNumber(anyString()))
                     .thenReturn(cardRead(card()));
 
-            // The fifteen named DFHMDF fields of app/bms/COCRDSL.bms, each at the width its xxxO item
-            // declares in app/cpy-bms/COCRDSL.CPY (gate G9).
             mockMvc().perform(get("/api/cards/{cardNum}", CARD_NUMBER)
                             .contentType(MediaType.APPLICATION_JSON)
                             .content(body(request("", ACCOUNT_ID, null))))
@@ -2790,14 +2393,11 @@ class CardSelectControllerTest {
                     .andExpect(jsonPath("$.infomsg").exists())
                     .andExpect(jsonPath("$.errmsg").exists())
                     .andExpect(jsonPath("$.fkeys").exists())
-                    // xxxL, xxxF and xxxA are validation and highlight metadata, never payload
-                    // members - AAP 0.6.3. None of them may appear.
                     .andExpect(jsonPath("$.acctsidl").doesNotExist())
                     .andExpect(jsonPath("$.cardsidl").doesNotExist())
                     .andExpect(jsonPath("$.acctsida").doesNotExist())
                     .andExpect(jsonPath("$.cardsida").doesNotExist())
                     .andExpect(jsonPath("$.acctsidf").doesNotExist())
-                    // And the input side of the symbolic map is not a response member either.
                     .andExpect(jsonPath("$.cardsidi").doesNotExist())
                     .andExpect(jsonPath("$.acctsidi").doesNotExist());
         }
@@ -2812,7 +2412,6 @@ class CardSelectControllerTest {
                             .contentType(MediaType.APPLICATION_JSON)
                             .content(body(request("", "", fromCardList()))))
                     .andExpect(status().isOk())
-                    // Gate G40: the response names the next target and the client makes the call.
                     .andExpect(jsonPath("$.nextProgram").exists())
                     .andExpect(jsonPath("$.navigationContext").exists());
             verifyNoInteractions(repository);
@@ -2824,9 +2423,6 @@ class CardSelectControllerTest {
         void eitherAidSpellingCarriesTheKey() throws Exception {
             String pf3 = String.valueOf(Byte.toUnsignedInt(CicsAid.DFHPF3));
 
-            // This route declared only the alternate spelling, so a caller that had learned the name on
-            // GET /api/cards sent the canonical one - Spring discarded it, the request ran as ENTER, and
-            // the operator's exit came back as a validation screen. Both spellings now reach the key.
             String throughAlternate = mockMvc().perform(get("/api/cards/{cardNum}", CARD_NUMBER)
                             .param(AidRequestParameter.ALTERNATE_NAME, pf3))
                     .andExpect(status().isOk())
@@ -2844,11 +2440,8 @@ class CardSelectControllerTest {
                     .andExpect(status().isOk())
                     .andReturn().getResponse().getContentAsString();
 
-            // Byte-identical to each other: one key, stated three ways.
             assertThat(throughCanonical).isEqualTo(throughAlternate);
             assertThat(throughBoth).isEqualTo(throughAlternate);
-            // And genuinely different from the ENTER default, which is what the discarded spelling
-            // silently produced. Asserting the difference is what makes the three above meaningful.
             assertThat(noKeyNamed).isNotEqualTo(throughAlternate);
             verifyNoInteractions(repository);
         }
@@ -2856,11 +2449,6 @@ class CardSelectControllerTest {
         @Test
         @DisplayName("PF3 is answered 200 in-place: no redirect, no forward and NO Location header (G40)")
         void backNavigationIsNotAnHttpRedirect() throws Exception {
-            // EXEC CICS XCTL PROGRAM(CDEMO-TO-PROGRAM) at :331-332 transfers control on the mainframe.
-            // The migration makes navigation client-driven (rule R6): the reply NAMES the next target and
-            // the client decides. So the one thing this must not have become is a 3xx - a redirect would
-            // put the choice back on the server, and a forward would resolve it there invisibly. Both are
-            // ruled out at the transport, where they would actually be observable.
             MvcResult result = mockMvc().perform(get("/api/cards/{cardNum}", CARD_NUMBER)
                             .param(AidRequestParameter.CANONICAL_NAME,
                                     String.valueOf(Byte.toUnsignedInt(CicsAid.DFHPF3)))
@@ -2874,12 +2462,10 @@ class CardSelectControllerTest {
                     .andReturn();
 
             MockHttpServletResponse response = result.getResponse();
-            // Not a redirect by status, not by header, and not by a dispatcher forward either.
             assertThat(response.getStatus()).isEqualTo(HttpStatus.OK.value());
             assertThat(response.getRedirectedUrl()).isNull();
             assertThat(response.getForwardedUrl()).isNull();
             assertThat(response.getHeader(HttpHeaders.LOCATION)).isNull();
-            // The next target arrived in the BODY, which is the whole point of G40.
             assertThat(response.getContentAsString())
                     .contains(CardSelectControllerAccess.CCLIST_PGM);
             verifyNoInteractions(repository);
@@ -2907,13 +2493,9 @@ class CardSelectControllerTest {
                     .andExpect(status().isOk())
                     .andReturn();
 
-            // Identical in, identical out - which can only hold if every scrap of conversation state came
-            // from the payload. A COMMAREA kept on the server, or a live clock, would break this.
             assertThat(second.getResponse().getContentAsString())
                     .isEqualTo(first.getResponse().getContentAsString());
 
-            // Nothing asked for a session, and nothing set a cookie to carry one. CICS is
-            // pseudo-conversational and the translation stays that way (rule R6).
             assertThat(first.getRequest().getSession(false)).isNull();
             assertThat(second.getRequest().getSession(false)).isNull();
             assertThat(first.getResponse().getCookies()).isEmpty();
@@ -2935,9 +2517,6 @@ class CardSelectControllerTest {
         @Test
         @DisplayName("an unbindable numeric parameter is a 400 from the advice, not a 500")
         void anUnbindableParameterIsRejectedByTheAdvice() throws Exception {
-            // Binding failure is a transport concern, so it is answered by CobolErrorHandler before the
-            // controller runs. This is the one status code the controller itself never produces, which
-            // is exactly why it is asserted here and nowhere else.
             mockMvc().perform(get("/api/cards/{cardNum}", CARD_NUMBER)
                             .param("eibAid", "not-a-number"))
                     .andExpect(status().isBadRequest());
@@ -2959,9 +2538,6 @@ class CardSelectControllerTest {
         @Test
         @DisplayName("an abend answers 500 carrying the area :865-869 sent, and no backend text with it")
         void anAbendPublishesTheTransmittedAreaAndNothingElse() throws Exception {
-            // The whole chain: the repository fails, ABEND-ROUTINE composes ABEND-DATA and sends it,
-            // AbendException carries those bytes, and CobolErrorHandler publishes them beside the 500.
-            // Before this, the area was composed and then thrown away and replaced by a constant.
             when(repository.readByCardNumber(anyString()))
                     .thenThrow(new IllegalStateException("ORA-00942: table or view does not exist"));
 
@@ -2984,40 +2560,12 @@ class CardSelectControllerTest {
         }
     }
 
-    // =================================================================================================
-    // Synthesised read outcomes. A CardReadResult carries the decoded record AND the bytes it was
-    // decoded from, because DISPLAY CARD-RECORD (app/cbl/CBACT02C.cbl:78) writes the record area and the
-    // area's FILLER X(59) holds whatever the row held. A test constructing an outcome has no row, so the
-    // image it supplies is the one a row of exactly this record would carry - which is what these two
-    // helpers state, once, rather than at every call site.
-    // =================================================================================================
-
-    /**
-     * The normal arm over a synthesised row of this record.
-     *
-     * @param record the record the row would carry
-     * @return the outcome, carrying the record and the image a row of it would hold
-     */
     private static CardReadResult cardRead(CardRecord record) {
         return CardReadResult.normal(record, record.encodeToImage(StandardCharsets.US_ASCII));
     }
 
-    /**
-     * The duplicate-key arm over a synthesised row of this record.
-     *
-     * @param record the first record sharing the alternate key
-     * @return the outcome, carrying the record and the image a row of it would hold
-     */
     private static CardReadResult cardReadDuplicate(CardRecord record) {
         return CardReadResult.duplicateKey(record, record.encodeToImage(StandardCharsets.US_ASCII));
     }
-
-    // =================================================================================================
-    // Synthesised read outcomes. A CardReadResult carries the decoded record AND the bytes it was
-    // decoded from, because DISPLAY CARD-RECORD (app/cbl/CBACT02C.cbl:78) writes the record area and the
-    // area's FILLER X(59) holds whatever the row held. A test constructing an outcome has no row, so the
-    // image it supplies is the one a row of exactly this record would carry - which is what these two
-    // helpers state, once, rather than at every call site.
-    // =================================================================================================
 
 }

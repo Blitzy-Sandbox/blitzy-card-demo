@@ -24,53 +24,22 @@ import org.springframework.dao.DataAccessResourceFailureException;
 
 /**
  * A raw backend failure reaches no log line and no value a caller can render.
- *
- * <h2>What went wrong, and why a per-file fix was not enough</h2>
- * Every dataset access in this module already composed a sanitized summary of a refusal - the
- * {@code SQLSTATE}, the vendor code, the exception type - and then handed the logger the original
- * {@link Throwable} beside it. Sanitising a summary and attaching the raw exception to the same call
- * sanitises nothing: the logger emits the exception's message and its whole cause chain verbatim.
- *
- * <p>That message is not incidental text. It is prose the backend composed <em>around the values it
- * refused</em>, so {@code value '4444333322221111' rejected} is an ordinary thing for a driver to say
- * about a card operation. Two weaknesses follow from emitting it: the record's content reaches a file
- * that is read by more people, kept for longer and guarded less than the dataset it describes
- * (CWE-532), and a carriage return anywhere in that text splits the entry in two, letting whatever
- * composed the message choose the second entry's contents (CWE-117).
- *
- * <p>Seven call sites did this, across six classes, and one of them additionally published the
- * exception itself through a public accessor. Fixing seven sites leaves the eighth to be written next
- * week, so this suite asserts the property structurally: <strong>no source file in the module passes a
- * throwable to a logger, and {@link BackendDiagnostic} has nowhere to hold a message.</strong>
  */
 @DisplayName("No raw backend failure reaches a log line or a renderable value")
 class NoRawBackendDiagnosticTest {
-
-    /** Repository-relative root of the module's main sources. */
     private static final String MAIN_SOURCE_ROOT = "app/java/src/main/java/com/vsergeychik/carddemo";
 
-    /** Repository-relative path of the module descriptor, used as the checkout marker. */
     private static final String POM_PATH = "app/java/pom.xml";
 
-    /** The start of a logging call: the field, the level, and the opening parenthesis. */
     private static final Pattern LOGGING_CALL = Pattern.compile(
             "(?:LOG|log|logger|LOGGER)\\s*\\.\\s*(error|warn|info|debug|trace|fatal)\\s*\\(");
-
-    // =============================================================================================
-    // The structural guard.
-    // =============================================================================================
 
     @Nested
     @DisplayName("Structurally, across every main source file")
     class Structural {
-
         @Test
         @DisplayName("no logging call in the module passes a throwable")
         void noLoggingCallPassesAThrowable() {
-            // Commons Logging publishes exactly two shapes per level: (Object message) and
-            // (Object message, Throwable t). A call with a second top-level argument is therefore a call
-            // that passes a throwable, by the API's own definition - so counting arguments IS the check,
-            // and it cannot be evaded by naming the variable something else.
             List<String> offenders = new ArrayList<>();
             for (Path source : mainSources()) {
                 String text = read(source);
@@ -94,9 +63,6 @@ class NoRawBackendDiagnosticTest {
         @Test
         @DisplayName("the argument scanner really does find a two-argument logging call")
         void theScannerFindsATwoArgumentCall() {
-            // The guard above passes trivially if the scanner never matches anything, so the scanner is
-            // pointed at the shape the defect actually had - a multi-line, concatenated message whose
-            // text contains both a semicolon and parentheses, which is what defeated a simpler check.
             String defectiveCall = "        LOG.error(\"Could not \" + attempt + \" - \"\n"
                     + "                + diagnostic.describe() + \"; reporting file status \"\n"
                     + "                + FileStatus.toStatusImage(PERMANENT_ERROR_STATUS)\n"
@@ -127,9 +93,6 @@ class NoRawBackendDiagnosticTest {
         @Test
         @DisplayName("the seven classes that logged a refusal are all present and all still log one")
         void theSevenClassesStillReportTheirRefusals() {
-            // The guard above would also pass if somebody deleted the logging altogether, which would
-            // trade one defect for another - a production abend with no diagnosis is not an improvement.
-            // So each class that reported a refusal must still report one, through describe().
             List<String> withoutADiagnosticLine = new ArrayList<>();
             for (String fileName : List.of(
                     "account/AccountRepository.java",
@@ -167,19 +130,9 @@ class NoRawBackendDiagnosticTest {
         }
     }
 
-    // =============================================================================================
-    // Behaviourally: what a refusal actually renders as.
-    // =============================================================================================
-
     @Nested
     @DisplayName("Behaviourally, for the kinds of message a driver actually composes")
     class Behavioural {
-
-        /**
-         * Driver messages of the shape a backend composes them, each carrying something a log must not.
-         *
-         * @return the message and the substring that must not survive
-         */
         static Stream<org.junit.jupiter.params.provider.Arguments> driverMessages() {
             return Stream.of(
                     org.junit.jupiter.params.provider.Arguments.of(
@@ -203,8 +156,6 @@ class NoRawBackendDiagnosticTest {
 
             assertThat(diagnostic.describe()).doesNotContain(mustNotSurvive);
             assertThat(diagnostic.toString()).doesNotContain(mustNotSurvive);
-            // And the codes that distinguish one refusal from another are all still there, because a
-            // diagnostic that said nothing would be its own defect.
             assertThat(diagnostic.sqlState()).isEqualTo("22001");
             assertThat(diagnostic.vendorCode()).isEqualTo(1_400);
             assertThat(diagnostic.exceptionType())
@@ -235,19 +186,6 @@ class NoRawBackendDiagnosticTest {
         }
     }
 
-    /**
-     * The top-level arguments of a parenthesised argument list, split on commas at depth one.
-     *
-     * <p>Hand-written rather than regex-driven because the text being scanned defeats a regex: the
-     * original defective call spanned four lines, and its message literal contained both a semicolon and
-     * a parenthesised sub-expression. String and character literals are skipped, escapes inside them are
-     * honoured, and nesting is tracked, so a comma inside a literal or inside a nested call does not
-     * split an argument.
-     *
-     * @param text            the source text
-     * @param openParenIndex  the index of the argument list's opening parenthesis
-     * @return the top-level arguments, in order; a single empty entry for an empty list
-     */
     private static List<String> topLevelArguments(String text, int openParenIndex) {
         List<String> arguments = new ArrayList<>();
         StringBuilder current = new StringBuilder();
@@ -306,11 +244,6 @@ class NoRawBackendDiagnosticTest {
         throw new IllegalStateException("Unbalanced argument list from index " + openParenIndex);
     }
 
-    /**
-     * Every {@code .java} file under the module's main source root.
-     *
-     * @return the source files, in a stable order
-     */
     private static List<Path> mainSources() {
         Path root = repositoryFile(MAIN_SOURCE_ROOT);
         try (Stream<Path> walk = Files.walk(root)) {
@@ -322,12 +255,6 @@ class NoRawBackendDiagnosticTest {
         }
     }
 
-    /**
-     * Reads one source file.
-     *
-     * @param source the file
-     * @return its text
-     */
     private static String read(Path source) {
         try {
             return Files.readString(source, StandardCharsets.UTF_8);
@@ -336,15 +263,6 @@ class NoRawBackendDiagnosticTest {
         }
     }
 
-    /**
-     * Locates a repository-relative path by walking upwards from the working directory.
-     *
-     * <p>The same approach {@code CardDemoApplicationTest} uses, so a suite that reads the checkout does
-     * it one way.
-     *
-     * @param relativePath the repository-relative path
-     * @return the resolved path
-     */
     private static Path repositoryFile(String relativePath) {
         Path candidate = Path.of("").toAbsolutePath();
         while (candidate != null) {

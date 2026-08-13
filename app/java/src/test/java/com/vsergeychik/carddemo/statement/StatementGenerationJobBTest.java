@@ -70,123 +70,26 @@ import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
 /**
- * Behavioural verification of {@link StatementGenerationJobB} against
- * {@code app/cbl/CBSTM03B.CBL}.
- *
- * <p>Every assertion names the COBOL line or the validation gate it stands for, because the value of a
- * parity test is not that it passes but that a reader can tell what it would mean if it failed.
- *
- * <p>No Spring context and no {@code JobLauncher} is involved anywhere in this class (practice B10, gate
- * G51): the subject is constructed directly with a mocked {@link JdbcTemplate}, a hand-built binding
- * catalogue and an explicitly named charset, so every branch is reachable from plain JUnit 5.
- *
- * <h2>Governing standards</h2>
- *
- * <p><strong>No user rules were provided for this project.</strong> The rules document consists of the
- * single line "No user rules provided", and that one line is the whole of it - there is nothing further
- * to read. Its absence is not licence to lower the bar, so this class is held instead to the twelve
- * enterprise best-practice substitutes the specification declares binding, and each is named at the
- * assertion it governs rather than only listed here:
- *
- * <ul>
- *   <li><strong>B1/B2</strong> - only the test libraries the build already declares: JUnit Jupiter,
- *       Mockito and AssertJ. No dependency is added and the build file is not touched. In particular
- *       {@code spring-batch-test} is <em>not</em> declared, so {@code JobLauncherTestUtils} is
- *       unavailable - and irrelevant, because the subject is a {@code @Component} and not a
- *       {@code Job}.</li>
- *   <li><strong>B3</strong> - nothing under {@code app/cbl}, {@code app/cpy}, {@code app/jcl},
- *       {@code app/csd} or {@code app/data} is written, and nothing there is <em>read</em> either: the
- *       fixture bytes this class uses arrive through the test classpath at
- *       {@code /fixtures/*.txt}, never through a relative filesystem walk out of the module (gate
- *       G5).</li>
- *   <li><strong>B4</strong> - this file is the only artefact added. No helper class and no new fixture
- *       resource: the nine derived fixtures are a fixed, shared set, so where no fixture exists - and
- *       none exists for {@code TRNXFILE} - the rows are composed here from the copybook's own offsets
- *       instead of a tenth file being invented.</li>
- *   <li><strong>B5</strong> - {@code 88 M03B-WRITE} and {@code 88 M03B-REWRITE}
- *       ({@code app/cbl/CBSTM03B.CBL:107-108}) are declared and tested nowhere in the program body.
- *       They stay dead: every assertion about them pins the silent no-op, and not one of them expects
- *       a write or a rewrite to happen.</li>
- *   <li><strong>B6</strong> - no credential, password or token appears in any test datum.</li>
- *   <li><strong>B7</strong> - deterministic and non-interactive: no clock, locale, time zone,
- *       randomness, network or test-ordering dependence anywhere (gate G54).</li>
- *   <li><strong>B8</strong> - the code page is always named explicitly and never defaulted; imports are
- *       individually spelled with no wildcard (gate G52); no production dataset name is written in
- *       Java, the four names used here are test names supplied through the binding catalogue exactly as
- *       configuration would supply them (gate G46).</li>
- *   <li><strong>B9</strong> - no static mutable state, in the subject or in this test (gate G53); the
- *       four cursors and four {@code FILE STATUS} areas live on a per-execution session, which is
- *       asserted rather than assumed.</li>
- *   <li><strong>B10</strong> - these tests ship with the implementation, not after it.</li>
- *   <li><strong>B11</strong> - every width and offset is asserted by hand against the copybook and the
- *       {@code FD}. No third-party copybook parser is used to derive an expectation.</li>
- *   <li><strong>B12</strong> - see the provenance note below.</li>
- * </ul>
- *
- * <h2>Provenance of every expectation (practice B12)</h2>
- *
- * <p><strong>No expectation in this class was captured from a running COBOL program, and none claims to
- * be.</strong> Every one is <em>statically derived</em> - read off the cited line of
- * {@code app/cbl/CBSTM03B.CBL}, {@code app/cbl/CBSTM03A.CBL}, the four copybooks
- * ({@code COSTM01.CPY}, {@code CVACT03Y.cpy}, {@code CUSTREC.cpy}, {@code CVACT01Y.cpy}),
- * {@code app/jcl/CREASTMT.JCL} or {@code app/csd/CARDDEMO.CSD}, cross-checked between at least two of
- * them wherever two of them speak to the same fact. The 350-byte record and its 32-byte key, for
- * instance, are asserted because {@code COSTM01.CPY}'s fields sum to 350 <em>and</em>
- * {@code CREASTMT.JCL} defines the cluster {@code KEYS(32 0) RECORDSIZE(350 350)} - two independent
- * statements of one geometry.
- *
- * <p>Executing the legacy programs to capture a baseline is not possible in this environment, and one of
- * the verified blockers is visible in this subroutine's own inputs: {@code app/cpy/CUSTREC.cpy} - the
- * copybook behind {@code CUSTFILE}'s 500-byte record - carries <strong>literal TAB characters in the
- * source margin on lines 6 through 22</strong>, which a COBOL compiler rejects outright rather than
- * treating as blanks, so the {@code CUSTFILE} half of this contract could not be compiled here even if
- * every other blocker were removed. That is why the file's width is asserted from the copybook's field
- * arithmetic and from {@code CBSTM03B.CBL:71-73}'s {@code X(09) + X(491)} split, and never from a
- * captured run.
- *
- * <p>A reader who needs to know what a failure means can therefore always find the answer in the source
- * line the assertion names, which is the whole point of deriving rather than recording.
+ * Behavioural verification of {@link StatementGenerationJobB} against {@code app/cbl/CBSTM03B.CBL}.
  */
 @DisplayName("StatementGenerationJobB - the CBSTM03B four-file data-access subroutine")
 class StatementGenerationJobBTest {
-
-    /** The code page every test states explicitly; never a platform default (practice B8). */
     private static final Charset ASCII = StandardCharsets.US_ASCII;
 
-    /** The column name the fake backend describes at the record-image ordinal. */
     private static final String DESCRIBED_COLUMN = "RECORD_IMAGE";
 
-    /** Test dataset names. Deliberately not the production ones, and never read from Java in the subject. */
     private static final String TRNX_DS = "TEST.M2.CARDDEMO.TRXFL.VSAM.KSDS";
     private static final String XREF_DS = "TEST.M2.CARDDEMO.CARDXREF.VSAM.KSDS";
     private static final String CUST_DS = "TEST.M2.CARDDEMO.CUSTDATA.VSAM.KSDS";
     private static final String ACCT_DS = "TEST.M2.CARDDEMO.ACCTDATA.VSAM.KSDS";
 
-    /** The backends this test has stubbed, one per mocked template. */
     private final Map<JdbcTemplate, Backend> backends = new LinkedHashMap<>();
 
-    // =================================================================================================
-    // Fixtures.
-    // =================================================================================================
-
-    /**
-     * A well-formed binding for one of the four datasets.
-     *
-     * @param dsname       the dataset name
-     * @param recordLength the copybook width
-     * @param keyLength    the {@code RECORD KEY} width
-     * @return the binding
-     */
     private static DatasetBinding ksds(String dsname, int recordLength, int keyLength) {
         return new DatasetBinding(dsname, DatasetBinding.KSDS, false, "FB", null, recordLength,
                 "COPYBOOK", keyLength, null, null, null);
     }
 
-    /**
-     * The four-entry catalogue, all four bindings well formed.
-     *
-     * @return the catalogue
-     */
     private static DatasetBindings validBindings() {
         return bindings(
                 ksds(TRNX_DS, TrnxRecord.RECORD_LENGTH, TrnxRecord.TRNX_KEY_LENGTH),
@@ -195,15 +98,6 @@ class StatementGenerationJobBTest {
                 ksds(ACCT_DS, AccountRecord.RECORD_LENGTH, AccountRecord.ACCT_ID_LENGTH));
     }
 
-    /**
-     * A catalogue built from four explicit bindings, so a test can spoil exactly one of them.
-     *
-     * @param trnx the {@code TRNXFILE} binding
-     * @param xref the {@code XREFFILE} binding
-     * @param cust the {@code CUSTFILE} binding
-     * @param acct the {@code ACCTFILE} binding
-     * @return the catalogue
-     */
     private static DatasetBindings bindings(DatasetBinding trnx, DatasetBinding xref,
                                             DatasetBinding cust, DatasetBinding acct) {
         DatasetBindings catalogue = new DatasetBindings();
@@ -214,15 +108,33 @@ class StatementGenerationJobBTest {
         return catalogue;
     }
 
-    /**
-     * The subject over a mocked template.
-     *
-     * @param jdbcTemplate the mocked template
-     * @return the subject
-     */
     private static StatementGenerationJobB subroutine(JdbcTemplate jdbcTemplate) {
-        return new StatementGenerationJobB(jdbcTemplate, validBindings(), ASCII,
+        return subroutineFrom(jdbcTemplate, validBindings(), ASCII,
                 RecordImageForm.CHARACTER);
+    }
+
+    /**
+     * The subject, together with the {@code TRNXFILE} repository the context would have injected.
+     *
+     * <p>Every construction in this suite goes through here, because {@code TRNXFILE}'s identity and
+     * geometry belong to {@link TrnxRepository} (gate G10) and the component takes that repository as a
+     * collaborator. Building it from the <em>same</em> catalogue is what keeps the constructor guards
+     * below meaningful: a spoiled {@code TRNXFILE} binding is now refused by the repository's own
+     * constructor rather than by the component's, and this helper is what makes that failure arrive at
+     * the same call site the assertion is written against.
+     *
+     * @param jdbcTemplate    the template, which may be {@code null} to exercise the guard
+     * @param bindings        the catalogue, which may be {@code null} or spoiled to exercise a guard
+     * @param charset         the dataset code page, which may be {@code null} or multi-byte
+     * @param recordImageForm the record-image representation, which may be {@code null}
+     * @return the subject, if construction is permitted at all
+     */
+    private static StatementGenerationJobB subroutineFrom(JdbcTemplate jdbcTemplate,
+                                                          DatasetBindings bindings,
+                                                          Charset charset,
+                                                          RecordImageForm recordImageForm) {
+        return new StatementGenerationJobB(jdbcTemplate, bindings, charset, recordImageForm,
+                new TrnxRepository(bindings));
     }
 
     /**
@@ -235,13 +147,6 @@ class StatementGenerationJobBTest {
         return backends.computeIfAbsent(jdbcTemplate, Backend::new);
     }
 
-    /**
-     * A record image of a declared width whose leading bytes are a key.
-     *
-     * @param key          the key characters
-     * @param recordLength the declared record width
-     * @return the image, right-padded with {@code '.'} so padding is visible in a failure message
-     */
     private static String row(String key, int recordLength) {
         StringBuilder image = new StringBuilder(recordLength);
         image.append(key);
@@ -251,12 +156,6 @@ class StatementGenerationJobBTest {
         return image.toString();
     }
 
-    /**
-     * The record width of one of the four DDs.
-     *
-     * @param dd the DD name
-     * @return its copybook width
-     */
     private static int widthOf(String dd) {
         return switch (dd) {
             case StatementGenerationJobB.TRNXFILE_DD -> StatementGenerationJobB.TRNXFILE_RECORD_LENGTH;
@@ -266,12 +165,6 @@ class StatementGenerationJobBTest {
         };
     }
 
-    /**
-     * The dataset name of one of the four DDs.
-     *
-     * @param dd the DD name
-     * @return its test dataset name
-     */
     private static String datasetOf(String dd) {
         return switch (dd) {
             case StatementGenerationJobB.TRNXFILE_DD -> TRNX_DS;
@@ -281,46 +174,28 @@ class StatementGenerationJobBTest {
         };
     }
 
-    /** The two DDs whose {@code ACCESS MODE IS SEQUENTIAL}. */
     private static List<String> sequentialDds() {
         return List.of(StatementGenerationJobB.TRNXFILE_DD, StatementGenerationJobB.XREFFILE_DD);
     }
 
-    /** The two DDs whose {@code ACCESS MODE IS RANDOM}. */
     private static List<String> randomDds() {
         return List.of(StatementGenerationJobB.CUSTFILE_DD, StatementGenerationJobB.ACCTFILE_DD);
     }
 
-    /** All four DD names. */
     private static List<String> allDds() {
         return StatementGenerationJobB.DD_NAMES;
     }
 
-    /** The caller's key width for a random DD. */
     private static int callerKeyOf(String dd) {
         return StatementGenerationJobB.CUSTFILE_DD.equals(dd)
                 ? StatementGenerationJobB.CUSTFILE_CALLER_KEY_LENGTH
                 : StatementGenerationJobB.ACCTFILE_CALLER_KEY_LENGTH;
     }
 
-    /** A digit key of the caller's width for a random DD, so the numeric receiver accepts it. */
     private static String digitKeyOf(String dd) {
         return "1".repeat(callerKeyOf(dd));
     }
 
-    /**
-     * Which DDs' paragraphs actually contain an {@code IF} for a given condition name.
-     *
-     * <p>Read straight off {@code app/cbl/CBSTM03B.CBL:133-229}: {@code IF M03B-OPEN} and
-     * {@code IF M03B-CLOSE} appear in all four paragraphs; {@code IF M03B-READ} appears only in the two
-     * whose {@code SELECT} says {@code ACCESS MODE IS SEQUENTIAL} (:141, :165); {@code IF M03B-READ-K}
-     * only in the two that say {@code RANDOM} (:188, :213); and <strong>{@code IF M03B-WRITE} and
-     * {@code IF M03B-REWRITE} appear nowhere at all</strong> - the two condition names are declared at
-     * :107-108 and never tested, which is the fact practice B5 requires be preserved.
-     *
-     * @param operation the condition name
-     * @return the DDs whose paragraph tests it; empty for the two dead ones
-     */
     private static List<String> ddsTesting(Operation operation) {
         return switch (operation) {
             case OPEN, CLOSE -> allDds();
@@ -330,47 +205,16 @@ class StatementGenerationJobBTest {
         };
     }
 
-    // =================================================================================================
-    // Derived fixture rows, and the TRNXFILE rows there is no fixture for.
-    //
-    // Practice B3: every byte below arrives either through the TEST CLASSPATH at /fixtures/*.txt or from
-    // the copybook's own offsets. Nothing walks out of the module to app/data/ASCII, and nothing under
-    // app/ is opened, so this class cannot make the parity oracle depend on the runner's filesystem.
-    // =================================================================================================
-
-    /** The derived CARDXREF fixture on the test classpath - the XREFFILE record's real data. */
     private static final String CARDXREF_FIXTURE = "/fixtures/cardxref.txt";
 
-    /** The derived ACCTDATA fixture on the test classpath - the ACCTFILE record's real data. */
     private static final String ACCTDATA_FIXTURE = "/fixtures/acctdata.txt";
 
-    /** The derived CUSTDATA fixture on the test classpath - the CUSTFILE record's real data. */
     private static final String CUSTDATA_FIXTURE = "/fixtures/custdata.txt";
 
-    /**
-     * How wide a stored {@code cardxref} row actually is - <strong>36</strong> bytes, where
-     * {@code app/cpy/CVACT03Y.cpy} declares 50.
-     *
-     * <p>Risk R-F: the fixture omits the copybook's trailing {@code FILLER X(14)} entirely, so a row has
-     * to be widened to its declared width before it can stand in for a VSAM record. The widening belongs
-     * to the shared codec's normaliser - and to the parity harness that uses it - and emphatically
-     * <em>not</em> to {@link CardXrefRecord}, whose job is to describe the 50-byte record the copybook
-     * declares rather than to accommodate a short fixture (gate G16).
-     */
     private static final int CARDXREF_STORED_ROW_WIDTH = 36;
 
-    /** A codec at the code page this class states explicitly; the only widener and mover used here. */
     private final FixedWidthCodec codec = new FixedWidthCodec(ASCII);
 
-    /**
-     * Every row of a derived fixture, exactly as stored and deliberately un-widened.
-     *
-     * <p>A fresh list per call, so no state is shared between tests and no test depends on another
-     * having run (practice B9, gate G53).
-     *
-     * @param resource the classpath resource path
-     * @return the rows, in file order, with any line terminator removed
-     */
     private static List<String> fixtureRows(String resource) {
         List<String> rows = new ArrayList<>();
         try (InputStream stream = StatementGenerationJobBTest.class.getResourceAsStream(resource)) {
@@ -392,14 +236,6 @@ class StatementGenerationJobBTest {
         return rows;
     }
 
-    /**
-     * One row of the {@code cardxref} fixture, widened from its stored 36 bytes to the 50 the copybook
-     * declares by right-padding with spaces - which is exactly what the omitted {@code FILLER X(14)}
-     * holds, since {@code CVACT03Y} gives it no {@code VALUE}.
-     *
-     * @param oneBasedRow which row to take, 1-based as the fixture is read
-     * @return a 50-character record image
-     */
     private String widenedCardXrefRow(int oneBasedRow) {
         String stored = fixtureRows(CARDXREF_FIXTURE).get(oneBasedRow - 1);
         assertThat(stored).as("stored cardxref rows are %s bytes wide - risk R-F",
@@ -407,31 +243,6 @@ class StatementGenerationJobBTest {
         return codec.padToDeclaredWidth(stored, CardXrefRecord.RECORD_LENGTH);
     }
 
-    /**
-     * A {@code TRNXFILE} record image composed from {@code app/cpy/COSTM01.CPY}'s own offsets.
-     *
-     * <p>There is <strong>no</strong> {@code TRNX} fixture to draw on, and inventing one would add a
-     * tenth file to a fixed nine-file set (practice B4). The reason there is none is structural rather
-     * than an oversight: the {@code TRXFL} cluster does not exist until
-     * {@code app/jcl/CREASTMT.JCL} builds it at run time - STEP010 sorts the {@code TRANSACT} dataset
-     * into a sequential file and STEP020 {@code REPRO}s that into the cluster STEP005 defined with
-     * {@code KEYS(32 0) RECORDSIZE(350 350)}. So the row is built here, field by field, at the offsets
-     * the copybook declares: {@code TRNX-CARD-NUM X(16)}@0, {@code TRNX-ID X(16)}@16,
-     * {@code TRNX-TYPE-CD X(02)}@32, {@code TRNX-CAT-CD 9(04)}@34, {@code TRNX-SOURCE X(10)}@38,
-     * {@code TRNX-DESC X(100)}@48, {@code TRNX-AMT S9(09)V99}@148 (11 bytes),
-     * {@code TRNX-MERCHANT-ID 9(09)}@159, merchant name/city/zip @168/@218/@268,
-     * {@code TRNX-ORIG-TS X(26)}@278, {@code TRNX-PROC-TS X(26)}@304 and {@code FILLER X(20)}@330,
-     * summing to 350.
-     *
-     * <p>The amount is stored through {@link CobolDecimal}, so the only rounding mode that can reach the
-     * record is {@link CobolDecimal#COBOL_ROUNDING} - {@code RoundingMode.DOWN} - which is the sole
-     * faithful choice because {@code ROUNDED} appears nowhere in the legacy source (gate G24).
-     *
-     * @param cardNumber the 16-byte card number, which is the leading half of the composite key
-     * @param transactionId the 16-byte transaction id, which is the trailing half
-     * @param amount the transaction amount, stored at the declared scale by truncation
-     * @return a 350-character record image
-     */
     private String trnxRow(String cardNumber, String transactionId, BigDecimal amount) {
         TrnxRecord record = TrnxRecord.newRecord(ASCII);
         record.writeTrnxCardNum(cardNumber);
@@ -454,14 +265,9 @@ class StatementGenerationJobBTest {
         return image;
     }
 
-    // =================================================================================================
-    // Gate G12 - a @Component, never a Spring Batch Job.
-    // =================================================================================================
-
     @Nested
     @DisplayName("Gate G12 - it is a Spring @Component and not a Spring Batch Job")
     class GateG12 {
-
         @Test
         @DisplayName("carries @Component, the stereotype CBSTM03B.CBL:7's BATCH COBOL Subroutine deserves")
         void carriesComponentStereotype() {
@@ -504,9 +310,6 @@ class StatementGenerationJobBTest {
         @Test
         @DisplayName("no method anywhere on it returns a Spring Batch Job, Step or JobExecution")
         void noMethodReturnsABatchType() {
-            // Stronger than "declares no @Bean": a Job-shaped return value would let the class be
-            // counted among the ten Job beans by anyone assembling them, however it was annotated. The
-            // nested types are walked too, because Session and the records are part of its API surface.
             List<String> offenders = new ArrayList<>();
             List<Class<?>> surface = new ArrayList<>();
             surface.add(StatementGenerationJobB.class);
@@ -541,14 +344,9 @@ class StatementGenerationJobBTest {
         }
     }
 
-    // =================================================================================================
-    // Gate G53 / practice B9 - no static mutable state, and sessions are independent.
-    // =================================================================================================
-
     @Nested
     @DisplayName("Practice B9 and gate G53 - all mutable state lives on the session")
     class StatelessComponent {
-
         @Test
         @DisplayName("declares no non-final static field, in the class or in any nested type")
         void declaresNoStaticMutableField() {
@@ -595,7 +393,6 @@ class StatementGenerationJobBTest {
             subject.open(first, dd);
             subject.open(second, dd);
 
-            // Advance the first session twice and the second once.
             subject.readNext(first, dd);
             subject.readNext(first, dd);
             Response secondRead = subject.readNext(second, dd);
@@ -617,7 +414,6 @@ class StatementGenerationJobBTest {
             assertThat(session.isClosed()).isFalse();
             session.close();
             assertThat(session.isClosed()).isTrue();
-            // Idempotent.
             assertThatNoException().isThrownBy(session::close);
 
             assertThatExceptionOfType(IllegalStateException.class).isThrownBy(
@@ -664,21 +460,15 @@ class StatementGenerationJobBTest {
             assertThat(session.status(dd)).isEqualTo(FileStatus.OK);
 
             session.close();
-            // The last status observed survives; a run unit ending is not a CLOSE statement.
             assertThat(session.status(dd)).isEqualTo(FileStatus.OK);
             assertThat(session.isOpen(dd)).isFalse();
             assertThat(session.position(dd)).isEqualTo(1);
         }
     }
 
-    // =================================================================================================
-    // The 1040-byte linkage contract.
-    // =================================================================================================
-
     @Nested
     @DisplayName("The 1040-byte LK-M03B-AREA contract - CBSTM03B.CBL:99-112")
     class LinkageArea {
-
         @Test
         @DisplayName("AREA_LENGTH is 1040 and the six field widths sum to it")
         void areaLengthIs1040() {
@@ -760,7 +550,6 @@ class StatementGenerationJobBTest {
             assertThat(image.substring(8, 9)).isEqualTo("K");
             assertThat(image.substring(9, 11)).isEqualTo("00");
             assertThat(image.substring(11, 36)).isEqualTo("12345678901              ");
-            // PIC S9(4) DISPLAY, value 11: digits "0011" with the low-order digit overpunched positive.
             assertThat(image.substring(36, 40)).isEqualTo("001A");
             assertThat(image.substring(40)).isEqualTo(StatementGenerationJobB.SPACES_FLDT);
         }
@@ -809,14 +598,9 @@ class StatementGenerationJobBTest {
         }
     }
 
-    // =================================================================================================
-    // The Request and Response value types.
-    // =================================================================================================
-
     @Nested
     @DisplayName("Request and Response - the typed projection of the shared area")
     class ValueTypes {
-
         @Test
         @DisplayName("dd and key are fitted to their PIC X widths: padded right, truncated right")
         void picXFieldsAreFitted() {
@@ -867,7 +651,6 @@ class StatementGenerationJobBTest {
         @Test
         @DisplayName("usedKey() is COBOL (1:n) - the FIRST n bytes, 1-based becoming substring(0, n)")
         void usedKeyIsTheLeadingPrefix() {
-            // 25 bytes: nine significant, then deliberate garbage the length must exclude.
             String key = "123456789" + "ZZZZZZZZZZZZZZZZ";
             assertThat(key).hasSize(25);
             Request request = Request.readKeyed(StatementGenerationJobB.CUSTFILE_DD, key, 9);
@@ -882,32 +665,11 @@ class StatementGenerationJobBTest {
         @ValueSource(ints = {-1, 0, 26, 1000})
         @DisplayName("a key length of 0 or one past 25 is refused - no COBOL behaviour exists to copy")
         void nonPositiveOrOverlongKeyLengthIsRefused(int keyLength) {
-            // Why refusal is the faithful answer, derived rather than invented:
-            //
-            // 1. app/cbl/CBSTM03B.CBL:189 and :214 are MOVE LK-M03B-KEY (1:LK-M03B-KEY-LN). Reference
-            //    modification is 1-based and its length must be at least 1 and must not run past the
-            //    25-byte field, so (1:0) and (1:26) address nothing a COBOL implementation defines. A
-            //    compiler diagnoses it only when range checking is switched on; otherwise the result is
-            //    unpredictable. There is therefore NO observable legacy behaviour to reproduce here.
-            //
-            // 2. The caller never issues such a call. app/cbl/CBSTM03A.CBL:373 and :397 do set the field
-            //    to zero, but the very next statement is COMPUTE WS-M03B-KEY-LN = LENGTH OF XREF-CUST-ID
-            //    (:374) or LENGTH OF XREF-ACCT-ID (:398), so the zero is never live when CALL 'CBSTM03B'
-            //    executes - it is a two-statement initialise-then-assign idiom, not a value in flight.
-            //
-            // 3. So the choice is between refusing the impossible request and manufacturing a FILE STATUS
-            //    for it. Manufacturing one would be worse than useless: the caller's guard chains at
-            //    :736 and :353-359 would then interpret an invented status as though the file had
-            //    spoken, and a caller defect would surface as a data condition. Refusing keeps the defect
-            //    where it belongs, which is why this is an IllegalArgumentException and not an rc.
             Request request = new Request(StatementGenerationJobB.CUSTFILE_DD, Operation.READ_K,
                     FileStatus.OK, Request.blankKey(), keyLength,
                     StatementGenerationJobB.SPACES_FLDT);
             assertThatExceptionOfType(IllegalArgumentException.class).isThrownBy(request::usedKey);
 
-            // And the zero the caller momentarily holds is representable in the area itself - it is only
-            // using it as a slice length that is refused. The request survives construction; nothing
-            // pre-emptively rejects the intermediate state CBSTM03A:373 genuinely passes through.
             assertThat(request.keyLength()).isEqualTo(keyLength);
         }
 
@@ -919,7 +681,6 @@ class StatementGenerationJobBTest {
             assertThat(Request.readKeyed("CUSTFILE", "1", 1).oper()).isEqualTo(Operation.READ_K);
             assertThat(Request.close("TRNXFILE").oper()).isEqualTo(Operation.CLOSE);
             assertThat(Request.unrecognisedOperation("TRNXFILE").oper()).isNull();
-            // Every call site does MOVE ZERO TO WS-M03B-RC and MOVE SPACES TO WS-M03B-FLDT first.
             assertThat(Request.read("TRNXFILE").rc()).isEqualTo(FileStatus.OK);
             assertThat(Request.read("TRNXFILE").fldt()).isEqualTo(StatementGenerationJobB.SPACES_FLDT);
             assertThat(Request.blankKey()).hasSize(25).isBlank();
@@ -949,14 +710,9 @@ class StatementGenerationJobBTest {
         }
     }
 
-    // =================================================================================================
-    // Practice B5 - six operation codes, two of them dead and staying dead.
-    // =================================================================================================
-
     @Nested
     @DisplayName("Practice B5 - all six 88-levels declared, WRITE and REWRITE dead and preserved")
     class OperationCodes {
-
         @Test
         @DisplayName("exactly six operations, with the literals of CBSTM03B.CBL:103-108")
         void sixCodes() {
@@ -1002,14 +758,9 @@ class StatementGenerationJobBTest {
         }
     }
 
-    // =================================================================================================
-    // Gate G48 - the five dispatch paths.
-    // =================================================================================================
-
     @Nested
     @DisplayName("Gate G48 - all four DD arms plus WHEN OTHER, in CBSTM03B.CBL:118-126 order")
     class GateG48Dispatch {
-
         @Test
         @DisplayName("DD_NAMES is the EVALUATE arm order: TRNXFILE, XREFFILE, CUSTFILE, ACCTFILE (G30)")
         void evaluateArmOrderIsPreserved() {
@@ -1041,7 +792,6 @@ class StatementGenerationJobBTest {
             StatementGenerationJobB subject = subroutine(template);
             Session session = subject.newSession();
 
-            // Establish a distinctive inbound status so "unchanged" is observable.
             Request request = new Request(unknown, Operation.READ, FileStatus.END_OF_FILE,
                     Request.blankKey(), 0, StatementGenerationJobB.SPACES_FLDT);
             Response response = subject.call(session, request);
@@ -1082,9 +832,6 @@ class StatementGenerationJobBTest {
         @Test
         @DisplayName("a paragraph method operates on its own file whatever LK-M03B-DD happens to carry")
         void aParagraphOperatesOnItsOwnFile() {
-            // 1000-TRNXFILE-PROC opens TRNX-FILE; by the time control reaches it, EVALUATE LK-M03B-DD has
-            // already decided, and the paragraph names its file directly. Calling it with a mismatched DD
-            // name therefore still operates on TRNXFILE - it does not re-dispatch and it does not refuse.
             JdbcTemplate template = mock(JdbcTemplate.class);
             backend(template);
             StatementGenerationJobB subject = subroutine(template);
@@ -1131,14 +878,9 @@ class StatementGenerationJobBTest {
         }
     }
 
-    // =================================================================================================
-    // The asymmetric per-DD operation matrix, and the silent no-op fall-through.
-    // =================================================================================================
-
     @Nested
     @DisplayName("The per-DD operation matrix - three operations each, and the sets differ")
     class OperationMatrix {
-
         @ParameterizedTest(name = "{0} honours OPEN, READ, CLOSE and has no keyed read")
         @MethodSource("com.vsergeychik.carddemo.statement.StatementGenerationJobBTest#sequentialDds")
         void sequentialDdsHonourThreeOperations(String dd) {
@@ -1167,15 +909,6 @@ class StatementGenerationJobBTest {
                     .isThrownBy(() -> capabilities.add(Operation.WRITE));
         }
 
-        /**
-         * The whole 4 DD x 6 operation-code space, plus the unrecognised-byte case.
-         *
-         * <p>Every combination is driven, and each is asserted to be either the honoured operation or the
-         * silent no-op returning the stale status. This is the table the class documentation states, made
-         * executable.
-         *
-         * @return one argument set per DD and operation
-         */
         static List<org.junit.jupiter.params.provider.Arguments> everyDdAndOperation() {
             List<org.junit.jupiter.params.provider.Arguments> cases = new ArrayList<>();
             for (String dd : StatementGenerationJobB.DD_NAMES) {
@@ -1196,7 +929,6 @@ class StatementGenerationJobBTest {
             StatementGenerationJobB subject = subroutine(template);
             Session session = subject.newSession();
 
-            // Establish a known, distinctive stale status by opening the file: the status becomes '00'.
             subject.open(session, dd);
             assertThat(session.status(dd)).isEqualTo(FileStatus.OK);
             int statementsAfterOpen = backend.statementsSent().size();
@@ -1286,14 +1018,9 @@ class StatementGenerationJobBTest {
         }
     }
 
-    // =================================================================================================
-    // Gate G47 - the FILE STATUS outcomes, and the independence of the four status areas.
-    // =================================================================================================
-
     @Nested
     @DisplayName("Gate G47 - FILE STATUS outcomes per operation, and four independent status areas")
     class GateG47Statuses {
-
         @ParameterizedTest(name = "a successful sequential read of {0} reports '00'")
         @MethodSource("com.vsergeychik.carddemo.statement.StatementGenerationJobBTest#sequentialDds")
         void successfulSequentialReadReportsOk(String dd) {
@@ -1325,7 +1052,6 @@ class StatementGenerationJobBTest {
             assertThat(atEnd.fldt()).as("AT END does not disturb the INTO receiver")
                     .isEqualTo(StatementGenerationJobB.SPACES_FLDT);
             assertThat(session.isExhausted(dd)).isTrue();
-            // Reported again, and again: CBSTM03A sets END-OF-FILE and never resumes.
             assertThat(subject.readNext(session, dd).rc()).isEqualTo(FileStatus.END_OF_FILE);
             assertThat(subject.readNext(session, dd).rc()).isEqualTo(FileStatus.END_OF_FILE);
             assertThat(session.position(dd)).isEqualTo(2);
@@ -1392,14 +1118,10 @@ class StatementGenerationJobBTest {
                 subject.open(session, dd);
             }
 
-            // TRNXFILE reads a record: '00'.
             subject.readNext(session, StatementGenerationJobB.TRNXFILE_DD);
-            // XREFFILE runs out: '10'.
             subject.readNext(session, StatementGenerationJobB.XREFFILE_DD);
-            // CUSTFILE misses: '23'.
             subject.readByKey(session, StatementGenerationJobB.CUSTFILE_DD, "123456789",
                     StatementGenerationJobB.CUSTFILE_CALLER_KEY_LENGTH);
-            // ACCTFILE finds: '00'.
             subject.readByKey(session, StatementGenerationJobB.ACCTFILE_DD, "12345678901",
                     StatementGenerationJobB.ACCTFILE_CALLER_KEY_LENGTH);
 
@@ -1604,9 +1326,6 @@ class StatementGenerationJobBTest {
         void keyedRowWithoutARecordImageIsReported() {
             JdbcTemplate template = mock(JdbcTemplate.class);
             String dd = StatementGenerationJobB.CUSTFILE_DD;
-            // The driver is made to hand the matched row back despite its column holding nothing, which
-            // real SQL cannot do - that is the point: this is the subject's defensive guard for a driver
-            // that misbehaves, and it is reached deliberately rather than by an unfaithful stub.
             backend(template).storing(CUST_DS, Arrays.asList((String) null))
                     .presentingUnreadableRowsToKeyedReads(CUST_DS);
             StatementGenerationJobB subject = subroutine(template);
@@ -1622,9 +1341,6 @@ class StatementGenerationJobBTest {
         void anUnreadableRowIsNotReportedAsAbsent() {
             JdbcTemplate template = mock(JdbcTemplate.class);
             String dd = StatementGenerationJobB.CUSTFILE_DD;
-            // The faithful shape: SQL evaluates NULL LIKE ? as UNKNOWN, so the keyed read matches nothing
-            // even though the dataset holds a row. FD-CUST-ID lives inside that row's image, so its key
-            // cannot be known and may be the very one asked for.
             backend(template).storing(CUST_DS, Arrays.asList((String) null));
             StatementGenerationJobB subject = subroutine(template);
             Session session = subject.newSession();
@@ -1650,7 +1366,6 @@ class StatementGenerationJobBTest {
             Session session = subject.newSession();
             subject.open(session, dd);
 
-            // No row of the dataset is unreadable, so the absence is established and '23' stands.
             assertThat(subject.readByKey(session, dd, "999999999", 9).rc())
                     .isEqualTo(FileStatus.NOT_FOUND);
         }
@@ -1667,7 +1382,6 @@ class StatementGenerationJobBTest {
             Session session = subject.newSession();
             subject.open(session, dd);
 
-            // The probe established nothing, so the absence stays unproved and must not become '23'.
             assertThat(subject.readByKey(session, dd, "999999999", 9).rc())
                     .isNotEqualTo(FileStatus.NOT_FOUND)
                     .isEqualTo(StatementGenerationJobB.PERMANENT_ERROR_STATUS);
@@ -1678,9 +1392,6 @@ class StatementGenerationJobBTest {
         void aProbeYieldingNoResultObjectIsNotReportedAsAbsent() {
             JdbcTemplate template = mock(JdbcTemplate.class);
             String dd = StatementGenerationJobB.CUSTFILE_DD;
-            // The read is answered for real - no row matches - and only the probe answers with no result
-            // object, which is the one way to reach the probe's own guard: were every query on the dataset
-            // to answer with nothing, the keyed read's identical guard would fire first.
             backend(template).storing(CUST_DS,
                             List.of(row("123456789", StatementGenerationJobB.CUSTFILE_RECORD_LENGTH)))
                     .probeYieldingNothing(CUST_DS);
@@ -1697,7 +1408,6 @@ class StatementGenerationJobBTest {
         @MethodSource("com.vsergeychik.carddemo.statement.StatementGenerationJobBTest#allDds")
         void misSizedRowReportsARecordLengthConflict(String dd) {
             JdbcTemplate template = mock(JdbcTemplate.class);
-            // One byte short of the copybook width: the layout and the data disagree.
             String stored = row(digitKeyOf(dd), widthOf(dd) - 1);
             backend(template).storing(datasetOf(dd), List.of(stored));
             StatementGenerationJobB subject = subroutine(template);
@@ -1708,16 +1418,10 @@ class StatementGenerationJobBTest {
                     ? subject.readNext(session, dd)
                     : subject.readByKey(session, dd, digitKeyOf(dd), callerKeyOf(dd));
 
-            // FILE STATUS '04', not a permanent error. In COBOL the READ succeeded; only the record's
-            // length disagrees with the file's fixed attributes. Nine sites in app/cbl/CBSTM03A.CBL
-            // accept exactly this status - IF WS-M03B-RC = '00' OR '04', including the first TRNXFILE
-            // read at :748 - and every one of those arms is dead if this class cannot produce it.
             assertThat(response.rc()).isEqualTo(FileStatus.RECORD_LENGTH_CONFLICT);
             assertThat(FileStatus.isRecordLengthConflict(response.rc())).isTrue();
             assertThat(response.rc()).isNotEqualTo(StatementGenerationJobB.PERMANENT_ERROR_STATUS);
 
-            // And the record area IS delivered, because READ INTO transferred it. The receiver is
-            // PIC X(1000), so the short record lands left-justified and the remainder is spaces.
             assertThat(response.fldt())
                     .as("the record area is filled, not left at SPACES: '04' is a successful read")
                     .isNotEqualTo(StatementGenerationJobB.SPACES_FLDT)
@@ -1731,8 +1435,6 @@ class StatementGenerationJobBTest {
         @MethodSource("com.vsergeychik.carddemo.statement.StatementGenerationJobBTest#allDds")
         void anOverWideRowIsTruncatedOnTheRight(String dd) {
             JdbcTemplate template = mock(JdbcTemplate.class);
-            // Wider than the PIC X(1000) receiver, so the MOVE has to discard the overflow rather than
-            // refuse: COBOL fills a PIC X receiver from the left and truncates on the RIGHT.
             String stored = row(digitKeyOf(dd), StatementGenerationJobB.FLDT_LENGTH + 7);
             backend(template).storing(datasetOf(dd), List.of(stored));
             StatementGenerationJobB subject = subroutine(template);
@@ -1781,13 +1483,6 @@ class StatementGenerationJobBTest {
 
             Response response = subject.readByKey(session, dd, key, 11);
 
-            // FD-ACCT-ID is the RECORD KEY of an indexed file (app/cbl/CBSTM03B.CBL:52), so a unique
-            // key matching two rows is an integrity defect in the backing relation and not a condition
-            // VSAM can present. Returning the first match with '00' would hand CBSTM03A one of two
-            // accounts chosen by whatever order the backend produced, with nothing to say a choice was
-            // made, and the statement it composed would be plausible and possibly wrong. '22' would be
-            // no better - no program in the estate compares against it, so it would be an invented
-            // status. The permanent-error status reaches the caller's WHEN OTHER arm, which abends.
             assertThat(response.rc()).isEqualTo(StatementGenerationJobB.PERMANENT_ERROR_STATUS);
             assertThat(response.rc()).isNotEqualTo(FileStatus.OK)
                     .isNotEqualTo(FileStatus.DUPLICATE);
@@ -1820,7 +1515,6 @@ class StatementGenerationJobBTest {
         void undecodableRowIsReported() {
             JdbcTemplate template = mock(JdbcTemplate.class);
             String dd = StatementGenerationJobB.XREFFILE_DD;
-            // A character with no US-ASCII encoding, so decoding the stored row must refuse.
             backend(template).storing(XREF_DS, List.of(row("\u00e9AA", widthOf(dd))));
             StatementGenerationJobB subject = subroutine(template);
             Session session = subject.newSession();
@@ -1836,7 +1530,6 @@ class StatementGenerationJobBTest {
             assertThat(StatementGenerationJobB.PERMANENT_ERROR_STATUS).hasSize(2).startsWith("9");
             assertThat(FileStatus.outcomeOfStatus(StatementGenerationJobB.PERMANENT_ERROR_STATUS))
                     .isEqualTo(FileStatus.Outcome.OTHER);
-            // And the four logic-error statuses are the standard COBOL ones, all on WHEN OTHER.
             assertThat(StatementGenerationJobB.ALREADY_OPEN_STATUS).isEqualTo("41");
             assertThat(StatementGenerationJobB.NOT_OPEN_STATUS).isEqualTo("42");
             assertThat(StatementGenerationJobB.NOT_OPEN_FOR_READ_STATUS).isEqualTo("47");
@@ -1844,14 +1537,9 @@ class StatementGenerationJobBTest {
         }
     }
 
-    // =================================================================================================
-    // READ ... INTO LK-M03B-FLDT - the group move into the 1000-byte receiver.
-    // =================================================================================================
-
     @Nested
     @DisplayName("READ ... INTO LK-M03B-FLDT - a 350/50/500/300-byte record into an X(1000) receiver")
     class ReadIntoPadding {
-
         @ParameterizedTest(name = "a record of {0} lands left-justified in 1000 bytes, remainder spaces")
         @MethodSource("com.vsergeychik.carddemo.statement.StatementGenerationJobBTest#allDds")
         void recordIsLeftJustifiedAndSpacePadded(String dd) {
@@ -1912,10 +1600,8 @@ class StatementGenerationJobBTest {
         @Test
         @DisplayName("practice B5 - FD-ACCT-DATA survives as TWO spans, 318 and 289, neither merged")
         void fdAcctDataIsDeclaredTwice() {
-            // CBSTM03B.CBL:63, inside the TRNXFILE record.
             assertThat(StatementGenerationJobB.TRNXFILE_ACCT_DATA_LENGTH).isEqualTo(318)
                     .isEqualTo(TrnxRecord.TRNX_REST_LENGTH);
-            // CBSTM03B.CBL:78, inside the ACCTFILE record.
             assertThat(StatementGenerationJobB.ACCTFILE_ACCT_DATA_LENGTH).isEqualTo(289);
             assertThat(StatementGenerationJobB.TRNXFILE_ACCT_DATA_LENGTH)
                     .as("one COBOL name, two different widths, in two different FD records - preserved")
@@ -1930,22 +1616,12 @@ class StatementGenerationJobBTest {
         }
     }
 
-    // =================================================================================================
-    // FILE STATUS '04', end to end. CBSTM03A has ten status-checking sites whose behaviour turns on
-    // '04' - nine that accept it and three that abend on it - and every one of them is dead code unless
-    // THIS class can produce the status. These tests prove the producer and the consumer agree, so the
-    // agreement cannot be broken from either side without a failure here.
-    // =================================================================================================
-
     @Nested
     @DisplayName("FILE STATUS '04' is producible, and is the status CBSTM03A's nine guards accept")
     class RecordLengthConflictReachability {
-
         @Test
         @DisplayName("the status this class produces is the very constant CBSTM03A tests against")
         void theProducerAndTheConsumerShareOneConstant() {
-            // Not two literals that happen to read the same. StatementGenerationJobA takes its constant
-            // from FileStatus, so a change on either side is a change on both.
             assertThat(StatementGenerationJobA.STATUS_RECORD_LENGTH_CONFLICT)
                     .isSameAs(FileStatus.RECORD_LENGTH_CONFLICT)
                     .isEqualTo("04");
@@ -1964,13 +1640,10 @@ class StatementGenerationJobBTest {
                     ? subject.readNext(session, dd)
                     : subject.readByKey(session, dd, digitKeyOf(dd), callerKeyOf(dd));
 
-            // IF WS-M03B-RC = '00' OR '04' - the nine accepting sites, expressed once as a predicate.
             assertThat(StatementGenerationJobA.isOkOrRecordLengthConflict(response.rc()))
                     .as("the arms at CBSTM03A:736, :748, :771, :789, :807, :862, :879, :895 and :911 are "
                             + "reachable only if this read produces a status they accept")
                     .isTrue();
-            // And the three rejecting sites still reject it: the loop read's EVALUATE (:836-847) and the
-            // two keyed reads (:379-386, :403-410) all test plain '00'.
             assertThat(FileStatus.isOk(response.rc()))
                     .as("the loop read and the two keyed reads test '00' alone, so they still abend")
                     .isFalse();
@@ -1991,14 +1664,9 @@ class StatementGenerationJobBTest {
         }
     }
 
-    // =================================================================================================
-    // The keyed read: reference modification, then the receiver's own MOVE rule.
-    // =================================================================================================
-
     @Nested
     @DisplayName("Keyed read - LK-M03B-KEY (1:LK-M03B-KEY-LN) into two differently-typed receivers")
     class KeyedRead {
-
         @Test
         @DisplayName("the caller's key widths are 9 for CUSTFILE and 11 for ACCTFILE, from CVACT03Y")
         void callerKeyWidths() {
@@ -2021,7 +1689,6 @@ class StatementGenerationJobBTest {
             Session session = subject.newSession();
             subject.open(session, dd);
 
-            // 25 bytes: nine significant, then garbage the reference modification must exclude.
             Response response = subject.readByKey(session, dd, "123456789ZZZZZZZZZZZZZZZZ", 9);
             assertThat(response.rc()).isEqualTo(FileStatus.OK);
             assertThat(backend.patternsBound()).hasSize(1);
@@ -2088,7 +1755,6 @@ class StatementGenerationJobBTest {
             Session session = subject.newSession();
             subject.open(session, dd);
 
-            // Thirteen digits into an eleven-digit receiver: the surviving digits are the last eleven.
             subject.readByKey(session, dd, "1234567890123", 13);
             assertThat(backend.patternsBound().get(0)).startsWith("34567890123");
         }
@@ -2125,29 +1791,24 @@ class StatementGenerationJobBTest {
         }
     }
 
-    // =================================================================================================
-    // Constructor guards - everything checkable, checked at startup.
-    // =================================================================================================
-
     @Nested
     @DisplayName("Constructor guards - configuration defects fail at startup, not at the first read")
     class ConstructorGuards {
-
         @Test
         @DisplayName("all four collaborators are required")
         void collaboratorsAreRequired() {
             JdbcTemplate template = mock(JdbcTemplate.class);
             assertThatExceptionOfType(NullPointerException.class).isThrownBy(
-                    () -> new StatementGenerationJobB(null, validBindings(), ASCII,
+                    () -> subroutineFrom(null, validBindings(), ASCII,
                             RecordImageForm.CHARACTER));
             assertThatExceptionOfType(NullPointerException.class).isThrownBy(
-                    () -> new StatementGenerationJobB(template, null, ASCII,
+                    () -> subroutineFrom(template, null, ASCII,
                             RecordImageForm.CHARACTER));
             assertThatExceptionOfType(NullPointerException.class).isThrownBy(
-                    () -> new StatementGenerationJobB(template, validBindings(), null,
+                    () -> subroutineFrom(template, validBindings(), null,
                             RecordImageForm.CHARACTER));
             assertThatExceptionOfType(NullPointerException.class).isThrownBy(
-                    () -> new StatementGenerationJobB(template, validBindings(), ASCII, null));
+                    () -> subroutineFrom(template, validBindings(), ASCII, null));
         }
 
         @Test
@@ -2155,7 +1816,7 @@ class StatementGenerationJobBTest {
         void multiByteCharsetIsRefused() {
             JdbcTemplate template = mock(JdbcTemplate.class);
             assertThatExceptionOfType(IllegalArgumentException.class).isThrownBy(
-                    () -> new StatementGenerationJobB(template, validBindings(),
+                    () -> subroutineFrom(template, validBindings(),
                             StandardCharsets.UTF_16, RecordImageForm.CHARACTER));
         }
 
@@ -2166,7 +1827,7 @@ class StatementGenerationJobBTest {
             DatasetBindings incomplete = validBindings();
             incomplete.remove(StatementGenerationJobB.CUSTFILE_DD);
             assertThatExceptionOfType(IllegalStateException.class).isThrownBy(
-                    () -> new StatementGenerationJobB(template, incomplete, ASCII,
+                    () -> subroutineFrom(template, incomplete, ASCII,
                             RecordImageForm.CHARACTER))
                     .withMessageContaining(StatementGenerationJobB.CUSTFILE_DD);
         }
@@ -2181,7 +1842,7 @@ class StatementGenerationJobBTest {
                     null, original.recordLength() + 1, "COPYBOOK", original.keyLength(), null, null,
                     null));
             assertThatExceptionOfType(IllegalStateException.class).isThrownBy(
-                    () -> new StatementGenerationJobB(template, spoiled, ASCII,
+                    () -> subroutineFrom(template, spoiled, ASCII,
                             RecordImageForm.CHARACTER))
                     .withMessageContaining("record length");
         }
@@ -2195,7 +1856,7 @@ class StatementGenerationJobBTest {
             spoiled.put(dd, new DatasetBinding(original.dsname(), DatasetBinding.KSDS, false, "FB",
                     null, original.recordLength(), "COPYBOOK", null, null, null, null));
             assertThatExceptionOfType(IllegalStateException.class).isThrownBy(
-                    () -> new StatementGenerationJobB(template, spoiled, ASCII,
+                    () -> subroutineFrom(template, spoiled, ASCII,
                             RecordImageForm.CHARACTER))
                     .withMessageContaining("key-length");
         }
@@ -2210,7 +1871,7 @@ class StatementGenerationJobBTest {
                     null, original.recordLength(), "COPYBOOK", original.keyLength() - 1, null, null,
                     null));
             assertThatExceptionOfType(IllegalStateException.class).isThrownBy(
-                    () -> new StatementGenerationJobB(template, spoiled, ASCII,
+                    () -> subroutineFrom(template, spoiled, ASCII,
                             RecordImageForm.CHARACTER))
                     .withMessageContaining("key-length");
         }
@@ -2225,7 +1886,7 @@ class StatementGenerationJobBTest {
             spoiled.put(dd, new DatasetBinding(original.dsname(), DatasetBinding.KSDS, false, "FB",
                     null, original.recordLength(), "COPYBOOK", original.keyLength(), 4, null, null));
             assertThatExceptionOfType(IllegalStateException.class).isThrownBy(
-                    () -> new StatementGenerationJobB(template, spoiled, ASCII,
+                    () -> subroutineFrom(template, spoiled, ASCII,
                             RecordImageForm.CHARACTER))
                     .withMessageContaining("key-offset");
         }
@@ -2253,12 +1914,6 @@ class StatementGenerationJobBTest {
                     .isThrownBy(() -> subroutineWithDsname("9BAD..NAME"));
         }
 
-        /**
-         * Builds the subject with {@code TRNXFILE}'s dataset name replaced.
-         *
-         * @param dsname the name to substitute
-         * @return the constructed subject, if construction is permitted at all
-         */
         private StatementGenerationJobB subroutineWithDsname(String dsname) {
             JdbcTemplate template = mock(JdbcTemplate.class);
             DatasetBindings spoiled = validBindings();
@@ -2266,7 +1921,7 @@ class StatementGenerationJobBTest {
             DatasetBinding original = spoiled.get(dd);
             spoiled.put(dd, new DatasetBinding(dsname, DatasetBinding.KSDS, false, "FB", null,
                     original.recordLength(), "COPYBOOK", original.keyLength(), null, null, null));
-            return new StatementGenerationJobB(template, spoiled, ASCII, RecordImageForm.CHARACTER);
+            return subroutineFrom(template, spoiled, ASCII, RecordImageForm.CHARACTER);
         }
 
         @Test
@@ -2284,8 +1939,6 @@ class StatementGenerationJobBTest {
         @DisplayName("practice B4 - a record-format disagreement is NOT reconciled and NOT rejected")
         void recordFormatIsNotAsserted() {
             JdbcTemplate template = mock(JdbcTemplate.class);
-            // The CSD says RECORDFORMAT(V) for three of these datasets while the JCL says RECFM=FB.
-            // The Java layer treats length as copybook-fixed and asserts neither side of the conflict.
             DatasetBindings variable = validBindings();
             for (String dd : allDds()) {
                 DatasetBinding original = variable.get(dd);
@@ -2293,7 +1946,7 @@ class StatementGenerationJobBTest {
                         null, original.recordLength(), "COPYBOOK", original.keyLength(), null, null,
                         null));
             }
-            assertThatNoException().isThrownBy(() -> new StatementGenerationJobB(template, variable,
+            assertThatNoException().isThrownBy(() -> subroutineFrom(template, variable,
                     ASCII, RecordImageForm.CHARACTER));
         }
 
@@ -2340,28 +1993,8 @@ class StatementGenerationJobBTest {
         }
     }
 
-    // =================================================================================================
-    // The whole (DD x operation) surface, in one table. app/cbl/CBSTM03B.CBL:118-128 crossed with
-    // :103-108 - five dispatch outcomes by seven operation bytes.
-    // =================================================================================================
-
-    /**
-     * Every DD name a caller could hand over, crossed with every operation byte.
-     *
-     * <p>Six DD names - the four {@code EVALUATE} arms plus two that take {@code WHEN OTHER} - by seven
-     * operation bytes - the six {@code 88}-levels plus one that names none of them. Forty-two cells, and
-     * every one of them is a distinct path through {@code 0000-START}: a dispatch to a paragraph that
-     * honours the operation, a dispatch to a paragraph that falls through it, or no dispatch at all.
-     *
-     * <p>A table rather than forty-two near-identical methods, so that adding a DD name or an operation
-     * widens the coverage automatically instead of inviting a copy-paste.
-     *
-     * @return one argument set per cell: the DD name, then the operation or {@code null} for a byte no
-     *         {@code 88}-level names
-     */
     static List<Arguments> everyDdCrossedWithEveryOperation() {
         List<String> dds = new ArrayList<>(StatementGenerationJobB.DD_NAMES);
-        // Both unknown names are exactly X(08) wide, because that is the field EVALUATE compares.
         dds.add("NOSUCHDD");
         dds.add(" ".repeat(StatementGenerationJobB.DD_LENGTH));
         List<Operation> operations = new ArrayList<>(Arrays.asList(Operation.values()));
@@ -2378,15 +2011,6 @@ class StatementGenerationJobBTest {
     @Nested
     @DisplayName("The full dispatch surface - 6 DD names x 7 operation bytes, all 42 cells")
     class FullDispatchSurface {
-
-        /**
-         * A status this subroutine can never itself produce, used as the inbound sentinel.
-         *
-         * <p>{@code '22'} is the duplicate-key status, and every one of the four files is opened
-         * {@code OPEN INPUT} ({@code app/cbl/CBSTM03B.CBL:136, :160, :184, :209}), so no path here can
-         * raise it. That makes it the ideal marker for "untouched": if it comes back, the value was
-         * carried, not computed.
-         */
         private static final String SENTINEL_RC = FileStatus.DUPLICATE;
 
         @ParameterizedTest(name = "operation {1} against DD ''{0}''")
@@ -2415,8 +2039,6 @@ class StatementGenerationJobBTest {
             Response response = subject.call(session, request);
 
             if (!subject.recognises(dd)) {
-                // Outcome 1 - WHEN OTHER -> GO TO 9999-GOBACK (CBSTM03B.CBL:127-131). Nothing is
-                // dispatched, nothing is assigned, and LK-M03B-RC comes back exactly as it went in.
                 assertThat(response.rc()).as("the WHEN OTHER arm returns the caller's own status")
                         .isEqualTo(SENTINEL_RC);
                 assertThat(response.fldt()).isEqualTo(request.fldt());
@@ -2424,16 +2046,11 @@ class StatementGenerationJobBTest {
                 return;
             }
             if (operation != null && subject.supportedOperations(dd).contains(operation)) {
-                // Outcome 2 - a guard matched, the operation ran, and nnn900-EXIT moved a status the
-                // operation itself produced. Whatever it is, it is NOT the sentinel.
                 assertThat(response.rc()).as("an honoured operation reports its own file status")
                         .isNotEqualTo(SENTINEL_RC)
                         .isEqualTo(session.status(dd));
                 return;
             }
-            // Outcome 3 - the paragraph was entered, no guard matched, and control fell out of the third
-            // IF straight into nnn900-EXIT, which still performed MOVE <file>-STATUS TO LK-M03B-RC. So
-            // the status is overwritten - with the file's own stale area - and no I/O happened.
             assertThat(response.rc()).as("the fall-through overwrites the caller's status with the "
                             + "file's own, unlike the WHEN OTHER arm which overwrites nothing")
                     .isNotEqualTo(SENTINEL_RC)
@@ -2453,14 +2070,10 @@ class StatementGenerationJobBTest {
             }
             StatementGenerationJobB subject = subroutine(template);
 
-            // The six VALUE literals at CBSTM03B.CBL:103-108 are distinct, so one operation byte can
-            // satisfy exactly one condition name - which is what makes "true" and "false" well defined.
             assertThat(Operation.ofCode(operation.code())).contains(operation);
 
             List<String> testing = ddsTesting(operation);
             for (String dd : allDds()) {
-                // A FRESH session each time, so the baseline is the never-established status area and any
-                // movement away from it is proof the guard was taken.
                 Session session = subject.newSession();
                 String key = operation == Operation.READ_K ? digitKeyOf(dd) : Request.blankKey();
                 int keyLength = operation == Operation.READ_K ? callerKeyOf(dd) : 0;
@@ -2485,9 +2098,6 @@ class StatementGenerationJobBTest {
         @Test
         @DisplayName("the guard census matches the source: OPEN and CLOSE x4, READ x2, READ-K x2, dead x0")
         void theGuardCensusMatchesTheSource() {
-            // Twelve IF statements in total across the four paragraphs, and the two dead condition names
-            // contribute none. If a later change gave WRITE a guard, this census would fail before any
-            // behavioural test noticed (practice B5).
             assertThat(ddsTesting(Operation.OPEN)).hasSize(4);
             assertThat(ddsTesting(Operation.CLOSE)).hasSize(4);
             assertThat(ddsTesting(Operation.READ)).containsExactly(
@@ -2500,7 +2110,6 @@ class StatementGenerationJobBTest {
             int guards = 0;
             for (Operation operation : Operation.values()) {
                 guards += ddsTesting(operation).size();
-                // And the census agrees with what the subject itself publishes as its capability sets.
                 for (String dd : allDds()) {
                     JdbcTemplate template = mock(JdbcTemplate.class);
                     assertThat(subroutine(template).supportedOperations(dd).contains(operation))
@@ -2525,21 +2134,9 @@ class StatementGenerationJobBTest {
         }
     }
 
-    // =================================================================================================
-    // The no-I/O guarantee, asserted on the collaborator itself. Counting statements proves the subject
-    // sent none; verifyNoInteractions proves it did not so much as touch the template - which is the
-    // stronger statement, and the one that would still hold if the subject grew a new access path.
-    // =================================================================================================
-
     @Nested
     @DisplayName("Every no-op path leaves the data-access collaborator completely untouched")
     class NoOpPathsTouchNothing {
-
-        /**
-         * The four DDs crossed with the operations each of them does <em>not</em> honour.
-         *
-         * @return one argument set per unsupported (DD, operation) pair
-         */
         static List<Arguments> unsupportedPairs() {
             List<Arguments> pairs = new ArrayList<>();
             for (String dd : StatementGenerationJobB.DD_NAMES) {
@@ -2560,8 +2157,6 @@ class StatementGenerationJobBTest {
         @MethodSource("unsupportedPairs")
         @DisplayName("an unsupported operation performs no interaction whatsoever with the JdbcTemplate")
         void unsupportedOperationsDoNotTouchTheTemplate(String dd, Operation operation) {
-            // Deliberately UNSTUBBED: if the subject touched it, the interaction would be recorded and
-            // the verification below would fail. There is nothing to stub, because nothing should run.
             JdbcTemplate template = mock(JdbcTemplate.class);
             StatementGenerationJobB subject = subroutine(template);
             Session session = subject.newSession();
@@ -2601,8 +2196,6 @@ class StatementGenerationJobBTest {
             StatementGenerationJobB subject = subroutine(template);
             Session session = subject.newSession();
 
-            // '04' as the sentinel this time: a real COBOL status, so the assertion cannot pass by the
-            // value happening to be impossible.
             Response response = subject.call(session, new Request(unknown, Operation.OPEN,
                     FileStatus.RECORD_LENGTH_CONFLICT, Request.blankKey(), 0,
                     StatementGenerationJobB.SPACES_FLDT));
@@ -2615,10 +2208,6 @@ class StatementGenerationJobBTest {
         @ValueSource(strings = {"TRNXFILE ", "TRNXFILEX", "TRNXFILE.RECORD"})
         @DisplayName("an over-long DD name is right-truncated to X(08) and therefore DOES match")
         void anOverLongDdNameTruncatesIntoTheRecognisedName(String overLong) {
-            // The trap this pins: EVALUATE LK-M03B-DD compares an eight-byte field, and a MOVE into
-            // PIC X(08) discards whatever will not fit - on the RIGHT. So a name that merely starts with
-            // TRNXFILE is not an unknown DD at all; it is TRNXFILE. Asserting the canonicalisation
-            // itself, with no session and no call, keeps the fact separate from what dispatch then does.
             Request request = new Request(overLong, Operation.OPEN, FileStatus.OK, Request.blankKey(), 0,
                     StatementGenerationJobB.SPACES_FLDT);
             assertThat(request.dd()).hasSize(StatementGenerationJobB.DD_LENGTH)
@@ -2653,8 +2242,6 @@ class StatementGenerationJobBTest {
             Session session = subject.newSession();
 
             assertThat(subject.open(session, dd).rc()).isEqualTo(FileStatus.OK);
-            // Everything the OPEN legitimately did is now accounted for; anything after this point is
-            // an interaction the fall-through caused, and there must be none.
             clearInvocations(template);
 
             Response response = subject.call(session, new Request(dd, Operation.WRITE, FileStatus.OK,
@@ -2667,15 +2254,9 @@ class StatementGenerationJobBTest {
         }
     }
 
-    // =================================================================================================
-    // Gate G47, completed: which FILE STATUS outcomes each DD can actually reach, and which it cannot.
-    // The set differs per DD, and the difference is the same asymmetry the SELECTs declare.
-    // =================================================================================================
-
     @Nested
     @DisplayName("Gate G47 - the reachable FILE STATUS outcomes, per DD, and the two that are not")
     class ReachableOutcomes {
-
         @ParameterizedTest(name = "{0} can report OK")
         @MethodSource("com.vsergeychik.carddemo.statement.StatementGenerationJobBTest#allDds")
         @DisplayName("'00' is reachable on all four DDs - the OPEN every caller performs first")
@@ -2718,9 +2299,6 @@ class StatementGenerationJobBTest {
             Session session = subject.newSession();
             subject.open(session, dd);
 
-            // A plain READ is not honoured here, so no repetition of it can ever exhaust a browse; and a
-            // keyed read that finds nothing is '23', never '10'. That is exactly why CBSTM03A's CUSTFILE
-            // and ACCTFILE EVALUATEs (:379 and :403) declare no '10' arm while its two read loops do.
             for (int attempt = 0; attempt < 3; attempt++) {
                 Response response = subject.readNext(session, dd);
                 assertThat(response.rc()).isNotEqualTo(FileStatus.END_OF_FILE);
@@ -2784,8 +2362,6 @@ class StatementGenerationJobBTest {
         @DisplayName("'22' is unreachable on every DD, because OPEN INPUT admits no write to duplicate")
         void duplicateIsUnreachableAnywhere(String dd) {
             JdbcTemplate template = mock(JdbcTemplate.class);
-            // Two rows that both match any key, so the one condition that could plausibly be called a
-            // duplicate is present in the data itself.
             backend(template).storing(datasetOf(dd), List.of(row(digitKeyOf(dd), widthOf(dd)),
                     row(digitKeyOf(dd), widthOf(dd))));
             StatementGenerationJobB subject = subroutine(template);
@@ -2807,8 +2383,6 @@ class StatementGenerationJobBTest {
         @Test
         @DisplayName("'22' is nevertheless a status the differ would recognise - it is unreachable, not unknown")
         void duplicateRemainsAClassifiableStatus() {
-            // The distinction matters: the class cannot produce '22', but nothing pretends the value has
-            // no meaning. A caller handed one from anywhere else still classifies it correctly.
             Response fabricated = new Response(FileStatus.DUPLICATE, StatementGenerationJobB.SPACES_FLDT);
             assertThat(fabricated.outcome()).isEqualTo(Outcome.DUPLICATE);
             assertThat(fabricated.ok()).isFalse();
@@ -2820,7 +2394,6 @@ class StatementGenerationJobBTest {
         void recordLengthConflictIsNotNormalised() {
             JdbcTemplate template = mock(JdbcTemplate.class);
             String dd = StatementGenerationJobB.XREFFILE_DD;
-            // One byte short of the copybook's declared width: the READ succeeds, the length disagrees.
             backend(template).storing(datasetOf(dd),
                     List.of(row("K", StatementGenerationJobB.XREFFILE_RECORD_LENGTH - 1)));
             StatementGenerationJobB subject = subroutine(template);
@@ -2832,43 +2405,25 @@ class StatementGenerationJobBTest {
             assertThat(response.rc()).isEqualTo(FileStatus.RECORD_LENGTH_CONFLICT);
             assertThat(response.rc()).isNotEqualTo(FileStatus.OK);
             assertThat(response.ok()).as("isOk is reserved for '00'").isFalse();
-            // app/cbl/CBSTM03A.CBL's nine guards read IF WS-M03B-RC = '00' OR '04', so both values pass
-            // there and only there; its four EVALUATEs name '00' and, at two of them, '10' - never '04'.
             assertThat(acceptedByTheNineGuards(response.rc())).isTrue();
             assertThat(acceptedByTheNineGuards(FileStatus.OK)).isTrue();
             assertThat(acceptedByTheNineGuards(FileStatus.END_OF_FILE)).isFalse();
             assertThat(acceptedByTheNineGuards(FileStatus.NOT_FOUND)).isFalse();
         }
 
-        /**
-         * {@code IF WS-M03B-RC = '00' OR '04'} - the guard at
-         * {@code app/cbl/CBSTM03A.CBL:736, :748, :771, :789, :807, :862, :879, :895, :911}, written out
-         * so the acceptance rule is executable rather than described.
-         *
-         * @param rc the status this subroutine returned
-         * @return whether those nine call sites would continue rather than abend
-         */
         private boolean acceptedByTheNineGuards(String rc) {
             return FileStatus.OK.equals(rc) || FileStatus.RECORD_LENGTH_CONFLICT.equals(rc);
         }
     }
 
-    // =================================================================================================
-    // Copybook geometry: the REDEFINES pair over one backing span, the FILLER spans that must be
-    // emitted, and the OCCURS tables this subroutine does not have.
-    // =================================================================================================
-
     @Nested
     @DisplayName("Copybook geometry - REDEFINES (G34), FILLER (G21) and OCCURS (G33)")
     class CopybookGeometry {
-
         @Test
         @DisplayName("gate G34 - TRNX-KEY and TRNX-REST are two accessors over ONE backing span")
         void theRedefinesPairSharesOneBackingSpan() {
             assertThat(TrnxRecord.TRNX_KEY.redefinition()).as("TRNX-KEY redefines storage").isTrue();
             assertThat(TrnxRecord.TRNX_REST.redefinition()).as("TRNX-REST redefines storage").isTrue();
-            // The two group spans tile the record exactly, and each covers its own elementary children:
-            // 0..31 is FD-TRNXS-ID (card 16 + id 16) and 32..349 is FD-ACCT-DATA X(318).
             assertThat(TrnxRecord.TRNX_KEY.offset()).isEqualTo(0);
             assertThat(TrnxRecord.TRNX_KEY.length()).isEqualTo(32);
             assertThat(TrnxRecord.TRNX_REST.offset()).isEqualTo(TrnxRecord.TRNX_KEY.endOffsetExclusive());
@@ -2876,13 +2431,10 @@ class StatementGenerationJobBTest {
             assertThat(TrnxRecord.TRNX_REST.endOffsetExclusive())
                     .isEqualTo(TrnxRecord.RECORD_LENGTH);
 
-            // Round-trip through the group accessor, then read the elementary ones: one storage, two
-            // views, and no cached copy in between.
             TrnxRecord record = TrnxRecord.newRecord(ASCII);
             record.writeTrnxKey("4444333322221111" + "0000000000000042");
             assertThat(record.readTrnxCardNum()).isEqualTo("4444333322221111");
             assertThat(record.readTrnxId()).isEqualTo("0000000000000042");
-            // ... and back the other way, which is the half a cached implementation would fail.
             record.writeTrnxCardNum("1111222233334444");
             assertThat(record.readTrnxKey()).startsWith("1111222233334444");
             assertThat(record.readTrnxKey()).hasSize(TrnxRecord.TRNX_KEY_LENGTH);
@@ -2897,12 +2449,8 @@ class StatementGenerationJobBTest {
                     StatementGenerationJobB.CUSTFILE_DD, "000000011" + " ".repeat(16),
                     StatementGenerationJobB.CUSTFILE_CALLER_KEY_LENGTH), null);
 
-            // The numeric view, through the subject's own parser.
             assertThat(subject.fromAreaImage(area).keyLength())
                     .isEqualTo(StatementGenerationJobB.CUSTFILE_CALLER_KEY_LENGTH);
-            // The character view of the very same four bytes at offset 36. S9(4) DISPLAY is zoned, so
-            // the digits are readable as text and the sign is overpunched into the last of them - which
-            // is what makes this four bytes rather than a two-byte COMP halfword.
             String zoned = new String(area, StatementGenerationJobB.KEY_LN_OFFSET,
                     StatementGenerationJobB.KEY_LN_LENGTH, ASCII);
             assertThat(zoned).hasSize(4);
@@ -2911,13 +2459,6 @@ class StatementGenerationJobBTest {
                     BigDecimal.valueOf(StatementGenerationJobB.CUSTFILE_CALLER_KEY_LENGTH));
         }
 
-        /**
-         * The four record types this subroutine reads, each with the {@code FILLER} its copybook
-         * declares. Every one of these spans must be emitted, and emitted as spaces, or every offset
-         * after it - and the total width - is wrong.
-         *
-         * @return one argument set per DD: the DD name, the {@code FILLER} span and the record width
-         */
         static List<Arguments> fillerSpans() {
             return List.of(
                     Arguments.of(StatementGenerationJobB.TRNXFILE_DD, TrnxRecord.FILLER,
@@ -2939,8 +2480,6 @@ class StatementGenerationJobBTest {
                     .as("%s's FILLER is the last span, so the record ends where it ends", dd)
                     .isEqualTo(recordLength);
             assertThat(recordLength).isEqualTo(widthOf(dd));
-            // The two the brief singles out, asserted as literals so a transcription slip cannot hide
-            // behind a constant that moved with it.
             if (StatementGenerationJobB.XREFFILE_DD.equals(dd)) {
                 assertThat(filler.offset()).isEqualTo(36);
                 assertThat(filler.length()).isEqualTo(14);
@@ -2956,16 +2495,10 @@ class StatementGenerationJobBTest {
         @DisplayName("gate G21 - FILLER arrives as spaces in LK-M03B-FLDT, never as data or as nothing")
         void fillerArrivesAsSpaces(String dd, FieldSpan filler, int recordLength) {
             JdbcTemplate template = mock(JdbcTemplate.class);
-            // A row whose FILLER span is spaces and whose other bytes are not, so "spaces" cannot pass
-            // by the whole record happening to be blank.
             StringBuilder stored = new StringBuilder("X".repeat(recordLength));
             for (int index = filler.offset(); index < filler.endOffsetExclusive(); index++) {
                 stored.setCharAt(index, ' ');
             }
-            // The two RANDOM files are reached by key, and ACCTFILE's RECORD KEY is FD-ACCT-ID PIC 9(11)
-            // (CBSTM03B.CBL:77), so its leading bytes must be digits: a numeric MOVE of 'X' is refused,
-            // deliberately, rather than silently zeroed. Digits for CUSTFILE's X(09) key too, which
-            // costs nothing and keeps the two random cases symmetrical.
             String key = randomDds().contains(dd) ? digitKeyOf(dd) : null;
             if (key != null) {
                 stored.replace(0, key.length(), key);
@@ -2992,19 +2525,12 @@ class StatementGenerationJobBTest {
         @Test
         @DisplayName("the four models' widths and RECORD KEYs are exactly what the four FDs declare")
         void theModelConstantsMatchTheFds() {
-            // TRNXFILE - FD-TRNXS-ID is the first 32 bytes (card 16 + id 16), which CREASTMT.JCL:29-32
-            // states independently as KEYS(32 0), and the record is 350.
             assertThat(TrnxRecord.RECORD_LENGTH).isEqualTo(350);
             assertThat(TrnxRecord.TRNX_KEY_OFFSET).isZero();
             assertThat(TrnxRecord.TRNX_KEY_LENGTH).isEqualTo(32);
             assertThat(StatementGenerationJobB.TRNXFILE_KEY_LENGTH)
                     .isEqualTo(TrnxRecord.TRNX_KEY_LENGTH);
 
-            // XREFFILE - the base RECORD KEY is FD-XREF-CARD-NUM X(16) at offset 0. The 11-byte
-            // XREF-ACCT-ID is the ALTERNATE key (CXACAIX's path over the same base), which this
-            // subroutine never browses on: CBSTM03B declares one RECORD KEY per SELECT, and the
-            // alternate exists here only because CBSTM03A reads the account id out of the record it was
-            // handed. Both are asserted so the distinction cannot quietly become two datasets.
             assertThat(CardXrefRecord.RECORD_LENGTH).isEqualTo(50);
             assertThat(CardXrefRecord.XREF_CARD_NUM_OFFSET).isZero();
             assertThat(StatementGenerationJobB.XREFFILE_KEY_LENGTH)
@@ -3012,13 +2538,11 @@ class StatementGenerationJobBTest {
             assertThat(CardXrefRecord.XREF_ACCT_ID_LENGTH).as("the alternate key").isEqualTo(11);
             assertThat(CardXrefRecord.XREF_ACCT_ID_OFFSET).isEqualTo(25);
 
-            // CUSTFILE - FD-CUST-ID X(09) at offset 0, record 500.
             assertThat(Stm03CustomerRecord.RECORD_LENGTH).isEqualTo(500);
             assertThat(Stm03CustomerRecord.KEY_OFFSET).isZero();
             assertThat(StatementGenerationJobB.CUSTFILE_KEY_LENGTH)
                     .isEqualTo(Stm03CustomerRecord.KEY_LENGTH).isEqualTo(9);
 
-            // ACCTFILE - FD-ACCT-ID PIC 9(11) at offset 0, record 300.
             assertThat(AccountRecord.RECORD_LENGTH).isEqualTo(300);
             assertThat(AccountRecord.ACCT_ID_OFFSET).isZero();
             assertThat(StatementGenerationJobB.ACCTFILE_KEY_LENGTH)
@@ -3028,13 +2552,6 @@ class StatementGenerationJobBTest {
         @Test
         @DisplayName("gate G33 - this subroutine indexes no OCCURS table, and here is the proof")
         void thereIsNoOccursTable() {
-            // CBSTM03B.CBL declares four FDs, four two-byte status areas and one linkage area, and not
-            // one OCCURS among them - so the 1-based-to-0-based conversion that gate G33 exists to catch
-            // has no site in this class. The 51-by-10 statement table with its OCCURS lives in
-            // app/cbl/CBSTM03A.CBL, and StatementGenerationJobA is where it is asserted.
-            //
-            // Stated as an assertion rather than only as a comment: a repeating group would show up as a
-            // repeated span name, and there is none in the linkage area or in any of the four records.
             assertNoRepeatedSpanName(StatementGenerationJobB.AREA_LAYOUT.spans(), "LK-M03B-AREA");
             assertNoRepeatedSpanName(TrnxRecord.layout().spans(), "TRNX-RECORD");
             assertNoRepeatedSpanName(CardXrefRecord.LAYOUT.spans(), "CARD-XREF-RECORD");
@@ -3044,13 +2561,6 @@ class StatementGenerationJobBTest {
                     .as("the linkage area is six elementary items and no table").hasSize(6);
         }
 
-        /**
-         * Asserts that no name other than {@code FILLER} appears twice in a layout, which is what
-         * "declares no repeating group" means structurally.
-         *
-         * @param spans  the layout's spans
-         * @param record the record's copybook name, for the failure message
-         */
         private void assertNoRepeatedSpanName(List<FieldSpan> spans, String record) {
             Set<String> seen = new LinkedHashSet<>();
             for (FieldSpan span : spans) {
@@ -3065,15 +2575,9 @@ class StatementGenerationJobBTest {
         }
     }
 
-    // =================================================================================================
-    // The real data. Three of the four files have a derived fixture on the TEST CLASSPATH; the fourth
-    // has none anywhere, because its dataset does not exist until CREASTMT.JCL builds it.
-    // =================================================================================================
-
     @Nested
     @DisplayName("Derived fixture rows - real CARDXREF, CUSTDATA and ACCTDATA bytes, and built TRNX rows")
     class DerivedFixtureRows {
-
         @Test
         @DisplayName("gate G16 / risk R-F - a 36-byte cardxref row is widened to the declared 50")
         void aStoredCardXrefRowIsWidenedToItsDeclaredWidth() {
@@ -3084,8 +2588,6 @@ class StatementGenerationJobBTest {
 
             assertThat(widened).hasSize(CardXrefRecord.RECORD_LENGTH);
             assertThat(widened).isEqualTo(stored + " ".repeat(CardXrefRecord.FILLER_LENGTH));
-            // The 14 bytes the fixture omits are exactly CVACT03Y's trailing FILLER, and spaces are what
-            // it holds because the copybook gives it no VALUE.
             assertThat(CardXrefRecord.FILLER_OFFSET).isEqualTo(CARDXREF_STORED_ROW_WIDTH);
             assertThat(widened.substring(CardXrefRecord.FILLER_OFFSET))
                     .isEqualTo(" ".repeat(CardXrefRecord.FILLER_LENGTH));
@@ -3096,9 +2598,6 @@ class StatementGenerationJobBTest {
         void theModelRefusesAShortImageSoTheCodecMustWiden() {
             String stored = fixtureRows(CARDXREF_FIXTURE).get(0);
 
-            // CardXrefRecord describes the 50-byte record CVACT03Y declares. Teaching it to accept 36
-            // would push a fixture's shortcoming into the model every consumer shares, so it refuses,
-            // and the normalisation stays in the codec where the parity harness also performs it.
             assertThatExceptionOfType(IllegalArgumentException.class)
                     .isThrownBy(() -> CardXrefRecord.decode(stored.getBytes(ASCII), ASCII));
             assertThatNoException().isThrownBy(() -> CardXrefRecord.decode(
@@ -3122,8 +2621,6 @@ class StatementGenerationJobBTest {
             assertThat(response.rc()).as("a widened row conforms, so '00' and not '04'")
                     .isEqualTo(FileStatus.OK);
             assertThat(response.recordImage(CardXrefRecord.RECORD_LENGTH)).isEqualTo(widened);
-            // The caller's own MOVE WS-M03B-FLDT TO CARD-XREF-RECORD, performed here to prove the bytes
-            // land where the copybook says: card number, then customer id, then account id.
             CardXrefRecord decoded = CardXrefRecord.decode(
                     response.recordImage(CardXrefRecord.RECORD_LENGTH).getBytes(ASCII), ASCII);
             assertThat(decoded.xrefCardNum())
@@ -3134,7 +2631,6 @@ class StatementGenerationJobBTest {
             assertThat(decoded.xrefAcctId()).isEqualTo(Long.parseLong(widened.substring(
                     CardXrefRecord.XREF_ACCT_ID_OFFSET,
                     CardXrefRecord.XREF_ACCT_ID_OFFSET + CardXrefRecord.XREF_ACCT_ID_LENGTH)));
-            // And the rest of the X(1000) receiver is spaces, because READ ... INTO is a group MOVE.
             assertThat(response.fldt().substring(CardXrefRecord.RECORD_LENGTH))
                     .isEqualTo(" ".repeat(StatementGenerationJobB.FLDT_LENGTH
                             - CardXrefRecord.RECORD_LENGTH));
@@ -3154,7 +2650,6 @@ class StatementGenerationJobBTest {
             Session session = subject.newSession();
             subject.open(session, dd);
 
-            // The caller pads the key into X(25) and states its length separately - CBSTM03A.CBL:372-374.
             Response response = subject.readByKey(session, dd,
                     key + " ".repeat(StatementGenerationJobB.KEY_LENGTH - key.length()),
                     StatementGenerationJobB.CUSTFILE_CALLER_KEY_LENGTH);
@@ -3203,8 +2698,6 @@ class StatementGenerationJobBTest {
             String dd = StatementGenerationJobB.TRNXFILE_DD;
             String cardNumber = fixtureRows(CARDXREF_FIXTURE).get(0)
                     .substring(0, CardXrefRecord.XREF_CARD_NUM_LENGTH);
-            // Three decimal places offered to a S9(09)V99 receiver: COBOL truncates, and CobolDecimal is
-            // the only route by which a value reaches the record, so DOWN is the only mode in play.
             BigDecimal offered = new BigDecimal("1234.567");
             String stored = trnxRow(cardNumber, "0000000000000042", offered);
             JdbcTemplate template = mock(JdbcTemplate.class);
@@ -3218,7 +2711,6 @@ class StatementGenerationJobBTest {
             assertThat(response.rc()).isEqualTo(FileStatus.OK);
             String image = response.recordImage(TrnxRecord.RECORD_LENGTH);
             assertThat(image).isEqualTo(stored);
-            // The 32-byte composite key is the first two fields, exactly as CREASTMT.JCL's KEYS(32 0).
             assertThat(image.substring(TrnxRecord.TRNX_CARD_NUM_OFFSET,
                     TrnxRecord.TRNX_CARD_NUM_OFFSET + TrnxRecord.TRNX_CARD_NUM_LENGTH))
                     .isEqualTo(cardNumber);
@@ -3252,63 +2744,27 @@ class StatementGenerationJobBTest {
         }
     }
 
-    // =================================================================================================
-    // The fake backend. An in-memory relation per dataset, driven through the subject's own statement
-    // creators and extractors so what is exercised is the subject's SQL and its decoding, not a stub's
-    // idea of them.
-    // =================================================================================================
-
-    /**
-     * A stubbed {@link JdbcTemplate} backed by in-memory relations keyed by dataset name.
-     */
     private static final class Backend {
-
-        /** How many rows a keyed read may transfer - the subject's own duplicate-detection limit. */
         private static final int KEYED_LIMIT = 2;
 
-        /** What each dataset holds, keyed by dataset name. */
         private final Map<String, List<String>> stored = new LinkedHashMap<>();
 
-        /** The datasets that cannot be reached. */
         private final Set<String> failing = new LinkedHashSet<>();
 
-        /** The datasets whose template yields no result object at all. */
         private final Set<String> yieldingNothing = new LinkedHashSet<>();
 
-        /** The datasets that describe no record-image column. */
         private final Set<String> describingNoColumn = new LinkedHashSet<>();
 
-        /** The datasets that refuse the unreadable-row probe, having answered the read itself. */
         private final Set<String> failingOnProbe = new LinkedHashSet<>();
 
-        /**
-         * The datasets whose unreadable-row probe - and only the probe - answers with no result object.
-         *
-         * <p>Separate from {@link #yieldingNothing}, which applies to every query on the dataset: there the
-         * keyed read's own no-result-object guard fires first and the probe is never reached, so the
-         * probe's guard would stay unexercised.
-         */
         private final Set<String> probeYieldingNothing = new LinkedHashSet<>();
 
-        /**
-         * The datasets whose keyed {@code LIKE} may return a seeded {@code null} row.
-         *
-         * <p>Off by default because real SQL cannot do it - every comparison against a null is
-         * {@code UNKNOWN}, so an unreadable row is invisible to a keyed predicate, and that is exactly
-         * why the not-found answer has to be proved. Switched on only to reach the subject's defensive
-         * guard for a driver that hands back a matched row carrying no value.
-         */
         private final Set<String> unreadableRowsMatchKeyedReads = new LinkedHashSet<>();
 
-        /** Every statement sent, in order. */
         private final List<String> statementsSent = new ArrayList<>();
 
-        /** Every parameter bound to a keyed read, in order. */
         private final List<String> patternsBound = new ArrayList<>();
 
-        /**
-         * @param template the template to stub
-         */
         Backend(JdbcTemplate template) {
             when(template.query(anyString(), ArgumentMatchers.<ResultSetExtractor<String>>any()))
                     .thenAnswer(this::describe);
@@ -3360,13 +2816,6 @@ class StatementGenerationJobBTest {
             return List.copyOf(patternsBound);
         }
 
-        /**
-         * Answers the metadata describe by driving the subject's own extractor over stubbed metadata.
-         *
-         * @param invocation the template call
-         * @return the column name the subject read out of the metadata
-         * @throws SQLException never; declared because the mocked JDBC methods declare it
-         */
         private Object describe(InvocationOnMock invocation) throws SQLException {
             String sql = invocation.getArgument(0);
             statementsSent.add(sql);
@@ -3376,14 +2825,6 @@ class StatementGenerationJobBTest {
             return extractor.extractData(describedResultSet(columns));
         }
 
-        /**
-         * Answers any prepared read: a keyed one by evaluating the composed predicate, a browse one by
-         * driving the subject's own extractor over the row it should see.
-         *
-         * @param invocation the template call
-         * @return what that read yields
-         * @throws SQLException never; declared because the mocked JDBC methods declare it
-         */
         private Object preparedRead(InvocationOnMock invocation) throws SQLException {
             PreparedStatementCreator creator = invocation.getArgument(0);
             Connection connection = mock(Connection.class);
@@ -3408,8 +2849,6 @@ class StatementGenerationJobBTest {
             }
             ResultSetExtractor<?> extractor = invocation.getArgument(1);
             if (isUnreadableRowProbe(statement)) {
-                // The probe binds no operand: its predicate is IS NULL and names no key. It is answered
-                // per dataset, because each DD owns its own relation and proves its own absence.
                 if (failingOnProbe.contains(datasetOf(statement))) {
                     throw new DataAccessResourceFailureException(
                             "the unreadable-row probe cannot be answered");
@@ -3424,7 +2863,6 @@ class StatementGenerationJobBTest {
                 patternsBound.add(pattern);
                 return extractor.extractData(rowsResultSet(keyedMatches(statement, pattern)));
             }
-            // A browse read: one row, the first or the first strictly after the bound image.
             String after = captured.isEmpty() ? null : captured.get(0);
             List<String> rows = rowsOf(statement);
             int index = nextBrowseRowIndex(rows, after);
@@ -3432,7 +2870,6 @@ class StatementGenerationJobBTest {
                     index >= 0 ? Arrays.asList(rows.get(index)) : List.of()));
         }
 
-        /** The rows a keyed pattern selects, up to the subject's transfer limit. */
         private List<String> keyedMatches(String statement, String pattern) {
             Pattern matcher = likeAsRegex(pattern);
             List<String> matches = new ArrayList<>();
@@ -3449,12 +2886,6 @@ class StatementGenerationJobBTest {
             return matches;
         }
 
-        /**
-         * Which seeded row a browse read should see.
-         *
-         * <p>An index rather than the row itself, because a seeded {@code null} is a row that is present
-         * and unreadable and has to stay distinguishable from no row at all.
-         */
         private static int nextBrowseRowIndex(List<String> rows, String after) {
             for (int index = 0; index < rows.size(); index++) {
                 String row = rows.get(index);
@@ -3465,7 +2896,6 @@ class StatementGenerationJobBTest {
             return -1;
         }
 
-        /** A result set carrying the given images, in order. */
         private static ResultSet rowsResultSet(List<String> images) throws SQLException {
             ResultSet resultSet = mock(ResultSet.class);
             int[] cursor = {-1};
@@ -3475,7 +2905,6 @@ class StatementGenerationJobBTest {
             return resultSet;
         }
 
-        /** An empty result set whose metadata reports {@code columns} columns. */
         private static ResultSet describedResultSet(int columns) throws SQLException {
             ResultSet resultSet = mock(ResultSet.class);
             ResultSetMetaData metaData = mock(ResultSetMetaData.class);
@@ -3496,10 +2925,6 @@ class StatementGenerationJobBTest {
             return stored.getOrDefault(datasetOf(sql), List.of());
         }
 
-        /**
-         * The rows a dataset holds and cannot present: what {@code ... IS NULL} selects, capped at the one
-         * row the probe asks for.
-         */
         private List<String> unreadableRowsOf(String sql) {
             for (String stored : rowsOf(sql)) {
                 if (stored == null) {
@@ -3509,30 +2934,19 @@ class StatementGenerationJobBTest {
             return List.of();
         }
 
-        /**
-         * Whether a statement is the unreadable-row probe rather than a read: recognised by the trailing
-         * {@code IS NULL} predicate, which is the whole of
-         * {@link com.vsergeychik.carddemo.common.DatasetRelation#selectUnreadableRows(String)} and which
-         * neither the keyed {@code LIKE} nor either browse form ends with.
-         */
         private static boolean isUnreadableRowProbe(String sql) {
             return sql.endsWith(" IS NULL");
         }
 
-        /** Which seeded dataset a statement addresses, read from the delimited identifier it carries. */
         private static String datasetOf(String sql) {
             for (String candidate : List.of(TRNX_DS, XREF_DS, CUST_DS, ACCT_DS)) {
                 if (sql.contains("\"" + candidate + "\"")) {
                     return candidate;
                 }
             }
-            // No seeded dataset is named in the statement. Returning a sentinel rather than throwing
-            // keeps a statement this fake does not recognise observable as "no rows" instead of aborting
-            // the test with a stack trace that hides which statement was actually sent.
             return "UNKNOWN";
         }
 
-        /** Translates a SQL {@code LIKE} pattern into the regular expression it denotes. */
         private static Pattern likeAsRegex(String like) {
             StringBuilder regex = new StringBuilder(like.length() * 2);
             for (int index = 0; index < like.length(); index++) {

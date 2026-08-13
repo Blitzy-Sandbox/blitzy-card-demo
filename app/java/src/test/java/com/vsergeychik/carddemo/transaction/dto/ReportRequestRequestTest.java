@@ -24,8 +24,6 @@ import java.lang.annotation.Annotation;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.lang.reflect.RecordComponent;
-// java.math is imported solely so the two types this payload must never contain can be NAMED in the
-// gate G22 and G24 negatives below. Neither appears in any assertion as a value.
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.nio.charset.Charset;
@@ -50,196 +48,40 @@ import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 /**
- * Parity tests for {@link ReportRequestRequest}, the inbound payload of {@code POST /api/reports} -
- * CSD transaction {@code CR00}, program {@code CORPT00C} (649 lines), map {@code CORPT0A} of mapset
+ * Parity tests for {@link ReportRequestRequest}, the inbound payload of {@code POST /api/reports} - CSD
+ * transaction {@code CR00}, program {@code CORPT00C} (649 lines), map {@code CORPT0A} of mapset
  * {@code CORPT00} - projected from {@code 01 CORPT0AI} at {@code app/cpy-bms/CORPT00.CPY:17}.
- *
- * <p>The suite reads the read-only sources from disk and asserts the Java against them rather than
- * against a transcription alone. That is deliberate: a hand-copied expectation can encode the same
- * misreading as the code it checks, whereas the copybook and the mapset cannot disagree with
- * themselves. A transcription is declared as well - {@code EXPECTED_FIELD_WIDTHS} - so every name and
- * width is checked three independent ways: against the copybook on disk, against that transcription,
- * and against the enum the production type publishes. Two of the three would have to be wrong in the
- * same direction for a drift to pass.
- *
- * <h2>Oracles, and the exact lines each supplies</h2>
- *
- * <ul>
- *   <li>{@code app/cpy-bms/CORPT00.CPY:17-120} - {@code 01 CORPT0AI}: the seventeen {@code xxxI} item
- *       names and {@code PICTURE} clauses, the seventeen {@code xxxL} / {@code xxxF} / {@code xxxA}
- *       metadata items, the leading {@code 02 FILLER PIC X(12)} TIOAPFX prefix at {@code :18} and the
- *       seventeen reserved {@code 02 FILLER PICTURE X(4)} spans. Line 121 onward is the
- *       {@code 01 CORPT0AO REDEFINES CORPT0AI} overlay and is excluded by {@code inputGroupOf}, so an
- *       {@code xxxO} item can never be mistaken for an {@code xxxI} item.</li>
- *   <li>{@code app/bms/CORPT00.bms} - forty-two {@code DFHMDF} entries, seventeen of them name
- *       labelled, ten of those {@code UNPROT}; {@code ERRMSG} at {@code :218-221} is
- *       {@code ATTRB=(ASKIP,BRT,FSET)}, {@code COLOR=RED}, {@code LENGTH=78}, {@code POS=(23,1)}.</li>
- *   <li>{@code app/cbl/CORPT00C.cbl} - {@code :5} the {@code Function :} header; {@code :138-140}
- *       {@code COPY COCOM01Y.} and then {@code COPY CORPT00.} with nothing between them;
- *       {@code :212-262} with its {@code WHEN OTHER} at {@code :437}, the ordered report-type
- *       selector; {@code :305-327} the six {@code FUNCTION NUMVAL-C} normalisations that move their
- *       result back into the alphanumeric item; {@code :329-374} the class tests and the
- *       {@code > '12'} / {@code > '31'} string comparisons that follow them; {@code :464} the blank
- *       {@code CONFIRM} stage; {@code :477-495} the {@code CONFIRM} {@code EVALUATE TRUE}; and the
- *       twenty-two {@code MOVE -1 TO xxxL} cursor placements.</li>
- *   <li>{@code app/cpy/COCOM01Y.cpy} - {@code 01 CARDDEMO-COMMAREA} at {@code :19} and its five
- *       {@code 05} sub-groups at {@code :20}, {@code :32}, {@code :37}, {@code :40} and {@code :42},
- *       modelled by {@link NavigationContext}.</li>
- *   <li>{@code app/csd/CARDDEMO.CSD} - {@code :137} {@code DEFINE MAPSET(CORPT00)}, {@code :242}
- *       {@code DEFINE PROGRAM(CORPT00C)}, {@code :409-410}
- *       {@code DEFINE TRANSACTION(CR00) PROGRAM(CORPT00C)}.</li>
- *   <li>{@code README.md:225} - the online inventory row
- *       {@code CR00 | CORPT00 | CORPT00C | Transaction Reports}.</li>
- * </ul>
- *
- * <p>Nothing here writes to any of them, and nothing here reads a parity case fixture: the harness
- * package and {@code src/test/resources/parity} belong to a different suite entirely.
- *
- * <h2>This screen is not an R-B case</h2>
- *
- * The plan's risk R-B - a mandated class name that contradicts its COBOL - covers the
- * {@code COTRN01C} / {@code COTRN02C} pair in this very package, where the class called
- * {@code ...Add...} views and the one called {@code ...View...} adds. It does <strong>not</strong>
- * cover this screen. {@code app/cbl/CORPT00C.cbl:5} reads {@code Function : Print Transaction reports
- * by submitting batch} and {@code README.md:225} documents {@code CR00} as {@code Transaction
- * Reports}: name and behaviour agree. No R-B warning belongs in this file, and one must not be copied
- * across from a sibling test.
- *
- * <h2>What governs this file</h2>
- *
- * {@code review_rules} returns exactly one line, "No user rules provided", and that one line is the
- * whole document, so <strong>no user rule governs this file</strong>. Per the agent plan's rules
- * sub-section that absence is not permission to lower the bar, so the plan's own binds are held as
- * the rulings here, and each is exercised rather than merely asserted in prose:
- *
- * <table border="1">
- *   <caption>Which group discharges which bind</caption>
- *   <tr><th>Bind</th><th>Held by</th></tr>
- *   <tr><td>R1 - name from the plan, behaviour from the source</td>
- *       <td>{@code Provenance}, and the not-an-R-B-case note above</td></tr>
- *   <tr><td>R2 / G24 - truncation, never rounding</td>
- *       <td>{@code NegativeContract}: no {@link RoundingMode} anywhere, and no monetary member to
- *           round - this payload carries date parts and flags only</td></tr>
- *   <tr><td>R4 / G22 - never {@code double}, {@code float} or {@link BigDecimal}</td>
- *       <td>{@code StringBoundary}, over components, fields, accessors and nested types</td></tr>
- *   <tr><td>R5 - fixed width is the wire format</td>
- *       <td>{@code Geometry} and {@code FixedWidthImage}: 12 + 17 x 7 + 206 = 337</td></tr>
- *   <tr><td>R6 / G37 - statelessness</td>
- *       <td>{@code Conversation}: the bare 160-byte communication area, no session, no
- *           thread-local, no static mutable holder</td></tr>
- *   <tr><td>B3 - reference inputs immutable</td>
- *       <td>every oracle is opened read-only, and the widths are transcribed into
- *           {@code EXPECTED_FIELD_WIDTHS} rather than edited into the sources</td></tr>
- *   <tr><td>B4 - no silent scope creep</td>
- *       <td>{@code StringBoundary}: the {@code > '12'} comparison stays alphanumeric even though a
- *           numeric one would look more correct</td></tr>
- *   <tr><td>B7 - deterministic and non-interactive</td>
- *       <td>plain JUnit 5; no clock, locale, time zone or default charset is consulted;
- *           {@code CURDATE} and {@code CURTIME} are treated as opaque {@code X(8)}</td></tr>
- *   <tr><td>B8 / G52 - explicit over implicit</td>
- *       <td>no wildcard import; every code page named ({@code US-ASCII}, {@code IBM037})</td></tr>
- *   <tr><td>B9 / G53 - no static mutable state</td>
- *       <td>{@code Conversation}; the oracles this suite caches are immutable {@code List}s</td></tr>
- *   <tr><td>B11 - hand-written, reviewable codecs</td>
- *       <td>the copybook is parsed by the explicit patterns declared below, never by a third-party
- *           copybook parser</td></tr>
- *   <tr><td>G9 - every payload field traces to a {@code DFHMDF}</td>
- *       <td>{@code NamesAndWidths} and {@code Provenance}</td></tr>
- *   <tr><td>G21 - {@code FILLER} emitted</td><td>{@code FixedWidthImage}</td></tr>
- *   <tr><td>G34 - {@code REDEFINES} is two accessors over one span</td>
- *       <td>{@code MetadataCarriers}</td></tr>
- *   <tr><td>G44 - no DDL, no entity annotation, no version column</td>
- *       <td>{@code NegativeContract}</td></tr>
- *   <tr><td>G49 - {@code transaction.dto} clears BRANCH 0.90 on its own</td>
- *       <td>{@code ReportTypeSelector}, {@code ConfirmTopology}, {@code StringBoundary} and
- *           {@code BeanValidation} drive both outcomes of each decision</td></tr>
- *   <tr><td>G54 - non-interactive</td><td>no sleep, no network, no watch mode</td></tr>
- * </table>
- *
- * <p><strong>G33 does not apply to this screen, and its absence is a finding rather than an
- * omission.</strong> Gate G33 covers the 1-based-COBOL-to-0-based-Java conversion of an
- * {@code OCCURS} table. {@code 01 CORPT0AI} declares no {@code OCCURS} at all - it has no repeating
- * row group, unlike the ten-row {@code COTRN00} and {@code COUSR00} maps in the same application - so
- * there is no row index to verify and nothing here to get off by one. {@code Geometry} asserts the
- * seventeen fields are seventeen distinct singletons, which is the positive form of the same fact.
- *
- * <p>Of the forty-two {@code DFHMDF} entries in the mapset, seventeen carry a name label and become
- * payload members. The other twenty-five are unlabelled literal and label fields - the captions
- * {@code 'Tran:'}, {@code 'Date:'}, {@code 'Time:'}, {@code 'Prog:'}, the report-type prompts, the
- * {@code '(MM/DD/YYYY)'} hints, the {@code '(Y/N)'} marker and the function-key legend. BMS
- * generates no symbolic-map item for an unlabelled field, so there is nothing for a payload to
- * carry: they are screen furniture, and their absence is asserted, not assumed.
- *
- * <h2>Self-contained by construction</h2>
- *
- * This class extends nothing and shares nothing. It follows the structural shape that
- * {@code TransactionListRequestTest} established in this package - numbered {@code @Nested} groups,
- * transcribed expectations, both sides of every decision - but takes no dependency on it, and no
- * common base class exists or is to be created. Its imports are confined to the four production types
- * this payload is built from ({@link ReportRequestRequest}, {@link NavigationContext},
- * {@link FixedWidthCodec}, {@code FixedWidthRecord}) plus JUnit, AssertJ, Jackson and Jakarta
- * Validation. In particular it does not reach for {@code card.dto.CardScreenState} or for a PF-key
- * resolver: {@code CORPT00C} copies neither {@code CVCRD01Y} nor {@code CSSTRPFY}, so the five-
- * character AID token convention is stated here as a local constant instead.
- *
- * <h2>Boundaries this suite deliberately does not cross</h2>
- *
- * No {@code MockMvc}, no {@code @SpringBootTest}, no {@code @WebMvcTest}, no repository, no
- * {@code JobLauncher} and no data source - {@code CORPT00C} touches no dataset at all. The
- * controller's own behaviour is owned by {@code ReportRequestControllerTest} in the parent package:
- * the job-submission port and its eighty-byte JCL skeleton, the {@code JOB-LINES OCCURS 1000}
- * overlay, gate G29 for the acceptance semantics of the six {@code FUNCTION NUMVAL-C} call sites,
- * {@code FUNCTION DATE-OF-INTEGER} / {@code INTEGER-OF-DATE}, and the two {@code CALL 'CSUTLDTC'}
- * sites. None of it is duplicated here. What this suite owns is the payload-side consequence: the
- * members stay {@code String}, the boundary stays a string boundary, and the bytes stay 337.
  */
 @DisplayName("ReportRequestRequest - CORPT00 symbolic map as the POST /api/reports payload")
 class ReportRequestRequestTest {
-
     private static final String SYMBOLIC_MAP_PATH = "app/cpy-bms/CORPT00.CPY";
     private static final String MAPSET_PATH = "app/bms/CORPT00.bms";
     private static final String PROGRAM_PATH = "app/cbl/CORPT00C.cbl";
 
-    /**
-     * The payload's own source. Read so the gate G22 and G24 negatives can be textual as well as
-     * reflective: reflection proves no member <em>is</em> a fixed-point or floating-point type, and the
-     * text proves no rounding mode is so much as named in the file.
-     */
     private static final String PAYLOAD_SOURCE_PATH =
             "app/java/src/main/java/com/vsergeychik/carddemo/transaction/dto/ReportRequestRequest.java";
 
-    /** {@code 02  xxxI  PIC X(n).} - the payload items of the {@code AI} group. */
     private static final Pattern INPUT_ITEM =
             Pattern.compile("^\\s*02\\s+(\\S*[A-Z0-9]I)\\s+PIC\\s+X\\((\\d+)\\)\\.");
 
-    /**
-     * {@code 02  xxxO  PIC X(n).} - the data items of the {@code AO} overlay. {@code FILLER} cannot
-     * match, because the group name must end in {@code O}.
-     */
     private static final Pattern OUTPUT_ITEM =
             Pattern.compile("^\\s*02\\s+(\\S*[A-Z0-9]O)\\s+PIC\\s+X\\((\\d+)\\)\\.");
 
-    /** {@code 02  xxxL    COMP  PIC  S9(4).} - the signed binary halfword length items. */
     private static final Pattern LENGTH_ITEM =
             Pattern.compile("^\\s*02\\s+(\\S+L)\\s+COMP\\s+PIC\\s+S9\\(4\\)\\.");
 
-    /** {@code 02  xxxF    PICTURE X.} - the flag bytes. */
     private static final Pattern FLAG_ITEM =
             Pattern.compile("^\\s*02\\s+(\\S+F)\\s+PICTURE\\s+X\\.");
 
-    /** {@code 03 xxxA    PICTURE X.} - the attribute views nested in the redefining FILLER. */
     private static final Pattern ATTRIBUTE_ITEM =
             Pattern.compile("^\\s*03\\s+(\\S+A)\\s+PICTURE\\s+X\\.");
 
-    /** A {@code DFHMDF} carrying a name label in the label area. */
     private static final Pattern NAMED_MDF = Pattern.compile("^(\\S+)\\s+DFHMDF\\b");
 
-    /** A {@code DFHMDF} with no name label - screen furniture. */
     private static final Pattern UNNAMED_MDF = Pattern.compile("^\\s+DFHMDF\\b");
 
     private static final Pattern MDF_LENGTH = Pattern.compile("LENGTH=(\\d+)");
 
-    /** {@code MOVE -1 TO <field>L OF CORPT0AI} - the CICS cursor-positioning idiom. */
     private static final Pattern CURSOR_MOVE =
             Pattern.compile("MOVE\\s+-1\\s+TO\\s+(\\S+)L\\s+OF\\s+CORPT0AI");
 
@@ -248,18 +90,6 @@ class ReportRequestRequestTest {
 
     private static final ObjectMapper JSON = new ObjectMapper();
 
-    // =================================================================================================
-    // The transcribed expectation. Every number below is read off app/cpy-bms/CORPT00.CPY,
-    // app/bms/CORPT00.bms, app/cbl/CORPT00C.cbl or app/cpy/COCOM01Y.cpy by eye and written here, never
-    // read back out of the class under test. The suite then checks the class against BOTH this
-    // transcription and the copybook on disk, so a slip in either one is caught by the other.
-    // Practice B3: the sources themselves are opened read-only and are never edited to match.
-    // =================================================================================================
-
-    /**
-     * The seventeen name-labelled {@code DFHMDF} fields in {@code 01 CORPT0AI} declaration order,
-     * transcribed from {@code app/cpy-bms/CORPT00.CPY:17-120}.
-     */
     private static final List<String> EXPECTED_FIELD_NAMES = List.of(
             "TRNNAME", "TITLE01", "CURDATE", "PGMNAME", "TITLE02", "CURTIME",
             "MONTHLY", "YEARLY", "CUSTOM",
@@ -267,10 +97,6 @@ class ReportRequestRequestTest {
             "EDTMM", "EDTDD", "EDTYYYY",
             "CONFIRM", "ERRMSG");
 
-    /**
-     * The seventeen {@code xxxI PIC X(n)} widths in the same order. {@code 4 + 40 + 8 + 8 + 40 + 8 +
-     * 1 + 1 + 1 + 2 + 2 + 4 + 2 + 2 + 4 + 1 + 78 = 206}.
-     */
     private static final List<Integer> EXPECTED_FIELD_WIDTHS_IN_ORDER = List.of(
             4, 40, 8, 8, 40, 8,
             1, 1, 1,
@@ -278,100 +104,52 @@ class ReportRequestRequestTest {
             2, 2, 4,
             1, 78);
 
-    /**
-     * Field name to declared width, in declaration order and unmodifiable. This is the field table the
-     * agent plan asks to be encoded as a constant, and it is the third of the three independent
-     * authorities this suite compares - the other two being the copybook on disk and
-     * {@link ScreenField} itself.
-     */
     private static final Map<String, Integer> EXPECTED_FIELD_WIDTHS = expectedFieldWidths();
 
-    /** Payload fields on this map: the narrowest of the four screens in this package. */
     private static final int EXPECTED_FIELD_COUNT = 17;
 
-    /** The seventeen widths added up. */
     private static final int EXPECTED_PAYLOAD_TOTAL = 206;
 
-    /** {@code 12 + 17 x 7 + 206}, the full width of {@code 01 CORPT0AI}. */
     private static final int EXPECTED_GROUP_IMAGE = 337;
 
-    /**
-     * {@code 01 CARDDEMO-COMMAREA} of {@code app/cpy/COCOM01Y.cpy}, and the whole of what
-     * {@code CORPT00C} passes: {@code 34 + 84 + 12 + 16 + 14}.
-     */
     private static final int EXPECTED_COMMAREA_LENGTH = 160;
 
-    /**
-     * The {@code 58}-byte {@code 05 CDEMO-CTnn-INFO} group that the three {@code CT} screens in this
-     * package declare immediately after {@code COPY COCOM01Y.}, making their passed communication area
-     * {@value #SIBLING_COMMAREA_WITH_EXTENSION} bytes. {@code CORPT00C} declares no such group, which
-     * is the single most copy-pasteable mistake on this screen.
-     */
     private static final int COMMAREA_EXTENSION_LENGTH = 58;
 
-    /** What a communication area would measure if this screen had an extension. It does not. */
     private static final int SIBLING_COMMAREA_WITH_EXTENSION =
             EXPECTED_COMMAREA_LENGTH + COMMAREA_EXTENSION_LENGTH;
 
-    /** {@code MOVE -1 TO xxxL} cursor placements in {@code app/cbl/CORPT00C.cbl}. */
     private static final int EXPECTED_CURSOR_MOVES = 22;
 
-    /** {@code DFHMDF} entries in {@code app/bms/CORPT00.bms}, labelled and unlabelled together. */
     private static final int EXPECTED_TOTAL_MDF = 42;
 
-    /** Unlabelled {@code DFHMDF} entries: screen furniture with no symbolic-map item. */
     private static final int EXPECTED_UNNAMED_MDF = EXPECTED_TOTAL_MDF - EXPECTED_FIELD_COUNT;
 
-    /** Named fields the operator can type into: {@code ATTRB=(...UNPROT)}. */
     private static final int EXPECTED_UNPROTECTED = 10;
 
-    /** Named fields that are {@code ASKIP} and are still returned, because each carries {@code FSET}. */
     private static final int EXPECTED_OUTPUT_ONLY = EXPECTED_FIELD_COUNT - EXPECTED_UNPROTECTED;
 
-    /** The ten input-capable named fields, transcribed from the {@code ATTRB} lists of the mapset. */
     private static final List<String> EXPECTED_INPUT_CAPABLE = List.of(
             "MONTHLY", "YEARLY", "CUSTOM",
             "SDTMM", "SDTDD", "SDTYYYY",
             "EDTMM", "EDTDD", "EDTYYYY",
             "CONFIRM");
 
-    /** The six date parts: a start triple and an end triple, and nothing between them. */
     private static final List<String> EXPECTED_START_DATE_TRIPLE = List.of("SDTMM", "SDTDD", "SDTYYYY");
 
-    /** The end triple, in the same month-day-year order the copybook declares. */
     private static final List<String> EXPECTED_END_DATE_TRIPLE = List.of("EDTMM", "EDTDD", "EDTYYYY");
 
-    /**
-     * Members a transaction-record screen would carry and this one must not:
-     * {@code app/cpy/CVTRA05Y.cpy} is copied by nine programs, and {@code CORPT00C} is not one of them.
-     */
     private static final List<String> FORBIDDEN_TRANSACTION_MEMBERS = List.of(
             "TRNID", "CARDNUM", "TRNAMT", "MID", "MNAME", "MCITY", "MZIP");
 
-    /**
-     * The {@code EIBAID} token for {@code DFHENTER}, the key {@code app/cbl/CORPT00C.cbl:185} acts on.
-     *
-     * <p>Stated as a local constant rather than imported. {@code CORPT00C} copies neither
-     * {@code CVCRD01Y} nor {@code CSSTRPFY}: it tests the raw {@code EIBAID} byte inline, so this
-     * payload has no production dependency on a PF-key resolver and this suite takes none either. The
-     * width is the module's five-character convention, which
-     * {@link ReportRequestRequest#AID_LENGTH} publishes and which this suite asserts against.
-     */
     private static final String AID_ENTER = "ENTER";
 
-    /** The token for {@code DFHPF3}, the {@code XCTL}-to-menu arm at {@code app/cbl/CORPT00C.cbl:187}. */
     private static final String AID_PF3 = "PFK03";
 
-    /** One character of the COBOL {@code SPACES} figurative constant. */
     private static final String SPACE = " ";
 
-    /** One character of the COBOL {@code LOW-VALUES} figurative constant: {@code X'00'}. */
     private static final String LOW_VALUE = "\u0000";
 
-    /**
-     * The index in {@code app/cbl/CORPT00C.cbl} of the first line containing {@code fragment}, or
-     * {@code -1} when it appears nowhere. Zero based, so the printed line number is one greater.
-     */
     private static int lineIndexContaining(String fragment) {
         for (int index = 0; index < program.size(); index++) {
             if (program.get(index).contains(fragment)) {
@@ -381,11 +159,6 @@ class ReportRequestRequestTest {
         return -1;
     }
 
-    /**
-     * The same, for a line that must contain two fragments. Used where the COBOL's own column alignment
-     * puts a run of spaces between the two halves of a statement, which a single literal would have to
-     * reproduce exactly and brittlely.
-     */
     private static int lineIndexContaining(String first, String second) {
         for (int index = 0; index < program.size(); index++) {
             String line = program.get(index);
@@ -396,7 +169,6 @@ class ReportRequestRequestTest {
         return -1;
     }
 
-    /** The index of the first line at or after {@code from} that contains {@code fragment}. */
     private static int lineIndexAfter(int from, String fragment) {
         for (int index = Math.max(from, 0); index < program.size(); index++) {
             if (program.get(index).contains(fragment)) {
@@ -406,7 +178,6 @@ class ReportRequestRequestTest {
         return -1;
     }
 
-    /** Builds the unmodifiable, order-preserving field table from the two transcribed lists. */
     private static Map<String, Integer> expectedFieldWidths() {
         Map<String, Integer> table = new LinkedHashMap<>();
         for (int index = 0; index < EXPECTED_FIELD_NAMES.size(); index++) {
@@ -415,45 +186,20 @@ class ReportRequestRequestTest {
         return java.util.Collections.unmodifiableMap(table);
     }
 
-    /**
-     * The oracle lines every test below reads, snapshotted once and immutable.
-     *
-     * <p>Read eagerly into {@code static final} lists rather than assigned by a {@code @BeforeAll},
-     * because a mutable static is shared state between tests however carefully it is populated: any
-     * method could reassign one, a reader cannot tell from the declaration that nothing does, and the
-     * order in which the suite happens to run becomes part of what the tests mean. The AAP forbids
-     * static mutable state outright (gate G53, practice B9), and these are the files it exists to
-     * protect - the five parity oracles the whole class asserts against.
-     *
-     * <p>{@link #readLines(Path)} already returns an unmodifiable list and
-     * {@link #inputGroupOf(List)} / {@link #outputGroupOf(List)} are pure slices of one, so the
-     * snapshots are immutable in substance as well as in reference.
-     */
     private static final List<String> SYMBOLIC_MAP =
         readLines(repositoryRoot().resolve(SYMBOLIC_MAP_PATH));
 
-    /** The {@code 01 CORPT0AI} group of the symbolic map, lines 17 to 120 inclusive. */
     private static final List<String> inputGroup = inputGroupOf(SYMBOLIC_MAP);
 
-    /** The {@code 01 CORPT0AO REDEFINES CORPT0AI} overlay, line 121 to the end of the copybook. */
     private static final List<String> outputGroup = outputGroupOf(SYMBOLIC_MAP);
 
-    /** The BMS mapset lines - the 17 DFHMDF definitions this payload projects. */
     private static final List<String> mapset = readLines(repositoryRoot().resolve(MAPSET_PATH));
 
-    /** The COBOL program lines, whose paragraph order several tests read. */
     private static final List<String> program = readLines(repositoryRoot().resolve(PROGRAM_PATH));
 
-    /** The payload's own source lines, for the two textual negatives. */
     private static final List<String> payloadSource =
         readLines(repositoryRoot().resolve(PAYLOAD_SOURCE_PATH));
 
-    /**
-     * Locates the repository root by walking up from the working directory until the symbolic map is
-     * found. Surefire runs with the Maven module directory as its working directory, so the walk is
-     * two levels; resolving it rather than hard-coding {@code ../..} keeps the suite runnable from
-     * the repository root and from an IDE as well.
-     */
     private static Path repositoryRoot() {
         Path candidate = Path.of("").toAbsolutePath();
         while (candidate != null) {
@@ -476,11 +222,6 @@ class ReportRequestRequestTest {
         }
     }
 
-    /**
-     * Narrows the copybook to {@code 01 CORPT0AI} and stops at
-     * {@code 01 CORPT0AO REDEFINES CORPT0AI}, so the {@code AO} view's {@code xxxO} items can never
-     * be mistaken for {@code AI}'s {@code xxxI} items.
-     */
     private static List<String> inputGroupOf(List<String> copybook) {
         List<String> group = new ArrayList<>();
         boolean inside = false;
@@ -501,11 +242,6 @@ class ReportRequestRequestTest {
         return group;
     }
 
-    /**
-     * Narrows the copybook to the {@code AO} overlay, which begins at
-     * {@code 01 CORPT0AO REDEFINES CORPT0AI} on line 121 and runs to the end of the file. Its
-     * {@code xxxO} items are the proof that {@code xxxI} and {@code xxxO} address one span.
-     */
     private static List<String> outputGroupOf(List<String> copybook) {
         List<String> group = new ArrayList<>();
         boolean inside = false;
@@ -524,12 +260,10 @@ class ReportRequestRequestTest {
         return group;
     }
 
-    /** Item name to declared width, in copybook declaration order, for one pattern. */
     private static Map<String, Integer> itemsMatching(Pattern pattern) {
         return itemsMatching(inputGroup, pattern);
     }
 
-    /** Item name to declared width, in declaration order, over an arbitrary run of copybook lines. */
     private static Map<String, Integer> itemsMatching(List<String> lines, Pattern pattern) {
         Map<String, Integer> items = new LinkedHashMap<>();
         for (String line : lines) {
@@ -542,7 +276,6 @@ class ReportRequestRequestTest {
         return items;
     }
 
-    /** The {@code xxxO PIC X(n)} items of the {@code AO} overlay, in declaration order. */
     private static Map<String, Integer> outputGroupItems() {
         return itemsMatching(outputGroup, OUTPUT_ITEM);
     }
@@ -551,11 +284,6 @@ class ReportRequestRequestTest {
         return List.copyOf(itemsMatching(pattern).keySet());
     }
 
-    /**
-     * The name-labelled {@code DFHMDF} entries of the mapset with their {@code LENGTH=}, in
-     * declaration order. A {@code LENGTH=} is attributed to the most recent label, and an unlabelled
-     * {@code DFHMDF} clears the label, so screen furniture cannot capture a width.
-     */
     private static Map<String, Integer> namedMapsetFields() {
         Map<String, Integer> fields = new LinkedHashMap<>();
         String pending = null;
@@ -578,7 +306,6 @@ class ReportRequestRequestTest {
         return fields;
     }
 
-    /** The {@code ATTRB=(...)} list of one named {@code DFHMDF}, as one comma-separated string. */
     private static String attributesOf(String fieldName) {
         boolean inside = false;
         for (String line : mapset) {
@@ -613,7 +340,6 @@ class ReportRequestRequestTest {
     @Nested
     @DisplayName("1. Geometry - the 337-byte AI group, proved against the copybook")
     class Geometry {
-
         @Test
         @DisplayName("the copybook declares exactly 17 xxxI payload items")
         void seventeenPayloadItems() {
@@ -745,7 +471,6 @@ class ReportRequestRequestTest {
     @Nested
     @DisplayName("2. Names and widths - verbatim from the copybook and the mapset")
     class NamesAndWidths {
-
         @ParameterizedTest
         @EnumSource(ScreenField.class)
         @DisplayName("the four copybook item names are spelled exactly as CORPT00.CPY spells them")
@@ -888,13 +613,10 @@ class ReportRequestRequestTest {
     @Nested
     @DisplayName("3. The payload - 17 screen fields, the communication area and the AID")
     class PayloadProjection {
-
         @Test
         @DisplayName("the record has 18 components: 17 String fields and one NavigationContext")
         void componentsAreSeventeenStringsAndTheCommarea() {
             RecordComponent[] components = ReportRequestRequest.class.getRecordComponents();
-            // Seventeen screen fields, then the two members that are not screen fields: the
-            // communication area and the resolved EIBAID token.
             assertThat(components).hasSize(ReportRequestRequest.FIELD_COUNT + 2);
             assertThat(components).filteredOn(c -> c.getType() == String.class)
                     .hasSize(ReportRequestRequest.FIELD_COUNT + 1);
@@ -926,8 +648,6 @@ class ReportRequestRequestTest {
             for (ScreenField field : ScreenField.values()) {
                 expected.add(field.bmsName().toLowerCase(java.util.Locale.ROOT));
             }
-            // The AID is a String component too, but it is not a screen field, so it is excluded here
-            // rather than added to the expectation - the assertion is about the DFHMDF projection.
             List<String> actual = new ArrayList<>();
             for (RecordComponent component : ReportRequestRequest.class.getRecordComponents()) {
                 if (component.getType() == String.class && !"aid".equals(component.getName())) {
@@ -1033,8 +753,6 @@ class ReportRequestRequestTest {
         void namedWithersMapToTheirFields() {
             ReportRequestRequest base = ReportRequestRequest.empty();
             assertThat(base.withTrnname("CR00").trnname()).isEqualTo("CR00");
-            // A shorter value is stored SHORT, not padded: padding is a rendering concern that
-            // belongs to FixedWidthCodec, so the payload keeps exactly what arrived.
             assertThat(base.withTitle01("T1").title01()).isEqualTo("T1");
             assertThat(base.withCurdate("07/18/22").curdate()).isEqualTo("07/18/22");
             assertThat(base.withPgmname("CORPT00C").pgmname()).isEqualTo("CORPT00C");
@@ -1051,7 +769,6 @@ class ReportRequestRequestTest {
             assertThat(base.withEdtyyyy("2023").edtyyyy()).isEqualTo("2023");
             assertThat(base.withConfirm("N").confirm()).isEqualTo("N");
             assertThat(base.withErrmsg("boom").errmsg()).isEqualTo("boom");
-            // ... and the codec is what widens it to the declared 78 on the way to the map image.
             assertThat(ASCII.movePicX(base.withErrmsg("boom").errmsg(),
                     ReportRequestRequest.ERRMSG_LENGTH))
                     .isEqualTo("boom" + " ".repeat(ReportRequestRequest.ERRMSG_LENGTH - 4));
@@ -1091,7 +808,6 @@ class ReportRequestRequestTest {
     @Nested
     @DisplayName("4. Normalisation - there is no null in a COBOL record, and no room for a surplus")
     class Normalisation {
-
         @Test
         @DisplayName("empty() is SPACES everywhere, at each field's declared width")
         void emptyIsSpaces() {
@@ -1183,7 +899,6 @@ class ReportRequestRequestTest {
     @Nested
     @DisplayName("5. The JSON contract - 19 properties, nothing trimmed, no metadata on the wire")
     class JsonContract {
-
         @Test
         @DisplayName("the payload is exactly the 19 components and nothing else")
         void payloadIsTheNineteenComponents() throws Exception {
@@ -1195,9 +910,6 @@ class ReportRequestRequestTest {
                 expected.add(field.bmsName().toLowerCase(java.util.Locale.ROOT));
             }
             expected.add("navigationContext");
-            // The AID is the second non-map member: CORPT00C branches on EIBAID at line 183, so the
-            // token has to be on the wire, but it is not a DFHMDF field and so is not counted in
-            // FIELD_COUNT.
             expected.add("aid");
             assertThat(properties).containsExactlyInAnyOrderElementsOf(expected)
                     .hasSize(ReportRequestRequest.FIELD_COUNT + 2);
@@ -1210,17 +922,12 @@ class ReportRequestRequestTest {
             ObjectNode node = (ObjectNode) JSON.readTree(json);
             List<String> properties = new ArrayList<>();
             node.fieldNames().forEachRemaining(properties::add);
-            // The derived accessors are @JsonIgnore'd, so none of them appears at the top level.
-            // "pgmContext" is checked here rather than in the raw string precisely because
-            // CDEMO-PGM-CONTEXT is a real copybook field of the nested communication area and
-            // legitimately does appear there - the request must not restate it beside it.
             assertThat(properties).doesNotContain("enter", "reenter", "pgmContext",
                     "commareaLength", "fieldValues", "hasNavigationContext", "entries", "metadata",
                     "symbolicMapMetadata");
             assertThat(node.get("navigationContext").has("pgmContext"))
                     .as("CDEMO-PGM-CONTEXT belongs to the communication area, and only there")
                     .isTrue();
-            // No metadata item name reaches the wire anywhere in the document, nested included.
             for (ScreenField field : ScreenField.values()) {
                 assertThat(json).doesNotContain(field.lengthItem())
                         .doesNotContain(field.flagItem())
@@ -1296,7 +1003,6 @@ class ReportRequestRequestTest {
     @Nested
     @DisplayName("6. The conversation travels in the payload - there is no session")
     class Conversation {
-
         @Test
         @DisplayName("a carried communication area is 160 bytes, because CORPT00C has no extension")
         void commareaIsOneHundredAndSixty() {
@@ -1377,7 +1083,6 @@ class ReportRequestRequestTest {
     @Nested
     @DisplayName("7. The 337-byte image - every FILLER emitted, every pad done by the codec")
     class FixedWidthImage {
-
         @Test
         @DisplayName("the image is exactly 337 bytes in either code page")
         void imageIsThreeHundredAndThirtySevenBytes() {
@@ -1430,8 +1135,6 @@ class ReportRequestRequestTest {
                     "End Date - Not a valid Day...");
             byte[] image = before.toSymbolicMap(ASCII);
             ReportRequestRequest after = ReportRequestRequest.fromSymbolicMap(ASCII, image);
-            // Every field comes back at its full declared width, so a value that went in short comes
-            // back padded exactly as the codec's PIC X move padded it - and nothing else changed.
             for (ScreenField field : ScreenField.values()) {
                 assertThat(after.value(field)).as("%s", field.inputItem())
                         .hasSize(field.declaredLength())
@@ -1553,7 +1256,6 @@ class ReportRequestRequestTest {
     @Nested
     @DisplayName("8. Metadata carriers - xxxL is signed, xxxA is an alias, and neither is payload")
     class MetadataCarriers {
-
         @Test
         @DisplayName("initial metadata is length 0 with a LOW-VALUES flag")
         void initialMetadata() {
@@ -1722,7 +1424,6 @@ class ReportRequestRequestTest {
     @Nested
     @DisplayName("9. Provenance - the program, the transaction and the 22 cursor moves")
     class Provenance {
-
         @Test
         @DisplayName("the mapset, map, group, transaction and program names are verbatim")
         void namesAreVerbatim() {
@@ -1832,13 +1533,6 @@ class ReportRequestRequestTest {
     @Nested
     @DisplayName("10. The AID - every arm of EVALUATE EIBAID is selectable from the payload")
     class AttentionIdentifier {
-
-        /**
-         * The reason the member exists. {@code app/cbl/CORPT00C.cbl:183-195} decides what the
-         * transaction does by evaluating {@code EIBAID} and nothing else, so a payload with no member
-         * for the key can reach only whichever arm happens to be the default - two of the three
-         * become dead through the API.
-         */
         @Test
         @DisplayName("the program really does branch on EIBAID, with three arms")
         void theProgramBranchesOnTheAid() {
@@ -1846,19 +1540,11 @@ class ReportRequestRequestTest {
             assertThat(program).anyMatch(l -> l.contains("WHEN DFHENTER"));
             assertThat(program).anyMatch(l -> l.contains("WHEN DFHPF3"));
             assertThat(program).anyMatch(l -> l.contains("WHEN OTHER"));
-            // ...and only those three: no PF4, PF5, PF7 or PF8 arm, unlike its COTRN siblings.
             assertThat(program).noneMatch(l -> l.contains("WHEN DFHPF4")
                     || l.contains("WHEN DFHPF5") || l.contains("WHEN DFHPF7")
                     || l.contains("WHEN DFHPF8"));
         }
 
-        /**
-         * The width is asserted against the constant the payload itself publishes and against the two
-         * tokens this screen acts on, not against another package's type. {@code CORPT00C} copies
-         * neither {@code CVCRD01Y} nor {@code CSSTRPFY} - it tests the raw {@code EIBAID} byte inline -
-         * so a dependency on a card screen-state carrier or on a PF-key resolver would be an invented
-         * coupling that the COBOL does not have.
-         */
         @Test
         @DisplayName("the width is the module's five-character token, not a raw EIBAID byte")
         void theWidthIsTheTokenWidth() {
@@ -1876,12 +1562,10 @@ class ReportRequestRequestTest {
 
             assertThat(ReportRequestRequest.empty().withAid(enter).aid()).isEqualTo(enter);
             assertThat(ReportRequestRequest.empty().withAid(pf3).aid()).isEqualTo(pf3);
-            // The WHEN OTHER arm: any other token, spaces included.
             assertThat(ReportRequestRequest.empty().aid())
                     .isEqualTo(" ".repeat(ReportRequestRequest.AID_LENGTH))
                     .isNotEqualTo(enter)
                     .isNotEqualTo(pf3);
-            // The resolver pads, so a caller passing its output never overflows the field.
             assertThat(enter).hasSize(ReportRequestRequest.AID_LENGTH);
             assertThat(pf3).hasSize(ReportRequestRequest.AID_LENGTH);
         }
@@ -1908,8 +1592,6 @@ class ReportRequestRequestTest {
             for (ScreenField field : ScreenField.values()) {
                 assertThat(field.bmsName()).isNotEqualTo(ReportRequestRequest.AID_FIELD);
             }
-            // The image width is derived from the seventeen fields alone, so adding the AID member
-            // cannot have widened it.
             assertThat(ReportRequestRequest.SYMBOLIC_MAP_LENGTH)
                     .isEqualTo(ReportRequestRequest.TIOAPFX_PREFIX_LENGTH
                             + ReportRequestRequest.FIELD_COUNT
@@ -1928,7 +1610,6 @@ class ReportRequestRequestTest {
             assertThat(read.aid()).as("EIBAID lives in the EIB, not in 01 CORPT0AI")
                     .isEqualTo(" ".repeat(ReportRequestRequest.AID_LENGTH));
             assertThat(read.navigationContext()).as("the commarea travels in DFHCOMMAREA").isNull();
-            // Every screen field, though, comes back byte-identical.
             for (ScreenField field : ScreenField.values()) {
                 assertThat(read.value(field)).as("%s", field.inputItem())
                         .isEqualTo(customRequest().value(field));
@@ -1945,16 +1626,9 @@ class ReportRequestRequestTest {
         }
     }
 
-    // =================================================================================================
-    // 11. The three authorities. Groups 1 and 2 above prove the class against the copybook and the
-    // mapset on disk. This group adds the transcription as a third, independent authority and proves
-    // all three agree. A drift now has to be made in the same direction in two places to survive.
-    // =================================================================================================
-
     @Nested
     @DisplayName("11. The transcribed table, the copybook, the mapset and the enum all agree")
     class TranscribedTable {
-
         @Test
         @DisplayName("the transcription itself is well formed: 17 names, 17 widths, no repetition")
         void theTranscriptionIsWellFormed() {
@@ -1966,11 +1640,6 @@ class ReportRequestRequestTest {
                     .containsExactlyElementsOf(EXPECTED_FIELD_NAMES);
         }
 
-        /**
-         * Practice B9: the transcription is {@code static final} <em>and</em> unmodifiable, so no test
-         * can mutate it and teach a later test the wrong width. An immutable constant is allowed;
-         * mutable static state is not.
-         */
         @Test
         @DisplayName("the table is unmodifiable, so no test can hand another the wrong width")
         void theTableIsImmutable() {
@@ -1987,7 +1656,6 @@ class ReportRequestRequestTest {
 
             List<String> baseNames = new ArrayList<>();
             for (String item : onDisk.keySet()) {
-                // Drop the trailing I: the copybook item is the field name plus the direction suffix.
                 baseNames.add(item.substring(0, item.length() - 1));
             }
             assertThat(baseNames)
@@ -2033,12 +1701,6 @@ class ReportRequestRequestTest {
             assertThat(field.attributeItem()).isEqualTo(field.bmsName() + "A");
         }
 
-        /**
-         * The two totals recomputed from the transcription alone, so neither is taken on trust from the
-         * class under test. 337 is the narrowest of the four screens in this package - the
-         * {@code COTRN00} list map is 1265 - which is precisely why a field or a {@code FILLER} dropped
-         * here would be easy to miss without an arithmetic check (gate G21).
-         */
         @Test
         @DisplayName("206 and 337 recomputed from the transcription, then matched against the class")
         void totalsRecomputedFromTheTranscription() {
@@ -2079,11 +1741,6 @@ class ReportRequestRequestTest {
                     .containsExactly("MONTHLY", "YEARLY", "CUSTOM", "CONFIRM");
         }
 
-        /**
-         * Gate G21 from the transcription's side: the prefix arithmetic only closes if the map declares
-         * exactly one twelve-byte TIOAPFX {@code FILLER} and exactly one four-byte reserved
-         * {@code FILLER} per field. Seventeen fields, seventeen reserved fillers.
-         */
         @Test
         @DisplayName("one X(12) prefix FILLER and exactly 17 reserved X(4) FILLERs, as 337 requires")
         void fillerCountsAreWhatTheArithmeticNeeds() {
@@ -2105,16 +1762,9 @@ class ReportRequestRequestTest {
         }
     }
 
-    // =================================================================================================
-    // 12. The date. This screen asks for a range as SIX separate map fields, not as two ten-character
-    // strings, and validates each part on its own. The ten-character form exists only in
-    // WORKING-STORAGE, assembled after every part has been edited.
-    // =================================================================================================
-
     @Nested
     @DisplayName("12. Six date parts in two triples - and no ten-character date field on the map")
     class DateStructure {
-
         @Test
         @DisplayName("the start triple is SDTMM 2, SDTDD 2, SDTYYYY 4 in that order")
         void startTripleIsMonthDayYear() {
@@ -2154,11 +1804,6 @@ class ReportRequestRequestTest {
                     .isEqualTo(EXPECTED_FIELD_NAMES.indexOf("EDTYYYY") + 1);
         }
 
-        /**
-         * The absence that matters. A migration that "tidied" the range into two ten-character members
-         * would look neater and would break parity twice over: it would change the map image, and it
-         * would collapse six independently reachable error messages into two.
-         */
         @Test
         @DisplayName("no field on this map is 10 characters wide, in the class or in the copybook")
         void noSingleTenCharacterDateFieldExists() {
@@ -2172,7 +1817,6 @@ class ReportRequestRequestTest {
                     .as("01 CORPT0AI declares no PIC X(10) item at all")
                     .noneMatch(line -> line.contains("PIC X(10)"));
 
-            // And no member is named as though it carried one.
             for (RecordComponent component : ReportRequestRequest.class.getRecordComponents()) {
                 assertThat(component.getName())
                         .as("component %s", component.getName())
@@ -2180,13 +1824,6 @@ class ReportRequestRequestTest {
             }
         }
 
-        /**
-         * Where the ten-character form does live: {@code app/cbl/CORPT00C.cbl:60-72} declares
-         * {@code 05 WS-START-DATE} as {@code X(04)} + {@code X(02)} + {@code X(02)} with two literal
-         * separators, and {@code WS-DATE-FORMAT PIC X(10) VALUE 'YYYY-MM-DD'} beside it. The program
-         * assembles it from the map parts <em>after</em> editing them, then hands it to
-         * {@code CSUTLDTC}. That assembly is the controller's job, not this payload's.
-         */
         @Test
         @DisplayName("the ten-character date is assembled in WORKING-STORAGE from the six map parts")
         void theTenCharacterDateIsAssembledInWorkingStorage() {
@@ -2207,12 +1844,6 @@ class ReportRequestRequestTest {
             assertThat(program).anyMatch(l -> l.contains("MOVE EDTDDI") && l.contains("WS-END-DATE-DD"));
         }
 
-        /**
-         * {@code app/cbl/CORPT00C.cbl:258-303} gives each part its own empty-field arm with its own
-         * message and its own cursor placement, and {@code :329-374} gives each its own edit. Six
-         * fields, six messages, six {@code MOVE -1} targets - which is only possible because the six
-         * are separate map fields.
-         */
         @Test
         @DisplayName("each of the six parts has its own message and its own cursor placement")
         void eachPartIsEditedIndependently() {
@@ -2274,34 +1905,9 @@ class ReportRequestRequestTest {
         }
     }
 
-    // =================================================================================================
-    // 13. The negative contract. Everything this payload must NOT contain. Each absence below is a
-    // deliberate migration decision with a source citation, not an oversight.
-    // =================================================================================================
-
     @Nested
     @DisplayName("13. What this payload deliberately does not carry")
     class NegativeContract {
-
-        /**
-         * No transaction-record member reaches this payload - and the reason is worth stating precisely,
-         * because the obvious shortcut of "the program does not copy the record" is <strong>false</strong>
-         * and was verified false against the source.
-         *
-         * <p>{@code app/cbl/CORPT00C.cbl:146} really does read {@code COPY CVTRA05Y.}, the 350-byte
-         * transaction record. It is copied for its <em>offsets</em>, not for its values: the program
-         * writes a JCL skeleton whose {@code SYMNAMES} control statements name positions inside that
-         * record - {@code "TRAN-CARD-NUM,263,16,ZD"} at {@code :100} and
-         * {@code "TRAN-PROC-DT,305,10,CH"} at {@code :102} - so the sort step it submits can filter the
-         * transaction file by card number and processing date. The program itself reads no dataset and
-         * displays no transaction: {@code 01 CORPT0AI} has no field for one.
-         *
-         * <p>So the assertion is the one that is actually true and actually protective: none of the
-         * seven transaction-record members that this package's {@code COTRN} siblings legitimately carry
-         * appears on this map, in this enum, among these components, or in the copybook group. Those
-         * seven are precisely the ones at risk of being copied across from a sibling DTO. The JCL
-         * skeleton and its {@code SYMNAMES} offsets belong to {@code ReportRequestControllerTest}.
-         */
         @Test
         @DisplayName("no transaction-record member, even though CORPT00C:146 does COPY CVTRA05Y")
         void noTransactionRecordMembers() {
@@ -2331,17 +1937,6 @@ class ReportRequestRequestTest {
             }
         }
 
-        /**
-         * Gate G44. This migration adds no schema, so the payload carries no persistence metadata: no
-         * entity, no table, no column, no identifier and - the one worth naming explicitly - no version
-         * column. {@code CORPT00C} accesses no dataset at all, and both update screens' optimistic
-         * concurrency lives in {@code 9300-CHECK-CHANGE-IN-REC} on their own services, never in a
-         * generated version field.
-         *
-         * <p>Checked by annotation <em>package</em> rather than by simple name, so a
-         * {@code javax.persistence} import or a differently named ORM annotation cannot slip past a list
-         * of five names.
-         */
         @Test
         @DisplayName("no @Entity, @Table, @Column, @Id or @Version, and no persistence package at all")
         void noPersistenceMetadataAnywhere() {
@@ -2386,12 +1981,6 @@ class ReportRequestRequestTest {
             }
         }
 
-        /**
-         * The ten input-capable fields, cross-checked against the mapset's own {@code ATTRB} lists rather
-         * than taken from the enum. The other seven are {@code ASKIP} - the operator cannot type into
-         * them - yet all seven carry {@code FSET} and so are still returned, which is why they are
-         * modelled at all. Validation metadata applies only to the ten.
-         */
         @Test
         @DisplayName("exactly 10 named fields are UNPROT, and the other 7 are ASKIP but still FSET")
         void theInputCapableSetIsExactlyTheTenNamedFields() {
@@ -2418,7 +2007,6 @@ class ReportRequestRequestTest {
                             "ERRMSG")
                     .hasSize(EXPECTED_OUTPUT_ONLY).hasSize(7);
 
-            // And the enum agrees with the mapset, field for field.
             for (ScreenField field : ScreenField.values()) {
                 assertThat(field.unprotected())
                         .as("%s unprotected", field.bmsName())
@@ -2427,12 +2015,6 @@ class ReportRequestRequestTest {
             assertThat(unprotected.size() + skipped.size()).isEqualTo(EXPECTED_FIELD_COUNT);
         }
 
-        /**
-         * The payload's own imports, as a boundary check. It must not reach into the card package for a
-         * screen-state carrier - {@code CORPT00C} copies no {@code CVCRD01Y} - nor into the parity
-         * harness, nor into any persistence API, and it must import everything explicitly so the
-         * copybook-to-type correspondence stays auditable (gate G52).
-         */
         @Test
         @DisplayName("the payload imports no card screen state, no parity harness and nothing on demand")
         void thePayloadsImportsStayInsideItsContract() {
@@ -2460,12 +2042,6 @@ class ReportRequestRequestTest {
                     .anyMatch(statement -> statement.contains("common.FixedWidthRecord"));
         }
 
-        /**
-         * Gate G33's absence, in its positive form. There is no {@code OCCURS} on this map, so there is no
-         * 1-based-to-0-based row index to get wrong: the seventeen fields are seventeen distinct
-         * singletons, and no member is named as a row. The ten-row {@code COTRN00} and {@code COUSR00}
-         * maps are where that gate has work to do; this one is where its silence is a finding.
-         */
         @Test
         @DisplayName("no OCCURS table on this map, so gate G33 has nothing to verify here")
         void thereIsNoOccursTable() {
@@ -2482,9 +2058,6 @@ class ReportRequestRequestTest {
                         .as("component %s is not a row list", component.getName()).isFalse();
             }
 
-            // A row group announces itself as a run of same-prefix numbered names - COTRN00 carries
-            // TRNID01 through TRNID10. The only numbered names here are the two title lines, which sit
-            // at (1,21) and (2,21) and are two separate captions rather than two rows of one table.
             List<String> numbered = new ArrayList<>();
             for (String name : EXPECTED_FIELD_NAMES) {
                 if (name.matches(".*\\d\\d$")) {
@@ -2497,17 +2070,9 @@ class ReportRequestRequestTest {
         }
     }
 
-    // =================================================================================================
-    // 14. The defining property of this payload, and the one a developer generalising from its three
-    // siblings would get wrong. COTRN00, COTRN01 and COTRN02 each declare a 58-byte CDEMO-CTnn-INFO
-    // group immediately after COPY COCOM01Y, so their passed communication area is 218 bytes. CORPT00C
-    // declares nothing there at all, so its area is the bare 160.
-    // =================================================================================================
-
     @Nested
     @DisplayName("14. The communication area is 160 bytes and not 218: this screen has no extension")
     class CommareaIsNotExtended {
-
         @Test
         @DisplayName("CORPT00C:138 copies COCOM01Y and :140 goes straight on to CORPT00")
         void nothingIsDeclaredBetweenTheTwoCopies() {
@@ -2517,8 +2082,6 @@ class ReportRequestRequestTest {
             assertThat(commareaCopy).as("COPY COCOM01Y. is present").isNotNegative();
             assertThat(mapCopy).as("COPY CORPT00. follows it").isGreaterThan(commareaCopy);
 
-            // Every line between the two is blank. Not "no 05 group" by name - nothing at all, which is
-            // the only form of this assertion that a differently named extension could not slip past.
             for (String between : program.subList(commareaCopy + 1, mapCopy)) {
                 assertThat(between.trim())
                         .as("line %d, between the two COPY statements", commareaCopy + 2)
@@ -2527,10 +2090,6 @@ class ReportRequestRequestTest {
             assertThat(program).noneMatch(line -> line.contains("CDEMO-CR00-INFO"));
         }
 
-        /**
-         * The contrast, stated as an assertion rather than left to a comment. 218 is what this screen's
-         * area would measure if the {@code CT} pattern were copied across; 160 is what it measures.
-         */
         @Test
         @DisplayName("160, not 218: the CT screens' 58-byte CDEMO-CTnn-INFO group is absent here")
         void theCarriedAreaIsOneHundredAndSixtyNotTwoHundredAndEighteen() {
@@ -2548,11 +2107,6 @@ class ReportRequestRequestTest {
                     .isNotEqualTo(SIBLING_COMMAREA_WITH_EXTENSION);
         }
 
-        /**
-         * There is no cursor to carry, so there is no cursor type. The three nested types this payload
-         * does declare are the symbolic-map field enum and the two metadata carriers - and neither
-         * carrier is a record component, so neither can reach the wire.
-         */
         @Test
         @DisplayName("no nested pagination or cursor type is declared at all")
         void noNestedCursorTypeExists() {
@@ -2568,8 +2122,6 @@ class ReportRequestRequestTest {
                         .doesNotContain("page").doesNotContain("info");
             });
 
-            // And the component types confirm it from the other side: seventeen strings, the area, the
-            // key. Nothing else has anywhere to live.
             for (RecordComponent component : ReportRequestRequest.class.getRecordComponents()) {
                 assertThat(component.getType())
                         .as("type of component %s", component.getName())
@@ -2592,7 +2144,6 @@ class ReportRequestRequestTest {
                     .isEqualTo(NavigationContext.COMMAREA_LENGTH)
                     .isEqualTo(EXPECTED_COMMAREA_LENGTH);
 
-            // The sub-groups are also contiguous from zero, so none of them has been quietly moved.
             assertThat(NavigationContext.GENERAL_INFO_OFFSET).isZero();
             assertThat(NavigationContext.CUSTOMER_INFO_OFFSET).isEqualTo(34);
             assertThat(NavigationContext.ACCOUNT_INFO_OFFSET).isEqualTo(118);
@@ -2600,13 +2151,6 @@ class ReportRequestRequestTest {
             assertThat(NavigationContext.MORE_INFO_OFFSET).isEqualTo(146);
         }
 
-        /**
-         * {@code CDEMO-LAST-MAP} and {@code CDEMO-LAST-MAPSET} are {@code PIC X(7)}, and this screen is
-         * the one that makes the difference visible: its map is {@code CORPT0A} and its mapset
-         * {@code CORPT00}, both exactly seven characters, while the symbolic-map group name
-         * {@code CORPT0AI} is eight - the eighth character being the direction suffix, not part of the
-         * map name. Widening either field to {@code X(8)} would move every byte after it.
-         */
         @Test
         @DisplayName("CDEMO-LAST-MAP and CDEMO-LAST-MAPSET are X(7), and CORPT0A / CORPT00 fit exactly")
         void theLastMapNamesAreSevenCharacters() {
@@ -2629,12 +2173,6 @@ class ReportRequestRequestTest {
             assertThat(carried.toFixedWidth(ASCII)).hasSize(EXPECTED_COMMAREA_LENGTH);
         }
 
-        /**
-         * Both {@code CDEMO-PGM-CONTEXT} states have to be expressible in the request, because
-         * {@code ENTER} is "paint the screen" and {@code REENTER} is "validate what was typed" - and it
-         * is the re-enter state that gates the {@code CSSETATY} error highlight on the response side. A
-         * request that could not say which state it was in would make one of the two unreachable.
-         */
         @Test
         @DisplayName("both CDEMO-PGM-CONTEXT states travel in the payload: ENTER 0 and REENTER 1")
         void bothContextStatesTravelInThePayload() throws Exception {
@@ -2651,7 +2189,6 @@ class ReportRequestRequestTest {
             assertThat(reEntry.isReenter()).isTrue();
             assertThat(reEntry.isEnter()).isFalse();
 
-            // The state is payload, so it survives the wire in both directions.
             for (ReportRequestRequest request : List.of(firstEntry, reEntry)) {
                 ReportRequestRequest viaJson = JSON.readValue(JSON.writeValueAsString(request),
                         ReportRequestRequest.class);
@@ -2660,11 +2197,6 @@ class ReportRequestRequestTest {
             }
         }
 
-        /**
-         * Gate G53 and rule R6, checked across the record and all three of its nested types rather than
-         * on the top-level class alone: a mutable static anywhere in the payload's own code would be a
-         * session by another name, and would break request isolation as well as test determinism.
-         */
         @Test
         @DisplayName("no session, no thread-local, no session-scoped annotation and no mutable static")
         void noServerSideStateAnywhereInTheType() {
@@ -2703,28 +2235,9 @@ class ReportRequestRequestTest {
         }
     }
 
-    // =================================================================================================
-    // 15. The per-field overlay, spelled out byte by byte. Group 1 proves the spans are self-consistent;
-    // this group proves they are where the copybook puts them, with every offset k derived from the
-    // transcription rather than read back out of the class.
-    //
-    //   k     .. k+1     xxxL    COMP PIC S9(4)             2 bytes, SIGNED
-    //   k+2             xxxF    PICTURE X                   1 byte
-    //   k+2             xxxA    via FILLER REDEFINES xxxF   the SAME byte, adding nothing
-    //   k+3   .. k+6     FILLER  PICTURE X(4)               4 bytes
-    //   k+7   .. k+6+n   xxxI    PIC X(n)                   n bytes  -> stride 7 + n
-    // =================================================================================================
-
     @Nested
     @DisplayName("15. The per-field overlay - xxxL signed, xxxA aliasing xxxF, xxxI at k+7")
     class ByteOverlay {
-
-        /**
-         * The absolute offset of {@code field}'s {@code xxxL} item, computed from the transcribed widths
-         * alone: twelve for the TIOAPFX prefix, then {@code 7 + n} per preceding field. Deliberately not
-         * taken from {@link ScreenField#lengthSpan()}, so this is an independent check of the class
-         * rather than a restatement of it.
-         */
         private int expectedBaseOffset(ScreenField field) {
             int offset = ReportRequestRequest.TIOAPFX_PREFIX_LENGTH;
             for (ScreenField preceding : ScreenField.values()) {
@@ -2779,13 +2292,6 @@ class ReportRequestRequestTest {
             assertThat(last.inputSpan().endOffsetExclusive()).isEqualTo(EXPECTED_GROUP_IMAGE);
         }
 
-        /**
-         * Gate G34, at the level of a single byte. {@code 02 FILLER REDEFINES xxxF.} with
-         * {@code 03 xxxA PICTURE X.} nested inside it means the flag item and the attribute item are two
-         * names for one byte at {@code k+2}. Both directions are driven: setting through the attribute
-         * view is visible through the flag view, and the byte written into the image is the one either
-         * view names.
-         */
         @ParameterizedTest
         @EnumSource(ScreenField.class)
         @DisplayName("xxxA and xxxF are two accessors over the same single byte at k+2")
@@ -2797,8 +2303,6 @@ class ReportRequestRequestTest {
             assertThat(field.flagSpan().redefinition())
                     .as("%s is the storage span", field.flagItem()).isFalse();
 
-            // Written through the attribute view, read back through the flag view, and the same single
-            // byte in the produced image either way.
             SymbolicMapMetadata metadata = SymbolicMapMetadata.initial().withAttribute(field, "*");
             assertThat(metadata.flag(field)).isEqualTo("*");
             assertThat(metadata.metadata(field).attribute()).isEqualTo(metadata.metadata(field).flag());
@@ -2809,12 +2313,6 @@ class ReportRequestRequestTest {
             assertThat(ReportRequestRequest.metadataFrom(ASCII, image).flag(field)).isEqualTo("*");
         }
 
-        /**
-         * {@code app/cbl/CORPT00C.cbl} performs {@code MOVE -1 TO xxxL} at twenty-two sites, which is
-         * only meaningful because {@code COMP PIC S9(4)} is <em>signed</em>: an unsigned halfword would
-         * read {@code -1} back as {@code 65535} and the cursor would land nowhere. Driven for all
-         * seventeen fields, not just the one the program happens to use most.
-         */
         @ParameterizedTest
         @EnumSource(ScreenField.class)
         @DisplayName("MOVE -1 TO xxxL round-trips as -1 for every field, because the halfword is signed")
@@ -2847,20 +2345,11 @@ class ReportRequestRequestTest {
                         .as("MOVE -1 TO %sL names a field of this map", target)
                         .contains(target);
             }
-            // Distinct targets: the three selectors are addressed through MONTHLY alone, so the eleven
-            // are the six date parts, MONTHLY, CONFIRM and the fields the error paths land on.
             assertThat(targets.stream().distinct().count())
                     .as("distinct cursor targets")
                     .isBetween(1L, (long) EXPECTED_FIELD_COUNT);
         }
 
-        /**
-         * {@code 01 CORPT0AO REDEFINES CORPT0AI} spends seven prefix bytes per field too -
-         * {@code FILLER X(3)} plus the four one-byte colour, PS, highlight and validation items - so
-         * each field's {@code xxxO} item begins at the same {@code k+7} as its {@code xxxI} item. They
-         * are one span under two names, which is why the request and the response projections of this
-         * screen carry the same seventeen fields at the same widths.
-         */
         @Test
         @DisplayName("the xxxI span and the AO view's xxxO span are the identical byte range")
         void theInputSpanIsTheOutputSpan() {
@@ -2880,18 +2369,11 @@ class ReportRequestRequestTest {
             }
             assertThat(offset).as("the AO view is the same 337 bytes").isEqualTo(EXPECTED_GROUP_IMAGE);
 
-            // The AO prefix really is 3 + 1 + 1 + 1 + 1, which is the only way it can come to seven.
             assertThat(outputGroup).anyMatch(line -> line.contains("FILLER PICTURE X(3)"));
             assertThat(outputGroup.stream().filter(l -> l.contains("FILLER PICTURE X(3)")).count())
                     .isEqualTo(EXPECTED_FIELD_COUNT);
         }
 
-        /**
-         * The metadata boundary, asserted by name in both directions rather than by counting. Seventeen
-         * payload keys must be present; the fifty-one metadata item names - seventeen {@code xxxL},
-         * seventeen {@code xxxF}, seventeen {@code xxxA} - must be absent from the whole document, the
-         * nested communication area included.
-         */
         @Test
         @DisplayName("the JSON carries the 17 payload keys and none of the 51 metadata item names")
         void metadataNamesNeverReachTheWire() throws Exception {
@@ -2915,11 +2397,6 @@ class ReportRequestRequestTest {
             }
         }
 
-        /**
-         * Gate G21 once more, from the direction that actually bites: not "is a {@code FILLER} declared"
-         * but "is it emitted". Eighteen filler spans - one prefix and seventeen reserved - and every
-         * byte of every one of them is a space in the produced image, in either code page.
-         */
         @Test
         @DisplayName("the X(12) prefix and all 17 reserved X(4) FILLERs are emitted as spaces")
         void everyFillerSpanIsEmittedAsSpaces() {
@@ -2950,35 +2427,9 @@ class ReportRequestRequestTest {
         }
     }
 
-    // =================================================================================================
-    // 16. Why every member is a String, proved from app/cbl/CORPT00C.cbl rather than assumed.
-    //
-    // The six date parts look numeric and are not. For each one the program normalises the value BACK
-    // INTO its own alphanumeric item at :305-327 -
-    //
-    //     COMPUTE WS-NUM-99 = FUNCTION NUMVAL-C (SDTMMI OF CORPT0AI)
-    //     MOVE    WS-NUM-99 TO SDTMMI OF CORPT0AI
-    //
-    // - and only then edits it, at :329-374, with an alphanumeric class test and a comparison whose
-    // operand is a STRING literal:
-    //
-    //     IF SDTMMI OF CORPT0AI IS NOT NUMERIC OR
-    //        SDTMMI OF CORPT0AI > '12'
-    //
-    // Both tests require the item to be PIC X. Promoting the member to int would make the failing
-    // states unrepresentable and would move the accept/reject boundary - which is what this group
-    // demonstrates rather than asserts.
-    //
-    // FUNCTION NUMVAL-C's own acceptance semantics are NOT re-tested here: gate G29 for the six call
-    // sites belongs to ReportRequestControllerTest in the parent package. What is owned here is the
-    // payload-side consequence.
-    // =================================================================================================
-
     @Nested
     @DisplayName("16. Every member is a String, and the boundary is a string boundary")
     class StringBoundary {
-
-        /** The COBOL class test on a {@code PIC X} item: every character must be a digit. */
         private boolean isCobolNumeric(String value) {
             if (value == null || value.isEmpty()) {
                 return false;
@@ -2992,34 +2443,14 @@ class ReportRequestRequestTest {
             return true;
         }
 
-        /**
-         * {@code IF <part> IS NOT NUMERIC OR <part> > '<limit>'} exactly as
-         * {@code app/cbl/CORPT00C.cbl:329-330}, {@code :338-339}, {@code :355-356} and {@code :364-365}
-         * write it: an alphanumeric class test, then an <em>alphanumeric</em> comparison against a
-         * two-character string literal. {@link String#compareTo} is faithful for the digit-and-space
-         * values this suite feeds it, because space sorts below the digits and the digits sort in
-         * ascending order in both code pages - see
-         * {@code theCollatingSequenceAgreesForDigitsAndSpace}. For a value containing a letter the two
-         * code pages order it differently, but the class test has already rejected it, so the outcome is
-         * the same either way and the comparison arm is never the sole cause.
-         */
         private boolean rejectedByEdit(String stored, String limit) {
             return !isCobolNumeric(stored) || stored.compareTo(limit) > 0;
         }
 
-        /**
-         * {@code COMPUTE WS-NUM-99 = FUNCTION NUMVAL-C(x)} followed by {@code MOVE WS-NUM-99 TO x}, for
-         * the digit-and-space inputs this suite applies it to: the digits present spell the number,
-         * spaces contribute nothing, and the move back through {@code PIC 99} leaves it zero filled to
-         * two characters. This is <strong>not</strong> a general {@code NUMVAL-C}; anything outside that
-         * input class is refused loudly rather than guessed at, because those semantics are gate G29's
-         * and belong to the controller's own suite.
-         */
         private String normaliseTwoDigits(String stored) {
             return String.format("%02d", numvalOfDigitsAndSpaces(stored));
         }
 
-        /** The same pair with {@code WS-NUM-9999 PIC 9999}, which the two year parts use. */
         private String normaliseFourDigits(String stored) {
             return String.format("%04d", numvalOfDigitsAndSpaces(stored));
         }
@@ -3034,12 +2465,6 @@ class ReportRequestRequestTest {
             return digits.isEmpty() ? 0 : Integer.parseInt(digits);
         }
 
-        /**
-         * Rule R4 and gate G22 over the members themselves. Derived accessors such as
-         * {@code pgmContext()} and {@code commareaLength()} legitimately compute an {@code int} - they
-         * are calculations, not storage - so the assertion is scoped to what the record actually holds:
-         * its components and its declared fields.
-         */
         @Test
         @DisplayName("every stored member is a String, or the communication area: never a number")
         void everyStoredMemberIsAString() {
@@ -3079,12 +2504,6 @@ class ReportRequestRequestTest {
             assertThat(wither.getParameterTypes()).containsExactly(String.class);
         }
 
-        /**
-         * The month edit, driven as the string comparison it is. Note two behaviours preserved rather
-         * than corrected (practice B4): {@code '00'} is accepted as a month, because {@code '00'} is
-         * numeric and is not greater than {@code '12'}; and a value the operator left one digit short is
-         * <em>rejected</em>, because a {@code PIC X(2)} receiver pads on the right.
-         */
         @ParameterizedTest
         @CsvSource({
             "'00', false", "'01', false", "'07', false", "'11', false", "'12', false",
@@ -3097,7 +2516,6 @@ class ReportRequestRequestTest {
             assertThat(rejectedByEdit(stored, "12"))
                     .as("IS NOT NUMERIC OR > '12' for \"%s\"", stored)
                     .isEqualTo(rejected);
-            // Both months are edited against the same literal, so one table drives both fields.
             assertThat(program).anyMatch(line -> line.contains("SDTMMI OF CORPT0AI > '12'"));
             assertThat(program).anyMatch(line -> line.contains("EDTMMI OF CORPT0AI > '12'"));
         }
@@ -3118,23 +2536,6 @@ class ReportRequestRequestTest {
             assertThat(program).anyMatch(line -> line.contains("EDTDDI OF CORPT0AI > '31'"));
         }
 
-        /**
-         * The case that justifies the whole typing decision, and the one an implementer is most likely to
-         * "fix". Two states, both real, neither expressible in an {@code int}:
-         *
-         * <ul>
-         *   <li>An operator who types {@code 9} into the two-character month field leaves {@code "9 "} in
-         *       storage, because a {@code PIC X} receiver is filled from the left and padded on the
-         *       right. As characters, {@code "9 "} is greater than {@code "12"} - {@code '9'} beats
-         *       {@code '1'} at the first position and the comparison stops there - so the COBOL
-         *       <strong>rejects</strong> it with {@code 'Start Date - Not a valid Month...'}. As a
-         *       number it is 9, a perfectly valid month, which an {@code int} member would
-         *       <strong>accept</strong>. Same input, opposite outcome.</li>
-         *   <li>An operator who types {@code 9} into the right-hand position leaves {@code " 9"}, which
-         *       fails {@code IS NUMERIC} outright. An {@code int} member cannot hold "nine, badly typed"
-         *       at all: the distinction disappears at the type, not at the edit.</li>
-         * </ul>
-         */
         @Test
         @DisplayName("promoting SDTMM to int would move the accept/reject boundary: '9 ' proves it")
         void promotingTheFieldToIntWouldMoveTheBoundary() {
@@ -3154,7 +2555,6 @@ class ReportRequestRequestTest {
                     .isEqualTo(9)
                     .isLessThanOrEqualTo(12);
 
-            // The other direction: a value an int could not represent at all.
             String rightJustified = " 9";
             assertThat(isCobolNumeric(rightJustified)).isFalse();
             assertThat(rejectedByEdit(rightJustified, "12")).isTrue();
@@ -3162,20 +2562,12 @@ class ReportRequestRequestTest {
                     .as("the comparison arm alone would have accepted it; the class test is what rejects")
                     .isNegative();
 
-            // And the payload really does carry both states, untouched.
             ReportRequestRequest request = ReportRequestRequest.empty()
                     .withSdtmm(stored).withEdtmm(rightJustified);
             assertThat(request.sdtmm()).isEqualTo("9 ");
             assertThat(request.edtmm()).isEqualTo(" 9");
         }
 
-        /**
-         * The string comparison is code-page independent for the values that can reach it as digits and
-         * spaces: {@code SPACE} sorts below {@code '0'} and the digits ascend, in US-ASCII
-         * ({@code 0x20 < 0x30..0x39}) and in IBM037 ({@code 0x40 < 0xF0..0xF9}) alike. So
-         * {@code "9 " > "12"} holds on the mainframe as well as here, and the migration has not
-         * accidentally made the boundary depend on the encoding.
-         */
         @Test
         @DisplayName("the collating sequence agrees for digits and space in both code pages")
         void theCollatingSequenceAgreesForDigitsAndSpace() {
@@ -3191,13 +2583,10 @@ class ReportRequestRequestTest {
                 assertThat(compareImages(codec, "  ", "12"))
                         .as("spaces sort below digits in %s", codec.charset()).isNegative();
             }
-            // Java's own String order agrees with both for these values, which is what makes the
-            // helper above a faithful model.
             assertThat("9 ".compareTo("12")).isPositive();
             assertThat(" 9".compareTo("12")).isNegative();
         }
 
-        /** Byte-wise, unsigned comparison of two values as the given code page encodes them. */
         private int compareImages(FixedWidthCodec codec, String left, String right) {
             byte[] leftBytes = codec.encodeImage(left, "left operand");
             byte[] rightBytes = codec.encodeImage(right, "right operand");
@@ -3211,13 +2600,6 @@ class ReportRequestRequestTest {
             return leftBytes.length - rightBytes.length;
         }
 
-        /**
-         * The order in the source, which is what makes the two-stage shape real: the empty-field arm at
-         * {@code :258} runs first, the six normalisations at {@code :305-327} next, and the edits at
-         * {@code :329-374} last. Each failing arm ends in {@code PERFORM SEND-TRNRPT-SCREEN}, whose final
-         * statement is the program's single {@code GO TO RETURN-TO-CICS}, so the first failure is the one
-         * the operator sees.
-         */
         @Test
         @DisplayName("the source normalises first and validates second, never the other way round")
         void normalisationPrecedesValidationInTheSource() {
@@ -3238,24 +2620,16 @@ class ReportRequestRequestTest {
                     .isEqualTo(1);
         }
 
-        /**
-         * And the order changes the answer, which is why it must be preserved. A month typed as a single
-         * digit arrives as {@code "9 "}; a month typed as {@code "1 "} arrives one digit short too, and
-         * the two resolve differently only because normalisation runs first.
-         */
         @Test
         @DisplayName("normalise-then-validate accepts '1 ' where validate-then-normalise would reject it")
         void theOrderChangesTheOutcome() {
             String typed = ASCII.movePicX("1", ScreenField.SDTMM.declaredLength());
             assertThat(typed).isEqualTo("1 ");
 
-            // Validate first: the class test fails on the trailing space, and the value is rejected.
             assertThat(rejectedByEdit(typed, "12"))
                     .as("validate-then-normalise would reject a perfectly good January")
                     .isTrue();
 
-            // Normalise first, as CORPT00C does: NUMVAL-C reads 1, the move back leaves "01", and the
-            // edit accepts it.
             String normalised = normaliseTwoDigits(typed);
             assertThat(normalised).isEqualTo("01");
             assertThat(isCobolNumeric(normalised)).isTrue();
@@ -3263,19 +2637,12 @@ class ReportRequestRequestTest {
                     .as("normalise-then-validate accepts it, which is the program's behaviour")
                     .isFalse();
 
-            // The same shape for a day, and for a value that normalisation leaves rejected.
             assertThat(normaliseTwoDigits(ASCII.movePicX("7", 2))).isEqualTo("07");
             assertThat(rejectedByEdit(normaliseTwoDigits("99"), "12"))
                     .as("normalisation does not rescue a month of 99")
                     .isTrue();
         }
 
-        /**
-         * The two year parts are {@code PIC X(4)} and go through the same pair, but with
-         * {@code WS-NUM-9999 PIC 9999} - and they are class tested <em>only</em>: there is no
-         * {@code > '...'} comparison for a year anywhere in the program, so no upper bound is invented
-         * here either.
-         */
         @Test
         @DisplayName("SDTYYYY and EDTYYYY are X(4), normalised through PIC 9999 and class tested only")
         void theYearPartsUseTheFourDigitWorkingItem() {
@@ -3300,12 +2667,6 @@ class ReportRequestRequestTest {
             assertThat(normaliseFourDigits("    ")).isEqualTo("0000");
         }
 
-        /**
-         * Gate G24 as a negative, and gate G22 textually. There is nothing on this screen to round: the
-         * payload carries date parts, one-character flags and message text, and not one monetary field.
-         * The assertion is therefore that no rounding mode is even <em>named</em> in the payload's
-         * source, and that no member is a fixed-point type.
-         */
         @Test
         @DisplayName("no RoundingMode, no HALF_UP, HALF_EVEN, CEILING or FLOOR, and no monetary member")
         void noRoundingModeAndNoMonetaryMember() {
@@ -3338,7 +2699,6 @@ class ReportRequestRequestTest {
                 }
             }
 
-            // Nor is any field named as though it held money: no amount, balance, rate or limit.
             for (String name : EXPECTED_FIELD_NAMES) {
                 assertThat(name)
                         .doesNotContain("AMT").doesNotContain("BAL")
@@ -3346,11 +2706,6 @@ class ReportRequestRequestTest {
             }
         }
 
-        /**
-         * The payload's part of the bargain: it stores these awkward values byte for byte, so the edit
-         * above sees exactly what the screen sent. The image path compares against the value as a
-         * {@code PIC X} receiver stores it, because padding is the codec's job and is done in one place.
-         */
         @ParameterizedTest
         @ValueSource(strings = {"9 ", " 9", "  ", "01", "12", "13", "99", "1A"})
         @DisplayName("every one of these values survives the payload, the JSON and the 337 bytes")
@@ -3370,40 +2725,16 @@ class ReportRequestRequestTest {
         }
     }
 
-    // =================================================================================================
-    // 17. The report-type selector: app/cbl/CORPT00C.cbl:212-262 with its WHEN OTHER at :437.
-    //
-    //     EVALUATE TRUE
-    //         WHEN MONTHLYI OF CORPT0AI NOT = SPACES AND LOW-VALUES   -> :213 monthly range
-    //         WHEN YEARLYI  OF CORPT0AI NOT = SPACES AND LOW-VALUES   -> :239 yearly range
-    //         WHEN CUSTOMI  OF CORPT0AI NOT = SPACES AND LOW-VALUES   -> :256 custom range
-    //         WHEN OTHER                                             -> :437 'Select a report type...'
-    //     END-EVALUATE
-    //
-    // Two properties, both load bearing: the predicate is a TWO-part test, and the EVALUATE is ordered.
-    // The source permits two selectors at once and resolves the ambiguity by position, so this must
-    // never become an exclusive-choice enum.
-    // =================================================================================================
-
     @Nested
     @DisplayName("17. The ordered selector - Monthly beats Yearly beats Custom, and blank is an arm")
     class ReportTypeSelector {
-
-        /** The {@code WHEN OTHER} arm's message, verbatim from {@code app/cbl/CORPT00C.cbl:438-439}. */
         private static final String NO_TYPE_SELECTED = "Select a report type to print report...";
 
-        /**
-         * {@code WHEN <field> NOT = SPACES AND LOW-VALUES} is COBOL's abbreviated combined relation and
-         * means {@code (x NOT = SPACES) AND (x NOT = LOW-VALUES)} - two comparisons against the same
-         * subject, not one against a pair. The value is compared as the map stores it, so a short value
-         * is padded by the codec first.
-         */
         private boolean selected(ScreenField field, String value) {
             String stored = ASCII.movePicX(value, field.declaredLength());
             return !stored.equals(field.spaces()) && !stored.equals(field.lowValues());
         }
 
-        /** The ordered {@code EVALUATE TRUE}, first match winning, with the blank case as the last arm. */
         private String reportType(ReportRequestRequest request) {
             if (selected(ScreenField.MONTHLY, request.monthly())) {
                 return "Monthly";
@@ -3417,14 +2748,6 @@ class ReportRequestRequestTest {
             return NO_TYPE_SELECTED;
         }
 
-        /**
-         * All four combinations of the two-part test, on a field one byte wide. The fourth - equal to
-         * spaces <em>and</em> to low values at once - is impossible, and saying so is the point: the two
-         * halves are not redundant, they are alternatives. {@code MOVE LOW-VALUES TO CORPT0AO} at
-         * {@code :179} leaves binary zeros on first entry, while a screen the operator has been shown and
-         * has left alone comes back as spaces, so both states occur and both must be treated as "not
-         * selected".
-         */
         @Test
         @DisplayName("the predicate is two-part: not spaces AND not low-values, which cannot both hold")
         void thePredicateIsTwoPart() {
@@ -3437,8 +2760,6 @@ class ReportRequestRequestTest {
 
             assertThat(monthly.spaces()).isEqualTo(SPACE).isNotEqualTo(monthly.lowValues());
             assertThat(monthly.lowValues()).isEqualTo(LOW_VALUE);
-            // The fourth combination: no one-byte value equals both, so neither half of the test can be
-            // dropped as implied by the other.
             assertThat(monthly.spaces().equals(monthly.lowValues()))
                     .as("spaces and low values are distinct states in storage")
                     .isFalse();
@@ -3466,11 +2787,6 @@ class ReportRequestRequestTest {
                     line.contains(field.inputItem() + " OF CORPT0AI NOT = SPACES AND LOW-VALUES"));
         }
 
-        /**
-         * The ambiguity the source permits, resolved the way the source resolves it: by position. A
-         * request with two selectors set is not rejected and is not a validation error - the earlier arm
-         * simply wins, and the later one is never evaluated.
-         */
         @Test
         @DisplayName("first match wins: monthly beats yearly beats custom, and all three at once is monthly")
         void firstMatchWinsInSourceOrder() {
@@ -3530,11 +2846,6 @@ class ReportRequestRequestTest {
                     .isLessThan(ScreenField.YEARLY.ordinal());
         }
 
-        /**
-         * The monthly and yearly arms assign the fixed parts of their ranges as <em>two-character string
-         * literals</em> - {@code '01'}, {@code '12'}, {@code '31'} - which is the same evidence for
-         * alphanumeric typing that group 16 draws from the edits, seen from the assignment side.
-         */
         @Test
         @DisplayName("the monthly and yearly arms assign the literals '01', '12' and '31' as characters")
         void theFixedRangePartsAreTwoCharacterLiterals() {
@@ -3550,7 +2861,6 @@ class ReportRequestRequestTest {
             for (String literal : List.of("01", "12", "31")) {
                 assertThat(literal).hasSize(ScreenField.SDTMM.declaredLength()).hasSize(2);
             }
-            // And the payload carries exactly those values, at exactly those widths.
             ReportRequestRequest wholeYear = ReportRequestRequest.empty()
                     .withSdtmm("01").withSdtdd("01").withEdtmm("12").withEdtdd("31");
             assertThat(wholeYear.sdtmm()).isEqualTo("01");
@@ -3560,11 +2870,6 @@ class ReportRequestRequestTest {
             assertThat(wholeYear.toSymbolicMap(ASCII)).hasSize(EXPECTED_GROUP_IMAGE);
         }
 
-        /**
-         * Why this is three independent {@code String} members and not one enum: the COBOL can be handed
-         * two selectors at once, and an exclusive choice would make that input unrepresentable - changing
-         * a request the program accepts into one the API rejects.
-         */
         @Test
         @DisplayName("the three selectors are independent Strings: the ambiguous input stays expressible")
         void theSelectorsAreNotAnExclusiveChoice() {
@@ -3585,32 +2890,9 @@ class ReportRequestRequestTest {
         }
     }
 
-    // =================================================================================================
-    // 18. CONFIRM, which this program handles in TWO stages - and not the way its sibling add screen
-    // does.
-    //
-    //   :464  IF CONFIRMI OF CORPT0AI = SPACES OR LOW-VALUES      <- a separate, prior stage
-    //             STRING 'Please confirm to print the ' DELIMITED BY SIZE
-    //                    WS-REPORT-NAME                DELIMITED BY SPACE
-    //                    ' report...'                  DELIMITED BY SIZE  INTO WS-MESSAGE
-    //             MOVE 'Y' TO WS-ERR-FLG   MOVE -1 TO CONFIRML
-    //   :477  IF NOT ERR-FLG-ON
-    //             EVALUATE TRUE
-    //                 WHEN CONFIRMI = 'Y' OR 'y'  -> CONTINUE
-    //                 WHEN CONFIRMI = 'N' OR 'n'  -> INITIALIZE-ALL-FIELDS, set the error flag
-    //                 WHEN OTHER                  -> '"' + CONFIRMI DELIMITED BY SPACE + '" is not a
-    //                                                valid value to confirm...'
-    //
-    // COTRN02C - the transaction add screen in this same package - writes ONE EVALUATE CONFIRMI and
-    // groups blank WITH 'N' and 'n' inside it. The two topologies are genuinely different: there, blank
-    // and no share an arm and a message; here, blank is intercepted first and gets its own message, and
-    // the EVALUATE never sees it. They must not be unified.
-    // =================================================================================================
-
     @Nested
     @DisplayName("18. CONFIRM in two stages - blank, then Y/y, N/n and everything else")
     class ConfirmTopology {
-
         private static final String BLANK = "blank";
         private static final String YES = "yes";
         private static final String NO = "no";
@@ -3620,7 +2902,6 @@ class ReportRequestRequestTest {
         private static final String BLANK_MESSAGE_TAIL = " report...";
         private static final String INVALID_MESSAGE_TAIL = "\" is not a valid value to confirm...";
 
-        /** Stage one at {@code :464}, then stage two at {@code :477-495}, in that order. */
         private String confirmOutcome(String value) {
             String stored = ASCII.movePicX(value, ScreenField.CONFIRM.declaredLength());
             if (stored.equals(ScreenField.CONFIRM.spaces())
@@ -3634,10 +2915,6 @@ class ReportRequestRequestTest {
             };
         }
 
-        /**
-         * {@code STRING ... DELIMITED BY SPACE}: the operand contributes its characters up to, but not
-         * including, its first space. {@code DELIMITED BY SIZE} contributes all of them.
-         */
         private String delimitedBySpace(String operand) {
             int firstSpace = operand.indexOf(' ');
             return firstSpace < 0 ? operand : operand.substring(0, firstSpace);
@@ -3656,7 +2933,6 @@ class ReportRequestRequestTest {
             assertThat(stageTwo).as("and only then does the EVALUATE run").isGreaterThan(guard);
             assertThat(endEvaluate).isGreaterThan(stageTwo);
 
-            // The decisive assertion: the EVALUATE itself has no blank arm, because stage one took it.
             for (String line : program.subList(stageTwo, endEvaluate)) {
                 assertThat(line)
                         .as("no arm of the CONFIRM EVALUATE mentions a figurative constant")
@@ -3694,12 +2970,6 @@ class ReportRequestRequestTest {
                     .isEqualTo(typed);
         }
 
-        /**
-         * Where {@code DELIMITED BY SPACE} actually bites: {@code WS-REPORT-NAME} is
-         * {@code PIC X(10) VALUE SPACES} at {@code app/cbl/CORPT00C.cbl:58}, so {@code 'Monthly'} sits in
-         * it as {@code "Monthly   "} and the delimiter is what keeps three spaces out of the middle of
-         * the sentence.
-         */
         @Test
         @DisplayName("the blank message truncates the report name at its first space")
         void theBlankMessageIsDelimitedBySpace() {
@@ -3716,18 +2986,10 @@ class ReportRequestRequestTest {
             assertThat(BLANK_MESSAGE_HEAD + delimitedBySpace(heldInWorkingStorage) + BLANK_MESSAGE_TAIL)
                     .isEqualTo("Please confirm to print the Monthly report...");
 
-            // The other two report names behave the same way, and 'Custom' is the shortest.
             assertThat(delimitedBySpace(ASCII.movePicX("Yearly", 10))).isEqualTo("Yearly");
             assertThat(delimitedBySpace(ASCII.movePicX("Custom", 10))).isEqualTo("Custom");
         }
 
-        /**
-         * The {@code WHEN OTHER} echo uses the same delimiter on {@code CONFIRMI} - and because
-         * {@code CONFIRMI} is {@code PIC X(1)}, the delimiter can only ever drop the whole operand, which
-         * is precisely the blank case that {@code :464} has already intercepted. So the echo is always
-         * the single character the operator typed. Recording that is the point: the delimiter is not
-         * redundant, it is unreachable-by-construction here, and the reason is the field's width.
-         */
         @Test
         @DisplayName("the invalid-value echo is DELIMITED BY SPACE too, which a X(1) field makes degenerate")
         void theInvalidEchoIsDelimitedBySpace() {
@@ -3751,12 +3013,6 @@ class ReportRequestRequestTest {
                     .isEqualTo(BLANK);
         }
 
-        /**
-         * The {@code N}/{@code n} arm performs {@code INITIALIZE-ALL-FIELDS}, which names exactly the ten
-         * input-capable {@code xxxI} items and {@code WS-MESSAGE}, and moves {@code -1} to
-         * {@code MONTHLYL}. It does <strong>not</strong> touch the seven {@code ASKIP} header fields, and
-         * the payload models that difference exactly.
-         */
         @Test
         @DisplayName("the N arm reinitialises exactly the 10 input-capable fields, not the 7 headers")
         void theNoArmReinitialisesOnlyTheTypeableFields() {
@@ -3772,7 +3028,6 @@ class ReportRequestRequestTest {
             assertThat(program.subList(paragraph, program.size()))
                     .anyMatch(line -> line.contains("MOVE -1") && line.contains("MONTHLYL"));
 
-            // Modelled on the payload: the ten typeable fields go back to SPACES, the seven headers stay.
             ReportRequestRequest inUse = customRequest().withTitle01("TRANSACTION REPORTS")
                     .withCurdate("07/18/22").withCurtime("12:00:00").withErrmsg("something went wrong");
             ReportRequestRequest reinitialised = inUse;
@@ -3805,7 +3060,6 @@ class ReportRequestRequestTest {
                     .filter(line -> line.trim().startsWith("WHEN ")).count();
             assertThat(arms).as("WHEN 'Y' OR 'y', WHEN 'N' OR 'n', WHEN OTHER").isEqualTo(3);
 
-            // And every outcome the model produces is one of the four this screen can be in.
             for (String typed : List.of(SPACE, LOW_VALUE, "Y", "y", "N", "n", "Q")) {
                 assertThat(confirmOutcome(typed)).isIn(BLANK, YES, NO, INVALID);
             }
@@ -3830,21 +3084,9 @@ class ReportRequestRequestTest {
         }
     }
 
-    // =================================================================================================
-    // 19. Bean Validation, driven from both sides for every constrained field.
-    //
-    // There is a wrinkle worth stating, because it decides how the invalid side has to be driven: the
-    // canonical constructor already refuses an over-long value, so an over-wide instance cannot be built
-    // and validator.validate(instance) can never see a @Size violation. The declarative ceiling is
-    // therefore exercised with Validator.validateValue, which checks a value against a property's
-    // constraints without constructing the bean - and the two ceilings are asserted to be the same
-    // number, so the declarative contract and the constructor guard cannot drift apart.
-    // =================================================================================================
-
     @Nested
     @DisplayName("19. Bean Validation - valid at the declared width, refused one character over")
     class BeanValidation {
-
         @ParameterizedTest
         @EnumSource(ScreenField.class)
         @DisplayName("a value at exactly the declared width raises no violation")
@@ -3883,12 +3125,6 @@ class ReportRequestRequestTest {
                         field.declaredLength() + 1).hasSize(1);
                 ConstraintViolation<ReportRequestRequest> violation = violations.iterator().next();
                 assertThat(violation.getPropertyPath()).hasToString(property);
-                // The message states the declared width and nothing else. It used to name the
-                // copybook item and its PICTURE clause, which is provenance written for a maintainer
-                // rather than a correction a caller can act on - and which, handed out one rejected
-                // field at a time, describes the estate behind the API. The item name and its width
-                // are still asserted against app/cpy-bms/CORPT00.CPY elsewhere in this class; they
-                // simply no longer travel to whoever sent the request.
                 assertThat(violation.getMessage())
                         .as("the message states the width and no internal provenance")
                         .isEqualTo("must be at most " + field.declaredLength() + " characters")
@@ -3897,11 +3133,6 @@ class ReportRequestRequestTest {
             }
         }
 
-        /**
-         * The declarative ceiling and the constructor guard are the same number, checked field by field.
-         * That is what makes the {@code @Size} annotation an accurate description of the type rather than
-         * a second, looser opinion about it.
-         */
         @ParameterizedTest
         @EnumSource(ScreenField.class)
         @DisplayName("the @Size ceiling and the constructor's own guard agree exactly")
@@ -3912,8 +3143,6 @@ class ReportRequestRequestTest {
             assertThat(size).isNotNull();
             assertThat(size.max()).isEqualTo(field.declaredLength());
 
-            // At the ceiling the constructor accepts; one over, it refuses - and refuses by naming the
-            // item rather than by echoing the value.
             assertThat(ReportRequestRequest.empty()
                     .withValue(field, "x".repeat(size.max())).value(field))
                     .hasSize(size.max());
@@ -3923,13 +3152,6 @@ class ReportRequestRequestTest {
                     .withMessageContaining(field.inputItem());
         }
 
-        /**
-         * A fully populated, realistic request has nothing wrong with it, and neither has a request of
-         * nulls: the constructor turns those into {@code SPACES}, which is what an untouched
-         * {@code PIC X} item holds. Nothing Java-side pre-empts the program's own editing - if it did,
-         * the {@code IS NOT NUMERIC}, {@code > '12'} and {@code WHEN OTHER} arms would become
-         * unreachable through the API.
-         */
         @Test
         @DisplayName("a real request, an empty request and a garbage request all pass validation")
         void nothingJavaSidePreEmptsTheProgramsOwnEditing() {
@@ -3943,7 +3165,6 @@ class ReportRequestRequestTest {
                 assertThat(validator.validate(ReportRequestRequest.lowValues()))
                         .as("and one still holding LOW-VALUES").isEmpty();
 
-                // Values CORPT00C itself rejects, with its own messages. Java must not reject them first.
                 ReportRequestRequest garbage = ReportRequestRequest.empty()
                         .withMonthly("X").withYearly("Y").withCustom("Z")
                         .withSdtmm("99").withSdtdd("99").withSdtyyyy("XXXX")
@@ -3953,7 +3174,6 @@ class ReportRequestRequestTest {
                         .as("every content rule is deferred to the COBOL")
                         .isEmpty();
 
-                // Including the cold-start shape, where no communication area was passed at all.
                 assertThat(validator.validate(garbage.withoutNavigationContext()))
                         .as("EIBCALEN = 0 is a state, not an error")
                         .isEmpty();
@@ -3987,11 +3207,6 @@ class ReportRequestRequestTest {
             }
         }
 
-        /**
-         * Seventeen screen fields plus the key: eighteen constrained properties, and not one more. A
-         * {@code @NotNull} or a {@code @Pattern} added anywhere here would be a rule the COBOL does not
-         * have, which is why their absence is asserted rather than assumed.
-         */
         @Test
         @DisplayName("exactly 18 properties carry @Size, and nothing carries a stricter constraint")
         void theConstraintSurfaceIsExactlyEighteenSizes() throws Exception {

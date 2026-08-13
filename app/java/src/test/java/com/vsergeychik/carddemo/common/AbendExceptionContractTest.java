@@ -13,22 +13,12 @@ import org.junit.jupiter.params.provider.ValueSource;
 
 /**
  * Tests for {@link AbendException}, the translation of the nine {@code CALL 'CEE3ABD'} sites.
- *
- * <p>The COBOL convention at those sites is to display an abend message, move a return code - 8 or 12
- * in the observed cases - and then abend. Two properties therefore matter for parity and are asserted
- * here: the return code must survive onto the exception so that a batch exit status matches, and the
- * abend parameters must be distinguishable from their absence, because the two call shapes in the
- * source differ in whether they pass them.
- *
- * <p>Every guard and every optional-field branch is driven from both sides.
  */
 @DisplayName("AbendException - the CEE3ABD equivalent and its RETURN-CODE")
 class AbendExceptionContractTest {
-
     @Nested
     @DisplayName("Return-code constants")
     class ReturnCodes {
-
         @Test
         @DisplayName("the documented COBOL return codes are 0, 4, 8, 12 and 16")
         void returnCodeConstants() {
@@ -51,7 +41,6 @@ class AbendExceptionContractTest {
     @Nested
     @DisplayName("standard() - the CEE3ABD shape that passes abend code and timing")
     class StandardFactory {
-
         @Test
         @DisplayName("carries the program, the return code and the standard abend parameters")
         void carriesProgramAndReturnCode() {
@@ -104,7 +93,6 @@ class AbendExceptionContractTest {
     @Nested
     @DisplayName("withoutAbendParameters() - the shape that omits abend code and timing")
     class WithoutAbendParametersFactory {
-
         @Test
         @DisplayName("both abend parameters are absent, and that is distinguishable from zero")
         void abendParametersAreAbsent() {
@@ -147,7 +135,6 @@ class AbendExceptionContractTest {
     @Nested
     @DisplayName("Reason normalisation - blank is treated as absent")
     class ReasonNormalisation {
-
         @ParameterizedTest(name = "a reason of [{0}] normalises to absent")
         @ValueSource(strings = {"", " ", "   ", "\t", "\n"})
         @DisplayName("a null, empty or whitespace-only reason is normalised to absent")
@@ -176,7 +163,6 @@ class AbendExceptionContractTest {
     @Nested
     @DisplayName("Program-name guards")
     class ProgramGuards {
-
         @Test
         @DisplayName("a null program name is rejected")
         void nullProgramRejected() {
@@ -207,7 +193,6 @@ class AbendExceptionContractTest {
     @Nested
     @DisplayName("Exception shape")
     class ExceptionShape {
-
         @Test
         @DisplayName("it is an unchecked exception, so COBOL abend paths need no checked plumbing")
         void isUnchecked() {

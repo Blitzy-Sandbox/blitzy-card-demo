@@ -10,30 +10,17 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 /**
- * Tests for {@link CobolCharsetConfig}, the one place in the module where a character encoding is
- * named.
- *
- * <p>Everything here runs without an application context. The class takes its three code-page names
- * as constructor arguments, so a plain unit test can drive every published bean and the single
- * decision behind them - which is exactly the property that makes the branch-coverage gate reachable
- * deterministically.
- *
- * <p>{@code review_rules} returns exactly one line - "No user rules provided." - so no user rule
- * governs this file.
+ * Tests for {@link CobolCharsetConfig}, the one place in the module where a character encoding is named.
  */
 @DisplayName("CobolCharsetConfig - the single seam that names a code page")
 class CobolCharsetConfigBeanSeamTest {
-
-    /** The EBCDIC code page {@code application.yml} declares. */
     private static final String EBCDIC = "IBM037";
 
-    /** The ASCII code page {@code application.yml} declares. */
     private static final String ASCII = "US-ASCII";
 
     @Nested
     @DisplayName("The three published beans")
     class PublishedBeans {
-
         @Test
         @DisplayName("Each bean resolves the code page its own property supplied")
         void eachBeanResolvesItsOwnProperty() {
@@ -65,7 +52,6 @@ class CobolCharsetConfigBeanSeamTest {
     @Nested
     @DisplayName("Resolution: the one decision this class makes")
     class Resolution {
-
         @Test
         @DisplayName("A supported name resolves")
         void aSupportedNameResolves() {
@@ -111,7 +97,6 @@ class CobolCharsetConfigBeanSeamTest {
     @Nested
     @DisplayName("The published contract: property keys and bean names")
     class PublishedContract {
-
         @Test
         @DisplayName("The three property keys are the ones application.yml declares")
         void thePropertyKeysAreStable() {

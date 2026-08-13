@@ -29,156 +29,31 @@ import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 /**
- * Tests for {@link AdminMenuOptions}, the single Java type for COBOL copybook
- * {@code app/cpy/COADM02Y.cpy} - the {@code 01 CARDDEMO-ADMIN-MENU-OPTIONS} administrator menu option
- * table of transaction {@code CA00}.
- *
- * <h2>The unit under test and its only consumer</h2>
- * {@code app/cpy/COADM02Y.cpy} is copied by exactly <strong>one</strong> program,
- * {@code app/cbl/COADM01C.cbl} (the {@code COPY COADM02Y.} at {@code COADM01C.cbl:51}); a
- * repository-wide search finds no other COBOL consumer. That program is therefore the sole authority for
- * how these bytes are observed, and every "why" comment below cites it by line.
- *
- * <h2>Provenance of every expected value: statically derived (practice B12, AAP risk R-A)</h2>
- * No COBOL execution produced any expectation in this file. The legacy programs cannot be run in this
- * environment, so each literal, width and offset asserted here was transcribed by direct reading of
- * {@code app/cpy/COADM02Y.cpy} and cross-checked against its consumer, and each one carries a
- * {@code COADM02Y.cpy:<line>} or {@code COADM01C.cbl:<line>} citation beside it. A reviewer can check
- * every number in this file against the copybook without leaving the file. The copybook itself is never
- * opened at run time and never written: it is the parity oracle (practice B3, gate G5).
- *
- * <h2>Governing rules</h2>
- * {@code review_rules} returns exactly one line, <strong>"No user rules provided."</strong> - there are
- * no user-specified rules for this file, none are invented here, and their absence is not treated as
- * licence to lower the bar. The enterprise-practice substitutes of AAP section 0.10.2 bind instead:
- * B1 (only the JUnit Jupiter and AssertJ APIs the pinned {@code spring-boot-starter-test} already
- * supplies, no version declared anywhere), B2 (nothing outside the closed stack - no JUnit 4, no
- * Hamcrest, and no Mockito, because this table has no collaborator to stub), B3, B4 (the traps below are
- * documented, never quietly corrected), B5 (the five unvalued slots and the commented-out use at
- * {@code COADM01C.cbl:150-151} are preserved as they are), B7 (plain deterministic JUnit; no default
- * locale, timezone or charset is consulted), B8 (every code page is an explicit argument and every
- * import is individual - gate G52), B9 (no mutable static state, fresh state per test, order
- * independent - gate G53), B10, B11 (offsets, widths and literals asserted explicitly; no copybook
- * parser and no reflection-driven layout walker standing in for them) and B12.
- *
- * <h2>Gates this file instruments</h2>
- * <ul>
- *   <li><strong>G21</strong> - total declared width, which fails immediately if a span is dropped or
- *       mis-sized. Asserted both ways: the layout's own self-check passes for the correct descriptor set
- *       and <em>fails</em> for a set with a span omitted and for one with a span mis-sized.</li>
- *   <li><strong>G33</strong> - {@code OCCURS} subscripts are 1-based in COBOL and 0-based in Java. The
- *       first, a middle and the last slot are asserted at both ends of that shift, and out-of-range
- *       subscripts are proven to be <em>rejected</em> rather than clamped.</li>
- *   <li><strong>G34</strong> - {@code REDEFINES} is two typed views over one backing span, round-tripped
- *       in both directions, adding no byte to the group.</li>
- *   <li><strong>G22 / rule R4</strong>, in one point only: {@code CDEMO-ADMIN-OPT-NUM PIC 9(02)} is
- *       scale-free, so the option number is an {@code int}. This copybook declares no decimal
- *       {@code PICTURE} at all.</li>
- *   <li><strong>G8</strong> - the verification counterpart of one one-type-per-copybook row.</li>
- *   <li><strong>G49</strong> - {@code app/java/pom.xml} applies its {@code BRANCH} >= 0.90 rule at
- *       {@code PACKAGE} granularity as well as {@code BUNDLE}, so {@code admin.model} is measured on its
- *       own. Together with {@code MenuOptionsTest} this file must drive every decision in
- *       {@link AdminMenuOptions}: each arm of the bounds check (below range, in range and valued, in
- *       range and unvalued, above range) and both sides of every internal predicate.</li>
- * </ul>
- *
- * <h2>Gates with no subject here - stated so nobody chases coverage by inventing tests</h2>
- * <ul>
- *   <li><strong>G50</strong> (both truth states of every {@code 88}-level condition name) has
- *       <strong>no subject</strong>: {@code COADM02Y.cpy} declares <em>zero</em> {@code 88} levels
- *       across all 51 of its lines. There is no condition name here to drive either way.</li>
- *   <li><strong>G22-G29</strong> beyond the single integral-type point above: this copybook has no
- *       scaled decimal field, no rounding, no arithmetic and no monetary value.</li>
- *   <li><strong>G35</strong> (abend and return code), <strong>G37-G43</strong> (online behaviour,
- *       statelessness, pagination, {@code XCTL}, optimistic concurrency) and <strong>G44-G48</strong>
- *       (data access, file status, alternate indexes): none applies. This file consumes no
- *       {@code common.CobolDecimal}, no {@code common.FileStatus}, no {@code common.AbendException}, no
- *       repository, no {@code config} class and no Spring annotation - the unit under test is a
- *       compile-time constant table read from {@code WORKING-STORAGE}, not per-request or persisted
- *       data.</li>
- * </ul>
- *
- * <h2>Scope boundary: what this file deliberately does not assert</h2>
- * Only the model's own contract is asserted here - declared widths and offsets, the populated-versus-
- * declared split, the addressable tail slots, the 1-based accessor's bounds behaviour, the
- * {@code REDEFINES} accessor pair, the untrimmed literals and the two-byte option-number images.
- * Everything that is a <em>decision</em> belongs to the admin menu service and is asserted there, not
- * duplicated here: the {@code BUILD-MENU-OPTIONS} loop and its inner {@code EVALUATE} arms
- * ({@code COADM01C.cbl:226-245}), the option-count validation ({@code COADM01C.cbl:127-134}), the
- * {@code 'DUMMY'} five-byte prefix branch ({@code COADM01C.cbl:138}), the "coming soon" message text
- * ({@code COADM01C.cbl:149-153}), the {@code EIBCALEN = 0} route, the ENTER/REENTER split, the
- * {@code EVALUATE EIBAID} arms and {@code XCTL} / next-program resolution.
- *
- * <h2>Three traps, recorded rather than resolved (practice B4)</h2>
- * <ol>
- *   <li>{@code COADM01C.cbl:150-151} is <strong>commented out</strong>. Those two lines would have put
- *       {@code CDEMO-ADMIN-OPT-NAME(WS-OPTION)} into the "coming soon" {@code STRING}, but they are
- *       comment lines, so the program emits {@code 'This option '} followed directly by
- *       {@code 'is coming soon ...'} with no option name in it. Nothing is implemented for those lines
- *       here or anywhere (practice B5), and the commented-out text is not treated as a value.</li>
- *   <li><strong>The header comment does not identify the copybook.</strong> {@code COADM02Y.cpy:2} reads
- *       {@code * CardDemo - Admin Menu Options} - and so does {@code COMEN02Y.cpy:2}, byte for byte. The
- *       two copybooks are not distinguishable by their headers; only the {@code 01} group name is
- *       ({@code CARDDEMO-ADMIN-MENU-OPTIONS} at {@code COADM02Y.cpy:19} versus
- *       {@code CARDDEMO-MAIN-MENU-OPTIONS}). A reader must never take the header as identification.</li>
- *   <li>The group name {@code CDEMO-ADMIN-OPT} ({@code COADM02Y.cpy:45}) is itself
- *       <strong>never referenced</strong> by {@code COADM01C.cbl} - only its three child fields are,
- *       subscripted. Harmless, and noted rather than read as evidence that the group is unused.</li>
- * </ol>
- *
- * <h2>One adaptation, stated plainly</h2>
- * Slots 5 to 9 lie past the end of the group being redefined, so no {@code VALUE} clause reaches them
- * and {@link AdminMenuOptions} reports them as <strong>absent</strong> rather than as fabricated entries
- * carrying option number 0 and blank names. "Present but empty" is therefore asserted here as what the
- * class actually guarantees: those subscripts are <em>addressable and accepted</em> - never rejected,
- * never clamped - the table stays nine slots wide, and the bytes their spans occupy are emitted at their
- * declared widths. The byte content of those spans is this module's own reproducible pad, and it is
- * asserted as such, not as a claim about what the legacy program's storage holds.
+ * Tests for {@link AdminMenuOptions}, the single Java type for COBOL copybook {@code app/cpy/COADM02Y.cpy}
+ * - the {@code 01 CARDDEMO-ADMIN-MENU-OPTIONS} administrator menu option table of transaction {@code CA00}.
  */
 @DisplayName("AdminMenuOptions - CARDDEMO-ADMIN-MENU-OPTIONS of COADM02Y")
 class AdminMenuOptionsTest {
-
-    /** The code page of the ASCII fixtures, named explicitly - never a platform default (practice B8). */
     private static final Charset ASCII = StandardCharsets.US_ASCII;
 
-    /** The EBCDIC code page of the binary datasets, used to prove the encoding is the caller's choice. */
     private static final Charset EBCDIC = Charset.forName("IBM037");
 
-    // =================================================================================================
-    // The copybook's four PIC X(35) literals, each written as its visible text plus an EXPLICIT trailing
-    // space count so the padding is legible and countable rather than hidden inside an opaque
-    // 35-character literal. Every one was measured against the copybook line cited (practice B12).
-    // =================================================================================================
-
-    /** {@code COADM02Y.cpy:26} {@code 'User List (Security)               '}: 20 visible + 15 spaces. */
     private static final String OPTION_1_NAME = "User List (Security)" + " ".repeat(15);
 
-    /** {@code COADM02Y.cpy:31} {@code 'User Add (Security)                '}: 19 visible + 16 spaces. */
     private static final String OPTION_2_NAME = "User Add (Security)" + " ".repeat(16);
 
-    /** {@code COADM02Y.cpy:36} {@code 'User Update (Security)             '}: 22 visible + 13 spaces. */
     private static final String OPTION_3_NAME = "User Update (Security)" + " ".repeat(13);
 
-    /** {@code COADM02Y.cpy:41} {@code 'User Delete (Security)             '}: 22 visible + 13 spaces. */
     private static final String OPTION_4_NAME = "User Delete (Security)" + " ".repeat(13);
 
-    /** {@code COADM02Y.cpy:27} - the security user-list program, exactly 8 characters. */
     private static final String OPTION_1_PGMNAME = "COUSR00C";
 
-    /** {@code COADM02Y.cpy:42} - the security user-delete program, exactly 8 characters. */
     private static final String OPTION_4_PGMNAME = "COUSR03C";
 
-    /**
-     * Pads synthetic test text to {@code CDEMO-ADMIN-OPT-NAME}'s declared width. Used only for values
-     * this file invents; the four copybook literals above state their padding explicitly instead.
-     *
-     * <p>A pure static function over immutable values, so it introduces no shared state (practice B9).
-     */
     private static String toNameWidth(String visible) {
         return visible + " ".repeat(AdminMenuOptions.OPT_NAME_LENGTH - visible.length());
     }
 
-    /** A fresh codec per call, so no test can hand mutable state to another (practice B9, gate G53). */
     private static FixedWidthCodec asciiCodec() {
         return new FixedWidthCodec(ASCII);
     }
@@ -186,36 +61,22 @@ class AdminMenuOptionsTest {
     @Nested
     @DisplayName("Constants and widths, transcribed from the copybook rather than read off the class")
     class ConstantsAndWidths {
-
         @Test
         @DisplayName("each declared width is the PICTURE the copybook writes")
         void eachDeclaredWidthIsItsPicture() {
-            // COADM02Y.cpy:20 - 05 CDEMO-ADMIN-OPT-COUNT   PIC 9(02) VALUE 4.
             assertThat(AdminMenuOptions.OPT_COUNT_LENGTH).isEqualTo(2);
-            // COADM02Y.cpy:46 - 15 CDEMO-ADMIN-OPT-NUM     PIC 9(02).
             assertThat(AdminMenuOptions.OPT_NUM_LENGTH).isEqualTo(2);
-            // COADM02Y.cpy:47 - 15 CDEMO-ADMIN-OPT-NAME    PIC X(35).
             assertThat(AdminMenuOptions.OPT_NAME_LENGTH).isEqualTo(35);
-            // COADM02Y.cpy:48 - 15 CDEMO-ADMIN-OPT-PGMNAME PIC X(08).
             assertThat(AdminMenuOptions.OPT_PGMNAME_LENGTH).isEqualTo(8);
-            // COADM02Y.cpy:45 - 10 CDEMO-ADMIN-OPT OCCURS 9 TIMES.
             assertThat(AdminMenuOptions.TABLE_SIZE).isEqualTo(9);
-            // COADM02Y.cpy:20 - the VALUE of the count field.
             assertThat(AdminMenuOptions.ACTIVE_OPTION_COUNT).isEqualTo(4);
-            // The first subscript the copybook values nothing for.
             assertThat(AdminMenuOptions.SPECIFIED_OPTION_COUNT_PLUS_ONE).isEqualTo(5);
-            // PIC 9(02) is an unsigned two-digit display field, so 99 is the largest it can hold.
             assertThat(AdminMenuOptions.MAX_OPT_NUM).isEqualTo(99);
         }
 
         @Test
         @DisplayName("an entry is 45 bytes: 2 + 35 + 8, with NO user-type column")
         void anEntryIsFortyFiveBytesComponentWise() {
-            // Asserted component-wise, so the difference from the sibling table is PROVABLE rather than
-            // assumed. COADM02Y.cpy:46-48 declares exactly three subfields per entry: there is no
-            // PIC X(01) FILLER and no -USRTYPE field anywhere in the copybook (a repository-wide search
-            // for CDEMO-ADMIN-OPT-USRTYPE returns nothing). That single missing column is precisely why
-            // the admin entry is 45 bytes while COMEN02Y's main-menu entry is 46.
             assertThat(AdminMenuOptions.OPT_NUM_LENGTH
                     + AdminMenuOptions.OPT_NAME_LENGTH
                     + AdminMenuOptions.OPT_PGMNAME_LENGTH)
@@ -227,19 +88,12 @@ class AdminMenuOptionsTest {
         @Test
         @DisplayName("the populated area is 180 bytes - NOT 182: the count field sits outside it")
         void thePopulatedAreaIsOneHundredAndEightyNotOneHundredAndEightyTwo() {
-            // The natural wrong answer is 182, and it is worth stating why it is wrong.
-            // CDEMO-ADMIN-OPT-COUNT is a level-05 item at COADM02Y.cpy:20, a SIBLING of
-            // CDEMO-ADMIN-OPTIONS-DATA rather than a child of it: the group only opens at
-            // COADM02Y.cpy:22, after the count. So the populated area is the four valued entries and
-            // nothing else - 4 x 45 = 180 - and the count's two bytes are counted once, in the group
-            // width, never inside the data area.
             assertThat(AdminMenuOptions.POPULATED_DATA_LENGTH)
                     .as("4 entries x 45 bytes, with the COADM02Y.cpy:20 count field excluded")
                     .isEqualTo(180)
                     .isEqualTo(AdminMenuOptions.ACTIVE_OPTION_COUNT * AdminMenuOptions.ENTRY_LENGTH)
                     .isNotEqualTo(AdminMenuOptions.ACTIVE_OPTION_COUNT * AdminMenuOptions.ENTRY_LENGTH
                             + AdminMenuOptions.OPT_COUNT_LENGTH);
-            // The count is the FIRST two bytes of the group, so the option area starts at offset 2.
             assertThat(AdminMenuOptions.OPTIONS_OFFSET).isEqualTo(AdminMenuOptions.OPT_COUNT_LENGTH);
             assertThat(AdminMenuOptions.OPTIONS_OFFSET).isEqualTo(2);
         }
@@ -247,8 +101,6 @@ class AdminMenuOptionsTest {
         @Test
         @DisplayName("the declared table is 405 bytes and is WIDER than the 180 it redefines")
         void theDeclaredTableIsWiderThanThePopulatedArea() {
-            // COADM02Y.cpy:45 declares OCCURS 9 TIMES over storage COADM02Y.cpy:22-42 values only four
-            // entries of, which is why these are two separate constants and must never be conflated.
             assertThat(AdminMenuOptions.TABLE_LENGTH)
                     .isEqualTo(405)
                     .isEqualTo(AdminMenuOptions.TABLE_SIZE * AdminMenuOptions.ENTRY_LENGTH)
@@ -261,10 +113,6 @@ class AdminMenuOptionsTest {
         @Test
         @DisplayName("the active count 4 and the table size 9 are independent values")
         void theActiveCountAndTheTableSizeAreIndependent() {
-            // COADM01C.cbl:228-229 bounds its loop on the COUNT
-            // (PERFORM VARYING WS-IDX FROM 1 BY 1 UNTIL WS-IDX > CDEMO-ADMIN-OPT-COUNT), and
-            // COADM01C.cbl:128 validates against the COUNT too - while the accessor's bound is the
-            // TABLE SIZE. That is exactly why slots 5 to 9 are never populated: nothing iterates to 9.
             assertThat(AdminMenuOptions.ACTIVE_OPTION_COUNT)
                     .as("the COADM02Y.cpy:20 literal, not the COADM02Y.cpy:45 OCCURS count")
                     .isEqualTo(4)
@@ -276,9 +124,6 @@ class AdminMenuOptionsTest {
         @Test
         @DisplayName("the group is 407 bytes: the REDEFINES overlay adds none of its own")
         void theRedefinesOverlayAddsNoBytes() {
-            // A REDEFINES is an overlay, not an append. The 01 group at COADM02Y.cpy:19 is sized by its
-            // LARGEST redefinition, so it is the count plus the OCCURS table - and emphatically not the
-            // count plus the table plus the 180 bytes the table redefines.
             assertThat(AdminMenuOptions.GROUP_LENGTH)
                     .isEqualTo(407)
                     .isEqualTo(AdminMenuOptions.OPT_COUNT_LENGTH + AdminMenuOptions.TABLE_LENGTH)
@@ -292,8 +137,6 @@ class AdminMenuOptionsTest {
         @Test
         @DisplayName("the copybook's own field names survive verbatim, misspellings and all")
         void theCopybookFieldNamesSurviveVerbatim() {
-            // The parity differ compares field by field BY NAME, so a renamed field would make a real
-            // difference invisible. Each name below is the copybook's spelling at the line cited.
             assertThat(AdminMenuOptions.ADMIN_OPT_COUNT_FIELD).isEqualTo("CDEMO-ADMIN-OPT-COUNT");
             assertThat(AdminMenuOptions.ADMIN_OPTIONS_DATA_FIELD).isEqualTo("CDEMO-ADMIN-OPTIONS-DATA");
             assertThat(AdminMenuOptions.ADMIN_OPTIONS_FIELD).isEqualTo("CDEMO-ADMIN-OPTIONS");
@@ -319,14 +162,6 @@ class AdminMenuOptionsTest {
     @Nested
     @DisplayName("The four entries the copybook values, byte for byte")
     class PopulatedEntries {
-
-        /**
-         * Each row is the copybook's own data for one entry: the {@code VALUE} of its
-         * {@code PIC 9(02)} at {@code COADM02Y.cpy:24}, {@code :29}, {@code :34} and {@code :39}; the
-         * visible text and the <em>measured</em> trailing-space count of its {@code PIC X(35)} at
-         * {@code :26}, {@code :31}, {@code :36} and {@code :41}; and its {@code PIC X(08)} program name
-         * at {@code :27}, {@code :32}, {@code :37} and {@code :42}.
-         */
         @ParameterizedTest(name = "CDEMO-ADMIN-OPT({0}) is {1} -> {4}")
         @DisplayName("each carries its literal at its full declared width")
         @CsvSource({
@@ -337,7 +172,6 @@ class AdminMenuOptionsTest {
         })
         void eachEntryCarriesItsLiteral(int subscript, String visibleText, int visibleLength,
                                        int trailingSpaces, String programName) {
-            // The measured arithmetic first, so a mis-transcribed row fails here rather than downstream.
             assertThat(visibleText).hasSize(visibleLength);
             assertThat(visibleLength + trailingSpaces)
                     .as("visible characters plus padding is exactly PIC X(35)")
@@ -362,9 +196,6 @@ class AdminMenuOptionsTest {
         @Test
         @DisplayName("the four literals in copybook order, against the transcribed constants")
         void theFourLiteralsInCopybookOrder() {
-            // A second, independent transcription of the same four values: the CsvSource above states
-            // them as visible text plus a space count, these constants state them as composed strings.
-            // Both must agree with the copybook, so a mistake in either form is caught.
             assertThat(AdminMenuOptions.activeOptions())
                     .extracting(AdminMenuOption::adminOptName)
                     .containsExactly(OPTION_1_NAME, OPTION_2_NAME, OPTION_3_NAME, OPTION_4_NAME);
@@ -398,14 +229,6 @@ class AdminMenuOptionsTest {
     @Nested
     @DisplayName("Untrimmed values - the padding is part of the field")
     class UntrimmedValues {
-
-        /**
-         * {@code COADM01C.cbl:235} moves the whole field:
-         * {@code STRING ... CDEMO-ADMIN-OPT-NAME(WS-IDX) DELIMITED BY SIZE ... INTO WS-ADMIN-OPT-TXT},
-         * and {@code DELIMITED BY SIZE} means all 35 bytes including every trailing space. So the
-         * padding is observable output, not incidental whitespace. (The second use of this field, at
-         * {@code COADM01C.cbl:150}, is a comment line - see the trap list in this class's header.)
-         */
         @ParameterizedTest
         @DisplayName("CDEMO-ADMIN-OPT-NAME is 35 characters, space-padded and never trimmed")
         @ValueSource(ints = {1, 2, 3, 4})
@@ -413,9 +236,6 @@ class AdminMenuOptionsTest {
             String name = AdminMenuOptions.optionBySubscript(subscript).orElseThrow().adminOptName();
 
             assertThat(name).hasSize(AdminMenuOptions.OPT_NAME_LENGTH).endsWith(" ");
-            // The negative assertion that makes a future "helpful" trim inside the model fail loudly:
-            // every one of the four literals has significant trailing padding, so none of them can
-            // legitimately equal its own trimmed form.
             assertThat(name)
                     .as("a trim inside the model would silently drop bytes COADM01C:235 emits")
                     .isNotEqualTo(name.trim());
@@ -440,16 +260,11 @@ class AdminMenuOptionsTest {
         @Test
         @DisplayName("CDEMO-ADMIN-OPT-PGMNAME is 8 characters and is not trimmed either")
         void theProgramNameIsUntrimmedEightCharacters() {
-            // All four copybook program names happen to fill PIC X(08) exactly, so for those four there
-            // is no padding to lose - stated here rather than left to look like a trim would be safe.
             assertThat(AdminMenuOptions.activeOptions())
                     .allSatisfy(option -> assertThat(option.adminOptPgmName())
                             .hasSize(AdminMenuOptions.OPT_PGMNAME_LENGTH)
                             .isEqualTo(option.adminOptPgmName().trim()));
 
-            // And the accessor itself does not trim: a shorter program name is held at its full declared
-            // width, padded on the right, exactly as COADM01C:138's five-byte reference modification
-            // CDEMO-ADMIN-OPT-PGMNAME(WS-OPTION)(1:5) requires the eight bytes to be.
             String padded = AdminMenuOption.of(5, toNameWidth("Short pgm"), "COX").adminOptPgmName();
 
             assertThat(padded)
@@ -463,15 +278,10 @@ class AdminMenuOptionsTest {
     @Nested
     @DisplayName("PIC 9(02) has BOTH an int value and a two-byte zero-filled image")
     class OptionNumberImage {
-
         @ParameterizedTest
         @DisplayName("option n renders as the two-byte image 0n, leading zero intact")
         @CsvSource({"1, 01", "2, 02", "3, 03", "4, 04"})
         void optionRendersAsATwoByteImage(int subscript, String expectedImage) {
-            // COADM01C.cbl:233 does
-            //   STRING CDEMO-ADMIN-OPT-NUM(WS-IDX) DELIMITED BY SIZE '. ' DELIMITED BY SIZE ...
-            // which consumes the stored two-byte display image directly, so option 1 renders on screen
-            // as "01. " and not "1. ". A model exposing only an int would lose that leading zero.
             AdminMenuOption option = AdminMenuOptions.optionBySubscript(subscript).orElseThrow();
 
             assertThat(option.adminOptNumImage())
@@ -485,8 +295,6 @@ class AdminMenuOptionsTest {
         @Test
         @DisplayName("CDEMO-ADMIN-OPT-COUNT renders as 04, and its value is 4")
         void theCountRendersAsZeroFour() {
-            // COADM02Y.cpy:20 writes VALUE 4; COBOL right-aligns a numeric VALUE in its field and
-            // zero-fills to the left, so the two stored bytes are "04".
             assertThat(AdminMenuOptions.adminOptCountImage())
                     .hasSize(AdminMenuOptions.OPT_COUNT_LENGTH)
                     .isEqualTo("04");
@@ -506,10 +314,6 @@ class AdminMenuOptionsTest {
         @Test
         @DisplayName("the option number is an int - scale-free PIC 9(02), never a scaled decimal")
         void theOptionNumberIsAnInt() throws Exception {
-            // Rule R4 / gate G22, in the one point where they have a subject here: COADM02Y.cpy:46
-            // declares PIC 9(02) with no V and no S, so the field is a scale-free integer. The whole
-            // copybook declares no scaled PICTURE, so no fixed-point decimal type belongs anywhere in
-            // this table and no binary approximation of one may appear either.
             assertThat(AdminMenuOption.class.getMethod("adminOptNum").getReturnType())
                     .isEqualTo(int.class);
             assertThat(AdminMenuOption.class.getRecordComponents())
@@ -523,12 +327,9 @@ class AdminMenuOptionsTest {
     @Nested
     @DisplayName("Gate G33 - OCCURS is 1-based in COBOL and 0-based in Java")
     class OneBasedSubscripts {
-
         @Test
         @DisplayName("subscript 1 is index 0, subscript 9 is index 8, and 4 is 3 in between")
         void theSubscriptShiftHoldsAtBothEndsAndInTheMiddle() {
-            // The single largest defect risk in this migration is this one-element shift. Both ends are
-            // asserted, and a middle slot with them, so an off-by-one cannot hide between the ends.
             assertThat(AdminMenuOptions.zeroBasedIndexFor(1)).isZero();
             assertThat(AdminMenuOptions.zeroBasedIndexFor(4)).isEqualTo(3);
             assertThat(AdminMenuOptions.zeroBasedIndexFor(AdminMenuOptions.TABLE_SIZE))
@@ -555,30 +356,11 @@ class AdminMenuOptionsTest {
         @Test
         @DisplayName("the boundary pair, side by side: subscript 9 is accepted and 10 is rejected")
         void theBoundaryPairIsNineAcceptedAndTenRejected() {
-            // COADM02Y.cpy:45 is OCCURS 9 TIMES, so the last valid subscript is 9 - not 4, which is only
-            // the count - and 10 is one past the end. Asserted adjacently so the boundary is visible in
-            // one place rather than inferred from two distant tests.
             assertThatNoException().isThrownBy(() -> AdminMenuOptions.optionBySubscript(9));
             assertThatExceptionOfType(IndexOutOfBoundsException.class)
                     .isThrownBy(() -> AdminMenuOptions.optionBySubscript(10));
         }
 
-        /**
-         * Out-of-range subscripts are <strong>rejected, never clamped</strong>.
-         *
-         * <p>An honest note on why this is a contract-level guarantee here rather than a reachability
-         * one. {@code COADM01C.cbl:46} declares {@code WS-OPTION PIC 9(02)}, whose domain is 0 to 99,
-         * and {@code COADM01C.cbl:123}'s {@code INSPECT WS-OPTION-X REPLACING ALL ' ' BY '0'} makes 0
-         * reachable - but {@code COADM01C.cbl:137} is {@code IF NOT ERR-FLG-ON}, and <em>every</em>
-         * admin subscript use ({@code :138} and {@code :143}) sits inside that guard, after
-         * {@code :127-129} has already rejected 0 and anything above the count. So in the admin program
-         * an out-of-range subscript does not in fact reach this table. The sibling program has no such
-         * guard - {@code COMEN01C.cbl:136-137} subscripts {@code CDEMO-MENU-OPT-USRTYPE(WS-OPTION)}
-         * before its own {@code IF NOT ERR-FLG-ON} at {@code :145} - so for the main-menu table the same
-         * rejection is reachability-driven. Here it is <em>defensive</em>, and this file does not claim
-         * otherwise. Rejecting is still the only correct behaviour: substituting slot 1 or slot 9 would
-         * invent an answer to a question the caller has to decide.
-         */
         @ParameterizedTest
         @DisplayName("subscripts outside 1..9 are rejected, never clamped to an end of the table")
         @ValueSource(ints = {0, 10, 13, 99})
@@ -597,8 +379,6 @@ class AdminMenuOptionsTest {
         @Test
         @DisplayName("a field name cannot be subscripted for a slot the table does not have")
         void aFieldNameCannotBeSubscriptedOutOfRange() {
-            // COADM01C.cbl:143 spells a subscripted reference as
-            // CDEMO-ADMIN-OPT-PGMNAME(WS-OPTION); the rendered key follows that spelling exactly.
             assertThat(AdminMenuOptions.subscriptedName(AdminMenuOptions.ADMIN_OPT_NUM_FIELD, 9))
                     .isEqualTo("CDEMO-ADMIN-OPT-NUM(9)");
             assertThat(AdminMenuOptions.subscriptedName(AdminMenuOptions.ADMIN_OPT_PGMNAME_FIELD, 1))
@@ -622,7 +402,6 @@ class AdminMenuOptionsTest {
                     .isEqualTo(expectedOffset)
                     .isEqualTo(AdminMenuOptions.OPTIONS_OFFSET
                             + (subscript - 1) * AdminMenuOptions.ENTRY_LENGTH);
-            // The three subfields tile the entry exactly: 2 + 35 + 8, in copybook order.
             assertThat(AdminMenuOptions.optNumSpanBySubscript(subscript).offset())
                     .isEqualTo(expectedOffset);
             assertThat(AdminMenuOptions.optNameSpanBySubscript(subscript).offset())
@@ -638,13 +417,10 @@ class AdminMenuOptionsTest {
     @Nested
     @DisplayName("The five slots the copybook does not value - addressable, and never fabricated")
     class UnvaluedTailSlots {
-
         @ParameterizedTest
         @DisplayName("slots 5 to 9 are ACCEPTED - rejecting them would be as wrong as clamping")
         @ValueSource(ints = {5, 6, 7, 8, 9})
         void slotsFiveToNineAreAccepted(int subscript) {
-            // In range but unvalued. COADM02Y.cpy:45 declares nine slots, so all nine are addressable;
-            // COADM02Y.cpy:22-42 values only the first four, so these five carry nothing.
             assertThatNoException().isThrownBy(() -> AdminMenuOptions.optionBySubscript(subscript));
             assertThat(AdminMenuOptions.isSpecified(subscript)).isFalse();
             assertThat(AdminMenuOptions.optionBySubscript(subscript))
@@ -657,8 +433,6 @@ class AdminMenuOptionsTest {
         @Test
         @DisplayName("the table is still nine slots wide: the five are absent, not trimmed away")
         void theTableIsStillNineSlotsWide() {
-            // Practice B5: the unvalued slots are preserved as slots. Shrinking the table to four, or
-            // looping to nine as though all nine were populated, are the two opposite defects here.
             List<Optional<AdminMenuOption>> slots = AdminMenuOptions.options();
 
             assertThat(slots).hasSize(9);
@@ -672,10 +446,6 @@ class AdminMenuOptionsTest {
         @DisplayName("their spans are still emitted at 2, 35 and 8 bytes, space and zero padded")
         @ValueSource(ints = {5, 6, 7, 8, 9})
         void theirSpansAreStillEmittedAtTheirDeclaredWidths(int subscript) {
-            // What is asserted here is that the BYTES are present at their declared widths - which is
-            // what keeps every later offset correct - and that this module's pad is reproducible. The
-            // pad itself is this module's own choice: COADM02Y.cpy gives these bytes no VALUE at all, so
-            // no claim is made here about what the legacy program's storage would hold.
             Map<String, String> images =
                     AdminMenuOptions.fieldImages(AdminMenuOptions.encode(ASCII), ASCII);
 
@@ -716,8 +486,6 @@ class AdminMenuOptionsTest {
         @Test
         @DisplayName("decode reports the tail as absent even though its padded bytes would parse")
         void decodeReportsTheTailAsAbsentEvenThoughItWouldParse() {
-            // The assertion that keeps a fabrication out: slot 5's number span holds "00", which WOULD
-            // parse as an entry, and parsing it would put an invented value straight into the table.
             byte[] group = AdminMenuOptions.encode(ASCII);
             int tailStart = AdminMenuOptions.unspecifiedTailSpan().offset();
 
@@ -733,7 +501,6 @@ class AdminMenuOptionsTest {
     @Nested
     @DisplayName("Gate G21 - the total declared width, and the self-check that enforces it")
     class TotalWidthSelfCheck {
-
         @Test
         @DisplayName("the layout declares 407 bytes as 28 contiguous storage spans from offset 0")
         void theLayoutDeclaresEveryByteExactlyOnce() {
@@ -749,7 +516,6 @@ class AdminMenuOptionsTest {
                     .as("the storage spans sum to exactly the declared record length")
                     .isEqualTo(AdminMenuOptions.GROUP_LENGTH);
 
-            // Contiguity, walked explicitly: a gap or an overlap anywhere would move every later offset.
             int cursor = 0;
             for (FieldSpan span : storage) {
                 assertThat(span.offset())
@@ -763,10 +529,6 @@ class AdminMenuOptionsTest {
         @Test
         @DisplayName("the populated area's 12 spans carry the copybook's VALUE literals and total 180")
         void thePopulatedAreaSpansAreEmittedWithTheirValues() {
-            // COADM02Y.cpy:24-42 declares the populated area entirely from FILLER items, and those bytes
-            // MUST be emitted rather than skipped - that is exactly what makes the 180-byte total
-            // reachable. In this layout the same bytes are named by the OCCURS elements, and each of the
-            // twelve carries the copybook literal declared on the corresponding FILLER item.
             RecordLayout layout = AdminMenuOptions.GROUP_LAYOUT;
             int valuedBytes = 0;
             for (int subscript = 1; subscript <= AdminMenuOptions.ACTIVE_OPTION_COUNT; subscript++) {
@@ -786,8 +548,6 @@ class AdminMenuOptionsTest {
                     .as("12 spans covering 4 x 45 bytes")
                     .isEqualTo(AdminMenuOptions.POPULATED_DATA_LENGTH);
 
-            // And the count span itself, which is the thirteenth valued span and the only one outside
-            // the option area (COADM02Y.cpy:20).
             FieldSpan count = layout.span(AdminMenuOptions.ADMIN_OPT_COUNT_FIELD);
             assertThat(count.offset()).isZero();
             assertThat(count.length()).isEqualTo(AdminMenuOptions.OPT_COUNT_LENGTH);
@@ -808,9 +568,6 @@ class AdminMenuOptionsTest {
         @Test
         @DisplayName("the self-check FAILS when a span is omitted, and names the shortfall")
         void theSelfCheckFailsWhenASpanIsOmitted() {
-            // This is what gives G21 its teeth: proving the check would have caught a dropped span, not
-            // merely that the correct set passes. Drop the trailing CDEMO-ADMIN-OPT-PGMNAME(9) and the
-            // layout is 8 bytes short of 407 and refuses to exist.
             List<FieldSpan> spans = new ArrayList<>(AdminMenuOptions.GROUP_LAYOUT.storageSpans());
             FieldSpan dropped = spans.remove(spans.size() - 1);
 
@@ -824,8 +581,6 @@ class AdminMenuOptionsTest {
         @Test
         @DisplayName("the self-check FAILS when a span is mis-sized, and names the offending descriptor")
         void theSelfCheckFailsWhenASpanIsMisSized() {
-            // A width transcribed as 34 instead of PIC X(35) leaves a one-byte hole, which the check
-            // reports against the span that would have moved.
             List<FieldSpan> spans = new ArrayList<>(AdminMenuOptions.GROUP_LAYOUT.storageSpans());
             String lastNameField = AdminMenuOptions.subscriptedName(
                     AdminMenuOptions.ADMIN_OPT_NAME_FIELD, AdminMenuOptions.TABLE_SIZE);
@@ -872,14 +627,12 @@ class AdminMenuOptionsTest {
     @Nested
     @DisplayName("Gate G34 - REDEFINES is two typed views over ONE backing span")
     class RedefinesViews {
-
         @Test
         @DisplayName("both views are overlays starting at the same offset over the same bytes")
         void bothViewsStartAtTheSameOffset() {
             FieldSpan dataView = AdminMenuOptions.ADMIN_OPTIONS_DATA_SPAN;
             FieldSpan tableView = AdminMenuOptions.ADMIN_OPTIONS_SPAN;
 
-            // COADM02Y.cpy:44 - 05 CDEMO-ADMIN-OPTIONS REDEFINES CDEMO-ADMIN-OPTIONS-DATA.
             assertThat(dataView.name()).isEqualTo(AdminMenuOptions.ADMIN_OPTIONS_DATA_FIELD);
             assertThat(tableView.name()).isEqualTo(AdminMenuOptions.ADMIN_OPTIONS_FIELD);
             assertThat(dataView.offset()).isEqualTo(AdminMenuOptions.OPTIONS_OFFSET);
@@ -936,14 +689,12 @@ class AdminMenuOptionsTest {
 
             codec.writePicX(area, slotTwoName, replacement);
 
-            // Read back through the OTHER view, and locate the field by arithmetic within it.
             int nameStartInDataView = AdminMenuOptions.ENTRY_LENGTH + AdminMenuOptions.OPT_NUM_LENGTH;
             String dataImage = codec.readPicX(area, AdminMenuOptions.ADMIN_OPTIONS_DATA_SPAN);
             assertThat(dataImage.substring(nameStartInDataView,
                     nameStartInDataView + AdminMenuOptions.OPT_NAME_LENGTH))
                     .isEqualTo(replacement);
 
-            // The same claim at byte level, which is the form the parity differ works in.
             byte[] dataViewBytes = area.readSpanBytes(AdminMenuOptions.ADMIN_OPTIONS_DATA_SPAN);
             assertThat(area.readSpanBytes(slotTwoName))
                     .isEqualTo(Arrays.copyOfRange(dataViewBytes, nameStartInDataView,
@@ -992,7 +743,6 @@ class AdminMenuOptionsTest {
     @Nested
     @DisplayName("The byte image - offsets, the caller's code page, and what is not claimed")
     class ByteImage {
-
         @Test
         @DisplayName("the count and the four valued entries land at their declared offsets")
         void theValuedEntriesLandAtTheirOffsets() {
@@ -1016,9 +766,6 @@ class AdminMenuOptionsTest {
         @Test
         @DisplayName("the code page is always the caller's: the same table differs under IBM037")
         void theCodePageIsAlwaysTheCallers() {
-            // Practice B8: no platform default is ever consulted, so the same table encodes to different
-            // bytes under the two code pages this migration uses - IBM037 for the EBCDIC datasets and
-            // US-ASCII for the text fixtures - and each round-trips under its own.
             byte[] ebcdic = AdminMenuOptions.encode(EBCDIC);
 
             assertThat(ebcdic)
@@ -1033,10 +780,6 @@ class AdminMenuOptionsTest {
         @Test
         @DisplayName("a decode survives a tail of bytes that are not even well formed")
         void aDecodeSurvivesAMalformedTail() {
-            // Real storage may hold anything in those 225 bytes, and the copybook claims nothing about
-            // them. Decoding them as entries would put them through a numeric read, so a single
-            // non-digit would fail the decode of an otherwise perfectly valid group image and take the
-            // four valued entries down with it.
             byte[] group = AdminMenuOptions.encode(ASCII);
             for (int offset = AdminMenuOptions.unspecifiedTailSpan().offset();
                     offset < group.length; offset++) {
@@ -1053,7 +796,6 @@ class AdminMenuOptionsTest {
                     AdminMenuOptions.TABLE_SIZE))
                     .allSatisfy(slot -> assertThat(slot).isEmpty());
 
-            // The bytes stay readable as bytes, which is where unclaimed storage belongs.
             Map<String, String> images = AdminMenuOptions.fieldImages(group, ASCII);
             assertThat(images.get(AdminMenuOptions.subscriptedName(
                     AdminMenuOptions.ADMIN_OPT_NAME_FIELD, 5)))
@@ -1067,8 +809,6 @@ class AdminMenuOptionsTest {
         @Test
         @DisplayName("but a malformed byte in a VALUED slot is still an error, because it is claimed")
         void aMalformedByteInAValuedSlotIsStillAnError() {
-            // The tolerance is confined to the tail. Bytes COADM02Y.cpy:24-42 does value are claimed, so
-            // a non-digit in option 1's number span is a genuine data or offset defect and is reported.
             byte[] group = AdminMenuOptions.encode(ASCII);
             group[AdminMenuOptions.OPTIONS_OFFSET] = (byte) '?';
 
@@ -1091,7 +831,6 @@ class AdminMenuOptionsTest {
     @Nested
     @DisplayName("encodeSlots - the fixed-size area a caller supplies")
     class EncodeSlotsContract {
-
         @Test
         @DisplayName("it round-trips a caller's own table")
         void itRoundTripsACallersTable() {
@@ -1151,12 +890,9 @@ class AdminMenuOptionsTest {
     @Nested
     @DisplayName("AdminMenuOption - the entry type, and the PICTURE rules it enforces")
     class EntryType {
-
         @Test
         @DisplayName("PIC X pads a short value on the right and truncates an over-wide one on the right")
         void picXPadsRightAndTruncatesRight() {
-            // COBOL fills a PIC X receiver from its leftmost position and discards the overflow, so the
-            // surviving characters are the LEADING ones - the opposite of a numeric receiver.
             assertThat(AdminMenuOption.of(3, "Short", "PGM").adminOptName())
                     .isEqualTo("Short" + " ".repeat(30));
             assertThat(AdminMenuOption.of(3, "x".repeat(40), "PGM12345").adminOptName())
@@ -1177,8 +913,6 @@ class AdminMenuOptionsTest {
         @Test
         @DisplayName("the canonical constructor requires both names at their full declared widths")
         void theCanonicalConstructorRequiresFullDeclaredWidths() {
-            // A value that is not exactly its declared width has already lost or gained bytes, so it is
-            // refused where the entry is built rather than where a later read comes back wrong.
             assertThatIllegalArgumentException()
                     .isThrownBy(() -> new AdminMenuOption(1, "short", OPTION_1_PGMNAME))
                     .withMessageContaining("PIC X(35)");
@@ -1198,8 +932,6 @@ class AdminMenuOptionsTest {
         @Test
         @DisplayName("an entry built from the copybook's own literals equals the table's own")
         void anEntryBuiltFromTheCopybookLiteralsEqualsTheTables() {
-            // Value equality, so a transcription drift in either direction fails: the entry built here
-            // from the copybook literals must be the very entry the class publishes for subscript 1.
             AdminMenuOption transcribed = new AdminMenuOption(1, OPTION_1_NAME, OPTION_1_PGMNAME);
 
             assertThat(AdminMenuOptions.optionBySubscript(1)).contains(transcribed);

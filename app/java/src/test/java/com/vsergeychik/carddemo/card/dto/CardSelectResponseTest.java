@@ -43,71 +43,26 @@ import org.junit.jupiter.params.provider.MethodSource;
 /**
  * Verifies {@link CardSelectResponse} against the four artefacts that define it:
  * {@code app/cpy-bms/COCRDSL.CPY} for the item names and widths, {@code app/bms/COCRDSL.bms} for the
- * name-labelled {@code DFHMDF} inventory, {@code app/cbl/COCRDSLC.cbl} for what the program actually
- * moves into the map, and {@code app/cpy/CSSETATY.cpy} for the error-highlight rule.
- *
- * <p>The widths and offsets in {@link #fieldOracle()} were computed independently of the class under
- * test, directly from the copybook, so this suite is an external oracle rather than a restatement of the
- * implementation's own arithmetic. Every one of those artefacts is read <strong>here, at authoring
- * time</strong> and transcribed into literals: nothing in this file opens {@code app/cpy-bms/},
- * {@code app/bms/} or {@code app/cbl/} at runtime, so the suite cannot be made to pass by a file that
- * happens to sit next to the runner, and the read-only oracle is never written to.
- *
- * <h2>Where the four attribute bytes per field come from - a derivation, not a convention</h2>
- * {@code app/bms/COCRDSL.bms:25-28} declares
- * {@code CCRDSLA DFHMDI CTRL=(FREEKB), DSATTS=(COLOR,HILIGHT,PS,VALIDN),
- * MAPATTS=(COLOR,HILIGHT,PS,VALIDN), SIZE=(24,80)}. <strong>{@code DSATTS} names exactly four extended
- * attributes, and that is why the output group carries exactly four one-byte items per field</strong> -
- * {@code xxxC} for {@code COLOR}, {@code xxxP} for {@code PS}, {@code xxxH} for {@code HILIGHT} and
- * {@code xxxV} for {@code VALIDN} ({@code app/cpy-bms/COCRDSL.CPY:L112-L115} and the fourteen groups
- * that follow it). Three declared attributes would have produced three items and five would have
- * produced five; the number is read off the mapset, and this suite asserts four because the mapset says
- * four.
- *
- * <h2>A documented divergence from the plan's own summary (practice B4)</h2>
- * The Agent Action Plan's design-system section states that all seventeen mapsets declare
- * {@code DFHMSD CTRL=(ALARM,FREEKB) EXTATT=YES LANG=COBOL MODE=INOUT STORAGE=AUTO TIOAPFX=YES}. For
- * {@code COCRDSL} that is <strong>not</strong> what the source says. The actual text at
- * {@code app/bms/COCRDSL.bms:20-24} is
- * {@code COCRDSL DFHMSD LANG=COBOL, MODE=INOUT, STORAGE=AUTO, TIOAPFX=YES, TYPE=&&SYSPARM} - with
- * <strong>no {@code CTRL}, no {@code ALARM} and no {@code EXTATT}</strong>. The control options live one
- * level down, on the {@code DFHMDI} at {@code :25-28}, which carries {@code CTRL=(FREEKB)} and the two
- * attribute lists. The discrepancy is recorded here rather than corrected anywhere, because the mapset
- * is the contract and the summary is a summary; it matters in this file in particular because
- * {@code DSATTS} - a {@code DFHMDI} operand the summary does not mention at all - is the derivation
- * above.
- *
- * <h2>What this file does not test</h2>
- * The type, and only the type. {@code CardSelectControllerTest} owns the {@code 0000-MAIN}
- * {@code EVALUATE} order, the valid-AID set, {@code PF3} back-navigation with its {@code LOW-VALUES} and
- * {@code SPACES} fallbacks, the {@code WHEN OTHER} abend path and the two card-file access paragraphs.
- * {@code CardScreenStateTest} owns the {@code CVCRD01Y} work area's own {@code LOW-VALUES}, {@code SPACES}
- * and {@code null} handling and its {@code REDEFINES} pairs, and this suite relies on those rather than
- * re-deriving them. {@code FieldAttributeSetterTest} owns the internal branch ordering of the
- * {@code CSSETATY} rule; what is asserted here is the <em>outcome</em> on this payload's own items.
- * {@code DateHeaderTest} owns the rendering of the date and time; what is asserted here is that the two
- * eight-byte items receive it.
+ * name-labelled {@code DFHMDF} inventory, {@code app/cbl/COCRDSLC.cbl} for what the program actually moves
+ * into the map, and {@code app/cpy/CSSETATY.cpy} for the error-highlight rule.
  */
 @DisplayName("CardSelectResponse - the output projection of 01 CCRDSLAO, 504 bytes, 15 of 31 DFHMDF")
 final class CardSelectResponseTest {
-
     /**
-     * One name-labelled {@code DFHMDF} of mapset {@code COCRDSL}, transcribed from the two source
-     * artefacts by hand. This record is the external oracle: it is deliberately <em>not</em> derived
-     * from any constant of the class under test, so a wrong width in the implementation cannot make its
-     * own assertion pass.
+     * One name-labelled {@code DFHMDF} of mapset {@code COCRDSL}, transcribed from the two source artefacts
+     * by hand.
      *
-     * @param dfhmdfLabel  the field name on the {@code DFHMDF} in {@code app/bms/COCRDSL.bms}
-     * @param cobolName    the {@code xxxO} item name in {@code app/cpy-bms/COCRDSL.CPY}
-     * @param width        the {@code xxxO} {@code PICTURE} width, which is also the {@code DFHMDF}
-     *                     {@code LENGTH} - the two agree for all fifteen fields, and this suite proves it
+     * @param dfhmdfLabel the field name on the {@code DFHMDF} in {@code app/bms/COCRDSL.bms}
+     * @param cobolName the {@code xxxO} item name in {@code app/cpy-bms/COCRDSL.CPY}
+     * @param width the {@code xxxO} {@code PICTURE} width, which is also the {@code DFHMDF} {@code LENGTH}
+     *     - the two agree for all fifteen fields, and this suite proves it
      * @param copybookLine the {@code COCRDSL.CPY} line carrying the {@code xxxO} declaration
-     * @param mapsetLine   the {@code COCRDSL.bms} line carrying the name-labelled {@code DFHMDF}
-     * @param bmsRow       the {@code POS} row, one-based, within {@code SIZE=(24,80)}
-     * @param bmsColumn    the {@code POS} column, one-based, within {@code SIZE=(24,80)}
+     * @param mapsetLine the {@code COCRDSL.bms} line carrying the name-labelled {@code DFHMDF}
+     * @param bmsRow the {@code POS} row, one-based, within {@code SIZE=(24,80)}
+     * @param bmsColumn the {@code POS} column, one-based, within {@code SIZE=(24,80)}
      * @param fillerOffset zero-based offset of the field's three-byte {@code FILLER} in the group
      * @param colourOffset zero-based offset of the field's {@code xxxC} item in the group
-     * @param dataOffset   zero-based offset of the field's {@code xxxO} item in the group
+     * @param dataOffset zero-based offset of the field's {@code xxxO} item in the group
      */
     private record FieldOracle(String dfhmdfLabel,
             String cobolName,
@@ -121,23 +76,6 @@ final class CardSelectResponseTest {
             int dataOffset) {
     }
 
-    /**
-     * The fifteen oracle rows, in {@code app/cpy-bms/COCRDSL.CPY} declaration order.
-     *
-     * <p>Widths and {@code LENGTH}/{@code POS} pairs come from {@code app/bms/COCRDSL.bms}: {@code TRNNAME}
-     * {@code :34}, {@code TITLE01} {@code :38}, {@code CURDATE} {@code :47}, {@code PGMNAME} {@code :57},
-     * {@code TITLE02} {@code :61}, {@code CURTIME} {@code :70}, {@code ACCTSID} {@code :84},
-     * {@code CARDSID} {@code :96}, {@code CRDNAME} {@code :107}, {@code CRDSTCD} {@code :116},
-     * {@code EXPMON} {@code :126}, {@code EXPYEAR} {@code :133}, {@code INFOMSG} {@code :139},
-     * {@code ERRMSG} {@code :144} and {@code FKEYS} {@code :148}. The offsets were computed by hand from
-     * the 12-byte {@code TIOAPFX} prefix and a seven-byte per-field stride: {@code FILLER X(3)} then the
-     * four attribute items, then the data.
-     *
-     * <p>The list is immutable and freshly built, so no test can perturb another's oracle and the class
-     * holds no mutable static state (practice B9, gate G53).
-     *
-     * @return the fifteen rows; never {@code null}
-     */
     private static List<FieldOracle> fieldOracle() {
         return List.of(
                 new FieldOracle("TRNNAME", "TRNNAMEO", 4, 116, 34, 1, 7, 12, 15, 19),
@@ -157,13 +95,6 @@ final class CardSelectResponseTest {
                 new FieldOracle("FKEYS", "FKEYSO", 75, 200, 148, 24, 1, 422, 425, 429));
     }
 
-    /**
-     * The fifteen {@code (ScreenField, oracle row)} pairs, for a parameterised walk over the whole
-     * name-labelled {@code DFHMDF} inventory. Pairing is positional, which is itself an assertion: the
-     * enum's declaration order is the copybook's order, and a reordered enum would fail here.
-     *
-     * @return one argument pair per field, in copybook order; never {@code null}
-     */
     static List<Arguments> screenFieldsWithOracle() {
         List<FieldOracle> oracle = fieldOracle();
         ScreenField[] fields = ScreenField.values();
@@ -178,18 +109,6 @@ final class CardSelectResponseTest {
         return pairs;
     }
 
-    /**
-     * The full {@code CSSETATY} truth table: three validation states by two program contexts, six cells,
-     * every one of them driven.
-     *
-     * <p>The rule is {@code app/cpy/CSSETATY.cpy:L18-L27}: {@code DFHRED} on {@code NOT-OK} <em>or</em>
-     * {@code BLANK}, the {@code '*'} on {@code BLANK} <em>only</em> because its {@code MOVE} is nested
-     * inside the colour move's {@code IF}, and <em>nothing at all</em> unless {@code CDEMO-PGM-REENTER}
-     * holds. Exactly one of the six cells writes the asterisk.
-     *
-     * @return the six cells: state, re-entry flag, whether the colour item is written, whether the
-     *         output item is written
-     */
     static List<Arguments> highlightTruthTable() {
         return List.of(
                 Arguments.of(FieldValidationState.OK, false, false, false),
@@ -200,27 +119,15 @@ final class CardSelectResponseTest {
                 Arguments.of(FieldValidationState.BLANK, true, true, true));
     }
 
-    /** The COBOL figurative constant {@code LOW-VALUES} at a given width. */
     private static String lowValues(int length) {
         return "\u0000".repeat(length);
     }
 
-    /**
-     * A codec for the {@code PIC X} move rule, over an explicitly named code page (practice B8).
-     *
-     * <p>{@code US-ASCII} is stated outright rather than inherited from a platform default. Only
-     * {@link FixedWidthCodec#movePicX(String, int)} is used from it and that operation pads and truncates
-     * characters without encoding a byte, so the choice cannot influence any expected value here - but a
-     * codec is never constructed without naming its charset anywhere in this module.
-     *
-     * @return a fresh codec; never {@code null}
-     */
     private static FixedWidthCodec picXCodec() {
         Charset codePage = StandardCharsets.US_ASCII;
         return new FixedWidthCodec(codePage);
     }
 
-    /** A payload with every member set, so a single-member change is always detectable. */
     private static CardSelectResponse populated() {
         CardSelectResponse response = new CardSelectResponse("CCDL", "t1", "01/02/26", "COCRDSLC",
                 "t2", "03:04:05", "00000000011", "1234567890123456", "JOHN DOE", "Y", "07", "2030",
@@ -229,14 +136,9 @@ final class CardSelectResponseTest {
         return response;
     }
 
-    // =============================================================================================
-    // Geometry
-    // =============================================================================================
-
     @Nested
     @DisplayName("Declared geometry - the 504-byte group of app/cpy-bms/COCRDSL.CPY:L109-L200")
     class Geometry {
-
         @Test
         @DisplayName("15 fields, 387 data bytes, 12 + 15x7 + 387 = 504")
         void widthArithmetic() {
@@ -254,35 +156,24 @@ final class CardSelectResponseTest {
         @Test
         @DisplayName("the output stride 3+4+n equals the input stride 2+1+4+n, as REDEFINES requires")
         void strideMatchesTheInputView() {
-            // The output prefix, item by item, from app/cpy-bms/COCRDSL.CPY:L111-L115:
-            //     02 FILLER PICTURE X(3)  +  xxxC + xxxP + xxxH + xxxV, each PICTURE X.
             int outputPrefix = CardSelectResponse.FILLER_LENGTH
                     + (CardSelectResponse.ATTRIBUTE_ITEMS_PER_FIELD
                             * CardSelectResponse.ATTRIBUTE_ITEM_LENGTH);
             assertThat(outputPrefix).isEqualTo(3 + 4).isEqualTo(7);
             assertThat(CardSelectResponse.FIELD_PREFIX_LENGTH).isEqualTo(outputPrefix);
 
-            // The input prefix, item by item, from app/cpy-bms/COCRDSL.CPY:L19-L23:
-            //     02 xxxL COMP PIC S9(4)  (2 bytes)
-            //     02 xxxF PICTURE X       (1 byte, redefined as xxxA)
-            //     02 FILLER PICTURE X(4)  (4 bytes)
             int inputPrefix = CardSelectRequest.LENGTH_ITEM_LENGTH
                     + CardSelectRequest.FLAG_ITEM_LENGTH
                     + CardSelectRequest.EXTENDED_ATTRIBUTE_ITEM_LENGTH;
             assertThat(inputPrefix).isEqualTo(2 + 1 + 4).isEqualTo(7);
             assertThat(CardSelectRequest.FIELD_OVERHEAD).isEqualTo(inputPrefix);
 
-            // 3 + 4 == 2 + 1 + 4 is the arithmetic that lets one storage layout serve both views.
             assertThat(outputPrefix).isEqualTo(inputPrefix);
         }
 
         @Test
         @DisplayName("REDEFINES forces one width on both views: the request and the response are both 504")
         void requestAndResponseAreTheSameWidth() {
-            // app/cpy-bms/COCRDSL.CPY:L109 - 01 CCRDSLAO REDEFINES CCRDSLAI. A COBOL REDEFINES gives the
-            // redefining item the SAME storage as the item it redefines, so the output group cannot be a
-            // byte longer or shorter than the input group. That identity is what this asserts, on all
-            // three of the numbers it decomposes into.
             assertThat(CardSelectResponse.GROUP_LENGTH)
                     .as("CCRDSLAO and CCRDSLAI are one storage area")
                     .isEqualTo(CardSelectRequest.GROUP_LENGTH)
@@ -343,16 +234,11 @@ final class CardSelectResponseTest {
     @Nested
     @DisplayName("ScreenField - the 15 name-labelled DFHMDF entries, checked against the oracle")
     class ScreenFieldVocabulary {
-
         @ParameterizedTest(name = "{1}")
         @MethodSource("com.vsergeychik.carddemo.card.dto.CardSelectResponseTest"
                 + "#screenFieldsWithOracle")
         @DisplayName("each field's declared width IS its xxxO PICTURE width AND its DFHMDF LENGTH")
         void widthAgreesWithBothArtefacts(ScreenField field, FieldOracle oracle) {
-            // The single width the copybook and the mapset both declare. app/cpy-bms/COCRDSL.CPY gives
-            // it as a PICTURE clause and app/bms/COCRDSL.bms as a LENGTH operand; the oracle carries the
-            // one number transcribed from both, so this assertion is simultaneously a check that the
-            // DTO agrees with the copybook and that the two artefacts agree with each other.
             assertThat(field.dfhmdfLabel()).isEqualTo(oracle.dfhmdfLabel());
             assertThat(field.cobolName()).isEqualTo(oracle.cobolName());
             assertThat(field.length()).as("%s PIC X(n) and DFHMDF LENGTH", oracle.cobolName())
@@ -360,9 +246,6 @@ final class CardSelectResponseTest {
             assertThat(field.copybookLine()).isEqualTo(oracle.copybookLine());
             assertThat(field.mapsetLine()).isEqualTo(oracle.mapsetLine());
 
-            // A DFHMDF POS must address a cell of the DFHMDI's declared SIZE=(24,80)
-            // (app/bms/COCRDSL.bms:28). The oracle carries the position transcribed from the mapset;
-            // the DTO has no POS accessor, by design, because a REST payload has no screen geometry.
             assertThat(oracle.bmsRow()).as("POS row of %s", oracle.dfhmdfLabel()).isBetween(1, 24);
             assertThat(oracle.bmsColumn()).as("POS column of %s", oracle.dfhmdfLabel())
                     .isBetween(1, 80);
@@ -370,7 +253,6 @@ final class CardSelectResponseTest {
                     .as("%s must fit on its 80-column row", oracle.dfhmdfLabel())
                     .isLessThanOrEqualTo(80);
 
-            // The stride the REDEFINES depends on: FILLER X(3), then C, P, H, V, then the data.
             assertThat(field.fieldOffset()).isEqualTo(oracle.fillerOffset());
             assertThat(field.fillerOffset()).isEqualTo(oracle.fillerOffset());
             assertThat(field.colourOffset()).isEqualTo(oracle.colourOffset());
@@ -394,8 +276,6 @@ final class CardSelectResponseTest {
                 positions.add(oracle.bmsRow() + "," + oracle.bmsColumn());
             }
             assertThat(positions).hasSize(15);
-            // EXPMON at (15,25) and EXPYEAR at (15,30) share row 15, separated by the unnamed
-            // LENGTH=1 INITIAL='/' at (15,28) - app/bms/COCRDSL.bms:126-136.
             assertThat(positions).contains("15,25", "15,30");
         }
 
@@ -428,10 +308,6 @@ final class CardSelectResponseTest {
             assertThat(labels).hasSize(CardSelectResponse.FIELD_COUNT).hasSize(15);
             assertThat(labels).doesNotContain("EXPDAY", "PAGENO");
 
-            // Two items that a reader who knows the OTHER card maps would expect and that COCRDSL does
-            // NOT declare. The expiry here is month and year only - app/bms/COCRDSL.bms:126-136 has
-            // EXPMON at (15,25) and EXPYEAR at (15,30) with no day field between them - and the detail
-            // screen shows one card, so it has no page number. Neither item may be invented (practice B5).
             Set<String> items = new LinkedHashSet<>();
             for (ScreenField field : ScreenField.values()) {
                 items.add(field.cobolName());
@@ -460,7 +336,6 @@ final class CardSelectResponseTest {
     @Nested
     @DisplayName("Group tiling - the guarantee that an omitted FILLER cannot pass unnoticed")
     class GroupTiling {
-
         @Test
         @DisplayName("groupGeometry is 91 spans that tile [0,504) with no gap and no overlap")
         void tilesTheGroup() {
@@ -535,21 +410,18 @@ final class CardSelectResponseTest {
         void verifyRejectsBrokenLayouts() {
             List<SpanDescriptor> real = CardSelectResponse.groupGeometry();
 
-            // A gap: drop the first per-field FILLER, so the following span starts three bytes late.
             List<SpanDescriptor> gapped = new ArrayList<>(real);
             gapped.remove(1);
             assertThatThrownBy(() -> CardSelectResponse.verifyGroupTiling(gapped))
                     .isInstanceOf(IllegalStateException.class)
                     .hasMessageContaining("must tile the group with no gap");
 
-            // An overlap: repeat the TIOAPFX prefix, so the next span starts before its predecessor ends.
             List<SpanDescriptor> overlapping = new ArrayList<>(real);
             overlapping.add(1, real.get(0));
             assertThatThrownBy(() -> CardSelectResponse.verifyGroupTiling(overlapping))
                     .isInstanceOf(IllegalStateException.class)
                     .hasMessageContaining("no gap");
 
-            // A correct chain that simply does not reach 504.
             List<SpanDescriptor> tooShort =
                     List.of(new SpanDescriptor("FILLER", SpanKind.TIOAPFX_PREFIX, 0, 12));
             assertThatThrownBy(() -> CardSelectResponse.verifyGroupTiling(tooShort))
@@ -585,14 +457,9 @@ final class CardSelectResponseTest {
         }
     }
 
-    // =============================================================================================
-    // Construction and the PIC X move rule
-    // =============================================================================================
-
     @Nested
     @DisplayName("Construction - MOVE LOW-VALUES TO CCRDSLAO, app/cbl/COCRDSLC.cbl:428")
     class Construction {
-
         @Test
         @DisplayName("a fresh payload is LOW-VALUES at every declared width, not spaces")
         void defaultsToLowValues() {
@@ -664,7 +531,6 @@ final class CardSelectResponseTest {
                 assertThat(response.get(field)).isEqualTo(lowValues(field.length()));
                 assertThat(response.attributes(field).getColour()).isZero();
             }
-            // 1100-SCREEN-INIT covers the map area only; CC-WORK-AREA and the commarea sit outside it.
             assertThat(response.getNextProgram()).isEqualTo("COCRDSLC");
             assertThat(response.getNextMapset()).isEqualTo("COCRDSL");
             assertThat(response.getNextMap()).isEqualTo("CCRDSLA");
@@ -696,7 +562,6 @@ final class CardSelectResponseTest {
     @Nested
     @DisplayName("The PIC X move rule - pad on the right, truncate on the RIGHT")
     class PicXMoveRule {
-
         @Test
         @DisplayName("a short value is space-padded and a long one loses its TAIL, never its head")
         void padAndTruncateDirection() {
@@ -740,9 +605,6 @@ final class CardSelectResponseTest {
         void infoMessageSameWidth() {
             CardSelectResponse response = new CardSelectResponse();
 
-            // The 88-level FOUND-CARDS-FOR-ACCOUNT literal of app/cbl/COCRDSLC.cbl:129-130, in the
-            // PIC X(40) field that declares it. The padding is derived from the declared width rather
-            // than typed out, so the fixture cannot drift from the constant it is meant to match.
             String literal = "   Displaying requested details";
             String wsInfoMsg =
                     literal + " ".repeat(CardSelectResponse.INFOMSGO_LENGTH - literal.length());
@@ -755,10 +617,6 @@ final class CardSelectResponseTest {
         @Test
         @DisplayName("a CSMSG01Y X(50) message truncates into INFOMSGO and widens into ERRMSGO")
         void standardMessageMoves() {
-            // The expected images come from FixedWidthCodec.movePicX, the module's own explicit move
-            // helper, rather than from String.substring or a hand-written padding expression. The point
-            // of the assertion is that CardSelectResponse performs the COBOL PIC X move; comparing
-            // against the same helper the rest of the system uses is what makes that the subject.
             FixedWidthCodec codec = picXCodec();
             CardSelectResponse response = new CardSelectResponse();
 
@@ -794,7 +652,6 @@ final class CardSelectResponseTest {
             FixedWidthCodec codec = picXCodec();
             CardSelectResponse response = new CardSelectResponse();
 
-            // Short: the value keeps its position and spaces are added on the right.
             String shortValue = "A";
             response.set(field, shortValue);
             assertThat(response.get(field)).as("%s short move", oracle.cobolName())
@@ -802,8 +659,6 @@ final class CardSelectResponseTest {
                     .hasSize(oracle.width())
                     .startsWith(oracle.width() >= 1 ? "A" : "");
 
-            // Long: the TAIL is lost, never the head. A PIC X receiver truncates on the right, which is
-            // the opposite of the PIC 9 rule, so the direction is asserted and not assumed.
             String longValue = "0123456789".repeat(12);
             assertThat(longValue.length()).isGreaterThan(oracle.width());
             response.set(field, longValue);
@@ -877,14 +732,9 @@ final class CardSelectResponseTest {
         }
     }
 
-    // =============================================================================================
-    // The populate operations COCRDSLC performs
-    // =============================================================================================
-
     @Nested
     @DisplayName("Populate operations - the named MOVEs of 1100-SCREEN-INIT and 2000-PROCESS-INPUTS")
     class PopulateOperations {
-
         @Test
         @DisplayName("applyScreenTitles reproduces COCRDSLC:432-433 byte for byte from COTTL01Y")
         void applyScreenTitles() {
@@ -933,26 +783,12 @@ final class CardSelectResponseTest {
         }
     }
 
-    /**
-     * Titles, messages and the date header - three sources with three different widths, and the reason
-     * they must never be substituted for one another.
-     *
-     * <p>{@code common/ScreenTitles} owns three {@code PIC X(40)} literals from {@code app/cpy/COTTL01Y.cpy}
-     * and {@code common/SystemMessages} owns two {@code PIC X(50)} literals from
-     * {@code app/cpy/CSMSG01Y.cpy}. {@code ScreenTitles.CCDA_THANK_YOU} and
-     * {@code SystemMessages.CCDA_MSG_THANK_YOU} are <strong>different literals with different owners and
-     * different declared widths</strong> - forty characters against fifty - and a forty-byte title item
-     * physically cannot hold the fifty-byte message. Substituting either for the other is a parity defect,
-     * so both widths are asserted here and the two constants are shown to be distinguishable.
-     */
     @Nested
     @DisplayName("Titles X(40), messages X(50), and an eight-byte date header from a fixed Clock")
     class TitlesMessagesAndDateHeader {
-
         @Test
         @DisplayName("TITLE01O and TITLE02O are 40 wide and the COTTL01Y literals fit exactly")
         void titlesFitTheirItemsExactly() {
-            // A move that neither pads nor truncates: X(40) source into an X(40) receiver.
             assertThat(ScreenTitles.TITLE_LENGTH).isEqualTo(40);
             assertThat(CardSelectResponse.TITLE01O_LENGTH).isEqualTo(ScreenTitles.TITLE_LENGTH);
             assertThat(CardSelectResponse.TITLE02O_LENGTH).isEqualTo(ScreenTitles.TITLE_LENGTH);
@@ -983,8 +819,6 @@ final class CardSelectResponseTest {
             assertThat(SystemMessages.CCDA_MSG_THANK_YOU).hasSize(50);
             assertThat(SystemMessages.CCDA_MSG_INVALID_KEY).hasSize(50);
 
-            // Ten characters wider than a title item, which is the whole point: the two families are not
-            // interchangeable, and the class publishes the deltas rather than leaving them implicit.
             assertThat(SystemMessages.MESSAGE_LENGTH - ScreenTitles.TITLE_LENGTH)
                     .isEqualTo(CardSelectResponse.INFOMSGO_STANDARD_MESSAGE_TRUNCATION)
                     .isEqualTo(10);
@@ -992,15 +826,11 @@ final class CardSelectResponseTest {
                     .isEqualTo(CardSelectResponse.ERRMSGO_STANDARD_MESSAGE_PADDING)
                     .isEqualTo(30);
 
-            // The thank-you literals are genuinely different values, not two names for one string, so a
-            // mix-up would be silent without an assertion like this one.
             assertThat(ScreenTitles.CCDA_THANK_YOU)
                     .isNotEqualTo(SystemMessages.CCDA_MSG_THANK_YOU)
                     .hasSize(ScreenTitles.TITLE_LENGTH);
             assertThat(SystemMessages.CCDA_MSG_THANK_YOU).hasSize(SystemMessages.MESSAGE_LENGTH);
 
-            // Stored into the 40-byte info line, an X(50) message loses its last ten characters. That is
-            // COBOL's PIC X move, reproduced - not a guard the DTO adds, and not something it prevents.
             FixedWidthCodec codec = picXCodec();
             CardSelectResponse response = new CardSelectResponse();
             response.setInfomsgo(SystemMessages.CCDA_MSG_THANK_YOU);
@@ -1014,10 +844,6 @@ final class CardSelectResponseTest {
         @Test
         @DisplayName("CURDATEO and CURTIMEO are 8 each and take mm/dd/yy and hh:mm:ss from a fixed Clock")
         void dateHeaderComesFromAFixedClock() {
-            // A FIXED Clock, never the system clock: an assertion on a rendered date must be reproducible
-            // on any host, in any zone, at any moment. The instant below is the source-footer timestamp of
-            // app/cpy/CSSETATY.cpy, 2022-07-19 23:15:58 UTC, chosen only because it is a real value from
-            // the repository rather than an arbitrary one.
             Clock fixedClock = Clock.fixed(
                     Instant.parse("2022-07-19T23:15:58Z"), ZoneOffset.UTC);
             DateHeader header = DateHeader.from(picXCodec(), fixedClock);
@@ -1030,8 +856,6 @@ final class CardSelectResponseTest {
             assertThat(CardSelectResponse.CURTIMEO_LENGTH)
                     .isEqualTo(DateHeader.WS_CURTIME_HH_MM_SS_LENGTH).isEqualTo(8);
 
-            // The exact eight-character shapes the BMS INITIAL placeholders advertise:
-            // 'mm/dd/yy' at app/bms/COCRDSL.bms:51 and 'hh:mm:ss' at :74.
             assertThat(response.getCurdateo()).isEqualTo("07/19/22").hasSize(8);
             assertThat(response.getCurtimeo()).isEqualTo("23:15:58").hasSize(8);
             assertThat(response.getCurdateo()).isEqualTo(header.wsCurdateMmDdYy());
@@ -1039,8 +863,6 @@ final class CardSelectResponseTest {
             assertThat(response.getCurdateo().charAt(2)).isEqualTo(DateHeader.DATE_SEPARATOR);
             assertThat(response.getCurtimeo().charAt(2)).isEqualTo(DateHeader.TIME_SEPARATOR);
 
-            // Reading the same fixed clock twice yields the same header, which is what "deterministic"
-            // has to mean here.
             DateHeader again = DateHeader.from(picXCodec(), fixedClock);
             assertThat(again.wsCurdateMmDdYy()).isEqualTo(header.wsCurdateMmDdYy());
             assertThat(again.wsCurtimeHhMmSs()).isEqualTo(header.wsCurtimeHhMmSs());
@@ -1049,10 +871,6 @@ final class CardSelectResponseTest {
         @Test
         @DisplayName("FKEYSO is 75 wide and the BMS legend keeps its internal double space")
         void fkeysLegendIsPaddedAndUnaltered() {
-            // app/bms/COCRDSL.bms:148-152 - FKEYS DFHMDF ATTRB=(ASKIP,NORM) COLOR=YELLOW LENGTH=75
-            // POS=(24,1) INITIAL='ENTER=Search Cards  F3=Exit'. There are TWO spaces between "Cards" and
-            // "F3", and they are part of the literal: normalising them to one would change what the
-            // terminal shows, which practice B5 forbids.
             String literal = "ENTER=Search Cards  F3=Exit";
             assertThat(literal).hasSize(27);
             assertThat(literal).contains("Cards  F3").doesNotContain("Cards F3");
@@ -1065,7 +883,6 @@ final class CardSelectResponseTest {
                     .isEqualTo(picXCodec().movePicX(literal, CardSelectResponse.FKEYSO_LENGTH))
                     .isEqualTo(literal + " ".repeat(75 - literal.length()));
 
-            // Right-space-padded, and the padding is 48 characters - not part of the literal.
             assertThat(CardSelectResponse.BMS_INITIAL_FKEYS.substring(literal.length()))
                     .isEqualTo(" ".repeat(48));
 
@@ -1081,7 +898,6 @@ final class CardSelectResponseTest {
     @Nested
     @DisplayName("Navigation - XCTL becomes response fields, and the tokens stay opaque")
     class Navigation {
-
         @Test
         @DisplayName("applyThisScreenAsNextTarget reproduces COCRDSLC:588-590")
         void thisScreenAsNextTarget() {
@@ -1105,10 +921,6 @@ final class CardSelectResponseTest {
         @Test
         @DisplayName("nextProgram is PIC X(8) and takes COCRDSLC, COCRDLIC and COMEN01C unaltered")
         void programTokenIsEightWide() {
-            // The three targets COCRDSLC can name, from its own WS-LITERALS at
-            // app/cbl/COCRDSLC.cbl:163-182: LIT-THISPGM 'COCRDSLC', LIT-CCLISTPGM 'COCRDLIC' and
-            // LIT-MENUPGM 'COMEN01C'. All three are exactly eight characters, which is why
-            // CCARD-NEXT-PROG is PIC X(8) at app/cpy/CVCRD01Y.cpy:21.
             CardSelectResponse response = new CardSelectResponse();
             assertThat(CardSelectResponse.NEXT_PROGRAM_LENGTH).isEqualTo(8);
 
@@ -1128,21 +940,16 @@ final class CardSelectResponseTest {
             assertThat(CardSelectResponse.NEXT_MAPSET_LENGTH).isEqualTo(7);
             assertThat(CardSelectResponse.NEXT_MAP_LENGTH).isEqualTo(7);
 
-            // app/cpy/CVCRD01Y.cpy:23-24 declares both at PIC X(7), and both pairs of names are exactly
-            // seven characters: 'COCRDSL'/'CCRDSLA' for this screen and 'COMEN01'/'COMEN1A' for the menu.
             for (String[] pair : List.of(new String[] {"COCRDSL", "CCRDSLA"},
                     new String[] {"COMEN01", "COMEN1A"})) {
                 response.setNextMapset(pair[0]);
                 response.setNextMap(pair[1]);
                 assertThat(response.getNextMapset()).isEqualTo(pair[0]).hasSize(7);
                 assertThat(response.getNextMap()).isEqualTo(pair[1]).hasSize(7);
-                // Not widened to eight: a seven-character mapset name gains no trailing space, because a
-                // PIC X(7) receiver has no eighth position to pad into.
                 assertThat(response.getNextMapset()).isNotEqualTo(pair[0] + " ")
                         .doesNotEndWith(" ");
             }
 
-            // And the program is not shortened to the mapset's width: PIC X(8) keeps all eight.
             response.setNextProgram("COCRDSLC");
             assertThat(response.getNextProgram()).hasSize(8).isEqualTo("COCRDSLC")
                     .isNotEqualTo("COCRDSL");
@@ -1155,11 +962,6 @@ final class CardSelectResponseTest {
         @Test
         @DisplayName("both carriers ride in the payload, replacing XCTL PROGRAM(CDEMO-TO-PROGRAM)")
         void bothCarriersRideInThePayload() {
-            // app/cbl/COCRDSLC.cbl:331-334 issues EXEC CICS XCTL PROGRAM(CDEMO-TO-PROGRAM)
-            // COMMAREA(CARDDEMO-COMMAREA): CICS forwards to the next program and hands it the commarea.
-            // A stateless REST server cannot forward, so it names the target and returns the carriers,
-            // and the CLIENT issues the follow-up call. There is no server-side forward, no redirect
-            // chain and no session affinity - which is exactly why both carriers must be readable here.
             CardSelectResponse response = new CardSelectResponse();
             response.setNavigationContext(NavigationContext.empty()
                     .withFromProgram("COCRDSLC")
@@ -1188,8 +990,6 @@ final class CardSelectResponseTest {
             first.getCardScreenState().setCcAcctId("00000000011");
             first.setNavigationContext(NavigationContext.empty().withUserId("ADMIN001"));
 
-            // Nothing written into the first is visible in the second, so no field of either is read from
-            // a static map, a ThreadLocal or any other ambient holder.
             assertThat(second.getCardsido()).isEqualTo(lowValues(16));
             assertThat(second.getNextProgram()).isEqualTo(" ".repeat(8));
             assertThat(second.getNextMapset()).isEqualTo(" ".repeat(7));
@@ -1202,7 +1002,6 @@ final class CardSelectResponseTest {
             assertThat(second.getCardScreenState()).isNotSameAs(first.getCardScreenState());
             assertThat(second).isNotEqualTo(first);
 
-            // And the reverse direction: mutating the second leaves the first exactly as it was.
             second.setCardsido("6543210987654321");
             assertThat(first.getCardsido()).isEqualTo("1234567890123456");
         }
@@ -1249,41 +1048,9 @@ final class CardSelectResponseTest {
         }
     }
 
-    // =============================================================================================
-    // CSSETATY - the error highlight, gate G38
-    // =============================================================================================
-
-    /**
-     * The error highlight, asserted as <strong>bytes on this payload's items</strong> and never as a call
-     * to a mechanism.
-     *
-     * <h2>Why the outcome and not the mechanism</h2>
-     * {@code app/cpy/CSSETATY.cpy} is a copybook, and a grep across all 28 programs shows it has exactly
-     * <strong>one</strong> consumer: {@code app/cbl/COACTUPC.cbl}, where it appears 39 times.
-     * <strong>No card program copies it at all.</strong> {@code COCRDSLC} performs the same repainting
-     * <em>inline</em>, moving {@code DFHRED} at four sites - {@code app/cbl/COCRDSLC.cbl:534} and
-     * {@code :538} for the two {@code NOT-OK} flags, {@code :544} and {@code :550} for the two
-     * {@code BLANK} flags - with the two {@code MOVE '*'} statements at {@code :543} and {@code :549}.
-     * Asserting that a {@code CSSETATY} helper was invoked would therefore be asserting something the
-     * card program does not do; what is asserted here is the resulting content of {@code xxxC} and
-     * {@code xxxO}, which is the only thing the 3270 can observe.
-     *
-     * <h2>A second documented divergence (practice B4)</h2>
-     * The inline form in {@code COCRDSLC} is not byte-identical in reachability to the copybook form.
-     * {@code app/cbl/COCRDSLC.cbl:533-539} reddens a {@code NOT-OK} field <em>without</em> testing
-     * {@code CDEMO-PGM-REENTER}, whereas {@code app/cpy/CSSETATY.cpy:L18-L20} gates both of its moves on
-     * it; and the inline {@code BLANK} branch at {@code :541-551} moves the asterisk <em>before</em> the
-     * colour, where the copybook nests the asterisk inside the colour move. The observable bytes agree in
-     * the {@code (BLANK, REENTER)} cell - both moves happen either way - and they differ in the
-     * {@code (NOT-OK, ENTER)} cell. {@code common/FieldAttributeSetter}, the collaborator this payload
-     * delegates to, implements the <em>copybook</em> rule, so that is the rule asserted below. The
-     * divergence is recorded rather than reconciled: reconciling it would mean changing behaviour in one
-     * direction or the other, and neither is this file's decision to make.
-     */
     @Nested
     @DisplayName("CSSETATY - DFHRED into xxxC, '*' into xxxO, and only when CDEMO-PGM-REENTER holds")
     class ErrorHighlight {
-
         @ParameterizedTest(name = "{0} + {1} -> colour={2}, asterisk={3}")
         @MethodSource("com.vsergeychik.carddemo.card.dto.CardSelectResponseTest"
                 + "#highlightTruthTable")
@@ -1292,9 +1059,7 @@ final class CardSelectResponseTest {
                 boolean reenter,
                 boolean expectColour,
                 boolean expectAsterisk) {
-
             CardSelectResponse response = new CardSelectResponse();
-            // A real value in the field first, so "unchanged" is distinguishable from "blanked".
             response.setAcctsido("00000000011");
             String before = response.getAcctsido();
 
@@ -1310,7 +1075,6 @@ final class CardSelectResponseTest {
 
             FieldAttributes quad = response.attributes(ScreenField.ACCTSID);
             if (expectColour) {
-                // Compared against the BmsAttributes constant, never a literal char or magic number.
                 assertThat(quad.getColour()).isEqualTo(BmsAttributes.DFHRED);
                 assertThat(quad.isRedHighlighted()).isTrue();
             } else {
@@ -1320,8 +1084,6 @@ final class CardSelectResponseTest {
             }
 
             if (expectAsterisk) {
-                // The asterisk lands in the DISPLAY item, space-padded to PIC X(11) by the ordinary
-                // PIC X move - MOVE '*' TO ACCTSIDO OF CCRDSLAO, app/cbl/COCRDSLC.cbl:543.
                 assertThat(response.getAcctsido())
                         .isEqualTo(FieldAttributeSetter.ASTERISK
                                 + " ".repeat(CardSelectResponse.ACCTSIDO_LENGTH - 1));
@@ -1330,8 +1092,6 @@ final class CardSelectResponseTest {
                 assertThat(response.getAcctsido()).isEqualTo(before);
             }
 
-            // Whatever happened, the field is still PIC X(11) and no offset moved: writing an asterisk
-            // into an xxxO must not resize the item or shift the group (gate G21).
             assertThat(response.getAcctsido()).hasSize(CardSelectResponse.ACCTSIDO_LENGTH);
             assertThat(ScreenField.ACCTSID.length()).isEqualTo(11);
             assertThat(ScreenField.ACCTSID.dataOffset()).isEqualTo(169);
@@ -1358,7 +1118,6 @@ final class CardSelectResponseTest {
                     cellsWritingTheAsterisk++;
                     assertThat(state).isEqualTo(FieldValidationState.BLANK);
                     assertThat(reenter).isTrue();
-                    // Into the display item; the colour item takes DFHRED, never an asterisk.
                     assertThat(response.getCardsido()).startsWith(FieldAttributeSetter.ASTERISK);
                     assertThat(response.attributes(ScreenField.CARDSID).getColour())
                             .isEqualTo(BmsAttributes.DFHRED)
@@ -1373,10 +1132,6 @@ final class CardSelectResponseTest {
         @Test
         @DisplayName("ERRMSGO is 80 wide and a shorter message is right-space-padded to 80")
         void errorLineIsEightyWide() {
-            // app/bms/COCRDSL.bms:144-147 declares ERRMSG at LENGTH=80, POS=(23,1), COLOR=RED,
-            // ATTRB=(ASKIP,BRT,FSET). The error line is therefore red BY MAP DEFINITION, for every
-            // message it ever shows, independently of the per-field DFHRED highlight above - that
-            // highlight exists to point at the offending input field, not at the message line.
             FixedWidthCodec codec = picXCodec();
             CardSelectResponse response = new CardSelectResponse();
             String message = "Account Filter is not a valid number";
@@ -1390,7 +1145,6 @@ final class CardSelectResponseTest {
                     .isEqualTo(message + " ".repeat(80 - message.length()))
                     .isEqualTo(codec.movePicX(message, CardSelectResponse.ERRMSGO_LENGTH));
 
-            // The map's own red is not the quad's red: an untouched ERRMSGC is still the default byte.
             assertThat(response.attributes(ScreenField.ERRMSG).isDefaultColour()).isTrue();
         }
 
@@ -1429,7 +1183,6 @@ final class CardSelectResponseTest {
                     .isEqualTo(BmsAttributes.DFHRED);
             assertThat(response.attributes(ScreenField.ACCTSID).isRedHighlighted()).isTrue();
             assertThat(response.attributes(ScreenField.ACCTSID).isDefaultColour()).isFalse();
-            // MOVE '*' TO ACCTSIDO - one asterisk, space-padded to PIC X(11).
             assertThat(response.getAcctsido()).isEqualTo("*" + " ".repeat(10)).hasSize(11);
         }
 
@@ -1483,7 +1236,6 @@ final class CardSelectResponseTest {
                     .hasMessageContaining("ACCTSID")
                     .hasMessageContaining("CARDSID");
 
-            // An anonymous decision carries no identity, so it may be applied to any field.
             FieldHighlight anonymous = FieldAttributeSetter.resolveFromFlags(true, false, true);
             response.applyHighlight(ScreenField.CARDSID, anonymous);
             assertThat(response.attributes(ScreenField.CARDSID).isRedHighlighted()).isTrue();
@@ -1525,7 +1277,6 @@ final class CardSelectResponseTest {
     @Nested
     @DisplayName("FieldAttributes - the C/P/H/V quad of DSATTS=(COLOR,HILIGHT,PS,VALIDN)")
     class AttributeQuad {
-
         @Test
         @DisplayName("all four items round-trip independently")
         void roundTrip() {
@@ -1619,24 +1370,15 @@ final class CardSelectResponseTest {
     @Nested
     @DisplayName("The quad is metadata, never payload - DSATTS declares four, so there are four")
     class AttributeQuadIsMetadataNotPayload {
-
         @Test
         @DisplayName("four attribute items per field, one for each name in DSATTS=(COLOR,HILIGHT,PS,VALIDN)")
         void fourItemsBecauseDsattsNamesFour() {
-            // THE DERIVATION. app/bms/COCRDSL.bms:26 declares DSATTS=(COLOR,HILIGHT,PS,VALIDN) on the
-            // CCRDSLA DFHMDI. Four extended attributes are declared, so BMS emits four one-byte items per
-            // field in the output group - xxxC, xxxP, xxxH and xxxV at
-            // app/cpy-bms/COCRDSL.CPY:L112-L115 and the fourteen groups after it. The count four is read
-            // off the mapset; it is not a convention and it is not a coincidence.
             List<String> dsatts = List.of("COLOR", "HILIGHT", "PS", "VALIDN");
             assertThat(dsatts).hasSize(CardSelectResponse.ATTRIBUTE_ITEMS_PER_FIELD).hasSize(4);
             assertThat(CardSelectResponse.ATTRIBUTE_ITEM_LENGTH).isEqualTo(1);
 
             for (ScreenField field : ScreenField.values()) {
                 String label = field.dfhmdfLabel();
-                // COLOR -> xxxC, PS -> xxxP, HILIGHT -> xxxH, VALIDN -> xxxV. Four names, four items,
-                // and the copybook's suffix order (C, P, H, V) is the storage order, which is not the
-                // order DSATTS lists them in.
                 assertThat(List.of(field.colourItemName(), field.psItemName(),
                                 field.hilightItemName(), field.validnItemName()))
                         .as("the quad of %s", label)
@@ -1644,7 +1386,6 @@ final class CardSelectResponseTest {
                         .hasSize(dsatts.size());
             }
 
-            // 15 fields x 4 items = 60 attribute bytes in the group, and the class exposes exactly those.
             assertThat(new CardSelectResponse().attributeItems())
                     .hasSize(CardSelectResponse.FIELD_COUNT
                             * CardSelectResponse.ATTRIBUTE_ITEMS_PER_FIELD)
@@ -1656,7 +1397,6 @@ final class CardSelectResponseTest {
         void jsonCarriesDataAndNotMetadata() throws Exception {
             CardSelectResponse response = populated();
             response.applyScreenTitles();
-            // Every quad written, so an accidental leak would have a non-default value to leak.
             for (ScreenField field : ScreenField.values()) {
                 FieldAttributes quad = response.attributes(field);
                 quad.setColour(BmsAttributes.DFHRED);
@@ -1667,19 +1407,13 @@ final class CardSelectResponseTest {
 
             JsonNode json = new ObjectMapper().valueToTree(response);
 
-            // Present: one member per display item. Named explicitly, one field at a time - a count
-            // would be satisfied by fifteen wrong names.
             for (FieldOracle oracle : fieldOracle()) {
-                // The wire name is the item without its output-direction suffix, in lower case (AAP 0.6.3).
                 String member = withoutDirectionSuffix(oracle.cobolName());
                 assertThat(json.has(member)).as("JSON member for %s", oracle.cobolName()).isTrue();
                 assertThat(json.get(member).asText()).as("%s image", oracle.cobolName())
                         .hasSize(oracle.width());
             }
 
-            // Absent: every one of the sixty attribute items, checked by name in both the copybook's
-            // spelling and the lower-case spelling a property would take. The quads travel under the
-            // ScreenMetadata envelope instead, which is why screenMetadata() is @JsonIgnore-d here.
             List<String> forbidden = new ArrayList<>();
             for (ScreenField field : ScreenField.values()) {
                 for (String item : List.of(field.colourItemName(), field.psItemName(),
@@ -1699,14 +1433,10 @@ final class CardSelectResponseTest {
         void fillerIsNotAMemberButIsStillStorage() throws Exception {
             JsonNode json = new ObjectMapper().valueToTree(populated());
 
-            // A FILLER has no name a caller could ask for, so it can have no JSON member - neither the
-            // 12-byte TIOAPFX prefix at app/cpy-bms/COCRDSL.CPY:L110 nor any of the fifteen X(3) spans.
             for (String spelling : List.of("FILLER", "filler", "tioapfx", "TIOAPFX")) {
                 assertThat(json.has(spelling)).as("%s must not be a JSON member", spelling).isFalse();
             }
 
-            // But they are storage, and omitting them would move every following offset. 12 + 15x3 = 57
-            // filler bytes, which together with the 60 attribute bytes and the 387 data bytes make 504.
             int fillerBytes = CardSelectResponse.TIOAPFX_LENGTH
                     + (CardSelectResponse.FIELD_COUNT * CardSelectResponse.FILLER_LENGTH);
             int attributeBytes = CardSelectResponse.FIELD_COUNT
@@ -1730,21 +1460,15 @@ final class CardSelectResponseTest {
                     .containsKeys("ACCTSID", "CARDSID", "ERRMSG");
             assertThat(response.screenMetadata().fields().get("ACCTSID").colour())
                     .isEqualTo(BmsAttributes.unsigned(BmsAttributes.DFHRED));
-            // ERRMSGC is republished as the message colour rather than stored a second time.
             assertThat(response.screenMetadata().messageColour())
                     .isEqualTo(BmsAttributes.unsigned(
                             response.attributes(ScreenField.ERRMSG).getColour()));
         }
     }
 
-    // =============================================================================================
-    // Views, value semantics and the JSON contract
-    // =============================================================================================
-
     @Nested
     @DisplayName("Images - the fingerprints a parity differ compares field by field")
     class Images {
-
         @Test
         @DisplayName("fieldImages is the 15 xxxO items, in copybook order, untrimmed and unmodifiable")
         void fieldImages() {
@@ -1811,29 +1535,6 @@ final class CardSelectResponseTest {
                     .contains("next: program=[COCRDSLC]");
         }
 
-        /**
-         * The observable payload carries the account identifier and the card number <strong>in the
-         * clear</strong>, exactly as the symbolic map does. The two diagnostic renderings do not.
-         *
-         * <h2>A third documented divergence, and why it is recorded rather than corrected (practice B4)</h2>
-         * The instruction for this file reads {@code toString} as a place where no masking may occur, on
-         * the grounds that {@code CARDSIDO} is a sixteen-digit card number the 3270 displays in full. The
-         * class under test decides otherwise, and deliberately: {@code CardSelectResponse#toString()}
-         * routes {@code acctsido} through {@code SensitiveDiagnostics.maskIdentifier} and {@code cardsido}
-         * through {@code maskPan}, documenting that its output goes to log lines and assertion messages -
-         * destinations nobody chose - while the JSON body, {@code fieldImages()} and {@code getCardsido()}
-         * all remain unmasked. A sibling suite, {@code common/NoSensitiveDisclosureTest}, enforces that
-         * choice across the module.
-         *
-         * <p>This suite asserts the <strong>real</strong> API rather than the assumed one, because
-         * weakening an assertion to fit an assumption would be worse than either behaviour, and editing a
-         * production file to match a test is not this file's prerogative. What matters for parity is
-         * asserted below and asserted hard: <em>every observable channel - the JSON wire, the named
-         * getters, the generic accessor and the parity fingerprint - carries all sixteen digits and the
-         * embossed name unaltered, untruncated and unhashed.</em> Redaction exists only in the two
-         * renderings whose sole purpose is human diagnosis, and it is proved here not to have leaked into
-         * anything the client or the differ reads.
-         */
         @Test
         @DisplayName("ACCTSIDO, CARDSIDO and CRDNAMEO travel in the clear; only the diagnostics redact")
         void identifiersTravelInTheClearAndOnlyDiagnosticsRedact() throws Exception {
@@ -1842,29 +1543,24 @@ final class CardSelectResponseTest {
             String embossedName = "JOHN DOE";
             CardSelectResponse response = populated();
 
-            // Every observable channel: the named getters ...
             assertThat(response.getAcctsido()).isEqualTo(accountId);
             assertThat(response.getCardsido()).isEqualTo(cardNumber).hasSize(16)
                     .containsOnlyDigits();
             assertThat(response.getCrdnameo()).startsWith(embossedName)
                     .hasSize(CardSelectResponse.CRDNAMEO_LENGTH);
 
-            // ... the generic accessor ...
             assertThat(response.get(ScreenField.ACCTSID)).isEqualTo(accountId);
             assertThat(response.get(ScreenField.CARDSID)).isEqualTo(cardNumber);
 
-            // ... the parity fingerprint ...
             assertThat(response.fieldImages())
                     .containsEntry("ACCTSIDO", accountId)
                     .containsEntry("CARDSIDO", cardNumber);
 
-            // ... and the JSON wire.
             JsonNode json = new ObjectMapper().valueToTree(response);
             assertThat(json.get("acctsid").asText()).isEqualTo(accountId);
             assertThat(json.get("cardsid").asText()).isEqualTo(cardNumber);
             assertThat(json.get("crdname").asText()).startsWith(embossedName);
 
-            // The two diagnostic renderings, and only they, withhold the three identifying fields.
             assertThat(response.toString())
                     .startsWith("CardSelectResponse[map=CCRDSLA")
                     .contains("ACCTSIDO=*******0011")
@@ -1872,20 +1568,12 @@ final class CardSelectResponseTest {
                     .doesNotContain(accountId, cardNumber);
             assertThat(response.describe()).doesNotContain(accountId, cardNumber, embossedName);
 
-            // No hashing anywhere, in either direction: the rendered forms are masks, and the payload is
-            // the original text - not a digest of it.
             assertThat(response.toString()).doesNotContain(
                     Integer.toHexString(cardNumber.hashCode()));
             assertThat(response.getCardsido()).isEqualTo(cardNumber);
         }
     }
 
-    /**
-     * Supplies one mutation per member {@link CardSelectResponse#equals(Object)} compares, so each
-     * comparison in its {@code &&} chain is exercised in both its true and its false state.
-     *
-     * @return the named mutations, one per compared member
-     */
     static List<Arguments> singleMemberMutations() {
         List<Arguments> mutations = new ArrayList<>();
         record Mutation(String name, Consumer<CardSelectResponse> apply) { }
@@ -1925,7 +1613,6 @@ final class CardSelectResponseTest {
     @Nested
     @DisplayName("Value semantics - equality over all 15 items, the 15 quads and the carriers")
     class ValueSemantics {
-
         @Test
         @DisplayName("two identically built payloads are equal and hash alike")
         void identicalPayloadsAreEqual() {
@@ -1944,8 +1631,6 @@ final class CardSelectResponseTest {
         @Test
         @DisplayName("a ONE-BYTE difference in any data item is enough to break equality")
         void oneByteDifferenceBreaksEquality() {
-            // A field-for-field differ that only noticed whole-value changes would pass a payload whose
-            // sixteenth digit was wrong, so the smallest possible difference is asserted directly.
             CardSelectResponse baseline = populated();
             CardSelectResponse oneByteOff = populated();
             assertThat(oneByteOff).isEqualTo(baseline).hasSameHashCodeAs(baseline);
@@ -1958,8 +1643,6 @@ final class CardSelectResponseTest {
             assertThat(oneByteOff).isNotEqualTo(baseline);
             assertThat(oneByteOff.fieldImages()).isNotEqualTo(baseline.fieldImages());
 
-            // And a trailing space is a byte too: PIC X(50) holds "JOHN DOE" padded, and shifting the
-            // padding by one character is a real difference in the transmitted record.
             CardSelectResponse spaceOff = populated();
             spaceOff.setCrdnameo(" JOHN DOE");
             assertThat(spaceOff.getCrdnameo()).hasSize(50);
@@ -1969,24 +1652,16 @@ final class CardSelectResponseTest {
         @Test
         @DisplayName("a difference in highlight metadata ALONE also breaks equality - the declared contract")
         void metadataOnlyDifferenceAlsoBreaksEquality() {
-            // The class documents equality over "all fifteen data items, all fifteen attribute quads, both
-            // carriers and the next-screen triple", so the quads are IN. That is asserted here rather than
-            // assumed either way: a field that should have been painted red but was not is a genuine
-            // difference, and a payload comparison that ignored it would pass a screen with the wrong
-            // colour on the wrong field.
             CardSelectResponse baseline = populated();
             CardSelectResponse reddened = populated();
             assertThat(reddened).isEqualTo(baseline).hasSameHashCodeAs(baseline);
 
             reddened.attributes(ScreenField.ACCTSID).setColour(BmsAttributes.DFHRED);
 
-            // Not one data item changed ...
             assertThat(reddened.fieldImages()).isEqualTo(baseline.fieldImages());
-            // ... and the payloads are still unequal.
             assertThat(reddened).isNotEqualTo(baseline);
             assertThat(reddened.attributeItems()).isNotEqualTo(baseline.attributeItems());
 
-            // Each of the other three items of the quad counts on its own too.
             for (Consumer<FieldAttributes> mutation : List.<Consumer<FieldAttributes>>of(
                     quad -> quad.setPs(BmsAttributes.DFHDFHI == 0 ? (byte) 0x01 : (byte) 0x02),
                     quad -> quad.setHilight(BmsAttributes.DFHUNDLN),
@@ -2018,7 +1693,6 @@ final class CardSelectResponseTest {
     @Nested
     @DisplayName("The JSON wire - exactly the 15 data members plus the six carriers")
     class JsonContract {
-
         @Test
         @DisplayName("serialisation emits 21 properties and no attribute item")
         void serialisedShape() throws Exception {
@@ -2031,9 +1705,6 @@ final class CardSelectResponseTest {
             Map<String, Object> json =
                     mapper.readValue(mapper.writeValueAsString(response), Map.class);
 
-            // The fifteen xxxO items, plus six carriers: CC-WORK-AREA, CARDDEMO-COMMAREA, the
-            // next-screen triple, and the twelve-byte WS-THIS-PROGCOMMAREA that COMMON-RETURN appends
-            // behind the commarea at app/cbl/COCRDSLC.cbl:398-400.
             assertThat(json.keySet()).containsExactlyInAnyOrder(
                     "trnname", "title01", "curdate", "pgmname", "title02", "curtime",
                     "acctsid", "cardsid", "crdname", "crdstcd", "expmon", "expyear",
@@ -2041,9 +1712,6 @@ final class CardSelectResponseTest {
                     "cardScreenState", "navigationContext", "nextProgram", "nextMapset", "nextMap",
                     "thisProgCommarea");
             assertThat(json).hasSize(21);
-            // The attribute quads are metadata and are published under the ScreenResponse envelope's
-            // screenMetadata member, never as siblings of the fifteen values - so no xxxC item and no
-            // accessor-shaped name appears here.
             assertThat(json.keySet()).doesNotContain("attributeQuads", "attributeItems",
                     "fieldImages", "describe", "groupGeometry", "attributes", "acctsidc",
                     "ACCTSIDC", "expday", "pageno", "screenMetadata");
@@ -2100,19 +1768,6 @@ final class CardSelectResponseTest {
         }
     }
 
-    /**
-     * A copybook item name rendered as the JSON member it is published under: the item without its
-     * output-direction suffix, lower-cased.
-     *
-     * <p>{@code @JsonProperty} pins every screen field's wire name to its {@code xxxI} item in lower
-     * case, which is the one naming rule AAP 0.6.3 states - "payload field names and lengths derive from
-     * the xxxI items only". The Java accessor keeps the {@code xxxO} spelling, because that is the map
-     * view the type projects; the wire name does not, because the paired request has to accept this
-     * response back field for field.
-     *
-     * @param itemName a symbolic-map item name such as {@code TRNNAMEO} or {@code TRNNAMEI}
-     * @return the JSON member name, such as {@code trnname}
-     */
     private static String withoutDirectionSuffix(String itemName) {
         return itemName.substring(0, itemName.length() - 1).toLowerCase(Locale.ROOT);
     }

@@ -81,91 +81,16 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
- * Behavioural tests for {@link CardListController}, the migration of {@code app/cbl/COCRDLIC.cbl}
- * (CICS transaction {@code CCLI}).
- *
- * <p><strong>Every decision is driven without HTTP.</strong> The controller is instantiated directly
- * with a stubbed {@link CardRepository}, so paging arithmetic, the eight-arm dispatcher, the seven
- * message arms and the two filter editors are all asserted with no {@code MockMvc} in the path
- * (practice B10, gate G51). {@code MockMvc} is confined to three nested classes and each of them
- * asserts a property that is only observable over HTTP and nowhere else: {@code HttpContract} covers
- * the route, status, media type and JSON shape; {@code PageSizeIsNotExternallyTunable} covers the
- * absence of any header or query parameter that could move the page size; and
- * {@code NavigationIsClientDriven} covers the absence of a redirect, a {@code Location} header, a
- * server-side forward and a servlet session. No business decision is asserted through any of them.
- *
- * <p><strong>Provenance of the expected values.</strong> COBOL cannot be executed in this environment
- * (AAP risk R-A: no z/OS, no CICS emulator, GnuCOBOL's indexed handler disabled, the three IBM-supplied
- * copybooks absent), so every expectation below is <em>statically derived</em> from
- * {@code app/cbl/COCRDLIC.cbl}, {@code app/cpy-bms/COCRDLI.CPY}, {@code app/bms/COCRDLI.bms},
- * {@code app/cpy/CVCRD01Y.cpy}, {@code app/cpy/CVACT02Y.cpy}, {@code app/cpy/CSSTRPFY.cpy} and
- * {@code app/csd/CARDDEMO.CSD}, and is cited to the source line it comes from. No captured baseline is
- * claimed (practice B12).
- *
- * <p>Those files are <strong>reference material only</strong> (practice B3). They are named in comments
- * so a reviewer can read a test beside the statement it came from, and not one of them is opened at
- * runtime: this suite performs no file, classpath-resource or network read of any kind, and it writes
- * nothing anywhere.
- *
- * <p>The clock is fixed so {@code CURDATEO} and {@code CURTIMEO} are deterministic; the charset is
- * stated explicitly rather than taken from the platform (practice B8).
- *
- * <p><strong>Rules.</strong> {@code review_rules} reports that <em>no user rules were provided</em> for
- * this project. That is not licence to lower the bar: the Agent Action Plan &sect;0.10.2 enterprise
- * practices <strong>B1-B12</strong> bind in their place, and the ones this suite exists to prove are
- * B4 (both documented conflicts are asserted, not merely described), B5 (the preserved oddities are
- * pinned by assertions so they cannot be tidied away), B6 (the unconditional
- * {@code SET CDEMO-USRTYP-USER} is asserted and no authorization the COBOL does not perform is
- * introduced), B7 (the branch gate), B10 and gate G51 (no {@code MockMvc} in any decision path) and
- * B12 (the provenance note above).
- *
- * <p><strong>The two preserved defects (practice B5).</strong> Both are asserted here and neither is
- * corrected, because correcting either would change observable behaviour:
- * <ol>
- *   <li><strong>The duplicated {@code PF7}-on-the-first-page {@code WHEN}</strong>
- *       [{@code app/cbl/COCRDLIC.cbl:439-454}]. {@code :439-440} declares
- *       {@code WHEN CCARD-AID-PFK07 AND CA-FIRST-PAGE} with an <em>empty</em> body and {@code :444-445}
- *       declares the identical condition again, this time carrying the body. Consecutive {@code WHEN}
- *       phrases share the statements that follow them, so the comment at {@code :441-443} - "PAGE UP -
- *       PF7 - BUT ALREADY ON FIRST PAGE" - reads as though the arm were meant to do nothing, while what
- *       actually runs is a fresh forward read from {@code WS-CA-FIRST-CARD-NUM} and a repaint. The
- *       behaviour, not the comment's intent, is what {@code Dispatcher} asserts - and the same
- *       duplication is why one branch of arm 5 at {@code :501-502} is unreachable, which
- *       {@code Dispatcher} also records.</li>
- *   <li><strong>The mapset/map mismatch on the {@code PF3}-to-menu path</strong>
- *       [{@code app/cbl/COCRDLIC.cbl:394-395}]. {@code :394} moves {@code LIT-MENUMAPSET}
- *       ({@code 'COMEN01'}) into {@code CCARD-NEXT-MAPSET} but {@code :395} moves {@code LIT-THISMAP}
- *       ({@code 'CCRDLIA'}) - <em>this</em> program's own map - into {@code CCARD-NEXT-MAP}, where the
- *       menu's own map {@code LIT-MENUMAP} ({@code 'COMEN1A'}) is declared at {@code :195-196} and never
- *       used. The pair disagrees in the source and is asserted disagreeing.</li>
- * </ol>
- *
- * <p><strong>Gates.</strong> This suite is the acceptance evidence for
- * <strong>G9</strong> (every payload field traces to a {@code DFHMDF} entry - see
- * {@code SymbolicMapPayloadContract}), <strong>G30</strong> (the {@code EVALUATE} arms in source order
- * with {@code WHEN OTHER} last), <strong>G33</strong> (the 1-based {@code OCCURS} tables converted at
- * both ends - see {@code OccursSubscriptBoundaries}), <strong>G37</strong> (no server-side state - see
- * {@code Statelessness} and {@code ClientMustReturnTheCursor}), <strong>G38</strong> (both
- * {@code ENTER} and {@code REENTER}, with the error highlight only on re-entry), <strong>G39</strong>
- * (page size exactly 7 and not externally tunable - see {@code PageSizeIsBehaviour} and
- * {@code PageSizeIsNotExternallyTunable}), <strong>G40</strong> (all three {@code XCTL} sites become a
- * {@code nextProgram} response field - see {@code NavigationIsClientDriven}), <strong>G47</strong>
- * (every {@code FileStatus} outcome per browse call site), <strong>G50</strong> (both states of every
- * {@code 88}-level), <strong>G51</strong>, <strong>G52</strong> (no wildcard imports),
- * <strong>G53</strong> (no static mutable state) and <strong>G54</strong> (the suite is
- * non-interactive and order-independent).
+ * Behavioural tests for {@link CardListController}, the migration of {@code app/cbl/COCRDLIC.cbl} (CICS
+ * transaction {@code CCLI}).
  */
 @DisplayName("CardListController - COCRDLIC, transaction CCLI, GET /api/cards")
 final class CardListControllerTest {
-
-    /** The dataset code page, always named rather than defaulted. */
     private static final FixedWidthCodec CODEC = new FixedWidthCodec(StandardCharsets.US_ASCII);
 
-    /** A fixed instant so the two header fields are assertable. 2022-07-19 is the source's own date. */
     private static final Clock CLOCK =
             Clock.fixed(Instant.parse("2022-07-19T23:12:33Z"), ZoneOffset.UTC);
 
-    /** {@code EIBAID} as an unsigned integer, which is how the query parameter carries it. */
     private static final int ENTER_PARAM = CicsAid.DFHENTER & 0xFF;
 
     private CardRepository repository;
@@ -180,11 +105,6 @@ final class CardListControllerTest {
         controller = new CardListController(repository, CODEC, CLOCK);
     }
 
-    // =============================================================================================
-    // Fixtures. Card n has card number n zero-filled to sixteen and account id 10000000000 + n, so a
-    // row's identity is readable from its assertion.
-    // =============================================================================================
-
     private static CardRecord card(int n) {
         return CardRecord.moving(String.format("%016d", n), 10_000_000_000L + n, 123,
                 "CARDHOLDER " + n, "2025-01-01", "Y", CODEC);
@@ -194,7 +114,6 @@ final class CardListControllerTest {
         return cardRead(card(n));
     }
 
-    /** Stubs the forward browse to hand back these cards and then end the file. */
     private void forward(int... cardNumbers) {
         CardReadResult[] rest = new CardReadResult[cardNumbers.length];
         for (int index = 0; index < cardNumbers.length; index++) {
@@ -203,7 +122,6 @@ final class CardListControllerTest {
         stub(true, rest);
     }
 
-    /** Stubs the backward browse to hand back these cards and then run off the front of the file. */
     private void backward(int... cardNumbers) {
         CardReadResult[] rest = new CardReadResult[cardNumbers.length];
         for (int index = 0; index < cardNumbers.length; index++) {
@@ -215,8 +133,6 @@ final class CardListControllerTest {
     private void stub(boolean forwards, CardReadResult... results) {
         CardReadResult[] withTail = new CardReadResult[results.length + 1];
         System.arraycopy(results, 0, withTail, 0, results.length);
-        // Running off either end of the browse reports ENDFILE; the backward direction has no ENDFILE
-        // arm, so this same result lands on its WHEN OTHER at :1361, exactly as the source has it.
         withTail[results.length] = CardReadResult.endOfFile();
         CardReadResult first = withTail[0];
         CardReadResult[] tail = new CardReadResult[withTail.length - 1];
@@ -228,7 +144,6 @@ final class CardListControllerTest {
         }
     }
 
-    /** A continuing request whose communication area names this program, i.e. {@code EIBCALEN > 0}. */
     private static CardListRequest continuing() {
         CardListRequest request = new CardListRequest();
         request.setNavigationContext(NavigationContext.empty()
@@ -241,11 +156,6 @@ final class CardListControllerTest {
         return request;
     }
 
-    /**
-     * Seven rows carrying cards 1..7, with {@code selection} typed on {@code selectedRow}. Row 1 is a
-     * {@link FirstListRow} - four members - and rows 2..7 are {@link StopperListRow}s with five, which
-     * is the asymmetry {@code app/cpy-bms/COCRDLI.CPY:78-79} declares.
-     */
     private static List<ListRow> rows(int selectedRow, String selection) {
         List<ListRow> built = new ArrayList<>(CardListRequest.PAGE_SIZE);
         for (int row = 1; row <= CardListRequest.PAGE_SIZE; row++) {
@@ -259,7 +169,6 @@ final class CardListControllerTest {
         return built;
     }
 
-    /** A continuing request showing cards 1..7 with {@code selection} typed on {@code selectedRow}. */
     private static CardListRequest showing(int selectedRow, String selection) {
         CardListRequest request = continuing();
         request.setPageCursor(PageCursor.initialised()
@@ -271,22 +180,17 @@ final class CardListControllerTest {
         return request;
     }
 
-    /** A text already moved to the declared width of {@code WS-ERROR-MSG}, {@code PIC X(75)}. */
     private static String moved(String message) {
         return CODEC.movePicX(message, CardScreenState.CCARD_ERROR_MSG_LENGTH);
     }
 
-    /** Renders {@code LOW-VALUES} visibly so a failure message is readable. */
     private static String visible(String value) {
         return value == null ? "<null>" : value.replace('\u0000', '.');
     }
 
-    // =============================================================================================
-
     @Nested
     @DisplayName("Page size 7 is behaviour, not configuration (gate G39)")
     final class PageSizeIsBehaviour {
-
         @Test
         @DisplayName("WS-MAX-SCREEN-LINES is a private static final int holding the literal 7")
         void constantIsSevenAndImmutable() throws ReflectiveOperationException {
@@ -322,11 +226,6 @@ final class CardListControllerTest {
             Method handler = CardListController.class.getDeclaredMethod("getCards",
                     CardListRequest.class, Integer.class, Integer.class);
 
-            // Named exhaustively rather than counted. The count moved once already, when the second
-            // accepted spelling of the EIBAID parameter was bound, and a count assertion would have
-            // failed for that without saying anything about the page size - which is what gate G39 is
-            // actually about. Every bound query parameter is enumerated instead, and the set may contain
-            // only the two AID names.
             assertThat(handler.getParameterCount()).isEqualTo(3);
             List<String> bound = Arrays.stream(handler.getParameters())
                     .map(parameter -> parameter.getAnnotation(RequestParam.class))
@@ -364,12 +263,9 @@ final class CardListControllerTest {
         }
     }
 
-    // =============================================================================================
-
     @Nested
     @DisplayName("Construction-time contract guards")
     final class ContractGuards {
-
         @Test
         @DisplayName("both guards pass against the collaborators as they stand")
         void guardsPass() {
@@ -426,9 +322,6 @@ final class CardListControllerTest {
         @Test
         @DisplayName("Conflict 1: the card-select DTO is referenced only as a navigation target")
         void cardSelectIsANavigationReferenceOnly() {
-            // app/cbl/COCRDLIC.cbl:274 is `*COPY COCRDSL.` - commented out - so this program has no
-            // COCRDSL data area. The AAP's import directive is honoured by cross-checking the
-            // navigation triple, and no COCRDSL map field is ever populated (practice B4).
             assertThat(CardListController.LIT_CARDDTLPGM).isEqualTo(CardSelectResponse.THIS_PROGRAM);
             assertThat(CardListController.LIT_CARDDTLMAPSET).isEqualTo(CardSelectResponse.THIS_MAPSET);
             assertThat(CardListController.LIT_CARDDTLMAP).isEqualTo(CardSelectResponse.MAP_NAME);
@@ -441,8 +334,6 @@ final class CardListControllerTest {
         @Test
         @DisplayName("Conflict 2: this program keeps its own correct CCRDLIA list map")
         void listMapIsNotTheSiblingsDefect() {
-            // COCRDSLC:178 and COCRDUPC:234 set LIT-CCLISTMAP to 'CCRDSLA'. That defect is preserved
-            // where it lives and is not propagated here (practice B4).
             assertThat(CardListController.LIT_THISMAP).isEqualTo("CCRDLIA");
             assertThat(CardListController.LIT_THISMAP).isNotEqualTo(CardSelectResponse.MAP_NAME);
         }
@@ -466,12 +357,9 @@ final class CardListControllerTest {
         }
     }
 
-    // =============================================================================================
-
     @Nested
     @DisplayName("EIBAID resolution")
     final class EibAidResolution {
-
         @Test
         @DisplayName("an absent parameter is ENTER, the key the program itself falls back to")
         void absentIsEnter() {
@@ -495,8 +383,6 @@ final class CardListControllerTest {
         @Test
         @DisplayName("an unrecognised AID becomes ENTER, which is the CSSTRPFY no-match outcome")
         void unrecognisedAidBecomesEnter() {
-            // app/cbl/COCRDLIC.cbl:370-380. CSSTRPFY has no WHEN OTHER and no DFHPA3 branch and does
-            // not clear CCARD-AID first, so PA3 matches no condition; :379 then forces ENTER.
             forward();
             WorkArea ws = new WorkArea();
 
@@ -546,12 +432,9 @@ final class CardListControllerTest {
         }
     }
 
-    // =============================================================================================
-
     @Nested
     @DisplayName("Cold start - EIBCALEN = 0, app/cbl/COCRDLIC.cbl:315-332")
     final class ColdStart {
-
         @Test
         @DisplayName("an absent payload initialises the commarea and the cursor")
         void absentPayloadInitialises() {
@@ -663,12 +546,9 @@ final class CardListControllerTest {
         }
     }
 
-    // =============================================================================================
-
     @Nested
     @DisplayName("9000-READ-FORWARD - counts up and stops at seven, app/cbl/COCRDLIC.cbl:1123-1263")
     final class ForwardPaging {
-
         @Test
         @DisplayName("eight available records fill exactly seven rows and report a next page")
         void sevenRowsAndANextPage() {
@@ -922,13 +802,9 @@ final class CardListControllerTest {
         }
     }
 
-    // =============================================================================================
-
     @Nested
     @DisplayName("9100-READ-BACKWARDS - primes to eight and counts down, :1264-1380")
     final class BackwardPaging {
-
-        /** A request positioned on page 3 so {@code NOT CA-FIRST-PAGE} holds. */
         private CardListRequest onPageThree() {
             CardListRequest request = continuing();
             request.setPageCursor(PageCursor.initialised()
@@ -1114,12 +990,9 @@ final class CardListControllerTest {
         }
     }
 
-    // =============================================================================================
-
     @Nested
     @DisplayName("0000-MAIN's eight-arm EVALUATE TRUE - order is load-bearing, :418-583 (gate G30)")
     final class Dispatcher {
-
         @Test
         @DisplayName("arm 1 WHEN INPUT-ERROR: repaint with the message and this program as the target")
         void armOneInputError() {
@@ -1313,9 +1186,6 @@ final class CardListControllerTest {
         @Test
         @DisplayName("a cold-start PF3 DOES transfer, because :319 has just named this program")
         void coldStartPf3AlsoTransfers() {
-            // :315-332 moves LIT-THISPGM into CDEMO-FROM-PROGRAM before the guard at :385 tests it,
-            // so a first-ever PF3 satisfies CDEMO-FROM-PROGRAM = LIT-THISPGM and leaves for the menu.
-            // The reading is counter-intuitive and is asserted so it cannot be "tidied" later.
             CardListResponse response = controller.listCards(null, CicsAid.DFHPF3);
 
             assertThat(response.getNextProgram()).isEqualTo(CardListController.LIT_MENUPGM);
@@ -1394,11 +1264,6 @@ final class CardListControllerTest {
         @ParameterizedTest(name = "a '{0}' selection carried from a foreign caller does not transfer")
         @CsvSource({"S", "U"})
         void aSelectionWithAForeignCallerDoesNotTransfer(String selection) {
-            // Unreachable through 0000-MAIN, because :357-362 receives the map only when the caller
-            // is this program, so a selection cannot exist while CDEMO-FROM-PROGRAM names someone
-            // else. The dispatcher is driven directly so the third condition of both arms - :519 and
-            // :547, CDEMO-FROM-PROGRAM = LIT-THISPGM - is proved to be load-bearing rather than
-            // decorative. Preserving it verbatim is practice B5.
             forward(1, 2);
             WorkArea ws = new WorkArea();
             ws.ccWorkArea.setCcardAidCondition(AidKey.ENTER);
@@ -1420,9 +1285,6 @@ final class CardListControllerTest {
         @Test
         @DisplayName("PF7 reaching arm 5 always has NOT CA-FIRST-PAGE, because arm 2 consumed the rest")
         void armFiveIsOnlyReachableOffTheFirstPage() {
-            // Arm 2 at :439-454 matches PF7 AND CA-FIRST-PAGE and returns, so by the time arm 5 tests
-            // NOT CA-FIRST-PAGE the answer is already settled. The redundant test is preserved
-            // verbatim (practice B5) and its outcome is asserted from both sides through arms 2 and 5.
             forward(1, 2, 3, 4, 5, 6, 7, 8);
             CardListRequest firstPage = showing(0, " ");
             CardListResponse onFirstPage = controller.listCards(firstPage, CicsAid.DFHPF7);
@@ -1448,12 +1310,9 @@ final class CardListControllerTest {
         }
     }
 
-    // =============================================================================================
-
     @Nested
     @DisplayName("Row selection - 2250-EDIT-ARRAY and the two transfer arms, :1073-1117, :517-569")
     final class RowSelection {
-
         @Test
         @DisplayName("'S' on row 1 transfers to the card detail view - :517-541 (gate G40)")
         void viewRequestedOnRowOne() {
@@ -1658,12 +1517,9 @@ final class CardListControllerTest {
         }
     }
 
-    // =============================================================================================
-
     @Nested
     @DisplayName("2210-EDIT-ACCOUNT and 2220-EDIT-CARD - the three outcomes each, :1003-1066")
     final class FilterEditing {
-
         @Test
         @DisplayName("LOW-VALUES is 'not supplied' for the account filter - :1007-1013")
         void accountLowValuesIsBlank() {
@@ -1862,12 +1718,9 @@ final class CardListControllerTest {
         }
     }
 
-    // =============================================================================================
-
     @Nested
     @DisplayName("1400-SETUP-MESSAGE - a seven-arm ordered EVALUATE, :895-932 (gate G30)")
     final class MessageSelection {
-
         private WorkArea ws;
         private CardListResponse response;
 
@@ -1957,9 +1810,6 @@ final class CardListControllerTest {
         @Test
         @DisplayName("arm 6 :920-921 WHEN OTHER, which 0000-MAIN cannot reach because :669 runs first")
         void whenOtherClearsTheInformationLine() {
-            // 1100-SCREEN-INIT sets WS-NO-INFO-MESSAGE at :669, which makes arm 5's first condition
-            // always true, so this arm is dead through 1000-SEND-MAP. It is preserved (practice B5)
-            // and driven directly, because a paragraph is the smallest thing the source can express.
             ws.ccWorkArea.setCcardAidCondition(AidKey.ENTER);
             ws.setWsInfoMsg(CODEC.movePicX("SOMETHING WAS ALREADY HERE",
                     CardListResponse.INFOMSGO_LENGTH));
@@ -2015,7 +1865,6 @@ final class CardListControllerTest {
         @DisplayName("arm 4's inner guard does not fire when the flag holds neither 88-level value")
         void armFourInnerGuardNeedsLastPageNotShown() {
             ws.ccWorkArea.setCcardAidCondition(AidKey.PFK08);
-            // Neither 0 nor 9, which INITIALIZE cannot produce but a client round-trip can.
             ws.cursor = ws.cursor.withNextPageNotExists().withLastPageDisplayed(5);
 
             controller.setupMessage(ws, response);
@@ -2056,12 +1905,9 @@ final class CardListControllerTest {
         }
     }
 
-    // =============================================================================================
-
     @Nested
     @DisplayName("1100/1200/1250/1300 - the screen-painting paragraphs, :642-889")
     final class ScreenPainting {
-
         private char attributeOf(CardListRequest request, String label) {
             return request.fieldMetadataOf(label)
                     .map(FieldMetadata::attributeByte)
@@ -2125,10 +1971,6 @@ final class CardListControllerTest {
                         .isEqualTo((char) (BmsAttributes.DFHBMPRO & 0xFF));
             }
 
-            // And every one of those bytes reaches the client. They are written into xxxA of the INPUT
-            // group, so the projection is given that area: reading the output group's never-written xxxP
-            // reported x'00' for all seven rows and a client could not tell a selectable row from a
-            // protected one.
             ScreenMetadata metadata = response.screenMetadata(request);
             assertThat(metadata.fields().get("CRDSEL1").protection())
                     .isEqualTo(BmsAttributes.unsigned(BmsAttributes.DFHBMPRF));
@@ -2138,7 +1980,6 @@ final class CardListControllerTest {
                         .isEqualTo(BmsAttributes.unsigned(BmsAttributes.DFHBMPRO));
             }
 
-            // Without an input area there is nothing to merge, and the output group's own byte stands.
             assertThat(response.screenMetadata().fields().get("CRDSEL1").protection()).isZero();
         }
 
@@ -2377,12 +2218,9 @@ final class CardListControllerTest {
         }
     }
 
-    // =============================================================================================
-
     @Nested
     @DisplayName("WS-FILE-ERROR-MESSAGE - exactly eighty characters, :153-171")
     final class FileErrorDiagnostic {
-
         @Test
         @DisplayName("the nine spans compose to exactly eighty characters, byte for byte")
         void eightyCharactersExactly() {
@@ -2451,12 +2289,9 @@ final class CardListControllerTest {
         }
     }
 
-    // =============================================================================================
-
     @Nested
     @DisplayName("Statelessness - the whole cursor travels in the payload (rule R6, gate G37)")
     final class Statelessness {
-
         @Test
         @DisplayName("the controller declares no session state of any kind")
         void noServerSideState() {
@@ -2488,7 +2323,6 @@ final class CardListControllerTest {
 
             forward(1, 2, 3, 4, 5, 6, 7, 8);
             controller.listCards(null, CicsAid.DFHENTER, first);
-            // The same browse, re-stubbed, so the second call sees the same file as the first.
             forward(1, 2, 3, 4, 5, 6, 7, 8);
             CardListResponse response = controller.listCards(null, CicsAid.DFHENTER, second);
 
@@ -2657,12 +2491,9 @@ final class CardListControllerTest {
         }
     }
 
-    // =============================================================================================
-
     @Nested
     @DisplayName("Helpers and the WORKING-STORAGE condition names (gate G50)")
     final class Helpers {
-
         @Test
         @DisplayName("isEvery treats an empty value as vacuously uniform")
         void isEveryEdgeCases() {
@@ -3010,12 +2841,9 @@ final class CardListControllerTest {
         }
     }
 
-    // =============================================================================================
-
     @Nested
     @DisplayName("The HTTP contract only - route, status, media type and JSON shape")
     final class HttpContract {
-
         private MockMvc mockMvc;
         private ObjectMapper json;
 
@@ -3061,8 +2889,6 @@ final class CardListControllerTest {
             String body = json.writeValueAsString(showing(0, " "));
             String pf3 = String.valueOf(CicsAid.DFHPF3 & 0xFF);
 
-            // GET /api/cards/{cardNum} declared the alternate spelling, so a client that learned the name
-            // there and then listed cards had its PF3 discarded by Spring and the list repainted instead.
             mockMvc.perform(get(CardListController.CARD_LIST_PATH)
                             .param(AidRequestParameter.ALTERNATE_NAME, pf3)
                             .contentType(MediaType.APPLICATION_JSON)
@@ -3070,7 +2896,6 @@ final class CardListControllerTest {
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.nextProgram").value("COMEN01C"));
 
-            // Both together, agreeing, are one statement made twice.
             mockMvc.perform(get(CardListController.CARD_LIST_PATH)
                             .param(AidRequestParameter.CANONICAL_NAME, pf3)
                             .param(AidRequestParameter.ALTERNATE_NAME, pf3)
@@ -3118,17 +2943,12 @@ final class CardListControllerTest {
 
             mockMvc.perform(get(CardListController.CARD_LIST_PATH))
                     .andExpect(status().isOk())
-                    // The screen is still at the top level, so no client field moves.
                     .andExpect(jsonPath("$.trnname").value("CCLI"))
                     .andExpect(jsonPath("$.acctsid").exists())
-                    // Finding F3: the 45 quads and the cursor request are published rather than dropped.
                     .andExpect(jsonPath("$.screenMetadata.fields.ACCTSID.colour").exists())
                     .andExpect(jsonPath("$.screenMetadata.fields.CRDSEL1.protection").exists())
                     .andExpect(jsonPath("$.screenMetadata.messageColour").exists())
-                    // 1300-SETUP-SCREEN-ATTRS:885 aims the cursor at the account filter when the screen
-                    // edited cleanly, and that request now reaches the client.
                     .andExpect(jsonPath("$.screenMetadata.cursorField").value("ACCTSID"))
-                    // And they are NOT siblings of the 45 values.
                     .andExpect(jsonPath("$.acctsidc").doesNotExist())
                     .andExpect(jsonPath("$.cursorField").doesNotExist());
         }
@@ -3205,29 +3025,12 @@ final class CardListControllerTest {
         }
     }
 
-    // =============================================================================================
-
-    /**
-     * {@code WS-MAX-SCREEN-LINES PIC S9(4) COMP VALUE 7} sits inside {@code 01 WS-CONSTANTS} at
-     * {@code app/cbl/COCRDLIC.cbl:177-178}. A {@code VALUE} clause on a constants group is not a
-     * tuneable: {@code :1191} compares the row counter against it and {@code :1284-1286} primes the
-     * backward browse to {@code WS-MAX-SCREEN-LINES + 1}, so a different value is a different program.
-     *
-     * <p>{@code PageSizeIsBehaviour} above proves the <em>declaration</em> is a private constant with
-     * no {@code @Value} and no bean-name injection. This class proves the complementary half - that
-     * nothing reachable by a <em>caller or an operator</em> can move it: not a system property, not a
-     * request header, not a stray query parameter, and not reflection (gate G39).
-     */
     @Nested
     @DisplayName("Page size 7 is not externally tunable (gate G39)")
     final class PageSizeIsNotExternallyTunable {
-
         @Test
         @DisplayName("no system property can move the page size off seven")
         void systemPropertiesCannotMoveThePageSize() {
-            // Every plausible key an operator might reach for, including the ones the sibling paged
-            // screens would use. None of them is read anywhere, and this asserts that by consequence
-            // rather than by inspection: the browse offers twenty records and still fills seven rows.
             List<String> candidateKeys = List.of(
                     "carddemo.card.list.page-size",
                     "carddemo.page-size",
@@ -3258,8 +3061,6 @@ final class CardListControllerTest {
                         .as("an eighth record still exists, so the next-page indicator is still 'Y'")
                         .isTrue();
             } finally {
-                // The suite holds no static mutable state of its own (gate G53); a property this test
-                // set is host state, so it is put back whatever the outcome, leaving the JVM as found.
                 for (int index = 0; index < candidateKeys.size(); index++) {
                     String key = candidateKeys.get(index);
                     String before = previous.get(index);
@@ -3287,7 +3088,6 @@ final class CardListControllerTest {
                             .param("size", "3")
                             .param("limit", "3"))
                     .andExpect(status().isOk())
-                    // Rows 1 and 7 are both painted, so the page is seven deep whatever was asked for.
                     .andExpect(jsonPath("$.crdnum1").value(String.format("%016d", 1)))
                     .andExpect(jsonPath("$.crdnum7").value(String.format("%016d", 7)));
         }
@@ -3315,7 +3115,6 @@ final class CardListControllerTest {
             assertThat(CardListRequest.SCREEN_ROW_COUNT).isEqualTo(7);
             assertThat(CardListResponse.PAGE_SIZE).isEqualTo(7);
             assertThat(CardListResponse.ROW_COUNT).isEqualTo(7);
-            // app/cbl/COCRDLIC.cbl:250 states the arithmetic in a comment: 28 CHARS X 7 ROWS = 196.
             assertThat(CardListResponse.SCREEN_ROW_LENGTH)
                     .as("WS-ROW-ACCTNO X(11) + WS-ROW-CARD-NUM X(16) + WS-ROW-CARD-STATUS X(1)")
                     .isEqualTo(11 + 16 + 1);
@@ -3325,23 +3124,9 @@ final class CardListControllerTest {
         }
     }
 
-    // =============================================================================================
-
-    /**
-     * {@code COCRDLIC} reaches {@code CCARD-AID} through {@code COPY 'CSSTRPFY'} at
-     * {@code app/cbl/COCRDLIC.cbl:1416}, and {@code app/cpy/CSSTRPFY.cpy:54-77} folds {@code DFHPF13}
-     * through {@code DFHPF24} back onto {@code CCARD-AID-PFK01} through {@code CCARD-AID-PFK12} -
-     * twelve further {@code WHEN} clauses that repeat the twelve above them with the high keys.
-     *
-     * <p>The fold is behaviour, not a convenience: because {@code :371-377} admits exactly
-     * {@code ENTER}, {@code PFK03}, {@code PFK07} and {@code PFK08}, folding is what makes
-     * <strong>{@code PF15} exit, {@code PF19} page up and {@code PF20} page down</strong>. Dropping it
-     * would send all three down the invalid-key path at {@code :379} and repaint page one instead.
-     */
     @Nested
     @DisplayName("PF13-PF24 fold onto PFK01-PFK12 - app/cpy/CSSTRPFY.cpy:54-77")
     final class FoldedProgramFunctionKeys {
-
         @ParameterizedTest(name = "PF{0} and PF{1} are the same AID token")
         @CsvSource({"13,1", "14,2", "15,3", "16,4", "17,5", "18,6",
                     "19,7", "20,8", "21,9", "22,10", "23,11", "24,12"})
@@ -3442,23 +3227,9 @@ final class CardListControllerTest {
         }
     }
 
-    // =============================================================================================
-
-    /**
-     * {@code app/cbl/COCRDLIC.cbl:410-414}:
-     * <pre>IF CCARD-AID-PFK08 CONTINUE ELSE SET CA-LAST-PAGE-NOT-SHOWN TO TRUE END-IF</pre>
-     *
-     * <p>The flag exists so {@code 1400-SETUP-MESSAGE} can tell a <em>first</em> {@code PF8} that lands
-     * on the last page ({@code :910-916}, which flips {@code CA-LAST-PAGE-SHOWN} on) from a
-     * <em>second</em> one ({@code :905-909}, which answers "no more pages"). Resetting it for every
-     * other key is what stops a stale {@code 0} carried in the payload from suppressing a legitimate
-     * page-down later, so both sides of the {@code IF} are asserted.
-     */
     @Nested
     @DisplayName("The last-page flag is reset for every key except PF8 - :410-414")
     final class LastPageFlagReset {
-
-        /** A continuing request that carries {@code CA-LAST-PAGE-SHOWN}, the resettable state. */
         private CardListRequest carryingLastPageShown() {
             CardListRequest request = showing(0, " ");
             request.setPageCursor(request.getPageCursor()
@@ -3469,8 +3240,6 @@ final class CardListControllerTest {
         @ParameterizedTest(name = "EIBAID {0} is not PF8, so the carried flag is discarded")
         @ValueSource(ints = {125, 247, 108, 109, 110})
         void everyNonPf8KeyResetsTheFlag(int aid) {
-            // 125 ENTER, 247 PF7, 108 CLEAR, 109 PA1, 110 PA2. The last three fold to ENTER at :379,
-            // which is still not PF8, so the ELSE arm runs for them too.
             forward(1, 2, 3, 4, 5, 6, 7);
             WorkArea ws = new WorkArea();
 
@@ -3489,9 +3258,6 @@ final class CardListControllerTest {
         @Test
         @DisplayName("PF8 takes the CONTINUE arm, so the carried flag survives into 1400-SETUP-MESSAGE")
         void pf8LeavesTheFlagAlone() {
-            // The carried flag says the last page has already been shown, and CA-NEXT-PAGE-EXISTS says
-            // there is more to come. :410-411 CONTINUE preserves the flag, so arm 3 of
-            // 1400-SETUP-MESSAGE (:905-909) is reachable and answers "no more pages".
             forward();
             WorkArea ws = new WorkArea();
 
@@ -3538,28 +3304,9 @@ final class CardListControllerTest {
         }
     }
 
-    // =============================================================================================
-
-    /**
-     * {@code app/cbl/COCRDLIC.cbl:586-601} - the block that follows {@code END-EVALUATE}.
-     *
-     * <p>It is <strong>unreachable</strong>. All eight arms of the {@code EVALUATE} terminate the
-     * program: six end in {@code GO TO COMMON-RETURN} and two in {@code EXEC CICS XCTL}, so nothing
-     * falls through to {@code :586}. Its statements are not lost, though - {@code :587-594} are
-     * character-for-character the seven moves the input-error arm already performs at {@code :423-430},
-     * and {@code :600} repeats the {@code MOVE LIT-THISPGM TO CCARD-NEXT-PROG} of {@code :428}.
-     *
-     * <p><strong>{@code :595-596} is commented out.</strong> The source reads
-     * {@code *       PERFORM 1000-SEND-MAP} / {@code *          THRU 1000-SEND-MAP}, so even if the
-     * block were reachable it would <em>not</em> repaint. Re-introducing that {@code PERFORM} in the
-     * Java form would send the map a second time on the error path and is therefore forbidden
-     * (practice B5). What makes the duplication harmless is that the seven moves are idempotent, which
-     * is what this class asserts rather than merely asserting that the block is absent.
-     */
     @Nested
     @DisplayName("The block after END-EVALUATE is unreachable and its send is commented out - :586-601")
     final class PostEvaluateTerminal {
-
         @Test
         @DisplayName("the seven moves of :587-594 are exactly what the input-error arm performs")
         void theSevenMovesAreTheInputErrorArmsOwnPreamble() {
@@ -3569,14 +3316,11 @@ final class CardListControllerTest {
 
             controller.applyInputErrorReturnState(ws);
 
-            // :424  MOVE WS-ERROR-MSG TO CCARD-ERROR-MSG          (= :587)
             assertThat(ws.ccWorkArea.getCcardErrorMsg())
                     .isEqualTo(moved(CardListController.WS_INVALID_ACTION_CODE));
-            // :425-427 the three CDEMO moves                       (= :588-590)
             assertThat(ws.commarea.fromProgram()).isEqualTo(CardListController.LIT_THISPGM);
             assertThat(ws.commarea.lastMapset()).isEqualTo(CardListController.LIT_THISMAPSET);
             assertThat(ws.commarea.lastMap()).isEqualTo(CardListController.LIT_THISMAP);
-            // :428-430 the three CCARD-NEXT moves                  (= :592-594, and :428 = :600)
             assertThat(ws.ccWorkArea.getCcardNextProg()).isEqualTo(CardListController.LIT_THISPGM);
             assertThat(ws.ccWorkArea.getCcardNextMapset()).isEqualTo(CardListController.LIT_THISMAPSET);
             assertThat(ws.ccWorkArea.getCcardNextMap()).isEqualTo(CardListController.LIT_THISMAP);
@@ -3596,7 +3340,6 @@ final class CardListControllerTest {
             String mapsetAfterFirst = ws.ccWorkArea.getCcardNextMapset();
             String mapAfterFirst = ws.ccWorkArea.getCcardNextMap();
 
-            // The unreachable block, had it run, would have done precisely this again.
             controller.applyInputErrorReturnState(ws);
 
             assertThat(ws.commarea).isEqualTo(afterFirst);
@@ -3609,12 +3352,6 @@ final class CardListControllerTest {
         @Test
         @DisplayName("the error path paints once, so the commented-out :595-596 send is not restored")
         void theErrorPathPaintsExactlyOnce() {
-            // A filter that failed edit means :431-435 skips the re-read, so the browse is never opened
-            // and 1000-SEND-MAP runs once, from :436-437. 1400-SETUP-MESSAGE arm 1 (:898-900) is a
-            // CONTINUE that keeps the filter's own message - so a SECOND send would leave ERRMSGO
-            // unchanged and be invisible in the payload. What IS visible is the information line: a
-            // second pass through 1000-SEND-MAP would re-run 1200-SCREEN-ARRAY-INIT over a row table
-            // that the first pass already wrote, so the single-pass outcome is pinned here instead.
             CardListRequest request = continuing();
             request.setAcctsid("NOTANUMBER1");
             WorkArea ws = new WorkArea();
@@ -3630,10 +3367,6 @@ final class CardListControllerTest {
                     .isEqualTo(MessageArm.FILTER_IN_ERROR);
             assertThat(response.getErrmsgo().trim())
                     .isEqualTo(CardListController.MSG_ACCOUNT_FILTER);
-            // :428-430 write CCARD-NEXT-*, which live in CC-WORK-AREA - WORKING-STORAGE that
-            // COMMON-RETURN at :604-615 attaches, not the XCTL target field. The dedicated
-            // nextProgram member stands for an actual transfer of control, and no transfer happened
-            // here, so it is correctly still spaces.
             assertThat(response.getCardScreenState().getCcardNextProg())
                     .as(":428 and its unreachable twin :600 both name this program")
                     .isEqualTo(CardListController.LIT_THISPGM);
@@ -3649,34 +3382,9 @@ final class CardListControllerTest {
         }
     }
 
-    // =============================================================================================
-
-    /**
-     * Gate G40 and rule R6. {@code COCRDLIC} issues three {@code EXEC CICS XCTL}s -
-     * {@code :402-403} to {@code LIT-MENUPGM}, {@code :538-539} to {@code LIT-CARDDTLPGM} and
-     * {@code :566-567} to {@code LIT-CARDUPDPGM} - and every one of them becomes a
-     * {@code nextProgram} field in the response body. The server performs <strong>no</strong> forward,
-     * <strong>no</strong> redirect and <strong>no</strong> session hand-off; the client reads the
-     * triple and issues the next call itself.
-     *
-     * <p><strong>Practice B4 - the {@code COCRDSL} reconciliation.</strong> AAP &sect;0.4.11 and
-     * &sect;0.6.4 state that {@code COCRDLIC} copies {@code COCRDSL} and that {@code CardListController}
-     * therefore imports the card-select DTO. The verified source disagrees:
-     * {@code app/cbl/COCRDLIC.cbl:274} reads {@code *COPY COCRDSL.} - <em>commented out</em>, as is
-     * {@code *COPY CSMSG02Y.} at {@code :283} - and the only live screen copy is {@code COPY COCRDLI.}
-     * at {@code :276}. The program sends and receives one map and one only:
-     * {@code SEND MAP(LIT-THISMAP) MAPSET(LIT-THISMAPSET)} at {@code :939-940} and {@code RECEIVE MAP}
-     * at {@code :963-964}, with {@code LIT-THISMAP = 'CCRDLIA'}. Commented-out COBOL is not behaviour.
-     * The conflict is recorded, not silently resolved: {@link CardSelectRequest} and
-     * {@link CardSelectResponse} are legitimate as <em>navigation-target references</em> - the triple
-     * {@code 'COCRDSLC'}/{@code 'COCRDSL'}/{@code 'CCRDSLA'} names that screen - and the tests below
-     * assert the navigation while asserting that no {@code COCRDSL} symbolic-map field is ever
-     * populated by this controller.
-     */
     @Nested
     @DisplayName("Navigation is client-driven - three XCTLs, no forward, no redirect (gate G40)")
     final class NavigationIsClientDriven {
-
         private MockMvc mockMvc;
         private ObjectMapper json;
 
@@ -3688,7 +3396,6 @@ final class CardListControllerTest {
             json = new ObjectMapper();
         }
 
-        /** Asserts the reply is a plain 200 body and not any form of server-side hand-off. */
         private void assertNoServerSideHandOff(MvcResult result) {
             MockHttpServletResponse http = result.getResponse();
             assertThat(http.getStatus())
@@ -3719,7 +3426,6 @@ final class CardListControllerTest {
                             .content(json.writeValueAsString(showing(0, " "))))
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.nextProgram").value("COMEN01C"))
-                    // Preserved defect 2: :394 names the menu's mapset, :395 names THIS map.
                     .andExpect(jsonPath("$.nextMapset").value("COMEN01"))
                     .andExpect(jsonPath("$.nextMap").value("CCRDLIA"))
                     .andReturn();
@@ -3782,7 +3488,6 @@ final class CardListControllerTest {
             assertThat(CardListController.LIT_CARDUPDPGM).isEqualTo("COCRDUPC").hasSize(8);
             assertThat(CardListController.LIT_CARDUPDMAPSET).isEqualTo("COCRDUP").hasSize(7);
             assertThat(CardListController.LIT_CARDUPDMAP).isEqualTo("CCRDUPA").hasSize(7);
-            // Declared at :195-196 and moved nowhere, which is what preserved defect 2 consists of.
             assertThat(CardListController.LIT_MENUMAP).isEqualTo("COMEN1A").hasSize(7);
         }
 
@@ -3794,8 +3499,6 @@ final class CardListControllerTest {
 
             String serialised = json.writeValueAsString(response);
 
-            // The five members COCRDSL declares that COCRDLI does not. FKEYSO is among them, which is
-            // also the proof that this map has no function-key legend field at all.
             assertThat(serialised)
                     .as("COCRDLIC copies only its own map, so none of COCRDSL's own items appears")
                     .doesNotContain("\"crdname\"")
@@ -3814,38 +3517,11 @@ final class CardListControllerTest {
         }
     }
 
-    // =============================================================================================
-
-    /**
-     * Gate G9 - every payload field traces to a name-labelled {@code DFHMDF} entry.
-     *
-     * <p>{@code app/cpy-bms/COCRDLI.CPY} declares {@code 01 CCRDLIAI} and, at line 289,
-     * {@code 01 CCRDLIAO REDEFINES CCRDLIAI}: two views of the same 797 bytes. It carries exactly
-     * <strong>45</strong> {@code xxxI PIC X(n)} data items, matching the 45 <em>name-labelled</em>
-     * {@code DFHMDF} entries in {@code app/bms/COCRDLI.bms} - the raw {@code DFHMDF} count of 72
-     * includes the unnamed literal fields, which have no symbolic-map item and so no payload member.
-     * The 45 reconcile as 9 header + 4 row 1 + 6 x 5 rows 2-7 + 2 footer.
-     *
-     * <p>The {@code xxxL} length item, the {@code xxxF} flag byte and its {@code xxxA} redefinition on
-     * the input side, and {@code xxxC}, {@code xxxP}, {@code xxxH} and {@code xxxV} on the output side,
-     * are validation and highlight <strong>metadata</strong>. They travel in
-     * {@code ScreenMetadata}, never as JSON payload members, and that is asserted for all 45 prefixes
-     * rather than spot-checked.
-     */
     @Nested
     @DisplayName("The symbolic-map payload contract - 45 fields, exactly (gate G9)")
     final class SymbolicMapPayloadContract {
-
-        /**
-         * The 45 items in copybook order with the width each {@code PICTURE} clause declares, read off
-         * {@code app/cpy-bms/COCRDLI.CPY}. The order <strong>is</strong> the byte layout, so this table
-         * is deliberately written out one row per field rather than generated from a loop.
-         *
-         * @return 45 {@code {itemName, width}} pairs
-         */
         private List<String[]> declaredFields() {
             List<String[]> declared = new ArrayList<>(CardListResponse.PAYLOAD_FIELD_COUNT);
-            // Header - 9 fields. PAGENOO sits seventh, between CURTIMEO and ACCTSIDO.
             declared.add(new String[] {"TRNNAMEO", "4"});
             declared.add(new String[] {"TITLE01O", "40"});
             declared.add(new String[] {"CURDATEO", "8"});
@@ -3855,12 +3531,10 @@ final class CardListControllerTest {
             declared.add(new String[] {"PAGENOO", "3"});
             declared.add(new String[] {"ACCTSIDO", "11"});
             declared.add(new String[] {"CARDSIDO", "16"});
-            // Row 1 - FOUR fields. There is no CRDSTP1O; CRDSEL1O runs straight into ACCTNO1O.
             declared.add(new String[] {"CRDSEL1O", "1"});
             declared.add(new String[] {"ACCTNO1O", "11"});
             declared.add(new String[] {"CRDNUM1O", "16"});
             declared.add(new String[] {"CRDSTS1O", "1"});
-            // Rows 2-7 - FIVE fields each, with CRDSTPnO SECOND in the row.
             for (int row = 2; row <= 7; row++) {
                 declared.add(new String[] {"CRDSEL" + row + "O", "1"});
                 declared.add(new String[] {"CRDSTP" + row + "O", "1"});
@@ -3868,7 +3542,6 @@ final class CardListControllerTest {
                 declared.add(new String[] {"CRDNUM" + row + "O", "16"});
                 declared.add(new String[] {"CRDSTS" + row + "O", "1"});
             }
-            // Footer - 2 fields. COCRDLI's own widths: 45 and 78, not the sibling maps' 40 and 80.
             declared.add(new String[] {"INFOMSGO", "45"});
             declared.add(new String[] {"ERRMSGO", "78"});
             return declared;
@@ -4005,8 +3678,6 @@ final class CardListControllerTest {
 
             CardListResponse response = controller.listCards(null, CicsAid.DFHENTER);
 
-            // app/cbl/COCRDLIC.cbl:646-649 moves CCDA-TITLE01 and CCDA-TITLE02, which COPY COTTL01Y
-            // at :270 supplies; both are PIC X(40).
             assertThat(response.getTitle01o())
                     .isEqualTo(ScreenTitles.CCDA_TITLE01)
                     .hasSize(ScreenTitles.TITLE_LENGTH);
@@ -4054,26 +3725,9 @@ final class CardListControllerTest {
         }
     }
 
-    // =============================================================================================
-
-    /**
-     * Gate G33 - the {@code OCCURS} subscript conversion, checked at both ends of the table.
-     *
-     * <p>{@code COCRDLIC} declares three seven-element tables: the {@code WS-ROW-*} group at
-     * {@code :76}, {@code WS-EDIT-SELECT-ERRORS} at {@code :86} and {@code WS-SCREEN-ROWS} at
-     * {@code :255}. A fourth {@code OCCURS} at {@code :295} is
-     * {@code OCCURS 1 TO 32767 TIMES DEPENDING ON EIBCALEN} - the {@code DFHCOMMAREA} overlay, not a
-     * screen table, and deliberately not treated as one here.
-     *
-     * <p>COBOL subscripts start at 1 and Java indices at 0. The AAP calls this the top defect risk of
-     * the whole migration, because an off-by-one shifts every row's data by one row and neither the
-     * compiler nor a round-trip test would notice. So the first element, the last element and the
-     * first value <em>past</em> the last are all asserted.
-     */
     @Nested
     @DisplayName("OCCURS 7 TIMES - 1-based COBOL to 0-based Java, at both ends (gate G33)")
     final class OccursSubscriptBoundaries {
-
         @Test
         @DisplayName("COBOL 1 is Java 0 and COBOL 7 is Java 6")
         void bothEndsConvert() {
@@ -4135,9 +3789,6 @@ final class CardListControllerTest {
         @Test
         @DisplayName("the first and the last row of a full page both hold their own record")
         void theFirstAndLastRowsAreBothCorrect() {
-            // 1200-SCREEN-ARRAY-INIT [app/cbl/COCRDLIC.cbl:678-742] moves WS-ROW-ACCTNO(n),
-            // WS-ROW-CARD-NUM(n) and WS-ROW-CARD-STATUS(n) into row n's three payload members. Each
-            // element is 11 + 16 + 1 = 28 bytes, and 28 x 7 = 196 - the WS-ALL-ROWS width at :253.
             forward(1, 2, 3, 4, 5, 6, 7, 8);
 
             CardListResponse response = controller.listCards(null, CicsAid.DFHENTER);
@@ -4170,38 +3821,17 @@ final class CardListControllerTest {
             assertThat(ws.iSelected)
                     .as("I-SELECTED holds the COBOL subscript, not the Java index")
                     .isEqualTo(7);
-            // :533-534 MOVE WS-ROW-CARD-NUM(I-SELECTED) TO CDEMO-CARD-NUM - X(16) into 9(16).
             assertThat(response.getNavigationContext().cardNum())
                     .as("WS-ROW-CARD-NUM(7), which is element 6 of the Java array")
                     .isEqualTo(7L);
-            // :531-532 MOVE WS-ROW-ACCTNO(I-SELECTED) TO CDEMO-ACCT-ID - X(11) into 9(11).
             assertThat(response.getNavigationContext().acctId())
                     .isEqualTo(10_000_000_007L);
         }
     }
 
-    // =============================================================================================
-
-    /**
-     * Gate G37 - {@code WS-THIS-PROGCOMMAREA} is 254 bytes of caller state and the server keeps none
-     * of it.
-     *
-     * <p>{@code app/cbl/COCRDLIC.cbl:228-250} declares the 58-byte cursor - two
-     * {@code X(16)} + {@code 9(11)} key pairs, {@code WS-CA-SCREEN-NUM}, {@code WS-CA-LAST-PAGE-DISPLAYED},
-     * {@code WS-CA-NEXT-PAGE-IND} and {@code WS-RETURN-FLAG} - and {@code :252-260} adds
-     * {@code WS-SCREEN-DATA}, whose {@code WS-ALL-ROWS PIC X(196)} is redefined as
-     * {@code WS-SCREEN-ROWS OCCURS 7 TIMES}. The {@code 05} level closes the preceding {@code 10}
-     * group, so the row table is part of the same communication area: 58 + 196 = 254.
-     *
-     * <p>{@code :328-331} splits the inbound {@code DFHCOMMAREA} into the 160-byte
-     * {@code CARDDEMO-COMMAREA} and then this 254-byte area, and {@code COMMON-RETURN} at
-     * {@code :604-615} concatenates them again on the way out. A client that does not return the area
-     * has not preserved the conversation - and paging is exactly the operation that then cannot work.
-     */
     @Nested
     @DisplayName("The client must return the cursor for paging to work (gate G37)")
     final class ClientMustReturnTheCursor {
-
         @Test
         @DisplayName("dropping the cursor makes the next page unreachable - PF8 repaints page one")
         void droppingTheCursorMakesTheNextPageUnreachable() {
@@ -4211,8 +3841,6 @@ final class CardListControllerTest {
                     .as("page two does exist, so nothing but the missing cursor can hide it")
                     .isTrue();
 
-            // The client returns the 160-byte navigation context but not the 254-byte area, which is
-            // what a caller that treats the reply as a view model rather than a conversation does.
             CardListRequest amnesiac = new CardListRequest();
             amnesiac.setNavigationContext(pageOne.getNavigationContext());
             forward(1, 2, 3, 4, 5, 6, 7, 8);
@@ -4283,7 +3911,6 @@ final class CardListControllerTest {
                     .as("58 + WS-ALL-ROWS 196 = 254, the trailing part of the split at :328-331")
                     .isEqualTo(58 + 196)
                     .isEqualTo(254);
-            // EIBCALEN reports the CARDDEMO-COMMAREA width, which is the first part of that split.
             assertThat(request.commareaLength())
                     .as("a request that carries an area reports 160, and one that does not reports 0")
                     .isEqualTo(NavigationContext.COMMAREA_LENGTH)
@@ -4294,47 +3921,14 @@ final class CardListControllerTest {
         }
     }
 
-    // =================================================================================================
-    // Synthesised read outcomes. A CardReadResult carries the decoded record AND the bytes it was
-    // decoded from, because DISPLAY CARD-RECORD (app/cbl/CBACT02C.cbl:78) writes the record area and the
-    // area's FILLER X(59) holds whatever the row held. A test constructing an outcome has no row, so the
-    // image it supplies is the one a row of exactly this record would carry - which is what these two
-    // helpers state, once, rather than at every call site.
-    // =================================================================================================
-
-    /**
-     * The normal arm over a synthesised row of this record.
-     *
-     * @param record the record the row would carry
-     * @return the outcome, carrying the record and the image a row of it would hold
-     */
     private static CardReadResult cardRead(CardRecord record) {
         return CardReadResult.normal(record, record.encodeToImage(StandardCharsets.US_ASCII));
     }
 
-    /**
-     * The duplicate-key arm over a synthesised row of this record.
-     *
-     * @param record the first record sharing the alternate key
-     * @return the outcome, carrying the record and the image a row of it would hold
-     */
     private static CardReadResult cardReadDuplicate(CardRecord record) {
         return CardReadResult.duplicateKey(record, record.encodeToImage(StandardCharsets.US_ASCII));
     }
 
-    /**
-     * A copybook item name rendered as the JSON member it is published under: the item without its
-     * output-direction suffix, lower-cased.
-     *
-     * <p>{@code @JsonProperty} pins every screen field's wire name to its {@code xxxI} item in lower
-     * case, which is the one naming rule AAP 0.6.3 states - "payload field names and lengths derive from
-     * the xxxI items only". The Java accessor keeps the {@code xxxO} spelling, because that is the map
-     * view the type projects; the wire name does not, because the paired request has to accept this
-     * response back field for field.
-     *
-     * @param itemName a symbolic-map item name such as {@code TRNNAMEO} or {@code TRNNAMEI}
-     * @return the JSON member name, such as {@code trnname}
-     */
     private static String withoutDirectionSuffix(String itemName) {
         return itemName.substring(0, itemName.length() - 1).toLowerCase(Locale.ROOT);
     }
@@ -4342,18 +3936,9 @@ final class CardListControllerTest {
     @Nested
     @DisplayName("G50: WS-CONTEXT-FLAG - declared by COCRDLIC, referenced by nothing")
     class TheDeadContextFlag {
-
         @Test
         @DisplayName("both of its condition names are asserted in both states, over the two characters")
         void theTwoConditionsAnswerInBothStates() {
-            // app/cbl/COCRDLIC.cbl:130-132 declares WS-CONTEXT-FLAG PIC X(1) with two condition names,
-            // WS-CONTEXT-FRESH-START VALUE '0' and WS-CONTEXT-FRESH-START-NO VALUE '1'. Each name
-            // appears exactly once in the whole program - at its own declaration. No paragraph sets the
-            // flag and none tests it, so there is no behaviour to drive and no field on the Java side
-            // holds it: inventing one would be inventing state the program has not got. What the source
-            // does declare is two characters and the predicate over them, and that is what this asserts,
-            // in both directions, so a transcription error cannot hide behind the disuse. The flag is a
-            // PIC X(1), so the two conditions are mutually exclusive by construction.
             String freshStart = CardListController.WS_CONTEXT_FRESH_START;
             String notFreshStart = CardListController.WS_CONTEXT_FRESH_START_NO;
 
@@ -4376,11 +3961,6 @@ final class CardListControllerTest {
         @Test
         @DisplayName("no paginated flow ever produces either character, which is why they are dead")
         void neitherCharacterIsProducedByAnyFlow() {
-            // The false state where it counts. WS-PFK-FLAG, declared immediately above it at :128-129,
-            // uses the same two characters and IS live - so asserting that the context flag's characters
-            // are distinct from nothing would prove nothing. What is assertable is that this controller
-            // exposes no accessor for the flag at all: the two constants above are the whole of the
-            // model, because the whole of the source is two declarations.
             assertThat(java.util.Arrays.stream(CardListController.class.getDeclaredFields())
                     .map(java.lang.reflect.Field::getName)
                     .filter(name -> name.toLowerCase(java.util.Locale.ROOT).contains("contextflag"))

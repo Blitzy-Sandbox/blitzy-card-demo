@@ -53,262 +53,64 @@ import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 /**
- * Parity tests for {@link ReportRequestResponse}, the outbound REST payload of
- * {@code POST /api/reports} - CSD transaction {@code CR00}, program {@code CORPT00C} - projected from
- * {@code 01 CORPT0AO REDEFINES CORPT0AI} at {@code app/cpy-bms/CORPT00.CPY:121} and from the
- * name-labelled {@code DFHMDF} fields of {@code app/bms/CORPT00.bms}.
- *
- * <h2>Sources this suite is diffed against</h2>
- *
- * <ul>
- *   <li>{@code app/cpy-bms/CORPT00.CPY:121} - {@code 01 CORPT0AO REDEFINES CORPT0AI}, the seventeen
- *       {@code xxxO} items and their widths. Lines 17-120 are the aliased {@code CORPT0AI} view.</li>
- *   <li>{@code app/bms/CORPT00.bms} - 42 {@code DFHMDF} entries, 17 of them name-labelled.
- *       {@code app/bms/CORPT00.bms:218-221} declares the error line:
- *       {@code ERRMSG DFHMDF ATTRB=(ASKIP,BRT,FSET), COLOR=RED, LENGTH=78, POS=(23,1)}.</li>
- *   <li>{@code app/cbl/CORPT00C.cbl:5} - {@code Function : Print Transaction reports by submitting
- *       batch}; {@code :138-140} - {@code COPY COCOM01Y.} then {@code COPY CORPT00.} with
- *       <strong>nothing between them</strong>; {@code :215-262} - the monthly and yearly branches and
- *       their {@code '01'}, {@code '12'} and {@code '31'} literals; {@code :305-325} - the six
- *       {@code FUNCTION NUMVAL-C} normalisations back into the map's own alphanumeric items;
- *       {@code :487} - the {@code WHEN OTHER} confirm message built with {@code STRING ... DELIMITED
- *       BY SPACE}; {@code :549} - the single {@code EXEC CICS XCTL PROGRAM(CDEMO-TO-PROGRAM)}.</li>
- *   <li>{@code app/cpy/CSSETATY.cpy} - the three-condition highlight rule, gate <strong>G38</strong>.</li>
- *   <li>{@code app/cpy/CSMSG01Y.cpy} - the two {@code PIC X(50)} common messages.</li>
- *   <li>{@code app/cpy/COTTL01Y.cpy} - the three {@code PIC X(40)} screen titles.</li>
- *   <li>{@code app/cpy/COCOM01Y.cpy} - {@code CARDDEMO-COMMAREA}, 160 bytes, reached through
- *       {@link NavigationContext}; and {@code app/cpy/CSDAT01Y.cpy}, reached through
- *       {@link DateHeader}.</li>
- *   <li>{@code app/csd/CARDDEMO.CSD:137} {@code DEFINE MAPSET(CORPT00)}, {@code :242}
- *       {@code DEFINE PROGRAM(CORPT00C)} and {@code :409} {@code DEFINE TRANSACTION(CR00)
- *       PROGRAM(CORPT00C)}.</li>
- *   <li>{@code README.md} - the online inventory row
- *       {@code | CR00 | CORPT00 | CORPT00C | Transaction Reports |}. Cited by row rather than by line
- *       number, because README.md gains a Java build section under this migration (gate G55) and any
- *       absolute index into it would go stale.</li>
- * </ul>
- *
- * <p>Where an expected value can be <em>read from a source</em> rather than retyped, it is. Several of
- * the suites below parse {@code app/cpy-bms/CORPT00.CPY} and {@code app/bms/CORPT00.bms} at run time
- * and diff the class against them, so the copybook and the mapset stay the authority and a retyping
- * slip in either the class or the test cannot pass unnoticed. Nothing under {@code app/cbl},
- * {@code app/cpy}, {@code app/cpy-bms}, {@code app/bms} or {@code app/csd} is ever written - bind
- * <strong>B3</strong>, and gate <strong>G5</strong>.
- *
- * <h2>This is not an R-B case</h2>
- *
- * <p>The prompt-mandated name and the verified source function <strong>agree</strong> here:
- * {@code CORPT00C.cbl:5} reads {@code Function : Print Transaction reports by submitting batch} and
- * README.md's online inventory documents {@code CR00} as {@code Transaction Reports}. So although rule
- * <strong>R1</strong> - names from the prompt, behaviour from the source - governs this file as it
- * governs every other, it costs nothing to apply. That is worth stating explicitly, because two of the
- * seven sibling classes in this very package <em>are</em> R-B cases: {@code COTRN01C} is named
- * {@code TransactionAddController} while its source <em>views</em> a transaction, and {@code COTRN02C}
- * is named {@code TransactionViewController} while its source <em>adds</em> one. No such swap applies
- * to {@code CORPT00C}, and no assertion here needs to compensate for one.
- *
- * <h2>Governing rules</h2>
- *
- * <p>{@code review_rules} returns exactly one line, {@code No user rules provided.} - that single line
- * is the whole document, so <strong>no user rule governs this file</strong>. Their absence is not
- * permission to lower the bar; the migration plan's own binds stand in their place and are treated as
- * rulings: <strong>R1</strong> (names from the prompt, behaviour from the source), <strong>R2</strong>
- * and <strong>R4</strong> (truncation not rounding; never {@code double} or {@code float}),
- * <strong>R5</strong> (fixed width is the wire format), <strong>R6</strong> (statelessness),
- * <strong>B3</strong> (reference inputs immutable), <strong>B4</strong> (no silent scope creep - the
- * {@code DELIMITED BY SPACE} message quirk is preserved, not tidied), <strong>B7</strong>
- * (deterministic: a fixed {@link Clock} with an explicit {@link ZoneId}, never the platform default
- * zone), <strong>B8</strong> (explicit over implicit: no wildcard imports, every charset named),
- * <strong>B9</strong> (no static mutable state) and <strong>B11</strong> (hand-written, reviewable
- * codecs - no third-party copybook parser is used or available).
- *
- * <h2>The suite is self-contained</h2>
- *
- * <p>There is no shared base class for the eight test classes in this package and none is introduced.
- * This file follows the structural shape of {@code TransactionListResponseTest} - nested suites named
- * after the property they pin - but <strong>depends on nothing in it</strong>: every fixture, helper
- * and constant used below is declared here. It uses no {@code MockMvc}, no {@code @SpringBootTest} and
- * no {@code @WebMvcTest}; the controller behaviour - the {@code JobSubmissionPort}, the 80-byte JCL
- * skeleton, gate {@code G29} for the six {@code FUNCTION NUMVAL-C} sites, the two
- * {@code util.DateUtilityJob} calls - belongs to {@code ReportRequestControllerTest} in the parent
- * package and is not duplicated. It reaches no repository, no {@code JobLauncher} and no datasource,
- * because {@code CORPT00C} accesses no dataset at all; it imports nothing from
- * {@code com.vsergeychik.carddemo.parity} and reads nothing under
- * {@code src/test/resources/parity}.
- *
- * <h2>Coverage and execution discipline</h2>
- *
- * <p>Gate <strong>G49</strong> measures package {@code transaction.dto} independently at
- * {@code BRANCH >= 0.90}, enforced by {@code jacoco-maven-plugin} 0.8.15 bound to {@code verify} in
- * {@code app/java/pom.xml}. This is the eighth and last of the eight classes contributing to that
- * figure, so the shortfall of any sibling would have to be made up here; it is not - the package
- * measures {@code 985/997 = 0.9880} and {@link ReportRequestResponse} itself {@code 132/133 = 0.9925}.
- * The single uncovered branch is the synthetic default arm javac emits for the exhaustive enum
- * {@code switch} in {@code setPayloadValue}: all seventeen arms are driven, and that arm is unreachable
- * from Java by construction.
- *
- * <p>Gate <strong>G54</strong>: this is plain JUnit 5 with AssertJ. There is no {@code Thread.sleep},
- * no socket, no HTTP call, no watch mode and no Spring context - {@code mvn -B test} runs it to
- * completion unattended, and {@link NegativeContracts#suiteIsNonInteractive()} asserts the absence
- * rather than leaving it to inspection.
- *
- * <h2>Gate G33 does not apply, and that is a finding rather than an omission</h2>
- *
- * <p>Gate {@code G33} pins the 1-based-to-0-based conversion of every {@code OCCURS} table.
- * {@code CORPT00.CPY} declares <strong>no {@code OCCURS} clause at all</strong> - {@code CORPT0A} is a
- * flat screen of seventeen scalar fields with no repeating row group, unlike {@code COTRN00} and
- * {@code COUSR00} whose ten-row tables the sibling suites do index. There is therefore no row
- * subscript on this map to verify, and no test below is missing one.
- *
- * <h2>The properties this suite pins</h2>
- *
- * <ol>
- *   <li>Seventeen payload items - the name-labelled {@code DFHMDF} fields - and no more. The other 25
- *       {@code DFHMDF} entries are screen literals that CICS never transmits (gate
- *       <strong>G9</strong>).</li>
- *   <li>The group image is <strong>337</strong> bytes: {@code 12} for the {@code TIOAPFX} prefix,
- *       {@code 17 x 7} for the attribute prefixes and {@code 206} for the payload - the narrowest of
- *       the four maps in this package (rule <strong>R5</strong>, gate <strong>G21</strong>).</li>
- *   <li>{@code xxxI} and {@code xxxO} are storage <strong>aliases</strong>, so the inbound and
- *       outbound projections carry identical names and widths and round trip losslessly in both
- *       directions (gate <strong>G34</strong>).</li>
- *   <li>The {@code xxxC}/{@code xxxP}/{@code xxxH}/{@code xxxV} quad is metadata and never a JSON
- *       payload member, even though it occupies real bytes - the same four bytes the inbound view
- *       calls its per-field {@code FILLER X(4)}.</li>
- *   <li>The {@code CSSETATY} highlight is reachable only in {@code CDEMO-PGM-REENTER} state, and the
- *       {@code '*'} only in the {@code BLANK} case (gate <strong>G38</strong>).</li>
- *   <li>{@code EXEC CICS XCTL} becomes a {@code nextProgram} field and nothing else - no session, no
- *       forward, no static state (gates <strong>G40</strong> and <strong>G37</strong>).</li>
- *   <li>The passed commarea is <strong>160</strong> bytes, not 218: this screen declares no commarea
- *       extension at all, which is the property that most distinguishes it from its siblings.</li>
- * </ol>
+ * Parity tests for {@link ReportRequestResponse}, the outbound REST payload of {@code POST /api/reports} -
+ * CSD transaction {@code CR00}, program {@code CORPT00C} - projected from
+ * {@code 01 CORPT0AO REDEFINES CORPT0AI} at {@code app/cpy-bms/CORPT00.CPY:121} and from the name-labelled
+ * {@code DFHMDF} fields of {@code app/bms/CORPT00.bms}.
  */
 @DisplayName("ReportRequestResponse - CORPT00 CORPT0AO, the outbound projection of CORPT00C")
 class ReportRequestResponseTest {
-
-    /** Both code pages are named explicitly; neither is ever the platform default. */
     private static final Charset ASCII = StandardCharsets.US_ASCII;
 
-    /** The EBCDIC code page of the datasets under {@code app/data/EBCDIC}. */
     private static final Charset EBCDIC = Charset.forName("IBM037");
 
-    /**
-     * The encoding of the <em>Java</em> sources, which is a different question from the code page of
-     * the COBOL data. {@code app/java/pom.xml} declares
-     * {@code <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>}, so the source-level
-     * scans below decode with that and never with the platform default - bind <strong>B8</strong>. It
-     * is named separately from {@link #ASCII} because a Javadoc comment elsewhere in the module may
-     * legitimately carry a non-ASCII character, and a scan that assumed otherwise would fail with an
-     * encoding error instead of the assertion it was written to make.
-     */
     private static final Charset JAVA_SOURCE = StandardCharsets.UTF_8;
 
-    /** {@code app/java/../cpy-bms/CORPT00.CPY}, the authoritative symbolic map. */
     private static final Path COPYBOOK = Paths.get("..", "cpy-bms", "CORPT00.CPY");
 
-    /** {@code app/java/../bms/CORPT00.bms}, the authoritative field definitions. */
     private static final Path MAPSET = Paths.get("..", "bms", "CORPT00.bms");
 
-    /** {@code app/java/../cbl/CORPT00C.cbl}, the authoritative behaviour. */
     private static final Path PROGRAM = Paths.get("..", "cbl", "CORPT00C.cbl");
 
-    /** {@code app/java/../csd/CARDDEMO.CSD}, the authoritative transaction and mapset definitions. */
     private static final Path CSD = Paths.get("..", "csd", "CARDDEMO.CSD");
 
-    /** {@code app/java/../../README.md}, whose transaction inventory corroborates the CSD. */
     private static final Path README = Paths.get("..", "..", "README.md");
 
-    /** The class under test, for the source-level checks that no reflection can express. */
     private static final Path SOURCE = Paths.get("src", "main", "java", "com", "vsergeychik",
             "carddemo", "transaction", "dto", "ReportRequestResponse.java");
 
-    // =============================================================================================
-    // Bind B7 - determinism. CORPT00C.cbl:611 reads FUNCTION CURRENT-DATE, which reaches CURDATEO and
-    // CURTIMEO through POPULATE-HEADER-INFO (lines 613-628). DateHeader takes an injected Clock and
-    // never calls now() of its own, so the instant AND the zone are both pinned here. Neither is ever
-    // the platform default: a suite that read the wall clock or the host's zone would pass in one
-    // timezone and fail in another, and a byte-for-byte header comparison would be meaningless.
-    // =============================================================================================
-
-    /** The zone the pinned instant is read in, named explicitly rather than defaulted. */
     private static final ZoneId FIXED_ZONE = ZoneId.of("America/Chicago");
 
-    /**
-     * The pinned instant. {@code 2022-08-22T22:02:43Z} is {@code 17:02:43} in {@link #FIXED_ZONE},
-     * which is what {@code CURDATEO} and {@code CURTIMEO} must render as {@code 08/22/22} and
-     * {@code 17:02:43}. The date is inside the source's own vintage - the copybooks carry
-     * {@code Ver: CardDemo_v1.0-15-g27d6c6f-68 Date: 2022-07-19}.
-     */
     private static final Instant FIXED_INSTANT = Instant.parse("2022-08-22T22:02:43Z");
 
-    /** The injected clock itself: fixed instant, explicit zone, no wall-clock read anywhere. */
     private static final Clock FIXED_CLOCK = Clock.fixed(FIXED_INSTANT, FIXED_ZONE);
 
-    /** The date and time the pinned clock yields, as {@code CURDATEO} must carry them. */
     private static final String EXPECTED_CURDATEO = "08/22/22";
 
-    /** The time the pinned clock yields, as {@code CURTIMEO} must carry it. */
     private static final String EXPECTED_CURTIMEO = "17:02:43";
 
-    // =============================================================================================
-    // The BMS input/output split, read off app/bms/CORPT00.bms. Ten fields carry ATTRB=(...,UNPROT)
-    // and are therefore input-capable; the other seven carry ATTRB=(ASKIP,...) and are output-only.
-    // CSSETATY can only ever highlight a field the operator can type into, so this split is exactly
-    // the domain of gate G38.
-    // =============================================================================================
-
-    /**
-     * The ten input-capable fields: {@code MONTHLY} {@code ATTRB=(FSET,IC,NORM,UNPROT)} at
-     * {@code app/bms/CORPT00.bms:80}, {@code YEARLY} at {@code :94}, {@code CUSTOM} at {@code :108},
-     * the six {@code NUM,UNPROT} date parts at {@code :127}, {@code :138}, {@code :149}, {@code :166},
-     * {@code :177} and {@code :188}, and {@code CONFIRM} at {@code :206}.
-     */
     private static final Set<ScreenField> INPUT_CAPABLE = EnumSet.of(
             ScreenField.MONTHLY, ScreenField.YEARLY, ScreenField.CUSTOM,
             ScreenField.SDTMM, ScreenField.SDTDD, ScreenField.SDTYYYY,
             ScreenField.EDTMM, ScreenField.EDTDD, ScreenField.EDTYYYY,
             ScreenField.CONFIRM);
 
-    /**
-     * The seven {@code ASKIP} output-only fields: the six header items at
-     * {@code app/bms/CORPT00.bms:34}, {@code :38}, {@code :47}, {@code :57}, {@code :61} and
-     * {@code :70}, plus {@code ERRMSG} at {@code :218}.
-     */
     private static final Set<ScreenField> OUTPUT_ONLY = EnumSet.complementOf(
             EnumSet.copyOf(INPUT_CAPABLE));
 
-    /** {@code 42} {@code DFHMDF} entries in the mapset, of which 17 are name-labelled. */
     private static final int TOTAL_DFHMDF_ENTRIES = 42;
 
-    /** {@code 42 - 17}: the unlabelled screen literals and prompts CICS never transmits. */
     private static final int UNLABELLED_DFHMDF_ENTRIES =
             TOTAL_DFHMDF_ENTRIES - ReportRequestResponse.SCREEN_FIELD_COUNT;
 
-    /** {@code MOVE -1 TO <field>L OF CORPT0AI} sites in {@code app/cbl/CORPT00C.cbl}: twenty-two. */
     private static final int MOVE_MINUS_ONE_SITES = 22;
 
-    /** {@code EXEC CICS XCTL} sites in {@code app/cbl/CORPT00C.cbl}: exactly one, at line 549. */
     private static final int XCTL_SITES = 1;
 
-    /** {@code WS-MESSAGE PIC X(80)}, {@code app/cbl/CORPT00C.cbl:39} - the source of {@code ERRMSGO}. */
     private static final int WS_MESSAGE_LENGTH = 80;
 
-    /** {@code WS-REPORT-NAME PIC X(10)}, {@code app/cbl/CORPT00C.cbl:58}. */
     private static final int WS_REPORT_NAME_LENGTH = 10;
 
-    // =============================================================================================
-    // Helpers that read the sources, so the sources remain the oracle.
-    // =============================================================================================
-
-    /**
-     * Extracts the {@code 02 xxx<suffix> PIC X(n)} items of one {@code 01} group of the copybook, in
-     * declaration order.
-     *
-     * @param groupHeader the group name, {@code CORPT0AI} or {@code CORPT0AO}
-     * @param suffix      the item suffix, {@code I} or {@code O}
-     * @return item name to declared width, in copybook order
-     * @throws IOException if the copybook cannot be read
-     */
     private static Map<String, Integer> parseGroupItems(String groupHeader, String suffix)
             throws IOException {
         Pattern item =
@@ -334,14 +136,6 @@ class ReportRequestResponseTest {
         return items;
     }
 
-    /**
-     * Extracts the name-labelled {@code DFHMDF} fields of the mapset and their {@code LENGTH=}.
-     * Unlabelled entries - the screen literals - are skipped, which is exactly the distinction that
-     * decides what becomes a payload member.
-     *
-     * @return field label to declared length, in mapset order
-     * @throws IOException if the mapset cannot be read
-     */
     private static Map<String, Integer> parseLabelledFields() throws IOException {
         Pattern label = Pattern.compile("^([A-Z0-9]+)\\s+DFHMDF");
         Pattern length = Pattern.compile("LENGTH=(\\d+)");
@@ -364,16 +158,6 @@ class ReportRequestResponseTest {
         return labelled;
     }
 
-    /**
-     * Extracts the {@code ATTRB=(...)} list of each name-labelled {@code DFHMDF} in the mapset.
-     *
-     * <p>This is the distinction that decides which fields {@code CSSETATY} could ever highlight: a
-     * field the operator cannot type into cannot be in error, so only {@code UNPROT} fields carry a
-     * validation flag.
-     *
-     * @return field label to its declared attribute list, in mapset order
-     * @throws IOException if the mapset cannot be read
-     */
     private static Map<String, String> parseLabelledAttributes() throws IOException {
         Pattern labelled = Pattern.compile("^([A-Z0-9]+)\\s+DFHMDF\\s+ATTRB=\\(([A-Z,]+)\\)");
         Map<String, String> attributes = new LinkedHashMap<>();
@@ -386,7 +170,6 @@ class ReportRequestResponseTest {
         return attributes;
     }
 
-    /** Removes block and line comments, so a forbidden-construct scan sees code and not prose. */
     private static String stripComments(String source) {
         StringBuilder out = new StringBuilder(source.length());
         boolean inBlock = false;
@@ -420,67 +203,30 @@ class ReportRequestResponseTest {
         return out.toString();
     }
 
-    /**
-     * The header CICS would build for the pinned instant, read through the injected {@link Clock}.
-     *
-     * <p>Bind <strong>B7</strong>: {@link DateHeader#from(FixedWidthCodec, Clock)} reads the clock
-     * once and never calls {@code now()} itself, so this is reproducible on any host in any timezone.
-     *
-     * @return the header for {@link #FIXED_INSTANT} in {@link #FIXED_ZONE}
-     */
     private static DateHeader pinnedHeader() {
         return DateHeader.from(new FixedWidthCodec(ASCII), FIXED_CLOCK);
     }
 
-    /** A response with the header populated from the pinned clock, as every send does. */
     private static ReportRequestResponse populated() {
         ReportRequestResponse response = new ReportRequestResponse();
         response.populateHeaderInfo(pinnedHeader());
         return response;
     }
 
-    /**
-     * COBOL's {@code STRING ... DELIMITED BY SPACE}: the operand contributes only the characters
-     * before its first space. This is the rule {@code app/cbl/CORPT00C.cbl:449} applies to
-     * {@code WS-REPORT-NAME PIC X(10)} and {@code :487} applies to {@code CONFIRMI}, and bind
-     * <strong>B4</strong> requires it be preserved rather than tidied into a trim.
-     *
-     * <p>It is deliberately <em>not</em> {@link String#trim()}: {@code "Two Words  "} yields
-     * {@code "Two"} under this rule and {@code "Two Words"} under a trim.
-     *
-     * @param operand the sending item, at its declared width
-     * @return the characters before the first space, or the whole operand if it contains none
-     */
     private static String delimitedBySpace(String operand) {
         int firstSpace = operand.indexOf(' ');
         return firstSpace < 0 ? operand : operand.substring(0, firstSpace);
     }
 
-    /**
-     * The two chained COBOL {@code MOVE}s that put a message on the screen: text into
-     * {@code WS-MESSAGE PIC X(80)} ({@code app/cbl/CORPT00C.cbl:39}), then
-     * {@code MOVE WS-MESSAGE TO ERRMSGO OF CORPT0AO} at {@code :560} into {@code PIC X(78)}.
-     *
-     * <p>Both moves are alphanumeric, so both pad on the right and truncate on the right. The net
-     * effect for any text shorter than 78 characters is right-space-padding to 78; for anything longer
-     * it is the leading 78 characters. That second case is real: {@code WS-MESSAGE} is 80 bytes wide
-     * and {@code ERRMSGO} is 78, so the last two bytes of a full {@code WS-MESSAGE} are dropped.
-     *
-     * @param text the assembled message
-     * @return exactly 78 characters, as {@code ERRMSGO} must hold them
-     */
     private static String throughWsMessageIntoErrmsgo(String text) {
         FixedWidthCodec codec = new FixedWidthCodec(ASCII);
         String wsMessage = codec.movePicX(text, WS_MESSAGE_LENGTH);
         return codec.movePicX(wsMessage, ScreenField.ERRMSG.payloadLength());
     }
 
-    // =============================================================================================
-
     @Nested
     @DisplayName("Gate G9 - every payload field traces to a DFHMDF and every width to a PICTURE")
     class ProjectionMatchesTheSources {
-
         @Test
         @DisplayName("the 17 ScreenField constants are the xxxO items, verbatim and in order")
         void screenFieldsAreTheCopybookItems() throws IOException {
@@ -563,7 +309,6 @@ class ReportRequestResponseTest {
     @Nested
     @DisplayName("Byte geometry - 12 + 17 x 7 + 206 = 337")
     class ByteGeometry {
-
         @Test
         @DisplayName("the payload widths sum to 206 and the group image is 337 bytes")
         void totals() {
@@ -652,13 +397,10 @@ class ReportRequestResponseTest {
     @Nested
     @DisplayName("PIC X semantics - padded on write, truncated on the right, never trimmed on read")
     class WidthDiscipline {
-
         @ParameterizedTest
         @EnumSource(ScreenField.class)
         @DisplayName("a fresh field is LOW-VALUES at its declared width")
         void defaultsToLowValues(ScreenField field) {
-            // MOVE LOW-VALUES TO CORPT0AO, app/cbl/CORPT00C.cbl:179. moveSpacesToAllFields() and
-            // initializeAllFields() carry the SPACES shapes and are asserted separately.
             ReportRequestResponse response = new ReportRequestResponse();
             assertThat(response.payloadValue(field))
                     .hasSize(field.payloadLength())
@@ -682,7 +424,6 @@ class ReportRequestResponseTest {
                     .as("COBOL fills a PIC X receiver from the left")
                     .isEqualTo("Z".repeat(field.payloadLength()));
 
-            // An exact-width value is returned unchanged.
             String exact = "e".repeat(field.payloadLength());
             response.setPayloadValue(field, exact);
             assertThat(response.payloadValue(field)).isEqualTo(exact);
@@ -787,7 +528,6 @@ class ReportRequestResponseTest {
     @Nested
     @DisplayName("The group moves CORPT00C performs, each named after its source line")
     class GroupMoves {
-
         @Test
         @DisplayName("CORPT00C:179 MOVE LOW-VALUES TO CORPT0AO clears the payload AND all 68 attributes")
         void moveLowValuesReachesEveryByte() {
@@ -882,8 +622,6 @@ class ReportRequestResponseTest {
             assertThat(response.getCurdateo()).isEqualTo("08/22/22").hasSize(8);
             assertThat(response.getCurtimeo()).isEqualTo("17:02:43").hasSize(8);
 
-            // The paragraph does not touch the eleven data fields, so they still hold what the
-            // constructor's MOVE LOW-VALUES TO CORPT0AO image (:179) left.
             assertThat(response.getMonthlyo()).isEqualTo(ScreenFieldImage.unpainted(1));
             assertThat(response.getConfirmo()).isEqualTo(ScreenFieldImage.unpainted(1));
             assertThat(response.getErrmsgo()).isEqualTo(ScreenFieldImage.unpainted(78));
@@ -911,7 +649,6 @@ class ReportRequestResponseTest {
     @Nested
     @DisplayName("Gate G38 - the CSSETATY highlight applies only in REENTER state")
     class Highlighting {
-
         @ParameterizedTest
         @EnumSource(FieldValidationState.class)
         @DisplayName("on first entry nothing is highlighted, whatever the validation state")
@@ -1045,7 +782,6 @@ class ReportRequestResponseTest {
     @Nested
     @DisplayName("The xxxC/xxxP/xxxH/xxxV quad - metadata, and independently settable")
     class AttributeQuad {
-
         @Test
         @DisplayName("UNSET is all X'00', which is also the device default")
         void unsetQuad() {
@@ -1146,7 +882,6 @@ class ReportRequestResponseTest {
     @Nested
     @DisplayName("Gates G40 and G37 - XCTL becomes a field, and nothing is held server-side")
     class Navigation {
-
         @Test
         @DisplayName("a fresh response names its own map and mapset at X(7) and no program yet")
         void defaults() {
@@ -1170,14 +905,9 @@ class ReportRequestResponseTest {
             response.echoNavigation(context);
 
             assertThat(response.getNextProgram()).isEqualTo("COMEN01C").hasSize(8);
-            // echoNavigation is the transfer projection, and an XCTL states no map: which map COMEN01C
-            // will paint is its decision, not this program's, and CORPT00C names none in the XCTL at
-            // :548-551. Blank means "not stated here" - naming this screen's own map would tell the
-            // client to repaint the screen it is leaving.
             assertThat(response.getNextMapset()).isBlank()
                     .hasSize(NavigationContext.LAST_MAPSET_LENGTH);
             assertThat(response.getNextMap()).isBlank().hasSize(NavigationContext.LAST_MAP_LENGTH);
-            // A SEND is the other case, and the constructor still names this screen there.
             assertThat(new ReportRequestResponse().getNextMapset())
                     .isEqualTo(ReportRequestResponse.MAPSET_NAME);
             assertThat(new ReportRequestResponse().getNextMap())
@@ -1310,7 +1040,6 @@ class ReportRequestResponseTest {
     @Nested
     @DisplayName("The JSON body - 17 payload members plus the four stateless carriers, and no metadata")
     class JsonContract {
-
         private final ObjectMapper mapper = new ObjectMapper();
 
         @Test
@@ -1408,7 +1137,6 @@ class ReportRequestResponseTest {
     @Nested
     @DisplayName("The 337-byte image - FILLER emitted, attribute bytes raw, both code pages")
     class FixedWidthImage {
-
         @Test
         @DisplayName("gate G21 - the TIOAPFX prefix and all 17 attribute FILLERs are space-filled")
         void fillerIsPresentAndSpaceFilled() {
@@ -1561,7 +1289,6 @@ class ReportRequestResponseTest {
     @Nested
     @DisplayName("Value semantics - equality covers everything that would be transmitted")
     class ValueSemantics {
-
         @Test
         @DisplayName("the copy constructor produces an equal but independent response")
         void copyConstructor() {
@@ -1653,8 +1380,6 @@ class ReportRequestResponseTest {
             assertThat(loud).contains("ERRMSGO='boom")
                     .contains("DFHGREEN")
                     .contains("nextProgram='COSGN00C")
-                    // Blanked, because echoNavigation is the transfer projection and an XCTL states no
-                    // map. The rendering shows what the response actually carries.
                     .contains("nextMapset='" + " ".repeat(NavigationContext.LAST_MAPSET_LENGTH))
                     .contains("nextMap='" + " ".repeat(NavigationContext.LAST_MAP_LENGTH))
                     .contains(NavigationContext.TO_PROGRAM_FIELD);
@@ -1664,7 +1389,6 @@ class ReportRequestResponseTest {
     @Nested
     @DisplayName("Bind B7 - the header comes from an injected fixed Clock, never from the wall clock")
     class DeterministicHeader {
-
         @Test
         @DisplayName("a fixed Clock with an explicit ZoneId pins CURDATEO and CURTIMEO exactly")
         void fixedClockPinsTheHeader() {
@@ -1733,7 +1457,6 @@ class ReportRequestResponseTest {
     @Nested
     @DisplayName("Rule R1 - the name is the prompt's, the behaviour is CORPT00C's, and here they agree")
     class SourceProvenance {
-
         @Test
         @DisplayName("CORPT00C:5 and the README's CR00 row agree, so this is NOT an R-B naming case")
         void nameAndBehaviourAgree() throws IOException {
@@ -1743,10 +1466,6 @@ class ReportRequestResponseTest {
                     .contains("Function")
                     .contains("Print Transaction reports by submitting batch");
 
-            // Located by content, not by line number. README.md is the one oracle in this list that
-            // the migration is allowed to change - it gains a Java build section (AAP 0.4.9, gate
-            // G55) - so an absolute index into it is a citation that goes stale the moment the
-            // documentation grows. The row itself is the evidence, and it is unique in the file.
             List<String> readme = Files.readAllLines(README, ASCII);
             List<String> cr00Rows = readme.stream()
                     .filter(row -> row.startsWith("|") && row.contains(" CR00 "))
@@ -1845,7 +1564,6 @@ class ReportRequestResponseTest {
     @Nested
     @DisplayName("Two date triples, no ten-character date field, and no CVTRA05Y member anywhere")
     class ShapeOfTheDateCriteria {
-
         @Test
         @DisplayName("the criteria are two MM/DD/YYYY triples at 2/2/4, not two ten-byte dates")
         void twoTriplesAndNoTenByteDate() {
@@ -1896,25 +1614,6 @@ class ReportRequestResponseTest {
             assertThat(response.getEdtyyyyo()).isEqualTo("2023");
         }
 
-        /**
-         * The negative contract, corrected against the source.
-         *
-         * <p>The folder requirements for this file assert that {@code CORPT00C} "does not copy
-         * {@code CVTRA05Y}". <strong>It does</strong> - {@code app/cbl/CORPT00C.cbl:146} reads
-         * {@code COPY CVTRA05Y.}, and the migration plan's own per-program copybook matrix (section 0.2.3)
-         * lists {@code CVTRA05Y} among {@code CORPT00C}'s eight includes. Rule <strong>R1</strong>
-         * settles the discrepancy: behaviour comes from the source, so the source wins and the
-         * assertion is written to the verified fact rather than to the prose.
-         *
-         * <p>The conclusion the requirement was reaching for is nevertheless <em>true</em>, and true
-         * for a sharper reason. {@code CVTRA05Y} is included as a {@code WORKING-STORAGE} declaration
-         * of the {@code TRANSACT} record - it is what the program's own {@code TRANSACT} browse reads
-         * into - and <strong>not one</strong> of its fields is a name-labelled {@code DFHMDF} field on
-         * {@code CORPT00}. Gate <strong>G9</strong> admits a payload member only where a
-         * {@code DFHMDF} label exists, so no transaction-record field can reach this response.
-         * {@code CVCRD01Y} genuinely is absent from the {@code COPY} list, so there is no
-         * {@code CardScreenState} equivalent here either.
-         */
         @Test
         @DisplayName("no CVTRA05Y-derived member reaches the map, though the program does copy it")
         void noTransactionRecordMembers() throws IOException {
@@ -2013,7 +1712,6 @@ class ReportRequestResponseTest {
     @Nested
     @DisplayName("The defining property - the passed commarea is 160 bytes, NOT the CT screens' 218")
     class NoCommareaExtension {
-
         @Test
         @DisplayName("160 bytes, because CORPT00C declares no 58-byte CDEMO-CTnn-INFO group")
         void oneHundredAndSixtyNotTwoHundredAndEighteen() {
@@ -2176,46 +1874,9 @@ class ReportRequestResponseTest {
         }
     }
 
-    /**
-     * Gate <strong>G34</strong> - the {@code REDEFINES} pair, proved as two accessors over one span.
-     *
-     * <p>{@code app/cpy-bms/CORPT00.CPY:121} declares {@code 01 CORPT0AO REDEFINES CORPT0AI}. At each
-     * field's prefix offset {@code k} the two views spend the same seven bytes differently:
-     *
-     * <pre>
-     *   AI view:  k..k+1 xxxL (2B, signed) | k+2 xxxF | k+2 xxxA (SAME byte) | k+3..k+6 FILLER X(4) | k+7.. xxxI X(n)
-     *   AO view:  k..k+2 FILLER X(3)                  | k+3 xxxC | k+4 xxxP  | k+5 xxxH | k+6 xxxV  | k+7.. xxxO X(n)
-     * </pre>
-     *
-     * <p>This suite owns the {@code AO} side and asserts all four consequences as round trips over one
-     * backing span. Nothing is inferred from prose: every claim is a byte read back through the other
-     * view.
-     *
-     * <h2>Two accessors, and why there are two kinds of test here</h2>
-     *
-     * <p>A {@code REDEFINES} claim needs a <em>second</em> accessor, and this suite uses two:
-     *
-     * <ul>
-     *   <li>A <strong>raw {@link FixedWidthRecord}</strong> over the 337-byte image, reaching the
-     *       {@code xxxL}/{@code xxxF} and quad windows by absolute offset with
-     *       {@link FixedWidthRecord#writeBytes(int, byte[])} and
-     *       {@link FixedWidthRecord#readBytes(int, int)}. These are the load-bearing tests: they prove
-     *       the overlay using only the fixed-width primitives this suite already depends on, so the
-     *       claim stands on nothing but the copybook and the codec.</li>
-     *   <li>{@link ReportRequestRequest}, the module's own {@code AI} projection of the same storage and
-     *       this type's Request sibling in the same package. It needs no {@code import} and adds no new
-     *       library, and it is the honest second accessor: it is what a real inbound
-     *       {@code RECEIVE MAP} produces. Its tests corroborate the raw-record ones rather than
-     *       standing in for them - hand-rolling a private symbolic-map decoder inside this test instead
-     *       would duplicate a codec the module already owns, which bind <strong>B11</strong> exists to
-     *       prevent.</li>
-     * </ul>
-     */
     @Nested
     @DisplayName("Gate G34 - CORPT0AO REDEFINES CORPT0AI, proved byte by byte through both views")
     class RedefinesOverlay {
-
-        /** The {@code AI} counterpart of an {@code AO} field, by ordinal - both enums are in copybook order. */
         private ReportRequestRequest.ScreenField inbound(ScreenField outboundField) {
             return ReportRequestRequest.ScreenField.values()[outboundField.ordinal()];
         }
@@ -2307,13 +1968,6 @@ class ReportRequestResponseTest {
                     .isEqualTo(k + 3);
         }
 
-        /**
-         * The cursor value is why {@code xxxL} is {@code COMP PIC S9(4)} - <em>signed</em> - rather
-         * than unsigned. {@code app/cbl/CORPT00C.cbl} performs {@code MOVE -1 TO <field>L OF CORPT0AI}
-         * at <strong>22</strong> sites, one for every field it can leave the cursor on: lines 180, 192,
-         * 264, 271, 278, 285, 292, 299, 334, 343, 351, 360, 369, 377, 403, 423, 441, 453, 472, 492,
-         * 533 and 635. An unsigned halfword would read that back as 65535.
-         */
         @ParameterizedTest
         @EnumSource(ScreenField.class)
         @DisplayName("consequence 2 - a -1 cursor length round trips as -1 and is invisible outbound")
@@ -2409,14 +2063,6 @@ class ReportRequestResponseTest {
                     .isEqualTo(original.fieldImages());
         }
 
-        /**
-         * The whole overlay, proved with the fixed-width primitives alone.
-         *
-         * <p>No {@code AI} projection is consulted: the three windows of each seven-byte prefix are
-         * reached by absolute offset over the rendered image, exactly as {@code CORPT0AI} and
-         * {@code CORPT0AO} reach them. This is what makes the {@code REDEFINES} claim independent of
-         * any other class in the package.
-         */
         @ParameterizedTest
         @EnumSource(ScreenField.class)
         @DisplayName("the overlay holds using the fixed-width primitives alone, with no AI projection")
@@ -2427,9 +2073,6 @@ class ReportRequestResponseTest {
             byte[] image = original.toFixedWidth(ASCII);
             int k = field.attributePrefixOffset();
 
-            // The xxxL window: two bytes at k, written as a signed big-endian halfword. Writing the
-            // CICS cursor value there must be invisible to every AO item, because the AO view calls
-            // bytes k..k+2 its FILLER X(3).
             FixedWidthRecord record = codec.wrap(image, ReportRequestResponse.LAYOUT);
             record.writeBytes(k, new byte[] {(byte) 0xFF, (byte) 0xFF});
             byte[] halfword = record.readBytes(k, 2);
@@ -2442,8 +2085,6 @@ class ReportRequestResponseTest {
             assertThat(afterCursor.fieldImages()).isEqualTo(original.fieldImages());
             assertThat(afterCursor.attributeImages()).isEqualTo(original.attributeImages());
 
-            // The quad window: four bytes at k+3, which the AI view calls its reserved FILLER X(4).
-            // Writing it must leave the xxxL/xxxF window and the payload window untouched.
             record.writeBytes(k + 3, new byte[] {BmsAttributes.DFHRED, (byte) 0x11,
                 BmsAttributes.DFHUNDLN, (byte) 0x22});
             assertThat(record.readBytes(k, 2))
@@ -2457,7 +2098,6 @@ class ReportRequestResponseTest {
                     .as("and the AO view reads the byte at k+3 as xxxC")
                     .isEqualTo(BmsAttributes.DFHRED);
 
-            // The payload window: n bytes at k+7, reached by offset and read back through the DTO.
             String written = "J".repeat(field.payloadLength());
             record.writeString(field.payloadOffset(), field.payloadLength(), written);
             assertThat(ReportRequestResponse.fromFixedWidth(record.toByteArray(), ASCII)
@@ -2495,48 +2135,9 @@ class ReportRequestResponseTest {
         }
     }
 
-    /**
-     * The {@code app/cpy/CSSETATY.cpy} decision table, driven exhaustively.
-     *
-     * <p>The copybook reads, structurally:
-     *
-     * <pre>
-     *   IF (FLG-x-NOT-OK OR FLG-x-BLANK) AND CDEMO-PGM-REENTER
-     *       MOVE DFHRED TO (SCRNVAR2)C OF (MAPNAME3)O
-     *       IF  FLG-x-BLANK
-     *           MOVE '*' TO (SCRNVAR2)O OF (MAPNAME3)O
-     *       END-IF
-     *   END-IF
-     * </pre>
-     *
-     * <p>Three conditions, so four outcomes, and every one is asserted below across all
-     * <strong>ten</strong> input-capable fields:
-     *
-     * <table border="1">
-     *   <caption>Gate G38</caption>
-     *   <tr><th>Flag</th><th>Context</th><th>{@code xxxC}</th><th>{@code xxxO}</th></tr>
-     *   <tr><td>NOT-OK</td><td>REENTER</td><td>{@code DFHRED}</td><td>unchanged</td></tr>
-     *   <tr><td>BLANK</td><td>REENTER</td><td>{@code DFHRED}</td><td><strong>{@code '*'}</strong></td></tr>
-     *   <tr><td>NOT-OK or BLANK</td><td>ENTER</td><td>unchanged</td><td>unchanged</td></tr>
-     *   <tr><td>OK</td><td>REENTER</td><td>unchanged</td><td>unchanged</td></tr>
-     * </table>
-     *
-     * <p>One accuracy note, because it changes what may honestly be asserted: {@code CORPT00C} does
-     * <strong>not</strong> include {@code CSSETATY} - its eight {@code COPY} statements, at
-     * {@code app/cbl/CORPT00C.cbl:138-149}, are {@code COCOM01Y}, {@code CORPT00}, {@code COTTL01Y},
-     * {@code CSDAT01Y}, {@code CSMSG01Y}, {@code CVTRA05Y}, {@code DFHAID} and {@code DFHBMSCA}. The
-     * copybook's single textual consumer is {@code COACTUPC}. What {@code CORPT00C} does instead, on a
-     * failed edit, is set the message line and position the cursor with
-     * {@code MOVE -1 TO <field>L OF CORPT0AI}. So the rule exercised here is the module's shared
-     * highlight semantics as {@link FieldAttributeSetter} publishes them - which is the seam every
-     * screen resolves through - and the field set it may be applied to is pinned against the mapset's
-     * own {@code UNPROT} declarations rather than assumed.
-     */
     @Nested
     @DisplayName("Gate G38 - the CSSETATY matrix across all ten input-capable fields, four outcomes")
     class HighlightMatrix {
-
-        /** Ten input-capable fields crossed with all six flag/context combinations. */
         static Stream<Arguments> matrix() {
             List<Arguments> cases = new ArrayList<>();
             for (ScreenField field : INPUT_CAPABLE) {
@@ -2601,14 +2202,6 @@ class ReportRequestResponseTest {
             }
         }
 
-        /**
-         * Row 2 is the non-obvious one and is worth stating plainly: the {@code '*'} goes into the
-         * <strong>{@code xxxO} output item</strong>, not into an attribute byte, so the highlight
-         * <strong>overwrites a payload value</strong>. That bites hardest on this map because six of
-         * the ten highlightable fields are only {@code X(1)} or {@code X(2)} wide - {@code MONTHLYO},
-         * {@code YEARLYO}, {@code CUSTOMO} and {@code CONFIRMO} are {@code X(1)}, so the {@code '*'}
-         * replaces the <em>entire</em> field and nothing of what the operator keyed survives.
-         */
         @Test
         @DisplayName("row 2 - BLANK in REENTER writes '*' INTO the payload item, overwriting its value")
         void rowTwoBlankOnReenterOverwritesThePayload() {
@@ -2732,15 +2325,6 @@ class ReportRequestResponseTest {
                     .isEqualTo(ReportRequestResponse.SCREEN_FIELD_COUNT);
         }
 
-        /**
-         * The seven {@code ASKIP} fields are not highlightable, and the reason is structural rather
-         * than an API prohibition: an operator cannot type into a skip-protected field, so no
-         * validation flag is ever raised against one, so {@code CSSETATY}'s outer {@code IF} can never
-         * be reached for it. {@link ReportRequestResponse#applyHighlight} is deliberately
-         * field-generic - one seam for all seventeen, which is what keeps the highlight rule in exactly
-         * one place - so the constraint is asserted where it actually lives: in the mapset's
-         * {@code ATTRB} lists, and in the program's own choice of cursor targets.
-         */
         @Test
         @DisplayName("the seven ASKIP fields are never flagged - no UNPROT, and no cursor ever lands there")
         void outputOnlyFieldsAreNotHighlightable() throws IOException {
@@ -2839,28 +2423,9 @@ class ReportRequestResponseTest {
         }
     }
 
-    /**
-     * The error line, and the two message widths that feed it.
-     *
-     * <p>{@code app/bms/CORPT00.bms:218-221} declares it in full:
-     *
-     * <pre>
-     *   ERRMSG  DFHMDF ATTRB=(ASKIP,BRT,FSET),
-     *                  COLOR=RED,
-     *                  LENGTH=78,
-     *                  POS=(23,1)
-     * </pre>
-     *
-     * <p>Four separate properties, and all four are asserted. Note that the {@code COLOR=RED} here is
-     * a <strong>declared property of the field</strong>, fixed at map-generation time, and is a
-     * different mechanism from the {@code DFHRED} that {@link FieldAttributeSetter} may move into a
-     * highlight quad at run time. Both exist, both are red, and neither implies the other.
-     */
     @Nested
     @DisplayName("ERRMSGO - all four declared BMS properties, and the message widths that feed it")
     class ErrorLineDeclaration {
-
-        /** The clause text of one name-labelled {@code DFHMDF}, from its label to the next entry. */
         private String declarationOf(String label) throws IOException {
             List<String> lines = Files.readAllLines(MAPSET, ASCII);
             StringBuilder declaration = new StringBuilder();
@@ -3105,7 +2670,6 @@ class ReportRequestResponseTest {
     @Nested
     @DisplayName("The echoed criteria - selectors, date parts and the four confirm outcomes")
     class EchoedCriteria {
-
         @ParameterizedTest
         @CsvSource({"MONTHLY", "YEARLY", "CUSTOM"})
         @DisplayName("the three selectors are X(1) and are echoed exactly as submitted")
@@ -3320,7 +2884,6 @@ class ReportRequestResponseTest {
     @Nested
     @DisplayName("Negative contracts - the types, annotations and constructs that must NOT be here")
     class NegativeContracts {
-
         @Test
         @DisplayName("gates G22 and R4 - every payload member is a String and none is numeric")
         void everyMemberIsAString() {
@@ -3408,8 +2971,6 @@ class ReportRequestResponseTest {
                                     + "not one of the 119 is a payload member")
                             .noneMatch(name -> name.equalsIgnoreCase(metadataItem));
                 }
-                // The payload member is the item WITHOUT its output-direction suffix, in lower case:
-                // @JsonProperty pins each wire name to the xxxI item (AAP 0.6.3).
                 String wireName = field.payloadItemName()
                         .substring(0, field.payloadItemName().length() - 1);
                 assertThat(names)
@@ -3440,13 +3001,6 @@ class ReportRequestResponseTest {
             }
         }
 
-        /**
-         * Gate <strong>G33</strong> pins the 1-based-to-0-based conversion of every {@code OCCURS}
-         * table. {@code CORPT00} has none, so there is no row subscript on this map to verify. That is
-         * asserted here rather than merely stated, so its absence is a checked finding: if a future
-         * change ever introduced a repeating row group to this screen, this test would fail and demand
-         * the indexing coverage that its siblings {@code COTRN00} and {@code COUSR00} carry.
-         */
         @Test
         @DisplayName("gate G33 does not apply - CORPT00 declares no OCCURS table, so there is no index")
         void noOccursTableOnThisMap() throws IOException {
@@ -3470,12 +3024,6 @@ class ReportRequestResponseTest {
             }
         }
 
-        /**
-         * Gate <strong>G54</strong>, asserted rather than asserted-about. A suite that slept, opened a
-         * socket or started a container would still pass its own assertions while making
-         * {@code mvn -B verify} slow, flaky or dependent on the network; this test is what stops that
-         * from arriving unnoticed in a later edit.
-         */
         @Test
         @DisplayName("gate G54 - no sleep, no socket, no HTTP, no container and no Spring context")
         void suiteIsNonInteractive() throws IOException {
@@ -3483,9 +3031,6 @@ class ReportRequestResponseTest {
                     "vsergeychik", "carddemo", "transaction", "dto",
                     "ReportRequestResponseTest.java"), JAVA_SOURCE));
 
-            // Each needle is assembled from fragments on purpose. A test that scans its own source
-            // cannot spell out the pattern it forbids, or it would always find itself - the same trap
-            // that noTransactionRecordMembers and nothingElseIsRead are written around.
             List<String> forbidden = List.of("Thread" + ".sleep", "CountDown" + "Latch",
                     "new " + "Socket", "Http" + "Client", "URL" + "Connection", "http" + "://",
                     "https" + "://", "System" + ".in", "read" + "Line(", "await" + "(");

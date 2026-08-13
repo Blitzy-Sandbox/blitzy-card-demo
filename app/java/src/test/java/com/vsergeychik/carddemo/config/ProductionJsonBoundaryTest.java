@@ -61,57 +61,17 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
 /**
- * The JSON boundary of the online screens, exercised with the converter a deployed request actually
- * meets.
- *
- * <h2>Why this class exists separately from the controller suites</h2>
- * Every screen's own test suite stands its controller up with {@code MockMvcBuilders.standaloneSetup},
- * which supplies a <strong>default</strong> {@code ObjectMapper}. That is the right call there - those
- * suites assert program behaviour, and a default mapper keeps the JSON out of the way - but it means
- * the settings {@code application.yml} and
- * {@link WebConfig#carddemoJacksonCustomizer(java.nio.charset.Charset)} apply in production are not
- * exercised on any real route: unknown-property rejection, trailing-token rejection, plain
- * {@code BigDecimal} rendering and the deliberate refusal to coerce {@code ""} to {@code null} would
- * each survive being switched off without a single test going red. Runtime testing raised exactly that
- * gap.
- *
- * <p>So the converter here is built from the customizer itself, plus the one feature
- * {@code application.yml} turns on, and it is pointed at two real controllers - one {@code POST} whose
- * body is required and one {@code GET} whose body is optional. What is asserted is the boundary, never a
- * program branch: a body either binds whole or is refused, and nothing about a refusal names anything
- * internal.
- *
- * <p>{@code WebConfigErrorContractTest} covers the same envelopes against a purpose-built stand-in
- * controller; this class is the other half of the pair, and the halves are deliberately not merged -
- * that one proves the advice maps the failure, this one proves a screen a client actually calls provokes
- * it.
+ * The JSON boundary of the online screens, exercised with the converter a deployed request actually meets.
  */
 @DisplayName("The production JSON converter, on real online routes")
 final class ProductionJsonBoundaryTest {
-
-    /**
-     * The code page {@code application-test.yml} names under {@code carddemo.charset.dataset}, which is
-     * what {@code CobolCharsetConfig} publishes as the active dataset charset under this profile.
-     *
-     * <p>Stated here, and passed to the production customizer, because the inbound screen-text boundary
-     * judges every value against the page in force rather than against a page of its own choosing: a
-     * mapper built for a test has to name the same one the profile does or it is not the production
-     * mapper.
-     */
     private static final Charset TEST_PROFILE_CHARSET = StandardCharsets.US_ASCII;
 
-    /** {@code FUNCTION CURRENT-DATE} pinned, so a screen header never depends on the wall clock. */
     private static final Clock FIXED_CLOCK =
             Clock.fixed(Instant.parse("2022-07-19T23:12:33Z"), ZoneOffset.UTC);
 
-    /** The card number {@code GET /api/cards/{cardNum}} is addressed with, {@code PIC X(16)}. */
     private static final String CARD_NUMBER = "4000000000000001";
 
-    /**
-     * An {@code ObjectMapper} carrying exactly what production carries: the customizer's own settings
-     * plus {@code spring.jackson.deserialization.fail-on-unknown-properties} from
-     * {@code application.yml}.
-     */
     private static ObjectMapper productionMapper() {
         Jackson2ObjectMapperBuilder builder = new Jackson2ObjectMapperBuilder();
         new WebConfig().carddemoJacksonCustomizer(TEST_PROFILE_CHARSET).customize(builder);
@@ -122,16 +82,12 @@ final class ProductionJsonBoundaryTest {
         return new MappingJackson2HttpMessageConverter(productionMapper());
     }
 
-    /** The {@code USRSEC} dataset, stubbed so a successful add reports what CICS would report. */
     private final SecUserRepository secUserRepository = mock(SecUserRepository.class);
 
-    /** The {@code CARDDAT} dataset. Never reached by a request that fails to bind. */
     private final CardRepository cardRepository = mock(CardRepository.class);
 
     private MockMvc addUserRoute() {
         when(secUserRepository.add(any(SecUserRecord.class))).thenReturn(WriteResult.written());
-        // The controller takes its code page from the repository it writes through, so the stub has to
-        // report one. US-ASCII is the test profile's page.
         when(secUserRepository.datasetCharset()).thenReturn(StandardCharsets.US_ASCII);
         return MockMvcBuilders
                 .standaloneSetup(new UserAddController(secUserRepository, FIXED_CLOCK))
@@ -149,28 +105,16 @@ final class ProductionJsonBoundaryTest {
                 .build();
     }
 
-    /**
-     * A {@code COUSR01} payload with the five data fields as given, carrying a re-entered communication
-     * area - which is what reaches the key dispatch at {@code COUSR01C:90-103}.
-     */
     private static UserAddRequest addRequest(String fName) {
         return addRequest(fName, "Doe");
     }
 
-    /**
-     * The same payload with the last name stated too, so a test can stop the guard chain of
-     * {@code COUSR01C:117-151} on a chosen field and see what the program echoed back.
-     */
     private static UserAddRequest addRequest(String fName, String lName) {
         return new UserAddRequest(null, null, null, null, null, null,
                 fName, lName, "USR1", "PASS1234", "U", null,
                 NavigationContext.empty().withPgmReenter(), null);
     }
 
-    /**
-     * Serialises a payload through the production mapper, so the body a test sends is the body a client
-     * that echoes this module's own DTO would send - every member present, at its declared width.
-     */
     private static String body(UserAddRequest request) throws Exception {
         return productionMapper().writeValueAsString(request);
     }
@@ -178,7 +122,6 @@ final class ProductionJsonBoundaryTest {
     @Nested
     @DisplayName("the settings are the deployed ones")
     class Settings {
-
         @Test
         @DisplayName("the customizer alone carries all four decisions, so nothing depends on yml order")
         void theCustomizerCarriesItsOwnDecisions() {
@@ -218,7 +161,6 @@ final class ProductionJsonBoundaryTest {
     @Nested
     @DisplayName("a body binds whole, or is refused")
     class BindOrRefuse {
-
         @Test
         @DisplayName("POST /api/users: a well-formed body still binds and the add reaches the dataset")
         void aWellFormedBodyBinds() throws Exception {
@@ -240,7 +182,6 @@ final class ProductionJsonBoundaryTest {
                             .content("{\"fname\":\"John\",\"notAField\":\"x\"}"))
                     .andExpect(status().isBadRequest())
                     .andExpect(jsonPath("$.code").value(CobolErrorHandler.MALFORMED_REQUEST_CODE))
-                    // The refused member is named so a caller can act on the answer; its value is not.
                     .andExpect(jsonPath("$.fieldErrors[0].field").value("notAField"))
                     .andExpect(content().string(not(containsString("John"))));
 
@@ -259,10 +200,6 @@ final class ProductionJsonBoundaryTest {
         @DisplayName("POST /api/users: an object or an array where a PIC X field belongs is refused, "
                 + "rather than bound as a field the caller left unpainted")
         void aStructuredValueForAScreenFieldIsRefused(String body) throws Exception {
-            // Before the shape guard, JsonParser#getValueAsString answered null for a structured token, so
-            // the member bound to null and the request the controller ran was not the request the caller
-            // sent: on the wire a null screen field is exactly an unpainted one. Refused whole instead,
-            // and the dataset is never reached.
             addUserRoute().perform(post("/api/users")
                             .contentType(MediaType.APPLICATION_JSON)
                             .content(body))
@@ -270,7 +207,6 @@ final class ProductionJsonBoundaryTest {
                     .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
                     .andExpect(jsonPath("$.code").value(CobolErrorHandler.MALFORMED_REQUEST_CODE))
                     .andExpect(jsonPath("$.detail").value(CobolErrorHandler.MALFORMED_REQUEST_MESSAGE))
-                    // Neither the value nor the Java type the converter wanted is echoed.
                     .andExpect(content().string(not(containsString("John"))))
                     .andExpect(content().string(not(containsString("java.lang.String"))));
 
@@ -285,7 +221,6 @@ final class ProductionJsonBoundaryTest {
                             .content("{\"fname\":\"John\",\"lname\":{\"a\":\"Doe\"}}"))
                     .andExpect(status().isBadRequest())
                     .andExpect(jsonPath("$.fieldErrors[0].field").value("lname"))
-                    // The member's NAME is the caller's own spelling; its value is not published.
                     .andExpect(content().string(not(containsString("Doe"))));
 
             verify(secUserRepository, never()).add(any(SecUserRecord.class));
@@ -300,10 +235,6 @@ final class ProductionJsonBoundaryTest {
         })
         @DisplayName("POST /api/users: content after the screen is refused rather than discarded")
         void trailingContentIsRefused(String body) throws Exception {
-            // Before FAIL_ON_TRAILING_TOKENS these all answered 200: the first document bound, the rest
-            // vanished, and nothing in the response distinguished that from a body read in full. A screen
-            // whose second half was silently dropped is the same silent-loss shape this module refuses
-            // everywhere else - an unknown member is refused, an over-width value is refused.
             addUserRoute().perform(post("/api/users")
                             .contentType(MediaType.APPLICATION_JSON)
                             .content(body))
@@ -314,8 +245,6 @@ final class ProductionJsonBoundaryTest {
 
             verify(secUserRepository, never()).add(any(SecUserRecord.class));
 
-            // The control, so the refusal above is attributable to the trailing content and to nothing
-            // else about the body: the same document, with nothing after it, binds and answers 200.
             addUserRoute().perform(post("/api/users")
                             .contentType(MediaType.APPLICATION_JSON)
                             .content("{\"fname\":\"John\"}"))
@@ -348,15 +277,11 @@ final class ProductionJsonBoundaryTest {
     @Nested
     @DisplayName("a screen field is character data, or the request is refused before the program runs")
     class ScreenFieldsAreCharacterData {
-
         @ParameterizedTest(name = "fname as {0}")
         @ValueSource(strings = {"11", "1.5", "true", "false"})
         @DisplayName("POST /api/users: a number or a boolean where a screen field belongs is refused, "
                 + "and no repository is touched")
         void aWrongTokenShapeIsRefusedOnARealRoute(String token) throws Exception {
-            // The coercion this replaces reached the dataset: getValueAsString() turned 11 into "11" and
-            // true into "true", so a PIC X(20) name span was written from a value no RECEIVE MAP could
-            // have delivered. Refused at the boundary, the program never runs at all.
             addUserRoute().perform(post("/api/users")
                             .contentType(MediaType.APPLICATION_JSON)
                             .content("{\"fname\":" + token + "}"))
@@ -374,10 +299,6 @@ final class ProductionJsonBoundaryTest {
         @DisplayName("POST /api/users: an object or an array is refused through Jackson's own "
                 + "unexpected-token path, which is the mapping-failure arm, and no repository is touched")
         void aStructuredTokenIsRefusedOnARealRoute(String token) throws Exception {
-            // A structured value is not a screen field with an unusual value: it is not a screen field.
-            // It goes to DeserializationContext.handleUnexpectedToken, so the answer is the boundary's
-            // existing malformed-body arm rather than a second answer invented for one fault. Either way
-            // it is a 400 raised before the program runs.
             addUserRoute().perform(post("/api/users")
                             .contentType(MediaType.APPLICATION_JSON)
                             .content("{\"fname\":" + token + "}"))
@@ -410,7 +331,6 @@ final class ProductionJsonBoundaryTest {
                     .andExpect(status().isBadRequest())
                     .andExpect(jsonPath("$.code").value(CobolErrorHandler.REJECTED_VALUE_CODE))
                     .andExpect(jsonPath("$.fieldErrors[0].field").value("fname"))
-                    // Nothing internal reaches the answer: not the code page, not the code point.
                     .andExpect(content().string(not(containsString("US-ASCII"))))
                     .andExpect(content().string(not(containsString("U+00E9"))));
 
@@ -435,15 +355,6 @@ final class ProductionJsonBoundaryTest {
     @Nested
     @DisplayName("the whole request surface is judged, all seventeen families of it")
     class WholeSurface {
-
-        /**
-         * Every one of the seventeen inbound screen payloads, named explicitly.
-         *
-         * <p>Listed rather than discovered by scanning, so that a family added or removed has to be
-         * acknowledged here: the count is the contract - seventeen CICS online programs, seventeen
-         * request types - and a scan that silently found sixteen would assert less while looking like
-         * more.
-         */
         private static final List<Class<?>> REQUEST_FAMILIES = List.of(
                 com.vsergeychik.carddemo.account.dto.AccountViewRequest.class,
                 com.vsergeychik.carddemo.account.dto.AccountUpdateRequest.class,
@@ -478,11 +389,6 @@ final class ProductionJsonBoundaryTest {
         @DisplayName("every family refuses a character the screen code page cannot represent - the "
                 + "judgement reaches all seventeen, not the three that sweep their received map")
         void everyFamilyRefusesAnUnrepresentableCharacter(final Class<?> family) throws Exception {
-            // The member used is navigationContext.fromProgram, because the communication area is the one
-            // member all seventeen families share - COCOM01Y is copied by every one of the seventeen
-            // online programs - and because a NESTED member is precisely what a received-map sweep cannot
-            // reach. The judgement is registered by type on the mapper, so proving it here proves it for
-            // every String member of every family.
             String body = "{\"navigationContext\":{\"fromProgram\":\"CO\u00d1EN01C\"}}";
 
             assertThatThrownBy(() -> productionMapper().readValue(body, family))
@@ -516,13 +422,6 @@ final class ProductionJsonBoundaryTest {
                     .hasMessageContaining("Duplicate");
         }
 
-        /**
-         * The deepest cause of a failure, which is where a refusal raised inside a deserializer ends up
-         * once Jackson has wrapped it in a mapping failure.
-         *
-         * @param failure the failure as thrown
-         * @return its root cause, or the failure itself when it has none
-         */
         private static Throwable rootCauseOf(final Throwable failure) {
             Throwable cause = failure;
             while (cause.getCause() != null && cause.getCause() != cause) {
@@ -535,14 +434,9 @@ final class ProductionJsonBoundaryTest {
     @Nested
     @DisplayName("one member states one value: a repeated member is refused, never resolved last-wins")
     class DuplicateMembers {
-
         @Test
         @DisplayName("POST /api/users: two values for one screen field are refused, and neither is used")
         void aRepeatedTopLevelMemberIsRefused() throws Exception {
-            // Jackson's default keeps the LAST occurrence and discards the first with nothing in the
-            // response saying so. A BMS map declares one storage item per named field, so two values for
-            // one field describe a screen that cannot exist - and on a password, a key or an attention
-            // identifier, which one survived decides what the request does (CWE-20).
             addUserRoute().perform(post("/api/users")
                             .contentType(MediaType.APPLICATION_JSON)
                             .content("{\"fname\":\"John\",\"fname\":\"Jane\"}"))
@@ -596,19 +490,13 @@ final class ProductionJsonBoundaryTest {
     @Nested
     @DisplayName("what a screen field means is not decided by Jackson's defaults")
     class FieldFidelity {
-
         @Test
         @DisplayName("an empty PIC X field binds as itself and is not coerced to null")
         void anEmptyFieldIsNotNull() throws Exception {
-            // ACCEPT_EMPTY_STRING_AS_NULL_OBJECT is disabled explicitly. If it were on, a screen field
-            // the operator cleared would arrive as absent, and the first-blank validation chain of
-            // COUSR01C:117-151 would be reporting on a value the client never sent.
             addUserRoute().perform(post("/api/users")
                             .contentType(MediaType.APPLICATION_JSON)
                             .content(body(addRequest(""))))
                     .andExpect(status().isOk())
-                    // The blank first name is what the program reports on, which is only possible if the
-                    // empty string survived the converter.
                     .andExpect(jsonPath("$.errmsg").value(containsString("First Name")));
 
             verify(secUserRepository, never()).add(any(SecUserRecord.class));
@@ -617,10 +505,6 @@ final class ProductionJsonBoundaryTest {
         @Test
         @DisplayName("a leading space survives, and the field comes back at its declared PIC width")
         void leadingSpaceSurvivesAndWidthIsPreserved() throws Exception {
-            // The last name is left blank on purpose, so the guard chain stops there and the screen is
-            // repainted with what was typed. A successful add would not do: COUSR01C:290-295 clears the
-            // five input fields to SPACES, so the echoed first name would be blank by the program's own
-            // decision and would say nothing about the converter.
             String painted = addUserRoute().perform(post("/api/users")
                             .contentType(MediaType.APPLICATION_JSON)
                             .content(body(addRequest(" John", ""))))
@@ -657,24 +541,9 @@ final class ProductionJsonBoundaryTest {
         }
     }
 
-    /**
-     * The six screen projections whose published member order was derived from reflection rather than
-     * declared, and so did not read as {@code app/cpy-bms} declares the map.
-     *
-     * <p>The type's own suite proves each order against a plain {@code ObjectMapper}. This class proves
-     * the same order survives the <strong>deployed</strong> converter - the one
-     * {@link WebConfig#carddemoJacksonCustomizer(Charset)} builds, with the screen-text module and the
-     * strict-duplicate and unknown-property settings on it - because it is the deployed converter, not
-     * a plain one, whose output a client actually reads.
-     *
-     * <p>Only the leading map projection is pinned here. Each type's own suite pins the transport
-     * extensions that follow it; what matters at this boundary is that the screen arrives contiguous
-     * and in screen order, with nothing of the transport wedged inside it.
-     */
     @Nested
     @DisplayName("a screen projection reaches the wire in the order its BMS map declares")
     class MapOrderIsPublished {
-
         @ParameterizedTest(name = "{0} leads with its map, in app/cpy-bms order")
         @MethodSource(
                 "com.vsergeychik.carddemo.config.ProductionJsonBoundaryTest#screenProjections")
@@ -705,11 +574,6 @@ final class ProductionJsonBoundaryTest {
         }
     }
 
-    /**
-     * The six projections and the {@code xxxI} order their {@code app/cpy-bms} copybook declares.
-     *
-     * @return one case per projection: its name, an instance, and its map fields in copybook order
-     */
     static Stream<Arguments> screenProjections() {
         return Stream.of(
             Arguments.of("BillPaymentRequest", new BillPaymentRequest(), List.of(

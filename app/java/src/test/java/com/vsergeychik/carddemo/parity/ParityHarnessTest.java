@@ -42,91 +42,51 @@ import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 /**
- * Exercises {@link ParityHarness} - the half of the parity gate that seeds a case, reaches the unit
- * under test and captures what the run produced.
- *
- * <h2>Why this suite exists separately from the differ's</h2>
- * <p>{@link FieldDiffer} decides whether an observation matches an expectation, and
- * {@code FieldDifferTest} covers that. The harness decides something different and equally load-bearing:
- * <em>what the unit is allowed to see</em>, <em>what counts as having been observed</em>, and
- * <em>what is written down when a run fails</em>. None of those is a comparison, so none of them is
- * reachable through the differ, and every one of them can turn a gate that reports "diff count = 0"
- * into a gate that proved nothing.
- *
- * <p>The suite therefore carries the harness's own guarantees, each one asserted against behaviour
- * rather than against a comment:
- * <ul>
- *   <li><strong>Oracle separation.</strong> A unit under test is handed the case's inputs and nothing
- *       else. It cannot read the expected writes, the expected final state, the expected return code,
- *       the expected messages or the expected response, so it cannot construct its observation from the
- *       answer it is about to be judged against.</li>
- *   <li><strong>Diagnostic safety.</strong> A failure raised inside a unit is quoted through
- *       {@link Redaction} rather than raw. A repository failure routinely carries the record it was
- *       handed, and for the datasets in this system that means names, addresses, social-security
- *       numbers, account and card identifiers and the legacy plaintext password - all of which an
- *       assertion message would otherwise publish to a build log and a CI artefact (CWE-532).</li>
- * </ul>
+ * Exercises {@link ParityHarness} - the half of the parity gate that seeds a case, reaches the unit under
+ * test and captures what the run produced.
  */
 @DisplayName("ParityHarness - seeding, reaching the unit, and what gets written down")
 class ParityHarnessTest {
-
-    /** The program every case in this suite names; any of the 28 would do. */
     private static final String PROGRAM = "CBACT01C";
 
-    /** The case identifier every case in this suite names. */
     private static final String CASE_ID = "case01";
 
-    /**
-     * A credential value that appears nowhere in the fixtures, so finding it in rendered output can
-     * only mean the harness put it there.
-     */
     private static final String SECRET = "SECRET99";
 
-    /** A minimal valid batch case: no seed, no parameters, and nothing expected. */
     private static ParityCase batchCase() {
         return new ParityCase(PROGRAM, CASE_ID, "a minimal valid case", UnitKind.BATCH_JOB,
             Map.of(), Map.of(), null, null, List.of(), List.of(), 0, List.of(), List.of());
     }
 
-    /** A 12-byte layout for recording an observation, whose only field is unclassified. */
     private static final RecordLayout LAYOUT = RecordLayout.of(12,
         FieldSpan.alphanumeric("ACCT-GROUP-ID", 0, 10), FieldSpan.filler(10, 2));
 
-    /** A row of {@link #LAYOUT}. */
     private static final String ROW = "PREMIUM     ";
 
-    /** The smallest well-formed screen request, declaring the harness's own code page. */
     private static ScreenRequest minimalRequest() {
         return new ScreenRequest(0, "DFHENTER", null, "US-ASCII", Map.of(), Map.of(), Map.of());
     }
 
-    /** The smallest well-formed expected response. */
     private static ExpectedResponse minimalResponse() {
         return new ExpectedResponse("COADM01C", null, null, Map.of(), List.of(), null,
             Termination.XCTL);
     }
 
-    /** A US-ASCII harness running under a caller-supplied clock. */
     private static ParityHarness harnessWithClock(Clock clock) {
         return new ParityHarness(FieldDiffer.forCharset(StandardCharsets.US_ASCII),
             JsonMapper.builder().build(), clock);
     }
 
-    /** A batch case seeding the supplied dataset inputs and expecting nothing. */
     private static ParityCase seedingCase(Map<String, DatasetInput> datasets) {
         return new ParityCase(PROGRAM, CASE_ID, "a seeded case", UnitKind.BATCH_JOB, datasets,
             Map.of(), null, null, List.of(), List.of(), 0, List.of(), List.of());
     }
 
-    // ===============================================================================================
     @Nested
     @DisplayName("Strict oracle loading: a fixture cannot assert less than it appears to")
     class StrictLoading {
-
-        /** The program whose twenty cases are shipped, so the loader has a real set to read. */
         private static final String SHIPPED_PROGRAM = "COUSR02C";
 
-        /** Reads a case body through the harness's own hardened mapper, from a temporary resource. */
         private ParityCase read(String json) throws IOException {
             return ParityHarness.usAscii().readCase(json.getBytes(StandardCharsets.UTF_8),
                 "an inline case body");
@@ -135,8 +95,6 @@ class ParityHarnessTest {
         @Test
         @DisplayName("a duplicate member is refused rather than resolved to the last occurrence")
         void aDuplicateMemberIsRefused() {
-            // The defect: the first expectation is dropped without a word, so the fixture states one
-            // return code in the file and asserts another in the run.
             String json = shippedCaseBody().replace("\"expectedReturnCode\": 0",
                 "\"expectedReturnCode\": 8, \"expectedReturnCode\": 0");
 
@@ -156,8 +114,6 @@ class ParityHarnessTest {
         @Test
         @DisplayName("an unknown member is refused even though the caller's mapper allowed it")
         void anUnknownMemberIsRefusedThroughALenientMapper() throws IOException {
-            // The caller hands in a mapper with unknown-property failure switched off globally, which
-            // overrides the model's own annotation. The harness copies and hardens it, so it cannot.
             ObjectMapper lenient = JsonMapper.builder()
                 .disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
                 .build();
@@ -236,12 +192,10 @@ class ParityHarnessTest {
             } finally {
                 Files.deleteIfExists(stray);
             }
-            // The set is clean again, so the failure was the stray file and nothing else.
             Assertions.assertThat(ParityHarness.casesOf(SHIPPED_PROGRAM))
                 .hasSize(ParityHarness.CASES_PER_PROGRAM);
         }
 
-        /** The twenty identifiers, in order, for the exact-set assertion. */
         private static String[] caseIds() {
             String[] ids = new String[ParityHarness.CASES_PER_PROGRAM];
             for (int ordinal = 1; ordinal <= ParityHarness.CASES_PER_PROGRAM; ordinal++) {
@@ -250,7 +204,6 @@ class ParityHarnessTest {
             return ids;
         }
 
-        /** The directory the shipped cases were copied to on the test classpath. */
         private static Path caseDirectory() {
             URL directory = ParityHarnessTest.class.getClassLoader()
                 .getResource(ParityHarness.CASE_RESOURCE_ROOT + SHIPPED_PROGRAM);
@@ -265,7 +218,6 @@ class ParityHarnessTest {
             }
         }
 
-        /** One shipped case's JSON body, used as the starting point every perturbation edits. */
         private static String shippedCaseBody() {
             try {
                 return Files.readString(caseDirectory().resolve("case01.json"),
@@ -276,22 +228,12 @@ class ParityHarnessTest {
         }
     }
 
-    // ===============================================================================================
     @Nested
     @DisplayName("Execution integrity: what the unit may see, what is kept, and what time it is")
     class ExecutionIntegrity {
-
         @Test
         @DisplayName("a unit is handed the case's inputs and no part of the expectation")
         void aUnitCannotReachTheExpectation() {
-            // The failure this closes is total rather than partial. A unit able to read the expected
-            // writes, the expected final state, the expected return code, the expected messages or the
-            // expected response could report them straight back, and every case would pass against an
-            // implementation that computes nothing. The gate would read "diff count = 0" for the worst
-            // possible reason, and no test downstream could tell the difference.
-            //
-            // Asserted structurally, on the type: Invocation exposes inputs and has no accessor for
-            // the case or for any expectation, so the separation cannot be undone by forgetting it.
             List<String> exposed = new ArrayList<>();
             for (Method method : ParityHarness.Invocation.class.getDeclaredMethods()) {
                 if (Modifier.isPublic(method.getModifiers())) {
@@ -362,8 +304,6 @@ class ParityHarnessTest {
         @Test
         @DisplayName("a case run through the wrong adapter is refused before the unit is reached")
         void aWrongAdapterIsRefusedBeforeExecution() {
-            // Before, not during: the case declares BATCH_JOB, and the adapter below would happily do
-            // something plausible if it were ever called. The point is that it is not called.
             boolean[] reached = {false};
 
             Assertions.assertThatIllegalArgumentException()
@@ -397,10 +337,6 @@ class ParityHarnessTest {
         @Test
         @DisplayName("an observation recorded after an early build is never dropped")
         void anObservationAfterAnEarlyBuildIsNeverDropped() {
-            // The exact shape: the unit builds an outcome part-way through, records one more write,
-            // and returns the object it built earlier. That object IS the recorder's own build, so an
-            // identity check waves it through and the second write disappears from the fingerprint -
-            // a parity difference that no longer exists to be reported.
             Assertions.assertThatIllegalStateException()
                 .isThrownBy(() -> ParityHarness.usAscii().run(batchCase(), UnitKind.BATCH_JOB,
                     invocation -> {
@@ -465,9 +401,6 @@ class ParityHarnessTest {
         @Test
         @DisplayName("a clock that ticks is refused however it was derived")
         void aTickingClockIsRefused() {
-            // Clock.offset and Clock.tick over a system clock are equal to none of the three system
-            // clock identities, so an identity check lets them through - and each stamps a different
-            // byte on every run. A hand-written implementation reading the wall time does the same.
             Assertions.assertThatIllegalArgumentException()
                 .isThrownBy(() -> harnessWithClock(
                     Clock.offset(Clock.systemUTC(), Duration.ofHours(1))))
@@ -506,9 +439,6 @@ class ParityHarnessTest {
                     Termination.XCTL),
                 List.of(), List.of(), 0, List.of(), List.of());
 
-            // Unread, the declaration is worse than absent: the case would be seeded and compared
-            // through the same wrong table on both sides and the diff count would be zero, certifying
-            // a code page it never exercised.
             Assertions.assertThatIllegalArgumentException()
                 .isThrownBy(() -> ParityHarness.usAscii().run(ebcdic, UnitKind.CONTROLLER_POJO,
                     invocation -> UnitOutcome.ofReturnCode(0)))
@@ -545,12 +475,9 @@ class ParityHarnessTest {
         }
     }
 
-    // ===============================================================================================
     @Nested
     @DisplayName("Forced outcomes: a closed set, and a declaration that has to be used")
     class ForcedOutcomes {
-
-        /** An online case forcing the supplied outcomes and nothing else. */
         private ParityCase forcing(Map<RepositoryOperation, ForcedOutcome> forced) {
             return new ParityCase(PROGRAM, CASE_ID, "a case forcing an outcome",
                 UnitKind.CONTROLLER_POJO, Map.of(), Map.of(),
@@ -558,7 +485,6 @@ class ParityHarnessTest {
                 minimalResponse(), List.of(), List.of(), 0, List.of(), List.of());
         }
 
-        /** A NOT_FOUND outcome, the commonest thing a case forces. */
         private ForcedOutcome notFound() {
             return new ForcedOutcome(FileStatus.Outcome.NOT_FOUND, null, null);
         }
@@ -582,10 +508,6 @@ class ParityHarnessTest {
         @Test
         @DisplayName("a declaration nothing asks for fails the run rather than forcing nothing")
         void anUnconsumedDeclarationFailsTheRun() {
-            // The false pass this closes: the case says it exercises the WHEN OTHER arm of a
-            // read-for-update, no call site asks for the outcome, the run takes the ordinary happy
-            // path, every expectation about that happy path is met, and the case passes. The case file
-            // looks entirely plausible afterwards, which is what makes it worth failing loudly.
             Assertions.assertThatIllegalStateException()
                 .isThrownBy(() -> ParityHarness.usAscii().run(
                     forcing(Map.of(RepositoryOperation.REWRITE, notFound())),
@@ -636,9 +558,6 @@ class ParityHarnessTest {
         @Test
         @DisplayName("an unconsumed declaration fails on the abend path too")
         void anUnconsumedDeclarationFailsAfterAnAbend() {
-            // An abend is an observation rather than a failure here, so the run completes and produces
-            // a fingerprint - and a forced outcome the abending run never reached forced nothing just
-            // the same.
             Assertions.assertThatIllegalStateException()
                 .isThrownBy(() -> ParityHarness.usAscii().run(
                     forcing(Map.of(RepositoryOperation.REWRITE, notFound())),
@@ -652,9 +571,6 @@ class ParityHarnessTest {
         @Test
         @DisplayName("asking for an outcome the case does not force is refused, naming what it forces")
         void askingForAnUndeclaredOutcomeIsRefused() {
-            // Raised inside the unit, so it arrives wrapped as the defect it is - a repository asking
-            // for an outcome the case never declared is a call site and a case that disagree, not an
-            // observation about the COBOL.
             Assertions.assertThatIllegalStateException()
                 .isThrownBy(() -> ParityHarness.usAscii().run(
                     forcing(Map.of(RepositoryOperation.REWRITE, notFound())),
@@ -675,22 +591,14 @@ class ParityHarnessTest {
         }
     }
 
-    // ===============================================================================================
     @Nested
     @DisplayName("A dataset that exists and holds no row is a seed, not an omission")
     class DeclaredEmptyInputs {
-
-        /** The account dataset, whose copybook CVACT01Y declares a 300-byte record. */
         private static final String ACCTFILE = "ACCTFILE";
 
         @Test
         @DisplayName("a declared-empty input reaches the unit as an existing dataset with no rows")
         void aDeclaredEmptyInputIsSeeded() {
-            // This is the branch every one of the five read-and-print programs takes on an empty file:
-            // OPEN succeeds, the first READ meets end-of-file, and the program prints its trailer and
-            // ends with RETURN-CODE 0 rather than abending. Before this shape existed the branch was
-            // unreachable from a case, because the only way to seed no rows was to omit the dataset -
-            // and an omitted dataset is a different thing entirely, as the next test shows.
             ParityHarness.usAscii().run(
                 seedingCase(Map.of(ACCTFILE, DatasetInput.ofEmpty(300, "CVACT01Y"))), UnitKind.BATCH_JOB,
                 invocation -> {
@@ -722,10 +630,6 @@ class ParityHarnessTest {
         @Test
         @DisplayName("the declared width is the seeded width, since no row is there to measure")
         void theDeclaredWidthIsTheSeededWidth() {
-            // Every other seed shape measures its width from its rows. An empty dataset has none, so
-            // the case states it - and it has to, because the width is the one property an empty
-            // output can still be wrong about: a reject file opened at 350 rather than the JCL's
-            // LRECL=430 is a real defect that no row comparison can see.
             ParityHarness.usAscii().run(
                 seedingCase(Map.of("DALYREJS", DatasetInput.ofEmpty(430, "CVTRA06Y"))), UnitKind.BATCH_JOB,
                 invocation -> {
@@ -740,7 +644,6 @@ class ParityHarnessTest {
         @Test
         @DisplayName("an empty seed sits beside a populated one, so a mixed case is expressible")
         void anEmptySeedSitsBesideAPopulatedOne() {
-            // CBTRN02C's shape exactly: a populated input and an output file that starts empty.
             ParityHarness.usAscii().run(
                 seedingCase(Map.of(
                     "DALYTRAN", DatasetInput.ofRows(List.of("a row of the daily file")),
@@ -753,17 +656,12 @@ class ParityHarnessTest {
         }
     }
 
-    // ===============================================================================================
     @Nested
     @DisplayName("Diagnostic safety: a failure is quoted through the redaction policy, never raw")
     class DiagnosticSafety {
-
         @Test
         @DisplayName("a non-abend failure's message is sanitised before it reaches the assertion text")
         void aNonAbendFailureIsSanitised() {
-            // The shape this guards against, verbatim: a repository that failed while handling a row
-            // and quoted the row in its message. This one carries a USRSEC row - user id, both names
-            // and the legacy plaintext password - which is what a build log would otherwise keep.
             String leakyMessage = "could not rewrite row 'ADMIN001Margaret            GOLD"
                 + "                PASSWORDA' - password=" + SECRET;
 
@@ -781,11 +679,6 @@ class ParityHarnessTest {
         @Test
         @DisplayName("the chained cause is a surrogate: the raw text survives in neither rendering")
         void theChainedCauseCarriesNoRawText() {
-            // Sanitising the harness's own message is only half the job. A chained cause is rendered
-            // by the runner independently, and trimStackTrace is false in app/java/pom.xml - so
-            // surefire prints the whole "Caused by:" chain. Chaining the original throwable would put
-            // the raw text into the log through that second rendering, and one sanitised rendering
-            // beside one raw rendering sanitises nothing (CWE-532).
             String leaky = "row 'USER0001LAWRENCE            THOMAS              PASSWORDU' rejected"
                 + " - secret=" + SECRET;
             IllegalStateException raised = new IllegalStateException(leaky);
@@ -808,10 +701,6 @@ class ParityHarnessTest {
                 .as("nor is the original suppressed onto it, which the runner would also print")
                 .isEmpty();
 
-            // The decisive assertion: render the whole thing the way a test runner does - every
-            // message and every frame of every link in the chain - and require the credential to be
-            // absent from ALL of it. Before the surrogate this string contained the row twice, once
-            // scrubbed and once raw.
             String rendered = renderLikeARunner(thrown);
             Assertions.assertThat(rendered)
                 .as("the fully rendered stack output, which is what reaches a build log and a CI "
@@ -823,32 +712,12 @@ class ParityHarnessTest {
                     + "second rendering exists and was sanitised too rather than merely absent")
                 .isEqualTo(2);
 
-            // The policy boundary, stated rather than implied: what sanitiseDiagnostic closes is
-            // credential material - a known credential value anywhere in the text, and a credential
-            // quoted as a labelled value. The names in this row sit inside a message shorter than
-            // MAX_DIAGNOSTIC_LENGTH, so they survive in both renderings, and that is the documented
-            // policy rather than an oversight: free text carries no field names for classification to
-            // reach, and the case that leaks a whole record image - a 500-byte customer row, names and
-            // social-security number included - is closed by the length bound instead. This assertion
-            // pins that boundary so a later change to the policy has to come here and restate it.
             Assertions.assertThat(rendered)
                 .as("names inside a short quoted row are bounded, not masked - the documented "
                     + "third rule - so they are expected here and are not what this test judges")
                 .contains("LAWRENCE");
         }
 
-        /**
-         * Counts non-overlapping occurrences of {@code needle} in {@code haystack}.
-         *
-         * <p>Used to prove a rendering happened <em>twice</em> and was sanitised both times. An
-         * assertion that the raw text is absent cannot distinguish "sanitised in both renderings" from
-         * "there was only ever one rendering", and the defect this guards against is precisely the
-         * second rendering.
-         *
-         * @param haystack the text to search
-         * @param needle the text to count
-         * @return the number of non-overlapping occurrences
-         */
         private static int countOccurrences(String haystack, String needle) {
             int count = 0;
             for (int at = haystack.indexOf(needle); at >= 0; at = haystack.indexOf(needle, at + needle.length())) {
@@ -892,18 +761,6 @@ class ParityHarnessTest {
                 .containsExactly(raised.getStackTrace());
         }
 
-        /**
-         * Renders a throwable chain the way a test runner does - every message and every frame of every
-         * link, including suppressed ones.
-         *
-         * <p>Assembled here rather than taken from {@code printStackTrace} so the assertion is over a
-         * string this test owns, and so a suppressed throwable cannot be silently omitted from what is
-         * checked. This is the text that reaches a build log, and it is the text the redaction policy
-         * has to hold for.
-         *
-         * @param thrown the top of the chain
-         * @return every message and frame in the chain, newline separated
-         */
         private static String renderLikeARunner(Throwable thrown) {
             StringBuilder rendered = new StringBuilder();
             for (Throwable link = thrown; link != null; link = link.getCause()) {
@@ -934,9 +791,6 @@ class ParityHarnessTest {
         @Test
         @DisplayName("a failure quoting a whole record is bounded rather than reproduced")
         void aFailureQuotingAWholeRecordIsBounded() {
-            // A 500-byte customer row is names, address, telephone numbers and a social-security
-            // number, and it carries no field name for classification to work from. The bound is what
-            // handles it.
             String customerRow = "Margaret".repeat(80);
 
             Assertions.assertThatIllegalStateException()

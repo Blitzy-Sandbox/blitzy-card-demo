@@ -1,7 +1,6 @@
 package com.vsergeychik.carddemo.config;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatIllegalStateException;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
 import static org.assertj.core.api.Assertions.assertThatIllegalStateException;
@@ -92,198 +91,42 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.transaction.PlatformTransactionManager;
 
 /**
- * Tests for {@link BatchConfig}: the module's one transaction manager, the builder seams the batch
- * job classes are assembled from, the JCL {@code COND=(0,NE)} step-gating policy, the COBOL
- * {@code RETURN-CODE} contract, and - just as load-bearing - every bean this class deliberately
- * refuses to declare.
- *
- * <h2>SPRING BATCH 5.2.6 - READ THIS BEFORE ADDING A BUILDER CALL</h2>
- * <p><strong>{@code JobBuilderFactory} and {@code StepBuilderFactory} do not exist on this
- * classpath.</strong> They were Spring Batch 4 API and were removed in 5. The correct - and only -
- * form is {@code new JobBuilder(name, jobRepository)} and
- * {@code new StepBuilder(name, jobRepository)}, which is what {@link BatchConfig#job(String)} and
- * {@link BatchConfig#step(String)} do and what
- * {@link TransactionManagerAndBuilderSeams#theSeamsBuildNamedJobsAndSteps()} exercises. Reaching
- * for either factory is a compile error, not a deprecation warning.
- *
- * <p>This is not a stylistic note, it is a version constraint with a reason. Spring Boot 4.1.0 and
- * Spring Batch 6.0.4 are both published, and this module is on Boot 3.5.16 with Batch 5.2.6 because
- * the migration plan pins Boot 3.x - constraint fidelity outranks recency (practice B2). The
- * absence of the two factory types is therefore <em>asserted</em> rather than assumed, in
- * {@link TheContractItRefusesToDeclare#theRemovedBatch4BuilderFactoriesAreAbsent()}, so that a
- * future upgrade to Batch 6 fails here with an explanation instead of somewhere obscure.
- *
- * <h2>What this file tests, and what it leaves alone</h2>
- * <p>Wiring, gating policy, return-code translation and the negative contract. It does <em>not</em>
- * start the whole application - {@code CardDemoApplicationTest} owns that graph - and it does not
- * launch a job or test any job's business logic, which belong to the job classes' own tests and to
- * the parity harness. Almost every assertion here is a plain method call with no application
- * context at all, which is what makes the branch-coverage gate reachable deterministically and
- * keeps the suite fast (practice B7).
- *
- * <p>Three assertions do build a context, and each needs to: the single transaction manager over
- * the module's own {@code DataSource}, the fact that the job repository is Spring Boot's rather than
- * this class's, and the effect of {@code spring.batch.job.enabled}. Those use
- * {@link ApplicationContextRunner} over the <em>shipped</em> configuration documents, so what is
- * asserted is the configuration this module actually ships. No test document is authored here:
- * there is exactly one {@code application-test.yml} in this module and this file adds none
- * (practice B4).
- *
- * <p>One boundary is worth naming because it looks like an omission and is not. The statement job's
- * two output widths are <em>not</em> asserted here - they belong to the statement writers, which own
- * them. They are also the estate's one genuine JCL conflict, so it is recorded rather than quietly
- * settled (practice B4): {@code app/jcl/CREASTMT.JCL}'s pre-delete step declares the HTML statement
- * as eighty bytes at L69 while the step that actually creates it declares one hundred at L94. The
- * creating step is authoritative, so the width is one hundred, and the text statement is eighty
- * (L89). What this file does assert about dataset geometry is the record width a <em>job</em>
- * resolves for a DD name, which is a different question and carries no conflict.
- *
- * <h2>Batch 5 requires a DataSource-backed job repository - documented, not worked around</h2>
- * <p>Spring Batch 5 dropped the in-memory map repository, so the real job repository needs a
- * database; the {@code test} profile's in-memory instance supplies one, and H2 is a test-scope
- * dependency that is never promoted (practice B12). The builder-seam assertions below deliberately
- * do <em>not</em> need it: they use the framework's own {@link ResourcelessJobRepository} and
- * {@link ResourcelessTransactionManager}, because what is under test is whether the seam hands a
- * step its repository and its commit boundary, not what either one persists. Where the identity of
- * the real repository matters, the document-backed context supplies the real thing.
- *
- * <h2>{@code COND=(0,NE)} is not the {@code COND=} in a sort control statement</h2>
- * <p>Two unrelated constructs share the keyword, and conflating them would invent step gating the
- * mainframe does not perform:
- * <ul>
- *   <li><strong>JCL step gating.</strong> {@code COND=(0,NE)} on an {@code EXEC} statement means
- *       <em>bypass this step unless every preceding step returned zero</em>. Verified by reading
- *       {@code app/jcl/CREASTMT.JCL}: it appears on exactly three of that job's five steps -
- *       {@code STEP020} (L56), {@code STEP030} (L66) and {@code STEP040} (L79) - and on
- *       <strong>neither</strong> {@code DELDEF01} (L22) nor {@code STEP010} (L44). Those three are
- *       the only step-level {@code COND=(0,NE)} in the whole estate.</li>
- *   <li><strong>A sort utility's record filter.</strong> {@code app/jcl/TRANREPT.jcl:L47} is
- *       {@code INCLUDE COND=(TRAN-PROC-DT,GE,PARM-START-DATE,AND,TRAN-PROC-DT,LE,PARM-END-DATE)} -
- *       a control statement read by DFSORT itself, selecting <em>records</em>. It is not step
- *       gating, that job has no step-level {@code COND} at all, and no step transition may be
- *       modelled from it. The same filter appears in the cataloged procedure form at
- *       {@code app/proc/TRANREPT.prc:L45-L46}.</li>
- * </ul>
- *
- * <p>One further form exists in the estate and is out of scope for the same reason:
- * {@code app/jcl/TRANBKP.jcl:L51} carries {@code COND=(4,LT)}, on a job whose steps are
- * {@code PROC=REPROC} and {@code PGM=IDCAMS} - utilities, not migrated programs. So
- * {@code COND=(0,NE)} is the only gating form any of the nine migrated jobs carries, and
- * {@link CondZeroNotEqualGate#onlyTheStatementJobGatesAnyStep()} asserts exactly that against the
- * shipped contracts.
- *
- * <h2>User-specified rules</h2>
- * <p>{@code review_rules} returns exactly one line - "No user rules provided." - and that single
- * line is the whole document, so <strong>no user rule governs this file</strong>. Its absence is
- * not licence to lower the bar: the migration plan's twelve enterprise practices stand in their
- * place, and the ones bearing on this file are B1 (nothing is added to {@code app/java/pom.xml} -
- * every type used here already arrives with the batch, JDBC and test starters), B2 (Batch 5.2.6 API
- * only, asserted rather than assumed), B3 (the JCL, procedure and control files cited throughout
- * are read-only and appear here purely as provenance), B4 (no configuration document is authored
- * here, and the one genuine JCL conflict is recorded rather than normalised), B7 (no wall clock, no
- * sleep, no launcher, no ordering dependence between methods), B8 (explicit imports, named exit
- * codes and named statuses rather than incidental text), B9 (no mutable static state - every static
- * member is an immutable constant or a side-effect-free function) and B12 (the environment's limits
- * are documented above rather than absorbed).
- *
- * @see BatchConfig
- * @see AbendException
+ * Tests for {@link BatchConfig}: the module's one transaction manager, the builder seams the batch job
+ * classes are assembled from, the JCL {@code COND=(0,NE)} step-gating policy, the COBOL {@code RETURN-CODE}
+ * contract, and - just as load-bearing - every bean this class deliberately refuses to declare.
  */
 @DisplayName("BatchConfig - the COND=(0,NE) gate, the RETURN-CODE contract and the Batch 5 seams")
 class BatchConfigTest {
-
-    /**
-     * The configuration key of the only job with gated steps: {@code CBSTM03A}, from
-     * {@code app/jcl/CREASTMT.JCL}.
-     */
     private static final String STATEMENT_JOB = "statement-generation-job-a";
 
-    /**
-     * The configuration key of the only job with a parameter: {@code CBACT04C}, from
-     * {@code app/jcl/INTCALC.jcl}.
-     */
     private static final String INTEREST_JOB = "account-interest-calc-job";
 
-    /**
-     * The configuration key of the {@code POSTTRAN} poster, {@code CBTRN02C}, whose JCL step at
-     * {@code app/jcl/POSTTRAN.jcl:L23} is a bare {@code EXEC PGM=} with no {@code PARM}.
-     */
     private static final String POSTTRAN_JOB = "transaction-validation-job";
 
-    /**
-     * The configuration key of the report job, {@code CBTRN03C}, whose date range is a dataset
-     * rather than a parameter.
-     */
     private static final String REPORT_JOB = "transaction-report-job";
 
-    /** The configuration key of {@code CBACT02C}, whose JCL DD is {@code CARDFILE}. */
     private static final String READCARD_JOB = "account-balance-reader-job";
 
-    /** The configuration key of {@code CBACT03C}, whose JCL DD is {@code XREFFILE}. */
     private static final String READXREF_JOB = "account-balance-update-job";
 
-    /**
-     * The four single-DD readers, each a single ungated {@code STEP05} with no {@code PARM}:
-     * {@code app/jcl/READACCT.jcl:L22}, {@code READCARD.jcl:L22}, {@code READXREF.jcl:L22} and
-     * {@code READCUST.jcl:L6}. Immutable, so it introduces no shared mutable state.
-     */
     private static final List<String> READER_JOBS = List.of(
             "account-balance-job",
             "account-balance-reader-job",
             "account-balance-update-job",
             "customer-file-reader-job");
 
-    /**
-     * The {@code PARM} of {@code app/jcl/INTCALC.jcl:L22}, verbatim.
-     *
-     * <p>Ten characters of <em>character data</em>. {@code CBACT04C} concatenates it straight into
-     * the transaction identifiers it generates - {@code STRING PARM-DATE, WS-TRANID-SUFFIX} at
-     * {@code app/cbl/CBACT04C.cbl:L476-L477} - so it must round-trip unaltered: no parsing, no
-     * reformatting, no revalidation.
-     */
     private static final String JCL_PARM_DATE = "2022071800";
 
-    /**
-     * The DD name {@code CBTRN03C} reads its reporting date range from
-     * ({@code app/jcl/TRANREPT.jcl:L73-L74}), which must never appear as a job parameter.
-     */
     private static final String DATE_RANGE_DD = "DATEPARM";
 
-    /**
-     * Activates the fixture-backed profile for every document-backed slice in this file.
-     *
-     * <p>Stated inline on every runner rather than inherited. An {@link ApplicationContextRunner}
-     * builds its environment on the surrounding JVM's system properties and process environment, so
-     * a build invoked with a different profile would otherwise change which document a slice reads.
-     * An inline value is installed as the first property source and outranks both.
-     */
     private static final String ACTIVATE_TEST_PROFILE = "spring.profiles.active=test";
 
-    /**
-     * A tasklet that does nothing and reports completion, for a step whose <em>body</em> is not
-     * what is being asserted.
-     *
-     * <p>A stateless lambda held in an immutable constant: no shared mutable state, and safe to
-     * hand to any number of builders (practice B9).
-     */
     private static final Tasklet NO_OP_TASKLET = (contribution, chunkContext) -> RepeatStatus.FINISHED;
 
-    /**
-     * An item reader that is immediately exhausted, for the chunk seam's shape assertions.
-     *
-     * <p>Returning {@code null} on the first read is Spring Batch's own end-of-input signal, so the
-     * step is well formed without any data behind it.
-     */
     private static final ItemReader<String> EXHAUSTED_READER = () -> null;
 
-    /** An item writer that discards, for the same reason. */
     private static final ItemWriter<String> DISCARDING_WRITER = chunk -> { };
 
-    /**
-     * The {@code RETURN-CODE} values an abend can carry, as {@link AbendException} declares them:
-     * the {@code APPL-RESULT} set {@code 0}, {@code 4}, {@code 8} and {@code 12}, plus {@code 16}
-     * for {@code 88 APPL-EOF}. Immutable.
-     */
     private static final List<Integer> CARRIED_RETURN_CODES = List.of(
             AbendException.RETURN_CODE_OK,
             AbendException.RETURN_CODE_WARNING,
@@ -291,34 +134,10 @@ class BatchConfigTest {
             AbendException.RETURN_CODE_IO_ERROR,
             AbendException.RETURN_CODE_END_OF_FILE);
 
-    /**
-     * A {@link BatchConfig} over the framework's resourceless repository and transaction manager,
-     * with empty catalogues.
-     *
-     * <p>Empty catalogues on purpose: the seam assertions this instance serves are about the
-     * builders, and a catalogue they never consult would only obscure that. The contract assertions
-     * that <em>do</em> need a catalogue read the shipped documents instead.
-     *
-     * @return a configuration whose seams can build a step without a database
-     */
     private static BatchConfig resourcelessConfig() {
         return configOver(new ResourcelessJobRepository(), new ResourcelessTransactionManager());
     }
 
-    /**
-     * A {@link BatchConfig} whose two providers resolve the supplied collaborators.
-     *
-     * <p>The providers are <em>real</em> ones, obtained from a bean factory holding the two
-     * singletons, rather than hand-written stand-ins. That matters: {@link ObjectProvider} is how
-     * this class breaks a genuine circular reference - Boot's batch configuration needs the
-     * transaction manager to build the job repository, and the transaction manager is a method on
-     * this very class - so resolution has to stay deferred to the first seam call, and a real
-     * provider is what proves it is.
-     *
-     * @param repository         the job repository the seams should bind steps to
-     * @param transactionManager the commit boundary the seams should hand a step
-     * @return the configuration
-     */
     private static BatchConfig configOver(JobRepository repository,
             PlatformTransactionManager transactionManager) {
         DefaultListableBeanFactory factory = new DefaultListableBeanFactory();
@@ -327,13 +146,6 @@ class BatchConfigTest {
         return configOver(factory);
     }
 
-    /**
-     * A {@link BatchConfig} whose providers resolve against the supplied factory, whatever it holds
-     * - including nothing at all.
-     *
-     * @param factory the factory the two providers resolve through
-     * @return the configuration
-     */
     private static BatchConfig configOver(DefaultListableBeanFactory factory) {
         ObjectProvider<JobRepository> repositories = factory.getBeanProvider(JobRepository.class);
         ObjectProvider<PlatformTransactionManager> managers =
@@ -341,16 +153,6 @@ class BatchConfigTest {
         return new BatchConfig(repositories, managers, new JobContracts(), new DatasetBindings());
     }
 
-    /**
-     * A job execution carrying one recorded step per supplied exit code.
-     *
-     * <p>This is the {@code COND} gate's whole input: JCL evaluates {@code COND} against the return
-     * codes of <em>every</em> preceding step, and a job execution's recorded step executions are
-     * where those live.
-     *
-     * @param exitCodes the exit codes to record, in execution order
-     * @return the job execution
-     */
     private static JobExecution jobExecutionWithStepExitCodes(String... exitCodes) {
         JobExecution jobExecution = new JobExecution(1L);
         for (int index = 0; index < exitCodes.length; index++) {
@@ -360,14 +162,6 @@ class BatchConfigTest {
         return jobExecution;
     }
 
-    /**
-     * Wraps a failure in {@code depth} plain exceptions, so the outermost is {@code depth} links
-     * above it.
-     *
-     * @param innermost the failure to bury
-     * @param depth     how many wrappers to place above it; {@code 0} returns it unwrapped
-     * @return the outermost wrapper
-     */
     private static Throwable wrapped(Throwable innermost, int depth) {
         Throwable outermost = innermost;
         for (int link = 0; link < depth; link++) {
@@ -376,18 +170,6 @@ class BatchConfigTest {
         return outermost;
     }
 
-    /**
-     * A runner over the <strong>shipped</strong> configuration documents with the two configuration
-     * classes a batch slice needs.
-     *
-     * <p>{@code DataSourceConfig} is loaded alongside {@code BatchConfig} because it registers the
-     * DD-name catalogue that {@code BatchConfig}'s constructor takes, and publishes the
-     * {@code DataSource} the transaction manager wraps. No auto-configuration beyond placeholder
-     * resolution is present, so no schema initializer runs and no connection is opened - the slice
-     * stays cheap.
-     *
-     * @return the runner
-     */
     private static ApplicationContextRunner documentBackedRunner() {
         return new ApplicationContextRunner()
                 .withInitializer(new ConfigDataApplicationContextInitializer())
@@ -398,25 +180,11 @@ class BatchConfigTest {
                 .withPropertyValues(ACTIVATE_TEST_PROFILE);
     }
 
-    /**
-     * The same runner with Spring Boot's batch auto-configuration added, so the beans this class
-     * refuses to declare are present and their provenance can be asserted.
-     *
-     * @return the runner
-     */
     private static ApplicationContextRunner runnerWithBatchAutoConfiguration() {
         return documentBackedRunner()
                 .withConfiguration(AutoConfigurations.of(BatchAutoConfiguration.class));
     }
 
-    /**
-     * The return type of every {@code @Bean} method {@link BatchConfig} declares.
-     *
-     * <p>Read from the class rather than from a list kept by hand, so a bean added later appears
-     * here whether or not anyone remembers to record it.
-     *
-     * @return the declared bean types, in no particular order
-     */
     private static List<Class<?>> declaredBeanTypes() {
         return Arrays.stream(BatchConfig.class.getDeclaredMethods())
                 .filter(method -> method.isAnnotationPresent(Bean.class))
@@ -424,23 +192,12 @@ class BatchConfigTest {
                 .toList();
     }
 
-    /**
-     * The {@code COND=(0,NE)} gate: {@code app/jcl/CREASTMT.JCL}'s "bypass unless every preceding
-     * step returned zero", expressed as a predicate and published as a decider.
-     *
-     * <p>Every arm is driven by direct call, with no application context and no launcher, which is
-     * why the gate's branches can be covered exhaustively and cheaply.
-     */
     @Nested
     @DisplayName("The COND=(0,NE) gate - bypass unless every preceding step returned zero")
     class CondZeroNotEqualGate {
-
         @Test
         @DisplayName("COMPLETED and NOOP are both return code zero")
         void completedAndNoopAreZero() {
-            // NOOP is a step that did not execute. Treating it as zero is what reproduces the
-            // mainframe: a step flushed by COND contributes no return code of its own, while the
-            // step whose non-zero code caused the flush is still recorded and still blocks.
             assertThat(BatchConfig.returnCodeOf(ExitStatus.COMPLETED))
                     .isEqualTo(BatchConfig.JCL_RETURN_CODE_ZERO);
             assertThat(BatchConfig.returnCodeOf(ExitStatus.NOOP))
@@ -475,8 +232,6 @@ class BatchConfigTest {
         @Test
         @DisplayName("a null exit code is folded into the same case rather than refused")
         void aNullExitCodeIsFoldedIn() {
-            // The exit status of a step is framework-owned. Refusing to evaluate a gate because of
-            // a null exit code would turn a diagnostic edge case into a job failure.
             assertThat(BatchConfig.returnCodeOf(new ExitStatus(null)))
                     .isEqualTo(BatchConfig.NO_JCL_RETURN_CODE);
         }
@@ -515,8 +270,6 @@ class BatchConfigTest {
         @Test
         @DisplayName("a job execution with nothing recorded yet trivially satisfies the gate")
         void nothingRecordedYetSatisfiesTheGate() {
-            // Which matches the mainframe: a COND test with nothing before it to examine does not
-            // bypass the step.
             assertThat(BatchConfig.allPrecedingStepsReturnedZero(jobExecutionWithStepExitCodes()))
                     .isTrue();
         }
@@ -532,9 +285,6 @@ class BatchConfigTest {
         @Test
         @DisplayName("one non-zero step anywhere in the history blocks, not merely the last one")
         void oneNonZeroStepAnywhereBlocks() {
-            // This is the substantive reading of COND=(0,NE): JCL tests it against EVERY preceding
-            // step. A gate that looked only at the step it arrived from would run STEP040 after
-            // STEP020 failed and STEP030 succeeded, which app/jcl/CREASTMT.JCL does not do.
             JobExecution earlierFailure = jobExecutionWithStepExitCodes("8", "COMPLETED");
 
             assertThat(BatchConfig.allPrecedingStepsReturnedZero(earlierFailure)).isFalse();
@@ -563,8 +313,6 @@ class BatchConfigTest {
         @Test
         @DisplayName("the step the flow arrived from is deliberately not consulted")
         void theArrivingStepIsNotConsulted() {
-            // Passing the step that arrived changes nothing, because the whole history is what the
-            // gate reads. Here the arriving step returned zero and an earlier one did not.
             JobExecution execution = jobExecutionWithStepExitCodes("8", "COMPLETED");
             StepExecution arrivedFrom = execution.getStepExecutions().stream()
                     .filter(step -> "COMPLETED".equals(step.getExitStatus().getExitCode()))
@@ -592,10 +340,6 @@ class BatchConfigTest {
         @DisplayName("the bypass exit code is not zero and not numeric, so an unmapped bypass can never "
                 + "read as success")
         void theBypassExitCodeIsNeverASuccess() {
-            // The failure mode of the mapping matters as much as the mapping. If the listener below ever
-            // failed to run, the code left on the job would be this literal - which returnCodeOf reads as
-            // the non-numeric sentinel, not as zero. A bare end() would have left COMPLETED there
-            // instead, and COMPLETED IS zero: that is exactly the defect this pair of parts removes.
             assertThat(BatchConfig.COND_BYPASSED_EXIT_CODE).isEqualTo("COND BYPASSED");
             assertThat(BatchConfig.COND_BYPASSED_EXIT_CODE)
                     .isNotEqualTo(ExitStatus.COMPLETED.getExitCode())
@@ -628,9 +372,6 @@ class BatchConfigTest {
         @Test
         @DisplayName("a history with no positive code reports the sentinel, never zero")
         void anIndeterminateHistoryIsNotZero() {
-            // Two states, and both are ones the gate's own decision contradicts - it only returns SKIP
-            // when some step did not return zero. Reporting zero for either would put the defect straight
-            // back: a job that bypassed its remaining steps would tell its caller everything was fine.
             for (JobExecution indeterminate : List.of(
                     jobExecutionWithStepExitCodes(),
                     jobExecutionWithStepExitCodes("COMPLETED", "NOOP"),
@@ -660,9 +401,6 @@ class BatchConfigTest {
                     .as("bypassing is not failing - only the code changes")
                     .isNotEqualTo(BatchStatus.FAILED);
 
-            // Everything else is left exactly as it arrived: a clean completion stays COMPLETED rather
-            // than becoming the literal "0", a failure stays FAILED, and a code the abend listener
-            // already wrote is not overwritten.
             for (ExitStatus untouched : List.of(ExitStatus.COMPLETED, ExitStatus.FAILED,
                     ExitStatus.NOOP, new ExitStatus("8"), ExitStatus.UNKNOWN)) {
                 JobExecution execution = jobExecutionWithStepExitCodes("COMPLETED", "4");
@@ -676,10 +414,6 @@ class BatchConfigTest {
         @DisplayName("a null exit status is read as UNKNOWN rather than dereferenced, and is left as it "
                 + "was found")
         void aNullExitStatusIsTolerated() {
-            // A job's exit status is framework-owned and a listener has no business inventing one. Reading
-            // null as UNKNOWN keeps the comparison from throwing; not writing it back keeps this listener
-            // to the one thing it is for. The assertion is therefore that nothing happened - no exception,
-            // and no status manufactured on the way past.
             JobExecutionListener listener = resourcelessConfig().condBypassExitStatusJobListener();
             JobExecution execution = jobExecutionWithStepExitCodes("4");
             execution.setExitStatus(null);
@@ -692,10 +426,6 @@ class BatchConfigTest {
         @Test
         @DisplayName("the bypass listener and the abend listener compose in either order")
         void theTwoListenersCompose() {
-            // They are mutually exclusive by construction, not by sequencing: an abend fails its step, a
-            // failed step never satisfies the flow's COMPLETED transition into a gate, so a job that
-            // abended cannot have reached a bypass terminal. Driving both orders over both cases is what
-            // proves neither listener depends on running first.
             BatchConfig config = resourcelessConfig();
             List<List<JobExecutionListener>> orders = List.of(
                     List.of(config.abendExitStatusJobListener(),
@@ -723,9 +453,6 @@ class BatchConfigTest {
         @DisplayName("the two outcomes are distinct, named as a flow wires them, and neither is a "
                 + "failure")
         void theTwoOutcomesAreDistinctAndNeitherIsAFailure() {
-            // Bypassing is deliberately not a failure: on the mainframe a step flushed by COND does
-            // not itself fail the job, and the non-zero code that caused the bypass is already
-            // recorded on the step that produced it.
             assertThat(BatchConfig.PROCEED.getName()).isEqualTo("PROCEED");
             assertThat(BatchConfig.SKIP.getName()).isEqualTo("SKIP");
             assertThat(BatchConfig.PROCEED).isNotEqualTo(BatchConfig.SKIP);
@@ -740,10 +467,6 @@ class BatchConfigTest {
                 List<StepContract> steps = context.getBean(JobContracts.class)
                         .contract(STATEMENT_JOB).steps();
 
-                // app/jcl/CREASTMT.JCL, read directly: DELDEF01 L22 (IDCAMS delete and define),
-                // STEP010 L44 (SORT), STEP020 L56 (IDCAMS REPRO), STEP030 L66 (IEFBR14 pre-delete),
-                // STEP040 L79 (CBSTM03A). COND=(0,NE) appears on the last three and on neither of
-                // the first two.
                 assertThat(steps).extracting(StepContract::name)
                         .containsExactly("DELDEF01", "STEP010", "STEP020", "STEP030", "STEP040");
                 assertThat(steps).hasSize(5);
@@ -783,10 +506,6 @@ class BatchConfigTest {
             documentBackedRunner().run(context -> {
                 JobContract report = context.getBean(JobContracts.class).contract(REPORT_JOB);
 
-                // app/jcl/TRANREPT.jcl's only COND= is the DFSORT INCLUDE filter at L47, which
-                // selects records rather than gating steps. Its three steps take the unambiguous
-                // names from app/proc/TRANREPT.prc, because the JCL labels its first two STEP05R
-                // twice (L23 and L37).
                 assertThat(report.steps()).extracting(StepContract::name)
                         .containsExactly("STEP01R", "STEP05R", "STEP10R");
                 assertThat(report.steps())
@@ -813,28 +532,15 @@ class BatchConfigTest {
         }
     }
 
-    /**
-     * The {@code RETURN-CODE} contract: an abend's code reaches both the Spring Batch exit status,
-     * where a step transition can test it, and the process exit code, where a shell or scheduler
-     * sees what JCL would have seen.
-     *
-     * <p>The codes are never re-derived. {@link AbendException} carries the value the COBOL placed
-     * in {@code APPL-RESULT} - the nine {@code CALL 'CEE3ABD'} sites move {@code 8} or {@code 12}
-     * into it, and {@code CSUTLDTC} ends with {@code MOVE WS-SEVERITY-N TO RETURN-CODE} - and these
-     * listeners only transcribe it.
-     */
     @Nested
     @DisplayName("The RETURN-CODE contract - 0, 4, 8, 12 reach the exit status and the process")
     class ReturnCodeContract {
-
         @ParameterizedTest(name = "an abend carrying RETURN-CODE {0} maps to exit code {0}")
         @ValueSource(ints = { 0, 4, 8, 12, 16 })
         @DisplayName("the carried code is transcribed unchanged, including zero")
         void theCarriedCodeIsTranscribedUnchanged(int returnCode) {
             AbendException abend = AbendException.standard("CBACT04C", returnCode);
 
-            // Zero is transcribed rather than "corrected" to a failure: the value is the COBOL's,
-            // and re-deriving it here would be this class inventing a return code.
             assertThat(BatchConfig.exitCodeFor(abend)).isEqualTo(returnCode);
             assertThat(BatchConfig.withAbendExitCode(ExitStatus.FAILED, List.<Throwable>of(abend))
                     .getExitCode()).isEqualTo(Integer.toString(returnCode));
@@ -845,9 +551,6 @@ class BatchConfigTest {
         @DisplayName("an abend that set neither ABCODE nor TIMING maps identically - the "
                 + "CBSTM03A.CBL:923 shape")
         void theShapeWithoutAbendParametersMapsIdentically(int returnCode) {
-            // app/cbl/CBSTM03A.CBL:921-923 is the one abend paragraph that performs no
-            // MOVE 999 TO ABCODE and no MOVE 0 TO TIMING. The absence must not change the
-            // return-code translation, and it must stay representable rather than be normalised.
             AbendException diverging = AbendException.withoutAbendParameters("CBSTM03A", returnCode);
             AbendException standard = AbendException.standard("CBSTM03A", returnCode);
 
@@ -872,9 +575,6 @@ class BatchConfigTest {
         @Test
         @DisplayName("the fallback arm: a failure this migration has no opinion about claims nothing")
         void anUnrelatedFailureClaimsNothing() {
-            // Zero is Spring Boot's own "no opinion" signal - its exit-code aggregation keeps the
-            // highest positive value any contributor offers - so an unrelated failure is left to
-            // whatever else the application configures. This is the WHEN OTHER arm, and it is last.
             assertThat(BatchConfig.exitCodeFor(new IllegalStateException("unrelated")))
                     .isEqualTo(BatchConfig.NO_MAPPED_EXIT_CODE);
             assertThat(BatchConfig.exitCodeFor(new RuntimeException(new IllegalArgumentException())))
@@ -892,8 +592,6 @@ class BatchConfigTest {
         @Test
         @DisplayName("an abend that arrived wrapped is still the abend the COBOL raised")
         void aWrappedAbendIsStillFound() {
-            // Spring Batch may hand a listener the exception it caught rather than the one the
-            // tasklet threw - a rollback or transaction wrapper sits in between.
             AbendException abend = AbendException.standard("CBTRN03C",
                     AbendException.RETURN_CODE_IO_ERROR, "ERROR READING TRANFILE");
 
@@ -908,9 +606,6 @@ class BatchConfigTest {
             AbendException abend = AbendException.standard("CBACT01C",
                     AbendException.RETURN_CODE_ASSUMED_FAILURE);
 
-            // Sixteen links are walked, so an abend fifteen wrappers deep is found and one sixteen
-            // deep is not. Far beyond anything the framework produces - a tasklet failure reaches
-            // the listener wrapped once or twice - and the bound is what makes the walk safe.
             assertThat(BatchConfig.findAbend(wrapped(abend, 15))).containsSame(abend);
             assertThat(BatchConfig.findAbend(wrapped(abend, 16))).isEmpty();
             assertThat(BatchConfig.exitCodeFor(wrapped(abend, 16)))
@@ -939,8 +634,6 @@ class BatchConfigTest {
                     AbendException.RETURN_CODE_IO_ERROR);
 
             assertThat(BatchConfig.findAbend(List.<Throwable>of(first, second))).containsSame(first);
-            // A non-abend ahead of it is skipped rather than claimed, which is what makes the
-            // fallback arm genuinely last.
             assertThat(BatchConfig.findAbend(
                     List.<Throwable>of(new IllegalStateException("noise"), second)))
                     .containsSame(second);
@@ -952,8 +645,6 @@ class BatchConfigTest {
         @Test
         @DisplayName("the exit description is preserved, so the text the COBOL displayed survives")
         void theExitDescriptionIsPreserved() {
-            // The description is Spring Batch's own record of the failure and is not composed here.
-            // Preserving it is what keeps the DISPLAY text that precedes CALL 'CEE3ABD' visible.
             AbendException abend = AbendException.standard("CBACT01C",
                     AbendException.RETURN_CODE_IO_ERROR, "ERROR OPENING ACCTFILE");
             ExitStatus asTheFrameworkLeftIt = new ExitStatus("FAILED", abend.getMessage());
@@ -1022,8 +713,6 @@ class BatchConfigTest {
             JobExecutionListener listener = resourcelessConfig().abendExitStatusJobListener();
             JobExecution jobExecution = new JobExecution(1L);
             jobExecution.setExitStatus(ExitStatus.FAILED);
-            // The abend is raised inside a step, and the job records the failure that ended it, so
-            // the listener has to read the steps' failures as well as the job's own.
             jobExecution.createStepExecution("STEP040").addFailureException(
                     AbendException.withoutAbendParameters("CBSTM03A",
                             AbendException.RETURN_CODE_IO_ERROR));
@@ -1085,9 +774,6 @@ class BatchConfigTest {
         @Test
         @DisplayName("a code written by a listener is readable by the gate, which is how it travels")
         void aCodeWrittenByAListenerIsReadableByTheGate() {
-            // The two halves of this class meet here: the listener writes a numeric exit code and
-            // returnCodeOf reads it back, which is exactly how a COBOL return code reaches the next
-            // step's COND test.
             for (int returnCode : CARRIED_RETURN_CODES) {
                 ExitStatus written = BatchConfig.withAbendExitCode(ExitStatus.FAILED,
                         List.<Throwable>of(AbendException.standard("CBTRN01C", returnCode)));
@@ -1099,27 +785,11 @@ class BatchConfigTest {
         }
     }
 
-    /**
-     * The one transaction manager, and the four builder seams that keep Spring Batch plumbing out of
-     * the job classes.
-     *
-     * <p>Every seam is built with the Spring Batch 5 constructors - see this class's documentation
-     * for why the Batch 4 factories cannot be used - so these assertions are simultaneously a
-     * compile-time guarantee that the module is on the API it claims to be on.
-     */
     @Nested
     @DisplayName("The transaction manager and the Batch 5 builder seams")
     class TransactionManagerAndBuilderSeams {
-
-        /** An in-memory URL, enough for the pool to derive a driver from the test classpath. */
         private static final String H2_URL = "jdbc:h2:mem:batchconfigtest";
 
-        /**
-         * The {@code DataSource} {@code DataSourceConfig} publishes, built the same way the context
-         * builds it.
-         *
-         * @return a pooled data source; no connection is opened by constructing it
-         */
         private static DataSource pooledDataSource() {
             DataSourceProperties properties = new DataSourceProperties();
             properties.setUrl(H2_URL);
@@ -1134,10 +804,6 @@ class BatchConfigTest {
 
             PlatformTransactionManager manager = resourcelessConfig().transactionManager(dataSource);
 
-            // JdbcTransactionManager rather than the plain data-source manager it extends: it adds
-            // SQL exception translation. Nothing else is set - no timeout, no isolation override, no
-            // propagation default - because commit boundaries belong to the step and the service
-            // layer, where they mirror the point at which the COBOL performs its REWRITE.
             assertThat(manager).isInstanceOf(JdbcTransactionManager.class);
             assertThat(((JdbcTransactionManager) manager).getDataSource()).isSameAs(dataSource);
             JdbcTransactionManager untouched = new JdbcTransactionManager(dataSource);
@@ -1151,10 +817,6 @@ class BatchConfigTest {
         @DisplayName("the shipped documents publish exactly one transaction manager, over the "
                 + "module's own DataSource")
         void theShippedDocumentsPublishExactlyOneTransactionManager() {
-            // Exactly one, on purpose: Spring Batch resolves a transaction manager by type when it
-            // builds the job repository, and so does every step this module assembles, so a second
-            // definition anywhere would make that resolution ambiguous and stop the context from
-            // starting. That is also why there is no primary-bean marker to be found.
             documentBackedRunner().run(context -> {
                 assertThat(context).hasNotFailed();
                 assertThat(context).hasSingleBean(PlatformTransactionManager.class);
@@ -1182,9 +844,6 @@ class BatchConfigTest {
                     .build();
             Job job = config.job("statementGenerationJobA").start(tasklet).build();
 
-            // Step names are transcribed from the JCL step they replace: STEP040 is
-            // app/jcl/CREASTMT.JCL:L79, STEP15 is app/jcl/POSTTRAN.jcl:L23 and STEP05 is
-            // app/jcl/READACCT.jcl:L22.
             assertThat(tasklet.getName()).isEqualTo("STEP040");
             assertThat(chunk.getName()).isEqualTo("STEP15");
             assertThat(bare.getName()).isEqualTo("STEP05");
@@ -1200,13 +859,6 @@ class BatchConfigTest {
                     .start(config.taskletStep("STEP05", NO_OP_TASKLET).build())
                     .build();
 
-            // A JCL job is submitted, in full, whenever the work needs doing again. Eight of the nine
-            // jobs here take no parameter at all, so without an identity of their own each would have
-            // exactly one instance for all time and a second submission would be refused as already
-            // complete. And nothing in the estate stores a checkpoint - CBACT04C commits per chunk while
-            // accumulating per account and records nothing - so resuming a failed execution would
-            // re-apply work, while skipping a completed step in TRANREPT or CREASTMT would report a
-            // fresh run over stale intermediate data.
             assertThat(job.getJobParametersIncrementer())
                     .as("the run identity is what makes a parameterless job submittable twice")
                     .isSameAs(config.jclRunIdentityIncrementer());
@@ -1235,8 +887,6 @@ class BatchConfigTest {
                     .as("a non-identifying value would not produce a new job instance, which is the "
                             + "whole purpose")
                     .isTrue();
-            // The one genuine parameter in the estate travels beside the identity, exactly as
-            // PARM='2022071800' travels on the EXEC statement.
             assertThat(besideAParm.getString(BatchConfig.PARM_DATE_PARAMETER))
                     .isEqualTo("2022071800");
             assertThat(besideAParm.getParameters().keySet())
@@ -1308,9 +958,6 @@ class BatchConfigTest {
         @ValueSource(ints = { 0, -1, Integer.MIN_VALUE })
         @DisplayName("a chunk size must be positive, and is never a module-wide default")
         void aChunkSizeMustBePositive(int chunkSize) {
-            // The chunk size is a property of the COBOL loop being translated - chunk orientation is
-            // correct for only two of the nine jobs - so this class holds no opinion about its value
-            // beyond it being a real commit interval.
             assertThatIllegalArgumentException()
                     .isThrownBy(() -> resourcelessConfig().chunkStep("STEP15", chunkSize))
                     .withMessageContaining("chunk size must be positive");
@@ -1330,10 +977,6 @@ class BatchConfigTest {
         @DisplayName("the repository and the transaction manager are resolved when a seam is used, "
                 + "not when this class is constructed")
         void collaboratorsAreResolvedLazily() {
-            // This is what breaks the circular reference described on BatchConfig: Boot's batch
-            // configuration needs the transaction manager to build the job repository, and the
-            // transaction manager is a method on this very class. Construction must therefore
-            // resolve neither.
             DefaultListableBeanFactory nothingRegistered = new DefaultListableBeanFactory();
 
             assertThatNoException().isThrownBy(() -> configOver(nothingRegistered));
@@ -1349,11 +992,6 @@ class BatchConfigTest {
         @DisplayName("a step built through a seam carries the return-code contract without opting "
                 + "in - gate G35, by construction")
         void aStepBuiltThroughASeamCarriesTheReturnCodeContract() throws JobInterruptedException {
-            // One step, executed directly through the framework's own Step API. No job is launched,
-            // no launcher is involved and no database is touched: the framework's resourceless
-            // repository and transaction manager are enough to prove that the listener the seam
-            // attaches is really attached, which is the difference between the contract holding by
-            // construction and holding only when an author remembers to opt in.
             ResourcelessJobRepository repository = new ResourcelessJobRepository();
             BatchConfig config = configOver(repository, new ResourcelessTransactionManager());
             Tasklet abends = (contribution, chunkContext) -> {
@@ -1374,29 +1012,16 @@ class BatchConfigTest {
             assertThat(stepExecution.getFailureExceptions())
                     .singleElement()
                     .isInstanceOf(AbendException.class);
-            // And the code it wrote is exactly what the COND gate reads back.
             assertThat(BatchConfig.returnCodeOf(stepExecution.getExitStatus())).isEqualTo(12);
             assertThat(BatchConfig.allPrecedingStepsReturnedZero(jobExecution)).isFalse();
         }
     }
 
-    /**
-     * {@link StopSignal} and {@link StopRequestedException} - the between-record cancellation probe.
-     *
-     * <p>Two things have to hold, and they are asserted separately because they fail separately: the
-     * probe must recognise a stop on the same terms the framework's own interruption policy does, and an
-     * abandoned pass must be reported by the framework as <em>stopped</em> rather than failed. The second
-     * is asserted by running a real step, because it is a property of how {@code AbstractStep} reads the
-     * exception rather than of anything this module can assert about itself.
-     */
     @Nested
     @DisplayName("StopSignal - the between-record cancellation probe (N-02)")
     class TheStopSignal {
-
-        /** The step name every probe here reports under. */
         private static final String STEP_NAME = "STEP040";
 
-        /** @return a step execution not asked to stop */
         private StepExecution stepExecution() {
             return new StepExecution(STEP_NAME, new JobExecution(50L));
         }
@@ -1447,11 +1072,8 @@ class BatchConfigTest {
                         .isThrownBy(signal::checkStopRequested)
                         .withCauseInstanceOf(JobInterruptedException.class);
 
-                // Not cleared by the probe. The framework's own policy tests the same flag at the step's
-                // repeat boundary, and a probe that consumed it would hide the interruption from it.
                 assertThat(Thread.currentThread().isInterrupted()).isTrue();
             } finally {
-                // Cleared here so the flag does not leak into whatever test runs next on this thread.
                 assertThat(Thread.interrupted()).isTrue();
             }
         }
@@ -1465,8 +1087,6 @@ class BatchConfigTest {
 
             assertThatNoException().isThrownBy(signal::checkStopRequested);
 
-            // The same probe, over the same execution: the stop is observed when it is requested, not
-            // when the probe was created, which is what makes it usable inside a running loop.
             stepExecution.setTerminateOnly();
             assertThatExceptionOfType(StopRequestedException.class)
                     .isThrownBy(signal::checkStopRequested);
@@ -1488,17 +1108,6 @@ class BatchConfigTest {
         @DisplayName("a real step whose tasklet reports a stop MID-PASS ends STOPPED, not FAILED - and "
                 + "the COND gate reads it as blocking")
         void aRealStepEndsStopped() throws JobInterruptedException {
-            // The load-bearing assertion of the whole design. StopRequestedException is unchecked, so it
-            // reaches AbstractStep as an ordinary failure; what makes the framework read it as a stop is
-            // its CAUSE being the framework's own JobInterruptedException. That is a property of the
-            // framework rather than of this module, so it is proved by running a real step through the
-            // real Step API - no launcher, no database, no job.
-            //
-            // The stop is requested from INSIDE the tasklet, on purpose. A stop already pending when the
-            // step begins is caught by TaskletStep's own interruption policy at the repeat boundary,
-            // before the tasklet is ever invoked - which is precisely the case that was already bounded
-            // and is not what N-02 is about. Flipping the flag while the pass is running is the case
-            // this probe exists for, and it is the only way to reach it.
             ResourcelessJobRepository repository = new ResourcelessJobRepository();
             BatchConfig config = configOver(repository, new ResourcelessTransactionManager());
             Tasklet stops = (contribution, chunkContext) -> {
@@ -1522,8 +1131,6 @@ class BatchConfigTest {
                     .singleElement()
                     .isInstanceOf(StopRequestedException.class);
 
-            // STOPPED carries no numeric return code, so the COND gate treats it as blocking: a stopped
-            // step can never be mistaken for one that returned zero.
             assertThat(BatchConfig.returnCodeOf(stepExecution.getExitStatus()))
                     .isEqualTo(BatchConfig.NO_JCL_RETURN_CODE);
             assertThat(BatchConfig.allPrecedingStepsReturnedZero(jobExecution)).isFalse();
@@ -1533,8 +1140,6 @@ class BatchConfigTest {
         @DisplayName("a stop already pending when the step begins is caught by the framework itself, "
                 + "before the tasklet is invoked - so the two mechanisms compose")
         void aStopPendingAtEntryIsCaughtByTheFramework() throws JobInterruptedException {
-            // Stated as a test rather than left implicit, because it is the reason the probe is scoped to
-            // record loops and to nothing else: the step boundary is already covered.
             ResourcelessJobRepository repository = new ResourcelessJobRepository();
             BatchConfig config = configOver(repository, new ResourcelessTransactionManager());
             boolean[] invoked = { false };
@@ -1583,51 +1188,12 @@ class BatchConfigTest {
         }
     }
 
-    /**
-     * What {@link BatchConfig} refuses to declare, which is as much of its contract as what it does.
-     *
-     * <p>Two things go wrong at once if any of these ever appears here. Spring Boot's batch
-     * auto-configuration already declares the job repository, launcher, explorer, operator and
-     * registry - its nested configuration extends the framework base class that supplies them - so a
-     * second definition of the same name is refused outright with bean-definition overriding
-     * disabled, and a second definition under another name makes by-type injection ambiguous in
-     * every job class at once. Worse, switching that auto-configuration off - by the activating
-     * annotation or by extending the framework base class here - takes Spring Boot's own batch
-     * database initializer with it, and this module would then be pushed into authoring the
-     * data-definition statements it is expressly forbidden to author.
-     *
-     * <p>These are reflective assertions on purpose, and the choice is worth defending. Loading this
-     * class alone in a context would be the obvious alternative, but it cannot be done cleanly - its
-     * constructor takes the DD-name catalogue that the sibling configuration registers, so a
-     * single-class slice would fail for a reason unrelated to what is being asserted. Reflection is
-     * also the <em>stronger</em> instrument here: stating the whole set of declared beans is a total
-     * assertion, whereas asking a context whether four particular types are absent leaves every
-     * other unwanted bean unexamined. It holds whether or not a context starts, it names the
-     * offending bean if one appears, and it needs no database.
-     */
     @Nested
     @DisplayName("The contract it refuses to declare - the absences are load-bearing")
     class TheContractItRefusesToDeclare {
-
         @Test
         @DisplayName("nine bean methods, and these exactly - so nothing else can have crept in")
         void exactlyNineBeansAndTheseExactly() {
-            // Read from the class rather than from a list kept by hand, so a bean added later shows
-            // up here whether or not anyone remembered to record it. Stating the whole set is what
-            // makes this a total assertion: no initialisation script, no script populator, no
-            // database initializer, no table-prefix arrangement, no task executor and no job or step
-            // bean can be present without failing this.
-            //
-            // Two of the nine carry the lifecycle contract that a JCL submission implies. The
-            // incrementer supplies a per-launch run identity, without which the eight parameterless
-            // jobs would each have exactly one instance for all time; and the launcher is the only
-            // thing that submits a job at all, which is why it is conditional on being asked for.
-            // Two more are JobExecutionListener, which is why that type appears twice: one carries an
-            // abend's RETURN-CODE onto a FAILED job, the other carries the highest executed step's
-            // return code onto a job that COMPLETED having flushed the rest under COND=(0,NE). Neither
-            // can see the other's path, so neither subsumes it.
-            // parmDateValidator() is deliberately NOT a bean - a validator is attached to one job
-            // builder, and a shared instance would invite a second job to pick up INTCALC's contract.
             assertThat(declaredBeanTypes()).containsExactlyInAnyOrder(
                     PlatformTransactionManager.class,
                     JobExecutionDecider.class,
@@ -1668,8 +1234,6 @@ class BatchConfigTest {
         @DisplayName("the batch auto-configuration is never switched off - neither by annotation nor "
                 + "by base class")
         void theBatchAutoConfigurationIsNeverSwitchedOff() {
-            // Named here, and only here, inside a negative assertion: this is the one place where
-            // writing the two identifiers down is the point rather than the violation.
             assertThat(BatchConfig.class.getAnnotation(EnableBatchProcessing.class)).isNull();
             assertThat(DefaultBatchConfiguration.class.isAssignableFrom(BatchConfig.class)).isFalse();
             assertThat(BatchConfig.class.getSuperclass()).isEqualTo(Object.class);
@@ -1679,11 +1243,6 @@ class BatchConfigTest {
         @Test
         @DisplayName("the removed Batch 4 builder factories really are absent from this classpath")
         void theRemovedBatch4BuilderFactoriesAreAbsent() {
-            // Spring Batch 5.2.6, because the plan pins Spring Boot 3.x (practice B2). Asserted
-            // rather than assumed, so an upgrade that reintroduced either type would be noticed
-            // here, with an explanation, instead of somewhere obscure. The correct form is
-            // new JobBuilder(name, jobRepository) / new StepBuilder(name, jobRepository), which
-            // TransactionManagerAndBuilderSeams builds with.
             for (String batch4Only : List.of(
                     "org.springframework.batch.core.configuration.annotation.JobBuilderFactory",
                     "org.springframework.batch.core.configuration.annotation.StepBuilderFactory")) {
@@ -1697,9 +1256,6 @@ class BatchConfigTest {
         @DisplayName("no persistence annotation can exist anywhere in this module, because the "
                 + "annotations themselves are not on the classpath")
         void noPersistenceAnnotationIsEvenReachable() {
-            // Gate G44 forbids entity mappings, generated table definitions and version columns.
-            // The strongest available statement of that is structural: the mandated dependency set
-            // excludes JPA entirely, so no such annotation is resolvable in the first place.
             for (String excluded : List.of("jakarta.persistence.Entity", "jakarta.persistence.Table",
                     "jakarta.persistence.Version", "org.flywaydb.core.Flyway",
                     "liquibase.Liquibase")) {
@@ -1719,19 +1275,9 @@ class BatchConfigTest {
         }
     }
 
-    /**
-     * Nothing here starts a job, which is what preserves the program no JCL invokes.
-     *
-     * <p>{@code CBTRN01C} is invoked by no JCL anywhere in {@code app/jcl} or {@code app/proc}, yet
-     * it is one of the in-scope programs, so it migrates as a fully runnable job with no trigger.
-     * Wiring it into a schedule would invent behaviour the COBOL estate does not have; deleting it
-     * would discard behaviour the estate does have. {@code spring.batch.job.enabled: false} is the
-     * mechanism, and this class is where it would silently be undone.
-     */
     @Nested
     @DisplayName("Nothing runs at startup - gate G13, the untriggered job")
     class NothingRunsAtStartup {
-
         @Test
         @DisplayName("both shipped profiles state that no job runs on context refresh")
         void bothShippedProfilesDisableAutomaticLaunching() {
@@ -1752,8 +1298,6 @@ class BatchConfigTest {
         @DisplayName("and the property is the mechanism: flipping it produces the runner, which is "
                 + "why it must stay false")
         void thePropertyIsTheMechanism() {
-            // The counter-assertion matters. Without it, "no runner" could be true for some
-            // unrelated reason and the gate would be resting on a coincidence.
             runnerWithBatchAutoConfiguration()
                     .withPropertyValues("spring.batch.job.enabled=true")
                     .run(context -> {
@@ -1773,11 +1317,6 @@ class BatchConfigTest {
                     .filter(method -> method.isAnnotationPresent(Scheduled.class))
                     .toList()).isEmpty();
 
-            // One bean method does return a runner - the launcher that turns a process invocation into
-            // a JCL submission and its RETURN-CODE into the process exit code. What keeps "nothing runs
-            // at startup" true is that it is @ConditionalOnProperty on the job name, so a context that
-            // was not asked to submit a job does not have it at all. That is asserted rather than
-            // assumed, on the method itself, and the property is the one the launcher publishes.
             List<Method> runnerBeans = Arrays.stream(BatchConfig.class.getDeclaredMethods())
                     .filter(method -> method.isAnnotationPresent(Bean.class))
                     .filter(method -> ApplicationRunner.class.isAssignableFrom(method.getReturnType())
@@ -1801,10 +1340,6 @@ class BatchConfigTest {
                 assertThat(context).hasNotFailed();
                 assertThat(context).hasSingleBean(JobRepository.class);
 
-                // Provenance, not merely presence: the definition's factory is Spring Boot's own
-                // batch configuration, so this module receives the repository rather than
-                // manufacturing one - which is exactly what keeps the framework's jar-supplied
-                // metadata schema initializer in play.
                 String[] repositoryBeans = context.getBeanNamesForType(JobRepository.class);
                 String[] thisConfiguration = context.getBeanNamesForType(BatchConfig.class);
                 assertThat(repositoryBeans).hasSize(1);
@@ -1816,65 +1351,26 @@ class BatchConfigTest {
                         .as("Spring Boot's batch auto-configuration declares the repository")
                         .isNotNull()
                         .startsWith(BatchAutoConfiguration.class.getName());
-                // Compared by bean identity rather than by text, deliberately: Spring Boot's own
-                // nested class is BatchAutoConfiguration$SpringBootBatchConfiguration, whose name
-                // contains this class's simple name as a substring, so a textual "does not contain"
-                // check here reports a violation that is not one.
                 assertThat(declaredBy).isNotEqualTo(thisConfiguration[0]);
             });
         }
     }
 
-    /**
-     * The job-parameter contracts, taken from the JCL: one parameter in the whole estate, and it is
-     * character data.
-     */
-    /**
-     * The launcher that turns one process invocation into one JCL submission, and its
-     * {@code RETURN-CODE} into the process exit code.
-     *
-     * <p>Two kinds of assertion, because the launcher has two kinds of obligation. The return-code
-     * mapping is a pure function of the execution it was handed, so it is driven by direct call against
-     * a stub launcher with no context and no database - Spring Boot's own batch runner reports
-     * {@code BatchStatus.ordinal()}, {@code 5} for a failure, and the whole point of this launcher is
-     * that {@code 0}, {@code 4}, {@code 8} and {@code 12} survive instead (gate G35). Resolution and
-     * resubmission are <em>not</em> pure functions: they depend on how many jobs the context publishes
-     * and on what the job repository already holds, so those are driven through a real context over a
-     * real H2-backed repository, which is the only place they can be wrong.
-     */
     @Nested
     @DisplayName("The JCL job launcher - a submission in, a RETURN-CODE out")
     class TheJclJobLauncher {
-
-        /** The bean name of a job whose contract exists, and the key that contract is declared under. */
         private static final String JOB_BEAN_NAME = "accountBalanceJob";
 
-        /** A second job's bean name, so "resolve by name" has something to be wrong about. */
         private static final String SECOND_JOB_BEAN_NAME = "customerFileReaderJob";
 
-        /** Every return code the terminator was asked to end the process with, in order. */
         private final List<Integer> terminatedWith = new ArrayList<>();
 
-        /** The terminator the tests inject in place of the one that would end the build's JVM. */
         private final BatchConfig.ProcessTerminator recordingTerminator = terminatedWith::add;
 
-        /**
-         * A launcher over a job whose run reports the given exit status.
-         *
-         * @param exitStatus what the stubbed launcher's execution carries
-         * @return the launcher, ready to run
-         */
         private BatchConfig.JclJobLauncher launcherReporting(ExitStatus exitStatus) {
             return launcherReporting(exitStatus, JOB_BEAN_NAME);
         }
 
-        /**
-         * A launcher over a named job whose run reports the given exit status.
-         *
-         * @param exitStatus what the stubbed launcher's execution carries
-         * @param jobName    the job bean's name
-         * @return the launcher, ready to run
-         */
         private BatchConfig.JclJobLauncher launcherReporting(ExitStatus exitStatus, String jobName) {
             JobLauncher launcher = (submitted, parameters) -> {
                 JobExecution execution = new JobExecution(1L, parameters);
@@ -1885,17 +1381,6 @@ class BatchConfigTest {
                     noHistory(), jobName);
         }
 
-        /**
-         * A launcher over the supplied collaborators, with the recording terminator in place of the one
-         * that ends the JVM.
-         *
-         * @param config      the configuration supplying the contracts
-         * @param beanFactory the factory the job name is resolved in
-         * @param launcher    the launcher the submission is handed to
-         * @param history     the persisted history the execution identity is derived from
-         * @param jobName     the requested job's bean name
-         * @return the launcher
-         */
         private BatchConfig.JclJobLauncher launcherOver(BatchConfig config,
                 ListableBeanFactory beanFactory, JobLauncher launcher, JobExplorer history,
                 String jobName) {
@@ -1904,16 +1389,6 @@ class BatchConfigTest {
                     config, jobName, recordingTerminator);
         }
 
-        /**
-         * A bean factory publishing one {@link Job} under each supplied name.
-         *
-         * <p>Real singletons in a real factory rather than a stubbed lookup, because what has to be
-         * proved is that a name selects one of several beans of the same type - which is precisely what
-         * a stub would paper over.
-         *
-         * @param jobNames the bean names to publish a job under
-         * @return the factory
-         */
         private ListableBeanFactory factoryPublishing(String... jobNames) {
             DefaultListableBeanFactory factory = new DefaultListableBeanFactory();
             for (String jobName : jobNames) {
@@ -1924,18 +1399,12 @@ class BatchConfigTest {
             return factory;
         }
 
-        /**
-         * A {@link JobExplorer} over a job that has never been submitted.
-         *
-         * @return the explorer
-         */
         private JobExplorer noHistory() {
             JobExplorer explorer = mock(JobExplorer.class);
             when(explorer.getLastJobInstance(org.mockito.ArgumentMatchers.anyString())).thenReturn(null);
             return explorer;
         }
 
-        /** A {@link BatchConfig} whose contract catalogue holds the two jobs these tests submit. */
         private BatchConfig configWithContracts() {
             DefaultListableBeanFactory factory = new DefaultListableBeanFactory();
             factory.registerSingleton("jobRepository", new ResourcelessJobRepository());
@@ -1950,15 +1419,6 @@ class BatchConfigTest {
                     new DatasetBindings());
         }
 
-        /**
-         * A real {@link ObjectProvider} over one singleton, so the launcher's lazy resolution is
-         * exercised rather than bypassed.
-         *
-         * @param type      the singleton's type
-         * @param singleton the singleton
-         * @param <T>       the type
-         * @return the provider
-         */
         private <T> ObjectProvider<T> providerOf(Class<T> type, T singleton) {
             DefaultListableBeanFactory factory = new DefaultListableBeanFactory();
             factory.registerSingleton(type.getSimpleName(), singleton);
@@ -1976,9 +1436,6 @@ class BatchConfigTest {
 
             assertThat(launcher.getExitCode()).isZero();
             assertThat(launcher.jobName()).isEqualTo(JOB_BEAN_NAME);
-            // A zero return code is not thrown, so nothing else would end the process: returning from
-            // the runner would leave the servlet container's non-daemon threads holding a finished batch
-            // process open with its return code undelivered.
             assertThat(terminatedWith).containsExactly(0);
         }
 
@@ -1989,18 +1446,12 @@ class BatchConfigTest {
         void aNonZeroReturnCodeBecomesTheProcessExitCode(final String exitCode) {
             BatchConfig.JclJobLauncher launcher = launcherReporting(new ExitStatus(exitCode));
 
-            // Spring Boot registers the code carried by an ExitCodeGenerator exception while it
-            // propagates out of SpringApplication.run, which is the same seam abendExitCodeMapper uses.
-            // BatchStatus.ordinal() - Boot's own batch runner's answer - would report 5 for a failure,
-            // and 5 is not a JCL return code.
             assertThatExceptionOfType(BatchConfig.JclReturnCodeException.class)
                     .isThrownBy(() -> launcher.run(new DefaultApplicationArguments()))
                     .withMessageContaining("RETURN-CODE " + exitCode)
                     .satisfies(raised -> assertThat(raised.getExitCode())
                             .isEqualTo(Integer.parseInt(exitCode)));
             assertThat(launcher.getExitCode()).isEqualTo(Integer.parseInt(exitCode));
-            // The failure path deliberately does NOT terminate here: the exception carries the code out
-            // through Boot, which reports the failure and ends the process with it.
             assertThat(terminatedWith).isEmpty();
         }
 
@@ -2031,8 +1482,6 @@ class BatchConfigTest {
             launcherOver(configWithContracts(), published, recording, noHistory(), SECOND_JOB_BEAN_NAME)
                     .run(new DefaultApplicationArguments());
 
-            // This is the whole of it: with two jobs of the same type in the factory, a by-type lookup
-            // cannot answer at all, and the configured name has to be the selector.
             assertThat(submitted).hasSize(1);
             assertThat(submitted.get(0).getName()).isEqualTo(SECOND_JOB_BEAN_NAME);
         }
@@ -2044,8 +1493,6 @@ class BatchConfigTest {
             DefaultListableBeanFactory published =
                     (DefaultListableBeanFactory) factoryPublishing(JOB_BEAN_NAME, SECOND_JOB_BEAN_NAME);
 
-            // The counter-assertion for the test above. Without it, "the name selects the job" could be
-            // true for some unrelated reason and the fix would rest on a coincidence.
             assertThatExceptionOfType(NoUniqueBeanDefinitionException.class)
                     .isThrownBy(() -> published.getBeanProvider(Job.class).getObject());
         }
@@ -2082,9 +1529,6 @@ class BatchConfigTest {
                     noHistory(), JOB_BEAN_NAME)
                     .run(new DefaultApplicationArguments("--ignored=value"));
 
-            // READACCT.jcl passes no PARM, so the only parameter is the execution identity. Process
-            // arguments are deliberately not read: a job's parameters are its contract in
-            // carddemo.jobs, never free text from a command line.
             assertThat(submitted).hasSize(1);
             assertThat(submitted.get(0).getParameters().keySet())
                     .containsExactly(BatchConfig.RUN_IDENTITY_PARAMETER);
@@ -2171,35 +1615,13 @@ class BatchConfigTest {
         }
     }
 
-    /**
-     * Resubmission: the same JCL deck, submitted again, is a new job instance.
-     *
-     * <p>This is the one behaviour in the launcher that cannot be established without a real
-     * repository. A Spring Batch instance is its name plus its identifying parameters and may complete
-     * only once, so "submit it again" is not a property of the launcher's code in isolation - it is a
-     * property of what the repository already holds. These run through Spring Boot's own batch
-     * auto-configuration over the H2 database the test profile provides, which is a genuine JDBC
-     * {@code JobRepository} with the framework's own metadata tables, and they launch the same job twice
-     * in one context.
-     */
     @Nested
     @DisplayName("Resubmission - the same deck submitted twice is two instances, not a refusal")
     class Resubmission {
-
-        /** Every return code the terminator was asked to end the process with, in order. */
         private final List<Integer> terminatedWith = new ArrayList<>();
 
-        /**
-         * Two published jobs over the shipped contracts, so name resolution has to choose and the
-         * repository has something real to record.
-         */
         @Configuration(proxyBeanMethods = false)
         static class TwoPublishedJobs {
-
-            /**
-             * @param batchConfig the scaffolding under test
-             * @return the account reader job, one no-op step
-             */
             @Bean
             Job accountBalanceJob(BatchConfig batchConfig) {
                 return batchConfig.job("accountBalanceJob")
@@ -2207,10 +1629,6 @@ class BatchConfigTest {
                         .build();
             }
 
-            /**
-             * @param batchConfig the scaffolding under test
-             * @return the customer reader job, one no-op step
-             */
             @Bean
             Job customerFileReaderJob(BatchConfig batchConfig) {
                 return batchConfig.job("customerFileReaderJob")
@@ -2240,10 +1658,6 @@ class BatchConfigTest {
                         launcher.run(new DefaultApplicationArguments());
                         launcher.run(new DefaultApplicationArguments());
 
-                        // Two completed submissions, two return codes delivered, and - the point of the
-                        // fix - two distinct instances. Deriving the identity from the parameters the
-                        // contract rebuilds would answer 1 both times, and the second submission would
-                        // be refused as an instance that had already completed.
                         assertThat(terminatedWith).containsExactly(0, 0);
                         List<JobInstance> instances =
                                 history.getJobInstances("accountBalanceJob", 0, 10);
@@ -2276,8 +1690,6 @@ class BatchConfigTest {
                                     .run(new DefaultApplicationArguments());
                         }
 
-                        // History is keyed by job name, so the customer reader's first submission is its
-                        // own first, not the third of some shared counter.
                         JobExplorer history = context.getBean(JobExplorer.class);
                         assertThat(history.getJobInstances("accountBalanceJob", 0, 10)).hasSize(2);
                         assertThat(history.getLastJobExecution(
@@ -2289,19 +1701,9 @@ class BatchConfigTest {
         }
     }
 
-    /**
-     * The parameter allow-list: exactly the business contract, plus the internal execution identity.
-     *
-     * <p>Eight of the nine JCL steps carry no {@code PARM} at all and the ninth carries exactly one, so
-     * a key outside the contract is a value the COBOL program never receives. It cannot change what the
-     * program does - but it does change which instance the submission resolves to, which is why it is
-     * refused rather than tolerated.
-     */
     @Nested
     @DisplayName("The parameter allow-list - the contract, the execution identity, and nothing else")
     class TheParameterAllowList {
-
-        /** A configuration over the shipped contracts, so the allow-list is the real one. */
         private BatchConfig shippedContracts() {
             DefaultListableBeanFactory factory = new DefaultListableBeanFactory();
             factory.registerSingleton("jobRepository", new ResourcelessJobRepository());
@@ -2376,9 +1778,6 @@ class BatchConfigTest {
             JobParametersValidator validator =
                     shippedContracts().jclParametersValidator("accountInterestCalcJob");
 
-            // Allowed and present, but nine characters where app/cbl/CBACT04C.cbl:178 declares
-            // PARM-DATE PIC X(10) - which would shift the generated suffix one byte left in every
-            // transaction identifier the job writes.
             assertThatExceptionOfType(JobParametersInvalidException.class)
                     .isThrownBy(() -> validator.validate(new JobParametersBuilder()
                             .addLong(BatchConfig.RUN_IDENTITY_PARAMETER, 1L)
@@ -2423,18 +1822,12 @@ class BatchConfigTest {
     @Nested
     @DisplayName("Job-parameter contracts - one PARM in the estate, and it is not a date")
     class JobParameterContracts {
-
         @Test
         @DisplayName("parmDate is a String parameter whose value round-trips unaltered")
         void parmDateRoundTripsUnaltered() {
             documentBackedRunner().run(context -> {
                 JobContract interest = context.getBean(JobContracts.class).contract(INTEREST_JOB);
 
-                // app/jcl/INTCALC.jcl:L22 - //STEP15 EXEC PGM=CBACT04C,PARM='2022071800'. The value
-                // is character data: CBACT04C concatenates it verbatim into the transaction
-                // identifiers it generates (STRING PARM-DATE, WS-TRANID-SUFFIX at
-                // app/cbl/CBACT04C.cbl:L476-L477), so parsing it as a date, reformatting it or
-                // revalidating it would corrupt every identifier the job writes.
                 assertThat(interest.parameters()).hasSize(1);
                 JobParameterContract declared = interest.parameters().get(0);
                 assertThat(declared.name()).isEqualTo(BatchConfig.PARM_DATE_PARAMETER)
@@ -2463,9 +1856,6 @@ class BatchConfigTest {
                 BatchConfig config = context.getBean(BatchConfig.class);
                 JobParameters shipped = config.contract(INTEREST_JOB).jobParameters();
 
-                // app/cbl/CBACT04C.cbl:178 declares PARM-DATE PIC X(10) and L476-L480 contributes
-                // the whole declared width to a fixed PIC X(16) identifier, so a nine- or
-                // eleven-character value would silently misplace the generated suffix.
                 assertThatNoException()
                         .isThrownBy(() -> config.parmDateValidator().validate(shipped));
                 assertThat(config.parmDateValidator())
@@ -2479,8 +1869,6 @@ class BatchConfigTest {
             documentBackedRunner().run(context -> {
                 JobContracts contracts = context.getBean(JobContracts.class);
 
-                // app/jcl/POSTTRAN.jcl:L23 is a bare //STEP15 EXEC PGM=CBTRN02C, and the four
-                // single-DD readers are the same. An empty list is the contract, not an omission.
                 assertThat(contracts.entrySet().stream()
                         .filter(job -> !job.getValue().parameters().isEmpty())
                         .map(Map.Entry::getKey)
@@ -2503,9 +1891,6 @@ class BatchConfigTest {
             documentBackedRunner().run(context -> {
                 JobContracts contracts = context.getBean(JobContracts.class);
 
-                // app/jcl/TRANREPT.jcl:L73-L74 binds DATEPARM as a DD, so CBTRN03C's reporting date
-                // range is read by the report-date reader bean. Turning it into a job parameter
-                // would move a value out of the file the COBOL reads it from.
                 assertThat(contracts.values().stream()
                         .flatMap(job -> job.parameters().stream())
                         .map(JobParameterContract::name)
@@ -2526,15 +1911,10 @@ class BatchConfigTest {
             documentBackedRunner().run(context -> {
                 BatchConfig config = context.getBean(BatchConfig.class);
 
-                // In the interest calculator the DD name TRANSACT is the GENERATED-TRANSACTION
-                // OUTPUT (app/jcl/INTCALC.jcl:L37-L41), not the transaction master: the job-scoped
-                // entry aliases it to the generation the JCL calls SYSTRAN, at RECFM=F LRECL=350.
-                // Only widths and copybooks are asserted - no dataset name appears in Java (G46).
                 assertThat(config.datasetBinding(INTEREST_JOB, "TRANSACT").recordLength())
                         .isEqualTo(350);
                 assertThat(config.datasetBinding(INTEREST_JOB, "TRANSACT").copybook())
                         .isEqualTo("CVTRA05Y");
-                // A DD name the job does not override falls through to the global catalogue.
                 assertThat(config.datasetBinding(POSTTRAN_JOB, "ACCTFILE").recordLength())
                         .isEqualTo(300);
                 assertThat(config.datasetBinding(POSTTRAN_JOB, "ACCTFILE").copybook())
@@ -2548,12 +1928,6 @@ class BatchConfigTest {
         @Test
         @DisplayName("the shipped catalogue satisfies every batch DD / repository DD equivalence")
         void theShippedCatalogueSatisfiesEveryDdEquivalence() {
-            // The batch programs address datasets under their own JCL DD names while the repositories are
-            // bound to the CICS file names, and every one of those keys carries an independent
-            // environment override. requireSameDataset is the gate each job runs at construction; this
-            // asserts the shipped defaults pass it, so the context starts on the configuration as
-            // delivered. It also fixes the mapping in a test, which is the only place it is stated
-            // outside the jobs themselves.
             documentBackedRunner().run(context -> {
                 BatchConfig config = context.getBean(BatchConfig.class);
 
@@ -2563,7 +1937,6 @@ class BatchConfigTest {
                 assertThat(config.requireSameDataset(INTEREST_JOB, "ACCTFILE", "ACCTDAT")).isNotBlank();
                 assertThat(config.requireSameDataset(INTEREST_JOB, "XREFFILE", "CCXREF")).isNotBlank();
                 assertThat(config.requireSameDataset(INTEREST_JOB, "XREFFIL1", "CXACAIX")).isNotBlank();
-                // The job-scoped alias: TRANSACT is the generated-transaction output here, not the master.
                 assertThat(config.requireSameDataset(INTEREST_JOB, "TRANSACT", "SYSTRAN")).isNotBlank();
                 assertThat(config.requireSameDataset(REPORT_JOB, "CARDXREF", "CCXREF")).isNotBlank();
                 assertThat(config.requireSameDataset(REPORT_JOB, "TRANTYPE", "TRANTYPE")).isNotBlank();
@@ -2575,10 +1948,6 @@ class BatchConfigTest {
         @DisplayName("requireSteps accepts the shipped sequence of every job and refuses any deviation "
                 + "from it")
         void requireStepsGuardsTheWholeTuple() {
-            // The seam every job class uses to prove its own reading of its JCL against the configured
-            // contract, before it resolves a dataset or builds a step. Driven here across all nine jobs
-            // at once, on the configuration as shipped, so the accepting arm is the real catalogue rather
-            // than a hand-built one.
             documentBackedRunner().run(context -> {
                 BatchConfig config = context.getBean(BatchConfig.class);
 
@@ -2587,10 +1956,6 @@ class BatchConfigTest {
                                 .as("%s ships the sequence it requires", jobKey)
                                 .isEqualTo(steps));
 
-                // Each of the five deviation classes, against the five-step job where each one bites
-                // hardest. The required sequence is the argument here, so these mutate what the caller
-                // asks for rather than what configuration declares - which is the same comparison read
-                // from the other side, and the direction a transcription slip in a job class would take.
                 List<StepContract> shipped = JobContracts.REQUIRED_STEPS.get(STATEMENT_JOB);
                 List<StepContract> dropped = shipped.subList(0, 4);
                 List<StepContract> added = new ArrayList<>(shipped);
@@ -2621,8 +1986,6 @@ class BatchConfigTest {
             documentBackedRunner().run(context -> {
                 BatchConfig config = context.getBean(BatchConfig.class);
 
-                // ACCTDAT and CARDDAT are two genuinely different datasets in the shipped catalogue, so
-                // pairing them is the divergence this gate exists to catch.
                 assertThatIllegalStateException()
                         .isThrownBy(() -> config.requireSameDataset(INTEREST_JOB, "ACCTFILE", "CARDDAT"))
                         .withMessageContaining("ACCTFILE")

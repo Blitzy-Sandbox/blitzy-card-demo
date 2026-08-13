@@ -8,6 +8,7 @@ import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.NavigationContext;
 import com.vsergeychik.carddemo.common.PfKeyResolver;
+import com.vsergeychik.carddemo.common.ScreenMetadata;
 import com.vsergeychik.carddemo.common.ScreenTitles;
 import com.vsergeychik.carddemo.common.SystemMessages;
 import com.vsergeychik.carddemo.config.WebConfig;
@@ -57,63 +58,12 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
- * Behavioural parity tests for {@link UserAddController} against {@code app/cbl/COUSR01C.cbl}, the
- * CICS program behind {@code DEFINE TRANSACTION(CU01) PROGRAM(COUSR01C)}
- * [{@code app/csd/CARDDEMO.CSD:459-460}], projected onto {@code POST /api/users}.
- *
- * <p>Every assertion cites the source line it pins. The paragraphs under test are
- * {@code MAIN-PARA} [{@code :71-110}], {@code PROCESS-ENTER-KEY}'s ordered blank chain
- * [{@code :117-151}] and its five plain {@code MOVE}s [{@code :153-158}],
- * {@code RETURN-TO-PREV-SCREEN} [{@code :165-178}], {@code WRITE-USER-SEC-FILE} [{@code :238-274}]
- * and {@code INITIALIZE-ALL-FIELDS} [{@code :286-294}].
- *
- * <h2>Two levels, deliberately</h2>
- * The controller's decisions all live in {@link UserAddController#mainPara(UserAddRequest, byte, int)},
- * which mentions no servlet type, so most tests here call it as a plain Java method - no HTTP layer and
- * no Spring context in the path. That is what makes every branch reachable, including the ones an HTTP
- * test could not reach at all, such as a repository reporting no CICS response code.
- *
- * <p>A second, smaller group raises a real dispatcher through
- * {@link org.springframework.test.web.servlet.setup.MockMvcBuilders#standaloneSetup}, because a handful
- * of rules belong to the adapter rather than to the program and exist nowhere else: that the mapping is
- * registered on {@code POST} and on that path, the {@code 405} a wrong verb earns, which members the
- * wire format actually carries, whether a blank field is answered by the program or refused by the
- * binder, and that nothing is pinned to a session, a cookie, a redirect or a forward. Standalone rather
- * than {@code @WebMvcTest}: exactly one handler is registered, so a wrong-verb request has nowhere else
- * to land and the status is the dispatcher's own answer rather than another controller's mapping.
- *
- * <h2>Copybooks in play, including the one that is not</h2>
- * {@code COUSR01C:55-56} copies {@code DFHAID} and {@code DFHBMSCA}, so {@link CicsAid} and
- * {@link BmsAttributes} constants are legitimately asserted here. {@code COUSR01C:57} reads
- * {@code *COPY DFHATTR.} - <strong>commented out</strong> - so {@code DFHATTR} contributes nothing at
- * compile time and nothing here asserts a {@code DFHATTR}-specific attribute. The migration plan's
- * "DFHATTR: 2 consumers" is a textual count that includes this commented line.
- *
- * <h2>Where the expected values come from</h2>
- * They are <strong>statically derived</strong> by reading {@code COUSR01C.cbl} paragraph by paragraph
- * and cross-checking against {@code app/cpy-bms/COUSR01.CPY} (field names and widths),
- * {@code app/bms/COUSR01.bms} (the {@code DFHMDF} definitions), {@code app/cpy/CSUSR01Y.cpy} (the
- * eighty-byte record) and {@code app/cpy/COCOM01Y.cpy} (the hundred-and-sixty-byte communication area).
- * They are <em>not</em> captured from a live COBOL run: this environment cannot execute the program, for
- * the reasons the migration plan records, so no execution baseline exists to capture. Nothing here was
- * written by observing the Java and calling the observation the expectation.
- *
- * <h2>Seed identities</h2>
- * {@code USRSEC} has no fixture under {@code app/data/ASCII}; it is seeded in-stream by
- * {@code app/jcl/DUSRSECJ.jcl}, whose {@code //SYSUT1 DD *} at line 34 carries ten records of
- * fifty-seven characters on lines 35-44 - {@code ADMIN001}-{@code ADMIN005} as type {@code A} and
- * {@code USER0001}-{@code USER0005} as type {@code U}, every one of them with the password literal
- * {@code PASSWORD}, and every one of them three bytes short of {@code SEC-USER-DATA}'s eighty because
- * the stream omits {@code SEC-USR-FILLER X(23)}. A duplicate is therefore modelled on {@code ADMIN001},
- * an addition on an identity the seed does not hold such as {@code NEWUSER1}.
- *
- * @see SignOnServiceTest for the other half of the case asymmetry: {@code COSGN00C:132-137} upper-cases
- *     its input unconditionally, whereas {@code COUSR01C:153-158} does not normalise at all
+ * Behavioural parity tests for {@link UserAddController} against {@code app/cbl/COUSR01C.cbl}, the CICS
+ * program behind {@code DEFINE TRANSACTION(CU01) PROGRAM(COUSR01C)} [{@code app/csd/CARDDEMO.CSD:459-460}],
+ * projected onto {@code POST /api/users}.
  */
 @DisplayName("UserAddController - app/cbl/COUSR01C.cbl parity")
 class UserAddControllerTest {
-
-    /** A pinned instant so the header bytes are deterministic: 2022-07-19 23:12:34 UTC. */
     private static final Clock FIXED_CLOCK =
             Clock.fixed(Instant.parse("2022-07-19T23:12:34Z"), ZoneOffset.UTC);
 
@@ -124,30 +74,20 @@ class UserAddControllerTest {
     void setUp() {
         repository = mock(SecUserRepository.class);
         when(repository.add(any(SecUserRecord.class))).thenReturn(WriteResult.written());
-        // The code page comes from the repository the record is written through, so the stub reports
-        // one: the five values moved into SEC-USER-DATA are persistence-bound, and the page they are
-        // measured in has to be the dataset's rather than this class's opinion of it.
         when(repository.datasetCharset()).thenReturn(StandardCharsets.US_ASCII);
         controller = new UserAddController(repository, FIXED_CLOCK);
     }
 
-    // =================================================================================================
-    // Helpers.
-    // =================================================================================================
-
-    /** A communication area already in the re-enter state, which is what reaches the key dispatch. */
     private static NavigationContext reenterContext() {
         return NavigationContext.empty().withPgmReenter();
     }
 
-    /** A payload carrying a re-entered context and the five data fields as given. */
     private static UserAddRequest request(String fName, String lName, String userId, String passwd,
             String usrType) {
         return new UserAddRequest(null, null, null, null, null, null,
                 fName, lName, userId, passwd, usrType, null, reenterContext(), null);
     }
 
-    /** A payload with every data field populated, so the blank chain falls through to the write. */
     private static UserAddRequest populatedRequest() {
         return request("John", "Doe", "USR1", "PASS1234", "U");
     }
@@ -156,14 +96,9 @@ class UserAddControllerTest {
         return controller.mainPara(request, CicsAid.DFHENTER, NavigationContext.COMMAREA_LENGTH);
     }
 
-    // =================================================================================================
-    // MAIN-PARA entry conditions - COUSR01C:73-87.
-    // =================================================================================================
-
     @Nested
     @DisplayName("MAIN-PARA entry - COUSR01C:71-110")
     class MainParaEntry {
-
         @Test
         @DisplayName("L78-80: EIBCALEN = 0 transfers to COSGN00C and never touches the dataset")
         void noCommareaTransfersToSignOn() {
@@ -260,14 +195,9 @@ class UserAddControllerTest {
         }
     }
 
-    // =================================================================================================
-    // EVALUATE EIBAID - COUSR01C:90-103.
-    // =================================================================================================
-
     @Nested
     @DisplayName("EVALUATE EIBAID - COUSR01C:90-103")
     class KeyDispatch {
-
         @Test
         @DisplayName("L93-95: DFHPF3 transfers to COADM01C with no map named")
         void pf3TransfersToAdminMenu() {
@@ -279,12 +209,6 @@ class UserAddControllerTest {
             assertThat(state.screenSent()).isFalse();
             UserAddResponse response = state.response();
             assertThat(response.nextProgram()).isEqualTo(UserAddController.ADMIN_MENU_PROGRAM);
-            // XCTL passes PROGRAM and COMMAREA only, so no map is named - and "no map" travels as blank
-            // at the declared width, never as JSON null. COBOL has no null: an unset PIC X(7) holds
-            // spaces. This arm is also the cold-start path (EIBCALEN = 0 is an XCTL to COSGN00C), so a
-            // null here was the very first thing a client saw, and it made the member's type depend on
-            // the branch. The sibling UserUpdateController already answers blank; this route now matches,
-            // and the seventeen-route surface carries no JSON null anywhere.
             assertThat(response.nextMapset())
                     .as("no map named, at NEXT_MAPSET_LENGTH spaces rather than null")
                     .isEqualTo(" ".repeat(UserAddResponse.NEXT_MAPSET_LENGTH));
@@ -396,14 +320,9 @@ class UserAddControllerTest {
         }
     }
 
-    // =================================================================================================
-    // PROCESS-ENTER-KEY, the ordered blank chain - COUSR01C:117-151.
-    // =================================================================================================
-
     @Nested
     @DisplayName("PROCESS-ENTER-KEY blank chain - COUSR01C:117-151")
     class BlankFieldChain {
-
         @Test
         @DisplayName("L118-123: arm one - a blank first name")
         void blankFirstName() {
@@ -531,14 +450,9 @@ class UserAddControllerTest {
         }
     }
 
-    // =================================================================================================
-    // WRITE-USER-SEC-FILE - COUSR01C:238-274.
-    // =================================================================================================
-
     @Nested
     @DisplayName("WRITE-USER-SEC-FILE - COUSR01C:238-274")
     class WriteOutcomes {
-
         @Test
         @DisplayName("L251-259: NORMAL confirms in green with the id trimmed at its first space")
         void normalConfirmsInGreen() {
@@ -695,34 +609,9 @@ class UserAddControllerTest {
         }
     }
 
-    // =================================================================================================
-    // No case normalisation - COUSR01C:153-158.
-    //
-    // The five statements are plain MOVEs. There is no FUNCTION UPPER-CASE anywhere in the program -
-    // grep across app/cbl/COUSR01C.cbl returns zero occurrences - so whatever the operator typed is what
-    // reaches SEC-USER-DATA, in the case they typed it in.
-    //
-    // This is one half of a genuine asymmetry, and the half this class owns. COSGN00C:132-137 upper-cases
-    // its user id and password UNCONDITIONALLY before it looks either up, which SignOnServiceTest pins.
-    // Put the two halves together and a user added here as 'newuser1' cannot sign on as 'newuser1': the
-    // sign-on program upper-cases the key to 'NEWUSER1', reads USRSEC for that, and does not find the
-    // record this program stored under the lower-case key. That is the legacy system's behaviour.
-    // Asserting it is this migration's job; correcting it would be a new business rule and is not.
-    // =================================================================================================
-
     @Nested
     @DisplayName("No case normalisation - COUSR01C:153-158")
     class NoCaseNormalisation {
-
-        /**
-         * The codec the five moves are performed through, at the code page the controller declares.
-         *
-         * <p>Constructed here rather than reached through the controller because the point of the
-         * assertions below is that {@code movePicX} - the explicit alphanumeric {@code MOVE} - is what
-         * produces the stored image, so the expectation has to be computed by the same rule the
-         * implementation is claimed to follow rather than by a hand-written literal that could agree
-         * with the implementation and disagree with COBOL.
-         */
         private final FixedWidthCodec codec = new FixedWidthCodec(StandardCharsets.US_ASCII);
 
         @Test
@@ -731,7 +620,6 @@ class UserAddControllerTest {
             enter(request("alice", "smith", "newuser1", "secret99", "u"));
 
             SecUserRecord written = writtenRecord();
-            // Not toUpperCase() anywhere: the id is the eight characters typed, in the case typed.
             assertThat(written.secUsrId()).isEqualTo("newuser1");
             assertThat(written.secUsrFname()).isEqualTo(codec.movePicX("alice",
                     SecUserRecord.SEC_USR_FNAME_LENGTH));
@@ -740,8 +628,6 @@ class UserAddControllerTest {
             assertThat(written.secUsrPwd()).isEqualTo("secret99");
             assertThat(written.secUsrType()).isEqualTo("u");
 
-            // Stated the other way round, so a future upper-casing "fix" fails here rather than passing
-            // silently: none of the five stored values equals its own upper-cased form.
             assertThat(written.secUsrId()).isNotEqualTo("NEWUSER1");
             assertThat(written.secUsrFname()).isNotEqualTo(codec.movePicX("ALICE",
                     SecUserRecord.SEC_USR_FNAME_LENGTH));
@@ -769,8 +655,6 @@ class UserAddControllerTest {
         void theConfirmationQuotesTheStoredCase() {
             ProgramState state = enter(request("alice", "smith", "newuser1", "secret99", "u"));
 
-            // L255-258 builds the message from SEC-USR-ID, the record field, so the operator is told
-            // exactly which key was written - lower case and all.
             assertThat(state.message()).isEqualTo(pad("User newuser1 has been added ..."));
             assertThat(state.message()).doesNotContain("NEWUSER1");
         }
@@ -795,7 +679,6 @@ class UserAddControllerTest {
             assertThat(written.secUsrFname()).hasSize(20);
             assertThat(written.secUsrFname()).as("left justified, so the value is at the front")
                     .startsWith("alice");
-            // The same image the codec's explicit helper produces, which is the rule being claimed.
             assertThat(written.secUsrFname()).isEqualTo(codec.movePicX("alice", 20));
         }
 
@@ -810,9 +693,6 @@ class UserAddControllerTest {
             SecUserRecord written = writtenRecord();
             assertThat(written.secUsrFname()).isEqualTo("ABCDEFGHIJKLMNOPQRST");
             assertThat(written.secUsrFname()).isEqualTo(codec.movePicX(twentyFive, 20));
-            // The direction is the whole point. A left-truncating receiver would have kept the tail, and
-            // the defect would be invisible at the call site - which is why the move goes through the
-            // codec's named helper and never through a bare Java assignment.
             assertThat(written.secUsrFname()).as("the LEADING characters survive, never the trailing ones")
                     .doesNotContain("Y")
                     .startsWith("A");
@@ -830,7 +710,6 @@ class UserAddControllerTest {
             assertThat(written.secUsrLname()).isEqualTo(codec.movePicX("smith", 20));
             assertThat(written.secUsrPwd()).isEqualTo(codec.movePicX("secret99", 8));
             assertThat(written.secUsrType()).isEqualTo(codec.movePicX("u", 1));
-            // And the widths themselves are CSUSR01Y's, not this test's opinion.
             assertThat(new int[] {SecUserRecord.SEC_USR_ID_LENGTH, SecUserRecord.SEC_USR_FNAME_LENGTH,
                 SecUserRecord.SEC_USR_LNAME_LENGTH, SecUserRecord.SEC_USR_PWD_LENGTH,
                 SecUserRecord.SEC_USR_TYPE_LENGTH})
@@ -845,12 +724,9 @@ class UserAddControllerTest {
             enter(request("alice", "smith", "newuser1", submitted, "u"));
 
             String stored = writtenRecord().secUsrPwd();
-            // COUSR01C:157 is MOVE PASSWDI TO SEC-USR-PWD. Nothing is applied to it: no digest, no salt,
-            // no encoder. SEC-USR-PWD is PIC X(08), so the only transformation is the PIC X pad.
             assertThat(stored).isEqualTo(codec.movePicX(submitted, 8));
             assertThat(stored.strip()).isEqualTo(submitted);
             assertThat(stored).hasSize(8);
-            // A hash of any kind would neither round-trip nor fit, which is what these two pin.
             assertThat(stored).doesNotContain("$");
             assertThat(Integer.toHexString(submitted.hashCode())).isNotEqualTo(stored.strip());
         }
@@ -858,7 +734,6 @@ class UserAddControllerTest {
         @Test
         @DisplayName("a password that exactly fills PIC X(08) is stored with no padding at all")
         void anExactlyFittingPasswordIsUnpadded() {
-            // The literal every DUSRSECJ seed record carries, and it fills the field precisely.
             enter(request("alice", "smith", "newuser1", "PASSWORD", "u"));
 
             assertThat(writtenRecord().secUsrPwd()).isEqualTo("PASSWORD");
@@ -873,14 +748,9 @@ class UserAddControllerTest {
         }
     }
 
-    // =================================================================================================
-    // STRING ... DELIMITED BY SPACE - COUSR01C:256.
-    // =================================================================================================
-
     @Nested
     @DisplayName("STRING ... DELIMITED BY SPACE - COUSR01C:256")
     class DelimitedBySpace {
-
         @ParameterizedTest(name = "\"{0}\" contributes \"{1}\"")
         @CsvSource({
             "ADMIN001, ADMIN001",
@@ -908,14 +778,9 @@ class UserAddControllerTest {
         }
     }
 
-    // =================================================================================================
-    // Parameter resolution.
-    // =================================================================================================
-
     @Nested
     @DisplayName("Parameter resolution")
     class ParameterResolution {
-
         @Test
         @DisplayName("the explicit eibAid parameter wins over the payload's own image")
         void explicitParameterWins() {
@@ -995,11 +860,9 @@ class UserAddControllerTest {
         @Test
         @DisplayName("eibcalen resolution: the carrier decides, and a statement must agree with it")
         void eibcalenResolution() {
-            // Absent: EIBCALEN is derived from what actually arrived, which is what CICS would have set.
             assertThat(UserAddController.resolveEibcalen(null, null)).isZero();
             assertThat(UserAddController.resolveEibcalen(null, populatedRequest()))
                     .isEqualTo(NavigationContext.COMMAREA_LENGTH);
-            // Stated and in agreement: taken as given.
             assertThat(UserAddController.resolveEibcalen(0, null)).isZero();
             assertThat(UserAddController.resolveEibcalen(NavigationContext.COMMAREA_LENGTH,
                     populatedRequest())).isEqualTo(NavigationContext.COMMAREA_LENGTH);
@@ -1022,10 +885,6 @@ class UserAddControllerTest {
         @DisplayName("every non-zero length is carried through unchanged: line 78 tests EIBCALEN "
                 + "against zero and against nothing else")
         void anImpossibleEibcalenIsRefusedDirectly(int stated) {
-            // The length a real flow produces here is 160 - COUSR01C copies COCOM01Y alone and its one
-            // caller, COADM01C, is the same shape - so an enumerated set of {0, 160} refused nothing
-            // real. It is still not written: it is a rule the source does not have, and the same rule
-            // written on the sibling screens refused the lengths their callers genuinely send.
             assertThat(UserAddController.resolveEibcalen(stated, populatedRequest())).isEqualTo(stated);
         }
 
@@ -1038,14 +897,9 @@ class UserAddControllerTest {
         }
     }
 
-    // =================================================================================================
-    // The HTTP adapter and the field contract.
-    // =================================================================================================
-
     @Nested
     @DisplayName("HTTP adapter and field contract")
     class Adapter {
-
         @Test
         @DisplayName("addUser delegates and projects, producing the same response as mainPara")
         void adapterDelegates() {
@@ -1055,7 +909,6 @@ class UserAddControllerTest {
             UserAddResponse viaAdapter = answer.screen();
             assertThat(viaAdapter.errMsg()).contains("has been added");
             assertThat(viaAdapter.nextProgram()).isEqualTo("COUSR01C");
-            // The presentation metadata travels beside the screen rather than not travelling at all.
             assertThat(answer.screenMetadata()).isNotNull();
             assertThat(answer.screenMetadata().fields())
                     .as("COUSR01 declares no attribute quads this program writes")
@@ -1077,9 +930,6 @@ class UserAddControllerTest {
         void eitherAidSpellingReachesTheKey() {
             int pf4 = Byte.toUnsignedInt(CicsAid.DFHPF4);
 
-            // This route declared only the alternate spelling while GET /api/users - the same path,
-            // a different verb - declared only the canonical one, so a client that used one name for both
-            // calls had its key discarded by Spring on one of them and the request executed as ENTER.
             UserAddResponse throughAlternate = controller
                     .addUser(populatedRequest(), pf4, NavigationContext.COMMAREA_LENGTH, null).screen();
             UserAddResponse throughCanonical = controller
@@ -1091,8 +941,6 @@ class UserAddControllerTest {
 
             assertThat(throughCanonical).isEqualTo(throughAlternate);
             assertThat(throughBoth).isEqualTo(throughAlternate);
-            // PF4 clears the screen (COUSR01C:96-98) while an absent key is ENTER, which adds the user -
-            // so the two answers genuinely differ and the equality above is meaningful.
             assertThat(throughEnter).isNotEqualTo(throughAlternate);
 
             assertThatThrownBy(() -> controller.addUser(populatedRequest(), pf4,
@@ -1100,7 +948,6 @@ class UserAddControllerTest {
                     .isInstanceOf(IllegalArgumentException.class)
                     .hasMessageContaining(UserAddController.EIBAID_PARAM)
                     .hasMessageContaining(UserAddController.EIBAID_PARAM_ALIAS);
-            // The range guard applies to whichever spelling carried the value.
             assertThatThrownBy(() -> controller.addUser(populatedRequest(), null,
                     NavigationContext.COMMAREA_LENGTH, 300))
                     .isInstanceOf(IllegalArgumentException.class)
@@ -1138,20 +985,44 @@ class UserAddControllerTest {
         }
 
         @Test
-        @DisplayName("G9: the serialised response carries exactly the twelve map fields plus navigation")
+        @DisplayName("G9: the serialised response carries eleven of the twelve map fields plus navigation")
         void responseCarriesOnlyPayloadFields() throws Exception {
             UserAddResponse response = enter(populatedRequest()).response();
 
             ObjectMapper mapper = new ObjectMapper();
+            String body = mapper.writeValueAsString(response);
             List<String> members = new ArrayList<>();
-            mapper.readTree(mapper.writeValueAsString(response)).fieldNames()
-                    .forEachRemaining(members::add);
+            mapper.readTree(body).fieldNames().forEachRemaining(members::add);
 
-            // Screen fields under their xxxI item in lower case (AAP 0.6.3); the four carriers, which
-            // trace to no DFHMDF field, under their own names.
             assertThat(members).containsExactly("trnname", "title01", "curdate", "pgmname", "title02",
-                    "curtime", "fname", "lname", "userid", "passwd", "usrtype", "errmsg",
+                    "curtime", "fname", "lname", "userid", "usrtype", "errmsg",
                     "navigationContext", "nextProgram", "nextMapset", "nextMap");
+            assertThat(members).doesNotContain("passwd", "password");
+        }
+
+        @Test
+        @DisplayName("no path publishes the keyed credential, and the DRK fact is published instead")
+        void noPathPublishesTheKeyedCredential() throws Exception {
+            ObjectMapper mapper = new ObjectMapper();
+            // Two endings: the successful add, where INITIALIZE-ALL-FIELDS at :289-295 has already
+            // blanked the field, and an error repaint, where the REDEFINES overlay still holds what was
+            // keyed and the SEND at :184-196 really does re-transmit it.
+            ProgramState added = enter(populatedRequest());
+            ProgramState refused = enter(request("  ", "Doe", "USR1", "PASS1234", "U"));
+
+            assertThat(refused.response().passwd())
+                    .as("in-process the overlay keeps the keyed value, as the parity corpus pins")
+                    .startsWith("PASS1234")
+                    .hasSize(UserAddResponse.PASSWD_LENGTH);
+            for (ProgramState state : List.of(added, refused)) {
+                assertThat(mapper.writeValueAsString(state.response()))
+                        .as("and no payload carries it, under any name")
+                        .doesNotContain("PASS1234")
+                        .doesNotContain("passwd");
+            }
+            assertThat(refused.screenMetadata().nonDisplayFields())
+                    .as("a 3270 reads DRK off the mapset; a REST client has no mapset, so it is told")
+                    .containsExactly(ScreenMetadata.PASSWORD_FIELD_LABEL);
         }
 
         @Test
@@ -1174,14 +1045,9 @@ class UserAddControllerTest {
         }
     }
 
-    // =================================================================================================
-    // Statelessness and construction.
-    // =================================================================================================
-
     @Nested
     @DisplayName("Statelessness and construction")
     class Statelessness {
-
         @Test
         @DisplayName("G53: the controller declares no static mutable field")
         void noStaticMutableState() {
@@ -1220,8 +1086,6 @@ class UserAddControllerTest {
             assertThatExceptionOfType(NullPointerException.class)
                     .isThrownBy(() -> new UserAddController(repository, null));
 
-            // A repository that reports no code page is refused at construction rather than producing a
-            // record measured in a page nobody stated.
             SecUserRepository pageless = mock(SecUserRepository.class);
             assertThatExceptionOfType(NullPointerException.class)
                     .isThrownBy(() -> new UserAddController(pageless, FIXED_CLOCK));
@@ -1230,9 +1094,6 @@ class UserAddControllerTest {
         @Test
         @DisplayName("the code page is the dataset's own, not a constant and not the platform's")
         void theCodePageComesFromTheRepository() {
-            // COUSR01C:154-158 moves the five typed values into SEC-USER-DATA and :240-248 writes that
-            // record to USRSEC, so the page they are measured in is a property of the dataset. An
-            // earlier revision named US-ASCII here while application.yml binds IBM037 in production.
             Charset ebcdic = Charset.forName("IBM037");
             SecUserRepository ebcdicRepository = mock(SecUserRepository.class);
             when(ebcdicRepository.datasetCharset()).thenReturn(ebcdic);
@@ -1279,16 +1140,9 @@ class UserAddControllerTest {
         }
     }
 
-    // =================================================================================================
-    // Defensive paths the source itself carries. COUSR01C guards conditions that its own two call sites
-    // make unreachable; those guards are preserved rather than tidied away, so they are exercised here
-    // directly to prove the guard works - which is what "both sides of every condition" requires.
-    // =================================================================================================
-
     @Nested
     @DisplayName("Defensive guards preserved from the source")
     class DefensiveGuards {
-
         @Test
         @DisplayName("G50: both sides of the WS-ERR-FLG 88-levels are driven")
         void bothSidesOfTheErrorFlag() {
@@ -1381,29 +1235,13 @@ class UserAddControllerTest {
         }
     }
 
-    // =================================================================================================
-    // The seed identities of app/jcl/DUSRSECJ.jcl, and the two answers they distinguish.
-    //
-    // USRSEC has no fixture under app/data/ASCII. It is seeded in-stream: //SYSUT1 DD * at DUSRSECJ.jcl:34
-    // with ten records on lines 35-44, each fifty-seven characters - eight for the id, twenty for the
-    // first name, twenty for the last, eight for the password and one for the type - which is
-    // SEC-USER-DATA less its trailing SEC-USR-FILLER X(23), so a loader right-pads fifty-seven to eighty.
-    // Five ids are administrators and five are regular users, and all ten carry the password literal
-    // PASSWORD. An id the seed already holds is what makes a duplicate reachable; one it does not hold is
-    // what makes an addition reachable.
-    // =================================================================================================
-
     @Nested
     @DisplayName("Seed identities - app/jcl/DUSRSECJ.jcl:34-44")
     class SeedIdentities {
-
-        /** An id the in-stream seed does not hold, so adding it is the NORMAL path. */
         private static final String UNSEEDED_ID = "NEWUSER1";
 
-        /** The first id the seed holds, so adding it again is the duplicate path. */
         private static final String SEEDED_ADMIN_ID = "ADMIN001";
 
-        /** The password literal every one of the ten seed records carries, filling PIC X(08) exactly. */
         private static final String SEED_PASSWORD = "PASSWORD";
 
         @Test
@@ -1438,10 +1276,6 @@ class UserAddControllerTest {
         void aShortIdCarriesNoInteriorPadding() {
             ProgramState state = enter(request("Ann", "Bell", "AB", SEED_PASSWORD, "U"));
 
-            // The record field is 'AB      ' - PIC X(08), six trailing spaces - but DELIMITED BY SPACE
-            // stops the sending operand at the first space, so the message carries 'AB' and the two words
-            // either side of it are separated by exactly one space each. A naive concatenation of the
-            // whole eight-byte field would have produced 'User AB        has been added ...'.
             assertThat(state.message()).isEqualTo(pad("User AB has been added ..."));
             assertThat(state.message()).doesNotContain("AB  ");
             assertThat(state.message().strip()).isEqualTo("User AB has been added ...");
@@ -1470,19 +1304,13 @@ class UserAddControllerTest {
             ProgramState state = enter(request("Newton", "Newman", UNSEEDED_ID, SEED_PASSWORD, "U"));
 
             UserAddResponse response = state.response();
-            // INITIALIZE-ALL-FIELDS moves SPACES into USERIDI, FNAMEI, LNAMEI, PASSWDI and USRTYPEI.
-            // The password is in that list, which is why UserAddResponse declares a passwd member at all:
-            // it carries a blank, never a value read back out of USRSEC. COUSR01C only ever reads PASSWDI
-            // and stores it at :157 - it never reads a password from the dataset onto the screen.
             assertThat(response.passwd()).isEqualTo(" ".repeat(UserAddResponse.PASSWD_LENGTH));
             assertThat(response.userId()).isEqualTo(" ".repeat(UserAddResponse.USER_ID_LENGTH));
             assertThat(response.fName()).isEqualTo(" ".repeat(UserAddResponse.F_NAME_LENGTH));
             assertThat(response.lName()).isEqualTo(" ".repeat(UserAddResponse.L_NAME_LENGTH));
             assertThat(response.usrType()).isEqualTo(" ".repeat(UserAddResponse.USR_TYPE_LENGTH));
-            // The submitted password does not survive anywhere on the response.
             assertThat(response.passwd()).doesNotContain(SEED_PASSWORD);
             assertThat(response.errMsg()).doesNotContain(SEED_PASSWORD);
-            // L289: the cursor goes back to the first field of the now-empty form.
             assertThat(state.cursorField()).contains(UserAddController.CURSOR_FNAME);
         }
 
@@ -1512,28 +1340,12 @@ class UserAddControllerTest {
         }
     }
 
-    // =================================================================================================
-    // Preserved absences. Three things COUSR01C does NOT do, and which the Java must go on not doing.
-    // Each is verified against the source rather than assumed, because "absent" is the one property a
-    // reader cannot confirm by looking at the Java alone.
-    // =================================================================================================
-
     @Nested
     @DisplayName("Preserved absences - COUSR01C:57, :172-173, and the un-extended commarea")
     class PreservedAbsences {
-
         @Test
         @DisplayName("B4: DFHATTR is commented out at :57, so no DFHATTR attribute is in play")
         void dfhattrContributesNothing() {
-            // app/cbl/COUSR01C.cbl:55-57 reads, in order:
-            //     COPY DFHAID.
-            //     COPY DFHBMSCA.
-            //    *COPY DFHATTR.
-            // The third is commented, so the compiler never expanded it and the program cannot name a
-            // DFHATTR item. What it CAN name is DFHAID's attention identifiers and DFHBMSCA's attributes,
-            // and those are exactly the two constant sets this class asserts against. This test documents
-            // the boundary rather than asserting a DFHATTR-specific behaviour, because there is none to
-            // assert: the migration plan's "DFHATTR: 2 consumers" counts this commented line textually.
             assertThat(CicsAid.DFHENTER).as("DFHAID is copied, so DFHENTER is reachable").isNotZero();
             assertThat(CicsAid.DFHPF3).isNotZero();
             assertThat(CicsAid.DFHPF4).isNotZero();
@@ -1541,7 +1353,6 @@ class UserAddControllerTest {
                     .isNotZero();
             assertThat(BmsAttributes.DFHRED).isNotZero();
 
-            // And the two colours the program actually moves are DFHBMSCA's, distinct from one another.
             ProgramState added = enter(populatedRequest());
             assertThat(added.errMsgColour()).isEqualTo(BmsAttributes.DFHGREEN);
             setUp();
@@ -1553,15 +1364,6 @@ class UserAddControllerTest {
         @Test
         @DisplayName("B5: :172-173 are commented out, so a transfer leaves the identity fields alone")
         void theCommentedMovesStayAbsent() {
-            // RETURN-TO-PREV-SCREEN, verbatim:
-            //     MOVE WS-TRANID    TO CDEMO-FROM-TRANID     <- runs
-            //     MOVE WS-PGMNAME   TO CDEMO-FROM-PROGRAM    <- runs
-            //    *MOVE WS-USER-ID   TO CDEMO-USER-ID         <- does NOT run
-            //    *MOVE SEC-USR-TYPE TO CDEMO-USER-TYPE       <- does NOT run
-            //     MOVE ZEROS        TO CDEMO-PGM-CONTEXT     <- runs
-            // Restoring either commented line would overwrite the signed-on operator's identity with the
-            // identity of the user just added - which is precisely the behaviour change the comment
-            // averted, and the reason the lines must stay inert.
             NavigationContext signedOn = NavigationContext.empty()
                     .withUserId("ADMIN001")
                     .withUserTypeAdmin()
@@ -1578,10 +1380,8 @@ class UserAddControllerTest {
             assertThat(state.commarea().userType()).as(":173 is commented, so the operator's type survives")
                     .isEqualTo("A");
             assertThat(state.commarea().isAdmin()).isTrue();
-            // The id of the user being added never reaches the identity field.
             assertThat(state.commarea().userId()).isNotEqualTo("NEWUSER1");
             assertThat(state.commarea().userType()).isNotEqualTo("U");
-            // While the three lines that are NOT commented did run.
             assertThat(state.commarea().fromTranid()).isEqualTo("CU01");
             assertThat(state.commarea().fromProgram()).isEqualTo("COUSR01C");
             assertThat(state.commarea().pgmContext()).isZero();
@@ -1611,25 +1411,13 @@ class UserAddControllerTest {
         @Test
         @DisplayName("B5: the commarea is the plain 160-byte COCOM01Y, with no inline extension")
         void theCommareaCarriesNoInlineExtension() {
-            // COUSR00C, COUSR02C and COUSR03C each redefine the tail of CARDDEMO-COMMAREA with a 34-byte
-            // CDEMO-CU0n-INFO block carrying the paging cursor and the selection flag. COUSR01C does not:
-            // grep -c 'CDEMO-CU0[0-9]-INFO' app/cbl/COUSR01C.cbl returns 0. So this screen has no page
-            // number, no next-page flag, no selection flag and no auto-lookup-from-selection branch - it
-            // is a blank form that is filled in and written, and nothing more.
             ProgramState state = enter(populatedRequest());
 
-            // COCOM01Y's own arithmetic: 34 general + 84 customer + 12 account + 16 card + 14 more = 160.
             assertThat(NavigationContext.COMMAREA_LENGTH).isEqualTo(160);
             assertThat(NavigationContext.GENERAL_INFO_LENGTH + NavigationContext.CUSTOMER_INFO_LENGTH
                     + NavigationContext.ACCOUNT_INFO_LENGTH + NavigationContext.CARD_INFO_LENGTH
                     + NavigationContext.MORE_INFO_LENGTH)
                     .isEqualTo(NavigationContext.COMMAREA_LENGTH);
-            // An extension would have made the length CICS reports 160 + 34 = 194, as it is for the CU02
-            // and CU03 screens. Here the length derived from the payload - the one a client that states
-            // nothing gets - is the plain copybook's 160, which is the observable consequence of the
-            // absent extension. A stated 194 is not refused, because line 78 tests EIBCALEN for zero and
-            // for nothing else; what it would mean is an area longer than this program reads, and the
-            // source's answer to that is to read its own 160 bytes out of it and ignore the rest.
             assertThat(state.eibcalen()).isEqualTo(NavigationContext.COMMAREA_LENGTH);
             assertThat(UserAddController.resolveEibcalen(
                     NavigationContext.COMMAREA_LENGTH + NavigationContext.GENERAL_INFO_LENGTH,
@@ -1654,7 +1442,6 @@ class UserAddControllerTest {
                 assertThat(responseJson).as("the response must not carry %s", absent)
                         .doesNotContain(absent);
             }
-            // Nor is there any read path at all on this screen: nothing is ever looked up, only written.
             verify(repository, never()).read(any());
         }
 
@@ -1664,26 +1451,14 @@ class UserAddControllerTest {
             enter(populatedRequest());
 
             verify(repository).add(any(SecUserRecord.class));
-            // The code page was read once, at construction, and it is not a file command.
             verify(repository).datasetCharset();
-            // No STARTBR, no READNEXT, no READ, no REWRITE, no DELETE. COUSR01C declares one EXEC CICS
-            // file command and this is it, so an auto-lookup branch could not exist without adding one.
             org.mockito.Mockito.verifyNoMoreInteractions(repository);
         }
     }
 
-    // =================================================================================================
-    // Error highlighting - CSSETATY through common.FieldAttributeSetter.
-    //
-    // The copybook's outer test is (FLG-NOT-OK OR FLG-BLANK) AND CDEMO-PGM-REENTER, so first entry never
-    // highlights however wrong the screen is; the inner test refines it to FLG-BLANK, which is what adds
-    // the asterisk on top of the colour.
-    // =================================================================================================
-
     @Nested
     @DisplayName("Error highlighting - CSSETATY, reenter-gated")
     class ErrorHighlighting {
-
         @Test
         @DisplayName("G38: on ENTER nothing is highlighted, even with a blank field on the screen")
         void firstEntryNeverHighlights() {
@@ -1762,9 +1537,6 @@ class UserAddControllerTest {
         @Test
         @DisplayName("the program's own first entry is the ENTER state, so it paints without highlighting")
         void theProgramsFirstEntryIsNotHighlighted() {
-            // COUSR01C:83-87. The screen is painted from LOW-VALUES with the cursor on FNAMEL and no
-            // validation has run at all, so there is nothing to highlight and CDEMO-PGM-CONTEXT is still
-            // the ENTER value when the decision would have been taken.
             UserAddRequest first = new UserAddRequest(null, null, null, null, null, null,
                     null, null, null, null, null, null, NavigationContext.empty(), null);
             assertThat(NavigationContext.empty().isEnter()).isTrue();
@@ -1779,37 +1551,15 @@ class UserAddControllerTest {
         }
     }
 
-    // =================================================================================================
-    // The HTTP contract - POST /api/users, transaction CU01 [app/csd/CARDDEMO.CSD:459-460].
-    //
-    // A standalone dispatcher over this one controller. The rules here are the adapter's own and live
-    // nowhere else: the verb and the path, the status a wrong verb earns, which members the wire format
-    // carries, whether a blank field is answered by the program or refused by the binder, and that
-    // nothing at all is pinned to a session, a cookie, a redirect or a forward.
-    // =================================================================================================
-
     @Nested
     @DisplayName("The HTTP contract - POST /api/users")
     class HttpContract {
-
-        /** The twelve wire names, in the order app/cpy-bms/COUSR01.CPY declares their xxxI items. */
-        // The twelve screen fields as they appear on the WIRE: each one's xxxI item in lower case,
-        // which @JsonProperty pins per AAP 0.6.3. Not the Java component names, which keep camel case.
         private static final List<String> PAYLOAD_FIELDS = List.of(
             "trnname", "title01", "curdate", "pgmname", "title02", "curtime", "fname", "lname",
             "userid", "passwd", "usrtype", "errmsg");
 
         private final ObjectMapper mapper = new ObjectMapper();
 
-        /**
-         * A dispatcher carrying only {@code POST /api/users}, with the application's own advice attached.
-         *
-         * <p>The advice is the real {@link WebConfig.CobolErrorHandler} rather than the dispatcher's
-         * default handling, because the status and body a rejected request earns are that class's
-         * decision and asserting the default would assert nothing about this application.
-         *
-         * @return the dispatcher; never {@code null}
-         */
         private MockMvc http() {
             return MockMvcBuilders.standaloneSetup(controller)
                     .setControllerAdvice(new WebConfig.CobolErrorHandler())
@@ -1822,8 +1572,6 @@ class UserAddControllerTest {
         }
 
         private ResultMatcher errMsgStartsWith(String expectedPrefix) {
-            // ERRMSGI is published as "errmsg" - @JsonProperty pins every screen field's wire name to
-            // its xxxI item in lower case (AAP 0.6.3), so path("errMsg") would silently read nothing.
             return result -> assertThat(mapper.readTree(result.getResponse().getContentAsString())
                             .path("errmsg").asText())
                     .startsWith(expectedPrefix);
@@ -1876,14 +1624,10 @@ class UserAddControllerTest {
             List<String> members = new ArrayList<>();
             mapper.readTree(body(populatedRequest())).fieldNames().forEachRemaining(members::add);
 
-            // The twelve payload members, then the two that carry conversation rather than screen state.
             assertThat(members).containsExactly("trnname", "title01", "curdate", "pgmname", "title02",
                     "curtime", "fname", "lname", "userid", "passwd", "usrtype", "errmsg",
                     "navigationContext", "aid");
 
-            // The symbolic map declares a quad per field. Only the last of the four is a payload member:
-            // xxxL is the length CICS reports, xxxF the attribute byte and xxxA its REDEFINES view, and
-            // all three are metadata the transport has no business carrying.
             String json = body(populatedRequest());
             for (String prefix : PAYLOAD_FIELDS) {
                 String screenName = prefix.substring(0, 1).toUpperCase(java.util.Locale.ROOT)
@@ -1919,9 +1663,6 @@ class UserAddControllerTest {
         @Test
         @DisplayName("a blank field is answered by the program with 200 and a message, NOT refused as 400")
         void aBlankFieldIsAnsweredNotRefused() throws Exception {
-            // The request DTO declares no @NotBlank and no @NotNull, deliberately: COUSR01C:117-151
-            // answers each blank field with its OWN message, and a binder rejection would replace five
-            // distinct COBOL answers with one framework error the operator was never shown.
             http().perform(post(UserAddController.USERS_PATH)
                             .param(UserAddController.EIBCALEN_PARAM,
                                     String.valueOf(NavigationContext.COMMAREA_LENGTH))
@@ -1969,8 +1710,6 @@ class UserAddControllerTest {
         @Test
         @DisplayName("@Size is the one constraint that does apply: an over-width field earns 400")
         void anOverWidthFieldIsRefused() throws Exception {
-            // A value wider than the symbolic map's own PIC X(n) could not have arrived from a 3270 at
-            // all, so refusing it is not a new rule - it is the field's declared width, enforced.
             String twentyOne = "A".repeat(UserAddRequest.FNAME_LENGTH + 1);
 
             http().perform(post(UserAddController.USERS_PATH)
@@ -1979,8 +1718,6 @@ class UserAddControllerTest {
                             .contentType(MediaType.APPLICATION_JSON)
                             .content(body(request(twentyOne, "Doe", "USR1", "PASS1234", "U"))))
                     .andExpect(status().isBadRequest())
-                    // The member is named with the spelling the caller sent, which is the JSON member
-                    // this record pins with @JsonProperty("fname"), not the Java property fName.
                     .andExpect(jsonPath("$.fieldErrors[0].field").value("fname"));
 
             verify(repository, never()).add(any(SecUserRecord.class));
@@ -2041,7 +1778,6 @@ class UserAddControllerTest {
                     .as("no cookie, so nothing is pinned to a client").isEmpty();
             assertThat(result.getResponse().getRedirectedUrl()).as("no sendRedirect").isNull();
             assertThat(result.getResponse().getForwardedUrl()).as("no server-side forward").isNull();
-            // The conversation comes back in the body instead, which is rule R6 in one assertion.
             assertThat(result.getResponse().getContentAsString()).contains("navigationContext");
         }
 
@@ -2153,7 +1889,6 @@ class UserAddControllerTest {
         }
     }
 
-    /** {@code MOVE '<literal>' TO WS-MESSAGE PIC X(80)} - right-padded to eighty. */
     private static String pad(String literal) {
         return literal + " ".repeat(UserAddController.WS_MESSAGE_LENGTH - literal.length());
     }

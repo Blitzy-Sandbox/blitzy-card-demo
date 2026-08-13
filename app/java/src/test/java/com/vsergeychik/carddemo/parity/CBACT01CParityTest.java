@@ -39,234 +39,31 @@ import java.util.Map;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * The parity gate for {@code CBACT01C}: twenty declarative cases, each judged field by field, each
- * required to report a diff count of zero.
- *
- * <h2>Where the expected values come from - read this first</h2>
- * <p>Every expectation in {@code src/test/resources/parity/CBACT01C/case01.json} through
- * {@code case20.json} is <strong>statically derived</strong>. It was obtained by reading
- * {@code app/cbl/CBACT01C.cbl} paragraph by paragraph, cross-checked against three other
- * authoritative sources: the byte layout of {@code app/cpy/CVACT01Y.cpy} (thirteen spans totalling
- * 300 bytes, ending in {@code FILLER PIC X(178)}), the DD and {@code PARM} contract of
- * {@code app/jcl/READACCT.jcl} (one input DD named {@code ACCTFILE}, no {@code PARM}, {@code SYSOUT}
- * and {@code SYSPRINT} for output), and the real fixture data in
- * {@code app/data/ASCII/acctdata.txt} (exactly fifty records of exactly 300 bytes).
- *
- * <p><strong>No expected value here was captured from a run of the legacy COBOL, and none was
- * captured from a run of this Java translation either.</strong> Executing the 28 legacy programs is
- * impossible in this environment - there is no z/OS runtime, the available COBOL compiler has its
- * indexed file handler disabled, and no Language Environment {@code CEE*} service is present, so
- * neither {@code CEEDAYS} nor the {@code CALL 'CEE3ABD'} at {@code app/cbl/CBACT01C.cbl:L173} can be
- * linked. The static derivation is the documented substitute for a captured baseline, and it is a
- * deliberate, escalated deviation from the original wording of the acceptance criterion rather than
- * an unremarked convenience. What survives that substitution is everything substantive: twenty cases
- * for this program, comparison field by field rather than as whole strings, and a diff count that
- * must be zero across all twenty before this module is complete. Only the provenance of the expected
- * values changed.
- *
- * <h2>The class name says balance; the program computes nothing</h2>
- * <p>{@link AccountBalanceJob} is the mandated name for the translation of {@code CBACT01C}, and it
- * does not describe what the program does. The source's own header reads
- * {@code Function : Read and print account data file}, and that is the whole of it: the program
- * opens {@code ACCTFILE} for input, walks it sequentially, displays each record, closes the file and
- * returns. It computes no balance, applies no interest, issues no {@code WRITE} and no
- * {@code REWRITE}, and touches no other dataset. The name is honoured verbatim and the behaviour is
- * taken from the source - so nobody should "complete" this class by adding a balance calculation,
- * and no case below expects one. Two of these twenty assert that positively rather than by omission:
- * {@code expectedWrites} is empty in all twenty, and the final state of {@code ACCTFILE} is pinned
- * byte for byte, so a translation that modified even one of the fifty stored records would be
- * reported.
- *
- * <h2>What the fingerprint of this program is</h2>
- * <p>{@code CBACT01C} writes no record anywhere, so its {@code SYSOUT} <em>is</em> its observable
- * output. The fingerprint is therefore the ordered list of {@code DISPLAY} lines plus the
- * {@code RETURN-CODE}, and the case files state that list line for line and character for character.
- * The line sequence of one successful pass is:
- * <ol>
- *   <li>{@code START OF EXECUTION OF PROGRAM CBACT01C} - the mainline's first statement, {@code L71};</li>
- *   <li>for each record, <strong>thirteen</strong> lines, because each record is displayed
- *       <em>twice</em> by two different paragraphs:
- *       {@code 1100-DISPLAY-ACCT-RECORD} emits eleven labelled field lines and a 49-dash separator
- *       from inside the {@code '00'} arm of the read paragraph at {@code L96}, and then the
- *       mainline's own {@code DISPLAY ACCOUNT-RECORD} at {@code L78} emits the raw 300-byte image;</li>
- *   <li>{@code END OF EXECUTION OF PROGRAM CBACT01C} - {@code L85}.</li>
- * </ol>
- * For the fifty-record fixture that is {@code 1 + (50 x 13) + 1 = 652} lines, which
- * {@code case01.json} states in full. Each of the eleven labels is exactly
- * {@value AccountBalanceJob#LABEL_WIDTH} characters wide including its terminating colon; the eleven
- * were extracted from {@code L119-L129} and each one matches the copybook field name it introduces.
- * Note which field is <em>absent</em> from them: {@code ACCT-ADDR-ZIP} is declared by the copybook
- * and stored in the record, yet the paragraph never labels it. {@code case09} pins that omission.
- *
- * <p>A fatal arm replaces the closing banner with three lines and a non-zero return code: the
- * paragraph's own error literal, then the {@code 9910-DISPLAY-IO-STATUS} rendering
- * {@code "}{@value FileStatus#DISPLAY_PREFIX}{@code "} followed by the four-character
- * {@code IO-STATUS-04} image - the {@code NNNN} is part of the literal at {@code L183} and not a
- * placeholder - and then {@value AbendException#ABEND_DISPLAY_TEXT} from
- * {@code 9999-ABEND-PROGRAM}. The {@code CALL 'CEE3ABD'} at {@code L173} arrives here as an
- * {@link AbendException} carrying {@code APPL-RESULT}, which is
- * {@value AccountRepository#APPL_RESULT_FATAL} at every one of this program's three fatal arms. An
- * abend is an <em>observation</em> and is compared like any other expectation; it never fails a case
- * by escaping.
- *
- * <h2>How the unit is reached: no launcher, no HTTP, no context</h2>
- * <p>Each case declares {@code "unitKind": "BATCH_JOB"} and the adapter below drives the tasklet
- * logic directly, through {@link AccountBalanceJob#readAndPrintAccountFile(SysoutSink)}. There is no
- * {@code JobLauncher}, no {@code JobLauncherTestUtils}, no job repository, no asynchronous executor,
- * no application context and nothing resembling an HTTP layer between the assertion and the code, so
- * the read order and the display order observed here are the ones the translated statements produce.
- * The job's {@code SYSOUT} seam is what makes that possible: the lines are collected into the
- * harness's recorder rather than written to a stream, so they survive an abend and reach the
- * fingerprint even when the run does not finish.
- *
- * <p>The collaborators are constructed rather than injected. {@link AccountRepository} and
- * {@link AccountBalanceJob} are the units under test; the four supporting types their public
- * constructors mandate - {@link BatchConfig}, {@link DatasetBindings}, {@link RecordImageForm} and an
- * {@link ObjectProvider} for the {@code SYSOUT} sink - are named here for that reason and no other.
- * No dataset name from the real system appears anywhere in this file: the cases address the dataset
- * by its {@code ACCTFILE} binding key and this class supplies a stand-in name of its own, because the
- * eight names taken from {@code app/csd/CARDDEMO.CSD} live only in {@code application.yml}.
- *
- * <h2>How a case's declared input decides which backend it meets</h2>
- * <p>A parity case is inputs and expectations; it is never a script. {@link Invocation} deliberately
- * exposes no part of the expectation, so this adapter cannot and does not branch on what a case
- * expects. It branches only on the dataset the case declares, through a closed mapping in which every
- * arm is a genuine property of that dataset:
- * <table border="1">
- *   <caption>Declared {@code ACCTFILE} input to backend condition</caption>
- *   <tr><th>the case declares</th><th>the backend is</th><th>the arm reached</th></tr>
- *   <tr><td>no {@code ACCTFILE} entry at all</td><td>a database holding no such relation</td>
- *       <td>{@code 0000-ACCTFILE-OPEN}'s fatal arm - {@code case12}</td></tr>
- *   <tr><td>{@code "empty": true} at 300 bytes</td><td>the relation, holding no row</td>
- *       <td>the first {@code READ} reports {@code '10'} - {@code case02}</td></tr>
- *   <tr><td>rows measuring 300 bytes</td><td>the relation, seeded with them</td>
- *       <td>{@code '00'} per record, then {@code '10'} - fifteen of the twenty</td></tr>
- *   <tr><td>rows measuring anything else</td><td>the relation, seeded with rows that are not
- *       {@code CVACT01Y} records</td>
- *       <td>{@code 1000-ACCTFILE-GET-NEXT}'s fatal arm - {@code case13}, {@code case14}</td></tr>
- * </table>
- * The fourth arm is worth a word. A stored row of 122 bytes is precisely the account record with its
- * trailing {@code FILLER PIC X(178)} span absent, and a row of 301 bytes is one byte too wide; the
- * repository refuses to decode fields from offsets that would not be theirs and reports a permanent
- * error, which is the status the COBOL's {@code WHEN OTHER} arm exists for. That is the same failure
- * a record-width assertion catches, seen from the program's side.
- *
- * <h2>Two arms these twenty cases cannot reach, stated rather than hidden</h2>
- * <ul>
- *   <li><strong>The fatal close.</strong> {@code 9000-ACCTFILE-CLOSE}'s {@code ELSE} arm needs the
- *       dataset to stop being addressable <em>between</em> the browse and the close. That is a
- *       temporal condition, and no seeded dataset expresses it: a {@code BATCH_JOB} case may declare
- *       only its datasets and its JCL {@code PARM} values - {@link ParityCase} forbids it a
- *       {@code screenRequest}, and with it the forced outcomes an online case can declare - and
- *       {@code app/jcl/READACCT.jcl} declares no {@code PARM}, so inventing a job parameter to carry
- *       an instruction would misstate that JCL contract. The arm is not left unasserted: it is driven
- *       and its byte-exact line sequence and return code 12 are asserted by
- *       {@code AccountBalanceJobTest}, which can refuse the second metadata probe of a run.</li>
- *   <li><strong>{@code 9910-DISPLAY-IO-STATUS}'s numeric branch.</strong> The only fatal status this
- *       program's backend produces begins with {@code '9'}, so the extended branch at {@code L179} is
- *       the one every fatal arm below takes, and the numeric branch at {@code L185} is unreachable
- *       from here. Statuses {@code '22'} and {@code '23'} are likewise unreachable, because
- *       {@code CBACT01C} performs only a sequential {@code READ} - there is no keyed read to report
- *       a duplicate or a missing record. All three are covered by {@code FileStatusTest} against the
- *       paragraph itself.</li>
- * </ul>
- *
- * <h2>Independence</h2>
- * <p>Every case runs against a private record-image store of its own, created inside the case and
- * unreachable from any other, so there is nothing to shut down and nothing to leak. This class holds no
- * mutable state, static or otherwise, so the twenty cases may run in any order, repeatedly, or in parallel
- * and each observes exactly what it seeded. That is also why the four sibling readers - {@code CBACT02C},
- * {@code CBACT03C} and {@code CBCUS01C} share this program's open / read-loop / display / close
- * shape - keep parity classes of their own instead of a shared abstract base: each drives a different
- * dataset at a different record width with a different display format, and a shared base would report
- * a failure without saying which program produced it.
- *
- * @see AccountBalanceJob the unit under test, the translation of {@code CBACT01C}
- * @see ParityHarness which seeds a case, invokes the unit and captures the fingerprint
- * @see FieldDiffer which compares the fingerprint field by field and counts the differences
+ * The parity gate for {@code CBACT01C}: twenty declarative cases, each judged field by field, each required
+ * to report a diff count of zero.
  */
 @DisplayName("CBACT01C parity - 20 statically derived cases over AccountBalanceJob, which reads and "
         + "prints the account master and computes nothing")
 class CBACT01CParityTest {
-
-    // =============================================================================================
-    // Identity. The program name is taken from the class under test so this file and the resource
-    // directory parity/CBACT01C/ cannot drift apart, and the DD name from the repository so it is
-    // the same key application.yml binds.
-    // =============================================================================================
-
-    /** {@code CBACT01C} - also the {@code parity/<PROGRAM>/} resource directory and this class's stem. */
     private static final String PROGRAM = AccountBalanceJob.PROGRAM_ID;
 
-    /** {@code ACCTFILE} - the one DD {@code app/jcl/READACCT.jcl:L25} declares, and the case key. */
     private static final String DD_NAME = AccountRepository.BATCH_DD_NAME;
 
-    /**
-     * The code page the seeded rows and the repository both use: {@code US-ASCII}, taken from the
-     * harness so the two cannot disagree.
-     *
-     * <p>Named explicitly and never left to the platform. A fixed-width mainframe record is bytes in a
-     * specific code page, and {@code app/data/ASCII} is the ASCII half of the shipped data - the
-     * EBCDIC half is read as {@code IBM037} and is not what these cases seed.
-     */
     private static final Charset DATASET_CHARSET = ParityHarness.FIXTURE_CHARSET;
 
-    /**
-     * A stand-in dataset name. The eight real ones declared by {@code app/csd/CARDDEMO.CSD} live only
-     * in {@code application.yml}, so no fully-qualified mainframe dataset name appears in Java at all -
-     * a case addresses its dataset by binding key and this is the local name that key resolves to.
-     */
     private static final String TEST_DSNAME = "PARITY.CBACT01C.ACCOUNT.KSDS";
 
-    /** The record-image column of the seeded relation, which the repository's probe discovers. */
     private static final String RECORD_IMAGE_COLUMN = "REC";
 
-    /**
-     * The rendered status line every fatal arm of this program emits.
-     *
-     * <p>The only status the backend reports for a refused operation begins with {@code '9'}, so
-     * {@code 9910-DISPLAY-IO-STATUS} renders it through its extended branch at
-     * {@code app/cbl/CBACT01C.cbl:L179-L183}. Composed through the class that owns the paragraph's
-     * shape rather than transcribed, so a change to either would show up as a failure here.
-     */
-    /**
-     * The {@code <VERB>-<DD>} name a case declares an arranged {@code OPEN INPUT} status at.
-     *
-     * <p>{@code app/cbl/CBACT01C.cbl:L135}, guarded at {@code :L136-L140}. Built from the repository's
-     * own DD constant, so a rename cannot leave a case file naming a site that matches nothing.
-     */
     private static final String OPEN_ACCTFILE_SITE = "OPEN-" + DD_NAME;
 
     private static final String PERMANENT_ERROR_LINE =
             FileStatus.toDisplayLine(AccountRepository.PERMANENT_ERROR_STATUS);
 
-    // =============================================================================================
-    // The case set.
-    // =============================================================================================
-
-    /**
-     * This program's complete case set, in {@code case01} through {@code case20} order.
-     *
-     * <p>{@link ParityHarness#casesOf(String)} enforces the set: a missing case is named
-     * individually, and a resource in the directory that the twenty-case enumeration would never read
-     * - a {@code case21.json}, a {@code Case07.json}, a {@code case07.json.bak} - is refused by name.
-     * A short set is not a smaller gate; it is a gate that passes without asking the questions.
-     *
-     * @return the twenty cases, in ascending case order
-     */
     static List<ParityCase> cases() {
         return ParityHarness.casesOf(PROGRAM);
     }
 
-    /**
-     * The count is part of the gate, so it is asserted rather than assumed.
-     *
-     * <p>{@code casesOf} already refuses a set that is not exactly twenty, which makes this a
-     * statement of the requirement at the place a reader looks for it rather than a second
-     * mechanism - and it also pins that every case in the directory really is a {@code CBACT01C}
-     * case declaring the batch unit kind, which the loader checks per file but nothing otherwise
-     * states as a property of the set.
-     */
     @Test
     @DisplayName("the set is exactly 20 CBACT01C batch cases, case01 through case20")
     void theCaseSetIsExactlyTwenty() {
@@ -301,30 +98,6 @@ class CBACT01CParityTest {
         }
     }
 
-    /**
-     * Pins the shape every case's expected line sequence must have, so a fixture cannot quietly
-     * describe a program other than this one.
-     *
-     * <p>This is a check on the <em>expectations</em>, and it is worth having beside the gate rather
-     * than folded into it. The gate compares one case's expectations against one run; nothing in it
-     * would notice a fixture whose expected lines were internally inconsistent - a fatal case that
-     * expected the closing banner, say, or a successful case whose line count was not the banners plus
-     * a whole number of thirteen-line blocks. Such a fixture would then be compared faithfully against
-     * a translation that had been written to match it, and both would be wrong together.
-     *
-     * <p>Three properties are asserted, each taken from the source rather than restated:
-     * <ul>
-     *   <li>every run opens with {@code L71}'s banner;</li>
-     *   <li>a run that ends normally closes with {@code L85}'s banner and emits the two banners plus a
-     *       whole number of {@value AccountBalanceJob#LINES_PER_RECORD}-line record blocks, and ends
-     *       with {@code RETURN-CODE} 0 because the program never touches it;</li>
-     *   <li>a run that abends ends with exactly the three lines of the shared fatal arm - one of the
-     *       two error literals reachable in these cases, the rendered file status, and
-     *       {@value AbendException#ABEND_DISPLAY_TEXT} - carries
-     *       {@value AccountRepository#APPL_RESULT_FATAL} as its return code, and never reaches the
-     *       closing banner.</li>
-     * </ul>
-     */
     @Test
     @DisplayName("every case's expected SYSOUT has the shape CBACT01C's paragraphs produce")
     void expectedLineSequencesHaveTheProgramsShape() {
@@ -390,22 +163,6 @@ class CBACT01CParityTest {
         }
     }
 
-    // =============================================================================================
-    // The gate.
-    // =============================================================================================
-
-    /**
-     * Runs one case and requires the diff count to be zero.
-     *
-     * <p>The whole gate is in the last assertion. A module is not complete until the count is zero
-     * across all twenty of its cases: nineteen clean and one difference is an incomplete module, not
-     * a nearly complete one. The failure text is {@link DiffResult#render()}, which names every
-     * difference it found - the dataset, the row, the field, its offset and length, and the expected
-     * and observed values - and never truncates the list, so one run is enough to see the whole
-     * picture.
-     *
-     * @param parityCase one of the twenty cases, supplied by {@link #cases()}
-     */
     @ParameterizedTest(name = "{0}")
     @MethodSource("cases")
     @DisplayName("the diff count is zero")
@@ -418,25 +175,6 @@ class CBACT01CParityTest {
                 .isZero();
     }
 
-    // =============================================================================================
-    // The adapter: how this class reaches the tasklet logic.
-    // =============================================================================================
-
-    /**
-     * Constructs the unit for one case, runs one complete pass, and records what the pass produced.
-     *
-     * <p>{@code null} is returned rather than a built outcome, which is what the harness asks a unit
-     * that may abend to do: the recorder survives the exception and a method's return value does not,
-     * so the lines a run displayed before abending still reach the fingerprint.
-     *
-     * <p>The final state is reported inside a {@code finally} block so it is reported on the abend
-     * path too - "the dataset the run failed on still holds exactly what it held" is an assertion
-     * worth making - and the relation is shut down in an outer one, so no case leaves an in-memory
-     * database behind for the next.
-     *
-     * @param invocation the seeded datasets, the pinned clock, the codec and the recorder
-     * @return {@code null}, meaning the recorder holds the outcome
-     */
     private UnitOutcome runAccountBalanceJob(Invocation invocation) {
         RecordImageDataSource backend = new RecordImageDataSource();
         JdbcTemplate template = new JdbcTemplate(backend);
@@ -446,7 +184,6 @@ class CBACT01CParityTest {
             seedRelation(backend, seeded);
         }
         {
-
             UnitOutcome.Builder recorder = invocation.recorder();
             SysoutSink sysout = recorder::display;
             AccountBalanceJob job = accountBalanceJob(template, sysout,
@@ -454,9 +191,6 @@ class CBACT01CParityTest {
             try {
                 job.readAndPrintAccountFile(sysout);
 
-                // GOBACK at app/cbl/CBACT01C.cbl:L87. The program never touches RETURN-CODE, so a
-                // normal end is zero; a fatal arm never reaches this statement and the harness takes
-                // the abend's own return code instead.
                 recorder.returnCode(AccountBalanceJob.RETURN_CODE_NORMAL_END);
             } finally {
                 reportFinalState(backend, seeded, recorder);
@@ -465,32 +199,6 @@ class CBACT01CParityTest {
         }
     }
 
-    /**
-     * Reports what {@code ACCTFILE} holds after the run, read back from the relation rather than
-     * echoed from the seed.
-     *
-     * <p>Reading it back is the point. {@code CBACT01C} opens the dataset {@code INPUT} and issues no
-     * {@code WRITE} and no {@code REWRITE}, so "the fifty stored records are still exactly the fifty
-     * stored records" is a real assertion about a class named {@code AccountBalanceJob} - and echoing
-     * the seed back would assert nothing at all, because the seed is what the case declared.
-     *
-     * <p>The rows are ordered by the record image ascending, which is the order the browse itself
-     * reads them in: {@code app/cbl/CBACT01C.cbl:L29-L33} declares {@code ACCTFILE} as
-     * {@code ORGANIZATION INDEXED}, {@code ACCESS MODE SEQUENTIAL}, {@code RECORD KEY FD-ACCT-ID}, so
-     * key order and not insertion order is what a sequential pass sees. {@code case09} seeds five
-     * records in strictly descending key order and expects them read back ascending, to pin exactly
-     * that.
-     *
-     * <p>Nothing is reported for a dataset whose stored rows are not {@code CVACT01Y} records. A
-     * 122-byte or 301-byte row has no 300-byte layout to be described by, and describing it under one
-     * would be a false statement about its bytes rather than an assertion about them. Those two cases
-     * assert through the displayed line sequence and the return code, which is where their behaviour
-     * actually shows.
-     *
-     * @param template the template over this case's relation
-     * @param seeded   the dataset as it was seeded, or {@code null} when the case declared none
-     * @param recorder where the final state is reported
-     */
     private void reportFinalState(RecordImageDataSource backend, SeededDataset seeded,
             UnitOutcome.Builder recorder) {
         if (seeded == null || seeded.recordLength() != AccountRecord.RECORD_LENGTH) {
@@ -501,89 +209,20 @@ class CBACT01CParityTest {
         recorder.finalState(DD_NAME, AccountRecord.LAYOUT, stored);
     }
 
-    // =============================================================================================
-    // The backend one case meets: a private in-memory relation with one record-image column.
-    // =============================================================================================
-
-    /**
-     * Declares the relation the repository will discover: one column, holding the record image.
-     *
-     * <p>No DDL. The relation is <em>declared</em> to a {@link RecordImageDataSource}, which is a store of
-     * record images and not a schema, so gate <strong>G44</strong> - no DDL, no schema migration, no entity
-     * annotation and no generated table definition anywhere in this module - holds with nothing to
-     * reinterpret. Everything above the driver is unchanged: the real {@code JdbcTemplate}, the real
-     * {@link AccountRepository}, {@code DatasetRelation}'s real composed statements and
-     * {@code RecordImageForm}'s real column read all run exactly as they do against a site's gateway.
-     *
-     * <p>The width is the one the case's own rows measure rather than the copybook's 300, so a case seeding
-     * a row of another width really does store a row of that width. Widening it to 300 would let the store
-     * pad the difference away and the fatal read arm of {@code case13} and {@code case14} would never be
-     * reached.
-     *
-     * <p>The column is named {@value #RECORD_IMAGE_COLUMN} rather than anything the repository could have
-     * assumed, because the repository discovers the name from metadata; a store that imposed a name would
-     * make that discovery assert nothing.
-     *
-     * @param backend     the store backing this case
-     * @param recordWidth the width the seeded rows measure
-     */
     private void declareRelation(RecordImageDataSource backend, int recordWidth) {
         backend.define(TEST_DSNAME, RECORD_IMAGE_COLUMN, ColumnForm.CHARACTER, recordWidth);
     }
 
-    /**
-     * Stores the case's rows, verbatim and in the order the case declared them.
-     *
-     * <p>Declaration order is preserved and deliberately not sorted here. A KSDS browse reads in key
-     * order whatever order the records were loaded in, and {@code case09} exists to prove the
-     * translation does the same - so the seed must be free to disagree with the read order.
-     *
-     * @param backend the store backing this case
-     * @param seeded  the dataset as the harness seeded it
-     */
     private void seedRelation(RecordImageDataSource backend, SeededDataset seeded) {
         backend.store().seed(TEST_DSNAME, seeded.rows());
     }
 
-    // =============================================================================================
-    // The unit and the collaborators its constructors mandate.
-    // =============================================================================================
-
-    /**
-     * The job under test, over one case's relation, writing every {@code DISPLAY} to the given sink.
-     *
-     * @param template the template over this case's relation
-     * @param sysout   where the displayed lines are captured
-     * @return the job
-     */
     private AccountBalanceJob accountBalanceJob(JdbcTemplate template, SysoutSink sysout,
             String declaredOpenStatus) {
         return new AccountBalanceJob(batchScaffolding(),
                 accountRepository(template, declaredOpenStatus), new DeclaredBean<>(sysout));
     }
 
-    /**
-     * The {@code FILE STATUS} a case declares its {@code OPEN INPUT} reports, or {@code null} to let the
-     * relation decide.
-     *
-     * <p>One seam, and it exists for one branch. {@code 9910-DISPLAY-IO-STATUS} at
-     * {@code app/cbl/CBACT01C.cbl:L175-L188} has two arms: the extended arm when {@code IO-STATUS} is
-     * not numeric or {@code IO-STAT1 = '9'}, which packs the second byte into a binary field and renders
-     * {@code NNNN9000}; and the {@code ELSE} arm at {@code :L184-L186}, which zero-fills and renders the
-     * two-digit status as {@code NNNN00nn}. An absent relation reports
-     * {@link AccountRepository#PERMANENT_ERROR_STATUS} - {@code '9'} followed by a NUL - so it reaches
-     * the extended arm and <strong>only</strong> the extended arm. No arrangement of seeded rows can
-     * reach the {@code ELSE} arm, because every status the data itself can produce is either {@code '00'}
-     * or that permanent error.
-     *
-     * <p>So the numeric status is declared, and the two arms are pinned by two cases that differ in their
-     * declarations rather than in nothing at all.
-     *
-     * @param invocation the run
-     * @return the declared two-character status, or {@code null}
-     * @throws IllegalArgumentException if the case declares a site this program has none of, a shape the
-     *     site cannot report, more than one site, or a status that would reach the extended arm anyway
-     */
     private static String declaredOpenStatus(Invocation invocation) {
         Map<String, ParityCase.CallSiteOutcome> declared = invocation.stimulus().callSiteOutcomes();
         if (declared.isEmpty()) {
@@ -631,24 +270,12 @@ class CBACT01CParityTest {
         return status;
     }
 
-    /**
-     * The repository over one case's relation, at the geometry {@code app/cpy/CVACT01Y.cpy} declares.
-     *
-     * <p>{@link RecordImageForm#CHARACTER} because the relation presents the image as characters, and
-     * the code page is single-byte so the character form is exact.
-     *
-     * @param template the template over this case's relation
-     * @return the repository
-     */
     private AccountRepository accountRepository(JdbcTemplate template, String declaredOpenStatus) {
         AccountRepository real = new AccountRepository(template, datasetBindings(), DATASET_CHARSET,
                 RecordImageForm.CHARACTER);
         if (declaredOpenStatus == null) {
             return real;
         }
-        // The handle is a spy over a real one, so everything except the open status it reports is the
-        // production code path: the job still reads openStatus() from an AccountFile, still closes it,
-        // and still renders through the same FileStatus rendering the other cases use.
         AccountRepository arranged = Mockito.spy(real);
         Mockito.doAnswer(call -> {
             AccountRepository.AccountFile handle =
@@ -659,16 +286,6 @@ class CBACT01CParityTest {
         return arranged;
     }
 
-    /**
-     * The dataset catalogue, naming one dataset under both of the keys the repository requires.
-     *
-     * <p>{@code app/csd/CARDDEMO.CSD:L1-L2} defines the CICS file and {@code app/jcl/READACCT.jcl:L25}
-     * defines the batch DD over <em>one</em> account master, so both keys name the same stand-in
-     * dataset here. The declared record width is 300 and the declared key width is 11, from
-     * {@code ACCT-ID PIC 9(11)}.
-     *
-     * @return the catalogue
-     */
     private DatasetBindings datasetBindings() {
         DatasetBinding account = new DatasetBinding(TEST_DSNAME, DatasetBinding.KSDS, false, "FB",
                 null, AccountRecord.RECORD_LENGTH, "CVACT01Y", AccountRecord.KEY_LENGTH, null, null,
@@ -679,20 +296,6 @@ class CBACT01CParityTest {
         return catalogue;
     }
 
-    /**
-     * The batch scaffolding, carrying the {@code carddemo.jobs} contract for this job.
-     *
-     * <p>The contract is what {@code application.yml} declares and what {@code app/jcl/READACCT.jcl}
-     * supports: program {@code CBACT01C}, no parameters, and one step named {@code STEP05} that is
-     * <strong>not</strong> gated on a preceding exit code, because that JCL carries no {@code COND}
-     * and declares only the one step.
-     *
-     * <p>The job repository and the transaction manager are mocked, and they are never used: nothing
-     * here launches a job or opens a step, so no batch metadata is written. They exist because the
-     * constructor takes them.
-     *
-     * @return the scaffolding
-     */
     private BatchConfig batchScaffolding() {
         JobContracts contracts = new JobContracts();
         contracts.put(AccountBalanceJob.JOB_KEY, new JobContract(PROGRAM, List.of(),
@@ -703,18 +306,7 @@ class CBACT01CParityTest {
                 datasetBindings());
     }
 
-    /**
-     * An {@link ObjectProvider} that always yields the bean it was given.
-     *
-     * <p>The job resolves its {@code SYSOUT} sink through a provider so a caller can supply one
-     * without reconfiguring the bean, which is exactly what a parity case needs: with the sink
-     * declared, the displayed lines reach the recorder instead of the process's standard output.
-     *
-     * @param bean the bean to yield
-     * @param <T>  the bean type
-     */
     private record DeclaredBean<T>(T bean) implements ObjectProvider<T> {
-
         @Override
         public T getObject() {
             return bean;

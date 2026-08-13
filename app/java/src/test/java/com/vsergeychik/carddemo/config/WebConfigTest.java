@@ -5,11 +5,14 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.fasterxml.jackson.core.JsonGenerator;
 import com.fasterxml.jackson.core.JsonParser;
+import com.fasterxml.jackson.core.StreamReadConstraints;
+import com.fasterxml.jackson.core.exc.StreamConstraintsException;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.exc.MismatchedInputException;
@@ -20,8 +23,12 @@ import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.ScreenInputRejectedException;
 import com.vsergeychik.carddemo.config.WebConfig.CobolErrorHandler;
 import com.vsergeychik.carddemo.testsupport.ScreenFixtureController;
+import com.vsergeychik.carddemo.user.SignOnController;
+import com.vsergeychik.carddemo.user.UserAddController;
+import com.vsergeychik.carddemo.user.UserUpdateController;
 
 import jakarta.servlet.RequestDispatcher;
+import jakarta.servlet.http.HttpServletRequest;
 
 import java.io.IOException;
 import java.lang.reflect.Method;
@@ -37,6 +44,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -54,8 +62,10 @@ import org.springframework.boot.logging.LoggingSystem;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.boot.test.system.CapturedOutput;
 import org.springframework.boot.test.system.OutputCaptureExtension;
+import org.springframework.context.annotation.Bean;
 import org.springframework.core.env.PropertySource;
 import org.springframework.core.io.ClassPathResource;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.converter.HttpMessageNotReadableException;
@@ -64,205 +74,55 @@ import org.springframework.http.converter.json.MappingJackson2HttpMessageConvert
 import org.springframework.http.ResponseEntity;
 import org.springframework.mock.http.MockHttpOutputMessage;
 import org.springframework.mock.web.MockHttpServletRequest;
+import org.springframework.mock.web.MockHttpServletResponse;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.validation.beanvalidation.LocalValidatorFactoryBean;
 import org.springframework.web.servlet.config.annotation.EnableWebMvc;
+import org.springframework.web.bind.annotation.PutMapping;
+import org.springframework.web.servlet.HandlerInterceptor;
+import org.springframework.web.servlet.function.ServerRequest;
+import org.springframework.web.servlet.function.ServerResponse;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
+import org.springframework.web.servlet.handler.MappedInterceptor;
+import org.springframework.web.util.ServletRequestPathUtils;
 
 /**
- * {@link WebConfig}'s own contract: the JSON settings that keep a screen projection byte-faithful,
- * the {@link Clock} the screen header depends on, the global error mapping as the real dispatcher
- * resolves it, and - the highest-value part - everything this class deliberately refuses to
- * contribute.
- *
- * <h2>Why the JSON settings are behaviour and not preference</h2>
- * The 17 CICS online programs each drove a BMS mapset, and those mapsets are the presentation
- * contract of this migration. There is no design system and no component library anywhere in this
- * repository to defer to - a repository-wide scan for {@code package.json}, {@code *.tsx},
- * {@code *.css}, {@code tailwind.config*}, {@code theme*} and {@code tokens*} returns nothing, and
- * there are zero Figma attachments (AAP 0.6.1, 0.11.1) - so the mapsets are the whole of it.
- *
- * <p>The reconciliation that makes an <em>untransformed</em> JSON naming strategy mandatory was
- * re-verified against {@code app/bms} before this class was written, rather than taken on trust:
- * <pre>
- * for f in app/bms/*.bms; do grep -v "^\*" "$f" | grep -c "^[A-Z0-9][A-Z0-9]* *DFHMDF"; done
- * </pre>
- * totals <strong>441</strong> - COACTUP 54, COTRN00 59, COSGN00 11 - while the raw count of
- * non-comment {@code DFHMDF} occurrences is <strong>902</strong>. The 461-entry difference is
- * unnamed field definitions: static screen literals such as {@code INITIAL='Tran :'}, which have no
- * symbolic-map {@code xxxI} item and therefore no payload member at all. Only the 441 <em>named</em>
- * definitions become fields, and their identifiers are upper-case mainframe labels -
- * {@code TRNNAME}, {@code CURDATE}, {@code PGMNAME}, {@code ERRMSG}, {@code ACCTSID} - taken
- * verbatim from column 1 of the mapset. Any camelCase, snake_case or kebab-case strategy would
- * rewrite every one of them and destroy the 1:1 trace from payload field back to {@code DFHMDF}
- * definition, which is what the parity harness follows.
- *
- * <p>Within a symbolic map ({@code app/cpy-bms/COSGN00.CPY}, read directly) each field is five
- * items: {@code xxxL COMP PIC S9(4)}, {@code xxxF PICTURE X}, a {@code FILLER REDEFINES xxxF}
- * carrying {@code xxxA}, a 4-byte {@code FILLER}, and finally {@code xxxI PIC X(n)}. Only
- * {@code xxxI} is a payload member, and it is where a Bean Validation length constraint comes
- * from - {@code USERIDI PIC X(8)} and {@code PASSWDI PIC X(8)} on the sign-on screen, for instance.
- *
- * <h2>What this class does not do, and who does it instead</h2>
- * It stays a slice on purpose. {@code CardDemoApplicationTest} owns gate G3's whole-graph context
- * load, so nothing here is a {@code @SpringBootTest}: bean presence and absence go through
- * {@link ApplicationContextRunner}, the advice goes through a standalone {@code MockMvc} over a
- * throwaway controller declared at the foot of this file, and the Jackson settings go through a
- * plain {@link Jackson2ObjectMapperBuilder}. None of the 17 real controllers is touched - each has
- * its own test in its own domain package - and neither DTO field lists nor {@link DateHeader}'s
- * 58-byte layout is asserted here, because those belong to the {@code dto} packages and to
- * {@code common} respectively.
- *
- * <p>Two sibling suites already own parts of the error mapping and are not duplicated:
- * {@code WebConfigErrorContractTest} drives the body builders as static methods and asserts what
- * they withhold, and {@code WebConfigErrorBoundaryTest} drives the field-level projections and the
- * five {@link FileStatus.Outcome} constants directly. What is added here is the part neither can
- * reach: <em>handler selection by the real exception resolver</em>, including that a narrower
- * handler beats a broader one and that the catch-all preserves a status it did not choose.
- *
- * <h2>Determinism (practice B7)</h2>
- * {@link DateHeader} never calls {@code now()}; its only clock-consuming factory takes a
- * {@link Clock} and reads {@code instant()} and {@code getZone()} exactly once. {@link WebConfig}
- * supplies the module's single {@link Clock}, so a fixed clock in a test is not a convenience but
- * the mechanism by which 17 date-bearing controllers become assertable at all. Every assertion here
- * that touches time uses {@link #FIXED_CLOCK}; nothing reads wall-clock time, and no assertion
- * depends on the ambient time zone or the platform default charset, so the suite gives identical
- * results under {@code -Duser.timezone=America/Chicago}, {@code -Duser.timezone=UTC} and
- * {@code -Dfile.encoding=US-ASCII}.
- *
- * <h2>Gates enforced</h2>
- * G3 the {@link Clock} bean exists and is unique &middot; G22 and G24 no {@code double} and no
- * rounding at the JSON boundary &middot; G37 no server-side session state &middot; G41
- * authentication stays as {@code COSGN00C} performs it, with no security machinery introduced
- * &middot; G47 every {@link FileStatus} outcome reaches a status decision &middot; G49 branch
- * coverage of this package &middot; G52 no wildcard imports &middot; G53 no static mutable state
- * &middot; G54 non-interactive.
- *
- * <p><strong>User-specified rules:</strong> {@code review_rules} reports that no user rules were
- * provided - that one line is the whole document - so none are cited below. The AAP's
- * enterprise-practice set stands in their place and is named where it bites.
+ * {@link WebConfig}'s own contract: the JSON settings that keep a screen projection byte-faithful, the
+ * {@link Clock} the screen header depends on, the global error mapping as the real dispatcher resolves it,
+ * and - the highest-value part - everything this class deliberately refuses to contribute.
  */
 @DisplayName("WebConfig - JSON fidelity, the Clock bean, the error mapping, and what it refuses")
 class WebConfigTest {
-
-    /**
-     * The code page {@code application-test.yml} names under {@code carddemo.charset.dataset}, which is
-     * what {@code CobolCharsetConfig} publishes as the active dataset charset under this profile.
-     *
-     * <p>Stated here, and passed to the production customizer, because the inbound screen-text boundary
-     * judges every value against the page in force rather than against a page of its own choosing: a
-     * mapper built for a test has to name the same one the profile does or it is not the production
-     * mapper.
-     */
     private static final Charset TEST_PROFILE_CHARSET = StandardCharsets.US_ASCII;
 
-    /**
-     * The instant every time-dependent assertion is pinned to.
-     *
-     * <p>Not an arbitrary date: {@code 2022-07-19} is this repository's own source version footer,
-     * which several files carry as {@code Ver: CardDemo_v1.0-15-g27d6c6f-68 Date: 2022-07-19} -
-     * {@code app/cbl/CSUTLDTC.cbl}, {@code app/jcl/INTCALC.jcl} and {@code app/jcl/POSTTRAN.jcl}
-     * among them. Choosing it means a failure message points at something traceable rather than at
-     * a number somebody made up.
-     */
     private static final Instant FIXED_INSTANT = Instant.parse("2022-07-19T23:23:06Z");
 
-    /**
-     * The fixed clock. Immutable and shared, so it is {@code static final} without introducing
-     * mutable static state (practice B9, gate G53).
-     *
-     * <p>{@link ZoneOffset#UTC} rather than the platform zone, so a build run in any time zone sees
-     * the same rendered date and time. That is the difference between a suite that passes and a
-     * suite that passes <em>here</em>.
-     */
     private static final Clock FIXED_CLOCK = Clock.fixed(FIXED_INSTANT, ZoneOffset.UTC);
 
-    /**
-     * A program name that must never appear in a response body.
-     *
-     * <p>Read from {@link ScreenFixtureController} rather than restated, because the fixture is what
-     * raises the abend carrying it: one value, so an assertion that the body withholds it cannot pass
-     * against a value the fixture stopped using.
-     */
     private static final String WITHHELD_PROGRAM = ScreenFixtureController.WITHHELD_PROGRAM;
 
-    /** A reason string that must never appear in a response body, from the same single source. */
     private static final String WITHHELD_REASON = ScreenFixtureController.WITHHELD_REASON;
 
-    /**
-     * The five {@code RETURN-CODE} values this estate actually produces, as
-     * {@link AbendException} declares them: {@code 0} normal, {@code 4} warning, {@code 8} assumed
-     * failure, {@code 12} I/O error, and {@code 16} for the {@code 88 APPL-EOF} condition.
-     */
     private static final String OBSERVED_RETURN_CODES = "0, 4, 8, 12, 16";
 
-    /**
-     * The exact bytes an abend answers with, composed from the two constants the advice declares.
-     *
-     * <p>Held as a constant so that the byte-for-byte comparison is written once and every abend
-     * assertion compares against the same expectation. If either constant changes, every abend
-     * assertion changes with it - which is the correct coupling, because the pair is the contract.
-     */
     private static final String ABEND_BODY = "{\"code\":\"" + CobolErrorHandler.ABEND_CODE
             + "\",\"error\":\"" + HttpStatus.INTERNAL_SERVER_ERROR.getReasonPhrase()
             + "\",\"detail\":\"" + CobolErrorHandler.ABEND_MESSAGE + "\",\"fieldErrors\":[]}";
 
-    /**
-     * Builds an {@link ObjectMapper} the way Spring Boot would: a fresh builder, then
-     * {@link WebConfig#carddemoJacksonCustomizer(java.nio.charset.Charset)} applied to it.
-     *
-     * <p>Applying the real customizer rather than hand-assembling a mapper is the whole point. A
-     * hand-assembled mapper would assert that a particular set of features produces a particular
-     * result, which is true of any mapper; going through the production bean asserts that
-     * <em>this module's</em> mapper does.
-     *
-     * @return the customized mapper, exactly as configured for the wire
-     */
     private static ObjectMapper customizedMapper() {
         final Jackson2ObjectMapperBuilder builder = new Jackson2ObjectMapperBuilder();
         customizer().customize(builder);
         return builder.build();
     }
 
-    /**
-     * The production customizer bean, obtained from a plain instance of the configuration class.
-     *
-     * @return the customizer under test
-     */
     private static Jackson2ObjectMapperBuilderCustomizer customizer() {
         return new WebConfig().carddemoJacksonCustomizer(TEST_PROFILE_CHARSET);
     }
 
-    /**
-     * A context slice holding {@link WebConfig} and nothing else.
-     *
-     * <p>Returned fresh on every call rather than held in a field, so no two tests can perturb one
-     * another (practice B7) and no mutable state is shared (practice B9, gate G53).
-     *
-     * <p>Two details in the property list are deliberate. {@code spring.profiles.active=} is stated
-     * <em>empty</em> because an {@link ApplicationContextRunner} inherits the surrounding JVM's
-     * system properties and process environment: a build invoked with
-     * {@code -Dspring.profiles.active=test}, or a CI executor exporting
-     * {@code SPRING_PROFILES_ACTIVE=test}, would otherwise activate a profile inside a slice that
-     * asked for none. Stating the key installs it ahead of both sources. And the eight
-     * {@code carddemo.job-submission.*} values are required rather than optional: {@link WebConfig}
-     * declares {@code @EnableConfigurationProperties} for that record and registers a validator that
-     * runs at context refresh, so a slice that omitted them would fail to start for a reason that
-     * has nothing to do with what is being tested. The two paths are absolute, traversal-free and
-     * outside every reference tree, and no filesystem access occurs - the validation is pure path
-     * algebra.
-     *
-     * @return a runner that starts {@link WebConfig} in isolation
-     */
     private static ApplicationContextRunner sliceRunner() {
         return new ApplicationContextRunner()
                 .withUserConfiguration(WebConfig.class)
-                // The one collaborator WebConfig has outside itself: the active dataset code page, which
-                // CobolCharsetConfig publishes under this name and which the inbound screen-text boundary
-                // judges every value against. Supplied as a bean rather than by importing that
-                // configuration so this slice stays "WebConfig and nothing else", and named rather than
-                // typed because three Charset beans exist in the application and none is primary.
                 .withBean(CobolCharsetConfig.DATASET_CHARSET_BEAN_NAME, Charset.class,
                         () -> TEST_PROFILE_CHARSET)
                 .withPropertyValues(
@@ -278,31 +138,6 @@ class WebConfigTest {
                         "carddemo.job-submission.destination=/var/carddemo/inreader/JOBS");
     }
 
-    /**
-     * Stands up the real Spring MVC dispatch machinery over {@link ScreenFixtureController}, with
-     * {@link CobolErrorHandler} registered as the advice and the production Jackson settings on the
-     * message converter.
-     *
-     * <p>This is the one thing a static drive of a body builder cannot do: it puts Spring's own
-     * {@code ExceptionHandlerExceptionResolver} in the path, so the tests below assert which handler
-     * the framework <em>selects</em> and not merely what a handler returns once chosen. Handler
-     * selection is a real behaviour with a real failure mode - a broad {@code Exception} handler that
-     * shadowed a narrower one would flatten every client mistake to {@code 500}.
-     *
-     * <p>Built per test method rather than shared, so no cached resolver state crosses a test
-     * boundary. A fresh validator is created with it, because {@code standaloneSetup} does not
-     * install one and {@code @Valid} would then be silently ignored - a test that appeared to pass
-     * while asserting nothing.
-     *
-     * <p>The fixture is instantiated here and registered with this dispatcher alone; it is never a
-     * bean. It lives in {@code com.vsergeychik.carddemo.testsupport}, outside
-     * {@code CardDemoApplication}'s eleven scanned packages, precisely so that the
-     * {@code @RestController} the standalone dispatcher needs cannot also put an eighteenth
-     * controller and ten fixture routes into an application context started from this module's test
-     * output.
-     *
-     * @return the configured dispatcher
-     */
     private static MockMvc adviceDispatcher() {
         final LocalValidatorFactoryBean validator = new LocalValidatorFactoryBean();
         validator.afterPropertiesSet();
@@ -310,6 +145,32 @@ class WebConfigTest {
                 .setControllerAdvice(new CobolErrorHandler())
                 .setMessageConverters(new MappingJackson2HttpMessageConverter(customizedMapper()))
                 .setValidator(validator)
+                .build();
+    }
+
+    /** The typed-path-variable fixture route, which answers 200 with a plain body. */
+    private static final String FIXTURE_ACCOUNT = ScreenFixtureController.BASE + "/accounts/42";
+
+    /** The screen-payload fixture route, which answers 400 when the body cannot be read. */
+    private static final String FIXTURE_SCREEN = ScreenFixtureController.BASE + "/screen";
+
+    /**
+     * {@link #adviceDispatcher()} with the response-header contributor in front of it.
+     *
+     * <p>A standalone dispatcher installs no filters of its own, which is exactly what makes this the
+     * right harness: the headers can only appear because the contributor put them there, so the
+     * assertion cannot pass on something the framework would have done anyway.
+     *
+     * @return the configured dispatcher
+     */
+    private static MockMvc headerDispatcher() {
+        final LocalValidatorFactoryBean validator = new LocalValidatorFactoryBean();
+        validator.afterPropertiesSet();
+        return MockMvcBuilders.standaloneSetup(new ScreenFixtureController())
+                .setControllerAdvice(new CobolErrorHandler())
+                .setMessageConverters(new MappingJackson2HttpMessageConverter(customizedMapper()))
+                .setValidator(validator)
+                .addFilters(new WebConfig().carddemoScreenResponseHeaders())
                 .build();
     }
 
@@ -336,25 +197,15 @@ class WebConfigTest {
         return loaded.get(0);
     }
 
-    /**
-     * Payload identifiers reach the wire exactly as the symbolic maps name them.
-     *
-     * <p>This is the group the 902-versus-441 reconciliation in this class's header exists to
-     * justify. The 441 named {@code DFHMDF} labels are the payload identifiers, they are upper-case
-     * mainframe labels, and any naming strategy at all would rewrite them.
-     */
     @Nested
     @DisplayName("JSON naming is untransformed, so every payload field still traces to a DFHMDF")
     class JsonNamingIsUntransformed {
-
         @Test
         @DisplayName("upper-case BMS labels serialise character for character")
         void bmsLabelsSurviveSerialisationVerbatim() throws IOException {
             final String json = customizedMapper().writeValueAsString(new ScreenPayload(
                     "CC00", "07/19/22", "COSGN00C", "", "00000000011", new BigDecimal("100.00")));
 
-            // Exact equality, and in declaration order, because both are part of what a reader
-            // compares a payload against by eye when tracing a field back to its mapset.
             assertThat(json).isEqualTo("{\"TRNNAME\":\"CC00\",\"CURDATE\":\"07/19/22\","
                     + "\"PGMNAME\":\"COSGN00C\",\"ERRMSG\":\"\",\"ACCTSID\":\"00000000011\","
                     + "\"TAMT001\":100.00}");
@@ -413,10 +264,6 @@ class WebConfigTest {
         void noNamingStrategyIsInstalledOnEitherDirection() {
             final ObjectMapper mapper = customizedMapper();
 
-            // Asserted rather than assumed (practice B8). Behaviour alone would also pass against a
-            // mapper that happened to be configured with an identity strategy today and a different
-            // one after an upgrade; pinning the strategy to absent says the naming of the wire is
-            // owned by the DTOs, which is exactly the claim application.yml makes in prose.
             assertThat(mapper.getSerializationConfig().getPropertyNamingStrategy())
                     .as("a serialisation naming strategy would rewrite all 441 field identifiers")
                     .isNull();
@@ -431,24 +278,13 @@ class WebConfigTest {
         void theShippedDocumentInstallsNoNamingStrategy() throws IOException {
             final PropertySource<?> document = shippedDocument("application.yml");
 
-            // Boot would apply spring.jackson.property-naming-strategy on top of the customizer, so
-            // the customizer being clean is only half the guarantee.
             assertThat(document.getProperty("spring.jackson.property-naming-strategy")).isNull();
         }
     }
 
-    /**
-     * A monetary value keeps its type and its scale across the wire.
-     *
-     * <p>Every signed decimal picture in this estate is scale 2 - exhaustive extraction across the 28
-     * programs found only {@code PIC S9(10)V99}, {@code PIC S9(09)V99} and {@code PIC S9(9)V99} - so
-     * a scale change or a {@code double} at the JSON boundary is a parity defect and not a formatting
-     * detail (gates G22, G24).
-     */
     @Nested
     @DisplayName("BigDecimal fidelity on the wire - no double, no exponent, no lost scale")
     class BigDecimalWireFidelity {
-
         @Test
         @DisplayName("USE_BIG_DECIMAL_FOR_FLOATS is enabled")
         void useBigDecimalForFloatsIsEnabled() {
@@ -474,8 +310,6 @@ class WebConfigTest {
         @Test
         @DisplayName("WRITE_BIGDECIMAL_AS_PLAIN is enabled on the generator factory")
         void writeBigDecimalAsPlainIsEnabled() {
-            // Queried on the factory, not on the mapper: WRITE_BIGDECIMAL_AS_PLAIN is a
-            // JsonGenerator.Feature, so it is carried by the JsonFactory the mapper writes through.
             assertThat(customizedMapper().getFactory()
                     .isEnabled(JsonGenerator.Feature.WRITE_BIGDECIMAL_AS_PLAIN))
                     .as("scientific notation on the wire would make a monetary field unreadable to a "
@@ -514,8 +348,6 @@ class WebConfigTest {
             assertThat(json).contains("\"TAMT001\":100.00");
             assertThat(received.TAMT001().scale()).isEqualTo(2);
             assertThat(received.TAMT001()).isEqualTo(new BigDecimal("100.00"));
-            // Not merely numerically equal: 100 and 100.0 both compare equal to 100.00 under
-            // compareTo, and either would be a different byte sequence in a fixed-width receiver.
             assertThat(received.TAMT001().toPlainString()).isEqualTo("100.00");
         }
 
@@ -528,10 +360,6 @@ class WebConfigTest {
 
             final BigDecimal received = mapper.readValue(literal, BigDecimal.class);
 
-            // The JSON boundary transports; it does not decide scale. RoundingMode.DOWN - the only
-            // faithful mode, because the keyword ROUNDED appears zero times in all 28 programs -
-            // belongs to common/CobolDecimal at the point of store, and duplicating it here would
-            // truncate a value twice and in the wrong place.
             assertThat(received.scale()).isEqualTo(scale);
             assertThat(mapper.writeValueAsString(received)).isEqualTo(literal);
         }
@@ -549,25 +377,12 @@ class WebConfigTest {
         }
     }
 
-    /**
-     * A request cannot state one member twice, and a screen field cannot arrive as anything but
-     * character data.
-     *
-     * <p>Both are properties of the mapper this bean configures, and both were previously left to
-     * Jackson's defaults - which accept a repeated member and keep the last occurrence, and coerce a
-     * number or a boolean into text. A BMS map declares exactly one storage item per named field and
-     * every one of them is {@code PIC X(n)}, so each default contradicts the wire contract and each
-     * loses part of the caller's own request without saying so.
-     */
     @Nested
     @DisplayName("One member states one value, and a screen field is character data")
     class StrictInboundShape {
-
         @Test
         @DisplayName("STRICT_DUPLICATE_DETECTION is enabled on the parser factory")
         void strictDuplicateDetectionIsEnabled() {
-            // Queried on the factory, because it is a JsonParser.Feature and is carried by the
-            // JsonFactory the mapper reads through - the same place WRITE_BIGDECIMAL_AS_PLAIN lives.
             assertThat(customizedMapper().getFactory()
                     .isEnabled(JsonParser.Feature.STRICT_DUPLICATE_DETECTION))
                     .as("the resolved Jackson default is DISABLED, so without this a repeated key, "
@@ -604,9 +419,6 @@ class WebConfigTest {
         @ValueSource(strings = {"11", "1.5", "true"})
         @DisplayName("a member that is not JSON character data is refused, not coerced into a field image")
         void aNonStringScreenFieldIsRefused(final String token) {
-            // Bound into a typed payload rather than an untyped Map, because an untyped Map binds its
-            // values through Jackson's Object deserializer and never consults the String one - so an
-            // untyped read would assert nothing about a screen field.
             assertThatExceptionOfType(IOException.class)
                     .isThrownBy(() -> customizedMapper()
                             .readValue("{\"TRNNAME\":" + token + "}", ScreenPayload.class))
@@ -632,12 +444,8 @@ class WebConfigTest {
             new WebConfig().carddemoJacksonCustomizer(Charset.forName("IBM037"))
                     .customize(ebcdicBuilder);
 
-            // IBM037 has a representation for this letter and US-ASCII does not, and neither answer is a
-            // preference: a PIC X(n) field is n bytes in the code page the datasets are actually in.
             assertThat(ebcdicBuilder.build().readValue("\"SM\u00d1TH\"", String.class))
                     .isEqualTo("SM\u00d1TH");
-            // Raised on the root value, so it reaches the caller as the unchecked refusal it is rather
-            // than wrapped in a mapping failure; both shapes are unwrapped to the same 400 by the advice.
             assertThatExceptionOfType(ScreenInputRejectedException.class)
                     .isThrownBy(() -> customizedMapper().readValue("\"SM\u00d1TH\"", String.class));
         }
@@ -653,23 +461,13 @@ class WebConfigTest {
         }
     }
 
-    /**
-     * Space padding, empty strings and nulls all survive the wire unaltered.
-     *
-     * <p>A {@code PIC X(n)} field is space-padded to its declared width and is not trimmed on read
-     * unless the COBOL itself trims, so an all-spaces value is data rather than absence. Trimming or
-     * null-coercion at the JSON boundary is the single most common silent-corruption path in a COBOL
-     * migration precisely because it looks like tidying up.
-     */
     @Nested
     @DisplayName("Space padding, empty strings and nulls survive the wire untouched")
     class SpacePaddingAndNullFidelity {
-
         @Test
         @DisplayName("a space-padded PIC X value round-trips with its trailing spaces intact")
         void trailingSpacesAreNotTrimmed() throws IOException {
             final ObjectMapper mapper = customizedMapper();
-            // COSGN00.CPY declares USERIDI PIC X(8), so a three-character name occupies eight bytes.
             final String padded = "BOB     ";
 
             final ScreenPayload received = mapper.readValue(
@@ -724,8 +522,6 @@ class WebConfigTest {
         void anEmptyStringForAnObjectIsRefused() {
             final ObjectMapper mapper = customizedMapper();
 
-            // The behavioural half of the feature check above, and the stronger of the two: with the
-            // feature enabled this would quietly yield a NestingPayload holding null.
             assertThatExceptionOfType(MismatchedInputException.class).isThrownBy(
                     () -> mapper.readValue("{\"nested\":\"\"}", NestingPayload.class));
         }
@@ -736,8 +532,6 @@ class WebConfigTest {
             final String json = customizedMapper().writeValueAsString(new ScreenPayload(
                     "CC00", null, null, null, null, null));
 
-            // A missing key would break the 1:1 field trace just as surely as a renamed one: the
-            // reader could not tell an absent field from a field that was never in the mapset.
             assertThat(json).isEqualTo("{\"TRNNAME\":\"CC00\",\"CURDATE\":null,\"PGMNAME\":null,"
                     + "\"ERRMSG\":null,\"ACCTSID\":null,\"TAMT001\":null}");
         }
@@ -747,8 +541,6 @@ class WebConfigTest {
         void theShippedDocumentIncludesEveryProperty() throws IOException {
             final PropertySource<?> document = shippedDocument("application.yml");
 
-            // Stated in the document rather than in the customizer, so the customizer being silent
-            // about inclusion is correct and this is where the guarantee actually lives.
             assertThat(document.getProperty("spring.jackson.default-property-inclusion"))
                     .isEqualTo("always");
         }
@@ -765,9 +557,6 @@ class WebConfigTest {
                     "00000000011", new BigDecimal("100.00")), MediaType.APPLICATION_JSON, response);
             final byte[] written = response.getBodyAsBytes();
 
-            // IBM037 and US-ASCII belong exclusively to dataset input and output, where
-            // CobolCharsetConfig selects them; applying either to an HTTP response would corrupt
-            // every byte of it. So the assertion here is UTF-8, decoded and compared as such.
             assertThat(new String(written, StandardCharsets.UTF_8)).contains(beyondAscii);
             assertThat(written).isEqualTo(
                     new String(written, StandardCharsets.UTF_8).getBytes(StandardCharsets.UTF_8));
@@ -790,32 +579,15 @@ class WebConfigTest {
         }
     }
 
-    /**
-     * An abend answers {@code 500} with one fixed body, whatever the {@code RETURN-CODE} was.
-     *
-     * <p>{@code CALL 'CEE3ABD'} appears at nine sites across the batch programs, and
-     * {@link AbendException} is its Java form. The status is {@code 500} because the COBOL did not
-     * complete its unit of work; the body is a constant because the abending program's name, its
-     * {@code RETURN-CODE} and its composed {@code ABENDING PROGRAM} sentence - which can quote a
-     * dataset's own reason text - are server-side diagnostics rather than anything a caller outside
-     * the trust boundary is entitled to.
-     *
-     * <p>So "preserve the message byte for byte" is asserted here as exact equality against
-     * {@link CobolErrorHandler#ABEND_MESSAGE} together with the absence of every withheld value. A
-     * {@code contains} assertion or a trimmed comparison would let a real leak through.
-     */
     @Nested
     @DisplayName("An abend answers 500 with one invariant body across every RETURN-CODE")
     class AbendMappingOverHttp {
-
         @ParameterizedTest(name = "RETURN-CODE={0} answers 500 with the invariant abend body")
         @ValueSource(ints = {0, 4, 8, 12, 16})
         @DisplayName("every observed RETURN-CODE produces the same status and the same body")
         void everyObservedReturnCodeIsAnsweredIdentically(final int returnCode) throws Exception {
             adviceDispatcher().perform(get("/webconfig-fixture/abend/" + returnCode))
                     .andExpect(status().isInternalServerError())
-                    // content().string, not content().json: a JSON comparison is a comparison of
-                    // structure, and this assertion is deliberately a comparison of bytes.
                     .andExpect(content().string(ABEND_BODY));
         }
 
@@ -844,18 +616,12 @@ class WebConfigTest {
                     .andReturn().getResponse().getContentAsString();
 
             assertThat(body).isEqualTo(ABEND_BODY);
-            // Four members and no fifth: no program, no return code, no reason, no path, no timestamp.
-            // fieldErrors is present and empty, because an abend identifies no field - and abendData is
-            // absent, because a CALL 'CEE3ABD' site transmits no ABEND-DATA area.
             assertThat(body.chars().filter(character -> character == ':').count()).isEqualTo(4);
         }
 
         @Test
         @DisplayName("an abend carrying ABCODE and TIMING is answered like one carrying neither")
         void theAbendParameterBranchesAreIndistinguishableToACaller() throws Exception {
-            // The standard sites set both LE arguments; app/cbl/CBSTM03A.CBL:923 sets neither. Both
-            // shapes exist in the estate, so both are driven - and a caller must not be able to tell
-            // them apart, because that difference is a server-side diagnostic.
             final String withParameters = adviceDispatcher()
                     .perform(get("/webconfig-fixture/abend/12"))
                     .andReturn().getResponse().getContentAsString();
@@ -878,8 +644,6 @@ class WebConfigTest {
         @Test
         @DisplayName("the withheld detail is still on the exception, for the server's own diagnostics")
         void theDetailRemainsAvailableServerSide() {
-            // Withholding is not discarding. A production failure has to stay diagnosable, so the
-            // values kept out of the body must still be on the exception the advice logged.
             final AbendException abend =
                     AbendException.standard(WITHHELD_PROGRAM, 12, WITHHELD_REASON);
 
@@ -895,8 +659,6 @@ class WebConfigTest {
         @Test
         @DisplayName("the five observed return codes are the ones AbendException declares")
         void theDrivenReturnCodesAreTheDeclaredOnes() {
-            // Keeps the @ValueSource above honest: it is the declared APPL-RESULT set, not a list
-            // that happened to be typed in.
             assertThat(List.of(AbendException.RETURN_CODE_OK, AbendException.RETURN_CODE_WARNING,
                     AbendException.RETURN_CODE_ASSUMED_FAILURE, AbendException.RETURN_CODE_IO_ERROR,
                     AbendException.RETURN_CODE_END_OF_FILE))
@@ -905,21 +667,9 @@ class WebConfigTest {
         }
     }
 
-    /**
-     * A rejected field reports which field and why, and nothing more.
-     *
-     * <p>The constraints these tests trip are the symbolic maps' widths expressed as Bean Validation
-     * annotations: {@code app/cpy-bms/COSGN00.CPY} declares {@code USERIDI PIC X(8)} and
-     * {@code PASSWDI PIC X(8)}, and the matching {@code DFHMDF} definitions in
-     * {@code app/bms/COSGN00.bms} are {@code LENGTH=8}. Reporting the field and the violation is what
-     * lets a caller correct the input, and it mirrors the COBOL highlighting the offending field on
-     * re-display. No specific production DTO's field list is asserted - that belongs to the domain
-     * {@code dto} packages.
-     */
     @Nested
     @DisplayName("A validation failure names the field and the violation, and echoes no value")
     class ValidationFailuresOverHttp {
-
         @Test
         @DisplayName("a width breach of an xxxI PIC X(8) field answers 400 naming that field")
         void aWidthBreachNamesTheField() throws Exception {
@@ -930,12 +680,6 @@ class WebConfigTest {
                     .andExpect(jsonPath("$.error").value(HttpStatus.BAD_REQUEST.getReasonPhrase()))
                     .andExpect(jsonPath("$.fieldErrors.length()").value(1))
                     .andExpect(jsonPath("$.fieldErrors[0].field").value("USERID"))
-                    // The declared width, and nothing else. The validator's own message is NOT what
-                    // travels: on this module's DTOs it is maintainer prose naming the symbolic-map
-                    // item, its PICTURE clause and the copybook path and line the width came from, and
-                    // forwarding it would publish the copybook inventory one rejected field at a time.
-                    // Neither is the constraint implementation's default wording - "size must be
-                    // between 0 and 8" - because that is whatever the validator release happens to say.
                     .andExpect(jsonPath("$.fieldErrors[0].message")
                             .value("must be at most 8 characters"));
         }
@@ -948,8 +692,6 @@ class WebConfigTest {
                             .content("{\"USERID\":\"NINECHARS\",\"PASSWD\":\"TOOLONGPASSWORD\"}"))
                     .andExpect(status().isBadRequest())
                     .andExpect(jsonPath("$.fieldErrors.length()").value(2))
-                    // PASSWD before USERID: sorted, not in whatever order the binder produced, so the
-                    // same failure always serialises the same way.
                     .andExpect(jsonPath("$.fieldErrors[0].field").value("PASSWD"))
                     .andExpect(jsonPath("$.fieldErrors[1].field").value("USERID"));
         }
@@ -964,9 +706,6 @@ class WebConfigTest {
                             .content("{\"USERID\":\"" + overWide + "\",\"PASSWD\":\"PASS\"}"))
                     .andReturn().getResponse().getContentAsString();
 
-            // The values flowing through these DTOs are card numbers, account identifiers and
-            // government-issued identifiers, so naming the field and its width is the reportable part
-            // and the characters never are.
             assertThat(body).doesNotContain(overWide);
         }
 
@@ -980,19 +719,12 @@ class WebConfigTest {
                             .content("{\"USERID\":\"USER0001\",\"PASSWD\":\"" + secret + "\"}"))
                     .andReturn().getResponse().getContentAsString();
 
-            // COSGN00C compares SEC-USR-PWD PIC X(08) against USRSEC in plaintext and this migration
-            // preserves that, because hashing would be a behaviour change and would need a framework
-            // that is out of scope (practice B6, gate G41). Preserving it is not licence to publish
-            // it: the error boundary still refuses to put the value in a response.
             assertThat(body).doesNotContain(secret);
         }
 
         @Test
         @DisplayName("a valid payload passes the validator untouched")
         void aValidPayloadIsAccepted() throws Exception {
-            // Quoted for the same reason as the path-variable case: the fixture returns a String and
-            // Jackson is the only converter. USER0001 and PASSWORD are both exactly eight characters,
-            // which is the width USERIDI and PASSWDI declare.
             adviceDispatcher().perform(post("/webconfig-fixture/signon")
                             .contentType(MediaType.APPLICATION_JSON)
                             .content("{\"USERID\":\"USER0001\",\"PASSWD\":\"PASSWORD\"}"))
@@ -1024,21 +756,9 @@ class WebConfigTest {
         }
     }
 
-    /**
-     * The dispatcher selects the handler the advice intends, and the catch-all preserves a status it
-     * did not choose.
-     *
-     * <p>This is the group that needs the real resolver. Spring resolves an
-     * {@code @ExceptionHandler} by walking the thrown exception's own type hierarchy and choosing the
-     * closest declared match, and because an advice is consulted <em>before</em> Spring's default
-     * resolver, a naive {@code Exception} handler would silently turn an unknown path, a wrong method
-     * and an unsupported media type into {@code 500 Internal Server Error}. Driving each through the
-     * dispatcher is the only way to hold that.
-     */
     @Nested
     @DisplayName("Handler selection is deterministic, and the catch-all preserves the status")
     class HandlerSelectionIsDeterministic {
-
         @Test
         @DisplayName("a value a domain guard rejected answers 400, not the catch-all's 500")
         void aRejectedValueStaysABadRequest() throws Exception {
@@ -1086,17 +806,6 @@ class WebConfigTest {
         @Test
         @DisplayName("a conversion failure names the parameter and no Java type")
         void aConversionFailureNamesTheParameterAndNoJavaType() throws Exception {
-            // MethodArgumentTypeMismatchException extends TypeMismatchException and there is exactly
-            // ONE handler for the family, so the same fixed sentence answers a path variable, a query
-            // parameter and a conversion refused during binding alike. There used to be a narrower
-            // handler for the MVC subclass which, because closest-match resolution preferred it,
-            // reported the required type - "is not a valid long" - and so published the internal Java
-            // type of a screen field to an unauthenticated caller.
-            //
-            // The parameter's NAME is a different matter from its type: the route publishes it in its
-            // own URI template and the caller typed the value into that position, so naming it back
-            // discloses nothing they did not already have, and it is the only thing that makes the
-            // answer actionable on a route carrying more than one parameter.
             final String body = adviceDispatcher()
                     .perform(get("/webconfig-fixture/accounts/not-a-number"))
                     .andExpect(status().isBadRequest())
@@ -1124,9 +833,6 @@ class WebConfigTest {
         @Test
         @DisplayName("a convertible path variable is still served normally")
         void aConvertiblePathVariableIsServed() throws Exception {
-            // Quoted, because the fixture returns a String and the only converter installed is the
-            // Jackson one, so the value is serialised as a JSON string. The point of the assertion is
-            // that the request reached the handler at all rather than being claimed by the advice.
             adviceDispatcher().perform(get("/webconfig-fixture/accounts/11"))
                     .andExpect(status().isOk())
                     .andExpect(content().string("\"11\""));
@@ -1218,8 +924,6 @@ class WebConfigTest {
             final String body = adviceDispatcher().perform(get(path))
                     .andReturn().getResponse().getContentAsString();
 
-            // A timestamp would make a response body non-deterministic in a module whose responses
-            // are compared byte for byte, and a path would echo caller-supplied text.
             assertThat(body)
                     .doesNotContain("timestamp")
                     .doesNotContain("\"path\"")
@@ -1227,37 +931,12 @@ class WebConfigTest {
         }
     }
 
-    /**
-     * The module's single time source (gate G3, practice B7).
-     *
-     * <p>{@code common/DateHeader} is the Java form of the {@code WS-DATE-TIME} group in
-     * {@code app/cpy/CSDAT01Y.cpy}, and it supplies the {@code CURDATE} and {@code CURTIME} fields
-     * that sit in the top-right corner of all 17 screens. It never calls {@code now()} of its own:
-     * its clock-consuming factory takes a {@link Clock} and reads {@code instant()} and
-     * {@code getZone()} exactly once, so a test can pass a fixed clock and assert an exact rendered
-     * header. That design needs exactly one {@link Clock} in the context, and {@link WebConfig}
-     * supplies it - a missing one fails the whole graph, and a non-fixed one in a test is what makes
-     * a suite flaky.
-     *
-     * <p>{@link DateHeader}'s own 58-byte layout is deliberately not asserted here; that belongs to
-     * the {@code common} package's tests. What is asserted here is the wiring the layout depends on.
-     */
-    /**
-     * The container's error path, which this API answers as JSON rather than as a framework page.
-     *
-     * <p>Two defects are being held closed here. A caller sending {@code Accept: text/html} used to be
-     * answered with Spring Boot's whitelabel HTML page - from an API that speaks only JSON - because a
-     * servlet container <em>forwards</em> to {@code /error} whenever a response carries an error status
-     * and no handler produced a body. And a direct {@code GET /error}, which is a real registered
-     * mapping, used to answer {@code 500} with {@code {"timestamp":...,"status":999,"error":"None"}}: a
-     * body shape found nowhere else in the API, carrying a status code that does not exist.
-     */
     @Nested
     @DisplayName("The container's error path answers this API's one JSON envelope")
     class TheErrorEndpoint {
 
-        /** The endpoint under test; it is stateless, so one instance serves every case. */
-        private final WebConfig.CobolErrorEndpoint endpoint = new WebConfig.CobolErrorEndpoint();
+        /** The route under test, on the framework's default error path; it holds no mutable state. */
+        private final WebConfig.CobolErrorRoute route = new WebConfig.CobolErrorRoute("/error");
 
         @Test
         @DisplayName("a forwarded failure keeps the status the container recorded")
@@ -1265,31 +944,24 @@ class WebConfigTest {
             final MockHttpServletRequest forwarded = new MockHttpServletRequest();
             forwarded.setAttribute(RequestDispatcher.ERROR_STATUS_CODE, 406);
 
-            final ResponseEntity<CobolErrorHandler.CobolErrorResponse> answer =
-                    endpoint.renderError(forwarded);
+            final ServerResponse answer = route.render(forwarded);
+            final CobolErrorHandler.CobolErrorResponse body =
+                    WebConfig.CobolErrorRoute.bodyFor(HttpStatus.NOT_ACCEPTABLE);
 
-            assertThat(answer.getStatusCode()).isEqualTo(HttpStatus.NOT_ACCEPTABLE);
-            assertThat(answer.getHeaders().getContentType()).isEqualTo(MediaType.APPLICATION_JSON);
-            assertThat(answer.getBody()).isNotNull();
-            assertThat(answer.getBody().code())
-                    .isEqualTo(CobolErrorHandler.REQUEST_NOT_COMPLETED_CODE);
-            assertThat(answer.getBody().error())
-                    .isEqualTo(HttpStatus.NOT_ACCEPTABLE.getReasonPhrase());
-            assertThat(answer.getBody().detail())
-                    .isEqualTo(CobolErrorHandler.UNEXPECTED_FAILURE_MESSAGE);
-            assertThat(answer.getBody().fieldErrors()).isEmpty();
-            assertThat(answer.getBody().abendData()).isNull();
+            assertThat(answer.statusCode()).isEqualTo(HttpStatus.NOT_ACCEPTABLE);
+            assertThat(answer.headers().getContentType()).isEqualTo(MediaType.APPLICATION_JSON);
+            assertThat(body.code()).isEqualTo(CobolErrorHandler.REQUEST_NOT_COMPLETED_CODE);
+            assertThat(body.error()).isEqualTo(HttpStatus.NOT_ACCEPTABLE.getReasonPhrase());
+            assertThat(body.detail()).isEqualTo(CobolErrorHandler.UNEXPECTED_FAILURE_MESSAGE);
+            assertThat(body.fieldErrors()).isEmpty();
+            assertThat(body.abendData()).isNull();
         }
 
         @Test
         @DisplayName("the body carries no timestamp, no path and no invented status member")
         void theBodyCarriesNothingFromTheRequest() throws Exception {
-            final MockHttpServletRequest forwarded = new MockHttpServletRequest();
-            forwarded.setAttribute(RequestDispatcher.ERROR_STATUS_CODE, 404);
-            forwarded.setAttribute(RequestDispatcher.ERROR_REQUEST_URI, "/api/no-such-screen");
-
             final String rendered = customizedMapper()
-                    .writeValueAsString(endpoint.renderError(forwarded).getBody());
+                    .writeValueAsString(WebConfig.CobolErrorRoute.bodyFor(HttpStatus.NOT_FOUND));
 
             assertThat(rendered).isEqualTo("{\"code\":\""
                     + CobolErrorHandler.REQUEST_NOT_COMPLETED_CODE + "\",\"error\":\""
@@ -1306,14 +978,12 @@ class WebConfigTest {
             if ("not-an-integer".equals(recorded)) {
                 request.setAttribute(RequestDispatcher.ERROR_STATUS_CODE, "404");
             } else if ("999".equals(recorded)) {
-                // 999 is exactly what Boot's own /error body reported for a direct request, and it is
-                // not a registered status: answering with it published a code that does not exist.
                 request.setAttribute(RequestDispatcher.ERROR_STATUS_CODE, 999);
             }
 
-            assertThat(WebConfig.CobolErrorEndpoint.statusOf(request))
+            assertThat(WebConfig.CobolErrorRoute.statusOf(request))
                     .isEqualTo(HttpStatus.INTERNAL_SERVER_ERROR);
-            assertThat(endpoint.renderError(request).getStatusCode())
+            assertThat(route.render(request).statusCode())
                     .isEqualTo(HttpStatus.INTERNAL_SERVER_ERROR);
         }
 
@@ -1321,22 +991,76 @@ class WebConfigTest {
         @DisplayName("it refuses to render without a request rather than inventing one")
         void itRefusesToRenderWithoutARequest() {
             assertThatExceptionOfType(NullPointerException.class)
-                    .isThrownBy(() -> endpoint.renderError(null));
+                    .isThrownBy(() -> route.render((HttpServletRequest) null));
             assertThatExceptionOfType(NullPointerException.class)
-                    .isThrownBy(() -> WebConfig.CobolErrorEndpoint.statusOf(null));
+                    .isThrownBy(() -> route.render((ServerRequest) null));
+            assertThatExceptionOfType(NullPointerException.class)
+                    .isThrownBy(() -> route.route(null));
+            assertThatExceptionOfType(NullPointerException.class)
+                    .isThrownBy(() -> WebConfig.CobolErrorRoute.statusOf(null));
+            assertThatExceptionOfType(NullPointerException.class)
+                    .isThrownBy(() -> WebConfig.CobolErrorRoute.bodyFor(null));
         }
 
         @Test
-        @DisplayName("it is an ErrorController, which is what suppresses Boot's whitelabel page")
-        void itIsAnErrorControllerSoBootsOwnIsSuppressed() {
+        @DisplayName("it is an ErrorController - which suppresses Boot's whitelabel page - and is NOT "
+                + "a controller, which is what keeps the online surface at seventeen")
+        void itIsAnErrorControllerButNotAController() {
             // BasicErrorController is registered @ConditionalOnMissingBean(ErrorController.class), so
             // implementing the interface is not decoration: it is the mechanism that replaces Boot's
-            // HTML-producing mapping with this JSON-only one.
+            // HTML-producing mapping with this JSON-only one. ErrorController is a marker with no
+            // methods in Boot 3, which is exactly why a non-controller can carry it.
             assertThat(org.springframework.boot.web.servlet.error.ErrorController.class)
-                    .isAssignableFrom(WebConfig.CobolErrorEndpoint.class);
-            assertThat(WebConfig.CobolErrorEndpoint.class
+                    .isAssignableFrom(WebConfig.CobolErrorRoute.class);
+
+            // And the other half, which is the reason this is a RouterFunction at all: the
+            // @RestController inventory is the seventeen translated CICS online programs and nothing
+            // else (gate G3), so the error boundary must map its path without a controller stereotype.
+            assertThat(WebConfig.CobolErrorRoute.class
                     .isAnnotationPresent(org.springframework.web.bind.annotation.RestController.class))
-                    .isTrue();
+                    .isFalse();
+            assertThat(WebConfig.CobolErrorRoute.class
+                    .isAnnotationPresent(org.springframework.stereotype.Controller.class))
+                    .isFalse();
+            assertThat(org.springframework.web.servlet.function.RouterFunction.class)
+                    .isAssignableFrom(WebConfig.CobolErrorRoute.class);
+        }
+
+        @Test
+        @DisplayName("the route matches the configured error path and nothing else")
+        void theRouteMatchesOnlyTheConfiguredPath() {
+            assertThat(route.errorPath()).isEqualTo("/error");
+            assertThat(route.route(serverRequestFor("/error"))).isPresent();
+            assertThat(route.route(serverRequestFor("/api/accounts/00000000001"))).isEmpty();
+            assertThat(route.route(serverRequestFor("/errors"))).isEmpty();
+
+            // A deployment that relocates the error path relocates the route with it, because the path
+            // is bound rather than written in Java.
+            final WebConfig.CobolErrorRoute relocated = new WebConfig.CobolErrorRoute("/failure");
+            assertThat(relocated.route(serverRequestFor("/failure"))).isPresent();
+            assertThat(relocated.route(serverRequestFor("/error"))).isEmpty();
+        }
+
+        @Test
+        @DisplayName("a route with no path is refused, because it would match nothing and hand the "
+                + "dispatch back to the whitelabel page")
+        void aRouteWithNoPathIsRefused() {
+            assertThatExceptionOfType(NullPointerException.class)
+                    .isThrownBy(() -> new WebConfig.CobolErrorRoute(null));
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .isThrownBy(() -> new WebConfig.CobolErrorRoute(" "))
+                    .withMessageContaining("server.error.path");
+        }
+
+        /**
+         * A {@link ServerRequest} over a mock servlet request, which is all the routing predicate reads.
+         *
+         * @param path the request path
+         * @return the request
+         */
+        private ServerRequest serverRequestFor(final String path) {
+            final MockHttpServletRequest request = new MockHttpServletRequest("GET", path);
+            return ServerRequest.create(request, List.of(new MappingJackson2HttpMessageConverter()));
         }
 
         @Test
@@ -1354,7 +1078,6 @@ class WebConfigTest {
     @Nested
     @DisplayName("The Clock bean - one of them, system-zoned, and the reason 17 screens are testable")
     class TheClockBean {
-
         @Test
         @DisplayName("the slice contributes exactly one Clock bean")
         void exactlyOneClockBeanIsContributed() {
@@ -1374,9 +1097,6 @@ class WebConfigTest {
         void theProductionClockIsTheSystemClock() {
             final Clock clock = new WebConfig().clock();
 
-            // Compared against systemDefaultZone rather than against a named zone, so the assertion
-            // holds under -Duser.timezone=America/Chicago exactly as it does under UTC. A fixed clock
-            // here would freeze the date on every screen.
             assertThat(clock).isEqualTo(Clock.systemDefaultZone());
             assertThat(clock.getZone()).isEqualTo(ZoneId.systemDefault());
             assertThat(clock).isNotEqualTo(FIXED_CLOCK);
@@ -1387,16 +1107,12 @@ class WebConfigTest {
         void theClockBeanIsSafeToShare() {
             final WebConfig config = new WebConfig();
 
-            // Two invocations produce equal values rather than a shared mutable object, which is what
-            // makes an instance-method bean correct here and a static field unnecessary (practice B9).
             assertThat(config.clock()).isEqualTo(config.clock());
         }
 
         @Test
         @DisplayName("a fixed clock reads identically however many times it is read")
         void aFixedClockIsReproducible() {
-            // The two accessors DateHeader reads. Freezing them is what makes a rendered header
-            // comparable byte for byte against an expected parity image.
             assertThat(FIXED_CLOCK.instant()).isEqualTo(FIXED_INSTANT);
             assertThat(FIXED_CLOCK.instant()).isEqualTo(FIXED_CLOCK.instant());
             assertThat(FIXED_CLOCK.getZone()).isEqualTo(ZoneOffset.UTC);
@@ -1406,10 +1122,6 @@ class WebConfigTest {
         @Test
         @DisplayName("a second Clock definition fails the context rather than quietly winning")
         void aSecondClockDefinitionFailsTheContext() {
-            // Measured, not assumed: Spring Boot disables bean-definition overriding, so a second
-            // Clock is a startup failure. That is the property that makes "the single source of the
-            // current instant" true by construction rather than by convention - two clocks in one
-            // context would render two different times into one screen header.
             sliceRunner().withBean(Clock.class, () -> FIXED_CLOCK).run(context -> {
                 assertThat(context).hasFailed();
                 assertThat(context.getStartupFailure())
@@ -1421,9 +1133,6 @@ class WebConfigTest {
         @Test
         @DisplayName("a fixed clock is what a consumer receives when a test supplies one")
         void aFixedClockIsInjectableIntoAConsumer() {
-            // The substitution a controller or a service test performs: WebConfig is absent, the
-            // fixed clock is the context's clock, and two reads are identical. This is the mechanism
-            // by which every date-bearing controller becomes deterministic (practice B7).
             new ApplicationContextRunner()
                     .withBean(Clock.class, () -> FIXED_CLOCK)
                     .run(context -> {
@@ -1439,9 +1148,6 @@ class WebConfigTest {
         @Test
         @DisplayName("DateHeader takes its time source as a parameter rather than reading it itself")
         void dateHeaderTakesAnInjectedClock() {
-            // The structural form of "never calls now()": at least one public static factory declares
-            // a java.time.Clock parameter, and no factory offers a no-argument form that could only
-            // have obtained the time internally.
             final List<Method> clockConsumers = Arrays.stream(DateHeader.class.getMethods())
                     .filter(method -> Modifier.isStatic(method.getModifiers()))
                     .filter(method -> Arrays.asList(method.getParameterTypes()).contains(Clock.class))
@@ -1461,25 +1167,12 @@ class WebConfigTest {
         }
     }
 
-    /**
-     * What {@link WebConfig} refuses to contribute, which defines it as much as what it declares.
-     *
-     * <p>A suite asserting only the positives would pass against an implementation that also switched
-     * off Boot's MVC auto-configuration, replaced the shared {@code ObjectMapper}, or introduced a
-     * session store or a filter chain. Each of those is a real regression with a real cost, and each
-     * is asserted against here.
-     */
     @Nested
     @DisplayName("The negative contract - no EnableWebMvc, no ObjectMapper, no session, no security")
     class TheNegativeContract {
-
         @Test
         @DisplayName("WebConfig is not annotated with EnableWebMvc")
         void enableWebMvcIsAbsent() {
-            // @EnableWebMvc switches Boot's MVC auto-configuration off and hands the whole
-            // configuration to the application, which would discard the auto-configured HTTP message
-            // converters - including the Jackson converter this class spends its length configuring -
-            // and every one of the 17 controllers would stop mapping JSON correctly (gate G3).
             assertThat(WebConfig.class.getAnnotation(EnableWebMvc.class)).isNull();
             assertThat(WebConfig.class.isAnnotationPresent(EnableWebMvc.class)).isFalse();
         }
@@ -1498,10 +1191,6 @@ class WebConfigTest {
             "configurePathMatch", "addArgumentResolvers"})
         @DisplayName("no WebMvcConfigurer callback is overridden - there is nothing for one to do")
         void noWebMvcConfigurerCallbackIsOverridden(final String callback) {
-            // There is no web user interface, no component library and no design tokens in this
-            // estate, so JSON is the only representation and an empty override set is the correct
-            // outcome rather than an omission. Overriding the converter callbacks in particular would
-            // be the way the UTF-8 guarantee above could be undone.
             assertThat(Arrays.stream(WebConfig.class.getDeclaredMethods())
                     .filter(method -> !method.isSynthetic())
                     .map(Method::getName)
@@ -1510,14 +1199,126 @@ class WebConfigTest {
         }
 
         @Test
-        @DisplayName("WebConfig declares only its three bean methods")
-        void onlyTheThreeBeanMethodsAreDeclared() {
+        @DisplayName("WebConfig declares only its six bean methods and one package-visible helper")
+        void onlyTheSixBeanMethodsAreDeclared() {
+            // Named rather than counted, so an added method has to be acknowledged here rather than
+            // absorbed by a threshold - a bean added here is a change to the web boundary.
+            // noStoreOnCredentialScreens is one of the six, added so the three routes that accept a
+            // password say so at the transport level as well as in their bodies;
+            // carddemoScreenResponseHeaders is another, which puts the no-store, nosniff pair on every
+            // response including the error dispatch; and cobolErrorRoute publishes the container error
+            // path as a RouterFunction rather than as an eighteenth @RestController, so the online
+            // inventory stays exactly the seventeen translated CICS programs (gate G3).
+            // screenReadConstraints is deliberately NOT a bean - it is the parser bound the customizer
+            // installs, exposed package-visibly only so a test can assert the same value the wire runs
+            // under rather than a restatement of it.
             assertThat(Arrays.stream(WebConfig.class.getDeclaredMethods())
                     .filter(method -> !method.isSynthetic())
                     .map(Method::getName)
                     .sorted()
                     .toList())
-                    .containsExactly("carddemoJacksonCustomizer", "clock", "jobSubmissionValidator");
+                    .containsExactly("carddemoJacksonCustomizer", "carddemoScreenResponseHeaders",
+                            "clock", "cobolErrorRoute", "jobSubmissionValidator",
+                            "noStoreOnCredentialScreens", "screenReadConstraints");
+            assertThat(Arrays.stream(WebConfig.class.getDeclaredMethods())
+                    .filter(method -> method.isAnnotationPresent(Bean.class))
+                    .map(Method::getName)
+                    .sorted()
+                    .toList())
+                    .as("the contributed surface is six beans, and the bound helper is not one of them")
+                    .containsExactly("carddemoJacksonCustomizer", "carddemoScreenResponseHeaders",
+                            "clock", "cobolErrorRoute", "jobSubmissionValidator",
+                            "noStoreOnCredentialScreens");
+        }
+
+        /**
+         * A request whose path has been parsed and cached, as the dispatcher would have left it.
+         *
+         * <p>{@code MappedInterceptor.matches} resolves the lookup path from the request rather than
+         * re-deriving it, and refuses a request that carries neither a parsed {@code RequestPath} nor a
+         * resolved lookup path. Parsing here is what the {@code DispatcherServlet} does before any
+         * handler mapping runs, so these assertions see the same input production does.
+         *
+         * @param method the HTTP method
+         * @param path   the request URI
+         * @return the request, ready for a path match
+         */
+        private MockHttpServletRequest routed(final String method, final String path) {
+            MockHttpServletRequest request = new MockHttpServletRequest(method, path);
+            ServletRequestPathUtils.parseAndCache(request);
+            return request;
+        }
+
+        @Test
+        @DisplayName("the no-store interceptor is a MappedInterceptor, so no callback override is needed")
+        void theNoStoreInterceptorNeedsNoCallbackOverride() {
+            MappedInterceptor interceptor = new WebConfig().noStoreOnCredentialScreens();
+
+            assertThat(interceptor)
+                    .as("AbstractHandlerMapping detects MappedInterceptor beans itself, which is what "
+                            + "lets this class keep its empty WebMvcConfigurer override set")
+                    .isNotNull();
+            assertThat(interceptor.getInterceptor()).isInstanceOf(HandlerInterceptor.class);
+            assertThat(interceptor.getExcludePathPatterns()).isNull();
+        }
+
+        @ParameterizedTest(name = "{0} is marked no-store")
+        @ValueSource(strings = {"/api/signon", "/api/users", "/api/users/USER0001"})
+        @DisplayName("each credential-bearing route matches the interceptor and gets the directive")
+        void eachCredentialRouteIsMarkedNoStore(final String path) throws Exception {
+            MappedInterceptor interceptor = new WebConfig().noStoreOnCredentialScreens();
+            MockHttpServletRequest request = routed("POST", path);
+            MockHttpServletResponse response = new MockHttpServletResponse();
+
+            assertThat(interceptor.matches(request))
+                    .as("%s accepts a password in its body, so it must not be cached anywhere", path)
+                    .isTrue();
+            assertThat(interceptor.getInterceptor().preHandle(request, response, new Object()))
+                    .as("the chain continues - the interceptor adds a header and judges nothing")
+                    .isTrue();
+            assertThat(response.getHeader(HttpHeaders.CACHE_CONTROL))
+                    .isEqualTo("no-store");
+        }
+
+        @ParameterizedTest(name = "{0} is left alone")
+        @ValueSource(strings = {"/api/accounts/00000000011", "/api/cards", "/api/transactions",
+            "/api/menu", "/api/billpay", "/api/reports"})
+        @DisplayName("a route that carries no credential is left exactly as the framework leaves it")
+        void aRouteWithoutACredentialIsNotIntercepted(final String path) {
+            assertThat(new WebConfig().noStoreOnCredentialScreens()
+                    .matches(routed("GET", path)))
+                    .as("%s carries no password, so there is nothing here for this rule to do", path)
+                    .isFalse();
+        }
+
+        @Test
+        @DisplayName("the patterns are the paths the three controllers actually declare")
+        void thePatternsMatchTheControllersOwnMappings() {
+            // Written against the controllers' own constants and mapping annotations, so a route that
+            // moved would fail the build here rather than silently lose its header. The patterns
+            // themselves stay literals in WebConfig, which must not depend on the user package.
+            MappedInterceptor interceptor = new WebConfig().noStoreOnCredentialScreens();
+
+            assertThat(interceptor.matches(routed("POST", SignOnController.SIGNON_PATH)))
+                    .as("POST %s", SignOnController.SIGNON_PATH)
+                    .isTrue();
+            assertThat(interceptor.matches(routed("POST", UserAddController.USERS_PATH)))
+                    .as("POST %s", UserAddController.USERS_PATH)
+                    .isTrue();
+
+            String declaredUpdatePath = Arrays.stream(UserUpdateController.class.getDeclaredMethods())
+                    .map(method -> method.getAnnotation(PutMapping.class))
+                    .filter(Objects::nonNull)
+                    .flatMap(mapping -> Arrays.stream(mapping.path()))
+                    .findFirst()
+                    .orElseThrow(() -> new AssertionError(
+                            "UserUpdateController declares no @PutMapping path"));
+            assertThat(declaredUpdatePath)
+                    .as("the third route, read from the controller's own annotation")
+                    .isEqualTo("/api/users/{userId}");
+            assertThat(interceptor.matches(routed("PUT", declaredUpdatePath.replace("{userId}", "USER0001"))))
+                    .as("matched by the /api/users/* pattern")
+                    .isTrue();
         }
 
         @Test
@@ -1525,9 +1326,6 @@ class WebConfigTest {
         void noReplacementObjectMapperIsContributed() {
             sliceRunner().run(context -> {
                 assertThat(context).hasNotFailed();
-                // A replacement ObjectMapper bean would silently discard Boot's own configuration -
-                // the module's modules, its spring.jackson.* handling and its other converters - so
-                // customizing the builder is the whole point.
                 assertThat(context.getBeanNamesForType(ObjectMapper.class)).isEmpty();
                 assertThat(context.getBeanNamesForType(
                         Jackson2ObjectMapperBuilderCustomizer.class))
@@ -1540,9 +1338,6 @@ class WebConfigTest {
         void theAdviceIsRegisteredOnce() {
             sliceRunner().run(context -> {
                 assertThat(context).hasNotFailed();
-                // Registration comes from the @RestControllerAdvice annotation alone. A @Bean factory
-                // method for it as well would register it a second time under a second name, leaving
-                // two identical instances in the exception resolver's cache.
                 assertThat(context.getBeanNamesForType(CobolErrorHandler.class)).hasSize(1);
                 assertThat(context).hasSingleBean(CobolErrorHandler.class);
             });
@@ -1560,11 +1355,6 @@ class WebConfigTest {
         })
         @DisplayName("no excluded framework is present, so none can be wired in by accident")
         void noExcludedFrameworkIsOnTheClasspath(final String type) {
-            // Asserted as classpath absence, which is stronger than asserting no bean of the type: a
-            // type that is not present cannot be introduced by a later edit without also changing
-            // app/java/pom.xml, and that change is visible in review (practice B1, AAP 0.5.6).
-            // Authentication stays the plaintext SEC-USR-PWD PIC X(08) comparison against USRSEC that
-            // COSGN00C performs; hashing it would be a behaviour change (gate G41).
             assertThatExceptionOfType(ClassNotFoundException.class)
                     .isThrownBy(() -> Class.forName(type));
         }
@@ -1592,11 +1382,6 @@ class WebConfigTest {
                 final ConfigurableListableBeanFactory factory =
                         context.getSourceApplicationContext().getBeanFactory();
 
-                // CICS is pseudo-conversational, and the conversation state of these 17 programs -
-                // the CARDDEMO-COMMAREA fields, the EIBAID value and the screen's own field values -
-                // travels in the request and response payloads through common/NavigationContext.
-                // Server-side state would reintroduce exactly the session affinity the migration
-                // removes (gate G37, AAP rule R6).
                 assertThat(Arrays.stream(context.getBeanDefinitionNames())
                         .filter(name -> "session".equals(factory.getBeanDefinition(name).getScope())
                                 || "globalSession".equals(
@@ -1632,40 +1417,255 @@ class WebConfigTest {
         }
 
         @Test
-        @DisplayName("the whole slice is four contributed beans and nothing else")
-        void theSliceContributesExactlyItsFourBeans() {
+        @DisplayName("the whole slice is six contributed beans and nothing else")
+        void theSliceContributesExactlyItsSixBeans() {
             sliceRunner().run(context -> {
                 assertThat(context).hasNotFailed();
-                // Named explicitly rather than counted, so an added bean has to be acknowledged here
-                // rather than absorbed by a threshold. The three nested records carry no stereotype
-                // annotation and are correctly not bean candidates; JobSubmissionProperties appears
-                // only because @EnableConfigurationProperties binds it. carddemoDatasetCharset is the
-                // one entry this slice SUPPLIES rather than contributes: the Jackson customizer takes
-                // the screen code page by bean name, CobolCharsetConfig owns that bean in a deployed
-                // context, and this slice starts WebConfig alone - so it stands in for it here.
                 assertThat(Arrays.stream(context.getBeanDefinitionNames())
                         .filter(name -> name.startsWith("com.vsergeychik")
                                 || name.startsWith("carddemo")
                                 || "webConfig".equals(name)
                                 || "clock".equals(name)
                                 || "carddemoJacksonCustomizer".equals(name)
-                                || "jobSubmissionValidator".equals(name))
+                                || "cobolErrorRoute".equals(name)
+                                || WebConfig.SCREEN_HEADER_BEAN_NAME.equals(name)
+                                || "jobSubmissionValidator".equals(name)
+                                || "noStoreOnCredentialScreens".equals(name))
                         .sorted()
                         .toList())
                         .containsExactly(
                                 "carddemo.job-submission-com.vsergeychik.carddemo.config.WebConfig"
                                         + "$JobSubmissionProperties",
-                                // Supplied BY the runner, not contributed by WebConfig: the active
-                                // dataset code page the JSON boundary judges against. It appears in this
-                                // list because the filter above matches every name beginning "carddemo".
                                 CobolCharsetConfig.DATASET_CHARSET_BEAN_NAME,
                                 "carddemoJacksonCustomizer",
+                                // The response-header contributor. Acknowledged here rather than
+                                // absorbed: it sets Cache-Control: no-store and
+                                // X-Content-Type-Options: nosniff on every response including the
+                                // container's error dispatch. It is not a security filter chain - it
+                                // reads nothing from the request and decides nothing about the caller.
+                                WebConfig.SCREEN_HEADER_BEAN_NAME,
                                 "clock",
-                                "com.vsergeychik.carddemo.config.WebConfig$CobolErrorEndpoint",
+                                "cobolErrorRoute",
                                 "com.vsergeychik.carddemo.config.WebConfig$CobolErrorHandler",
                                 "jobSubmissionValidator",
+                                "noStoreOnCredentialScreens",
                                 "webConfig");
             });
+        }
+    }
+
+    // =================================================================================================
+    // F-SM9 and F-SM10 - the inbound resource bounds and the outbound headers.
+    // =================================================================================================
+
+    /**
+     * The two properties of the HTTP boundary that are about cost and caching rather than fidelity.
+     *
+     * <p>Everything else in this file asks whether a value survives the wire unchanged. This group asks
+     * two different questions: how much work a single unauthenticated request can make the server do,
+     * and what a caller is told about storing what comes back. Both were unanswered before - two of
+     * Jackson's six stream-read defaults are {@code -1}, meaning unlimited, and no response carried a
+     * caching directive or a sniffing directive at all.
+     */
+    @Nested
+    @DisplayName("The request bounds and the response headers - cost and caching, not fidelity")
+    class TheRequestBoundsAndResponseHeaders {
+
+        /** A screen payload whose {@code TRNNAME} is the given value, as a document. */
+        private static String screenDocument(final String trnName) {
+            return "{\"TRNNAME\":\"" + trnName + "\"}";
+        }
+
+        @Test
+        @DisplayName("all six parser bounds are stated, and none is left unlimited")
+        void everyParserBoundIsStatedAndNoneIsUnlimited() {
+            final StreamReadConstraints bounds = WebConfig.screenReadConstraints();
+
+            assertThat(bounds.getMaxDocumentLength()).isEqualTo(WebConfig.MAX_JSON_DOCUMENT_BYTES);
+            assertThat(bounds.getMaxTokenCount()).isEqualTo(WebConfig.MAX_JSON_TOKEN_COUNT);
+            assertThat(bounds.getMaxStringLength()).isEqualTo(WebConfig.MAX_JSON_STRING_LENGTH);
+            assertThat(bounds.getMaxNestingDepth()).isEqualTo(WebConfig.MAX_JSON_NESTING_DEPTH);
+            assertThat(bounds.getMaxNameLength()).isEqualTo(WebConfig.MAX_JSON_NAME_LENGTH);
+            assertThat(bounds.getMaxNumberLength()).isEqualTo(WebConfig.MAX_JSON_NUMBER_LENGTH);
+
+            // The point of the whole registration: Jackson leaves the document length and the token
+            // count at -1, so before this every request body was read until the caller stopped sending
+            // (CWE-400). A negative value here would mean the bound had been removed again.
+            assertThat(StreamReadConstraints.DEFAULT_MAX_DOC_LEN)
+                    .as("the default this replaces really is unlimited")
+                    .isNegative();
+            assertThat(StreamReadConstraints.DEFAULT_MAX_TOKEN_COUNT).isNegative();
+            assertThat(bounds.getMaxDocumentLength()).isPositive();
+            assertThat(bounds.getMaxTokenCount()).isPositive();
+
+            // And each of the four that had a default is genuinely tighter than it, so none of these is
+            // a restatement of what Jackson already did.
+            assertThat(bounds.getMaxStringLength())
+                    .isLessThan(StreamReadConstraints.DEFAULT_MAX_STRING_LEN);
+            assertThat(bounds.getMaxNestingDepth()).isLessThan(StreamReadConstraints.DEFAULT_MAX_DEPTH);
+            assertThat(bounds.getMaxNameLength()).isLessThan(StreamReadConstraints.DEFAULT_MAX_NAME_LEN);
+            assertThat(bounds.getMaxNumberLength()).isLessThan(StreamReadConstraints.DEFAULT_MAX_NUM_LEN);
+        }
+
+        @Test
+        @DisplayName("the mapper the wire actually uses carries them, not just the factory method")
+        void theCustomizedMapperCarriesTheBounds() {
+            final StreamReadConstraints installed =
+                    customizedMapper().getFactory().streamReadConstraints();
+
+            assertThat(installed.getMaxDocumentLength()).isEqualTo(WebConfig.MAX_JSON_DOCUMENT_BYTES);
+            assertThat(installed.getMaxTokenCount()).isEqualTo(WebConfig.MAX_JSON_TOKEN_COUNT);
+            assertThat(installed.getMaxStringLength()).isEqualTo(WebConfig.MAX_JSON_STRING_LENGTH);
+            assertThat(installed.getMaxNestingDepth()).isEqualTo(WebConfig.MAX_JSON_NESTING_DEPTH);
+            assertThat(installed.getMaxNameLength()).isEqualTo(WebConfig.MAX_JSON_NAME_LENGTH);
+            assertThat(installed.getMaxNumberLength()).isEqualTo(WebConfig.MAX_JSON_NUMBER_LENGTH);
+        }
+
+        @Test
+        @DisplayName("a string past the bound is refused rather than buffered")
+        void anOverLongStringIsRefused() {
+            final String tooLong = "A".repeat(WebConfig.MAX_JSON_STRING_LENGTH + 1);
+
+            assertThatExceptionOfType(StreamConstraintsException.class)
+                    .isThrownBy(() -> customizedMapper()
+                            .readTree(screenDocument(tooLong)));
+        }
+
+        @Test
+        @DisplayName("nesting past the bound is refused rather than descended")
+        void anOverDeepDocumentIsRefused() {
+            final int depth = WebConfig.MAX_JSON_NESTING_DEPTH + 1;
+            final String tooDeep = "[".repeat(depth) + "]".repeat(depth);
+
+            assertThatExceptionOfType(StreamConstraintsException.class)
+                    .isThrownBy(() -> customizedMapper().readTree(tooDeep));
+        }
+
+        @Test
+        @DisplayName("a property name past the bound is refused rather than buffered")
+        void anOverLongNameIsRefused() {
+            final String tooLong = "N".repeat(WebConfig.MAX_JSON_NAME_LENGTH + 1);
+
+            assertThatExceptionOfType(StreamConstraintsException.class)
+                    .isThrownBy(() -> customizedMapper()
+                            .readTree("{\"" + tooLong + "\":\"CC00\"}"));
+        }
+
+        @Test
+        @DisplayName("a document past the bound is refused part-way through, not read to its end")
+        void anOverLongDocumentIsRefused() {
+            // Built from many short strings rather than one long one, so what is exceeded is the
+            // DOCUMENT bound and not the string bound: this asserts the limit that was unlimited.
+            final StringBuilder document = new StringBuilder("{\"TRNNAME\":\"CC00\"");
+            final String filler = "F".repeat(1_000);
+            for (int index = 0; document.length() <= WebConfig.MAX_JSON_DOCUMENT_BYTES; index++) {
+                document.append(",\"F").append(index).append("\":\"").append(filler).append('"');
+            }
+            document.append('}');
+            assertThat(document.length()).isGreaterThan((int) WebConfig.MAX_JSON_DOCUMENT_BYTES);
+
+            assertThatExceptionOfType(StreamConstraintsException.class)
+                    .isThrownBy(() -> customizedMapper().readTree(document.toString()));
+        }
+
+        @Test
+        @DisplayName("the widest thing this repository actually ships is still accepted")
+        void theLargestLegitimateInputIsAccepted() throws IOException {
+            // 37,973 characters is the longest string in any of the 560 shipped parity case files, and
+            // six is the deepest nesting any of them reaches. A bound that refused either would be a
+            // bound set below the module's own data. The widest SCREEN value is far smaller still - the
+            // broadest symbolic-map item in the estate is ERRMSGI PIC X(78).
+            final String longestShippedString = "L".repeat(37_973);
+            assertThat(customizedMapper().readTree(screenDocument(longestShippedString))
+                    .get("TRNNAME").asText())
+                    .hasSize(37_973);
+
+            final String sixDeep = "{\"a\":{\"b\":{\"c\":{\"d\":{\"e\":{\"f\":\"CC00\"}}}}}}";
+            assertThat(customizedMapper().readTree(sixDeep).at("/a/b/c/d/e/f").asText())
+                    .isEqualTo("CC00");
+        }
+
+        @Test
+        @DisplayName("an over-long body is answered as a malformed request, not as a server fault")
+        void anOverLongBodyIsAnsweredAsAMalformedRequest() throws Exception {
+            final String tooLong = "A".repeat(WebConfig.MAX_JSON_STRING_LENGTH + 1);
+
+            // The bound is reached inside the parser, so it arrives at the advice as an unreadable body.
+            // CobolErrorHandler already claims that family, and it answers 400 with the same invariant
+            // envelope every other refusal uses - so exceeding a bound is a caller error, and the
+            // response quotes nothing of what was sent.
+            adviceDispatcher().perform(post(FIXTURE_SCREEN)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(screenDocument(tooLong)))
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.code").value(CobolErrorHandler.MALFORMED_REQUEST_CODE));
+        }
+
+        @Test
+        @DisplayName("every response carries no-store and nosniff, on the success path")
+        void aSuccessfulResponseCarriesBothHeaders() throws Exception {
+            headerDispatcher().perform(get(FIXTURE_ACCOUNT))
+                    .andExpect(status().isOk())
+                    .andExpect(header().string(HttpHeaders.CACHE_CONTROL, WebConfig.CACHE_CONTROL_VALUE))
+                    .andExpect(header().string(HttpHeaders.PRAGMA, WebConfig.PRAGMA_VALUE))
+                    .andExpect(header().string(HttpHeaders.EXPIRES, WebConfig.EXPIRES_VALUE))
+                    .andExpect(header().string(WebConfig.CONTENT_TYPE_OPTIONS_HEADER,
+                            WebConfig.CONTENT_TYPE_OPTIONS_VALUE));
+        }
+
+        @Test
+        @DisplayName("and on the failure path, where the body is a refusal rather than a screen")
+        void aRefusedResponseCarriesBothHeaders() throws Exception {
+            headerDispatcher().perform(post(FIXTURE_SCREEN)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{"))
+                    .andExpect(status().isBadRequest())
+                    .andExpect(header().string(HttpHeaders.CACHE_CONTROL, WebConfig.CACHE_CONTROL_VALUE))
+                    .andExpect(header().string(WebConfig.CONTENT_TYPE_OPTIONS_HEADER,
+                            WebConfig.CONTENT_TYPE_OPTIONS_VALUE));
+        }
+
+        @Test
+        @DisplayName("no-store is stated rather than a weaker directive, and nosniff exactly so")
+        void theHeaderValuesAreTheStrongestOnesAvailable() {
+            // A screen is painted for one request and is never reusable, so the directive has to be
+            // no-store and not max-age=0 or no-cache alone (CWE-525). The legacy pair is carried too,
+            // for intermediaries that predate Cache-Control.
+            assertThat(WebConfig.CACHE_CONTROL_VALUE)
+                    .startsWith("no-store")
+                    .contains("no-cache", "must-revalidate", "max-age=0");
+            assertThat(WebConfig.PRAGMA_VALUE).isEqualTo("no-cache");
+            assertThat(WebConfig.EXPIRES_VALUE).isEqualTo("0");
+            assertThat(WebConfig.CONTENT_TYPE_OPTIONS_VALUE).isEqualTo("nosniff");
+            assertThat(WebConfig.CONTENT_TYPE_OPTIONS_HEADER).isEqualTo("X-Content-Type-Options");
+        }
+
+        @Test
+        @DisplayName("the contributor runs on the container's ERROR dispatch too, unlike the default")
+        void theContributorRunsOnTheErrorDispatch() {
+            // Spring's default is to skip the error dispatch. That is the one dispatch where
+            // CobolErrorRoute answers, so skipping it would leave the JSON refusal envelope with no
+            // caching directive at all. Callable directly because the filter is a named class in this
+            // package and the override is protected.
+            assertThat(new WebConfig.ScreenResponseHeaderFilter().shouldNotFilterErrorDispatch())
+                    .as("false means: run on the ERROR dispatch as well")
+                    .isFalse();
+        }
+
+        @Test
+        @DisplayName("the contributor reads nothing from the request: it is not authentication")
+        void theContributorIsNotASecurityComponent() {
+            // Gate G41. This is two response headers and nothing else - no principal, no credential, no
+            // decision about the caller - so it is not the filter chain the migration excludes. The
+            // assertion is structural: the filter declares no field, so it can hold no policy and no
+            // state, and it cannot be carrying an authentication decision.
+            assertThat(WebConfig.ScreenResponseHeaderFilter.class.getDeclaredFields())
+                    .as("a header contributor has nothing to remember")
+                    .isEmpty();
+            assertThat(WebConfig.SCREEN_HEADER_BEAN_NAME.toLowerCase(Locale.ROOT))
+                    .doesNotContain("security", "filterchain", "authentication", "passwordencoder");
+            assertThat(new WebConfig().carddemoScreenResponseHeaders())
+                    .isInstanceOf(WebConfig.ScreenResponseHeaderFilter.class);
         }
     }
 
@@ -1690,17 +1690,8 @@ class WebConfigTest {
     @ExtendWith(OutputCaptureExtension.class)
     @DisplayName("The withheld field names still reach the server log, and only the server log")
     class WithheldDiagnosticsReachTheServerLog {
-
-        /** The logger the advice writes to. */
         private static final String ADVICE_LOGGER = CobolErrorHandler.class.getName();
 
-        /**
-         * Runs an action with {@code DEBUG} enabled on the advice's logger, restoring whatever was
-         * configured before.
-         *
-         * @param action the assertion body to run at {@code DEBUG}
-         * @throws Exception if the action does
-         */
         private void atDebugLevel(final ThrowingAction action) throws Exception {
             final LoggingSystem logging = LoggingSystem.get(getClass().getClassLoader());
             final LoggerConfiguration previous = logging.getLoggerConfiguration(ADVICE_LOGGER);
@@ -1708,8 +1699,6 @@ class WebConfigTest {
             try {
                 action.run();
             } finally {
-                // Passing null restores inheritance, which is the correct restoration when the logger
-                // had no explicit level of its own - as it does not here.
                 logging.setLogLevel(ADVICE_LOGGER,
                         previous == null ? null : previous.getConfiguredLevel());
             }
@@ -1753,8 +1742,6 @@ class WebConfigTest {
                         .andExpect(status().isBadRequest())
                         .andReturn().getResponse().getContentAsString();
 
-                // Jackson never reached a field, so the honest answer is that the document is at
-                // fault rather than any member of it - the other arm of the same log statement.
                 assertThat(output.getOut() + output.getErr())
                         .contains("none named - the document itself is unreadable");
                 assertThat(body).isEqualTo("{\"code\":\""
@@ -1774,10 +1761,6 @@ class WebConfigTest {
                                 .content("{\"TRNNAME\":\"CC00\",\"CURDATE\":\"07/19/22\","
                                         + "\"PGMNAME\":\"COSGN00C\",\"ERRMSG\":\"\","
                                         + "\"ACCTSID\":\"00000000011\","
-                                        // A card-number-shaped value with a trailing non-digit, so it
-                                        // genuinely fails to convert and Jackson's own message quotes
-                                        // it back. A purely numeric string would be coerced happily
-                                        // and the request would succeed, testing nothing.
                                         + "\"TAMT001\":\"4111111111111111X\"}"))
                         .andExpect(status().isBadRequest());
 
@@ -1785,8 +1768,6 @@ class WebConfigTest {
 
                 assertThat(logged)
                         .contains(HttpMessageNotReadableException.class.getName());
-                // The parser's message is where the payload is quoted, and a card number is exactly
-                // the sort of value that would then sit in a log file (CWE-532).
                 assertThat(logged).doesNotContain("4111111111111111");
             });
         }
@@ -1805,45 +1786,16 @@ class WebConfigTest {
                                 .content("{\"TRNNAME\":"))
                         .andReturn().getResponse().getContentAsString();
 
-                // The response is a function of the failure family alone, never of how the server
-                // happens to be logging at the time.
                 assertThat(verbose).isEqualTo(quiet);
             });
         }
     }
 
-    /**
-     * An action that may throw, so a test body can be handed to {@link
-     * WithheldDiagnosticsReachTheServerLog#atDebugLevel}.
-     */
     @FunctionalInterface
     private interface ThrowingAction {
-
-        /**
-         * Runs the action.
-         *
-         * @throws Exception if the action fails, which the calling test then reports
-         */
         void run() throws Exception;
     }
 
-    /**
-     * A payload shaped like a real screen projection, used by the JSON tests.
-     *
-     * <p>The component names are upper-case on purpose: they are the actual named {@code DFHMDF}
-     * labels of {@code app/bms/COSGN00.bms} ({@code TRNNAME}, {@code CURDATE}, {@code PGMNAME},
-     * {@code ERRMSG}) and {@code app/bms/COACTUP.bms} ({@code ACCTSID}), so a naming strategy that
-     * rewrote identifiers would be caught by a name this repository actually uses rather than by a
-     * synthetic one.
-     *
-     * @param TRNNAME the {@code CC00} transaction identifier field, {@code TRNNAMEI PIC X(4)}
-     * @param CURDATE the screen date field, {@code CURDATEI PIC X(8)}
-     * @param PGMNAME the program-name field, {@code PGMNAMEI PIC X(8)}
-     * @param ERRMSG  the error-message field, {@code ERRMSGI PIC X(78)}
-     * @param ACCTSID the account-identifier field of the account-update screen
-     * @param TAMT001 a monetary amount, standing for the {@code PIC S9(10)V99} family that every
-     *                money field in this estate belongs to
-     */
     private record ScreenPayload(
             String TRNNAME,
             String CURDATE,
@@ -1853,12 +1805,6 @@ class WebConfigTest {
             BigDecimal TAMT001) {
     }
 
-    /**
-     * A payload with one nested object, used to prove that an empty string is not silently turned
-     * into a missing object.
-     *
-     * @param nested the nested screen projection
-     */
     private record NestingPayload(ScreenPayload nested) {
     }
 }

@@ -14,27 +14,15 @@ import org.junit.jupiter.params.provider.ValueSource;
 /**
  * Tests for {@link BmsAttributes}, the reproduction of the IBM-supplied {@code DFHBMSCA} and
  * {@code DFHATTR} copybooks.
- *
- * <p>Those two copybooks are referenced by seventeen and two COBOL programs respectively but are
- * absent from this repository, so their constants could not be diffed against any in-repository
- * source. That makes the decode helpers the only mechanical check available on the byte values, and
- * every one of them is exercised here from both sides.
- *
- * <p>The 3270 field-attribute byte encodes protection, numeric-shift, intensity and the
- * modified-data tag in separate bit positions, so each predicate is driven with an attribute that
- * sets its bit and one that does not.
  */
 @DisplayName("BmsAttributes - DFHBMSCA and DFHATTR attribute, colour and highlight constants")
 class BmsAttributesContractTest {
-
     @Nested
     @DisplayName("Unsigned widening and hex rendering")
     class UnsignedAndHex {
-
         @Test
         @DisplayName("unsigned() widens a negative byte to its 0-255 code point")
         void unsignedWidensNegativeBytes() {
-            // 0xF0 is -16 as a Java byte; the attribute's identity is the unsigned 240.
             assertThat(BmsAttributes.unsigned(BmsAttributes.DFHBMASK)).isEqualTo(0xF0).isEqualTo(240);
             assertThat(BmsAttributes.unsigned((byte) 0x00)).isZero();
             assertThat(BmsAttributes.unsigned((byte) 0xFF)).isEqualTo(255);
@@ -52,7 +40,6 @@ class BmsAttributesContractTest {
     @Nested
     @DisplayName("Mnemonic lookup - a known byte names itself, an unknown byte renders as hex")
     class MnemonicLookup {
-
         @Test
         @DisplayName("a known field attribute resolves to its DFHBMSCA mnemonic")
         void knownFieldAttributeResolves() {
@@ -129,7 +116,6 @@ class BmsAttributesContractTest {
     @Nested
     @DisplayName("Attribute bit decoding - each predicate driven from both sides")
     class BitDecoding {
-
         @Test
         @DisplayName("isProtected is true for the protected attributes and false for unprotected")
         void isProtected() {
@@ -151,13 +137,9 @@ class BmsAttributesContractTest {
         @Test
         @DisplayName("isAutoskip requires BOTH protected and numeric, so all four cases are driven")
         void isAutoskipRequiresBothBits() {
-            // protected AND numeric -> autoskip
             assertThat(BmsAttributes.isAutoskip(BmsAttributes.DFHBMASK)).isTrue();
-            // protected, not numeric
             assertThat(BmsAttributes.isAutoskip(BmsAttributes.DFHBMPRO)).isFalse();
-            // numeric, not protected
             assertThat(BmsAttributes.isAutoskip(BmsAttributes.DFHBMUNN)).isFalse();
-            // neither
             assertThat(BmsAttributes.isAutoskip(BmsAttributes.DFHBMUNP)).isFalse();
         }
 
@@ -202,8 +184,6 @@ class BmsAttributesContractTest {
         @Test
         @DisplayName("DFHRED is the error-highlight colour CSSETATY moves onto a bad field")
         void dfhRedIsTheErrorColour() {
-            // CSSETATY sets DFHRED plus '*' on the offending field in REENTER state, so this specific
-            // constant carries behavioural weight across the online programs.
             assertThat(BmsAttributes.DFHRED).isEqualTo((byte) 0xF2);
             assertThat(BmsAttributes.colourMnemonic(BmsAttributes.DFHRED)).isEqualTo("DFHRED");
         }
@@ -212,7 +192,6 @@ class BmsAttributesContractTest {
     @Nested
     @DisplayName("Class shape")
     class ClassShape {
-
         @Test
         @DisplayName("the holder is not instantiable, including reflectively")
         void notInstantiable() throws ReflectiveOperationException {

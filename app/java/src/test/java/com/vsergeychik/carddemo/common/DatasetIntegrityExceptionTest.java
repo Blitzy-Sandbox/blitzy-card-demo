@@ -9,15 +9,9 @@ import org.junit.jupiter.api.Test;
 /**
  * Unit tests for {@link DatasetIntegrityException}, the refusal a dataset operation raises when it has
  * produced a state the COBOL original cannot produce.
- *
- * <p>Two properties matter and are pinned here. It <strong>is</strong> an
- * {@link IllegalStateException}, so every layer that already treats one of those from the data-access
- * layer as non-recoverable keeps working unchanged and no new handling path has to be built. And it
- * carries the operation as a component, so a caller can attribute a refusal without matching prose.
  */
 @DisplayName("DatasetIntegrityException - the refusal that stops a commit")
 class DatasetIntegrityExceptionTest {
-
     @Test
     @DisplayName("it is an IllegalStateException, so existing handling covers it")
     void itIsAnIllegalStateException() {

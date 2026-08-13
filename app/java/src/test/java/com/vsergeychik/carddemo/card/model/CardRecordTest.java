@@ -39,183 +39,52 @@ import static org.assertj.core.api.Assertions.assertThatNullPointerException;
  * {@code 01 CARD-RECORD}: a fixed-width value of exactly 150 bytes copied by six COBOL programs
  * ({@code CBACT02C}, {@code CBTRN01C}, {@code COACTVWC}, {@code COCRDLIC}, {@code COCRDSLC} and
  * {@code COCRDUPC}).
- *
- * <h2>Plain JUnit 5, deliberately</h2>
- * No Spring context, no {@code @SpringBootTest}, no {@code MockMvc} and no Mockito: the subject is
- * an immutable value type with no collaborators beyond the codec it is handed. Booting a container
- * to test byte offsets would only add a way for the test to fail for reasons unrelated to the
- * copybook.
- *
- * <h2>The reference material, and why it is never opened at runtime</h2>
- * Four artefacts are the binding contract for this type. They are cited here, and throughout, as
- * comments only; nothing in this file reads them from disk, because they are the read-only parity
- * oracle for the whole migration and a test that opened them could not run from a packaged
- * artifact:
- * <ul>
- *   <li>{@code app/cpy/CVACT02Y.cpy} - the record layout. Seven {@code 05} items on lines 5 to 11,
- *       and the {@code (RECLN 150)} header comment on line 2;</li>
- *   <li>{@code app/data/ASCII/carddata.txt} - the authoritative fixture data. Independently
- *       re-measured for these tests: every one of its 50 rows is exactly 150 bytes wide;</li>
- *   <li>{@code app/csd/CARDDEMO.CSD} - the dataset definitions. {@code DEFINE FILE(CARDDAT)} at
- *       line 25 over {@code AWS.M2.CARDDEMO.CARDDATA.VSAM.KSDS}, and
- *       {@code DEFINE FILE(CARDAIX)} at line 13 over
- *       {@code AWS.M2.CARDDEMO.CARDDATA.VSAM.AIX.PATH};</li>
- *   <li>{@code app/cbl/COCRDUPC.cbl} - the only program that rewrites this record, and the source
- *       of the expiry-span slicing rules at lines 1361, 1363 and 1365.</li>
- * </ul>
- * Runtime data comes instead from the test classpath, at {@value #FIXTURE_RESOURCE}, which is a
- * byte-for-byte copy of the ASCII fixture. Unlike {@code cardxref}, the card fixture needs no
- * widening: it already carries the full declared 150 bytes per row, trailing {@code FILLER}
- * included.
- *
- * <h2>A recorded tension, not a defect to fix</h2>
- * The CSD declares all four card and cross-reference files {@code RECORDFORMAT(V)} - variable -
- * on lines 18, 30, 43 and 69, while the batch JCL declares the same data {@code RECFM=F} - fixed.
- * The Java layer resolves this by treating the record length as copybook-fixed regardless, so
- * every assertion below pins the width at exactly 150 and none of them treats the record as
- * variable-length. The disagreement is recorded here rather than silently reconciled, because the
- * CSD and the JCL are both read-only inputs.
- *
- * <h2>What the branch bar actually requires of this file</h2>
- * The build enforces a JaCoCo {@code BRANCH} covered-ratio of 0.90 with two rules, {@code BUNDLE}
- * and {@code PACKAGE}, so {@code com.vsergeychik.carddemo.card.model} is measured on its own and
- * cannot hide behind a better-covered package. That package holds two classes, so this file and
- * {@code CardXrefRecordTest} are its only coverage sources - and the two share no code, by design,
- * because a helper that re-implemented padding or offsetting could let both tests pass while the
- * production codec was wrong.
- *
- * <p>{@link CardRecord}'s branches all live in its two private validation helpers: the
- * {@code PIC X} width check ({@code over-wide}, {@code exactly-wide}, {@code shorter}) and the
- * {@code PIC 9} range check ({@code negative}, {@code too-many-digits}, {@code in-range}). Every
- * one of those six outcomes is driven below, in {@code ConstructionBounds}, so the ratio does not
- * depend on whether a particular JaCoCo version filters a record's generated members.
- *
- * <h2>Governing directives</h2>
- * No user rules were provided for this project, so this file is held to the migration's own
- * codified practice instead: reference inputs stay immutable and are cited rather than read (B3);
- * the copybook's misspelling is preserved and asserted, not corrected (B5); the run is
- * deterministic, with no wall clock, locale, time zone or default charset in play, and no
- * assumption that silently skips a required assertion (B7); every charset is named and every
- * offset is a visible literal (B8); no static mutable state (B9); and assertions are hand-written
- * against explicit byte offsets rather than delegated to reflective deep-equality, so a failure
- * names the offset that moved (B11).
- *
- * @see CardRecord
- * @see FixedWidthCodec
- * @see FixedWidthRecord
  */
 @DisplayName("CardRecord - CVACT02Y card record, 150 bytes")
 class CardRecordTest {
-
-    // =================================================================================================
-    // Code pages. Always named, never inherited from the platform (B8). Both are String/Charset
-    // constants and therefore immutable, so none of this is mutable static state (B9, G53).
-    // =================================================================================================
-
-    /** The code page of the nine text fixtures under {@code app/data/ASCII}, named explicitly. */
     private static final Charset ASCII = StandardCharsets.US_ASCII;
 
-    /**
-     * The code page of the binary datasets under {@code app/data/EBCDIC}, named explicitly.
-     *
-     * <p>Resolved at class initialisation on purpose. {@code IBM037} ships in the JDK's
-     * {@code jdk.charsets} module, so if it were ever absent this class would fail to initialise
-     * with {@code UnsupportedCharsetException} - loudly, and naming the missing code page. That is
-     * the wanted outcome: an assumption that quietly skipped the code-page tests would leave the
-     * charset parameter unproven while still reporting green (B7).
-     */
     private static final Charset EBCDIC = Charset.forName("IBM037");
 
-    /** The fixture on the test classpath - not the copy under {@code app/data/ASCII} (B3). */
     private static final String FIXTURE_RESOURCE = "fixtures/carddata.txt";
 
-    /** The number of rows {@code app/data/ASCII/carddata.txt} holds, re-measured for this test. */
     private static final int FIXTURE_ROW_COUNT = 50;
 
-    // =================================================================================================
-    // Expected values, read off app/data/ASCII/carddata.txt by hand at absolute offsets. Written out
-    // rather than computed, so that a failure compares against a literal a reviewer can check against
-    // the fixture without running anything.
-    // =================================================================================================
-
-    /** {@code CARD-NUM} of fixture row 1. The leading zero is data, not formatting. */
     private static final String ROW_1_CARD_NUM = "0500024453765740";
 
-    /** {@code CARD-ACCT-ID} of fixture row 1, stored as the eleven digits {@code 00000000050}. */
     private static final long ROW_1_ACCT_ID = 50L;
 
-    /** {@code CARD-CVV-CD} of fixture row 1, stored as the three digits {@code 747}. */
     private static final int ROW_1_CVV = 747;
 
-    /** {@code CARD-EMBOSSED-NAME} of fixture row 1, before its 41 characters of right padding. */
     private static final String ROW_1_NAME = "Aniya Von";
 
-    /** {@code CARD-EXPIRAION-DATE} of fixture row 1 - the misspelling is the copybook's. */
     private static final String ROW_1_EXPIRY = "2023-03-09";
 
-    /** {@code CARD-ACTIVE-STATUS} of fixture row 1. All fifty rows carry {@code Y}. */
     private static final String ROW_1_STATUS = "Y";
 
-    /** {@code CARD-NUM} of fixture row 2, also leading-zero bearing. */
     private static final String ROW_2_CARD_NUM = "0683586198171516";
 
-    /** {@code CARD-NUM} of fixture row 3, whose CVV {@code 028} evidences the left zero-fill. */
     private static final String ROW_3_CARD_NUM = "0923877193247330";
 
-    /** The single character COBOL pads a {@code PIC X} receiver with, on the right. */
     private static final String SPACE = " ";
 
-    /** The ASCII space, {@code 0x20} - what a {@code FILLER} byte must be, never {@code 0x00}. */
     private static final byte ASCII_SPACE_BYTE = 0x20;
 
-    /** The EBCDIC space, {@code 0x40} - the same {@code FILLER} under {@code IBM037}. */
     private static final byte EBCDIC_SPACE_BYTE = 0x40;
-
-    // =================================================================================================
-    // Per-instance collaborators. JUnit builds a fresh test instance per test method, so these are
-    // never shared across tests and no execution order can matter (B7, B9).
-    // =================================================================================================
 
     private final FixedWidthCodec asciiCodec = new FixedWidthCodec(ASCII);
 
     private final FixedWidthCodec ebcdicCodec = new FixedWidthCodec(EBCDIC);
 
-    /**
-     * The record fixture row 1 denotes, built through the canonical constructor so that its
-     * {@code PIC X} components arrive padded to their declared widths.
-     *
-     * @return a representative record, used wherever the particular values do not matter
-     */
     private static CardRecord row1() {
         return new CardRecord(ROW_1_CARD_NUM, ROW_1_ACCT_ID, ROW_1_CVV, ROW_1_NAME, ROW_1_EXPIRY,
                 ROW_1_STATUS);
     }
 
-    /**
-     * Right-pads a value to a declared width with spaces, for building an <em>expected</em> value.
-     *
-     * <p>This deliberately does not re-implement the codec's move rule: it is only ever used to
-     * spell out what a test expects, never to produce the value under test. The production padding
-     * path is {@link FixedWidthCodec#movePicX(String, int)} and is exercised directly in
-     * {@code MovePicXParity}.
-     *
-     * @param value the value to pad
-     * @param width the declared width of the receiving span
-     * @return {@code value} followed by enough spaces to reach {@code width}
-     */
     private static String expectedPadded(String value, int width) {
         return value + SPACE.repeat(width - value.length());
     }
 
-    /**
-     * Reads every row of the fixture from the test classpath, as text.
-     *
-     * <p>Loaded as a classpath resource rather than a file, so the test is independent of the
-     * working directory and never touches the read-only tree under {@code app/data} (B3). A missing
-     * resource fails with a message naming the path it looked for, rather than skipping.
-     *
-     * @return the fixture rows, in file order, with line terminators removed and blanks dropped
-     */
     private static List<String> fixtureRows() {
         List<String> rows = new ArrayList<>();
         try (InputStream stream =
@@ -238,12 +107,6 @@ class CardRecordTest {
         return rows;
     }
 
-    /**
-     * Supplies every fixture row to the parameterised round-trip test, paired with its 1-based row
-     * number so a failure names the offending row.
-     *
-     * @return one argument pair per fixture row
-     */
     private static List<Arguments> everyFixtureRow() {
         List<String> rows = fixtureRows();
         List<Arguments> arguments = new ArrayList<>();
@@ -253,15 +116,9 @@ class CardRecordTest {
         return arguments;
     }
 
-    // =================================================================================================
-    // 1. Declared geometry. The copybook's own arithmetic, asserted span by span so that a regression
-    //    names the field whose offset moved rather than reporting a width mismatch at the end (B11).
-    // =================================================================================================
-
     @Nested
     @DisplayName("Declared geometry - the seven spans of CVACT02Y (G8, G19)")
     class DeclaredGeometry {
-
         @Test
         @DisplayName("RECLN 150: the seven declared widths sum to the declared record length")
         void widthsSumToRecordLength() {
@@ -310,17 +167,6 @@ class CardRecordTest {
                     .isEmpty();
         }
 
-        /**
-         * Every span's offset and length, asserted one field at a time.
-         *
-         * <p>The literals are repeated from the copybook rather than derived from the constants under
-         * test, because a test that recomputed them from the same source it is checking would agree
-         * with any transcription error (B8, B11).
-         *
-         * @param fieldName the copybook item name, quoted into the failure message
-         * @param offset    the absolute 0-based offset the copybook implies
-         * @param length    the declared width
-         */
         @ParameterizedTest(name = "[{0}] {1} occupies [{2}, {2}+{3})")
         @CsvSource({
                 "0, CARD-NUM,             0,  16",
@@ -334,8 +180,6 @@ class CardRecordTest {
         @DisplayName("Each span sits at its copybook offset with its copybook width")
         void eachSpanSitsAtItsCopybookOffset(int declarationIndex, String fieldName, int offset,
                                              int length) {
-            // Addressed by declaration index rather than by name, because FILLER is deliberately not
-            // a referable COBOL name and RecordLayout.span(String) rightly refuses to return it.
             FieldSpan span = CardRecord.LAYOUT.storageSpans().get(declarationIndex);
 
             assertThat(span.name())
@@ -378,13 +222,6 @@ class CardRecordTest {
                     .isEqualTo(CardRecord.RECORD_LENGTH);
         }
 
-        /**
-         * The picture category of each span, which is what decides the pad byte and the direction of
-         * truncation. Getting this wrong would zero-fill a name or space-pad a number.
-         *
-         * @param fieldName the copybook item name
-         * @param kind      the expected picture category
-         */
         @ParameterizedTest(name = "[{0}] {1} is {2}")
         @CsvSource({
                 "0, CARD-NUM,            ALPHANUMERIC",
@@ -409,9 +246,6 @@ class CardRecordTest {
         @Test
         @DisplayName("FILLER is not a referable COBOL name, so it cannot be looked up by name")
         void fillerIsNotReferableByName() {
-            // COBOL cannot read or write an unnamed FILLER, so it is deliberately absent from the
-            // by-name lookup while still being a first-class span in the layout. Both halves matter:
-            // present in the geometry, absent from the referable names.
             assertThat(CardRecord.LAYOUT.hasSpan("FILLER"))
                     .as("FILLER is unreferenceable in COBOL and must not resolve by name")
                     .isFalse();
@@ -450,15 +284,9 @@ class CardRecordTest {
         }
     }
 
-    // =================================================================================================
-    // 2. The total-width self-check, driven on BOTH sides. A geometry check that has never been seen
-    //    to reject anything is not evidence of anything, so each way of breaking the layout is tried.
-    // =================================================================================================
-
     @Nested
     @DisplayName("The layout self-check accepts CVACT02Y and rejects every way of breaking it")
     class LayoutSelfCheck {
-
         @Test
         @DisplayName("The passing side: the real CVACT02Y layout builds and declares 150 bytes")
         void theRealLayoutPassesTheSelfCheck() {
@@ -496,7 +324,6 @@ class CardRecordTest {
         @Test
         @DisplayName("A gap between two spans is rejected, naming the span it precedes")
         void aGapBetweenSpansIsRejected() {
-            // CARD-ACCT-ID moved one byte late, leaving byte 16 undeclared.
             FieldSpan displaced = FieldSpan.unsignedNumeric("CARD-ACCT-ID", 17,
                     CardRecord.CARD_ACCT_ID_LENGTH);
 
@@ -512,7 +339,6 @@ class CardRecordTest {
         @Test
         @DisplayName("An overlap between two spans is rejected, naming the overlapping span")
         void anOverlapBetweenSpansIsRejected() {
-            // CARD-ACCT-ID moved one byte early, overlapping the last byte of CARD-NUM.
             FieldSpan overlapping = FieldSpan.unsignedNumeric("CARD-ACCT-ID", 15,
                     CardRecord.CARD_ACCT_ID_LENGTH);
 
@@ -544,15 +370,6 @@ class CardRecordTest {
                     .withMessageContaining("151");
         }
 
-        /**
-         * Any byte count other than the declared 150 is refused when a stored image is wrapped.
-         *
-         * <p>149 and 151 bracket the declared width; 91 is the width a record would have if the
-         * trailing {@code FILLER} were dropped, and 36 is the width of a {@code cardxref} row, which
-         * is a plausible mix-up between two datasets that both key on a card number.
-         *
-         * @param wrongWidth a byte count that is not the declared record length
-         */
         @ParameterizedTest(name = "{0} bytes is not a CARD-RECORD")
         @ValueSource(ints = {0, 1, 36, 91, 149, 151, 300})
         @DisplayName("Wrapping or decoding any width other than 150 is rejected")
@@ -574,15 +391,9 @@ class CardRecordTest {
         }
     }
 
-    // =================================================================================================
-    // 3. The two keys. CARDDAT is keyed on the card number; the CARDAIX path reaches the same 150-byte
-    //    record by account id. One dataset, two access paths - never two tables.
-    // =================================================================================================
-
     @Nested
     @DisplayName("Two keys over one dataset - CARDDAT base and CARDAIX alternate index")
     class KeyOffsets {
-
         @Test
         @DisplayName("The CARDDAT base KSDS key is CARD-NUM, the 16 bytes at [0, 16)")
         void baseKeyIsCardNumAtOffsetZero() {
@@ -657,17 +468,9 @@ class CardRecordTest {
         }
     }
 
-    // =================================================================================================
-    // 4. PIC X MOVE parity. A COBOL alphanumeric receiver fills from the LEFT: it pads on the right and
-    //    discards on the right. MOVE occurs 2,795 times in this estate and is a larger parity risk than
-    //    all of its arithmetic, so both halves of the rule are driven through the codec's own helper
-    //    rather than through Java string assignment (B11).
-    // =================================================================================================
-
     @Nested
     @DisplayName("PIC X MOVE parity - pad on the right, truncate on the right")
     class MovePicXParity {
-
         @Test
         @DisplayName("A short CARD-EMBOSSED-NAME is right-padded with spaces to its full 50 bytes")
         void shortNameIsRightPaddedToFiftyBytes() {
@@ -701,9 +504,6 @@ class CardRecordTest {
         @Test
         @DisplayName("An over-wide name keeps its FIRST 50 characters - truncation is on the right")
         void overWideNameKeepsItsLeadingCharacters() {
-            // Deliberately NOT a repeating string: with "ABCDEFGHIJ" repeated, the leading 50
-            // characters and the trailing 50 are identical, so such a value could not tell a
-            // right-truncating implementation apart from a left-truncating one.
             String sixty = "HEAD-Aniya-Von-Cardholder-Embossed-Name-Padding-XY" + "-DISCARDED";
             assertThat(sixty).hasSize(60);
             String leading50 = sixty.substring(0, CardRecord.CARD_EMBOSSED_NAME_LENGTH);
@@ -761,16 +561,6 @@ class CardRecordTest {
                     .hasSize(CardRecord.RECORD_LENGTH);
         }
 
-        /**
-         * The codec's alphanumeric move rule, exercised directly at the three widths that matter.
-         *
-         * <p>Driven through {@link FixedWidthCodec#movePicX(String, int)} rather than through Java
-         * string assignment, because that is the production path and the direction of truncation has
-         * to be a deliberate, visible decision.
-         *
-         * @param source   the sending value
-         * @param expected the image a 10-byte alphanumeric receiver must hold
-         */
         @ParameterizedTest(name = "movePicX(\"{0}\", 10) -> \"{1}\"")
         @CsvSource(quoteCharacter = '\'', ignoreLeadingAndTrailingWhitespace = false, value = {
                 "'ABC','ABC       '",
@@ -788,16 +578,9 @@ class CardRecordTest {
         }
     }
 
-    // =================================================================================================
-    // 5. PIC 9 MOVE parity. A COBOL numeric receiver aligns on its implied decimal point: it zero-fills
-    //    on the LEFT and discards on the LEFT, keeping the low-order digits. This is the exact opposite
-    //    of the PIC X rule above, and keeping the leading digits instead is the classic defect.
-    // =================================================================================================
-
     @Nested
     @DisplayName("PIC 9 MOVE parity - zero-fill on the left, truncate on the left")
     class MovePic9Parity {
-
         @Test
         @DisplayName("CARD-ACCT-ID 50 is written 00000000050 - eleven digits, zero-filled left")
         void acctIdIsZeroFilledOnTheLeft() {
@@ -855,12 +638,6 @@ class CardRecordTest {
                     .isEqualTo(234);
         }
 
-        /**
-         * The codec's numeric move rule at every width, asserted against literal images.
-         *
-         * @param source   the sending digits
-         * @param expected the image an 11-digit numeric receiver must hold
-         */
         @ParameterizedTest(name = "movePic9({0}, 11) -> {1}")
         @CsvSource({
                 "50,            00000000050",
@@ -894,15 +671,9 @@ class CardRecordTest {
         }
     }
 
-    // =================================================================================================
-    // 6. CARD-NUM is PIC X(16) and must stay a String. The data looks numeric, which is precisely the
-    //    trap: a numeric type would destroy the leading zero that every fixture row carries.
-    // =================================================================================================
-
     @Nested
     @DisplayName("CARD-NUM is alphanumeric - leading zeros are data (G22)")
     class CardNumIsAlphanumeric {
-
         @ParameterizedTest(name = "{0} survives a round trip with its leading zero")
         @ValueSource(strings = {"0500024453765740", "0683586198171516", "0923877193247330",
                 "0000000000000001"})
@@ -957,21 +728,12 @@ class CardRecordTest {
         }
     }
 
-    // =================================================================================================
-    // 7. The misspelling is load-bearing.
-    // =================================================================================================
-
     @Nested
     @DisplayName("CARD-EXPIRAION-DATE is misspelled in the copybook, and stays misspelled (B5)")
     class MisspellingIsTheContract {
-
         @Test
         @DisplayName("The span name is CARD-EXPIRAION-DATE, exactly as CVACT02Y:9 spells it")
         void spanNameCarriesTheCopybookMisspelling() {
-            // INTENTIONAL. app/cpy/CVACT02Y.cpy:9 declares CARD-EXPIRAION-DATE, without the second
-            // T. The parity differ keys on the field NAME, so "correcting" the spelling would make a
-            // genuine field-level difference invisible to it. If this assertion ever fails, the fix
-            // is to restore the misspelling, NOT to update the expectation.
             assertThat(CardRecord.CARD_EXPIRAION_DATE.name())
                     .as("the copybook spelling is the contract; EXPIRAION is not a typo in this test")
                     .isEqualTo("CARD-EXPIRAION-DATE")
@@ -1022,16 +784,9 @@ class CardRecordTest {
         }
     }
 
-    // =================================================================================================
-    // 8. The expiry slices. COBOL reference modification is 1-based and slices BYTES: it does not parse
-    //    a date and cannot fail on a non-date. Date validation lives in CSUTLDTC and CSUTLDPY/CSUTLDWY,
-    //    not here, so a LocalDate.parse in the model would reject values the COBOL accepts.
-    // =================================================================================================
-
     @Nested
     @DisplayName("Expiry slices - 1-based reference modification, and no validation whatsoever")
     class ExpirySlices {
-
         @Test
         @DisplayName("(1:4), (6:2) and (9:2) translate to [0,4), [5,7) and [8,10)")
         void sliceIndicesTranslateFromOneBasedReferenceModification() {
@@ -1085,18 +840,6 @@ class CardRecordTest {
             assertThat(record.cardExpiraionDateDay()).doesNotContain("-");
         }
 
-        /**
-         * The critical parity ruling: reference modification slices bytes and never validates.
-         *
-         * <p>A {@code LocalDate.parse} in the model would throw on each of these, rejecting values the
-         * COBOL accepts without complaint. That would be a behaviour change, so this test exists to
-         * surface one rather than to accommodate it.
-         *
-         * @param stored        a ten-character span that is not a date
-         * @param expectedYear  the bytes at {@code [0, 4)}
-         * @param expectedMonth the bytes at {@code [5, 7)}
-         * @param expectedDay   the bytes at {@code [8, 10)}
-         */
         @ParameterizedTest(name = "\"{0}\" slices to \"{1}\"/\"{2}\"/\"{3}\" without throwing")
         @CsvSource(quoteCharacter = '\'', ignoreLeadingAndTrailingWhitespace = false, value = {
                 "'ABCDEFGHIJ','ABCD','FG','IJ'",
@@ -1135,8 +878,6 @@ class CardRecordTest {
         @Test
         @DisplayName("A short expiry value is right-space-padded to 10 first, then sliced")
         void aShortValueIsPaddedThenSliced() {
-            // The COBOL field is always ten bytes, so a seven-character value occupies the first
-            // seven and the day slice reads the padding.
             CardRecord record = new CardRecord(ROW_1_CARD_NUM, ROW_1_ACCT_ID, ROW_1_CVV, ROW_1_NAME,
                     "2023-03", ROW_1_STATUS);
 
@@ -1176,21 +917,9 @@ class CardRecordTest {
         }
     }
 
-    // =================================================================================================
-    // 9. CARD-ACTIVE-STATUS. Every one of the fifty fixture rows carries 'Y', so the fixture alone can
-    //    never exercise the not-active side of anything. The other values are synthesised here for
-    //    exactly that reason.
-    // =================================================================================================
-
     @Nested
     @DisplayName("CARD-ACTIVE-STATUS X(01) - one byte, carried verbatim, never widened")
     class ActiveStatus {
-
-        /**
-         * Every status value that has to round-trip, including the two the fixture cannot supply.
-         *
-         * @param status the single character stored at offset 90
-         */
         @ParameterizedTest(name = "status \"{0}\" round-trips as one byte")
         @CsvSource(quoteCharacter = '\'', ignoreLeadingAndTrailingWhitespace = false, value = {
                 "'Y'", "'N'", "' '", "'0'", "'1'", "'A'"
@@ -1212,8 +941,6 @@ class CardRecordTest {
         @Test
         @DisplayName("The not-active status the fixture cannot supply is still fully supported")
         void theNotActiveStatusIsSupported() {
-            // All fifty rows of app/data/ASCII/carddata.txt are 'Y' - re-measured for this test - so
-            // 'N' exists nowhere in the fixture and has to be synthesised.
             CardRecord inactive = row1().withCardActiveStatus("N");
 
             assertThat(inactive.cardActiveStatus()).isEqualTo("N");
@@ -1247,15 +974,9 @@ class CardRecordTest {
         }
     }
 
-    // =================================================================================================
-    // 10. FILLER X(59). Gate G21: present, first-class, and space-filled on every encode. Dropping it
-    //     would yield a 91-byte record, and in a fixed-width dataset that shifts every later offset.
-    // =================================================================================================
-
     @Nested
     @DisplayName("FILLER X(59) is emitted and space-filled on every encode (G21)")
     class FillerSpan {
-
         @Test
         @DisplayName("The FILLER span is declared at [91, 150) as a first-class FILLER descriptor")
         void fillerIsAFirstClassSpan() {
@@ -1340,16 +1061,9 @@ class CardRecordTest {
         }
     }
 
-    // =================================================================================================
-    // 11. The real fixture. Seeded from the test classpath, never from app/data (B3). These tests police
-    //     the fixture's own derivation as well as the model: if the copy ever drifted from the
-    //     authoritative ASCII data, the shape assertions would catch it.
-    // =================================================================================================
-
     @Nested
     @DisplayName("The real fixture - 50 rows of 150 bytes from the test classpath (G16)")
     class RealFixture {
-
         @Test
         @DisplayName("The fixture resource is present on the test classpath")
         void theFixtureResourceIsPresent() {
@@ -1429,15 +1143,6 @@ class CardRecordTest {
             assertThat(record.cardExpiraionDate()).isEqualTo("2024-08-11");
         }
 
-        /**
-         * Decode then re-encode every fixture row and require the bytes to be identical.
-         *
-         * <p>Compared as bytes rather than as trimmed strings, because trailing padding is part of the
-         * record and a trimming comparison would pass while the stored image had lost 41 spaces.
-         *
-         * @param rowNumber the 1-based row number, so a failure names the row
-         * @param row       the stored row image
-         */
         @ParameterizedTest(name = "row {0} re-encodes byte-identically")
         @MethodSource("com.vsergeychik.carddemo.card.model.CardRecordTest#everyFixtureRow")
         @DisplayName("Every one of the 50 rows survives decode then encode byte-identically")
@@ -1507,20 +1212,12 @@ class CardRecordTest {
         }
     }
 
-    // =================================================================================================
-    // 12. The charset is always the caller's. A platform default is the classic silent corrupter of
-    //     mainframe data, so the parameter is proved to be honoured rather than merely accepted.
-    // =================================================================================================
-
     @Nested
     @DisplayName("The code page is always named and always honoured, never a platform default")
     class CharsetIsExplicit {
-
         @Test
         @DisplayName("IBM037 is available in this JDK, asserted rather than assumed away")
         void ibm037IsAvailable() {
-            // Asserted, not assumed: Assumptions.assumeTrue here would let the whole code-page
-            // section skip silently and report green while proving nothing (B7).
             assertThat(Charset.isSupported("IBM037"))
                     .as("IBM037 ships in the JDK's jdk.charsets module and is required to encode the "
                             + "EBCDIC datasets under app/data/EBCDIC")
@@ -1574,9 +1271,6 @@ class CardRecordTest {
         void decodingAnEbcdicImageAsAsciiDoesNotSucceedSilently() {
             byte[] ebcdicImage = row1().encode(EBCDIC);
 
-            // Most EBCDIC bytes are not characters in US-ASCII at all, so the mismatch is refused at
-            // the transcoding seam rather than producing a plausible-looking wrong value or a run of
-            // replacement characters.
             assertThatExceptionOfType(IllegalStateException.class)
                     .as("a code-page mismatch must fail loudly, never decode to a plausible value")
                     .isThrownBy(() -> CardRecord.decode(ebcdicImage, ASCII))
@@ -1613,23 +1307,9 @@ class CardRecordTest {
         }
     }
 
-    // =================================================================================================
-    // 13. Construction bounds - and the branch bar. Every PICTURE bound is enforced at the boundary, so
-    //     an instance can never exist in a shape the copybook cannot hold. This group drives all six
-    //     outcomes of the two validation helpers: PIC X over-wide / exactly-wide / shorter, and PIC 9
-    //     negative / too-many-digits / in-range. Those are the only branches in the class, so covering
-    //     them here is what carries this package over the 0.90 branch bar (G49).
-    // =================================================================================================
-
     @Nested
     @DisplayName("Construction bounds - every PICTURE bound enforced, both sides of every branch")
     class ConstructionBounds {
-
-        /**
-         * The over-wide side of the {@code PIC X} width check, for every character component.
-         *
-         * @param componentIndex which of the four character components to over-fill
-         */
         @ParameterizedTest(name = "character component {0} rejects an over-wide value")
         @ValueSource(ints = {0, 1, 2, 3})
         @DisplayName("An over-wide PIC X value is rejected, never silently truncated")
@@ -1642,13 +1322,6 @@ class CardRecordTest {
                     .withMessageContaining("moving");
         }
 
-        /**
-         * Builds a record whose chosen character component is one character too wide.
-         *
-         * @param componentIndex 0 for CARD-NUM, 1 for the embossed name, 2 for the expiry span and
-         *                       3 for the active status
-         * @return never returns; always throws
-         */
         private CardRecord overFillCharacterComponent(int componentIndex) {
             return switch (componentIndex) {
                 case 0 -> new CardRecord("X".repeat(CardRecord.CARD_NUM_LENGTH + 1), ROW_1_ACCT_ID,
@@ -1713,13 +1386,6 @@ class CardRecordTest {
                             ROW_1_NAME, ROW_1_EXPIRY, null));
         }
 
-        /**
-         * The negative side of the {@code PIC 9} range check. {@code PIC 9} has no sign position, so a
-         * negative value has no representation at all and is rejected rather than stored as its
-         * magnitude.
-         *
-         * @param negative a value below zero
-         */
         @ParameterizedTest(name = "account id {0} is rejected - PIC 9 is unsigned")
         @ValueSource(longs = {-1L, -50L, -100_000_000_000L, Long.MIN_VALUE})
         @DisplayName("A negative CARD-ACCT-ID is rejected - PIC 9 has no sign position")
@@ -1763,12 +1429,6 @@ class CardRecordTest {
                     .withMessageContaining("3");
         }
 
-        /**
-         * The in-range side of the {@code PIC 9} check, at both boundaries of each picture.
-         *
-         * @param acctId an account id inside {@code PIC 9(11)}
-         * @param cvv    a CVV inside {@code PIC 9(03)}
-         */
         @ParameterizedTest(name = "account id {0} and CVV {1} are accepted")
         @CsvSource({
                 "0,           0",
@@ -1833,15 +1493,9 @@ class CardRecordTest {
         }
     }
 
-    // =================================================================================================
-    // 14. Value semantics. This is what 9300-CHECK-CHANGE-IN-REC needs: COCRDUPC re-reads the record and
-    //     compares it field by field before rewriting, so equality has to be component-wise.
-    // =================================================================================================
-
     @Nested
     @DisplayName("Value semantics - what 9300-CHECK-CHANGE-IN-REC and the parity differ rely on")
     class ValueSemantics {
-
         @Test
         @DisplayName("Two records with the same six components are equal and share a hash code")
         void identicalRecordsAreEqual() {
@@ -1867,12 +1521,6 @@ class CardRecordTest {
                     .hasSameHashCodeAs(unpadded);
         }
 
-        /**
-         * A record differing in exactly one component must not be equal, for each of the six
-         * components in turn. This is the whole point of a field-level comparison.
-         *
-         * @param componentIndex which component to vary
-         */
         @ParameterizedTest(name = "differing only in component {0} makes the records unequal")
         @ValueSource(ints = {0, 1, 2, 3, 4, 5})
         @DisplayName("Differing in any single component breaks equality")
@@ -1971,12 +1619,6 @@ class CardRecordTest {
         @Test
         @DisplayName("No stored byte can forge a second log line out of this rendering")
         void theDiagnosticRenderingCannotBeUsedToForgeALogLine() {
-            // CARD-NUM is PIC X(16) and neither this type nor CardRepository validates it as digits -
-            // deliberately, because rejecting a stored card key would be a behaviour change the COBOL
-            // never makes. So a CR or LF really can be in the dataset, and it survives in the four
-            // characters the mask reveals. CARD-EXPIRAION-DATE and CARD-ACTIVE-STATUS are PIC X spans
-            // rendered in full, so either can carry one too. All three paths are asserted, because
-            // closing one and leaving the others is indistinguishable from closing none (CWE-117).
             CardRecord forged = new CardRecord("411111111111\r\nOK", 1L, 123, "A\rB",
                     "2025-\n1-01", "\n");
 
@@ -1988,25 +1630,15 @@ class CardRecordTest {
             assertThat(rendering.lines())
                     .as("a rendering documented as safe to log must occupy exactly one line")
                     .hasSize(1);
-            // The escape is lossless and applied only to the rendering: the stored values, which the
-            // parity harness reads by name, are byte-identical to what was supplied.
             assertThat(forged.cardNum()).isEqualTo("411111111111\r\nOK");
             assertThat(forged.cardExpiraionDate()).isEqualTo("2025-\n1-01");
             assertThat(forged.cardActiveStatus()).isEqualTo("\n");
         }
     }
 
-    // =================================================================================================
-    // 15. Structural gate guards. These assert properties of the TYPE rather than of a value, and they
-    //     are the cheapest possible defence against a whole class of regression. Reflection over
-    //     declared members is precise and named; it is reflective deep-EQUALITY that is avoided (B11),
-    //     because that would hide which offset diverged.
-    // =================================================================================================
-
     @Nested
     @DisplayName("Structural guards - no floating point, no persistence mapping (G22, G44)")
     class StructuralGuards {
-
         @Test
         @DisplayName("No declared field is double, float, Double or Float (G22)")
         void noDeclaredFieldIsFloatingPoint() {
@@ -2045,8 +1677,6 @@ class CardRecordTest {
             List<String> offenders = new ArrayList<>();
             for (RecordComponent component : CardRecord.class.getRecordComponents()) {
                 Class<?> type = component.getType();
-                // Matched by name rather than by importing a decimal type, so that this file names no
-                // scaled decimal at all - there is none in CVACT02Y to name.
                 if (isFloatingPoint(type) || "java.math.BigDecimal".equals(type.getName())) {
                     offenders.add(component.getName() + " : " + type.getName());
                 }
@@ -2065,12 +1695,6 @@ class CardRecordTest {
                             "cardExpiraionDate", "cardActiveStatus");
         }
 
-        /**
-         * Whether a type is a binary floating-point type, in either its primitive or boxed form.
-         *
-         * @param type the type to test
-         * @return {@code true} for {@code double}, {@code float}, {@link Double} and {@link Float}
-         */
         private boolean isFloatingPoint(Class<?> type) {
             return double.class.equals(type)
                     || float.class.equals(type)
@@ -2098,13 +1722,6 @@ class CardRecordTest {
                     .isEmpty();
         }
 
-        /**
-         * Records any annotation drawn from a persistence API.
-         *
-         * @param annotations the annotations to inspect
-         * @param location    a human-readable description of where they were found
-         * @param offenders   the running list of violations
-         */
         private void collectPersistenceAnnotations(Annotation[] annotations, String location,
                                                    List<String> offenders) {
             for (Annotation annotation : annotations) {

@@ -17,27 +17,12 @@ import org.junit.jupiter.params.provider.ValueSource;
 
 /**
  * Tests for {@link SensitiveDiagnostics}, this module's single disclosure policy.
- *
- * <h2>What is being protected</h2>
- * Every type that carries cardholder data can be rendered into a log line, an exception message or an
- * assertion failure. A Java {@code record}'s generated {@code toString} renders every component, so
- * before this policy existed a record holding a primary account number disclosed it the first time
- * anything rendered it. Nothing in the COBOL requires that - COBOL has no {@code toString} - so the
- * disclosure was purely an artefact of the target language, and closing it changes nothing the legacy
- * program or the parity harness can observe.
- *
- * <p>These tests pin the policy itself. The rules a reviewer most needs held are the awkward ones: that a
- * value <em>at or below</em> the reveal length is masked entirely rather than handed back whole, that an
- * unclassified field is withheld rather than published, and that nothing here ever throws - a diagnostic
- * that failed while being built would turn a log line into an outage.
  */
 @DisplayName("SensitiveDiagnostics - the module's disclosure policy")
 class SensitiveDiagnosticsTest {
-
     @Nested
     @DisplayName("The policy's own constants")
     class Constants {
-
         @Test
         @DisplayName("one marker, and it cannot be mistaken for stored data")
         void oneMarkerThatCannotBeMistakenForData() {
@@ -50,8 +35,6 @@ class SensitiveDiagnosticsTest {
         @Test
         @DisplayName("the reveal length is a genuine minority of the narrowest identifier field")
         void theRevealLengthIsAMinority() {
-            // CUST-ID and XREF-CUST-ID are PIC 9(09), the narrowest fields this policy is applied to.
-            // Revealing four of nine withholds a majority; revealing nine would withhold nothing.
             assertThat(SensitiveDiagnostics.REVEALED_TRAILING_DIGITS).isEqualTo(4).isLessThan(9);
         }
 
@@ -75,7 +58,6 @@ class SensitiveDiagnosticsTest {
     @Nested
     @DisplayName("Masking a primary account number or an identifier")
     class Masking {
-
         @ParameterizedTest(name = "{0} -> {1}")
         @DisplayName("the last four characters survive and the stored width is preserved")
         @CsvSource({
@@ -97,8 +79,6 @@ class SensitiveDiagnosticsTest {
         @DisplayName("a value at or below the reveal length is masked ENTIRELY, never handed back whole")
         @ValueSource(strings = {"1", "12", "123", "1234"})
         void aShortValueIsMaskedEntirely(String stored) {
-            // The rule that is easy to get backwards. Revealing "the last four" of a four-character
-            // value would disclose all of it, which is the opposite of the intent.
             assertThat(SensitiveDiagnostics.maskPan(stored))
                     .isEqualTo("*".repeat(stored.length()))
                     .doesNotContain(stored);
@@ -129,8 +109,6 @@ class SensitiveDiagnosticsTest {
         @Test
         @DisplayName("a negative value is rendered from its magnitude, never with a sign")
         void aNegativeValueIsRenderedFromItsMagnitude() {
-            // None of the fields this serves is signed - every one is an unsigned PIC 9(n) - so a sign
-            // here means the caller passed the wrong field, and the magnitude discloses no more.
             assertThat(SensitiveDiagnostics.maskIdentifier(-123456L, 11))
                     .isEqualTo("*******3456")
                     .doesNotContain("-");
@@ -145,11 +123,6 @@ class SensitiveDiagnosticsTest {
         @Test
         @DisplayName("the revealed tail is control-character escaped, so it cannot forge a log line")
         void theRevealedTailCannotForgeALogLine() {
-            // CARD-NUM and XREF-CARD-NUM are PIC X(16): alphanumeric pictures, holding whatever the
-            // dataset holds, which no repository here validates as digits. A CR or LF in the last four
-            // bytes therefore survives the mask, and appending it raw lets the stored value append a
-            // log line of its own - CWE-117. The escape is what makes the guarantee cover the whole
-            // rendering rather than only the masked part.
             String forged = "411111111111\r\nOK";
 
             assertThat(SensitiveDiagnostics.maskPan(forged))
@@ -164,10 +137,6 @@ class SensitiveDiagnosticsTest {
         @Test
         @DisplayName("the mask keeps its own width even when an escape lengthens the visible tail")
         void theMaskKeepsItsWidth() {
-            // The two properties are separate and both are required. The mask must stay as wide as the
-            // part of the field it covers, because that is how the rendering still reports the stored
-            // width; the escaped tail is necessarily longer, because X'0A' is five characters for one
-            // byte, and that is the correct trade - the escape is lossless and unambiguous.
             String stored = "0000000000000\u000109";
 
             String rendered = SensitiveDiagnostics.maskPan(stored);
@@ -180,10 +149,6 @@ class SensitiveDiagnosticsTest {
         @Test
         @DisplayName("this and DiagnosticText agree - one policy cannot be rendered two ways")
         void theTwoHelpersAgree() {
-            // Before this fix the two disagreed: DiagnosticText.masked escaped its retained suffix and
-            // SensitiveDiagnostics.maskTrailing did not, which is how a reviewer ends up auditing every
-            // call site instead of reading the policy once. Asserted rather than commented, so the two
-            // cannot drift apart again silently.
             for (String stored : new String[] {"4111111111111111", "00000000011", "1234", "1",
                                                "411111111111\r\nOK", "00000000\u009F11"}) {
                 assertThat(SensitiveDiagnostics.maskPan(stored))
@@ -191,11 +156,6 @@ class SensitiveDiagnosticsTest {
                                 stored.replace("\r", "<CR>").replace("\n", "<LF>"))
                         .isEqualTo(DiagnosticText.masked(stored));
             }
-            // Two divergences remain, and both are deliberate rather than drift, so they are pinned
-            // here instead of being left to look like an oversight. Each class names an absent and an
-            // empty value in its own vocabulary - this one is called from hand-written toString methods
-            // that already print "null", the other from a label-driven loop - and neither rendering
-            // discloses anything, which is the property that has to hold.
             assertThat(SensitiveDiagnostics.maskPan((String) null)).isEqualTo("null");
             assertThat(DiagnosticText.masked(null)).isEqualTo("<absent>");
             assertThat(SensitiveDiagnostics.maskPan("")).isEqualTo("[text len=0]");
@@ -206,7 +166,6 @@ class SensitiveDiagnosticsTest {
     @Nested
     @DisplayName("Describing free-text personal data")
     class DescribingText {
-
         @Test
         @DisplayName("the length is reported and not one character of the content")
         void theLengthIsReportedAndNoContent() {
@@ -218,8 +177,6 @@ class SensitiveDiagnosticsTest {
         @Test
         @DisplayName("a blank fixed-width field is distinguishable from an empty or absent one")
         void blankEmptyAndAbsentAreDistinguishable() {
-            // All three are different states of a fixed-width field and a diagnostic has to tell them
-            // apart: spaces are a field that was cleared, empty is a Java value, absent is no value.
             assertThat(SensitiveDiagnostics.describeText(" ".repeat(25))).isEqualTo("[blank]");
             assertThat(SensitiveDiagnostics.describeText("")).isEqualTo("[text len=0]");
             assertThat(SensitiveDiagnostics.describeText(null)).isEqualTo("null");
@@ -236,7 +193,6 @@ class SensitiveDiagnosticsTest {
     @Nested
     @DisplayName("Classified rendering, for the screen DTOs that render in a loop")
     class ClassifiedRendering {
-
         @ParameterizedTest(name = "{0}")
         @DisplayName("each classification applies its own treatment")
         @CsvSource({
@@ -254,8 +210,6 @@ class SensitiveDiagnosticsTest {
         @Test
         @DisplayName("an UNCLASSIFIED field is withheld, not published")
         void anUnclassifiedFieldIsWithheld() {
-            // The safe default. A field nobody classified is more likely to be a new sensitive one than
-            // a new label, so the null classification withholds rather than discloses.
             assertThat(SensitiveDiagnostics.render(null, "4111111111111111"))
                     .isEqualTo(SensitiveDiagnostics.REDACTED)
                     .doesNotContain("4111");
@@ -277,7 +231,6 @@ class SensitiveDiagnosticsTest {
     @Nested
     @DisplayName("Nothing here ever throws")
     class NeverThrows {
-
         @ParameterizedTest
         @DisplayName("every entry point accepts null")
         @NullSource

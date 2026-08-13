@@ -47,239 +47,76 @@ import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 
 /**
  * Self-tests for {@link FieldDiffer}, the deterministic judge of this migration.
- *
- * <p>Every module's acceptance gate is stated as "diff count = 0", and {@link FieldDiffer} is what
- * computes that number. An untested judge is therefore the single most dangerous class in the build:
- * a differ that under-reports turns the gate into a rubber stamp, and the failure mode is silent by
- * construction, because a false-clean result looks exactly like a correct one. Nothing else in the
- * suite can catch it - the parity cases all consume this class, so any blindness in it is inherited
- * by all 560 of them at once. Hence this file, and hence its emphasis: most of what follows checks
- * that a difference the differ could plausibly smooth away is in fact <em>reported</em>.
- *
- * <h2>What is asserted, and why each one earns its place</h2>
- * <ol>
- *   <li><strong>Field granularity.</strong> A record with three wrong fields must yield
- *       <em>three</em> diffs, each naming its own COBOL field with that field's declared offset and
- *       length. One opaque "not equal" would leave a reviewer to find the offending byte by hand,
- *       which for a 300-byte record is exactly the work the differ exists to do.</li>
- *   <li><strong>Trailing spaces and leading zeros are values, not formatting.</strong> A COBOL
- *       {@code PIC X} field is space-padded to its declared width and a {@code PIC 9} field is
- *       zero-filled; both paddings are part of the value. With 2,795 {@code MOVE} statements across
- *       the 28 programs - truncating on the right for alphanumeric receivers and on the left for
- *       numeric ones - padding is the dominant parity risk in the whole codebase, well ahead of
- *       arithmetic. A differ that trimmed would be blind to most of it.</li>
- *   <li><strong>Signed fields: the stored byte form decides, and the decoded number explains.</strong>
- *       The zoned {@code DISPLAY} form overpunches the sign into the trailing byte, so the differ
- *       decodes through the codec - which lets a case state its expectation as {@code "194.00"} and
- *       match the canonical stored image {@code 00000001940&#123;}, and which is what puts a readable
- *       quantity in the explanation. What the decoding does <em>not</em> do is make two different byte
- *       images equal. The unsigned zone-F rendering {@code 000000019400} denotes the same quantity and
- *       is still reported as a difference, because a COBOL store into {@code PIC S9(10)V99} always
- *       overpunches and so that image is one no program in the codebase writes; a judge that accepted
- *       it would be blind to the very defect overpunching exists to expose. The bytes are the record
- *       contract; the number is the diagnosis. Both halves are pinned below -
- *       {@link SignedZonedFields#theStoredOverpunchImageDenotesTheDocumentedValue()} for the decoding,
- *       {@link SignedZonedFields#twoImagesOfTheSameValueAreStillADifference()} for the authority - and
- *       the arithmetic is checked against real fixture bytes because it is easy to get wrong by a
- *       factor of ten.</li>
- *   <li><strong>Total record width, and therefore {@code FILLER}.</strong> Omitting a {@code FILLER}
- *       span shifts every offset after it; a width check is the cheapest way to catch that and it is
- *       asserted to report once, against the record, rather than as a cascade of field noise.</li>
- *   <li><strong>The two normalisations, and only the two.</strong> Each must be inert unless the case
- *       declares it, must fire only for its own width pair, and must announce itself when it
- *       fires.</li>
- *   <li><strong>Determinism.</strong> The same comparison run twice must produce byte-identical
- *       ordered output, and no diff may ever be truncated from the report.</li>
- * </ol>
- *
- * <h2>Provenance of the data used here</h2>
- * <p>The record images below are real. The account row is read from {@code fixtures/acctdata.txt} on
- * the test classpath, whose first row opens
- * <code>00000000001Y00000001940&#123;00000020200&#123;00000010200&#123;2014-11-20</code>; the
- * cross-reference row is read from {@code fixtures/cardxref.txt}, whose rows measure exactly
- * <strong>36</strong> characters against the 50 its copybook declares. The 57-character
- * {@code USRSEC} row is transcribed from the ten in-stream rows of {@code app/jcl/DUSRSECJ.jcl}, the
- * job that seeds that dataset, because no {@code usrsec} fixture file exists - the seed data lives in
- * the JCL itself. Nothing under {@code app/cpy}, {@code app/cbl}, {@code app/jcl} or
- * {@code app/data} is opened at test runtime; the reference trees are the parity oracle and stay
- * read-only.
- *
- * <p>Field geometry is likewise never restated here. The three layouts used - 50-byte
- * {@link CardXrefRecord#LAYOUT}, 80-byte {@link SecUserRecord#LAYOUT} and 300-byte
- * {@link AccountRecord#LAYOUT} - are the model classes' own published, self-checking layouts, so a
- * transcription error could not agree with them by accident.
- *
- * <h2>Governing rules</h2>
- * <p>{@code review_rules} reports <strong>no user rules provided</strong> for this project, confirmed
- * for this file, so no project rule governs it and none has been invented. The enterprise practices
- * the Agent Action Plan puts in their place bind instead:
- * <ul>
- *   <li><strong>B1 / B2</strong> - JUnit Jupiter and AssertJ only, both arriving through
- *       {@code spring-boot-starter-test} under the Spring Boot 3.5.16 parent. No new dependency, no
- *       third-party copybook parser, no whole-document assertion library, no Lombok.</li>
- *   <li><strong>B3</strong> - the reference trees are never opened or written.</li>
- *   <li><strong>B4</strong> - no difference is normalised away to make an assertion pass; where a
- *       measured byte is surprising it is asserted as measured and explained.</li>
- *   <li><strong>B7</strong> - deterministic and non-interactive: no clock, no random, no ordering
- *       that depends on a hash-ordered collection, and {@link DeterminismAndCompleteness} asserts
- *       reproducibility outright.</li>
- *   <li><strong>B8</strong> - explicit over implicit: no wildcard imports (gate G52), the
- *       {@link Charset} is named at every byte boundary, and scale 2 with
- *       {@link RoundingMode#DOWN} is named at every numeric expectation (gates G23, G24).</li>
- *   <li><strong>B9</strong> - no static mutable state (gate G53): every static member here is
- *       {@code final} over an immutable type, and the differ under test is rebuilt per test
- *       instance.</li>
- * </ul>
- *
- * @see FieldDiffer
- * @see ParityCase
  */
 @DisplayName("FieldDiffer - the deterministic judge, itself judged")
 class FieldDifferSelfJudgedTest {
-
-    // =================================================================================================
-    // Charsets, identifiers and dataset binding keys.
-    // =================================================================================================
-
-    /** The fixtures are US-ASCII, stated rather than defaulted (practice B8). */
     private static final Charset ASCII = StandardCharsets.US_ASCII;
 
-    /** An eight-character COBOL program name, the only shape {@link ParityCase} accepts. */
     private static final String PROGRAM = "CBACT01C";
 
-    /** A case identifier in the mandated {@code case01}-{@code case20} range. */
     private static final String CASE_ID = "case01";
 
-    /** Why the case exists; {@link ParityCase} requires a non-blank description. */
     private static final String DESCRIPTION = "FieldDiffer self-test";
 
-    /** Binding key for the account master dataset. Never a literal dataset name (gate G46). */
     private static final String ACCOUNT = "ACCTFILE";
 
-    /** Binding key for the card cross-reference dataset. */
     private static final String XREF = "CARDXREF";
 
-    /** Binding key for the user security dataset. */
     private static final String USRSEC = "USRSEC";
 
-    /** The pseudo-scope a return-code difference is reported against. */
     private static final String RETURN_CODE_SCOPE = "<return-code>";
 
-    /** The pseudo-scope an emitted-message difference is reported against. */
     private static final String MESSAGES_SCOPE = "<messages>";
 
-    /** The pseudo-field a whole-record difference is reported against. */
     private static final String RECORD_SCOPE_FIELD = "<record>";
 
-    // =================================================================================================
-    // Fixture locations and the transcribed USRSEC seed row.
-    // =================================================================================================
-
-    /** Classpath copy of {@code app/data/ASCII/acctdata.txt}: 50 rows of 300 characters. */
     private static final String ACCOUNT_FIXTURE = "fixtures/acctdata.txt";
 
-    /** Classpath copy of {@code app/data/ASCII/cardxref.txt}: 50 rows of <strong>36</strong>. */
     private static final String XREF_FIXTURE = "fixtures/cardxref.txt";
 
-    /**
-     * The first of the ten {@code USRSEC} rows seeded in-stream by {@code app/jcl/DUSRSECJ.jcl},
-     * transcribed verbatim: {@code SEC-USR-ID X(08)} + {@code SEC-USR-FNAME X(20)} +
-     * {@code SEC-USR-LNAME X(20)} + {@code SEC-USR-PWD X(08)} + {@code SEC-USR-TYPE X(01)}, which is
-     * 57 characters and stops short of the 80 the copybook declares.
-     *
-     * <p>The password span holds the literal word {@code PASSWORD}. That is demonstration seed data
-     * committed to the repository in the JCL itself, carries no credential value, and is quoted here
-     * only because the parity contract is byte-level and this span's content is part of it.
-     */
     private static final String USRSEC_ROW_57 =
             "ADMIN001MARGARET            GOLD                PASSWORDA";
 
-    /** Bytes the {@code USRSEC} normalisation must supply: {@code SEC-USR-FILLER PIC X(23)}. */
     private static final int USRSEC_FILLER_WIDTH = 23;
 
-    /** Bytes the cross-reference normalisation must supply: {@code FILLER PIC X(14)}. */
     private static final int XREF_FILLER_WIDTH = 14;
 
-    // =================================================================================================
-    // COBOL field names, written as a fixture author writes them: verbatim, and case-sensitive.
-    // =================================================================================================
-
-    /** {@code XREF-CARD-NUM PIC X(16)} at offset 0. */
     private static final String XREF_CARD_NUM = "XREF-CARD-NUM";
 
-    /** {@code XREF-CUST-ID PIC 9(09)} at offset 16. */
     private static final String XREF_CUST_ID = "XREF-CUST-ID";
 
-    /** {@code XREF-ACCT-ID PIC 9(11)} at offset 25. */
     private static final String XREF_ACCT_ID = "XREF-ACCT-ID";
 
-    /** The name the first unnamed {@code FILLER} span of a record is addressed by. */
     private static final String FILLER = "FILLER";
 
-    /** {@code ACCT-ID PIC 9(11)} at offset 0. */
     private static final String ACCT_ID = "ACCT-ID";
 
-    /** {@code ACCT-ACTIVE-STATUS PIC X(01)} at offset 11. */
     private static final String ACCT_ACTIVE_STATUS = "ACCT-ACTIVE-STATUS";
 
-    /** {@code ACCT-CURR-BAL PIC S9(10)V99} at offset 12, twelve characters wide. */
     private static final String ACCT_CURR_BAL = "ACCT-CURR-BAL";
 
-    /** {@code ACCT-CREDIT-LIMIT PIC S9(10)V99} at offset 24. */
     private static final String ACCT_CREDIT_LIMIT = "ACCT-CREDIT-LIMIT";
 
-    /** {@code ACCT-OPEN-DATE PIC X(10)} at offset 48. */
     private static final String ACCT_OPEN_DATE = "ACCT-OPEN-DATE";
 
-    /**
-     * {@code ACCT-EXPIRAION-DATE PIC X(10)} at offset 58 - misspelled in
-     * {@code app/cpy/CVACT01Y.cpy} and therefore misspelled here. Correcting it would leave the diff
-     * hunting for a field the decoder never produces, which is a silent parity break rather than a
-     * loud one.
-     */
     private static final String ACCT_EXPIRAION_DATE = "ACCT-EXPIRAION-DATE";
 
-    /** {@code SEC-USR-ID PIC X(08)} at offset 0. */
     private static final String SEC_USR_ID = "SEC-USR-ID";
 
-    /** {@code SEC-USR-LNAME PIC X(20)} at offset 28. */
     private static final String SEC_USR_LNAME = "SEC-USR-LNAME";
 
-    /** {@code SEC-USR-FILLER PIC X(23)} at offset 57 - named in the copybook, so named here. */
     private static final String SEC_USR_FILLER = "SEC-USR-FILLER";
 
-    // =================================================================================================
-    // The unit under test. An instance field, so JUnit's per-method instance gives every test its own
-    // and nothing is shared (practice B9). Immutable in any case: the differ holds only its codec.
-    // =================================================================================================
-
-    /** The differ, over a codec that names US-ASCII explicitly. */
     private final FieldDiffer differ = FieldDiffer.forCharset(ASCII);
 
-    // =================================================================================================
-    // Builders. Deliberately thin: a helper that computed an expectation could agree with a wrong
-    // implementation, so every expected value below is written out rather than derived.
-    // =================================================================================================
-
-    /** A case pinning the given expectations, return code 0, no messages, no normalisations. */
     private static ParityCase caseOf(ExpectedRecord... expected) {
         return caseOf(List.of(expected), 0, List.of(), List.of());
     }
 
-    /** A case pinning the given expectations and the given normalisations. */
     private static ParityCase caseOf(List<Normalisation> normalisations, ExpectedRecord... expected) {
         return caseOf(List.of(expected), 0, List.of(), normalisations);
     }
 
-    /**
-     * The full case constructor, with the members this suite never varies fixed.
-     *
-     * <p>The expectations are pinned on the <strong>write</strong> channel, which is the channel
-     * {@link #wrote(String, RecordLayout, String...)} fills, and every message is a variable-width
-     * COBOL {@code DISPLAY} line. A declared normalisation is bound to the dataset it describes and
-     * that dataset is seeded, because a normalisation pads the rows a case seeds - it is owned by the
-     * seeding side and never by the comparison.
-     */
     private static ParityCase caseOf(List<ExpectedRecord> expected,
                                      int returnCode,
                                      List<String> messages,
@@ -290,12 +127,6 @@ class FieldDifferSelfJudgedTest {
                 boundNormalisations(expected, normalisations));
     }
 
-    /**
-     * Each expected message as the {@code DISPLAY} line a batch program writes.
-     *
-     * @param messages the expected texts, in order
-     * @return the expectations on the variable-width DISPLAY channel
-     */
     private static List<EmittedMessage> displayLines(List<String> messages) {
         List<EmittedMessage> lines = new ArrayList<>(messages.size());
         for (String text : messages) {
@@ -304,13 +135,6 @@ class FieldDifferSelfJudgedTest {
         return lines;
     }
 
-    /**
-     * Binds each declared normalisation to the dataset it describes among the expectations.
-     *
-     * @param expected the expectations, whose datasets are the candidates
-     * @param declared the normalisations the case declares
-     * @return one binding per declaration, in declaration order
-     */
     private static List<DatasetNormalisation> boundNormalisations(List<ExpectedRecord> expected,
                                                                  List<Normalisation> declared) {
         List<DatasetNormalisation> bound = new ArrayList<>(declared.size());
@@ -320,7 +144,6 @@ class FieldDifferSelfJudgedTest {
         return bound;
     }
 
-    /** The dataset a normalisation binds to: the expectation naming it, else its own first DD name. */
     private static String datasetFor(Normalisation kind, List<ExpectedRecord> expected) {
         for (ExpectedRecord expectation : expected) {
             if (kind.describes(expectation.dataset())) {
@@ -330,7 +153,6 @@ class FieldDifferSelfJudgedTest {
         return kind.datasets().iterator().next();
     }
 
-    /** Seeds each normalised dataset, since a declaration for an unseeded dataset can never fire. */
     private static Map<String, DatasetInput> seedsFor(List<ExpectedRecord> expected,
                                                      List<Normalisation> declared) {
         Map<String, DatasetInput> seeds = new LinkedHashMap<>();
@@ -341,37 +163,18 @@ class FieldDifferSelfJudgedTest {
         return seeds;
     }
 
-    /**
-     * One row as <strong>seeding</strong> leaves it: the pad applied once, where it is owned.
-     *
-     * @param dataset the dataset the row is seeded into
-     * @param kind    the normalisation the case declares for it
-     * @param row     the row at its fixture width
-     * @return the row at its copybook width
-     */
     private static String seeded(String dataset, Normalisation kind, String row) {
         return new DatasetNormalisation(dataset, kind).normaliseSeedRow(row);
     }
 
-    /** An expectation pinning named fields only. */
     private static ExpectedRecord pinning(String dataset, int rowIndex, Map<String, String> fields) {
         return new ExpectedRecord(dataset, rowIndex, fields, null);
     }
 
-    /** An expectation pinning the complete record image only. */
     private static ExpectedRecord pinningImage(String dataset, int rowIndex, String image) {
         return new ExpectedRecord(dataset, rowIndex, Map.of(), image);
     }
 
-    /**
-     * Field expectations in declaration order.
-     *
-     * <p>{@link LinkedHashMap} rather than {@link Map#of}: several assertions below turn on the order
-     * a fixture declares its fields in, and {@code Map.of} has no defined iteration order.
-     *
-     * @param namesAndValues alternating field name and expected value
-     * @return the expectations, in the order given
-     */
     private static Map<String, String> fields(String... namesAndValues) {
         if (namesAndValues.length % 2 != 0) {
             throw new IllegalArgumentException("fields(...) takes name/value pairs, but was given "
@@ -384,54 +187,34 @@ class FieldDifferSelfJudgedTest {
         return pinned;
     }
 
-    /** One dataset's rows, encoded with the explicitly named test charset. */
     private static DatasetOutput output(String dataset, RecordLayout layout, String... rows) {
         return DatasetOutput.ofImages(dataset, layout, List.of(rows), ASCII);
     }
 
-    /** A fingerprint carrying one written dataset, return code 0 and no emitted lines. */
     private static Fingerprint wrote(String dataset, RecordLayout layout, String... rows) {
         return Fingerprint.of(List.of(output(dataset, layout, rows)), List.of(), null, 0, List.of());
     }
 
-    /** A fingerprint carrying an explicit return code and message list. */
     private static Fingerprint wrote(int returnCode, List<String> messages, DatasetOutput... outputs) {
         return Fingerprint.of(List.of(outputs), List.of(), null, returnCode, displayLines(messages));
     }
 
-    // =================================================================================================
-    // Record images. Read from the classpath fixtures, or transcribed from the seeding JCL.
-    // =================================================================================================
-
-    /** Row 1 of the account fixture: exactly 300 characters, sign overpunch intact. */
     private static String accountRow() {
         return fixtureRow(ACCOUNT_FIXTURE, AccountRecord.RECORD_LENGTH);
     }
 
-    /** Row 1 of the cross-reference fixture as shipped: exactly 36 characters, not 50. */
     private static String xrefRow36() {
         return fixtureRow(XREF_FIXTURE, CardXrefRecord.FILLER_OFFSET);
     }
 
-    /** Row 1 of the cross-reference fixture, hand-widened to its declared 50. */
     private static String xrefRow50() {
         return xrefRow36() + " ".repeat(XREF_FILLER_WIDTH);
     }
 
-    /** The transcribed {@code USRSEC} seed row, hand-widened to its declared 80. */
     private static String usrsecRow80() {
         return USRSEC_ROW_57 + " ".repeat(USRSEC_FILLER_WIDTH);
     }
 
-    /**
-     * A copy of {@code row} with one span replaced, which is how a "wrong record" is produced without
-     * disturbing any other byte.
-     *
-     * @param row the original image
-     * @param span the span to overwrite
-     * @param value the replacement, exactly the span's declared width
-     * @return the modified image, the same total width as {@code row}
-     */
     private static String replacing(String row, FieldSpan span, String value) {
         assertThat(value)
                 .as("a replacement for %s must be exactly its declared width, or the record's total "
@@ -441,14 +224,6 @@ class FieldDifferSelfJudgedTest {
                 + row.substring(span.offset() + span.length());
     }
 
-    /**
-     * The first row of a classpath fixture, decoded with the explicitly named charset and checked
-     * against its expected width so a fixture swap cannot silently weaken this suite.
-     *
-     * @param resource the classpath location, always under {@code fixtures/}
-     * @param expectedWidth the width every row of that fixture is measured to have
-     * @return the first row, without its line terminator
-     */
     private static String fixtureRow(String resource, int expectedWidth) {
         List<String> rows = fixtureRows(resource);
         assertThat(rows).as("%s must carry at least one row", resource).isNotEmpty();
@@ -456,14 +231,6 @@ class FieldDifferSelfJudgedTest {
         return rows.get(0);
     }
 
-    /**
-     * Every row of a classpath fixture. Reads only the derived copy under {@code fixtures/}; the
-     * authoritative {@code app/data/ASCII} tree is the parity oracle and is never opened (practice
-     * B3).
-     *
-     * @param resource the classpath location
-     * @return the rows, in file order, with line terminators removed
-     */
     private static List<String> fixtureRows(String resource) {
         List<String> rows = new ArrayList<>();
         try (InputStream stream =
@@ -481,24 +248,6 @@ class FieldDifferSelfJudgedTest {
         return rows;
     }
 
-    /**
-     * The differences this suite is about, excluding {@link DiffKind#INCOMPLETE_EXPECTATION}.
-     *
-     * <p>Every fixture in this file names one or two fields deliberately, because isolating a single
-     * comparison behaviour is the whole method: a test about how a wrong balance is reported must not
-     * also have to state the account id, the group id and the {@code FILLER}. Under the completeness
-     * contract such an expectation is <em>also</em> reported as not accounting for its whole record,
-     * which is a true finding about the fixture and a distraction from the behaviour under test.
-     *
-     * <p>Nothing hides behind this filter. The kind is proved reachable, proved to name every uncovered
-     * span, and proved to count toward {@link DiffResult#count()} exactly like every other kind, in the
-     * {@code Completeness} nest of {@code FieldDifferTest}; {@link #allKindsOf(DiffResult)} is the
-     * unfiltered view this file uses where the claim is about producibility; and the gate itself reads
-     * the unfiltered {@link DiffResult#count()}, so a partial fixture still fails a real module gate.
-     *
-     * @param result the comparison result
-     * @return its differences about the output, in traversal order
-     */
     private static List<Diff> outputDiffs(DiffResult result) {
         List<Diff> output = new ArrayList<>();
         for (Diff diff : result.entries()) {
@@ -509,34 +258,14 @@ class FieldDifferSelfJudgedTest {
         return output;
     }
 
-    /**
-     * How many differences the result carries about the output, on the same footing as
-     * {@link #outputDiffs(DiffResult)}.
-     *
-     * @param result the comparison result
-     * @return the count of differences about the output
-     */
     private static int outputCount(DiffResult result) {
         return outputDiffs(result).size();
     }
 
-    /**
-     * Whether the result is clean about the output, on the same footing as
-     * {@link #outputDiffs(DiffResult)}.
-     *
-     * @param result the comparison result
-     * @return {@code true} when nothing about the output differs
-     */
     private static boolean outputIsClean(DiffResult result) {
         return outputDiffs(result).isEmpty();
     }
 
-    /**
-     * Every kind the result carries, filtering nothing - the view a producibility claim needs.
-     *
-     * @param result the comparison result
-     * @return every kind present, in traversal order
-     */
     private static List<DiffKind> allKindsOf(DiffResult result) {
         List<DiffKind> kinds = new ArrayList<>();
         for (Diff diff : result.entries()) {
@@ -545,7 +274,6 @@ class FieldDifferSelfJudgedTest {
         return kinds;
     }
 
-    /** The kinds of every diff about the output, in traversal order. */
     private static List<DiffKind> kindsOf(DiffResult result) {
         List<DiffKind> kinds = new ArrayList<>();
         for (Diff diff : outputDiffs(result)) {
@@ -554,22 +282,15 @@ class FieldDifferSelfJudgedTest {
         return kinds;
     }
 
-    /** The single diff of a result that must carry exactly one. */
     private static Diff onlyDiff(DiffResult result) {
         assertThat(outputDiffs(result)).as("expected exactly one difference: %s", result.render())
                 .hasSize(1);
         return outputDiffs(result).get(0);
     }
 
-
-    // =================================================================================================
-    // 1. A clean comparison. The baseline the gate is stated against.
-    // =================================================================================================
-
     @Nested
     @DisplayName("A clean comparison reports a diff count of zero")
     class CleanComparison {
-
         @Test
         @DisplayName("every field pinned to its stored value gives count 0 and isClean")
         void everyFieldPinnedCorrectlyIsClean() {
@@ -629,15 +350,9 @@ class FieldDifferSelfJudgedTest {
         }
     }
 
-
-    // =================================================================================================
-    // 2. Field granularity. The property the whole class exists to deliver (gate G17).
-    // =================================================================================================
-
     @Nested
     @DisplayName("Comparison is field by field, never whole strings")
     class FieldGranularity {
-
         @Test
         @DisplayName("one wrong field yields exactly one diff, located by offset and length")
         void oneWrongFieldYieldsOneDiff() {
@@ -652,8 +367,6 @@ class FieldDifferSelfJudgedTest {
             assertThat(diff.fieldName()).isEqualTo(XREF_CUST_ID);
             assertThat(diff.offset()).isEqualTo(CardXrefRecord.XREF_CUST_ID_OFFSET);
             assertThat(diff.length()).isEqualTo(CardXrefRecord.XREF_CUST_ID_LENGTH);
-            // XREF-CUST-ID names one customer. The difference is reported in full - dataset, row,
-            // field, offset, width - with the two values rendered as digests that differ.
             assertThat(diff.expected())
                     .doesNotContain("000000051")
                     .contains("<identifier>", "len=9", "sha256=");
@@ -684,8 +397,6 @@ class FieldDifferSelfJudgedTest {
         @Test
         @DisplayName("diffs come out in COPYBOOK order, whatever order the fixture declares them")
         void diffOrderIsCopybookOrderNotFixtureOrder() {
-            // Declared back to front on purpose: a reviewer reads the failure down the record the same
-            // way the copybook reads, whichever way the fixture author happened to type it.
             DiffResult result = differ.compare(
                     caseOf(pinning(XREF, 0, fields(
                             XREF_ACCT_ID, "00000000051",
@@ -733,15 +444,9 @@ class FieldDifferSelfJudgedTest {
         }
     }
 
-
-    // =================================================================================================
-    // 3. PIC X - trailing spaces are part of the value.
-    // =================================================================================================
-
     @Nested
     @DisplayName("PIC X comparison is at full declared width and never trims")
     class AlphanumericPadding {
-
         @Test
         @DisplayName("an expectation short of the declared width IS a difference")
         void anExpectationShortOfTheDeclaredWidthIsADifference() {
@@ -753,8 +458,6 @@ class FieldDifferSelfJudgedTest {
 
             Diff diff = onlyDiff(result);
             assertThat(diff.kind()).isEqualTo(DiffKind.VALUE_MISMATCH);
-            // SEC-USR-LNAME is a person's name, so both sides render as a class, a length and a digest.
-            // The lengths are the finding - 4 against the span's 20 - and they are both still stated.
             assertThat(diff.actual())
                     .doesNotContain("GOLD")
                     .contains("<personal>", "len=20", "sha256=");
@@ -781,10 +484,6 @@ class FieldDifferSelfJudgedTest {
         @Test
         @DisplayName("render makes the invisible visible: trailing spaces counted, length stated")
         void renderCountsTrailingSpacesAndStatesLength() {
-            // Asserted on ACCT-GROUP-ID rather than on a name: this is a test about how a value is
-            // RENDERED, and a classified value renders as a class, a length and a digest, which has no
-            // trailing space left in it to count. ACCT-GROUP-ID is PIC X(10), unclassified, and ten
-            // spaces in the fixture - so the observed side is nothing but the padding this test is about.
             DiffResult result = differ.compare(
                     caseOf(pinning(ACCOUNT, 0, fields(AccountRecord.ACCT_GROUP_ID_NAME, "GOLD"))),
                     wrote(ACCOUNT, AccountRecord.LAYOUT, accountRow()));
@@ -810,15 +509,9 @@ class FieldDifferSelfJudgedTest {
         }
     }
 
-
-    // =================================================================================================
-    // 4. PIC 9 - leading zeros are part of the value.
-    // =================================================================================================
-
     @Nested
     @DisplayName("PIC 9 comparison keeps leading zeros significant")
     class NumericZeroFill {
-
         @Test
         @DisplayName("an unpadded numeric expectation IS a difference, and is named as one")
         void anUnpaddedNumericExpectationIsADifference() {
@@ -845,28 +538,13 @@ class FieldDifferSelfJudgedTest {
         }
     }
 
-
-    // =================================================================================================
-    // 5. PIC S9(p)V99 - decoded through the codec's overpunch reader into BigDecimal at scale 2 with
-    //    RoundingMode.DOWN (gates G23, G24). The decoding is what makes a decimal expectation matchable
-    //    and what makes an explanation readable; it is not a licence to treat two different stored
-    //    images as equal. Parity is decided on the bytes.
-    // =================================================================================================
-
     @Nested
     @DisplayName("Signed zoned fields - the stored byte form is authoritative, the decoded number "
             + "explains it")
     class SignedZonedFields {
-
         @Test
         @DisplayName("the stored image 00000001940{ denotes 194.00 - twelve digits, no sign byte")
         void theStoredOverpunchImageDenotesTheDocumentedValue() {
-            // Stated directly as well as through a comparison, because this is the one arithmetic in
-            // the differ that is easy to get wrong by a factor of ten. PIC S9(10)V99 occupies twelve
-            // characters - ten integer digits and two fraction digits - and the sign consumes no
-            // position of its own, which is the only reading under which CVACT01Y sums to its
-            // documented 300 bytes. Reading the trailing byte as a separate sign character would
-            // leave eleven digits and yield 1940.00.
             assertThat(differ.codec().decodeSignedScaled("00000001940{",
                     CobolDecimal.MONETARY_SCALE))
                     .isEqualByComparingTo(new BigDecimal("194.00"));
@@ -883,12 +561,6 @@ class FieldDifferSelfJudgedTest {
         @Test
         @DisplayName("two images of the same value are still a difference: the bytes are the contract")
         void twoImagesOfTheSameValueAreStillADifference() {
-            // The unsigned zoned form and the positive-overpunch form denote the same number and are
-            // not the same bytes, and the bytes are what the record contract is written in. A COBOL
-            // store into PIC S9(10)V99 overpunches the sign into the trailing character, so the
-            // unsigned rendering is one no COBOL program writes - and a judge that accepted it would
-            // be unable to see the very defect that overpunching exists to make visible. Reporting it
-            // is therefore not an invented difference; it is the gate working.
             DiffResult result = differ.compare(
                     caseOf(pinning(ACCOUNT, 0, fields(ACCT_CURR_BAL, "000000019400"))),
                     wrote(ACCOUNT, AccountRecord.LAYOUT, accountRow()));
@@ -922,11 +594,6 @@ class FieldDifferSelfJudgedTest {
                     .as("pinning the exact bytes %s must always be clean", image)
                     .isTrue();
 
-            // A literal expectation is encoded to the one image a COBOL store of that value produces,
-            // so it is satisfied by the canonical form and by nothing else. Four of these five images
-            // ARE that form. The fifth is the unsigned zone-F rendering of the same quantity, and the
-            // literal does not accept it - that is the false pass the byte-level gate closes, not a
-            // false failure.
             DiffResult againstTheLiteral = differ.compare(
                     caseOf(pinning(ACCOUNT, 0, fields(ACCT_CURR_BAL, value))), fingerprint);
             if (canonical) {
@@ -986,8 +653,6 @@ class FieldDifferSelfJudgedTest {
                             ACCT_EXPIRAION_DATE, "1999-01-01"))),
                     wrote(ACCOUNT, AccountRecord.LAYOUT, row));
 
-            // Two diffs, not an exception and not one: an escaping exception would abandon the
-            // comparison and hide every difference after it, which is the opposite of judging.
             assertThat(kindsOf(result))
                     .containsExactly(DiffKind.UNDECODABLE_FIELD, DiffKind.VALUE_MISMATCH);
             assertThat(outputDiffs(result).get(0).explanation())
@@ -1013,22 +678,14 @@ class FieldDifferSelfJudgedTest {
         @Test
         @DisplayName("no monetary comparison uses a half-rounding or a directional mode")
         void theRoundingPolicyIsTruncation() {
-            // ROUNDED appears zero times in all 28 COBOL programs, so COBOL truncates on store and
-            // truncation is the only faithful choice here.
             assertThat(CobolDecimal.COBOL_ROUNDING).isEqualTo(RoundingMode.DOWN);
             assertThat(CobolDecimal.MONETARY_SCALE).isEqualTo(2);
         }
     }
 
-
-    // =================================================================================================
-    // 6. Total record width, which is how an omitted FILLER is caught (gates G19, G21).
-    // =================================================================================================
-
     @Nested
     @DisplayName("Total record width is checked before any field of the record is compared")
     class RecordWidthAndFiller {
-
         @Test
         @DisplayName("a record short by its trailing FILLER is reported as RECORD_WIDTH_MISMATCH")
         void anOmittedFillerIsAWidthMismatch() {
@@ -1110,15 +767,9 @@ class FieldDifferSelfJudgedTest {
         }
     }
 
-
-    // =================================================================================================
-    // 7. The two normalisations - inert unless declared, and never a third.
-    // =================================================================================================
-
     @Nested
     @DisplayName("Exactly two width normalisations exist, and this class owns both")
     class TheTwoNormalisations {
-
         @Test
         @DisplayName("cardxref 36 to 50: with the normalisation declared the compare is clean")
         void cardxrefPadMakesTheCompareClean() {
@@ -1132,8 +783,6 @@ class FieldDifferSelfJudgedTest {
                     wrote(XREF, CardXrefRecord.LAYOUT, seeded(XREF,
                             Normalisation.CARDXREF_FILLER_PAD_36_TO_50, xrefRow36())));
 
-            // The FILLER pin is the point: it proves the pad supplied fourteen SPACES, which is what
-            // COBOL writes into a FILLER carrying no VALUE.
             assertThat(outputCount(result)).as(result.render()).isZero();
         }
 
@@ -1176,23 +825,17 @@ class FieldDifferSelfJudgedTest {
         @Test
         @DisplayName("a normalisation fires ONLY for its own width pair, never as a general escape hatch")
         void aNormalisationFiresOnlyForItsOwnWidthPair() {
-            // Two barriers, and each refuses the escape hatch on its own. The first is the binding:
-            // the cross-reference pad names the DD names that reach CVACT03Y's record, and USRSEC is
-            // not one of them, so the declaration itself cannot be written.
             assertThatIllegalArgumentException()
                     .isThrownBy(() -> new DatasetNormalisation(USRSEC,
                             Normalisation.CARDXREF_FILLER_PAD_36_TO_50))
                     .withMessageContaining("does not describe");
 
-            // The second is the width pair: even asked for the dataset it does describe, the pad
-            // refuses a row that is neither 36 nor 50 rather than padding an arbitrary width up.
             assertThatIllegalArgumentException()
                     .isThrownBy(() -> Normalisation.CARDXREF_FILLER_PAD_36_TO_50
                             .normaliseSeedRow(USRSEC_ROW_57, XREF))
                     .withMessageContaining("cannot be normalised")
                     .withMessageContaining("pads 36 to 50");
 
-            // So the 57-byte row reaches the comparison as it stands: one width mismatch.
             DiffResult result = differ.compare(
                     caseOf(pinning(USRSEC, 0, fields(SEC_USR_ID, "ADMIN001"))),
                     wrote(USRSEC, SecUserRecord.LAYOUT, USRSEC_ROW_57));
@@ -1213,10 +856,6 @@ class FieldDifferSelfJudgedTest {
 
             assertThat(outputIsClean(result)).isTrue();
 
-            // The pad is applied by the seeding side, so its announcement is the case's own
-            // declaration rather than a note appended to the verdict - and that declaration carries
-            // every fact a reviewer needs: which dataset, which widths, how much was added, and out
-            // of which copybook's absent span.
             assertThat(parityCase.normalisations()).singleElement().satisfies(declared -> {
                 assertThat(declared.dataset()).isEqualTo(XREF);
                 assertThat(declared.kind()).isEqualTo(Normalisation.CARDXREF_FILLER_PAD_36_TO_50);
@@ -1239,8 +878,6 @@ class FieldDifferSelfJudgedTest {
                     List.of(Normalisation.CARDXREF_FILLER_PAD_36_TO_50));
             DatasetNormalisation declared = parityCase.normalisations().get(0);
 
-            // One declaration, applied to every row of its dataset in seeding order - and idempotent,
-            // so a row already at its copybook width passes through untouched rather than growing.
             List<String> seededRows = declared.normaliseSeedRows(
                     List.of(xrefRow36(), xrefRow36(), xrefRow50()));
 
@@ -1296,15 +933,9 @@ class FieldDifferSelfJudgedTest {
         }
     }
 
-
-    // =================================================================================================
-    // 8. The COBOL RETURN-CODE, which becomes the batch exit status.
-    // =================================================================================================
-
     @Nested
     @DisplayName("The RETURN-CODE is compared, because it is the batch exit status")
     class ReturnCode {
-
         @Test
         @DisplayName("a differing return code is reported against its own pseudo-scope")
         void aDifferingReturnCodeIsReported() {
@@ -1341,15 +972,9 @@ class FieldDifferSelfJudgedTest {
         }
     }
 
-
-    // =================================================================================================
-    // 9. Emitted lines, compared positionally and byte-exactly.
-    // =================================================================================================
-
     @Nested
     @DisplayName("Emitted lines are compared positionally and byte-exactly")
     class EmittedMessages {
-
         @Test
         @DisplayName("a differing count is reported when the shared prefix matches")
         void aDifferingCountIsReported() {
@@ -1392,8 +1017,6 @@ class FieldDifferSelfJudgedTest {
         @Test
         @DisplayName("two file-status lines get a hint narrowing the difference to the status image")
         void fileStatusLinesGetATargetedHint() {
-            // The trailing NNNN is genuinely part of the COBOL literal, not a placeholder, so a real
-            // line reads FILE STATUS IS: NNNN0000.
             assertThat(FileStatus.toDisplayLine(FileStatus.OK)).isEqualTo("FILE STATUS IS: NNNN0000");
 
             DiffResult result = differ.compare(
@@ -1421,15 +1044,9 @@ class FieldDifferSelfJudgedTest {
         }
     }
 
-
-    // =================================================================================================
-    // 10. Missing and extra records. Both count toward the diff count.
-    // =================================================================================================
-
     @Nested
     @DisplayName("A record that is absent, and a record that should not be there, both count")
     class MissingAndExtraRecords {
-
         @Test
         @DisplayName("an expectation against a dataset the unit never wrote is one diff")
         void anUnwrittenDatasetIsOneDiff() {
@@ -1454,10 +1071,6 @@ class FieldDifferSelfJudgedTest {
                     caseOf(pinning(XREF, 1, fields(XREF_CUST_ID, "000000050"))),
                     wrote(XREF, CardXrefRecord.LAYOUT, xrefRow50()));
 
-            // Two findings, and both are true: the expectation at index 1 has nothing to compare
-            // against, AND the row the unit did write at index 0 is one no expectation addresses. A
-            // judge that reported only the first would let the second through, which is the direction
-            // that lets a wrong record pass.
             assertThat(kindsOf(result))
                     .containsExactly(DiffKind.MISSING_RECORD, DiffKind.EXTRA_RECORD);
             Diff diff = outputDiffs(result).get(0);
@@ -1487,10 +1100,6 @@ class FieldDifferSelfJudgedTest {
                             XREF_ACCT_ID, "00000000050"))),
                     wrote(XREF, CardXrefRecord.LAYOUT, xrefRow50()));
 
-            // Three fields were pinned on the absent record and exactly ONE missing-record difference
-            // is reported for it - the fields of a record that was never written are not independently
-            // wrong, they are collectively absent. The row the unit did write at index 0 is a separate
-            // finding of its own, and does not dilute this one.
             assertThat(outputDiffs(result))
                     .filteredOn(diff -> diff.kind() == DiffKind.MISSING_RECORD)
                     .singleElement()
@@ -1536,12 +1145,6 @@ class FieldDifferSelfJudgedTest {
                             output(XREF, CardXrefRecord.LAYOUT, xrefRow50()),
                             output(ACCOUNT, AccountRecord.LAYOUT, accountRow(), accountRow())));
 
-            // A judge driven by the expectation keys can never reach a dataset no expectation names,
-            // so a unit that wrote an output the COBOL does not have would pass clean - the single
-            // most consequential blind spot a parity judge can have, because the whole question is
-            // whether the unit did what the COBOL does and nothing else. The pass is therefore driven
-            // by what the unit produced: an expectation the case does not state is a positive
-            // assertion that nothing was produced, not an absence of interest.
             assertThat(outputIsClean(result)).isFalse();
             assertThat(outputDiffs(result)).singleElement().satisfies(diff -> {
                 assertThat(diff.kind()).isEqualTo(DiffKind.EXTRA_DATASET);
@@ -1551,15 +1154,9 @@ class FieldDifferSelfJudgedTest {
         }
     }
 
-
-    // =================================================================================================
-    // 11. Field names are the copybook's own, verbatim.
-    // =================================================================================================
-
     @Nested
     @DisplayName("Field names are the copybook's own, and an unknown one fails loudly")
     class FieldNaming {
-
         @Test
         @DisplayName("the misspelled ACCT-EXPIRAION-DATE is the contract; the corrected spelling is not")
         void theMisspelledNameIsTheContract() {
@@ -1623,15 +1220,9 @@ class FieldDifferSelfJudgedTest {
         }
     }
 
-
-    // =================================================================================================
-    // 12. Determinism, traversal order and completeness of the report.
-    // =================================================================================================
-
     @Nested
     @DisplayName("The report is deterministic, ordered and never truncated")
     class DeterminismAndCompleteness {
-
         @Test
         @DisplayName("the same comparison run twice produces identical ordered output")
         void theSameComparisonTwiceIsIdentical() {
@@ -1737,15 +1328,9 @@ class FieldDifferSelfJudgedTest {
         }
     }
 
-
-    // =================================================================================================
-    // 13. Construction. The charset is a parameter, never a platform default.
-    // =================================================================================================
-
     @Nested
     @DisplayName("The differ is constructed over an explicit codec and an explicit charset")
     class ConstructionContract {
-
         @Test
         @DisplayName("a null charset is rejected: an encoding is never derived from the platform")
         void aNullCharsetIsRejected() {

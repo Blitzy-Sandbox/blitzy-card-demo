@@ -54,91 +54,51 @@ import org.junit.jupiter.params.provider.ValueSource;
 /**
  * The contract test for {@link ParityCase} - the model every one of the 560 declarative parity cases
  * deserialises into.
- *
- * <h2>Why this suite exists at all</h2>
- * <p>{@code ParityCase} is not a data holder that happens to validate; validation <em>is</em> what it
- * is for. The whole parity gate is stated as "diff count = 0", and a case that loads with an input
- * silently dropped, an expectation parked among the inputs, or a dataset addressed by a literal name
- * produces a diff count of zero for reasons that have nothing to do with the translation being right.
- * Every guard below therefore closes a specific way a green gate can be meaningless, and each test
- * says which one.
- *
- * <p>Three properties get disproportionate attention because they carry disproportionate weight:
- * <ul>
- *   <li><strong>Strict deserialisation.</strong> Every type in the contract is annotated
- *       {@code @JsonIgnoreProperties(ignoreUnknown = false)}, so a misspelled key fails the load
- *       instead of removing an input. That is asserted at every level of the object graph, not just
- *       the top, because the level a typo lands on is not the level anybody chose.</li>
- *   <li><strong>The fixture allow-list.</strong> A case names a file and the model supplies the
- *       directory, so nothing a case can write reaches a resource outside {@code fixtures/}. Path
- *       traversal, absolute paths, drive letters, URI schemes and unknown names are each refused
- *       rather than normalised.</li>
- *   <li><strong>Redaction.</strong> The legacy password span is carried verbatim because
- *       {@code COSGN00C} compares it verbatim, and it must never be rendered. Every {@code toString}
- *       that could reach a log is asserted not to disclose it.</li>
- * </ul>
- *
- * <p>Nothing here reads the wall clock, opens a network connection, writes a file or mutates static
- * state. The {@link ObjectMapper} is built per test method from {@link JsonMapper}, so no two tests
- * can share a configured instance.
  */
 @DisplayName("ParityCase - the declarative parity case contract")
 class ParityCaseTest {
-
-    /** A program name of the shape every one of the 28 in-scope programs has. */
     private static final String PROGRAM = "COUSR02C";
 
-    /** The USRSEC binding key, which is the dataset every COUSR02C case seeds. */
     private static final String USRSEC = "USRSEC";
 
-    /** A 57-character USRSEC seed row exactly as {@code app/jcl/DUSRSECJ.jcl} carries it. */
     private static final String SEED_ROW_57 =
         "ADMIN001John                Doe                 PASSWORDA";
 
-    /** The same row at the 80-byte width {@code CSUSR01Y} declares. */
     private static final String SEED_ROW_80 = SEED_ROW_57 + " ".repeat(23);
 
-    /** A fresh mapper per call, so no test can be affected by another's configuration. */
     private static ObjectMapper mapper() {
         return JsonMapper.builder().build();
     }
 
-    /** A minimal valid batch case, which every batch test starts from and then perturbs. */
     private static ParityCase batchCase() {
         return new ParityCase(PROGRAM, "case01", "a minimal valid case", UnitKind.BATCH_JOB,
             Map.of(), Map.of(), null, null, List.of(), List.of(), 0, List.of(), List.of());
     }
 
-    /** A minimal valid controller case, which requires both online members. */
     private static ParityCase controllerCase() {
         return new ParityCase(PROGRAM, "case01", "a minimal valid controller case",
             UnitKind.CONTROLLER_POJO, Map.of(), Map.of(), minimalRequest(), minimalResponse(),
             List.of(), List.of(), 0, List.of(), List.of());
     }
 
-    /** The smallest well-formed screen request. */
     private static ScreenRequest minimalRequest() {
         return new ScreenRequest(0, "DFHENTER", null, "US-ASCII", Map.of(), Map.of(), Map.of());
     }
 
-    /** The smallest well-formed expected response. */
     private static ExpectedResponse minimalResponse() {
         return new ExpectedResponse("COSGN00C", null, null, Map.of(), List.of(), null,
             Termination.XCTL);
     }
 
-    /** Asserts that a callable is rejected with a message mentioning every supplied fragment. */
     private static void rejectedBecause(ThrowingCallable callable, String... fragments) {
         Assertions.assertThatIllegalArgumentException()
             .isThrownBy(callable)
             .withMessageContainingAll(fragments);
     }
 
-    // ===============================================================================================
     @Nested
     @DisplayName("Identity members: program, caseId, description, unitKind")
     class Identity {
-
         @ParameterizedTest(name = "program \"{0}\" is rejected")
         @DisplayName("a program name that is not eight upper-case alphanumerics is refused")
         @ValueSource(strings = {"cousr02c", "COUSR02", "COUSR02CX", "1OUSR02C", "COUSR-2C",
@@ -227,11 +187,9 @@ class ParityCaseTest {
         }
     }
 
-    // ===============================================================================================
     @Nested
     @DisplayName("expectedReturnCode: the z/OS step return code bound")
     class ReturnCode {
-
         @ParameterizedTest(name = "return code {0} is accepted")
         @DisplayName("every code this migration produces, and the bounds, are accepted")
         @ValueSource(ints = {0, 3, 4, 8, 12, 16, 4095})
@@ -254,11 +212,9 @@ class ParityCaseTest {
         }
     }
 
-    // ===============================================================================================
     @Nested
     @DisplayName("inputs: addressed by binding key, never by dataset name")
     class Inputs {
-
         @ParameterizedTest(name = "inputs key \"{0}\" is rejected")
         @DisplayName("a literal dataset name, a lower-cased key or an over-long key is refused")
         @ValueSource(strings = {"AWS.M2.CARDDEMO.USRSEC.VSAM.KSDS", "usrsec", "USRSECFILE",
@@ -361,11 +317,9 @@ class ParityCaseTest {
         }
     }
 
-    // ===============================================================================================
     @Nested
     @DisplayName("DatasetInput: exactly one shape, and a closed fixture allow-list")
     class FixtureInputs {
-
         @Test
         @DisplayName("declaring both rows and a fixture is refused")
         void declaringBothShapesIsRefused() {
@@ -565,11 +519,9 @@ class ParityCaseTest {
         }
     }
 
-    // ===============================================================================================
     @Nested
     @DisplayName("jobParameters: batch parameters only, and never an expectation")
     class JobParameters {
-
         @Test
         @DisplayName("the one verified parameter in the migration is accepted verbatim")
         void parmDateIsAcceptedVerbatim() {
@@ -642,11 +594,9 @@ class ParityCaseTest {
         }
     }
 
-    // ===============================================================================================
     @Nested
     @DisplayName("Online members: required for a controller, forbidden for a batch job")
     class OnlineMembers {
-
         @Test
         @DisplayName("a controller case without a screenRequest is refused")
         void aControllerCaseWithoutAScreenRequestIsRefused() {
@@ -695,11 +645,9 @@ class ParityCaseTest {
         }
     }
 
-    // ===============================================================================================
     @Nested
     @DisplayName("ScreenRequest: the typed online invocation")
     class Requests {
-
         @Test
         @DisplayName("eibcalen zero is a real state - the first invocation with no commarea")
         void eibcalenZeroIsARealState() {
@@ -882,11 +830,9 @@ class ParityCaseTest {
         }
     }
 
-    // ===============================================================================================
     @Nested
     @DisplayName("ForcedOutcome: the only way to reach a WHEN OTHER arm")
     class ForcedOutcomes {
-
         @ParameterizedTest
         @DisplayName("every FileStatus.Outcome can be forced, so none is unreachable")
         @EnumSource(FileStatus.Outcome.class)
@@ -929,9 +875,6 @@ class ParityCaseTest {
         @ValueSource(strings = {"rewirte", "READ", "Read", "read-for-update", "read.next", "",
             "readforupdate"})
         void aMalformedOperationKeyIsRefused(String operation) {
-            // The realistic failure is a transposition, and it is silent: "rewirte" names no call
-            // site, so nothing is forced, the run takes the ordinary path, and a case whose whole
-            // purpose is the WHEN OTHER arm passes without reaching it.
             rejectedBecause(() -> RepositoryOperation.fromKey(operation),
                 "is not a repository operation", "read, readForUpdate, readNext, startBrowse, "
                     + "write, rewrite, delete");
@@ -992,11 +935,9 @@ class ParityCaseTest {
         }
     }
 
-    // ===============================================================================================
     @Nested
     @DisplayName("ExpectedResponse and ScreenSend: the online expectation")
     class Responses {
-
         @Test
         @DisplayName("an absent termination is refused: XCTL and RETURN are not interchangeable")
         void anAbsentTerminationIsRefused() {
@@ -1178,14 +1119,11 @@ class ParityCaseTest {
         }
     }
 
-    /** Send fixtures shared by the response tests, so no test depends on another's object. */
     private static final class ScreenSendFixtures {
-
         private ScreenSendFixtures() {
             throw new AssertionError("fixture holder");
         }
 
-        /** A send carrying the 78-byte error field and the colour that goes with it. */
         static ScreenSend errorSend() {
             String text = "User ID can NOT be empty...";
             return new ScreenSend(Map.of("ERRMSGO", text + " ".repeat(78 - text.length())),
@@ -1193,11 +1131,9 @@ class ParityCaseTest {
         }
     }
 
-    // ===============================================================================================
     @Nested
     @DisplayName("DatasetInput.empty: a dataset that exists and holds no row")
     class EmptyInputs {
-
         @Test
         @DisplayName("an empty declaration carries its own width and copybook, and reads as empty")
         void anEmptyDeclarationIsWellFormed() {
@@ -1229,9 +1165,6 @@ class ParityCaseTest {
         @Test
         @DisplayName("\"empty\": false is refused rather than read as an absent declaration")
         void anExplicitFalseIsRefused() {
-            // A case author writing "empty": false plainly means something by it, and the two readings
-            // - "this dataset is not empty" and "say nothing" - differ. Refusing is the only reading
-            // that cannot be wrong.
             rejectedBecause(
                 () -> new DatasetInput(List.of(SEED_ROW_80), null, null, null, Boolean.FALSE, null,
                     null),
@@ -1300,11 +1233,9 @@ class ParityCaseTest {
         }
     }
 
-    // ===============================================================================================
     @Nested
     @DisplayName("ExpectedDataset: the dataset-level observation a row expectation cannot make")
     class ExpectedDatasets {
-
         @Test
         @DisplayName("a row count of zero is legal and is the whole point of the type")
         void zeroIsLegalAndMeaningful() {
@@ -1319,9 +1250,6 @@ class ParityCaseTest {
         @Test
         @DisplayName("the row count is mandatory, so an omitted key cannot bind to zero")
         void theRowCountIsMandatory() {
-            // Zero is a real, asserting value here, which is exactly why it must never arrive by
-            // default: a fixture that forgot the key would otherwise assert "this dataset produced
-            // nothing" and pass on a job that produced nothing because it was broken.
             Assertions.assertThatNullPointerException()
                 .isThrownBy(() -> new ExpectedDataset("DALYREJS", DatasetChannel.WRITES, null, 430))
                 .withMessageContainingAll("rowCount", "never defaulted", "by accident");
@@ -1383,11 +1311,9 @@ class ParityCaseTest {
         }
     }
 
-    // ===============================================================================================
     @Nested
     @DisplayName("ExpectedRecord: what a record expectation may and may not say")
     class Records {
-
         @Test
         @DisplayName("a record pinning nothing is refused: it would always pass")
         void aRecordPinningNothingIsRefused() {
@@ -1514,11 +1440,9 @@ class ParityCaseTest {
         }
     }
 
-    // ===============================================================================================
     @Nested
     @DisplayName("EmittedMessage and MessageChannel: width belongs to the channel")
     class Messages {
-
         @Test
         @DisplayName("the three channels carry the three widths the programs actually use")
         void theThreeChannelsCarryTheirWidths() {
@@ -1635,11 +1559,9 @@ class ParityCaseTest {
         }
     }
 
-    // ===============================================================================================
     @Nested
     @DisplayName("Normalisation: the seed-time pad, owned here and applied once")
     class Normalisations {
-
         @Test
         @DisplayName("there are exactly two recorded deviations and no third")
         void thereAreExactlyTwoRecordedDeviations() {
@@ -1822,11 +1744,9 @@ class ParityCaseTest {
         }
     }
 
-    // ===============================================================================================
     @Nested
     @DisplayName("Redaction: carrying a credential and printing it are different things")
     class Redactions {
-
         @ParameterizedTest(name = "\"{0}\" is a credential field")
         @DisplayName("the three names that carry the eight password bytes are all sensitive")
         @ValueSource(strings = {"SEC-USR-PWD", "PASSWDI", "PASSWDO"})
@@ -2037,9 +1957,6 @@ class ParityCaseTest {
         @Test
         @DisplayName("a real program message about a password is NOT mangled by the label rule")
         void aProgramMessageAboutAPasswordSurvives() {
-            // COUSR01C emits this exact text as a screen message, and COUSR02C emits its siblings.
-            // They are expectations in their own right, so a rule that masked the word after
-            // "Password" would break the parity contract in order to protect nothing.
             for (String message : List.of("Password can NOT be empty...",
                 "Password should be Alphanumeric...", "Wrong Password. Try again...")) {
                 Assertions.assertThat(Redaction.maskIfSensitiveText(message))
@@ -2130,11 +2047,6 @@ class ParityCaseTest {
         @DisplayName("a USRSEC image truncated INSIDE the credential span is masked, not passed through")
         @ValueSource(ints = {49, 50, 51, 52, 53, 54, 55})
         void aTruncatedImageIsMaskedAcrossTheIntersection(int width) {
-            // The case this method used to get wrong. "Too short to hold the span" was read as "holds
-            // none of it", and an image of 49 to 55 characters holds one to seven password bytes at
-            // offset 48 - which were written into the failure report verbatim. These widths are not
-            // hypothetical: FieldDiffer renders an observed row at whatever width the unit wrote it, and
-            // a unit that truncated a USRSEC row is precisely the defect this harness exists to catch.
             String truncated = SEED_ROW_80.substring(0, width);
             String masked = Redaction.maskRecordImage(USRSEC, truncated);
 
@@ -2144,21 +2056,14 @@ class ParityCaseTest {
                 .hasSize(width)
                 .isEqualTo(SEED_ROW_80.substring(0, Redaction.SENSITIVE_SPAN_OFFSET)
                     + "*".repeat(disclosed));
-            // Asserted on the credential's own bytes as well as on the whole rendering, so the case
-            // cannot pass because the prefix happened to differ.
             Assertions.assertThat(masked)
                 .doesNotContain("PASSWORD".substring(0, disclosed));
-            // The leading fields survive, because a truncation leaves them in place and they are what
-            // makes the failure diagnosable.
             Assertions.assertThat(masked).startsWith("ADMIN001");
         }
 
         @Test
         @DisplayName("an image ending at or before the span's offset carries no credential and is kept")
         void anImageEndingBeforeTheSpanIsReturnedUnchanged() {
-            // 48 is the boundary: offset 48 is the credential's first character, so an image of exactly
-            // 48 ends one character before it and holds nothing to mask. Masking here would destroy
-            // diagnostic value for no gain, which is a different mistake from the one above.
             for (int width : new int[] {0, 1, 47, 48}) {
                 String tooShort = SEED_ROW_80.substring(0, width);
                 Assertions.assertThat(Redaction.maskRecordImage(USRSEC, tooShort))
@@ -2170,11 +2075,6 @@ class ParityCaseTest {
         @Test
         @DisplayName("an image of any width other than 80 is masked from the span to its end")
         void aWrongWidthImageIsMaskedToItsEnd() {
-            // Once the total width is wrong no offset past the credential's is trustworthy: a span that
-            // is short or long moves every byte after it, so the password's bytes may sit anywhere from
-            // 48 to the end. FieldDiffer applies the same reasoning when it stops comparing fields on a
-            // width mismatch. The rendered length is still preserved, which is what keeps the width
-            // itself diagnosable.
             String overWide = SEED_ROW_80 + "PASSWORD";
             String masked = Redaction.maskRecordImage(USRSEC, overWide);
             Assertions.assertThat(masked)
@@ -2202,10 +2102,6 @@ class ParityCaseTest {
         @Test
         @DisplayName("no USRSEC width whatsoever renders a credential byte")
         void noWidthAtAllRendersACredentialByte() {
-            // The property stated once over the whole domain rather than per interesting width, because
-            // the defect was a boundary nobody had enumerated. Every width from empty to over-wide is
-            // driven, and the assertion is the one that matters: the rendered length is unchanged and
-            // no part of the credential survives.
             for (int width = 0; width <= SEED_ROW_80.length() + 8; width++) {
                 String image = width <= SEED_ROW_80.length()
                     ? SEED_ROW_80.substring(0, width)
@@ -2271,12 +2167,9 @@ class ParityCaseTest {
         }
     }
 
-    // ===============================================================================================
     @Nested
     @DisplayName("Strict JSON binding: a typo fails the load rather than removing an input")
     class Binding {
-
-        /** A complete, valid controller case as a fixture would write it. */
         private static final String VALID_JSON = """
             {
               "program": "COUSR02C",
@@ -2321,11 +2214,6 @@ class ParityCaseTest {
             }
             """.formatted(SEED_ROW_57, " ".repeat(78));
 
-        /**
-         * A valid batch document with one member left open, so a superseded member can be injected
-         * into an otherwise-clean case. Batch rather than controller because a batch case needs no
-         * screen members, which keeps the injected member the only thing under test.
-         */
         private static final String LEGACY_SKELETON = """
             {
               "program": "COUSR02C",
@@ -2484,9 +2372,6 @@ class ParityCaseTest {
         @Test
         @DisplayName("the old schema no longer loads, which is what makes the migration complete")
         void theSupersededSchemaNoLongerLoads() {
-            // Jackson defers unknown-property reporting until after the creator has run, so each
-            // superseded member is asserted against a document that is otherwise valid. That way the
-            // failure reported is the one being asserted and not an unrelated earlier one.
             String bareStringMessage = LEGACY_SKELETON.formatted(
                 "\"expectedMessages\": [\"a bare string with no channel\"]");
             String bareStringNormalisation = LEGACY_SKELETON.formatted(
@@ -2666,23 +2551,14 @@ class ParityCaseTest {
         }
     }
 
-    // ===============================================================================================
     @Nested
     @DisplayName("The shipped COUSR02C suite: twenty cases that must load and must cover the program")
     class ShippedSuite {
-
-        /** Where the shipped cases live on the test classpath. */
         private static final String FOLDER = "parity/COUSR02C/";
 
-        /** The five keys {@code COUSR02C} names explicitly in its ordered EVALUATE EIBAID. */
         private static final List<String> NAMED_AIDS =
             List.of("DFHENTER", "DFHPF3", "DFHPF4", "DFHPF5", "DFHPF12");
 
-        /**
-         * Every blank-field message the program can issue, one per named arm of the two ordered
-         * {@code EVALUATE TRUE} paragraphs. Every one of these must appear in some case's screen
-         * payload, or that arm is unreached and the suite's coverage claim is untrue.
-         */
         private static final List<String> BLANK_FIELD_MESSAGES = List.of(
             "User ID can NOT be empty...",
             "First Name can NOT be empty...",
@@ -2690,7 +2566,6 @@ class ParityCaseTest {
             "Password can NOT be empty...",
             "User Type can NOT be empty...");
 
-        /** The ten 57-character seed cards, verbatim from {@code app/jcl/DUSRSECJ.jcl}. */
         private static final List<String> SEED_CARDS = List.of(
             "ADMIN001MARGARET            GOLD                PASSWORDA",
             "ADMIN002RUSSELL             RUSSELL             PASSWORDA",
@@ -2703,7 +2578,6 @@ class ParityCaseTest {
             "USER0004AVERARDO            MAZZI               PASSWORDU",
             "USER0005LEE                 TING                PASSWORDU");
 
-        /** Reads one shipped case's raw text from the classpath. */
         private String rawCase(String caseId) {
             try (InputStream stream = getClass().getClassLoader()
                 .getResourceAsStream(FOLDER + caseId + ".json")) {
@@ -2717,7 +2591,6 @@ class ParityCaseTest {
             }
         }
 
-        /** Loads one shipped case through the strict mapper, which is the real assertion. */
         private ParityCase load(String caseId) {
             try {
                 return mapper().readValue(rawCase(caseId), ParityCase.class);
@@ -2727,7 +2600,6 @@ class ParityCaseTest {
             }
         }
 
-        /** All twenty shipped cases in case order. */
         private List<ParityCase> loadAll() {
             List<ParityCase> cases = new ArrayList<>(20);
             for (int number = 1; number <= 20; number++) {
@@ -2736,7 +2608,6 @@ class ParityCaseTest {
             return cases;
         }
 
-        /** Every ERRMSGO value carried by any send of any case, in case then send order. */
         private List<String> allScreenMessages() {
             List<String> messages = new ArrayList<>();
             for (ParityCase parityCase : loadAll()) {
@@ -2992,7 +2863,7 @@ class ParityCaseTest {
         }
 
         @Test
-        @DisplayName("every repository outcome arm is reachable, forced where data cannot reach it")
+        @DisplayName("every repository outcome arm is reachable, forced only where data cannot reach it")
         void everyRepositoryOutcomeArmIsCovered() {
             Map<RepositoryOperation, List<FileStatus.Outcome>> forced = new LinkedHashMap<>();
             for (ParityCase parityCase : loadAll()) {
@@ -3003,14 +2874,46 @@ class ParityCaseTest {
             }
 
             Assertions.assertThat(forced)
-                .as("the WHEN OTHER arms of both EVALUATE WS-RESP-CD paragraphs need a forced "
-                    + "outcome: no arrangement of seeded rows produces an I/O failure")
+                .as("only the read and the rewrite need forcing at all; every other verb's arms are "
+                    + "reachable from the seeded rows")
                 .containsOnlyKeys(RepositoryOperation.READ_FOR_UPDATE,
                     RepositoryOperation.REWRITE);
             Assertions.assertThat(forced.get(RepositoryOperation.READ_FOR_UPDATE))
+                .as("READ-USER-SEC-FILE's NOTFND and WHEN OTHER arms both need a forced outcome: no "
+                    + "arrangement of seeded rows produces an I/O failure, and case15 needs the "
+                    + "NOTFND to be the read's rather than a consequence of anything later")
                 .contains(FileStatus.Outcome.NOT_FOUND, FileStatus.Outcome.OTHER);
             Assertions.assertThat(forced.get(RepositoryOperation.REWRITE))
-                .contains(FileStatus.Outcome.NOT_FOUND, FileStatus.Outcome.OTHER);
+                .as("UPDATE-USER-SEC-FILE's NOTFND arm needs one too - a rewrite that follows a "
+                    + "successful read-for-update cannot legitimately report NOTFND")
+                .contains(FileStatus.Outcome.NOT_FOUND);
+
+            // The rewrite's WHEN OTHER arm is deliberately NOT forced, because the corpus reaches it by
+            // its real cause. EXEC CICS REWRITE at COUSR02C:360-366 carries no RIDFLD, so it replaces
+            // the record the preceding READ ... UPDATE holds; when the read failed, nothing is held and
+            // CICS raises DFHRESP(INVREQ), RESP 16 - the WHEN OTHER arm at :383-389, which moves -1 into
+            // FNAMEL. case15 drives exactly that, and the defect it preserves is that UPDATE-USER-INFO
+            // never re-tests the error flag after the read, so the rewrite is attempted at all.
+            //
+            // Forcing that outcome instead would assert the arm while hiding its cause, and would only
+            // be consumed by an implementation that issued a keyed rewrite with nothing held - which is
+            // the very thing the keyless REWRITE contract forbids.
+            List<ParityCase> reachedWithoutForcing = loadAll().stream()
+                .filter(parityCase -> !parityCase.screenRequest().forcedOutcomes()
+                    .containsKey(RepositoryOperation.REWRITE))
+                .filter(parityCase -> parityCase.expectedResponse().sends().stream()
+                    .anyMatch(send -> String.valueOf(send.fields().get("ERRMSGO"))
+                        .startsWith("Unable to Update User...")))
+                .toList();
+
+            Assertions.assertThat(reachedWithoutForcing)
+                .as("some case must reach the rewrite's WHEN OTHER arm with no forced rewrite outcome, "
+                    + "or the INVREQ-with-nothing-held path is unproven")
+                .isNotEmpty()
+                .allSatisfy(parityCase -> Assertions.assertThat(parityCase.expectedResponse()
+                        .cursorField())
+                    .as("%s must also show the -1 that arm moves into FNAMEL", parityCase.caseId())
+                    .isEqualTo("FNAMEL"));
         }
 
         @Test

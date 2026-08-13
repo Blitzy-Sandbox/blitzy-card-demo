@@ -1,9 +1,11 @@
 package com.vsergeychik.carddemo.user.dto;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.core.JsonGenerator;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.vsergeychik.carddemo.common.BmsAttributes;
 import com.vsergeychik.carddemo.common.DateHeader;
 import com.vsergeychik.carddemo.common.FieldAttributeSetter;
@@ -17,9 +19,12 @@ import com.vsergeychik.carddemo.common.SystemMessages;
 import com.vsergeychik.carddemo.user.model.SecUserRecord;
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.lang.annotation.Annotation;
+import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
+import java.lang.reflect.Parameter;
 import java.lang.reflect.RecordComponent;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
@@ -47,239 +52,69 @@ import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 
 /**
- * Unit tests for {@link SignOnResponse} - the outbound payload of the {@code COSGN00} sign-on screen,
- * CICS transaction {@code CC00}, program {@code app/cbl/COSGN00C.cbl}, map {@code COSGN0A}.
- *
- * <h2>What this suite is for, and what it deliberately leaves alone</h2>
- *
- * A plain-object suite over one immutable record. It constructs values, reads them back, measures
- * widths and offsets, and serialises. It starts <strong>no Spring context</strong>, uses no
- * {@code MockMvc}, and touches no controller, service or repository: {@code user.SignOnControllerTest}
- * owns the HTTP surface and {@code user.SignOnServiceTest} owns the authentication decision, so
- * re-asserting either here would be duplicated coverage masquerading as thoroughness. Mockito is on
- * the classpath and is not used, because the type under test has no collaborator to stub.
- *
- * <p>The reason this package needs its own instruments at all is the coverage gate. {@code pom.xml}
- * applies the JaCoCo {@code BRANCH} rule at {@code 0.90} to <strong>both</strong> {@code BUNDLE}
- * <strong>and</strong> {@code PACKAGE}, so {@code user}, {@code user.model} and {@code user.dto} are
- * each measured on their own and none can shelter behind another's coverage (gate <strong>G49</strong>).
- * The branches here are the canonical constructor's width and null guards and the role test that
- * selects between the two {@code XCTL} targets, and they are driven directly rather than incidentally.
- *
- * <h2>The two subjects this file exists for</h2>
- *
- * <ol>
- *   <li><strong>The two fields nothing writes and the program sends anyway.</strong> No {@code MOVE} in
- *       {@code app/cbl/COSGN00C.cbl} targets {@code USERIDO} or {@code PASSWDO}, and both are
- *       transmitted: the group {@code REDEFINES} below makes each of them the same span as its
- *       {@code xxxI} counterpart, so the receive fills them and the send carries them.
- *       {@link TheOverlayPair} holds that, together with the split between being on the wire and being
- *       in a rendering.</li>
- *   <li><strong>The group-level {@code REDEFINES} overlay.</strong> {@code COSGN00.CPY:85} declares
- *       {@code 01 COSGN0AO REDEFINES COSGN0AI}, one 308-byte storage area seen through two sets of
- *       names. {@link GroupRedefinesOverlay} proves the geometry and round-trips a value across the two
- *       views at identical offsets (gate <strong>G34</strong>).</li>
- * </ol>
- *
- * <h2>User-specified rules</h2>
- *
- * {@code review_rules} returns exactly one line - <strong>"No user rules provided."</strong> - and that
- * single line is the whole document; it was read again to the end before this suite was written. No
- * rule therefore governs this file, none has been invented, and the absence is not treated as licence
- * to assert less. The binding constraints are instead the enterprise practices <strong>B1</strong>
- * through <strong>B12</strong> of the plan, each named below with what it requires <em>here</em> and
- * nowhere restated in its own words.
- *
- * <h2>Governing practices, and this file's ruling on each</h2>
- *
- * <ul>
- *   <li><strong>B1</strong> - imports are confined to the JDK, JUnit Jupiter, AssertJ, Jackson and the
- *       project types this file legitimately depends on. No coordinate is added and nothing from the
- *       plan's exclusion list appears - no JPA, no Spring Security, no Testcontainers, no COBOL parser.
- *       {@code jakarta.validation} is on the classpath and is intentionally absent from the imports: a
- *       response is never validated, and {@link SignOnResponse} carries no constraint annotation to
- *       exercise. Widths are enforced by its constructor instead, which is stronger because it cannot
- *       be skipped.</li>
- *   <li><strong>B2</strong> - JUnit 5 Jupiter only: {@code @Test}, {@code @ParameterizedTest},
- *       {@code @Nested}, {@code @DisplayName}. No JUnit 4, no vendor runner.</li>
- *   <li><strong>B3</strong> and gate <strong>G5</strong> - the parity oracle is immutable and, in this
- *       suite, is not even <em>opened</em>. Nothing under {@code app/cbl/}, {@code app/cpy/},
- *       {@code app/cpy-bms/}, {@code app/bms/}, {@code app/csd/}, {@code app/jcl/}, {@code app/proc/},
- *       {@code app/ctl/}, {@code app/catlg/} or {@code app/data/} is read at runtime: there is no
- *       {@code java.nio.file} import, no directory walk and no path literal. Every expectation is an
- *       inlined {@code private static final} constant carrying the file and line it was transcribed
- *       from, which also makes the suite independent of the working directory it runs in.</li>
- *   <li><strong>B4</strong> - the four {@code PASSWD} reference lines and the zero {@code PASSWDO}
- *       write sites are both recorded, with the evidence, and the conclusion drawn from them is the one
- *       the {@code REDEFINES} supports rather than the one the write sites alone suggest. See
- *       {@link TheOverlayPair}.</li>
- *   <li><strong>B5</strong> - asymmetries are asserted as correct, not smoothed. {@code USERIDO} and
- *       {@code PASSWDO} stay declared although no {@code MOVE} writes them, because the overlay sends
- *       them. {@code curTime} stays nine characters although the four sibling user screens declare
- *       eight.</li>
- *   <li><strong>B6</strong> and gate <strong>G41</strong> - the security posture is neither weakened nor
- *       strengthened. The password travels because the map transmits it, unhashed and unmasked, and it
- *       appears in no rendering; the suite asserts both halves, and that no token, encoder or security
- *       type is reachable through this payload's API.</li>
- *   <li><strong>B7</strong> and gate <strong>G54</strong> - deterministic and non-interactive. No
- *       {@code now()}, no random value, no ordering dependence, no sleep, no I/O. The one
- *       time-derived expectation is read through {@link Clock#fixed} at {@link ZoneOffset#UTC}, which
- *       is the seam {@code config.WebConfig}'s single {@link Clock} bean exists to make available.</li>
- *   <li><strong>B8</strong> and gates <strong>G46</strong>, <strong>G52</strong> - explicit over
- *       implicit. {@link #MAP_CHARSET} is named once and passed into every codec construction, so no
- *       assertion can inherit the platform default. Every import is written out individually; there is
- *       no wildcard. No dataset name appears anywhere in this file.</li>
- *   <li><strong>B9</strong> and gate <strong>G53</strong> - every field of this class is
- *       {@code static final} and immutable, over immutable values. No test mutates shared state, so the
- *       cases are order-independent; each one that writes bytes allocates its own record.</li>
- *   <li><strong>B10</strong> - the tests are the deliverable, not an afterthought: this suite asserts
- *       the screen contract rather than merely exercising accessors for coverage.</li>
- *   <li><strong>B11</strong> - every fixed-width and truncation operation routes through
- *       {@link FixedWidthCodec} or {@link FixedWidthRecord}. The {@code PIC X(80)} to {@code PIC X(78)}
- *       narrowing in particular is performed by {@link FixedWidthCodec#movePicX(String, int)} and never
- *       by a bare assignment or a {@code substring}, because the plan names {@code MOVE} the dominant
- *       parity risk and the direction of the loss has to be visible at the call site. No third-party
- *       copybook parser is involved.</li>
- *   <li><strong>B12</strong> - see the provenance note immediately below.</li>
- * </ul>
- *
- * <h2>Provenance of every expected value</h2>
- *
- * COBOL cannot be executed in this environment - the plan records eight independently verified
- * blockers, and the deviation is carried as risk <strong>R-A</strong> - so nothing here was captured
- * from a run. Every expectation is <strong>statically derived</strong> by reading the source and is
- * cited to the line it came from:
- *
- * <ul>
- *   <li>{@code app/cpy-bms/COSGN00.CPY} - line 17 opens {@code 01 COSGN0AI}; line 18 its twelve-byte
- *       {@code TIOAPFX} prefix; line 85 declares {@code 01 COSGN0AO REDEFINES COSGN0AI}; line 86 the
- *       output view's own twelve-byte prefix; the eleven {@code xxxO} items sit at lines 92, 98, 104,
- *       110, 116, 122, 128, 134, 140, 146 and 152.</li>
- *   <li>{@code app/bms/COSGN00.bms} - the name-labelled {@code DFHMDF} definitions and their
- *       {@code LENGTH=} operands, which corroborate the copybook widths independently; notably
- *       {@code CURTIME} at lines 70-74 and {@code ERRMSG} at lines 197-200.</li>
- *   <li>{@code app/cbl/COSGN00C.cbl} - the literals at lines 36, 37 and 38; the messages at lines 89,
- *       93, 120, 125, 242, 249 and 254; the map and mapset names at lines 111 and 112; the error-line
- *       move at line 149; {@code POPULATE-HEADER-INFO} at lines 177-204 including the two
- *       {@code EXEC CICS ASSIGN} statements at 198-200 and 202-204; the communication-area population
- *       at lines 224-228; and the {@code XCTL} routing at lines 230-240.</li>
- *   <li>{@code app/cpy/COCOM01Y.cpy} - the two user-type condition names at lines 27 and 28, and
- *       {@code CDEMO-LAST-MAP} and {@code CDEMO-LAST-MAPSET} at lines 43 and 44.</li>
- *   <li>{@code app/cpy/CSUSR01Y.cpy} - {@code SEC-USR-PWD PIC X(08)} at line 21 and
- *       {@code SEC-USR-TYPE PIC X(01)} at line 22.</li>
- *   <li>{@code app/csd/CARDDEMO.CSD} - the {@code CC00} transaction and {@code COSGN00C} program
- *       definitions, which corroborate the two literals above.</li>
- * </ul>
- *
- * <p>Where this suite and {@code SignOnRequestTest} share a constant they were transcribed from the
- * same line, and the vocabulary is deliberately identical so the two files read as one contract seen
- * from its two directions.
- *
- * <p>{@link SignOnResponse}'s <strong>declared</strong> members are ground truth throughout. Where this
- * suite's expectation and the class could differ, the class is asserted and the difference is recorded
- * in a comment rather than corrected here.
+ * Unit tests for {@link SignOnResponse} - the outbound payload of the {@code COSGN00} sign-on screen, CICS
+ * transaction {@code CC00}, program {@code app/cbl/COSGN00C.cbl}, map {@code COSGN0A}.
  */
 @DisplayName("SignOnResponse - the COSGN00 (CC00) sign-on outbound payload")
 class SignOnResponseTest {
-
-    // =================================================================================================
-    // THE CODE PAGE. Named once, passed explicitly into every codec construction below (B8).
-    //
-    // US-ASCII, not IBM037: the authoritative fixtures under app/data/ASCII are text, and this suite
-    // measures widths and offsets rather than decoding a mainframe dataset. Naming it is the point -
-    // no assertion here can quietly acquire the platform default.
-    // =================================================================================================
-
-    /** The explicitly named code page for every fixed-width operation in this suite. */
     private static final Charset MAP_CHARSET = StandardCharsets.US_ASCII;
 
-    // =================================================================================================
-    // SCREEN IDENTITY. Transcribed literals, each with the line it came from (B3, B12).
-    // =================================================================================================
-
-    /** {@code MAP('COSGN0A')}, {@code app/cbl/COSGN00C.cbl:111}; also the {@code DFHMDI} label. */
     private static final String MAP_NAME = "COSGN0A";
 
-    /** {@code MAPSET('COSGN00')}, {@code app/cbl/COSGN00C.cbl:112}; also the {@code DFHMSD} label. */
     private static final String MAPSET_NAME = "COSGN00";
 
-    /** {@code WS-TRANID PIC X(04) VALUE 'CC00'}, {@code app/cbl/COSGN00C.cbl:37}. */
     private static final String TRANSACTION_ID = "CC00";
 
-    /** {@code WS-PGMNAME PIC X(08) VALUE 'COSGN00C'}, {@code app/cbl/COSGN00C.cbl:36}. */
     private static final String PROGRAM_NAME = "COSGN00C";
 
-    /** Every {@code DFHMDF} definition in {@code app/bms/COSGN00.bms}, labelled or not. */
     private static final int DFHMDF_TOTAL = 37;
 
-    /**
-     * The name-labelled {@code DFHMDF} definitions, which is also the number of {@code xxxI} items and
-     * of {@code xxxO} items in {@code app/cpy-bms/COSGN00.CPY}.
-     */
     private static final int DFHMDF_NAMED = 11;
 
-    /**
-     * Map-derived members of the response: all {@value #DFHMDF_NAMED} named fields.
-     *
-     * <p>{@code PASSWDO} and {@code USERIDO} are among them although no {@code MOVE} writes either -
-     * {@code 01 COSGN0AO REDEFINES COSGN0AI} at {@code COSGN00.CPY:85} makes each of them the same span
-     * as its {@code xxxI} counterpart, so the {@code RECEIVE} fills them and the {@code SEND} transmits
-     * them. Section 3 holds that.
-     */
     private static final int RESPONSE_MAP_MEMBERS = 11;
 
-    // =================================================================================================
-    // THE OUTPUT VIEW, in the copybook's declaration order. Parallel lists sharing one index, so each
-    // can be checked against its own authority: the member names against the record's components, the
-    // xxxO item names and widths against app/cpy-bms/COSGN00.CPY, and the screen labels and widths
-    // against the LENGTH= operands of app/bms/COSGN00.bms. The two authorities agree field for field.
-    //
-    // These lists carry ELEVEN entries - the whole screen, PASSWD included - because the subject of
-    // this file is the difference between eleven and ten. The payload's ten are RESPONSE_MEMBERS.
-    // =================================================================================================
-
-    /** The eleven {@code xxxO} item names, {@code app/cpy-bms/COSGN00.CPY} lines 92 through 152. */
     private static final List<String> OUTPUT_MAP_ITEMS = List.of(
             "TRNNAMEO", "TITLE01O", "CURDATEO", "PGMNAMEO", "TITLE02O", "CURTIMEO",
             "APPLIDO", "SYSIDO", "USERIDO", "PASSWDO", "ERRMSGO");
 
-    /** The eleven name-labelled {@code DFHMDF} labels, {@code app/bms/COSGN00.bms} in mapset order. */
     private static final List<String> SCREEN_FIELDS = List.of(
             "TRNNAME", "TITLE01", "CURDATE", "PGMNAME", "TITLE02", "CURTIME",
             "APPLID", "SYSID", "USERID", "PASSWD", "ERRMSG");
 
-    /**
-     * The eleven declared widths, from the {@code xxxO} {@code PICTURE} clauses and independently from
-     * the mapset's {@code LENGTH=} operands: {@code 4, 40, 8, 8, 40, 9, 8, 8, 8, 8, 78}.
-     *
-     * <p>The sixth entry is <strong>9</strong>, not 8. See {@link WidthTraps}.
-     */
     private static final List<Integer> DECLARED_WIDTHS = List.of(4, 40, 8, 8, 40, 9, 8, 8, 8, 8, 78);
 
-    /** The {@code app/cpy-bms/COSGN00.CPY} line declaring each {@code xxxO} item. */
     private static final List<Integer> COPYBOOK_LINES = List.of(92, 98, 104, 110, 116, 122, 128, 134,
             140, 146, 152);
 
-    /** The {@code app/bms/COSGN00.bms} line labelling each {@code DFHMDF}. */
     private static final List<Integer> MAPSET_LINES = List.of(34, 38, 47, 57, 61, 70, 80, 89, 156,
             175, 197);
 
-    // =================================================================================================
-    // THE ELEVEN MEMBERS THE PAYLOAD CARRIES, and the six that carry the navigation and text contracts.
-    // =================================================================================================
-
-    /** The eleven map-derived component names, in {@code 01 COSGN0AO} declaration order. */
     private static final List<String> RESPONSE_MEMBERS = List.of(
             "trnName", "title01", "curDate", "pgmName", "title02", "curTime",
             "applId", "sysId", "userId", "passwd", "errMsg");
 
-    /** The eleven {@code xxxO} items the payload projects - all of {@link #OUTPUT_MAP_ITEMS}. */
     private static final List<String> RESPONSE_MAP_ITEMS = List.of(
             "TRNNAMEO", "TITLE01O", "CURDATEO", "PGMNAMEO", "TITLE02O", "CURTIMEO",
             "APPLIDO", "SYSIDO", "USERIDO", "PASSWDO", "ERRMSGO");
 
-    /** The eleven declared widths of {@link #RESPONSE_MEMBERS}, in the same order. */
     private static final List<Integer> RESPONSE_WIDTHS = List.of(4, 40, 8, 8, 40, 9, 8, 8, 8, 8, 78);
+
+    /**
+     * The one member of {@link #RESPONSE_MEMBERS} that is <strong>not</strong> published.
+     *
+     * <p>{@code PASSWDO} reaches a 3270 under {@code ATTRB=(DRK,FSET,UNPROT)} at
+     * {@code app/bms/COSGN00.bms} line 175: the eight characters go to exactly one device and are
+     * rendered invisibly there. A JSON member has no {@code DRK} bit and no single recipient, so the
+     * component keeps the overlay's image faithfully - {@code 01 COSGN0AO REDEFINES COSGN0AI} really does
+     * put the typed value in the send area, and the parity corpus pins it - while {@code @JsonIgnore}
+     * keeps it off the wire.
+     */
+    private static final String WITHHELD_MEMBER = "passwd";
+
+    /** {@link #RESPONSE_MEMBERS} less {@link #WITHHELD_MEMBER}: the ten that are serialised. */
+    private static final List<String> PUBLISHED_MEMBERS = RESPONSE_MEMBERS.stream()
+            .filter(member -> !WITHHELD_MEMBER.equals(member))
+            .toList();
 
     /**
      * The six members with no {@code DFHMDF} behind them, in component order.
@@ -291,40 +126,60 @@ class SignOnResponseTest {
     private static final List<String> NAVIGATION_MEMBERS = List.of(
             "role", "nextProgram", "nextMapset", "nextMap", "plainText", "navigationContext");
 
-    /**
-     * A member's name <strong>on the wire</strong>.
-     *
-     * <p>A screen field answers to its {@code xxxI} item in lower case - that is what
-     * {@code @JsonProperty} pins on the subject and what AAP 0.6.3 requires, "payload field names and
-     * lengths derive from the xxxI items only". A carrier traces to no {@code DFHMDF} field, so no such
-     * rule governs it and it keeps its own component name. Keeping the two apart is the point: a single
-     * list serving both roles would silently assert that the Java identifier and the wire name coincide.
-     *
-     * @param member the Java member name
-     * @return the JSON property name it is published under
-     */
     private static String wireNameOf(String member) {
         return RESPONSE_MEMBERS.contains(member) ? member.toLowerCase(Locale.ROOT) : member;
     }
 
-    /**
-     * {@link #wireNameOf(String)} over a list, preserving order.
-     *
-     * @param members the Java member names
-     * @return their JSON property names
-     */
     private static List<String> wireNamesOf(List<String> members) {
         return members.stream().map(SignOnResponseTest::wireNameOf).toList();
     }
 
-    /** {@value #COMPONENT_COUNT} components: {@value #RESPONSE_MAP_MEMBERS} map-derived plus six. */
     private static final int COMPONENT_COUNT = 17;
 
-    /** The screen-field stem of the credential field: {@code PASSWD}, bms line 175. */
     private static final String CREDENTIAL_SCREEN_FIELD = "PASSWD";
 
-    /** The credential's symbolic-map output item: {@code PASSWDO}, {@code COSGN00.CPY:146}. */
     private static final String CREDENTIAL_OUTPUT_ITEM = "PASSWDO";
+
+    /**
+     * The one component declared {@code @JsonProperty(access = WRITE_ONLY)}: {@code passwd}.
+     *
+     * <p>{@code app/bms/COSGN00.bms:174-180} declares {@code PASSWD} with {@code ATTRB=(DRK,..)}, so the
+     * 3270 receives the eight characters and renders them invisibly. JSON has no {@code DRK}, and a
+     * member on the wire is readable by the client, by anything between them and by anything that logs a
+     * response body - so emitting it would reproduce one half of the terminal contract and discard the
+     * half that hides the value. The two halves are therefore separated: the span stays on the model,
+     * {@link SignOnResponse#passwd()} and the field census still report it in full, and only the
+     * serialized projection omits it - in both directions, so no payload can put a credential
+     * back into a response either.
+     */
+    private static final String WRITE_ONLY_MEMBER = "passwd";
+
+    /**
+     * The member names the payload actually emits: every component's wire name less
+     * {@link #WRITE_ONLY_MEMBER}, in declaration order.
+     *
+     * @param members the Java member names, in declaration order
+     * @return their emitted JSON property names
+     */
+    private static List<String> emittedNamesOf(List<String> members) {
+        List<String> emitted = wireNamesOf(members).stream()
+                .filter(name -> !name.equals(WRITE_ONLY_MEMBER))
+                .toList();
+        if (emitted.size() != members.size() - 1) {
+            throw new AssertionError(WRITE_ONLY_MEMBER + " must appear exactly once in " + members
+                    + ", otherwise removing it from the emitted set would assert nothing");
+        }
+        return emitted;
+    }
+
+    /**
+     * The JSON property name the credential component would have carried, and the key the serialised
+     * payload must not contain: {@code passwd}, the lower-case {@code PASSWDI} stem AAP 0.6.3 pins.
+     */
+    private static final String CREDENTIAL_WIRE_NAME = "passwd";
+
+    /** Map-derived members the wire carries: {@value #RESPONSE_MAP_MEMBERS} less the withheld one. */
+    private static final int RESPONSE_WIRE_MEMBERS = RESPONSE_MAP_MEMBERS - 1;
 
     /**
      * An obviously fake eight-character password image, standing for what {@code EXEC CICS RECEIVE MAP}
@@ -332,297 +187,119 @@ class SignOnResponseTest {
      */
     private static final String RECEIVED_PASSWORD = "PASSWORD";
 
-    /**
-     * The four - and only four - lines of {@code app/cbl/COSGN00C.cbl} that mention {@code PASSWD} at
-     * all: 123, 126, 135 and 244.
-     *
-     * <p>Recorded as data so {@link TheOverlayPair#noMoveWritesTheOutputItem()} can state the census
-     * rather than merely describe it. What each line does is set out there.
-     */
     private static final List<Integer> PASSWD_REFERENCE_LINES = List.of(123, 126, 135, 244);
 
-    /** {@code PASSWDO} occurrences in {@code app/cbl/COSGN00C.cbl}: none. */
     private static final int PASSWDO_REFERENCE_COUNT = 0;
 
-    /**
-     * {@code CDEMO-CU0n-INFO} occurrences in {@code app/cbl/COSGN00C.cbl}: none.
-     *
-     * <p>Three sibling programs - {@code COUSR00C}, {@code COUSR02C} and {@code COUSR03C} - declare a
-     * {@code CDEMO-CU0n-INFO} extension block onto the communication area. {@code COSGN00C} declares
-     * none, so this payload carries none: it hands back the plain
-     * {@value NavigationContext#COMMAREA_LENGTH}-byte area and nothing appended to it.
-     */
     private static final int CDEMO_CU0N_INFO_COUNT = 0;
 
-    // =================================================================================================
-    // BYTE GEOMETRY OF THE TWO VIEWS, and why the overlay is exact rather than approximate.
-    //
-    // 01 COSGN0AI opens with a twelve-byte TIOAPFX prefix (CPY:18) and then, per field, xxxL
-    // (COMP PIC S9(4), a two-byte halfword) + xxxF (PICTURE X) + FILLER PICTURE X(4) - seven bytes -
-    // before the xxxI item.
-    //
-    // 01 COSGN0AO opens with its own twelve-byte prefix (CPY:86) and then, per field, FILLER
-    // PICTURE X(3) + xxxC + xxxP + xxxH + xxxV, one byte each - also seven bytes - before the xxxO item.
-    //
-    // Both prefixes being seven bytes is the whole reason REDEFINES lines the two views up field for
-    // field with no drift. The numbers below are transcribed and then RE-DERIVED by the layout
-    // builders: RecordLayout refuses a gap, an unintended overlap, or any total other than the declared
-    // length, so a single wrong constant fails class initialisation instead of silently shifting every
-    // offset after it.
-    // =================================================================================================
-
-    /** {@code 02 FILLER PIC X(12)} - the {@code TIOAPFX=YES} prefix; {@code COSGN00.CPY:18} and 86. */
     private static final int TIOAPFX_PREFIX_LENGTH = 12;
 
-    /** {@code xxxL COMP PIC S9(4)} - a binary halfword, two bytes. Input view only. */
     private static final int LENGTH_ITEM_LENGTH = 2;
 
-    /** {@code xxxF PICTURE X}, and the {@code 03 xxxA PICTURE X} overlay over that same byte. */
     private static final int ATTRIBUTE_ITEM_LENGTH = 1;
 
-    /** {@code 02 FILLER PICTURE X(4)} - the input view's reserved span between {@code xxxF} and {@code xxxI}. */
     private static final int INPUT_FILLER_LENGTH = 4;
 
-    /** {@code 02 FILLER PICTURE X(3)} - the output view's reserved span, ahead of the attribute quartet. */
     private static final int OUTPUT_FILLER_LENGTH = 3;
 
-    /**
-     * The {@code EXTATT=YES} attribute quartet the output view interleaves ahead of every {@code xxxO}
-     * item, in copybook order: colour, programmed symbol, highlight, validation.
-     *
-     * <p>{@code xxxC} is the <strong>colour</strong> item and is
-     * {@link FieldAttributeSetter}'s target - the class publishes it as
-     * {@link FieldAttributeSetter#COLOUR_ITEM_SUFFIX}. The sibling program makes the usage explicit:
-     * {@code app/cbl/COUSR03C.cbl:317} executes {@code MOVE DFHGREEN TO ERRMSGC OF COUSR3AO}. All four
-     * are terminal presentation attributes and none of them is payload.
-     */
     private static final List<String> ATTRIBUTE_SUFFIXES = List.of("C", "P", "H", "V");
 
-    /** {@value #FIELD_PREFIX_LENGTH} bytes ahead of every {@code xxxI} item: 2 + 1 + 4. */
     private static final int FIELD_PREFIX_LENGTH =
             LENGTH_ITEM_LENGTH + ATTRIBUTE_ITEM_LENGTH + INPUT_FILLER_LENGTH;
 
-    /** {@value #OUTPUT_PREFIX_LENGTH} bytes ahead of every {@code xxxO} item: 3 + 1 + 1 + 1 + 1. */
     private static final int OUTPUT_PREFIX_LENGTH =
             OUTPUT_FILLER_LENGTH + ATTRIBUTE_SUFFIXES.size() * ATTRIBUTE_ITEM_LENGTH;
 
-    /** {@value #PAYLOAD_WIDTH_TOTAL} bytes of data: 4+40+8+8+40+9+8+8+8+8+78. */
     private static final int PAYLOAD_WIDTH_TOTAL = 219;
 
-    /**
-     * {@value #SYMBOLIC_MAP_LENGTH} bytes in each view: {@value #TIOAPFX_PREFIX_LENGTH} +
-     * {@value #DFHMDF_NAMED} x 7 + {@value #PAYLOAD_WIDTH_TOTAL}.
-     *
-     * <p>One figure, because {@code 01 COSGN0AO REDEFINES COSGN0AI} means one storage area.
-     */
     private static final int SYMBOLIC_MAP_LENGTH = 308;
 
-    /**
-     * The twelve {@code REDEFINES} in {@code app/cpy-bms/COSGN00.CPY}: eleven per-field
-     * {@code 02 FILLER REDEFINES xxxF} overlays at lines 21, 27, 33, 39, 45, 51, 57, 63, 69, 75 and 81,
-     * plus the one group-level {@code 01 COSGN0AO REDEFINES COSGN0AI} at line 85.
-     */
     private static final int COPYBOOK_REDEFINES_TOTAL = 12;
 
-    /** The group-level {@code REDEFINES} of this copybook - exactly one, at {@code COSGN00.CPY:85}. */
     private static final int GROUP_LEVEL_REDEFINES = 1;
 
-    /**
-     * The per-field {@code REDEFINES} across this package's five maps: {@code COSGN00} 11,
-     * {@code COUSR00} 59, {@code COUSR01} 12, {@code COUSR02} 12 and {@code COUSR03} 11.
-     *
-     * <p>One per named screen field, because every field's {@code xxxF} byte carries an {@code xxxA}
-     * overlay. 11 + 59 + 12 + 12 + 11 = {@value #PACKAGE_PER_FIELD_REDEFINES}.
-     */
     private static final int PACKAGE_PER_FIELD_REDEFINES = 105;
 
-    /** One group-level {@code REDEFINES} per map, and this package owns five maps. */
     private static final int PACKAGE_GROUP_LEVEL_REDEFINES = 5;
 
-    /**
-     * {@value #PACKAGE_REDEFINES_TOTAL} {@code REDEFINES} across the package's five symbolic maps:
-     * {@value #PACKAGE_PER_FIELD_REDEFINES} per-field plus {@value #PACKAGE_GROUP_LEVEL_REDEFINES}
-     * group-level, with no gap and nothing counted twice.
-     *
-     * <p>The split matters because the two kinds are asserted in different files.
-     * {@code SignOnRequestTest} owns the eleven per-field overlays of this map and states explicitly
-     * that the group-level one is this file's; {@link GroupRedefinesOverlay} is where it is discharged.
-     */
     private static final int PACKAGE_REDEFINES_TOTAL = 110;
 
-    /**
-     * {@code 05 WS-MESSAGE PIC X(80) VALUE SPACES}, {@code app/cbl/COSGN00C.cbl:38}.
-     *
-     * <p>Two characters wider than the {@code ERRMSGO PIC X(78)} it is moved into at line 149. See
-     * {@link TheErrorLine}.
-     */
     private static final int WS_MESSAGE_LENGTH = 80;
 
-    /** The characters {@code MOVE WS-MESSAGE TO ERRMSGO} discards: 80 - 78. */
     private static final int ERRMSG_TRUNCATED_CHARACTERS = WS_MESSAGE_LENGTH - 78;
 
-    // =================================================================================================
-    // THE TWO VIEWS AS VALIDATED LAYOUTS. Immutable records over unmodifiable span lists, so publishing
-    // them as constants introduces no shared mutable state (B9); each test that writes bytes takes its
-    // own fresh FixedWidthRecord.
-    // =================================================================================================
-
-    /**
-     * {@code 01 COSGN0AI} - the storage, plus the twelve {@code REDEFINES} the copybook declares over
-     * it.
-     *
-     * <p>Eleven of those twelve are the per-field {@code xxxA} overlays. The twelfth is the group-level
-     * {@code 01 COSGN0AO REDEFINES COSGN0AI} of {@code COSGN00.CPY:85}, declared here as a single
-     * {@value #SYMBOLIC_MAP_LENGTH}-byte overlay named {@code COSGN0AO} over the whole area - which is
-     * exactly what the copybook says it is. It is declared last so that all
-     * {@value #SYMBOLIC_MAP_LENGTH} bytes of storage exist ahead of it, which is the condition
-     * {@link FixedWidthRecord.RecordLayout} enforces on any overlay.
-     *
-     * <p>The {@code xxxL} halfword is declared as {@code FILLER} rather than under its own name: it is
-     * {@code COMP} - binary - and {@link FixedWidthRecord.PictureKind} deliberately has no binary
-     * category, because no persisted record in this estate holds one. It is reserved storage here, and
-     * it is never a payload member in any case.
-     */
     private static final FixedWidthRecord.RecordLayout INPUT_VIEW_LAYOUT = inputViewLayout();
 
-    /**
-     * {@code 01 COSGN0AO} - the same {@value #SYMBOLIC_MAP_LENGTH} bytes under the output view's own
-     * names: the twelve-byte prefix, then per field a three-byte filler, the {@code xxxC},
-     * {@code xxxP}, {@code xxxH} and {@code xxxV} attribute bytes, and the {@code xxxO} item.
-     *
-     * <p>Declared as a layout in its own right rather than as overlays inside
-     * {@link #INPUT_VIEW_LAYOUT}, because that is what makes the geometry provable: a redefining group
-     * has to tile the redefined storage exactly, so the fact that <em>both</em> builders satisfy
-     * {@link FixedWidthRecord.RecordLayout}'s self-check at {@value #SYMBOLIC_MAP_LENGTH} bytes is the
-     * assertion that the overlay is exact. The two views are then made to share one storage area in
-     * {@link GroupRedefinesOverlay#aValueCrossesBetweenTheTwoViewsAtOneOffset}.
-     */
     private static final FixedWidthRecord.RecordLayout OUTPUT_VIEW_LAYOUT = outputViewLayout();
 
-    // =================================================================================================
-    // DETERMINISM (B7). One fixed instant, read through Clock.fixed at UTC, so the header renders the
-    // same characters on every run, on every machine, in any order.
-    // =================================================================================================
-
-    /**
-     * A fixed instant: the timestamp in the version footer of {@code app/cbl/COSGN00C.cbl:259}, which
-     * makes it traceable rather than arbitrary.
-     */
     private static final Instant FIXED_INSTANT = Instant.parse("2022-07-19T23:12:33Z");
 
-    /**
-     * The single {@link Clock} every time-derived expectation here is read through.
-     *
-     * <p>{@code config.WebConfig} publishes the module's one {@link Clock} bean and returns
-     * {@link Clock#systemDefaultZone()}; {@link DateHeader#from(FixedWidthCodec, Clock)} takes a
-     * {@link Clock} and reads it once, which is precisely the seam that lets a test substitute a fixed
-     * instant. No context is loaded here - the seam is used directly. {@link Clock} is immutable, so
-     * this constant is not shared mutable state.
-     */
     private static final Clock FIXED_CLOCK = Clock.fixed(FIXED_INSTANT, ZoneOffset.UTC);
 
-    /** {@code MM/DD/YY} for {@link #FIXED_INSTANT} - what {@code COSGN00C.cbl:190} would move. */
     private static final String FIXED_CURDATE = "07/19/22";
 
-    /** {@code HH:MM:SS} for {@link #FIXED_INSTANT} - what {@code COSGN00C.cbl:196} would move. */
     private static final String FIXED_CURTIME = "23:12:33";
 
-    /** {@code CURTIME DFHMDF ... INITIAL='Ahh:mm:ss'}, {@code app/bms/COSGN00.bms:74} - nine characters. */
     private static final String CURTIME_INITIAL = "Ahh:mm:ss";
 
-    /** {@code CURDATE DFHMDF ... INITIAL='mm/dd/yy'}, {@code app/bms/COSGN00.bms:51} - eight. */
     private static final String CURDATE_INITIAL = "mm/dd/yy";
 
-    // =================================================================================================
-    // THE FIVE MESSAGE LITERALS COSGN00C MOVES INTO WS-MESSAGE, each with its line (B3, B12).
-    // =================================================================================================
-
-    /** {@code app/cbl/COSGN00C.cbl:120} - the blank user-id branch. */
     private static final String MSG_ENTER_USER_ID = "Please enter User ID ...";
 
-    /** {@code app/cbl/COSGN00C.cbl:125} - the blank password branch. */
     private static final String MSG_ENTER_PASSWORD = "Please enter Password ...";
 
-    /** {@code app/cbl/COSGN00C.cbl:242} - the plaintext comparison failed. */
     private static final String MSG_WRONG_PASSWORD = "Wrong Password. Try again ...";
 
-    /** {@code app/cbl/COSGN00C.cbl:249} - {@code WS-RESP-CD} was 13, the record was not found. */
     private static final String MSG_USER_NOT_FOUND = "User not found. Try again ...";
 
-    /** {@code app/cbl/COSGN00C.cbl:254} - the {@code WHEN OTHER} branch of the file read. */
     private static final String MSG_UNABLE_TO_VERIFY = "Unable to verify the User ...";
 
-    /** The five literals above, in the order the program's branches reach them. */
     private static final List<String> PROGRAM_MESSAGES = List.of(
             MSG_ENTER_USER_ID, MSG_ENTER_PASSWORD, MSG_WRONG_PASSWORD, MSG_USER_NOT_FOUND,
             MSG_UNABLE_TO_VERIFY);
 
-    /**
-     * The two copybook messages {@code COSGN00C} moves into {@code WS-MESSAGE}, at lines 89 and 93.
-     *
-     * <p>Unlike the five literals above these are {@code PIC X(50)} fields rather than in-line text, so
-     * they take a <strong>two-stage</strong> route to the screen: {@code PIC X(50)} widened into
-     * {@code WS-MESSAGE PIC X(80)}, then narrowed into {@code ERRMSGO PIC X(78)}. See
-     * {@link TheErrorLine#theCopybookMessagesWidenThenNarrow()}.
-     */
     private static final List<String> COPYBOOK_MESSAGES = List.of(
             SystemMessages.CCDA_MSG_THANK_YOU, SystemMessages.CCDA_MSG_INVALID_KEY);
 
-    // =================================================================================================
-    // Construction of the constants above. Static, side-effect free, called once each.
-    // =================================================================================================
-
     private static FixedWidthRecord.RecordLayout inputViewLayout() {
         List<FixedWidthRecord.FieldSpan> spans = new ArrayList<>();
-        // 02 FILLER PIC X(12) - COSGN00.CPY:18.
         spans.add(FixedWidthRecord.FieldSpan.filler(0, TIOAPFX_PREFIX_LENGTH));
         int cursor = TIOAPFX_PREFIX_LENGTH;
         for (int index = 0; index < DFHMDF_NAMED; index++) {
             String field = SCREEN_FIELDS.get(index);
-            // 02 xxxL COMP PIC S9(4) - a binary halfword, declared as reserved storage.
             spans.add(FixedWidthRecord.FieldSpan.filler(cursor, LENGTH_ITEM_LENGTH));
             cursor += LENGTH_ITEM_LENGTH;
-            // 02 xxxF PICTURE X, with 02 FILLER REDEFINES xxxF / 03 xxxA PICTURE X over the same byte.
             FixedWidthRecord.FieldSpan flag = FixedWidthRecord.FieldSpan.alphanumeric(
                     field + "F", cursor, ATTRIBUTE_ITEM_LENGTH);
             spans.add(flag);
             spans.add(flag.redefinedAs(field + "A", FixedWidthRecord.PictureKind.ALPHANUMERIC));
             cursor += ATTRIBUTE_ITEM_LENGTH;
-            // 02 FILLER PICTURE X(4).
             spans.add(FixedWidthRecord.FieldSpan.filler(cursor, INPUT_FILLER_LENGTH));
             cursor += INPUT_FILLER_LENGTH;
-            // 02 xxxI PIC X(n).
             spans.add(FixedWidthRecord.FieldSpan.alphanumeric(
                     SCREEN_FIELDS.get(index) + "I", cursor, DECLARED_WIDTHS.get(index)));
             cursor += DECLARED_WIDTHS.get(index);
         }
-        // 01 COSGN0AO REDEFINES COSGN0AI - COSGN00.CPY:85. Declared last, so the whole area exists
-        // ahead of it, which is the condition RecordLayout enforces on an overlay.
         spans.add(FixedWidthRecord.FieldSpan.redefining(MAP_NAME + "O", 0, SYMBOLIC_MAP_LENGTH,
                 FixedWidthRecord.PictureKind.ALPHANUMERIC));
-        // The DECLARED total is passed, never the cursor this loop happened to reach: passing the
-        // cursor would only prove the constants are consistent with themselves.
         return FixedWidthRecord.RecordLayout.of(SYMBOLIC_MAP_LENGTH,
                 spans.toArray(FixedWidthRecord.FieldSpan[]::new));
     }
 
     private static FixedWidthRecord.RecordLayout outputViewLayout() {
         List<FixedWidthRecord.FieldSpan> spans = new ArrayList<>();
-        // 02 FILLER PIC X(12) - COSGN00.CPY:86.
         spans.add(FixedWidthRecord.FieldSpan.filler(0, TIOAPFX_PREFIX_LENGTH));
         int cursor = TIOAPFX_PREFIX_LENGTH;
         for (int index = 0; index < DFHMDF_NAMED; index++) {
             String field = SCREEN_FIELDS.get(index);
-            // 02 FILLER PICTURE X(3).
             spans.add(FixedWidthRecord.FieldSpan.filler(cursor, OUTPUT_FILLER_LENGTH));
             cursor += OUTPUT_FILLER_LENGTH;
-            // 02 xxxC / xxxP / xxxH / xxxV PICTURE X - the EXTATT=YES attribute quartet.
             for (String suffix : ATTRIBUTE_SUFFIXES) {
                 spans.add(FixedWidthRecord.FieldSpan.alphanumeric(
                         field + suffix, cursor, ATTRIBUTE_ITEM_LENGTH));
                 cursor += ATTRIBUTE_ITEM_LENGTH;
             }
-            // 02 xxxO PIC X(n).
             spans.add(FixedWidthRecord.FieldSpan.alphanumeric(
                     OUTPUT_MAP_ITEMS.get(index), cursor, DECLARED_WIDTHS.get(index)));
             cursor += DECLARED_WIDTHS.get(index);
@@ -631,32 +308,10 @@ class SignOnResponseTest {
                 spans.toArray(FixedWidthRecord.FieldSpan[]::new));
     }
 
-    // =================================================================================================
-    // Shared, stateless helpers. Every one returns a fresh value; none caches, mutates or memoises.
-    // =================================================================================================
-
-    /**
-     * A codec over the explicitly named code page (B8). A fresh instance per call: the codec is cheap,
-     * and sharing one would be shared state for no benefit.
-     */
     private static FixedWidthCodec codec() {
         return new FixedWidthCodec(MAP_CHARSET);
     }
 
-    /**
-     * An {@link ObjectMapper} configured exactly as {@code config.WebConfig} configures the
-     * application's shared one, and for the reasons that class documents.
-     *
-     * <p>A default mapper would be the wrong instrument and would make this suite assert the wrong
-     * thing. Four settings are stated rather than inherited: {@code USE_BIG_DECIMAL_FOR_FLOATS} and
-     * {@code WRITE_BIGDECIMAL_AS_PLAIN} so no scale-bearing value could route through a {@code double}
-     * or serialise in exponent notation, {@code FAIL_ON_TRAILING_TOKENS} so a payload is either read
-     * whole or refused, and {@code ACCEPT_EMPTY_STRING_AS_NULL_OBJECT} <em>disabled</em> so an
-     * all-spaces {@code PIC X(n)} value stays the real screen data it is instead of becoming
-     * {@code null}. No naming strategy is applied, so each property still traces 1:1 to an {@code xxxO}
-     * item; no inclusion filter is applied, so nothing is dropped; and no trimming converter is
-     * registered, so trailing padding survives a round trip.
-     */
     private static ObjectMapper webConfigEquivalentMapper() {
         ObjectMapper mapper = new ObjectMapper();
         mapper.enable(DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS);
@@ -666,21 +321,18 @@ class SignOnResponseTest {
         return mapper;
     }
 
-    /** The record's component names, in declaration order. */
     private static List<String> componentNames() {
         return Arrays.stream(SignOnResponse.class.getRecordComponents())
                 .map(RecordComponent::getName)
                 .toList();
     }
 
-    /** The record's component types, in declaration order. */
     private static List<Class<?>> componentTypes() {
         return Arrays.stream(SignOnResponse.class.getRecordComponents())
                 .map(RecordComponent::getType)
                 .toList();
     }
 
-    /** A fully populated response: every member exactly its declared width, and every value distinct. */
     private static SignOnResponse populated() {
         return new SignOnResponse(TRANSACTION_ID,
                 ScreenTitles.CCDA_TITLE01,
@@ -701,11 +353,6 @@ class SignOnResponseTest {
                 signedOnContext(SignOnResponse.ROLE_ADMIN));
     }
 
-    /**
-     * The communication area as {@code app/cbl/COSGN00C.cbl:224-228} populates it on the success path:
-     * {@code CDEMO-FROM-TRANID}, {@code CDEMO-FROM-PROGRAM}, {@code CDEMO-USER-ID},
-     * {@code CDEMO-USER-TYPE} from {@code SEC-USR-TYPE}, and {@code CDEMO-PGM-CONTEXT} zeroed.
-     */
     private static NavigationContext signedOnContext(String role) {
         return NavigationContext.empty()
                 .withFromTranid(TRANSACTION_ID)
@@ -715,29 +362,29 @@ class SignOnResponseTest {
                 .withPgmEnter();
     }
 
-    /** The ten map-derived values of a response, in component order. */
     private static List<String> mapValuesOf(SignOnResponse response) {
         return List.of(response.trnName(), response.title01(), response.curDate(),
                 response.pgmName(), response.title02(), response.curTime(), response.applId(),
                 response.sysId(), response.userId(), response.passwd(), response.errMsg());
     }
 
-    /**
-     * The serialised payload's own top-level keys, in emission order and with their exact spelling.
-     *
-     * <p>Case and order are preserved here, unlike in {@link #jsonKeys(SignOnResponse)}: because
-     * {@code config.WebConfig} applies no naming strategy, each key must still be the component name
-     * verbatim, and that is only checkable if nothing is normalised on the way out.
-     */
     private static List<String> topLevelJsonKeys(SignOnResponse response) {
         return List.copyOf(asMap(response).keySet());
     }
 
-    /** Every key of the serialised payload, nested keys included, flattened and lower-cased. */
     private static Set<String> jsonKeys(SignOnResponse response) {
         Set<String> keys = new LinkedHashSet<>();
         collectKeys(asMap(response), keys);
         return keys;
+    }
+
+    /** The serialised payload as raw text, for asserting that a value appears nowhere in it. */
+    private static String json(SignOnResponse response) {
+        try {
+            return webConfigEquivalentMapper().writeValueAsString(response);
+        } catch (IOException failure) {
+            throw new UncheckedIOException("Could not serialise the sign-on response", failure);
+        }
     }
 
     private static Map<String, Object> asMap(SignOnResponse response) {
@@ -745,6 +392,109 @@ class SignOnResponseTest {
         try {
             return mapper.readValue(mapper.writeValueAsString(response),
                     new TypeReference<LinkedHashMap<String, Object>>() { });
+        } catch (IOException failure) {
+            throw new UncheckedIOException("Could not serialise the sign-on response", failure);
+        }
+    }
+
+    /**
+     * The {@link JsonProperty} governing one component's wire projection, or {@code null} if it has
+     * none.
+     *
+     * <p>Searched across the accessor, the backing field and the canonical-constructor parameter rather
+     * than on the record component, because {@code JsonProperty}'s {@code @Target} names
+     * {@code FIELD}, {@code METHOD} and {@code PARAMETER} but <strong>not</strong>
+     * {@code RECORD_COMPONENT} - so an annotation written in the record header is reachable on those
+     * three and absent from the component itself. Every surface that carries one is required to agree,
+     * so declaring one access mode on the field and another on the accessor cannot pass unnoticed.
+     *
+     * @param componentName the component to inspect
+     * @return the annotation that governs it, or {@code null} if none is applied
+     */
+    private static JsonProperty jsonPropertyOn(String componentName) {
+        List<JsonProperty> found = new ArrayList<>();
+        RecordComponent component = Arrays.stream(SignOnResponse.class.getRecordComponents())
+                .filter(candidate -> candidate.getName().equals(componentName))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError(
+                        componentName + " is not a component of SignOnResponse"));
+        addIfPresent(found, component.getAnnotation(JsonProperty.class));
+        addIfPresent(found, component.getAccessor().getAnnotation(JsonProperty.class));
+        try {
+            addIfPresent(found, SignOnResponse.class.getDeclaredField(componentName)
+                    .getAnnotation(JsonProperty.class));
+        } catch (NoSuchFieldException neverHappensForARecordComponent) {
+            throw new AssertionError("a record component always has a backing field",
+                    neverHappensForARecordComponent);
+        }
+        for (Constructor<?> constructor : SignOnResponse.class.getDeclaredConstructors()) {
+            for (Parameter parameter : constructor.getParameters()) {
+                if (parameter.getName().equals(componentName)) {
+                    addIfPresent(found, parameter.getAnnotation(JsonProperty.class));
+                }
+            }
+        }
+        if (found.isEmpty()) {
+            return null;
+        }
+        assertThat(found.stream().map(JsonProperty::access).distinct().toList())
+                .as("%s must declare the same access mode on every surface", componentName)
+                .hasSize(1);
+        assertThat(found.stream().map(JsonProperty::value).distinct().toList())
+                .as("%s must declare the same wire name on every surface", componentName)
+                .hasSize(1);
+        return found.get(0);
+    }
+
+    private static void addIfPresent(List<JsonProperty> target, JsonProperty annotation) {
+        if (annotation != null) {
+            target.add(annotation);
+        }
+    }
+
+    /**
+     * Every annotation reachable on one component, across the same surfaces
+     * {@link #jsonPropertyOn(String)} inspects, as simple names.
+     *
+     * @param componentName the component to inspect
+     * @return the annotation type simple names found
+     */
+    private static Set<String> annotationSimpleNamesOn(String componentName) {
+        Set<String> names = new LinkedHashSet<>();
+        RecordComponent component = Arrays.stream(SignOnResponse.class.getRecordComponents())
+                .filter(candidate -> candidate.getName().equals(componentName))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError(
+                        componentName + " is not a component of SignOnResponse"));
+        collectSimpleNames(names, component.getAnnotations());
+        collectSimpleNames(names, component.getAccessor().getAnnotations());
+        try {
+            collectSimpleNames(names,
+                    SignOnResponse.class.getDeclaredField(componentName).getAnnotations());
+        } catch (NoSuchFieldException neverHappensForARecordComponent) {
+            throw new AssertionError("a record component always has a backing field",
+                    neverHappensForARecordComponent);
+        }
+        for (Constructor<?> constructor : SignOnResponse.class.getDeclaredConstructors()) {
+            for (Parameter parameter : constructor.getParameters()) {
+                if (parameter.getName().equals(componentName)) {
+                    collectSimpleNames(names, parameter.getAnnotations());
+                }
+            }
+        }
+        return names;
+    }
+
+    private static void collectSimpleNames(Set<String> target, Annotation[] annotations) {
+        for (Annotation annotation : annotations) {
+            target.add(annotation.annotationType().getSimpleName());
+        }
+    }
+
+    /** The raw serialized document, for assertions about a value rather than about a key. */
+    private static String serialisedFormOf(SignOnResponse response) {
+        try {
+            return webConfigEquivalentMapper().writeValueAsString(response);
         } catch (IOException failure) {
             throw new UncheckedIOException("Could not serialise the sign-on response", failure);
         }
@@ -760,14 +510,30 @@ class SignOnResponseTest {
         }
     }
 
-    /** Serialise then deserialise through the {@code WebConfig}-equivalent mapper. */
     private static SignOnResponse roundTrip(SignOnResponse response) {
         ObjectMapper mapper = webConfigEquivalentMapper();
         try {
-            return mapper.readValue(mapper.writeValueAsString(response), SignOnResponse.class);
+            ObjectNode document = (ObjectNode) mapper.readTree(mapper.writeValueAsString(response));
+            document.put(CREDENTIAL_WIRE_NAME, " ".repeat(SignOnResponse.PASSWD_LENGTH));
+            return mapper.treeToValue(document, SignOnResponse.class);
         } catch (IOException failure) {
             throw new UncheckedIOException("Could not round trip the sign-on response", failure);
         }
+    }
+
+    /**
+     * The same value as it exists <strong>after</strong> a round trip: every published member unchanged,
+     * and the withheld credential in the blank image an absent JSON member deserialises to.
+     *
+     * <p>Round-trip equality is asserted against this rather than against the original, because equality
+     * that ignored the credential would also stop noticing if it ever came back.
+     *
+     * @param response the value before serialisation
+     * @return the value the wire form can reconstruct
+     */
+    private static SignOnResponse withCredentialWithheld(SignOnResponse response) {
+        return response.withReceivedMapArea(response.userId(),
+                " ".repeat(SignOnResponse.PASSWD_LENGTH));
     }
 
     /** Every type this payload's API mentions: component types, and every parameter and return type. */
@@ -788,18 +554,9 @@ class SignOnResponseTest {
         return names;
     }
 
-    // =================================================================================================
-    // 1. THE PROJECTION OF 01 COSGN0AO ONTO THE PAYLOAD.
-    //
-    // Gate G9: every payload field must trace to a DFHMDF definition, and every width to a symbolic-map
-    // PICTURE clause. The five navigation members are the plan's own documented exception and are
-    // identified as such rather than quietly counted as screen fields.
-    // =================================================================================================
-
     @Nested
     @DisplayName("Projection of 01 COSGN0AO - ten map members, then five navigation members")
     class MapProjection {
-
         @Test
         @DisplayName("fifteen components: the ten map members in copybook order, then the five")
         void componentCensus() {
@@ -827,8 +584,6 @@ class SignOnResponseTest {
         @Test
         @DisplayName("no member is a floating-point type, and none is numeric at all")
         void nothingIsFloatingPoint() {
-            // Gate G22. This screen has no monetary field, so the stronger statement holds: every
-            // character member is a String and the one non-String member is the communication area.
             assertThat(componentTypes())
                     .doesNotContain(double.class, float.class, Double.class, Float.class)
                     .containsOnly(String.class, NavigationContext.class);
@@ -920,19 +675,9 @@ class SignOnResponseTest {
         }
     }
 
-    // =================================================================================================
-    // 2. WIDTH TRAPS. Nine, not eight; seventy-eight, not eighty; seven, not eight.
-    //
-    // Each width is transcribed twice - from the xxxO PICTURE clause and independently from the
-    // mapset's LENGTH= operand - and both are compared against what the class publishes. Comparing the
-    // class against two independent authorities is the point; comparing two copies of one typed-in
-    // number would prove nothing.
-    // =================================================================================================
-
     @Nested
     @DisplayName("Widths from the PICTURE clauses, cross-checked against the mapset's LENGTH=")
     class WidthTraps {
-
         @ParameterizedTest(name = "{0} is PIC X({1}) at COSGN00.CPY line {2}")
         @CsvSource({
             "TRNNAMEO, 4, 92",
@@ -989,10 +734,6 @@ class SignOnResponseTest {
         @Test
         @DisplayName("curTime is nine characters, not the eight of COUSR00 through COUSR03")
         void curTimeIsNineCharacters() {
-            // COSGN00.CPY:122 declares CURTIMEO PIC X(9), and app/bms/COSGN00.bms:70-74 corroborates
-            // it independently with LENGTH=9 and INITIAL='Ahh:mm:ss' - a nine-character literal. The
-            // four sibling user screens declare their time field X(8). Regularising this one to eight
-            // would shorten a real field (B5).
             assertThat(SignOnResponse.CURTIME_LENGTH)
                     .as("COSGN00.CPY:122 and COSGN00.bms:72 both say nine")
                     .isEqualTo(9);
@@ -1010,8 +751,6 @@ class SignOnResponseTest {
         @Test
         @DisplayName("the eight-character header time pads on the right into the nine-wide field")
         void theHeaderTimePadsIntoTheNineWideField() {
-            // DateHeader renders HH:MM:SS - eight characters, WS_CURTIME_HH_MM_SS_LENGTH - and the
-            // receiver is nine, so COBOL pads on the right. Through the codec, never by assignment.
             String rendered = DateHeader.from(codec(), FIXED_CLOCK).wsCurtimeHhMmSs();
             assertThat(rendered).isEqualTo(FIXED_CURTIME).hasSize(DateHeader.WS_CURTIME_HH_MM_SS_LENGTH);
 
@@ -1058,13 +797,6 @@ class SignOnResponseTest {
         @Test
         @DisplayName("applId and sysId are eight, and exist on this screen alone")
         void applIdAndSysIdAreEight() {
-            // Unlike every other header field these two are not moved from WORKING-STORAGE: the
-            // program obtains them from CICS itself, with EXEC CICS ASSIGN APPLID(APPLIDO OF COSGN0AO)
-            // at COSGN00C.cbl:198-200 and EXEC CICS ASSIGN SYSID(SYSIDO OF COSGN0AO) at :202-204 -
-            // two separate statements, each writing straight into the OUTPUT view. On the response
-            // side they are therefore genuinely server-derived; on the request side the same two
-            // fields are only ever whatever the terminal echoed back. No sibling screen in this
-            // package has them at all.
             assertThat(SignOnResponse.APPLID_LENGTH).isEqualTo(8);
             assertThat(SignOnResponse.SYSID_LENGTH).isEqualTo(8);
             assertThat(OUTPUT_MAP_ITEMS).contains("APPLIDO", "SYSIDO");
@@ -1086,8 +818,6 @@ class SignOnResponseTest {
         @Test
         @DisplayName("userId is the width of the USRSEC key it was read with, and role of SEC-USR-TYPE")
         void userIdAndRoleMatchTheSecurityRecord() {
-            // The program reads USRSEC with RIDFLD(WS-USER-ID) at COSGN00C.cbl:211-219 and then moves
-            // SEC-USR-TYPE into CDEMO-USER-TYPE at :227, so both widths are the security record's.
             assertThat(SignOnResponse.USERID_LENGTH)
                     .isEqualTo(SecUserRecord.SEC_USR_ID_LENGTH)
                     .isEqualTo(8);
@@ -1112,10 +842,6 @@ class SignOnResponseTest {
         @Test
         @DisplayName("the map and mapset names are seven characters, which is why X(7) is correct")
         void mapNamesAreSevenCharacters() {
-            // CDEMO-LAST-MAP and CDEMO-LAST-MAPSET are PIC X(7) at COCOM01Y.cpy:43-44, not X(8). This
-            // screen shows why: a BMS symbolic-map group item is a seven-character map name plus a
-            // one-character direction suffix, which is how COSGN0A yields COSGN0AI for input and
-            // COSGN0AO for output. Both real values are exactly seven.
             assertThat(MAP_NAME).hasSize(SignOnResponse.NEXT_MAP_LENGTH).hasSize(7);
             assertThat(MAPSET_NAME).hasSize(SignOnResponse.NEXT_MAPSET_LENGTH).hasSize(7);
             assertThat(MAP_NAME + "I").hasSize(8);
@@ -1137,7 +863,6 @@ class SignOnResponseTest {
         }
     }
 
-    /** The widths the type under test publishes, in component order - read from the class, not restated. */
     private static List<Integer> publishedWidths() {
         return List.of(SignOnResponse.TRNNAME_LENGTH,
                 SignOnResponse.TITLE01_LENGTH,
@@ -1152,65 +877,21 @@ class SignOnResponseTest {
                 SignOnResponse.ERRMSG_LENGTH);
     }
 
-    /** Concatenates two lists into a new immutable list. */
     private static List<String> concat(List<String> first, List<String> second) {
         List<String> combined = new ArrayList<>(first);
         combined.addAll(second);
         return List.copyOf(combined);
     }
 
-    /** Asserts that a published collection refuses modification, so a census cannot be edited. */
     private static void assertRefusesModification(Runnable modification) {
         assertThatExceptionOfType(UnsupportedOperationException.class)
                 .as("a published census must be immutable")
                 .isThrownBy(modification::run);
     }
 
-    // =================================================================================================
-    // 3. THE TWO FIELDS THE PROGRAM TRANSMITS WITHOUT WRITING.
-    //
-    //    ##############################################################################################
-    //    #                                                                                            #
-    //    #   READ THIS BEFORE "TIDYING" USERIDO OR PASSWDO AWAY.                                      #
-    //    #                                                                                            #
-    //    #   Neither field has a MOVE into it anywhere in the 260 lines of app/cbl/COSGN00C.cbl. Every #
-    //    #   mention of PASSWD in the program is one of these four, and there is no fifth:             #
-    //    #                                                                                            #
-    //    #     :123  WHEN PASSWDI OF COSGN0AI = SPACES OR LOW-VALUES     <- READS the input item       #
-    //    #     :126  MOVE -1 TO PASSWDL OF COSGN0AI                      <- cursor, not a value        #
-    //    #     :135  MOVE FUNCTION UPPER-CASE(PASSWDI OF COSGN0AI) TO    <- READS the input item       #
-    //    #     :244  MOVE -1 TO PASSWDL OF COSGN0AI                      <- cursor, not a value        #
-    //    #                                                                                            #
-    //    #   An earlier revision of the subject read exactly that evidence and concluded the field is  #
-    //    #   never sent, so it omitted PASSWDO and left USERIDO at LOW-VALUES on every path. THE       #
-    //    #   EVIDENCE WAS INCOMPLETE. Section 4 of this file proves the missing half: COSGN00.CPY:85   #
-    //    #   declares 01 COSGN0AO REDEFINES COSGN0AI, so USERIDI and USERIDO are ONE eight-byte span   #
-    //    #   and PASSWDI and PASSWDO are ANOTHER. EXEC CICS RECEIVE MAP at :110-115 writes those       #
-    //    #   spans, and EXEC CICS SEND MAP ... FROM(COSGN0AO) at :151-157 transmits whatever they      #
-    //    #   hold. The program does not need a MOVE, and it does not have one.                         #
-    //    #                                                                                            #
-    //    #   So an error repaint DOES come back with the typed user id in the field - which is what a  #
-    //    #   3270 operator sees when 'Wrong Password. Try again ...' arrives - and it re-transmits the #
-    //    #   password field too, dark (bms L175 is ATTRB=(DRK,FSET,UNPROT)) but on the wire. Both      #
-    //    #   fields are projected for that reason, and the counts now agree at eleven.                 #
-    //    #                                                                                            #
-    //    #   Carried is not logged. toString substitutes a constant marker for passwd, so no log line, #
-    //    #   exception message or debugger view can publish the credential (CWE-532), while equals and #
-    //    #   hashCode keep it because they are value semantics. The cases below hold both halves.      #
-    //    #                                                                                            #
-    //    #   DO NOT GENERALISE THIS EITHER WAY. The rule is "mirror the program", not "hide            #
-    //    #   passwords" and not "echo passwords". UserUpdateResponse carries one because               #
-    //    #   app/cbl/COUSR02C.cbl:169 executes MOVE SEC-USR-PWD TO PASSWDI OF COUSR2AI outright; this  #
-    //    #   screen carries one because a REDEFINES puts it in the span that is sent. Each screen is   #
-    //    #   decided from its own source.                                                             #
-    //    #                                                                                            #
-    //    ##############################################################################################
-    // =================================================================================================
-
     @Nested
     @DisplayName("The overlay pair: USERIDO and PASSWDO are sent although nothing writes them")
     class TheOverlayPair {
-
         @Test
         @DisplayName("eleven named screen fields, eleven members: the counts agree by assertion")
         void bothCountsAgree() {
@@ -1231,7 +912,6 @@ class SignOnResponseTest {
         @Test
         @DisplayName("PASSWD is a real named screen field, at the width of the record it is compared to")
         void passwordIsARealScreenField() {
-            // bms line 175 labels it and COSGN00.CPY:146 declares PASSWDO PIC X(8).
             assertThat(SCREEN_FIELDS).contains(CREDENTIAL_SCREEN_FIELD);
             assertThat(OUTPUT_MAP_ITEMS).contains(CREDENTIAL_OUTPUT_ITEM);
             assertThat(MAPSET_LINES.get(SCREEN_FIELDS.indexOf(CREDENTIAL_SCREEN_FIELD)))
@@ -1256,10 +936,6 @@ class SignOnResponseTest {
             assertThat(PASSWDO_REFERENCE_COUNT)
                     .as("PASSWDO - the OUTPUT item - is referenced nowhere in the program")
                     .isZero();
-            // Two of the four read PASSWDI, the INPUT item; the other two move -1 into PASSWDL, which
-            // positions the cursor and is not a value at all. And yet the field is transmitted, because
-            // the group REDEFINES makes PASSWDI and PASSWDO the same span - section 4 proves the overlay
-            // is exact at 308 bytes, which is what makes "no write site" and "sent anyway" both true.
             assertThat(PASSWD_REFERENCE_LINES).contains(123, 135);
             assertThat(PASSWD_REFERENCE_LINES).contains(126, 244);
             assertThat(SignOnResponse.MAP_FIELDS)
@@ -1288,8 +964,6 @@ class SignOnResponseTest {
         @Test
         @DisplayName("an untransmitted field is LOW-VALUES, which is what empty() carries")
         void anUntransmittedSpanIsLowValues() {
-            // :81 MOVE LOW-VALUES TO COSGN0AO on the cold start; never written at all on the PF3 and
-            // invalid-key arms, where COPY COSGN00 at :50 leaves WORKING-STORAGE at binary zeros.
             assertThat(SignOnResponse.empty().userId())
                     .isEqualTo(ScreenFieldImage.unpainted(SignOnResponse.USERID_LENGTH));
             assertThat(SignOnResponse.empty().passwd())
@@ -1297,7 +971,8 @@ class SignOnResponseTest {
         }
 
         @Test
-        @DisplayName("the credential is on the wire, and in no rendering - CWE-532")
+        @DisplayName("the credential is in the screen image, on no wire and in no rendering - CWE-200, "
+                + "CWE-522, CWE-532")
         void theCredentialIsCarriedButNeverRendered() {
             SignOnResponse repaint = populated();
 
@@ -1305,9 +980,13 @@ class SignOnResponseTest {
                     .as("the span EXEC CICS SEND MAP ... FROM(COSGN0AO) transmits")
                     .isEqualTo(RECEIVED_PASSWORD);
             assertThat(jsonKeys(repaint))
-                    .as("the item is PASSWDO, so the wire name is passwd")
-                    .contains("passwd")
-                    .doesNotContain("password", "pwd", "secusrpwd", "secret");
+                    .as("PASSWDO is withheld: the screen image keeps the span, the serialised "
+                            + "payload carries no key for it under any spelling")
+                    .doesNotContain(CREDENTIAL_WIRE_NAME, "password", "pwd", "secusrpwd", "secret");
+            assertThat(SignOnResponse.WIRE_WITHHELD_FIELD).isEqualTo(CREDENTIAL_OUTPUT_ITEM);
+            assertThat(json(repaint))
+                    .as("and the value itself appears nowhere in the payload, under any name")
+                    .doesNotContain(RECEIVED_PASSWORD);
             assertThat(repaint.toString())
                     .as("a log line is not a 3270")
                     .doesNotContain(RECEIVED_PASSWORD)
@@ -1316,14 +995,16 @@ class SignOnResponseTest {
                     .as("equals keeps the password: value semantics disclose nothing")
                     .isEqualTo(populated())
                     .isNotEqualTo(repaint.withReceivedMapArea(repaint.userId(), "OTHERPWD"));
+            assertThat(roundTrip(repaint).passwd())
+                    .as("and the wire cannot hand it back either: the member is withheld in both "
+                            + "directions, so a body read back carries the blank image at the declared "
+                            + "width rather than the typed value")
+                    .isEqualTo(" ".repeat(SignOnResponse.PASSWD_LENGTH));
         }
 
         @Test
         @DisplayName("USERIDO is painted by the same overlay, and is not upper-cased on the way out")
         void theUserIdIsPaintedByTheSameOverlay() {
-            // :132-134 MOVE FUNCTION UPPER-CASE(USERIDI) writes WS-USER-ID and CDEMO-USER-ID, never back
-            // into the span, so a lower-case attempt comes back lower-case in the field while the
-            // communication area carries it upper-cased. Both are observable and they legitimately differ.
             SignOnResponse repaint = SignOnResponse.empty()
                     .withReceivedMapArea("admin001", RECEIVED_PASSWORD);
 
@@ -1336,11 +1017,6 @@ class SignOnResponseTest {
         @Test
         @DisplayName("no security framework type is reachable: authentication stays plaintext on USRSEC")
         void noSecurityFrameworkIsIntroduced() {
-            // Gate G41 and practice B6. COSGN00C.cbl:223 authenticates with IF SEC-USR-PWD =
-            // WS-USER-PWD - a direct comparison against SEC-USR-PWD PIC X(08) of CSUSR01Y.cpy:21.
-            // There is no hash, salt, token or expiry in the legacy design, and introducing one would
-            // change observable behaviour. The password this payload carries is the screen field the
-            // program transmits, unhashed and unmasked, for exactly that reason.
             for (String name : reachableTypeNames()) {
                 assertThat(name)
                         .as("reachable type %s", name)
@@ -1353,36 +1029,54 @@ class SignOnResponseTest {
                     .as("the stored credential is a plaintext PIC X(08); that is inherited, not chosen")
                     .isEqualTo(8);
         }
-    }
 
-    // =================================================================================================
-    // 4. THE GROUP-LEVEL REDEFINES OVERLAY - gate G34, and this file's other defining subject.
-    //
-    // app/cpy-bms/COSGN00.CPY:85 declares:
-    //
-    //     01  COSGN0AO REDEFINES COSGN0AI.
-    //
-    // ONE storage area, TWO sets of names. That is one of the twelve REDEFINES in this copybook; the
-    // other eleven are the per-field 02 FILLER REDEFINES xxxF overlays at lines 21, 27, 33, 39, 45, 51,
-    // 57, 63, 69, 75 and 81, which SignOnRequestTest owns and which that file explicitly states are not
-    // this one. Across the package's five maps the split is 105 per-field + 5 group-level = 110, with no
-    // gap and nothing counted twice.
-    //
-    // The overlay is EXACT rather than approximate because both views carry a seven-byte per-field
-    // prefix. That is not a coincidence to be trusted, it is arithmetic to be proved, and the proof is
-    // that both layout builders satisfy RecordLayout's self-check at 308 bytes.
-    // =================================================================================================
+        @Test
+        @DisplayName("the only suppression is the credential's ignore, and only passwd carries it")
+        void theOnlySuppressionIsTheDocumentedIgnore() {
+            // Pins the exact mechanism, so a broader suppression fails the build as loudly as removing
+            // it would. Suppression is what the DRK attribute has no JSON equivalent for; a masking
+            // serialiser or a rename would instead change what a caller sees under a name that traces
+            // to no symbolic-map item, and a non-AUTO access mode on any other member would narrow a
+            // projection the client is entitled to read back in full.
+            assertThat(annotationSimpleNamesOn(WRITE_ONLY_MEMBER))
+                    .as("the credential answers to a @JsonIgnore, which is what withholds it")
+                    .contains("JsonIgnore")
+                    .doesNotContain("JsonSerialize", "JsonRawValue", "JsonView");
+            assertThat(jsonPropertyOn(WRITE_ONLY_MEMBER))
+                    .as("and it is withheld by suppression alone - not renamed into the payload under "
+                            + "some other spelling")
+                    .isNull();
+
+            List<String> suppressed = new ArrayList<>();
+            for (RecordComponent component : SignOnResponse.class.getRecordComponents()) {
+                Set<String> applied = annotationSimpleNamesOn(component.getName());
+                if (applied.contains("JsonIgnore")) {
+                    suppressed.add(component.getName());
+                }
+                JsonProperty annotation = jsonPropertyOn(component.getName());
+                assertThat(annotation == null || annotation.access() == JsonProperty.Access.AUTO)
+                        .as("%s declares no narrowed access mode", component.getName())
+                        .isTrue();
+                assertThat(applied)
+                        .as("%s carries no custom serialiser and no view", component.getName())
+                        .doesNotContain("JsonIgnoreProperties", "JsonIgnoreType",
+                                "JsonSerialize", "JsonRawValue", "JsonView");
+            }
+
+            assertThat(suppressed)
+                    .as("exactly one member is suppressed, and it is the DRK credential; every "
+                            + "other value is one the client is entitled to read back, so the "
+                            + "projection stays complete")
+                    .containsExactly(WRITE_ONLY_MEMBER);
+        }
+    }
 
     @Nested
     @DisplayName("REDEFINES - one 308-byte area, two views, zero drift")
     class GroupRedefinesOverlay {
-
         @Test
         @DisplayName("both views tile 308 bytes exactly: 12 + 11 x 7 + 219")
         void bothViewsTileTheSameArea() {
-            // Constructing either layout already proved this - RecordLayout refuses a gap, an
-            // unintended overlap and any total other than its declared length - so this case states
-            // the arithmetic a reader needs rather than leaving it to be discovered.
             assertThat(FIELD_PREFIX_LENGTH)
                     .as("input view: xxxL 2 + xxxF 1 + FILLER X(4)")
                     .isEqualTo(7);
@@ -1461,26 +1155,18 @@ class SignOnResponseTest {
             "APPLID", "SYSID", "USERID", "PASSWD", "ERRMSG"})
         @DisplayName("a value crosses between the two views at one offset - a genuine round trip")
         void aValueCrossesBetweenTheTwoViewsAtOneOffset(String screenField) {
-            // THE POINT OF THIS CASE. Two layouts, but ONE FixedWidthRecord - one 308-byte storage
-            // area. A span descriptor carries only an offset, a width and a category, so handing the
-            // OUTPUT view's descriptor to the record that the INPUT view allocated is exactly what
-            // REDEFINES means: the same bytes under a second set of names. Encoding twice and
-            // comparing the two images would prove nothing, because two independent encodings of the
-            // same text agree whatever the offsets are.
             FixedWidthRecord area = FixedWidthRecord.forLayout(INPUT_VIEW_LAYOUT, MAP_CHARSET);
             FixedWidthRecord.FieldSpan input = INPUT_VIEW_LAYOUT.span(screenField + "I");
             FixedWidthRecord.FieldSpan output = OUTPUT_VIEW_LAYOUT.span(screenField + "O");
             String inbound = "I".repeat(input.length());
             String outbound = "O".repeat(output.length());
 
-            // Write through the input view; read the identical bytes through the output view.
             area.writeSpan(input, inbound);
             assertThat(area.readSpan(output))
                     .as("%sO must see what was written to %sI", screenField, screenField)
                     .isEqualTo(inbound);
             assertThat(area.readSpanBytes(output)).isEqualTo(area.readSpanBytes(input));
 
-            // And back the other way: one storage area, two names for it.
             area.writeSpan(output, outbound);
             assertThat(area.readSpan(input))
                     .as("and %sI must see what was written to %sO", screenField, screenField)
@@ -1514,11 +1200,6 @@ class SignOnResponseTest {
         @Test
         @DisplayName("the attribute quartet occupies the bytes the input view reserves as filler")
         void theAttributeQuartetSitsOverTheInputFiller() {
-            // The prefixes are the same total width but are NOT carved up the same way: the output
-            // view's three-byte filler covers the input view's two-byte xxxL halfword plus its xxxF
-            // attribute byte, and the four attribute bytes cover the input view's FILLER X(4). Only
-            // the data items align item-for-item, which is precisely why the case above round-trips
-            // the DATA and this one measures the PREFIX.
             for (int index = 0; index < DFHMDF_NAMED; index++) {
                 String screenField = SCREEN_FIELDS.get(index);
                 FixedWidthRecord.FieldSpan colour =
@@ -1545,10 +1226,6 @@ class SignOnResponseTest {
         @Test
         @DisplayName("xxxC is the colour item, which is what FieldAttributeSetter targets")
         void theColourItemIsTheAttributeSettersTarget() {
-            // CSSETATY moves DFHRED and an asterisk onto an offending field when the program is being
-            // re-entered, and the field it moves the colour into is xxxC. The sibling program shows
-            // the same item used for the success signal: app/cbl/COUSR03C.cbl:317 executes
-            // MOVE DFHGREEN TO ERRMSGC OF COUSR3AO.
             assertThat(ATTRIBUTE_SUFFIXES.get(0))
                     .as("the first item of the quartet is the colour item")
                     .isEqualTo(FieldAttributeSetter.COLOUR_ITEM_SUFFIX);
@@ -1565,8 +1242,6 @@ class SignOnResponseTest {
             assertThat(OUTPUT_VIEW_LAYOUT.hasSpan("FILLER"))
                     .as("filler is declared as reserved storage, and reserved storage has no name")
                     .isFalse();
-            // A reserved span is one whose PICTURE category is FILLER - the predicate lives on
-            // PictureKind, and FieldSpan.filler(int, int) is the factory that produces such a span.
             long fillerBytes = OUTPUT_VIEW_LAYOUT.storageSpans().stream()
                     .filter(span -> span.kind().filler())
                     .mapToInt(FixedWidthRecord.FieldSpan::length)
@@ -1580,40 +1255,36 @@ class SignOnResponseTest {
         }
     }
 
-    // =================================================================================================
-    // 5. SYMBOLIC-MAP METADATA NEVER REACHES THE WIRE.
-    //
-    // Seven suffixes exist across the two views and not one of them is payload. The input view's xxxL
-    // (the length CICS reports), xxxF (the attribute byte) and xxxA (its REDEFINES alias) are validation
-    // and highlight metadata. The output view's xxxC, xxxP, xxxH and xxxV are terminal presentation
-    // attributes owned by common.BmsAttributes and common.FieldAttributeSetter. Only xxxO is data.
-    // =================================================================================================
-
     @Nested
     @DisplayName("Metadata - xxxL, xxxF, xxxA, xxxC, xxxP, xxxH, xxxV and every FILLER stay off the wire")
     class MetadataIsNotPayload {
-
         @Test
-        @DisplayName("the top-level JSON keys are exactly the fifteen components, and nothing more")
+        @DisplayName("the top-level JSON keys are exactly the components less the withheld credential")
         void keysAreExactlyTheComponents() {
             // Only the top level is asserted here. The communication area is a nested object whose own
             // shape is NavigationContext's contract and its own suite's subject; what matters at this
-            // boundary is that this payload adds nothing to it and drops nothing from it.
+            // boundary is that this payload adds nothing to it and drops nothing from it - with one
+            // stated subtraction: PASSWDO is bound WRITE_ONLY, so the credential span is in the screen
+            // image and in no response body.
+            List<String> screenKeys = wireNamesOf(RESPONSE_MEMBERS).stream()
+                    .filter(name -> !CREDENTIAL_WIRE_NAME.equals(name))
+                    .toList();
+            assertThat(screenKeys).hasSize(RESPONSE_WIRE_MEMBERS);
             assertThat(topLevelJsonKeys(populated()))
-                    .as("every screen field is published under its xxxI item in lower case and every "
-                            + "carrier under its own name - no extra, none dropped")
-                    .containsExactlyElementsOf(
-                            concat(wireNamesOf(RESPONSE_MEMBERS), NAVIGATION_MEMBERS))
-                    .hasSize(COMPONENT_COUNT);
+                    .as("every projected screen field is published under its xxxI item in lower case "
+                            + "and every carrier under its own name - no extra, and none dropped but "
+                            + "the one the wire withholds")
+                    .containsExactlyElementsOf(concat(screenKeys, NAVIGATION_MEMBERS))
+                    .hasSize(COMPONENT_COUNT - 1);
+            assertThat(componentNames())
+                    .as("the component is still declared - only its serialisation is suppressed, so "
+                            + "the overlay image the parity corpus pins is still readable in-process")
+                    .contains(WITHHELD_MEMBER);
         }
 
         @Test
         @DisplayName("no derived predicate leaks in as a sixteenth property")
         void noDerivedPredicateBecomesAProperty() throws NoSuchMethodException {
-            // The role test and the target lookup are deliberately static on SignOnResponse: a derived
-            // INSTANCE accessor would become a JSON property the canonical constructor cannot accept
-            // back, breaking the round trip, and it could report a role contradicting the byte the
-            // payload travelled with. Static methods are invisible to bean introspection.
             for (Method method : List.of(
                     SignOnResponse.class.getDeclaredMethod("isAdminRole", String.class),
                     SignOnResponse.class.getDeclaredMethod("resolveNextProgram", String.class))) {
@@ -1674,35 +1345,9 @@ class SignOnResponseTest {
         }
     }
 
-    // =================================================================================================
-    // 6. XCTL BECOMES RESPONSE DATA - gate G40, and both states of the 88-level - gate G50.
-    //
-    // app/cbl/COSGN00C.cbl:230-240, verbatim:
-    //
-    //     IF CDEMO-USRTYP-ADMIN
-    //          EXEC CICS XCTL PROGRAM ('COADM01C') COMMAREA(CARDDEMO-COMMAREA) END-EXEC   <- L232
-    //     ELSE
-    //          EXEC CICS XCTL PROGRAM ('COMEN01C') COMMAREA(CARDDEMO-COMMAREA) END-EXEC   <- L237
-    //     END-IF
-    //
-    // THIS IS A GENUINE TWO-WAY IF/ELSE, NOT A THREE-WAY EVALUATE. The condition tested is
-    // 88 CDEMO-USRTYP-ADMIN VALUE 'A' (app/cpy/COCOM01Y.cpy:27), so the ELSE means "not an
-    // administrator" - a strictly wider set than 88 CDEMO-USRTYP-USER VALUE 'U' (:28). A user type of
-    // 'U', of a space (which is what a freshly initialised communication area holds), or of any
-    // unexpected byte all route to COMEN01C. Rewriting it as an equality test on 'U' with a third
-    // outcome would change where an uninitialised or corrupt user type is sent, so the case below drives
-    // a third value explicitly to prove the ELSE is taken and that no third target exists.
-    //
-    // The role this response carries is the navigation contract the sibling admin package consumes:
-    // 'A' selects admin.AdminMenuController (GET /api/admin/menu, transaction CA00) and anything else
-    // selects admin.MainMenuController (GET /api/menu, transaction CM00). Nothing is imported from that
-    // package here - the coupling is the byte, not a type.
-    // =================================================================================================
-
     @Nested
     @DisplayName("Role routing, transcribed from COSGN00C lines 230-240")
     class RoleRoutingAndXctl {
-
         @Test
         @DisplayName("the payload declares the role, all three next-target members and the plain text")
         void theNavigationMembersExist() {
@@ -1718,7 +1363,6 @@ class SignOnResponseTest {
         @Test
         @DisplayName("'A' satisfies the administrator condition and reaches the administrator menu")
         void adminRoleReachesTheAdminMenu() {
-            // The 88-level in its TRUE state (G50).
             assertThat(SignOnResponse.ROLE_ADMIN)
                     .as("88 CDEMO-USRTYP-ADMIN VALUE 'A', COCOM01Y.cpy:27")
                     .isEqualTo("A")
@@ -1733,7 +1377,6 @@ class SignOnResponseTest {
         @Test
         @DisplayName("'U' does not satisfy it, and takes the ELSE to the regular-user menu")
         void regularUserTakesTheElse() {
-            // The 88-level in its FALSE state (G50), driven with the value the copybook names.
             assertThat(SignOnResponse.ROLE_USER)
                     .as("88 CDEMO-USRTYP-USER VALUE 'U', COCOM01Y.cpy:28")
                     .isEqualTo("U")
@@ -1758,9 +1401,6 @@ class SignOnResponseTest {
         })
         @DisplayName("only 'A' reaches the administrator menu; the ELSE takes everything else")
         void theElseTakesEverythingThatIsNotAdmin(String role, String expected) {
-            // 'X' is the third value the brief asks for: it is neither 88-level's value, and it proves
-            // the ELSE is a catch-all rather than a third branch. 'a' proves the test is
-            // case-sensitive, as a COBOL PIC X comparison is.
             assertThat(SignOnResponse.resolveNextProgram(role))
                     .as("user type [%s]", role)
                     .isEqualTo(expected);
@@ -1784,9 +1424,6 @@ class SignOnResponseTest {
         @Test
         @DisplayName("null routes to the ELSE target rather than failing")
         void nullRoutesToTheElseTarget() {
-            // A predicate that threw would surprise a caller inspecting a partially built payload, and
-            // COBOL has no null to test in the first place - an unset PIC X(01) holds a space, which
-            // routes to the same place.
             assertThat(SignOnResponse.isAdminRole(null)).isFalse();
             assertThat(SignOnResponse.resolveNextProgram(null))
                     .isEqualTo(SignOnResponse.NEXT_PROGRAM_USER);
@@ -1808,9 +1445,6 @@ class SignOnResponseTest {
         @Test
         @DisplayName("the response carries the resolved target rather than re-deriving it")
         void theResponseCarriesWhatTheServiceDecided() {
-            // withNavigation resolves nothing: the service calls resolveNextProgram and passes the
-            // result in. A response must report what was decided, not recompute it - which is also why
-            // a test can construct the mismatched state a defective service could produce.
             SignOnResponse mismatched = SignOnResponse.empty().withNavigation(
                     SignOnResponse.ROLE_ADMIN, SignOnResponse.NEXT_PROGRAM_USER, MAPSET_NAME,
                     MAP_NAME, signedOnContext(SignOnResponse.ROLE_ADMIN));
@@ -1845,20 +1479,9 @@ class SignOnResponseTest {
         }
     }
 
-    // =================================================================================================
-    // 7. STATELESSNESS IS STRUCTURAL - gate G37 and rule R6.
-    //
-    // CICS is pseudo-conversational: COSGN00C paints the screen, ends with EXEC CICS RETURN TRANSID
-    // COMMAREA(CARDDEMO-COMMAREA) at lines 134-138, and is re-entered from the top on the next key
-    // press. The only state that survives is what it handed back. The migrated form keeps that shape by
-    // carrying the communication area in the payload, so no HttpSession, no server-side cache and no
-    // session affinity is needed - and none may be introduced.
-    // =================================================================================================
-
     @Nested
     @DisplayName("Conversation state - the communication area travels in the payload")
     class StatelessConversationState {
-
         @Test
         @DisplayName("the communication area is a payload member, so no session is ever needed")
         void theCommareaIsAPayloadMember() {
@@ -1873,8 +1496,6 @@ class SignOnResponseTest {
         @Test
         @DisplayName("the communication area is 160 bytes: 34 + 84 + 12 + 16 + 14")
         void theCommareaIsOneHundredAndSixtyBytes() {
-            // Proved through the codec with an explicitly named code page (B8, B11), not by trusting
-            // the constant. COCOM01Y.cpy:19-44 gives the five groups.
             byte[] image = populated().navigationContext().toFixedWidth(codec());
             assertThat(image)
                     .as("CARDDEMO-COMMAREA serialises to its declared width exactly")
@@ -1947,9 +1568,6 @@ class SignOnResponseTest {
         @Test
         @DisplayName("no CDEMO-CU0n-INFO extension block is carried, because this program declares none")
         void noExtensionBlockIsCarried() {
-            // COUSR00C, COUSR02C and COUSR03C each declare a CDEMO-CU0n-INFO block appended to the
-            // communication area. COSGN00C declares none, so this payload hands back the plain
-            // 160-byte area and nothing appended to it.
             assertThat(CDEMO_CU0N_INFO_COUNT)
                     .as("grep -c 'CDEMO-CU0[0-9]-INFO' app/cbl/COSGN00C.cbl")
                     .isZero();
@@ -1962,27 +1580,12 @@ class SignOnResponseTest {
         }
     }
 
-    // =================================================================================================
-    // 8. THE ERROR LINE - the one place this screen loses data, and it loses it deliberately.
-    //
-    // app/cbl/COSGN00C.cbl:38 declares 05 WS-MESSAGE PIC X(80) VALUE SPACES, and :149 executes
-    // MOVE WS-MESSAGE TO ERRMSGO OF COSGN0AO into a PIC X(78) receiver. COBOL fills a PIC X receiver
-    // from its leftmost position and discards the overflow, so the two RIGHTMOST characters are lost.
-    //
-    // Every narrowing here goes through FixedWidthCodec.movePicX and never through a bare assignment or
-    // a substring (B11). The plan names MOVE the dominant parity risk precisely because a plain Java
-    // assignment neither pads nor truncates, and the resulting defect is invisible at the call site.
-    // =================================================================================================
-
     @Nested
     @DisplayName("The error line - PIC X(80) into PIC X(78), narrowed on purpose")
     class TheErrorLine {
-
         @Test
         @DisplayName("the eighty-byte message narrows to seventy-eight, losing the two on the right")
         void theMessageNarrowsOnTheRight() {
-            // A message whose last two characters are distinguishable, so the direction of the loss is
-            // observable rather than assumed.
             String eighty = "L".repeat(WS_MESSAGE_LENGTH - 2) + "XY";
             assertThat(eighty).hasSize(WS_MESSAGE_LENGTH);
 
@@ -1999,8 +1602,6 @@ class SignOnResponseTest {
         @Test
         @DisplayName("the payload refuses an eighty-character message rather than clipping it silently")
         void anOverWideMessageIsRefusedNotClipped() {
-            // The narrowing is the caller's deliberate act. Were the constructor to clip, the loss
-            // would be invisible at the site that caused it.
             String eighty = "M".repeat(WS_MESSAGE_LENGTH);
             assertThatIllegalArgumentException()
                     .isThrownBy(() -> SignOnResponse.empty().withErrMsg(eighty))
@@ -2047,12 +1648,6 @@ class SignOnResponseTest {
         @Test
         @DisplayName("the two copybook messages widen to eighty then narrow to seventy-eight")
         void theCopybookMessagesWidenThenNarrow() {
-            // CCDA-MSG-THANK-YOU (line 89) and CCDA-MSG-INVALID-KEY (line 93) are PIC X(50) fields
-            // rather than in-line text, so they take a TWO-STAGE route: PIC X(50) widened into
-            // WS-MESSAGE PIC X(80), left-justified and right-space-padded, then narrowed into ERRMSGO
-            // PIC X(78). The two characters the second stage discards are padding the first stage added,
-            // so the content survives intact - which is why these are safe where an 80-character
-            // message would not be.
             for (String message : COPYBOOK_MESSAGES) {
                 assertThat(message)
                         .as("a PIC X(50) copybook message")
@@ -2098,12 +1693,6 @@ class SignOnResponseTest {
                     .hasSize(SignOnResponse.ERRMSG_LENGTH)
                     .isBlank()
                     .isEqualTo(" ".repeat(SignOnResponse.ERRMSG_LENGTH));
-            // Two different facts, and this test now separates them. empty() is the map before anything
-            // is written, so ERRMSGO holds the LOW-VALUES image; :78's MOVE SPACES is a program ACTION,
-            // and withErrMsg is how the projection performs it. Asserting that empty() already equalled
-            // the :78 result conflated the initial state with the first statement - and on the
-            // EIBCALEN = 0 arm :81's group MOVE LOW-VALUES overwrites :78 anyway, before
-            // SEND-SIGNON-SCREEN moves WS-MESSAGE back in.
             assertThat(SignOnResponse.empty().errMsg())
                     .as("the map before anything is written - MOVE LOW-VALUES TO COSGN0AO, :81")
                     .isEqualTo(ScreenFieldImage.unpainted(SignOnResponse.ERRMSG_LENGTH));
@@ -2115,13 +1704,6 @@ class SignOnResponseTest {
         @Test
         @DisplayName("the field's map-declared colour is RED, so DFHGREEN is an override not a default")
         void theDeclaredColourIsRed() {
-            // app/bms/COSGN00.bms:197-200 declares ERRMSG DFHMDF ATTRB=(ASKIP,BRT,FSET) COLOR=RED
-            // LENGTH=78 POS=(23,1), and the same declaration appears on all five maps in this package.
-            // The field is therefore red WITHOUT the program doing anything, which is why CSSETATY's
-            // DFHRED move is a re-assertion and COUSR03C.cbl:317's MOVE DFHGREEN TO ERRMSGC OF
-            // COUSR3AO is the deliberate success-path OVERRIDE. Colour is carried as attribute metadata
-            // on xxxC and never as a payload member, so nothing here is asserted about the payload -
-            // only about which byte means what.
             assertThat(BmsAttributes.DFHRED)
                     .as("the map's declared colour for this field")
                     .isNotEqualTo(BmsAttributes.DFHDFCOL);
@@ -2134,21 +1716,9 @@ class SignOnResponseTest {
         }
     }
 
-    // =================================================================================================
-    // 9. POPULATE-HEADER-INFO - app/cbl/COSGN00C.cbl:177-204, and nothing beyond it.
-    //
-    // The paragraph writes exactly eight fields: TITLE01O (181), TITLE02O (182), TRNNAMEO (183),
-    // PGMNAMEO (184), CURDATEO (190), CURTIMEO (196), APPLIDO (199) and SYSIDO (203). It does not write
-    // USERIDO, and ERRMSGO is written by its caller at line 149 AFTER it has run.
-    //
-    // The two time-derived values are read through a fixed Clock (B7), so this suite renders the same
-    // characters on every run.
-    // =================================================================================================
-
     @Nested
     @DisplayName("POPULATE-HEADER-INFO - the eight fields it writes, and only those")
     class HeaderPopulation {
-
         @Test
         @DisplayName("withHeader writes the eight header fields and leaves the other seven alone")
         void withHeaderWritesExactlyTheEightFields() {
@@ -2214,19 +1784,86 @@ class SignOnResponseTest {
         }
     }
 
-    // =================================================================================================
-    // 10. SERIALISATION. Space padding is data, and a default mapper would quietly destroy it.
-    // =================================================================================================
-
     @Nested
     @DisplayName("Serialisation - space padding survives a round trip untouched")
     class JsonRoundTrip {
-
         @Test
-        @DisplayName("a fully populated payload round trips to an equal value")
+        @DisplayName("a fully populated payload round trips to an equal value once the withheld "
+                + "credential is re-supplied")
         void populatedRoundTrips() {
             SignOnResponse original = populated();
-            assertThat(roundTrip(original)).isEqualTo(original);
+
+            // The credential cannot come back, so equality here is the statement that the OTHER sixteen
+            // components survive the wire untouched, with the withheld span at its blank image.
+            assertThat(roundTrip(original)).isEqualTo(withCredentialWithheld(original));
+        }
+
+        @Test
+        @DisplayName("the credential does not survive the wire: no key, and no binding without it")
+        void theCredentialDoesNotSurviveTheWire() throws IOException {
+            SignOnResponse original = populated();
+            assertThat(original.passwd())
+                    .as("the screen image genuinely holds the span COSGN0AO REDEFINES COSGN0AI puts there")
+                    .isEqualTo(RECEIVED_PASSWORD);
+
+            ObjectMapper mapper = webConfigEquivalentMapper();
+            String document = mapper.writeValueAsString(original);
+
+            // The wire-level negative assertion, made against the document itself rather than a parsed
+            // view of it, so neither the key nor the value can reach a caller by any spelling.
+            assertThat(document)
+                    .as("CWE-200/CWE-522: the submitted credential is not in the response body")
+                    .doesNotContain(CREDENTIAL_WIRE_NAME)
+                    .doesNotContain(RECEIVED_PASSWORD);
+            assertThat(topLevelJsonKeys(original))
+                    .hasSize(COMPONENT_COUNT - 1)
+                    .doesNotContain(CREDENTIAL_WIRE_NAME);
+
+            // And the published census says so, rather than leaving it to be inferred from a count.
+            assertThat(SignOnResponse.WIRE_FIELD_COUNT)
+                    .isEqualTo(RESPONSE_WIRE_MEMBERS)
+                    .isEqualTo(SignOnResponse.MAP_FIELD_COUNT - 1);
+            assertThat(SignOnResponse.WIRE_FIELDS)
+                    .hasSize(SignOnResponse.WIRE_FIELD_COUNT)
+                    .doesNotContain(SignOnResponse.WIRE_WITHHELD_FIELD)
+                    .containsExactlyElementsOf(SignOnResponse.MAP_FIELDS.stream()
+                            .filter(item -> !SignOnResponse.WIRE_WITHHELD_FIELD.equals(item))
+                            .toList());
+
+            // Binding the emitted document back cannot recover the span, and a body that names the
+            // member cannot put one there either: the component is withheld on the inbound leg as well,
+            // so the canonical constructor normalises the absent value to the unpainted image. That is
+            // why roundTrip() re-supplies the member explicitly rather than relying on the wire.
+            assertThat(mapper.readValue(document, SignOnResponse.class).passwd())
+                    .as("a payload read straight back carries the blank image, never the typed value")
+                    .isEqualTo(" ".repeat(SignOnResponse.PASSWD_LENGTH));
+
+            ObjectNode restored = (ObjectNode) mapper.readTree(document);
+            restored.put(CREDENTIAL_WIRE_NAME, RECEIVED_PASSWORD);
+            assertThat(mapper.treeToValue(restored, SignOnResponse.class).passwd())
+                    .as("and naming the member inbound does not smuggle it back in")
+                    .isEqualTo(" ".repeat(SignOnResponse.PASSWD_LENGTH))
+                    .isNotEqualTo(RECEIVED_PASSWORD);
+        }
+
+        @Test
+        @DisplayName("the withheld credential comes back blank, not null, and never as the typed value")
+        void theWithheldCredentialComesBackBlank() {
+            SignOnResponse original = populated();
+            assertThat(original.passwd())
+                    .as("before serialisation the overlay holds what was typed")
+                    .isEqualTo(RECEIVED_PASSWORD);
+
+            SignOnResponse revived = roundTrip(original);
+
+            assertThat(revived.passwd())
+                    .as("an absent JSON member deserialises to null, which the canonical constructor "
+                            + "normalises to the field's own width in spaces - never null, so nothing "
+                            + "downstream has to test for one")
+                    .isNotNull()
+                    .hasSize(SignOnResponse.PASSWD_LENGTH)
+                    .isBlank()
+                    .isNotEqualTo(RECEIVED_PASSWORD);
         }
 
         @Test
@@ -2250,9 +1887,6 @@ class SignOnResponseTest {
         @Test
         @DisplayName("a seventy-eight-space error line stays a string of spaces, never null")
         void anAllSpacesErrorLineIsNotCoercedToNull() {
-            // ACCEPT_EMPTY_STRING_AS_NULL_OBJECT is disabled in WebConfig for exactly this case: an
-            // all-spaces PIC X(n) field is real screen data, and a null would fail the canonical
-            // constructor on the way back in.
             SignOnResponse cleared = SignOnResponse.empty()
                     .withErrMsg(" ".repeat(SignOnResponse.ERRMSG_LENGTH));
             assertThat(cleared.errMsg()).hasSize(SignOnResponse.ERRMSG_LENGTH).isBlank();
@@ -2262,7 +1896,7 @@ class SignOnResponseTest {
                     .isNotNull()
                     .isEqualTo(cleared.errMsg())
                     .hasSize(SignOnResponse.ERRMSG_LENGTH);
-            assertThat(revived).isEqualTo(cleared);
+            assertThat(revived).isEqualTo(withCredentialWithheld(cleared));
         }
 
         @Test
@@ -2298,22 +1932,24 @@ class SignOnResponseTest {
             // No naming STRATEGY is in play - no snake_case, no kebab-case, no upper-camel. Each screen
             // field is published under the one name AAP 0.6.3 allows, its xxxI item in lower case, which
             // @JsonProperty pins field by field; each carrier keeps its component name.
+            // Every key traces 1:1 to an item, and the one component that carries no key is the
+            // write-only credential - so the expectation is the component list less that member,
+            // in declaration order.
+            List<String> expected = wireNamesOf(componentNames()).stream()
+                    .filter(name -> !CREDENTIAL_WIRE_NAME.equals(name))
+                    .toList();
+            assertThat(expected).hasSize(COMPONENT_COUNT - 1);
             assertThat(topLevelJsonKeys(populated()))
-                    .as("each key traces 1:1 to an item")
-                    .containsExactlyElementsOf(wireNamesOf(componentNames()));
+                    .as("each key traces 1:1 to an item, and PASSWDO is withheld")
+                    .containsExactlyElementsOf(expected);
             assertThat(topLevelJsonKeys(populated()))
                     .allSatisfy(key -> assertThat(key).doesNotContain("_").doesNotContain("-"));
         }
     }
 
-    // =================================================================================================
-    // 11. empty() - the screen before POPULATE-HEADER-INFO has run.
-    // =================================================================================================
-
     @Nested
     @DisplayName("empty() - every field its own width in spaces")
     class EmptyScreen {
-
         @Test
         @DisplayName("every map member is the unpainted image at its own declared width")
         void everyMapMemberIsUnpainted() {
@@ -2367,15 +2003,9 @@ class SignOnResponseTest {
         }
     }
 
-    // =================================================================================================
-    // 12. THE CANONICAL CONSTRUCTOR. Every branch of both guards, which is where this package's branch
-    // coverage actually lives (G49).
-    // =================================================================================================
-
     @Nested
     @DisplayName("The canonical constructor enforces every declared width")
     class WidthEnforcement {
-
         @Test
         @DisplayName("a value exactly at its declared width is accepted")
         void exactWidthIsAccepted() {
@@ -2407,7 +2037,6 @@ class SignOnResponseTest {
             "6, APPLIDO",
             "7, SYSIDO",
             "8, USERIDO",
-            "9, PASSWDO",
             "10, ERRMSGO"
         })
         @DisplayName("null is rejected and the failure names the item, because COBOL has no null")
@@ -2415,6 +2044,22 @@ class SignOnResponseTest {
             assertThatNullPointerException()
                     .isThrownBy(() -> constructWith(index, null))
                     .withMessageContaining(field);
+        }
+
+        @Test
+        @DisplayName("PASSWDO alone accepts null, because an unpublished member has an absent state")
+        void nullIsNormalisedForTheWithheldCredential() {
+            // Every other component is on the wire, so a null could only ever be a caller's mistake and
+            // is refused with the item's name. This one is not on the wire, so a body read back really
+            // does arrive without it, and refusing null would make the type unable to represent its own
+            // serialised form. It is normalised to the declared width in spaces instead.
+            assertThat(RESPONSE_MEMBERS.indexOf(WITHHELD_MEMBER))
+                    .as("component 9 is PASSWDO, the index omitted from the CsvSource above")
+                    .isEqualTo(9);
+            assertThat(constructWith(9, null).passwd())
+                    .isNotNull()
+                    .hasSize(SignOnResponse.PASSWD_LENGTH)
+                    .isBlank();
         }
 
         @ParameterizedTest(name = "component {0} ({1}) rejects {2} + 1 characters")
@@ -2476,13 +2121,6 @@ class SignOnResponseTest {
         }
     }
 
-    /**
-     * Builds a response with one map-derived component replaced, so the constructor's guard can be
-     * driven per component without fifteen near-identical literal argument lists.
-     *
-     * @param index the 0-based position among the eleven map-derived components
-     * @param value the value to place there, possibly {@code null} or over-wide
-     */
     private static SignOnResponse constructWith(int index, String value) {
         List<String> values = new ArrayList<>(mapValuesOf(populated()));
         values.set(index, value);
@@ -2494,14 +2132,9 @@ class SignOnResponseTest {
                 signedOnContext(SignOnResponse.ROLE_ADMIN));
     }
 
-    // =================================================================================================
-    // 13. IMMUTABILITY AND THE ABSENCE OF STATE - practice B9 and gate G53.
-    // =================================================================================================
-
     @Nested
     @DisplayName("Immutability - one method per writing paragraph, and no state anywhere")
     class ImmutableReplacement {
-
         @Test
         @DisplayName("withErrMsg changes the error line and nothing else")
         void withErrMsgChangesOnlyTheErrorLine() {
@@ -2571,8 +2204,6 @@ class SignOnResponseTest {
         @Test
         @DisplayName("every static field is final, so there is no static mutable state")
         void noStaticMutableState() {
-            // A static holder would be a session by another name and would break both request isolation
-            // and this suite's order independence.
             for (Field field : SignOnResponse.class.getDeclaredFields()) {
                 if (Modifier.isStatic(field.getModifiers())) {
                     assertThat(Modifier.isFinal(field.getModifiers()))

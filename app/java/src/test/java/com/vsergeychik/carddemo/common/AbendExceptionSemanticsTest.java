@@ -12,22 +12,12 @@ import org.junit.jupiter.params.provider.ValueSource;
 
 /**
  * Tests for {@link AbendException}, the Java equivalent of {@code CALL 'CEE3ABD'}.
- *
- * <p>The assertion that matters most is the one about the ninth call site.
- * {@code app/cbl/CBSTM03A.CBL:923} abends with {@code DISPLAY 'ABENDING PROGRAM'} followed
- * immediately by {@code CALL 'CEE3ABD'} - and <strong>no</strong> {@code MOVE 999 TO ABCODE} and no
- * {@code MOVE 0 TO TIMING}, unlike the eight other sites. A translation that made those two
- * parameters mandatory would have to fabricate a {@code 999} the COBOL never sets, and a translation
- * that defaulted them to zero would make {@code TIMING} absent indistinguishable from the
- * {@code TIMING=0} the other eight sites really do set. Both failure modes are asserted against here.
  */
 @DisplayName("AbendException - the CALL 'CEE3ABD' equivalent at nine sites")
 class AbendExceptionSemanticsTest {
-
     @Nested
     @DisplayName("The eight standard sites - MOVE 0 TO TIMING, MOVE 999 TO ABCODE")
     class StandardSites {
-
         @Test
         @DisplayName("carries ABCODE 999 and TIMING 0 as present values")
         void carriesTheStandardAbendParameters() {
@@ -57,12 +47,6 @@ class AbendExceptionSemanticsTest {
             assertThat(abend.getMessage()).contains("DALYTRAN FILE STATUS 35");
         }
 
-        /**
-         * A reason that is null or only whitespace is normalised to absent, so the composed message
-         * never ends in a dangling separator.
-         *
-         * @param reason the blank reason to supply
-         */
         @ParameterizedTest
         @ValueSource(strings = {"", " ", "   ", "\t"})
         void aBlankReasonIsTreatedAsAbsent(String reason) {
@@ -89,7 +73,6 @@ class AbendExceptionSemanticsTest {
     @Nested
     @DisplayName("The ninth site - CBSTM03A.CBL:923 sets neither ABCODE nor TIMING")
     class TheDivergentSite {
-
         @Test
         @DisplayName("ABCODE and TIMING are absent, not silently zero")
         void abendParametersAreAbsentRatherThanZero() {
@@ -101,8 +84,6 @@ class AbendExceptionSemanticsTest {
             assertThat(abend.hasTiming()).isFalse();
             assertThat(abend.getTiming()).isEmpty();
 
-            // The failure mode this guards against: a defaulted 0 would be indistinguishable from
-            // the TIMING=0 that the eight standard sites genuinely set.
             assertThat(abend.getTiming()).isNotEqualTo(
                     AbendException.standard("CBACT01C", 8).getTiming());
             assertThat(abend.getMessage()).doesNotContain("ABCODE").doesNotContain("TIMING");
@@ -128,7 +109,6 @@ class AbendExceptionSemanticsTest {
     @Nested
     @DisplayName("Contract - display text, return codes, guards and unchecked propagation")
     class Contract {
-
         @Test
         @DisplayName("the display literal is byte-exact and sixteen characters")
         void theDisplayLiteralIsByteExact() {
@@ -137,13 +117,6 @@ class AbendExceptionSemanticsTest {
                     .startsWith(AbendException.ABEND_DISPLAY_TEXT);
         }
 
-        /**
-         * Every observed return code round-trips unchanged. Gate G35 requires the process exit code
-         * to be exactly what the COBOL set, so a lossy or clamped field here would break
-         * JCL-equivalent {@code COND} gating.
-         *
-         * @param returnCode the code to round-trip
-         */
         @ParameterizedTest
         @ValueSource(ints = {0, 4, 8, 12, 16})
         void everyObservedReturnCodeRoundTrips(int returnCode) {

@@ -14,37 +14,16 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 /**
- * Unit tests for {@link ScreenMetadata}, the presentation metadata every online response carries
- * beside its projected map.
- *
- * <h2>What is being pinned</h2>
- *
- * <p>A BMS symbolic map declares four items per field and only {@code xxxI}/{@code xxxO} is data; the
- * other three - {@code xxxL}, {@code xxxF} and its {@code xxxA} redefinition - are metadata
- * (plan section 0.6.3). This type is where that metadata travels, and these tests pin the three
- * properties that make it usable:
- *
- * <ul>
- *   <li><strong>the attribute bytes read as 0-255.</strong> {@code DFHRED} is {@code 0xF8}, which a
- *       Java {@code byte} reads back as {@code -8}; publishing that reading would make the documented
- *       hexadecimal codes unrecognisable to a client;</li>
- *   <li><strong>absence is honest.</strong> A screen whose program issues no {@code MOVE -1} reports
- *       no cursor field rather than a made-up one, and a screen with no attribute quads reports an
- *       empty map rather than a different shape;</li>
- *   <li><strong>a published response cannot be repainted through it.</strong> The field map is copied
- *       on the way in and unmodifiable on the way out.</li>
- * </ul>
+ * Unit tests for {@link ScreenMetadata}, the presentation metadata every online response carries beside its
+ * projected map.
  */
 @DisplayName("ScreenMetadata - the metadata that is separate from the payload but present on the wire")
 class ScreenMetadataTest {
-
-    /** The colour {@code app/cpy/CSSETATY.cpy} moves into a field that failed its edit. */
     private static final byte RED = BmsAttributes.DFHRED;
 
     @Nested
     @DisplayName("The unsigned projection of an attribute byte")
     class UnsignedAttributes {
-
         @Test
         @DisplayName("a quad built from raw bytes reads back as four 0-255 values")
         void aQuadReadsBackUnsigned() {
@@ -79,7 +58,6 @@ class ScreenMetadataTest {
     @Nested
     @DisplayName("Absent metadata is reported as absent")
     class AbsentMetadata {
-
         @Test
         @DisplayName("empty() carries no cursor, no colour, no repaint and no quads")
         void emptyCarriesNothing() {
@@ -101,7 +79,14 @@ class ScreenMetadataTest {
         @Test
         @DisplayName("a null field map is normalised to an empty one")
         void aNullFieldMapBecomesEmpty() {
-            assertThat(new ScreenMetadata("USRIDIN", 0, false, null).fields()).isEmpty();
+            assertThat(new ScreenMetadata("USRIDIN", 0, false, null, null).fields()).isEmpty();
+        }
+
+        @Test
+        @DisplayName("a null non-display list is normalised to an empty one")
+        void aNullNonDisplayListBecomesEmpty() {
+            assertThat(new ScreenMetadata("USRIDIN", 0, false, null, null).nonDisplayFields())
+                    .isEmpty();
         }
 
         @Test
@@ -124,7 +109,6 @@ class ScreenMetadataTest {
     @Nested
     @DisplayName("The field map is copied in and unmodifiable out")
     class TheFieldMap {
-
         @Test
         @DisplayName("mutating the source map afterwards does not change the metadata")
         void theSourceMapIsCopied() {
@@ -179,7 +163,6 @@ class ScreenMetadataTest {
     @Nested
     @DisplayName("Composing the cursor with quads the response owns")
     class WithCursorField {
-
         @Test
         @DisplayName("withCursorField replaces only the cursor")
         void onlyTheCursorChanges() {
@@ -208,7 +191,6 @@ class ScreenMetadataTest {
     @Nested
     @DisplayName("The JSON shape")
     class TheJsonShape {
-
         private final ObjectMapper mapper = new ObjectMapper();
 
         @Test

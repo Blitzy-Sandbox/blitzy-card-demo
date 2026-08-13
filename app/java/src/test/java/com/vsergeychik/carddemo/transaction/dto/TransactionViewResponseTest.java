@@ -57,137 +57,11 @@ import org.junit.jupiter.params.provider.MethodSource;
 /**
  * Parity tests for {@link TransactionViewResponse}, the {@code xxxO} projection of
  * {@code 01 COTRN2AO REDEFINES COTRN2AI} in {@code app/cpy-bms/COTRN02.CPY}.
- *
- * <p>Every expected value here is transcribed from the <strong>copybook, the mapset and the
- * program</strong>, never read back from the class under test, so this suite compares the
- * implementation against its source rather than against itself. A change to either side that moved a
- * width, renamed an item or altered a literal fails here.
- *
- * <p>The suite is organised around the properties that determine the implementation, so a failure
- * names a translation decision rather than merely a value:
- *
- * <ol>
- *   <li>The 21 declared widths sum to <strong>396</strong> and the group image is
- *       <strong>555</strong> bytes.</li>
- *   <li>The field set is the <strong>add</strong> screen's - risk <strong>R-B</strong> - so
- *       {@code CONFIRMO} is present and {@code TRNIDINO} and {@code TRNIDO} are absent.</li>
- *   <li>{@code PIC X} moves pad and truncate on the right and never trim, and survive a JSON round
- *       trip untrimmed.</li>
- *   <li>The {@code CSSETATY} highlight is reachable in {@code REENTER} and unreachable in
- *       {@code ENTER} - gate <strong>G38</strong>.</li>
- *   <li>Card, account and merchant identifiers are carried unmasked - gate <strong>G41</strong>.</li>
- *   <li>The 58-byte cursor's two {@code 88}-levels are reachable in both states - gate
- *       <strong>G50</strong>.</li>
- * </ol>
- *
- * <h2>Risk R-B: this type is named "View" and renders the <em>Add</em> map</h2>
- * The build prompt mandates the name {@code TransactionView...} for the type paired with
- * {@code COTRN02C}. Three independent sources show that program <strong>adds</strong> a transaction
- * rather than viewing one:
- *
- * <ol>
- *   <li>{@code app/cbl/COTRN02C.cbl:5} - {@code Function : Add a new Transaction to TRANSACT file}.</li>
- *   <li>{@code README.md} - the online inventory row
- *       {@code | CT02 | COTRN02 | COTRN02C | Transaction Add |}, cited by row rather than by line
- *       number because README.md gains a Java build section under this migration (gate G55).</li>
- *   <li>The map's own shape in {@code app/bms/COTRN02.bms} - {@code ACTIDIN 11},
- *       {@code CARDNIN 16} and {@code CONFIRM 1} are present, {@code TRNIDIN} and {@code TRNID} are
- *       absent, and <strong>14 of the 21</strong> labelled fields are {@code UNPROT}. A view screen
- *       does not need fourteen input fields or a confirmation prompt.</li>
- * </ol>
- *
- * <p>Rule <strong>R1</strong> governs the outcome: <em>the name comes from the prompt, the behaviour
- * comes from the source</em>. So the class name is kept verbatim, the field set is taken from
- * {@code app/cpy-bms/COTRN02.CPY}, and the divergence is <strong>documented here rather than
- * corrected</strong> - practice <strong>B4</strong> forbids silently fixing a conflict. No
- * {@code TRNIDINO} and no {@code TRNIDO} are added; {@code TransactionAddResponse} in this same
- * package is the inverse case, being named "Add" while rendering {@code COTRN01}, the view map.
- * {@link SourceOracle} asserts all three pieces of evidence directly from the sources, so the
- * divergence is a tested fact and not a comment that could rot.
- *
- * <h2>The sources this suite treats as the oracle</h2>
- * Every width, name, literal and count below is read from, or transcribed from, these files. Not one
- * of them is written to - practice <strong>B3</strong>, gate <strong>G5</strong>:
- *
- * <ul>
- *   <li>{@code app/cpy-bms/COTRN02.CPY} - {@code 01 COTRN2AI.} at line 17 and
- *       {@code 01 COTRN2AO REDEFINES COTRN2AI.} at <strong>line 145</strong>; the 21 {@code xxxI} and
- *       21 {@code xxxO} items and their widths.</li>
- *   <li>{@code app/bms/COTRN02.bms} - {@code DFHMSD} mapset {@code COTRN02}, {@code DFHMDI} map
- *       {@code COTRN2A} at {@code SIZE=(24,80)}, and 61 {@code DFHMDF} definitions of which
- *       {@code ERRMSG} at <strong>line 293</strong> declares
- *       {@code ATTRB=(ASKIP,BRT,FSET), COLOR=RED, LENGTH=78, POS=(23,1)}.</li>
- *   <li>{@code app/cbl/COTRN02C.cbl} - {@code :5} the function header, {@code :53}
- *       {@code WS-TRAN-AMT PIC +99999999.99}, {@code :72-80} the 58-byte {@code CDEMO-CT02-INFO}
- *       extension, and {@code :509} the single {@code EXEC CICS XCTL PROGRAM(CDEMO-TO-PROGRAM)}.</li>
- *   <li>{@code app/cpy/CSSETATY.cpy} - the highlight rule, whose four outcomes {@link HighlightMatrix}
- *       drives across all 14 input fields.</li>
- *   <li>{@code app/cpy/COCOM01Y.cpy}, {@code COTTL01Y.cpy}, {@code CSDAT01Y.cpy},
- *       {@code CSMSG01Y.cpy} - the 160-byte commarea, the {@code X(40)} titles, the date and time
- *       header and the {@code X(50)} messages.</li>
- *   <li>{@code app/cpy/CVTRA05Y.cpy} - the 350-byte {@code TRAN-RECORD} whose fields are the sending
- *       operands of every cross-width {@code MOVE} into this map.</li>
- *   <li>{@code app/csd/CARDDEMO.CSD} - {@code MAPSET(COTRN02)} at line 153,
- *       {@code PROGRAM(COTRN02C)} at line 271 and {@code TRANSACTION(CT02)} at line 439.</li>
- *   <li>{@code README.md} - the transaction inventory row quoted above.</li>
- * </ul>
- *
- * <h2>Counts reconciled, so an absence reads as a finding</h2>
- * <ul>
- *   <li>{@code app/bms/COTRN02.bms} declares <strong>61</strong> {@code DFHMDF} fields, of which
- *       <strong>21</strong> carry a name and <strong>40</strong> do not. The 40 unnamed ones are the
- *       screen's static captions and separators - {@code 'Tran:'}, {@code 'Account Number :'},
- *       {@code '(Y/N)'} and the like. They have no symbolic-map item, so they can carry no payload
- *       field, and gate <strong>G9</strong> is satisfied by the 21 named ones alone.</li>
- *   <li>The group image is <strong>555</strong> bytes here against <strong>575</strong> for
- *       {@code COTRN01}, even though both maps declare 21 fields: the two field <em>sets</em> differ,
- *       so the payload totals differ - 396 here against 416 there. Equal field counts are not equal
- *       geometry, which is why the total is asserted rather than assumed.</li>
- *   <li>Gate <strong>G33</strong> - {@code OCCURS} indexing - has <strong>no subject on this map</strong>.
- *       {@code COTRN02} declares no table: the add screen shows one transaction being composed, not a
- *       page of rows, so there is no one-based-to-zero-based conversion to verify.
- *       {@link SourceOracle#noOccursTableExistsOnThisMap()} asserts the absence, so this reads as a
- *       finding rather than an omission.</li>
- * </ul>
- *
- * <h2>The rules position, and what governs instead</h2>
- * {@code review_rules} returns exactly one line, "No user rules provided", and that single line is
- * the whole document - so <strong>no user rule governs this file</strong>. Per the Agent Action Plan's
- * section 0.10 that absence is not permission to lower the bar, so this suite is held to the plan's
- * own binds: <strong>R1</strong> (name from the prompt, behaviour from the source),
- * <strong>R5</strong> (fixed width is the wire format), <strong>R6</strong> and gate
- * <strong>G37</strong> (statelessness), <strong>R4</strong> and gate <strong>G22</strong> (never
- * {@code double} or {@code float}), <strong>R2</strong> and gate <strong>G24</strong> (truncation, not
- * rounding), <strong>B3</strong> (reference inputs immutable), <strong>B4</strong> (no silent scope
- * creep), <strong>B7</strong> (deterministic and non-interactive - hence the fixed {@link Clock}),
- * <strong>B8</strong> and gate <strong>G52</strong> (explicit over implicit, no wildcard imports),
- * <strong>B9</strong> and gate <strong>G53</strong> (no static mutable state) and
- * <strong>B11</strong> (hand-written, reviewable codecs rather than an opaque parser).
- * {@link Negatives} turns each of those into an assertion.
- *
- * <h2>Scope: what this suite deliberately does not do</h2>
- * It is <strong>self-contained</strong>. It follows the structural shape established by
- * {@code TransactionListResponseTest} but depends on nothing in it: there is no shared base class and
- * none is introduced. It exercises the payload record only - there is no {@code MockMvc}, no
- * {@code @SpringBootTest} and no {@code @WebMvcTest}, because {@code TransactionViewControllerTest}
- * owns the controller behaviour ({@code STARTBR}/{@code READPREV}/{@code ENDBR}/{@code WRITE}, the two
- * {@code CSUTLDTC} calls and the {@code FUNCTION NUMVAL} acceptance). It touches no repository, no
- * {@code JobLauncher} and no datasource, imports nothing from
- * {@code com.vsergeychik.carddemo.parity} and reads nothing under
- * {@code src/test/resources/parity}, and does not reach for {@code card.dto.CardScreenState} -
- * {@code COTRN02C} does not copy {@code CVCRD01Y}.
  */
 @DisplayName("TransactionViewResponse - COTRN02 COTRN2AO output projection (CT02 / COTRN02C)")
 class TransactionViewResponseTest {
-
-    /** The code page of the authoritative fixtures under {@code app/data/ASCII}. */
     private static final Charset ASCII = StandardCharsets.US_ASCII;
 
-    /**
-     * The 21 labelled fields with the widths transcribed from {@code app/cpy-bms/COTRN02.CPY} lines
-     * 152 to 272, in declaration order. Independently equal to the {@code DFHMDF LENGTH=} values in
-     * {@code app/bms/COTRN02.bms}.
-     */
     private static Map<String, Integer> copybookWidths() {
         Map<String, Integer> widths = new LinkedHashMap<>();
         widths.put("TRNNAMEO", 4);
@@ -214,7 +88,6 @@ class TransactionViewResponseTest {
         return widths;
     }
 
-    /** A response with every payload item set to a distinguishable value at its declared width. */
     private static TransactionViewResponse populated() {
         TransactionViewResponse response = new TransactionViewResponse();
         for (ScreenField field : ScreenField.values()) {
@@ -239,7 +112,6 @@ class TransactionViewResponseTest {
         return response;
     }
 
-    /** A repeatable value of exactly the field's declared width, distinct per field. */
     private static String filled(ScreenField field) {
         String stem = field.label() + "-";
         StringBuilder text = new StringBuilder(field.width());
@@ -249,105 +121,46 @@ class TransactionViewResponseTest {
         return text.substring(0, field.width());
     }
 
-    /**
-     * The EBCDIC code page of the datasets under {@code app/data/EBCDIC}. Named explicitly so no
-     * assertion here can depend on the platform default (practice <strong>B8</strong>).
-     */
     private static final Charset EBCDIC = Charset.forName("IBM037");
 
-    // =============================================================================================
-    // Paths to the read-only sources. Every one of these is READ and none is written (practice B3,
-    // gate G5). Surefire runs with the Maven module directory - app/java - as its working directory,
-    // so ".." reaches app/ and the sources sit one level above this module.
-    // =============================================================================================
-
-    /** {@code app/cpy-bms/COTRN02.CPY} - the authoritative symbolic map, {@code AI} and {@code AO}. */
     private static final Path COPYBOOK = Paths.get("..", "cpy-bms", "COTRN02.CPY");
 
-    /** {@code app/bms/COTRN02.bms} - the authoritative {@code DFHMDF} field definitions. */
     private static final Path MAPSET = Paths.get("..", "bms", "COTRN02.bms");
 
-    /** {@code app/cbl/COTRN02C.cbl} - the authoritative behaviour, 783 lines. */
     private static final Path PROGRAM = Paths.get("..", "cbl", "COTRN02C.cbl");
 
-    /** {@code app/cpy/CVTRA05Y.cpy} - the 350-byte {@code TRAN-RECORD}, the sending operands. */
     private static final Path TRAN_COPYBOOK = Paths.get("..", "cpy", "CVTRA05Y.cpy");
 
-    /** {@code app/csd/CARDDEMO.CSD} - the transaction, program and mapset definitions. */
     private static final Path CSD = Paths.get("..", "csd", "CARDDEMO.CSD");
 
-    /** {@code README.md} - the transaction inventory, two levels above this module. */
     private static final Path README = Paths.get("..", "..", "README.md");
 
-    /** The class under test, for the source-level checks no reflection can express. */
     private static final Path SOURCE = Paths.get("src", "main", "java", "com", "vsergeychik",
             "carddemo", "transaction", "dto", "TransactionViewResponse.java");
 
-    /** This suite's own source, so gate <strong>G52</strong> is asserted of the test too. */
     private static final Path TEST_SOURCE = Paths.get("src", "test", "java", "com", "vsergeychik",
             "carddemo", "transaction", "dto", "TransactionViewResponseTest.java");
 
-    // =============================================================================================
-    // Determinism (practice B7). DateHeader never calls now() of its own; it takes a Clock. Every
-    // header assertion in this suite therefore states its instant AND its zone outright, so the same
-    // run on a host in any time zone renders the same eight bytes into CURDATEO and CURTIMEO.
-    // =============================================================================================
-
-    /** The zone the fixed clock is read in - stated, never inherited from the platform. */
     private static final ZoneId FIXED_ZONE = ZoneId.of("UTC");
 
-    /** {@code 2022-07-18T04:05:06Z}: the release date carried by the sources' own version footer. */
     private static final Instant FIXED_INSTANT = Instant.parse("2022-07-18T04:05:06Z");
 
-    /** A clock that cannot move, so a header rendered twice is byte-identical twice. */
     private static final Clock FIXED_CLOCK = Clock.fixed(FIXED_INSTANT, FIXED_ZONE);
 
-    /**
-     * The 14 input-capable fields, in copybook order - the {@code UNPROT} set of
-     * {@code app/bms/COTRN02.bms} and therefore exactly the fields {@code app/cpy/CSSETATY.cpy} can
-     * highlight. Transcribed, then cross-checked against the mapset by
-     * {@link SourceOracle#exactly14NamedFieldsAreUnprot()}.
-     */
     private static final List<ScreenField> INPUT_FIELDS = List.of(ScreenField.ACTIDIN,
             ScreenField.CARDNIN, ScreenField.TTYPCD, ScreenField.TCATCD, ScreenField.TRNSRC,
             ScreenField.TDESC, ScreenField.TRNAMT, ScreenField.TORIGDT, ScreenField.TPROCDT,
             ScreenField.MID, ScreenField.MNAME, ScreenField.MCITY, ScreenField.MZIP,
             ScreenField.CONFIRM);
 
-    /**
-     * The seven output-only fields: the six header items and the error line. Not {@code UNPROT}, so
-     * the program never validates them and {@code CSSETATY} is never invoked for them.
-     */
     private static final List<ScreenField> OUTPUT_ONLY_FIELDS = List.of(ScreenField.TRNNAME,
             ScreenField.TITLE01, ScreenField.CURDATE, ScreenField.PGMNAME, ScreenField.TITLE02,
             ScreenField.CURTIME, ScreenField.ERRMSG);
 
-    // =============================================================================================
-    // Helpers that read the sources, so the sources - not this file's opinion of them - are the
-    // oracle. Every read names US-ASCII: all seven files were verified to hold none but ASCII bytes,
-    // and naming the code page is the point (practice B8).
-    // =============================================================================================
-
-    /**
-     * Reads a source file as lines.
-     *
-     * @param path the file to read; never written
-     * @return its lines, in order
-     * @throws IOException if the file cannot be read
-     */
     private static List<String> lines(Path path) throws IOException {
         return Files.readAllLines(path, ASCII);
     }
 
-    /**
-     * Returns one 1-based line of a source file, so a citation such as {@code COTRN02C.cbl:509} can be
-     * asserted at exactly the line the documentation names.
-     *
-     * @param path   the file to read
-     * @param number the 1-based line number
-     * @return that line, trailing spaces retained
-     * @throws IOException if the file cannot be read
-     */
     private static String line(Path path, int number) throws IOException {
         List<String> all = lines(path);
         assertThat(all.size()).as("%s has at least %d lines", path, number)
@@ -355,19 +168,6 @@ class TransactionViewResponseTest {
         return all.get(number - 1);
     }
 
-    /**
-     * Extracts the {@code 02 xxx<suffix> PIC X(n)} items of one {@code 01} group of
-     * {@code app/cpy-bms/COTRN02.CPY}, in declaration order.
-     *
-     * <p>Only {@code PIC X(n)} items are collected, which is precisely the payload set: the
-     * {@code xxxL} length items are {@code COMP PIC S9(4)} and every other item is
-     * {@code PICTURE X}, so neither can be mistaken for a payload item.
-     *
-     * @param groupHeader the group name, {@code COTRN2AI} or {@code COTRN2AO}
-     * @param suffix      the item suffix, {@code I} or {@code O}
-     * @return item name to declared width, in copybook order
-     * @throws IOException if the copybook cannot be read
-     */
     private static Map<String, Integer> parseGroupItems(String groupHeader, String suffix)
             throws IOException {
         Pattern item =
@@ -391,18 +191,6 @@ class TransactionViewResponseTest {
         return items;
     }
 
-    /**
-     * Joins {@code app/bms/COTRN02.bms} into whole BMS statements, folding each continuation line -
-     * the ones ending in {@code '-'} - into the statement it continues.
-     *
-     * <p>Necessary because every {@code DFHMDF} in this mapset spans three to five physical lines, so
-     * a per-line scan can see a field's {@code ATTRB} without ever seeing its {@code LENGTH}. The
-     * continuation's leading spaces are preserved, which keeps adjacent operands from being jammed
-     * into one token.
-     *
-     * @return one string per BMS statement, in file order
-     * @throws IOException if the mapset cannot be read
-     */
     private static List<String> mapsetStatements() throws IOException {
         List<String> statements = new ArrayList<>();
         StringBuilder current = new StringBuilder();
@@ -426,12 +214,6 @@ class TransactionViewResponseTest {
         return statements;
     }
 
-    /**
-     * The name-labelled {@code DFHMDF} statements of the mapset, keyed by label in file order.
-     *
-     * @return label to whole statement text
-     * @throws IOException if the mapset cannot be read
-     */
     private static Map<String, String> namedFieldStatements() throws IOException {
         Pattern named = Pattern.compile("^([A-Z0-9]+)\\s+DFHMDF\\b");
         Map<String, String> fields = new LinkedHashMap<>();
@@ -444,39 +226,16 @@ class TransactionViewResponseTest {
         return fields;
     }
 
-    /**
-     * Reads one integer operand out of a BMS statement, for example {@code LENGTH=78}.
-     *
-     * @param statement the whole statement
-     * @param operand   the operand keyword
-     * @return its integer value
-     */
     private static int bmsInt(String statement, String operand) {
         Matcher matched = Pattern.compile(operand + "=(\\d+)").matcher(statement);
         assertThat(matched.find()).as("%s= in %s", operand, statement).isTrue();
         return Integer.parseInt(matched.group(1));
     }
 
-    /**
-     * Counts the occurrences of a literal in a file, so a claim such as "35 {@code MOVE -1} sites" is
-     * measured rather than remembered.
-     *
-     * @param path    the file to read
-     * @param literal the literal to count
-     * @return the number of lines containing {@code literal}
-     * @throws IOException if the file cannot be read
-     */
     private static long countLinesContaining(Path path, String literal) throws IOException {
         return lines(path).stream().filter(text -> text.contains(literal)).count();
     }
 
-    /**
-     * Strips block and line comments from Java source, so a Javadoc paragraph explaining what is
-     * absent from the code cannot be mistaken for the absent thing itself.
-     *
-     * @param source the Java source text
-     * @return the same text with comments removed
-     */
     private static String stripComments(String source) {
         StringBuilder out = new StringBuilder(source.length());
         boolean inBlock = false;
@@ -510,35 +269,11 @@ class TransactionViewResponseTest {
         return out.toString();
     }
 
-    /**
-     * The name of the generated accessor for one field's payload item, for example
-     * {@code getTrnnameo} for {@code TRNNAME}. Used by {@link Negatives} to prove every one of the 21
-     * payload accessors returns a {@link String} and never a floating-point type.
-     *
-     * @param field the screen field
-     * @return the getter's name
-     */
     private static String payloadGetterName(ScreenField field) {
         String label = field.label();
         return "get" + label.charAt(0) + label.substring(1).toLowerCase(Locale.ROOT) + "o";
     }
 
-    /**
-     * Builds the {@code COTRN2AI} view over the same 555 bytes the {@code AO} view occupies.
-     *
-     * <p>This is the other half of the {@code REDEFINES} pair, and it is declared <em>here</em> rather
-     * than taken from the class under test on purpose: {@link RecordLayout} verifies in its own
-     * constructor that a layout's storage spans sum to the declared length with no gap and no overlap,
-     * so the fact that an independently written {@code AI} view - {@code xxxL} at two bytes,
-     * {@code xxxF} at one, {@code FILLER X(4)}, then {@code xxxI} - also lands on exactly 555 bytes is
-     * itself the proof that the two views alias byte for byte (gate <strong>G34</strong>).
-     *
-     * <p>{@code xxxL} is declared as a two-byte span rather than a numeric picture because
-     * {@code COMP PIC S9(4)} is binary, not zoned: it is read and written here as raw bytes, which is
-     * what lets {@code MOVE -1} round trip as {@code -1}.
-     *
-     * @return the {@code AI} layout, 85 spans summing to 555
-     */
     private static RecordLayout inboundLayout() {
         List<FieldSpan> spans = new ArrayList<>(1 + ScreenField.values().length * 4);
         int offset = 0;
@@ -558,43 +293,16 @@ class TransactionViewResponseTest {
         return RecordLayout.of(offset, spans.toArray(new FieldSpan[0]));
     }
 
-    /**
-     * The width of one {@code xxxL} item: {@code COMP PIC S9(4)} occupies two bytes of binary storage,
-     * which is why the per-field {@code AI} prefix is {@code 2 + 1 + 4} and the {@code AO} prefix is
-     * {@code 3 + 1 + 1 + 1 + 1} - both seven.
-     */
     private static final int LENGTH_ITEM_LENGTH = 2;
 
-    /**
-     * Renders a signed cursor length the way {@code COMP PIC S9(4)} stores it: two bytes, big-endian,
-     * two's complement. {@code MOVE -1 TO <field>L} is what {@code COTRN02C} does at all 35 of its
-     * validation-failure sites to put the cursor on the offending field.
-     *
-     * @param value the value to store, for example {@code -1}
-     * @return two bytes
-     */
     private static byte[] comp2(int value) {
         return new byte[] {(byte) ((value >> 8) & 0xFF), (byte) (value & 0xFF)};
     }
 
-    /**
-     * Reads back what {@link #comp2(int)} wrote.
-     *
-     * @param image two bytes, big-endian, two's complement
-     * @return the signed value
-     */
     private static int fromComp2(byte[] image) {
         return (short) (((image[0] & 0xFF) << 8) | (image[1] & 0xFF));
     }
 
-    /**
-     * The offsets at which two group images differ, so a claim that a write "touched only these bytes"
-     * can be asserted exactly rather than approximated by a spot check.
-     *
-     * @param before the image before the write
-     * @param after  the image after it
-     * @return the differing offsets, ascending
-     */
     private static List<Integer> differingOffsets(byte[] before, byte[] after) {
         assertThat(after).as("a group image never changes length").hasSameSizeAs(before);
         List<Integer> offsets = new ArrayList<>();
@@ -609,7 +317,6 @@ class TransactionViewResponseTest {
     @Nested
     @DisplayName("Group geometry - 21 fields, 396 payload bytes, a 555-byte image")
     class Geometry {
-
         @Test
         @DisplayName("the map declares exactly 21 name-labelled fields")
         void fieldCountIs21() {
@@ -731,7 +438,6 @@ class TransactionViewResponseTest {
     @Nested
     @DisplayName("Risk R-B - the field set is the ADD screen's, whatever the class is called")
     class RiskRb {
-
         @Test
         @DisplayName("CONFIRMO is present: COTRN02 confirms an add, COTRN01 has no such field")
         void confirmIsPresent() {
@@ -800,7 +506,6 @@ class TransactionViewResponseTest {
     @Nested
     @DisplayName("ScreenField - labels, derived item names and resolution")
     class Fields {
-
         @ParameterizedTest
         @EnumSource(ScreenField.class)
         @DisplayName("the five derived item names are the label plus C, P, H, V and O")
@@ -851,13 +556,10 @@ class TransactionViewResponseTest {
     @Nested
     @DisplayName("PIC X move semantics - pad right, truncate right, never trim")
     class PictureMoves {
-
         @ParameterizedTest
         @EnumSource(ScreenField.class)
         @DisplayName("a fresh response holds LOW-VALUES at every declared width")
         void freshResponseIsUnpainted(ScreenField field) {
-            // MOVE LOW-VALUES TO COTRN2AO, app/cbl/COTRN02C.cbl:122. moveSpacesToOutputMap() is the
-            // separate MOVE SPACES shape CLEAR-CURRENT-SCREEN needs at :145, and it is asserted there.
             TransactionViewResponse response = new TransactionViewResponse();
             assertThat(response.getOutputItem(field))
                     .hasSize(field.width())
@@ -1024,7 +726,6 @@ class TransactionViewResponseTest {
     @Nested
     @DisplayName("The edited amount - TRNAMTO is a 12-character mask, not a number")
     class EditedAmount {
-
         @Test
         @DisplayName("the field is 12 characters: sign, 8 integer digits, a point, 2 fraction digits")
         void maskIsTwelveCharacters() {
@@ -1057,8 +758,6 @@ class TransactionViewResponseTest {
         @DisplayName("the mask holds 8 integer digits while TRAN-AMT holds 9, so a 9-digit amount "
                 + "left-truncates exactly as COTRN02C:481-485 does")
         void ninthIntegerDigitIsLeftTruncated() {
-            // TRAN-AMT PIC S9(09)V99 can hold 123456789.99; the PIC +99999999.99 mask cannot.
-            // COBOL's numeric move drops high-order digits, so the leading 1 is lost.
             TransactionViewResponse response = new TransactionViewResponse();
             response.setTrnamto("+23456789.99");
             assertThat(response.getTrnamto()).hasSize(12);
@@ -1070,7 +769,6 @@ class TransactionViewResponseTest {
     @Nested
     @DisplayName("Security posture - identifiers are carried unmasked (gate G41)")
     class SecurityPosture {
-
         @Test
         @DisplayName("CARDNINO returns all 16 characters of the card number, unredacted")
         void cardNumberIsNotMasked() {
@@ -1116,7 +814,6 @@ class TransactionViewResponseTest {
     @Nested
     @DisplayName("CSSETATY highlight - reachable in REENTER, unreachable in ENTER (gate G38)")
     class Highlighting {
-
         @ParameterizedTest
         @EnumSource(ScreenField.class)
         @DisplayName("every field starts with all four attribute items at DFHDFCOL")
@@ -1233,8 +930,6 @@ class TransactionViewResponseTest {
                     () -> new FieldHighlight(false, true, "TRNAMT",
                             TransactionViewResponse.MAP_NAME));
 
-            // The three reachable combinations, which is why applyHighlight tests each write
-            // independently rather than assuming both always happen together.
             assertThat(new FieldHighlight(false, false, "TRNAMT", "COTRN2A").untouched()).isTrue();
             assertThat(new FieldHighlight(true, false, "TRNAMT", "COTRN2A").untouched()).isFalse();
             assertThat(new FieldHighlight(true, true, "TRNAMT", "COTRN2A").untouched()).isFalse();
@@ -1311,7 +1006,6 @@ class TransactionViewResponseTest {
     @Nested
     @DisplayName("CDEMO-CT02-INFO - the 58-byte cursor and its two 88-levels (gate G50)")
     class Cursor {
-
         @Test
         @DisplayName("16 + 16 + 8 + 1 + 1 + 16 = 58, and the passed commarea is 160 + 58 = 218")
         void cursorGeometry() {
@@ -1460,7 +1154,6 @@ class TransactionViewResponseTest {
     @Nested
     @DisplayName("Statelessness - navigation replaces XCTL (gates G37 and G40)")
     class Navigation {
-
         @Test
         @DisplayName("the navigation targets default to this screen, and the program to spaces")
         void navigationDefaults() {
@@ -1527,7 +1220,6 @@ class TransactionViewResponseTest {
     @Nested
     @DisplayName("The COTRN02C send path, reproduced move for move")
     class SendPath {
-
         @Test
         @DisplayName("populateHeaderInfo reproduces POPULATE-HEADER-INFO at COTRN02C:552-571")
         void populateHeaderInfoSetsSixItems() {
@@ -1621,7 +1313,6 @@ class TransactionViewResponseTest {
     @Nested
     @DisplayName("Fixed-width rendering of the 555-byte group image")
     class FixedWidth {
-
         @Test
         @DisplayName("a rendered image is exactly 555 bytes")
         void imageIs555Bytes() {
@@ -1759,7 +1450,6 @@ class TransactionViewResponseTest {
     @Nested
     @DisplayName("JSON projection - 21 payload members, no metadata, nothing trimmed")
     class Json {
-
         private final ObjectMapper mapper = new ObjectMapper();
 
         @Test
@@ -1833,7 +1523,6 @@ class TransactionViewResponseTest {
     @Nested
     @DisplayName("Value semantics over everything the response carries")
     class ValueSemantics {
-
         @Test
         @DisplayName("two fresh responses are equal and share a hash code")
         void freshResponsesAreEqual() {
@@ -1885,17 +1574,9 @@ class TransactionViewResponseTest {
         }
     }
 
-    // =============================================================================================
-    // The sources as the oracle. Everything below is read from app/cpy-bms, app/bms, app/cbl,
-    // app/cpy, app/csd and README.md - and written to none of them (practice B3, gate G5). These are
-    // the assertions that would catch a mistranscription in this very file, which is why they parse
-    // the sources instead of restating them.
-    // =============================================================================================
-
     @Nested
     @DisplayName("The sources as oracle - copybook, mapset, program, CSD and README (gates G9, G5)")
     class SourceOracle {
-
         @Test
         @DisplayName("the AI and AO views declare the same 21 stems, in order, at the same widths")
         void aiAndAoAliasNameForName() throws IOException {
@@ -2016,12 +1697,8 @@ class TransactionViewResponseTest {
             assertThat(bmsInt(statement, "LENGTH")).isEqualTo(78)
                     .isEqualTo(TransactionViewResponse.ERRMSGO_LENGTH);
 
-            // ASKIP is the whole point: the error line is written by the program and can never be
-            // typed into, so it is output-only and CSSETATY never highlights it.
             assertThat(ScreenField.ERRMSG.input()).isFalse();
 
-            // Its red is declared by the map, not moved by CSSETATY: a fresh response leaves the
-            // ERRMSGC attribute item at DFHDFCOL and the field is still red on the screen.
             assertThat(new TransactionViewResponse().getMetadata(ScreenField.ERRMSG).getColour())
                     .isEqualTo(BmsAttributes.DFHDFCOL);
         }
@@ -2048,10 +1725,6 @@ class TransactionViewResponseTest {
         void theProgramHeaderAndTheReadmeBothSayAdd() throws IOException {
             assertThat(line(PROGRAM, 5))
                     .contains("Function    : Add a new Transaction to TRANSACT file");
-            // The README row is located by content, not by line number. README.md is the only oracle
-            // in this class's list that the migration itself changes - it gains a Java build section
-            // (AAP 0.4.9, gate G55) - so an absolute index into it goes stale as soon as the
-            // documentation grows, while the row remains unique and remains the evidence.
             List<String> ct02Rows = lines(README).stream()
                     .filter(row -> row.startsWith("|") && row.contains(" CT02 "))
                     .toList();
@@ -2061,7 +1734,6 @@ class TransactionViewResponseTest {
             assertThat(ct02Rows.get(0)).contains("CT02").contains("COTRN02")
                     .contains("COTRN02C").contains("Transaction Add");
 
-            // And the type is nonetheless named "View", by rule R1. Documented, not corrected.
             assertThat(TransactionViewResponse.class.getSimpleName())
                     .isEqualTo("TransactionViewResponse");
             assertThat(TransactionViewResponse.PROGRAM_ID).isEqualTo("COTRN02C");
@@ -2132,8 +1804,6 @@ class TransactionViewResponseTest {
             assertThat("+99999999.99").hasSize(12)
                     .hasSize(TransactionViewResponse.TRNAMTO_LENGTH);
 
-            // The program keeps its own numeric copies of the two identifiers, at their own
-            // pictures; the MAP items stay alphanumeric, so nothing here becomes numeric.
             assertThat(line(PROGRAM, 55)).contains("WS-ACCT-ID-N").contains("PIC 9(11)");
             assertThat(line(PROGRAM, 56)).contains("WS-CARD-NUM-N").contains("PIC 9(16)");
             assertThat(ScreenField.ACTIDIN.width()).isEqualTo(11);
@@ -2190,19 +1860,9 @@ class TransactionViewResponseTest {
         }
     }
 
-    // =============================================================================================
-    // The REDEFINES pair as one span seen two ways (gate G34). These assertions operate on a SINGLE
-    // FixedWidthRecord on purpose: a REDEFINES is a claim about shared storage, and the only way to
-    // prove shared storage is to write through one view and read through the other over the same
-    // bytes. A response -> image -> response round trip would not do it, because toFixedWidth
-    // allocates a fresh record whose FILLER spans are re-initialised.
-    // =============================================================================================
-
     @Nested
     @DisplayName("The REDEFINES overlay - one span, two views (gate G34)")
     class RedefinesOverlay {
-
-        /** The {@code COTRN2AI} view, declared independently of the class under test. */
         private final RecordLayout inbound = inboundLayout();
 
         @Test
@@ -2213,7 +1873,6 @@ class TransactionViewResponseTest {
             assertThat(inbound.spans()).as("one leading FILLER plus L, F, FILLER and I per field")
                     .hasSize(1 + 21 * 4);
 
-            // 2 + 1 + 4 on the AI side and 3 + 1 + 1 + 1 + 1 on the AO side are the same seven bytes.
             assertThat(LENGTH_ITEM_LENGTH + TransactionViewResponse.ATTRIBUTE_ITEM_LENGTH
                     + TransactionViewResponse.ATTRIBUTE_ITEM_COUNT)
                     .isEqualTo(TransactionViewResponse.ATTRIBUTE_PREFIX_FILLER_LENGTH
@@ -2259,7 +1918,6 @@ class TransactionViewResponseTest {
             assertThat(inboundFillers.get(0).length())
                     .isEqualTo(TransactionViewResponse.ATTRIBUTE_ITEM_COUNT).isEqualTo(4);
 
-            // And the AO view calls the SAME four bytes its four attribute items.
             FieldSpans outbound = TransactionViewResponse.FIELD_SPANS.get(field);
             assertThat(List.of(outbound.colour().offset(), outbound.ps().offset(),
                     outbound.highlight().offset(), outbound.validn().offset()))
@@ -2298,17 +1956,11 @@ class TransactionViewResponseTest {
                 + "TransactionViewResponseTest#inputFields")
         @DisplayName("MOVE -1 TO xxxL round trips as -1, and is invisible through the AO view")
         void theCursorLengthRoundTripsAndIsInvisibleOutbound(ScreenField field) {
-            // COTRN02C moves -1 into a cursor length at 35 sites - one per input-capable field's
-            // validation-failure path, which is the most in this package. COMP PIC S9(4) is signed
-            // two-byte binary, so -1 is X'FFFF' and must come back as -1 rather than as 65535.
             FixedWidthRecord record =
                     FixedWidthRecord.forLayout(TransactionViewResponse.LAYOUT, ASCII);
             populated().writeInto(record);
             byte[] imageBefore = record.toByteArray();
 
-            // The group image carries the 105 addressable items and nothing else - navigation, the
-            // commarea and the cursor travel in the JSON payload - so the comparison is made between
-            // the two projections OF THE IMAGE rather than against the response that produced it.
             TransactionViewResponse projectedBefore =
                     TransactionViewResponse.fromFixedWidth(imageBefore, ASCII);
             int start = inbound.span(field.label() + "L").offset();
@@ -2338,13 +1990,11 @@ class TransactionViewResponseTest {
                     FixedWidthRecord.forLayout(TransactionViewResponse.LAYOUT, ASCII);
             FieldSpan inboundPayload = inbound.span(field.label() + "I");
 
-            // Outbound then inbound: what the program SENDs through xxxO, it RECEIVEs through xxxI.
             TransactionViewResponse sending = new TransactionViewResponse();
             sending.setOutputItem(field, filled(field));
             sending.writeInto(record);
             assertThat(record.readSpan(inboundPayload)).isEqualTo(filled(field));
 
-            // Inbound then outbound: what arrives in xxxI is what xxxO renders back.
             String received = field.width() == 1 ? "Z" : "Z".repeat(field.width() - 1) + "!";
             record.writeSpan(inboundPayload, received);
             TransactionViewResponse receiving = new TransactionViewResponse();
@@ -2368,36 +2018,15 @@ class TransactionViewResponseTest {
                         .as("FILLER X(3) before %sC", field.label()).isEqualTo("   ");
             }
 
-            // Dropping any one of the 22 FILLER spans would change this total, which is exactly why
-            // they are declared rather than inferred.
             assertThat(TransactionViewResponse.TIOAPFX_LENGTH
                     + 21 * TransactionViewResponse.ATTRIBUTE_PREFIX_FILLER_LENGTH)
                     .isEqualTo(12 + 63).isEqualTo(75);
         }
     }
 
-    // =============================================================================================
-    // The CSSETATY highlight matrix (gate G38) - the densest branch surface in this package.
-    // =============================================================================================
-
-    /**
-     * The four outcomes of {@code app/cpy/CSSETATY.cpy:17-27}, driven across all 14 input-capable
-     * fields of this map.
-     *
-     * <p>An accuracy note, because it would be easy to overclaim: {@code COTRN02C} does
-     * <strong>not</strong> {@code COPY CSSETATY} - only {@code COACTUPC} does, at 39 textual sites.
-     * What {@code COTRN02C} copies is {@code DFHBMSCA} at {@code :93}, the IBM-supplied attribute
-     * constants reproduced in {@link BmsAttributes}, and it drives the rule's gating condition itself:
-     * {@code :120-121} latches {@code CDEMO-PGM-REENTER} on re-entry and {@code :507} moves zeros back
-     * into {@code CDEMO-PGM-CONTEXT} when it leaves. Gate <strong>G38</strong> is therefore asserted
-     * here as a property of this map's 14 input-capable fields - the highlight is reachable in
-     * {@code REENTER} and unreachable in {@code ENTER} - with the rule itself living once, in
-     * {@link FieldAttributeSetter}.
-     */
     @Nested
     @DisplayName("The CSSETATY matrix - 14 input fields x four outcomes (gate G38)")
     class HighlightMatrix {
-
         @ParameterizedTest(name = "{0}: {1} in {2} -> colour={3}, asterisk={4}")
         @MethodSource("com.vsergeychik.carddemo.transaction.dto."
                 + "TransactionViewResponseTest#highlightMatrix")
@@ -2426,7 +2055,6 @@ class TransactionViewResponseTest {
                         .isEqualTo(typed);
             }
 
-            // Only the named field is affected: the highlight is per field, not per screen.
             for (ScreenField other : ScreenField.values()) {
                 if (other != field) {
                     assertThat(response.getMetadata(other).isDefault())
@@ -2452,8 +2080,6 @@ class TransactionViewResponseTest {
             assertThat(response.getMetadata(ScreenField.CONFIRM).getColour())
                     .isEqualTo(BmsAttributes.DFHRED);
 
-            // The same overwrite on a wide field keeps the declared width, so the group image cannot
-            // change size: the '*' is padded to 60 for TDESCO, not written as one loose byte.
             TransactionViewResponse wide = new TransactionViewResponse();
             wide.setTdesco("A DESCRIPTION THE USER TYPED");
             wide.applyHighlight(FieldAttributeSetter.resolve(FieldValidationState.BLANK, true,
@@ -2470,8 +2096,6 @@ class TransactionViewResponseTest {
                     .isFalse();
             assertThat(namedFieldStatements().get(field.label())).doesNotContain("UNPROT");
 
-            // The program never validates a field it does not accept input for, so it never places a
-            // cursor on one either: none of the 35 MOVE -1 sites names any of these seven.
             assertThat(countLinesContaining(PROGRAM,
                     "MOVE -1       TO " + field.label() + "L")).isZero();
         }
@@ -2504,7 +2128,6 @@ class TransactionViewResponseTest {
                     .as("only COACTUPC copies CSSETATY; this program applies the rule inline")
                     .doesNotContain("CSSETATY");
 
-            // Both CDEMO-PGM-CONTEXT states are expressible, and REENTER is what opens the rule.
             assertThat(NavigationContext.empty().withPgmEnter().isReenter()).isFalse();
             assertThat(NavigationContext.empty().withPgmReenter().isReenter()).isTrue();
             assertThat(NavigationContext.PGM_CONTEXT_ENTER).isZero();
@@ -2512,15 +2135,9 @@ class TransactionViewResponseTest {
         }
     }
 
-    // =============================================================================================
-    // The header literals and the fixed clock (practices B7 and B8), and the two thank-you literals
-    // that are easy to substitute for one another and must never be.
-    // =============================================================================================
-
     @Nested
     @DisplayName("Header literals and a clock that cannot move (practices B7, B8)")
     class HeaderLiteralsAndClock {
-
         private final FixedWidthCodec codec = new FixedWidthCodec(ASCII);
 
         @Test
@@ -2566,8 +2183,6 @@ class TransactionViewResponseTest {
                             + "against CSMSG01Y")
                     .isNotEqualTo(SystemMessages.CCDA_MSG_THANK_YOU.stripTrailing());
 
-            // The title belongs in TITLE01O/TITLE02O, which are exactly 40 wide, and the message in
-            // ERRMSGO, which is 78. Neither field is the other's size.
             assertThat(TransactionViewResponse.TITLE01O_LENGTH)
                     .isEqualTo(TransactionViewResponse.TITLE02O_LENGTH)
                     .isEqualTo(ScreenTitles.TITLE_LENGTH);
@@ -2589,7 +2204,6 @@ class TransactionViewResponseTest {
             assertThat(rendered.substring(SystemMessages.MESSAGE_LENGTH))
                     .as("28 trailing spaces, not a truncation and not a trim").isEqualTo(" ".repeat(28));
 
-            // The same holds for the invalid-key message the program sends at COTRN02C:150.
             TransactionViewResponse invalid = new TransactionViewResponse();
             invalid.setErrmsgoInvalidKey();
             assertThat(invalid.getErrmsgo()).hasSize(78)
@@ -2610,24 +2224,11 @@ class TransactionViewResponseTest {
         }
     }
 
-    // =============================================================================================
-    // Cross-width MOVEs from the 350-byte TRAN-RECORD into this map (rule R5). Every one of them goes
-    // through FixedWidthCodec.movePicX or movePic9, so the DIRECTION of the loss is chosen at the call
-    // site instead of being whatever a Java assignment happens to do - which is nothing.
-    // =============================================================================================
-
     @Nested
     @DisplayName("Cross-width MOVEs from CVTRA05Y's TRAN-RECORD (rule R5)")
     class TranRecordMoves {
-
         private final FixedWidthCodec codec = new FixedWidthCodec(ASCII);
 
-        /**
-         * A distinguishable sending value of a given width, so a truncation is visible in the result.
-         *
-         * @param width the sender's declared width
-         * @return a value of exactly {@code width} characters ending in a marker
-         */
         private String sending(int width) {
             StringBuilder text = new StringBuilder(width);
             while (text.length() < width - 1) {
@@ -2696,7 +2297,6 @@ class TransactionViewResponseTest {
         @Test
         @DisplayName("a numeric sender zero-fills on the LEFT into an alphanumeric receiver")
         void numericSendersZeroFillOnTheLeft() {
-            // TRAN-CAT-CD PIC 9(04) into TCATCDO PIC X(4) and TRAN-MERCHANT-ID PIC 9(09) into MIDO.
             assertThat(codec.movePic9(7L, ScreenField.TCATCD.width())).isEqualTo("0007").hasSize(4);
             assertThat(codec.movePic9(123456L, ScreenField.MID.width()))
                     .isEqualTo("000123456").hasSize(9);
@@ -2722,8 +2322,6 @@ class TransactionViewResponseTest {
         @Test
         @DisplayName("TRAN-AMT is never moved into TRNAMTO directly - it goes through the mask")
         void theAmountIsRenderedThroughTheMaskAndNeverAssigned() {
-            // TRAN-AMT PIC S9(09)V99 occupies eleven bytes of zoned storage, sign overpunched into
-            // the trailing digit. Moving that image into TRNAMTO would put storage on the screen.
             String digits = codec.movePic9(123450L, 11);
             String zoned = digits.substring(0, 10)
                     + FixedWidthRecord.ZonedSign.overpunch(0, false);
@@ -2732,8 +2330,6 @@ class TransactionViewResponseTest {
             String movedRaw = codec.movePicX(zoned, ScreenField.TRNAMT.width());
             assertThat(movedRaw).hasSize(12).isNotEqualTo("+00001234.50");
 
-            // What COTRN02C:53 actually declares is an EDITED field, PIC +99999999.99, and that
-            // twelve-character rendering is what the map carries.
             TransactionViewResponse response = new TransactionViewResponse();
             response.setTrnamto("+00001234.50");
             String mask = response.getTrnamto();
@@ -2743,25 +2339,15 @@ class TransactionViewResponseTest {
             assertThat(mask.charAt(9)).as("the decimal point").isEqualTo('.');
             assertThat(mask.substring(10)).as("two fraction digits").containsOnlyDigits();
 
-            // The mask carries eight integer digits while TRAN-AMT holds nine, so the edited field is
-            // narrower than the stored one. That is the source's own choice, preserved unchanged.
             assertThat(9).isGreaterThan(8);
         }
     }
 
-    // =============================================================================================
-    // The negatives. Each of these asserts the ABSENCE of something, which is the only way a gate
-    // phrased as a prohibition can be tested. The source-text checks strip comments first, so a
-    // Javadoc paragraph explaining what is absent cannot be mistaken for the absent thing.
-    // =============================================================================================
-
     @Nested
     @DisplayName("The negatives - what must be absent (gates G22, G24, G37, G44, G52, G53)")
     class Negatives {
-
         private final ObjectMapper mapper = new ObjectMapper();
 
-        /** The type and the four nested types that together carry everything this response holds. */
         private final List<Class<?>> types = List.of(TransactionViewResponse.class,
                 ScreenField.class, FieldMetadata.class, Ct02Info.class, FieldSpans.class);
 
@@ -2781,8 +2367,6 @@ class TransactionViewResponseTest {
                     .getMethod("getOutputItem", ScreenField.class).getReturnType())
                     .isEqualTo(String.class);
 
-            // The backing field is a String too, so nothing is converted on the way through: an
-            // edited PIC field is characters on the screen and characters in this record.
             assertThat(TransactionViewResponse.class
                     .getDeclaredField(getterName.substring(3, 4).toLowerCase(Locale.ROOT)
                             + getterName.substring(4)).getType())
@@ -2867,9 +2451,6 @@ class TransactionViewResponseTest {
                             + "belongs anywhere near this projection")
                     .doesNotContain("RoundingMode").doesNotContain("HALF_UP")
                     .doesNotContain("HALF_EVEN").doesNotContain("CEILING").doesNotContain("FLOOR");
-            // Nothing about static factory methods is forbidden - newMetadataMap() is one - so this
-            // check names the constructs that would actually hold state between requests, and gate
-            // G53's real enforcement is the reflective every-static-field-is-final test above.
             assertThat(code).as("state travels in the payload, never on the server")
                     .doesNotContain("HttpSession").doesNotContain("SessionAttributes")
                     .doesNotContain("ThreadLocal").doesNotContain("@SessionScope")
@@ -2898,8 +2479,6 @@ class TransactionViewResponseTest {
                     .doesNotContain("MockMvc")
                     .doesNotContain("SpringBootTest")
                     .doesNotContain("WebMvcTest"));
-            // The two needles are assembled from fragments on purpose: spelled out as literals they
-            // would appear in this file's own source and the assertion would fail against itself.
             String parityFixtures = String.join("/", "src", "test", "resources", "parity");
             String parityCaseType = "Parity" + "Case";
             assertThat(stripComments(Files.readString(TEST_SOURCE, ASCII)))
@@ -2969,60 +2548,27 @@ class TransactionViewResponseTest {
         }
     }
 
-    /**
-     * The 14 input-capable fields, as a parameter source.
-     *
-     * @return one argument per {@code UNPROT} field
-     */
     static Stream<ScreenField> inputFields() {
         return INPUT_FIELDS.stream();
     }
 
-    /**
-     * The seven output-only fields, as a parameter source.
-     *
-     * @return one argument per protected field
-     */
     static Stream<ScreenField> outputOnlyFields() {
         return OUTPUT_ONLY_FIELDS.stream();
     }
 
-    /**
-     * The full {@code CSSETATY} decision matrix: the 14 input-capable fields crossed with the state
-     * and context combinations that reach each of the copybook's four outcomes.
-     *
-     * <p>Six combinations per field rather than four, because the {@code ENTER} row of the truth table
-     * is reached by <em>both</em> failing flags and the "left alone" row by {@code OK} in either
-     * context. Every one of the three conditions at {@code CSSETATY.cpy:18-23} is therefore driven
-     * true and false, which is what gate <strong>G49</strong>'s branch counter measures - 84 cases in
-     * place of 56 hand-written methods.
-     *
-     * @return field, validation state, context, whether {@code xxxC} is assigned, whether {@code xxxO}
-     *         is overwritten with the asterisk
-     */
     static Stream<Arguments> highlightMatrix() {
         List<Arguments> cases = new ArrayList<>(INPUT_FIELDS.size() * 6);
         for (ScreenField field : INPUT_FIELDS) {
-            // Outer test passes: NOT-OK under re-entry colours the field and leaves what was typed.
             cases.add(Arguments.of(field, FieldValidationState.NOT_OK, "REENTER", true, false));
-            // Outer and inner test pass: BLANK under re-entry colours AND stars the field.
             cases.add(Arguments.of(field, FieldValidationState.BLANK, "REENTER", true, true));
-            // Outer test fails on its AND: neither flag matters in ENTER context.
             cases.add(Arguments.of(field, FieldValidationState.NOT_OK, "ENTER", false, false));
             cases.add(Arguments.of(field, FieldValidationState.BLANK, "ENTER", false, false));
-            // Outer test fails on its OR: a valid field is never touched, in either context.
             cases.add(Arguments.of(field, FieldValidationState.OK, "REENTER", false, false));
             cases.add(Arguments.of(field, FieldValidationState.OK, "ENTER", false, false));
         }
         return cases.stream();
     }
 
-    /**
-     * The cross-width {@code MOVE}s from {@code app/cpy/CVTRA05Y.cpy}'s 350-byte {@code TRAN-RECORD}
-     * into this map's payload items, each with the sending field's declared width.
-     *
-     * @return sending field name, sending width, receiving screen field
-     */
     static Stream<Arguments> alphanumericMoves() {
         return Stream.of(
                 Arguments.of("TRAN-CARD-NUM", 16, ScreenField.CARDNIN),
@@ -3054,19 +2600,6 @@ class TransactionViewResponseTest {
                                 .setColour(BmsAttributes.DFHRED)));
     }
 
-    /**
-     * A copybook item name rendered as the JSON member it is published under: the item without its
-     * output-direction suffix, lower-cased.
-     *
-     * <p>{@code @JsonProperty} pins every screen field's wire name to its {@code xxxI} item in lower
-     * case, which is the one naming rule AAP 0.6.3 states - "payload field names and lengths derive from
-     * the xxxI items only". The Java accessor keeps the {@code xxxO} spelling, because that is the map
-     * view the type projects; the wire name does not, because the paired request has to accept this
-     * response back field for field.
-     *
-     * @param itemName a symbolic-map item name such as {@code TRNNAMEO} or {@code TRNNAMEI}
-     * @return the JSON member name, such as {@code trnname}
-     */
     private static String withoutDirectionSuffix(String itemName) {
         return itemName.substring(0, itemName.length() - 1).toLowerCase(Locale.ROOT);
     }

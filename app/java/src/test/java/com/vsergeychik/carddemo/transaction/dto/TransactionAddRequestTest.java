@@ -40,101 +40,14 @@ import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 /**
- * Verifies {@link TransactionAddRequest} - the inbound payload of CSD transaction {@code CT01},
- * program {@code COTRN01C}, mapset {@code COTRN01}, map {@code COTRN1A} - against the legacy sources
- * that define it. Every one is read-only reference material; nothing here writes to any of them, and
- * nothing here opens any of them at run time. The expected values are transcribed into constants
- * below instead.
- *
- * <h2>The authoritative sources, by line</h2>
- * <ul>
- *   <li>{@code app/cpy-bms/COTRN01.CPY:17} - {@code 01 COTRN1AI.}, the symbolic map: a 12-byte
- *       {@code TIOAPFX} {@code FILLER} followed by twenty-one
- *       {@code xxxL}/{@code xxxF}/{@code xxxA}/{@code FILLER X(4)}/{@code xxxI} groups. The
- *       {@code xxxI} items supply every payload name and width; {@code COTRN1AO} at
- *       {@code COTRN01.CPY:145} redefines the same storage for output.</li>
- *   <li>{@code app/bms/COTRN01.bms:85} - {@code TRNIDIN DFHMDF ATTRB=(FSET,IC,NORM,UNPROT)}, the
- *       only input-capable field on the screen, and {@code app/bms/COTRN01.bms:259} -
- *       {@code ERRMSG DFHMDF ATTRB=(ASKIP,BRT,FSET) COLOR=RED LENGTH=78 POS=(23,1)}.</li>
- *   <li>{@code app/cbl/COTRN01C.cbl:5} - the program's {@code Function :} header;
- *       {@code COTRN01C.cbl:49} - {@code 05 WS-TRAN-AMT PIC +99999999.99}, the edited amount mask
- *       that {@code TRNAMT} carries; {@code COTRN01C.cbl:53-61} - {@code CDEMO-CT01-INFO}, the
- *       58-byte commarea extension declared immediately after {@code COPY COCOM01Y.}</li>
- *   <li>{@code app/cpy/COCOM01Y.cpy} - {@code CARDDEMO-COMMAREA}, 160 bytes, carrying
- *       {@code CDEMO-PGM-CONTEXT} with its {@code 88} levels {@code ENTER 0} and
- *       {@code REENTER 1}.</li>
- *   <li>{@code app/cpy/CVTRA05Y.cpy} - the 350-byte {@code TRAN-RECORD} this screen displays, whose
- *       wider fields are the source of every cross-width {@code MOVE} asserted here.</li>
- *   <li>{@code app/csd/CARDDEMO.CSD:149} - {@code DEFINE MAPSET(COTRN01)};
- *       {@code CARDDEMO.CSD:264} - {@code DEFINE PROGRAM(COTRN01C)};
- *       {@code CARDDEMO.CSD:429} - {@code DEFINE TRANSACTION(CT01)} naming that program.</li>
- *   <li>{@code README.md:223} - the online inventory row for {@code CT01}.</li>
- * </ul>
- *
- * <h2>Risk R-B: this type is named "Add" and its map is the View map</h2>
- * The build prompt mandates the name {@code TransactionAddRequest}. The paired COBOL program does the
- * opposite: it <em>views</em> an existing transaction. Three independent sources agree on that, and
- * they are cited above rather than paraphrased.
- * <ol>
- *   <li>{@code app/cbl/COTRN01C.cbl:5} reads {@code Function : View a Transaction from TRANSACT
- *       file}.</li>
- *   <li>{@code README.md:223} lists {@code CT01 | COTRN01 | COTRN01C | Transaction View}, and the
- *       row beneath it lists {@code CT02 | COTRN02 | COTRN02C | Transaction Add}.</li>
- *   <li>The map's own shape settles it. {@code COTRN1AI} declares {@code TRNIDIN} (the key the
- *       operator types) <em>and</em> {@code TRNID} (the key read back for display) - a pair the
- *       {@code COTRN02} add screen does not have at all. It declares no {@code CONFIRM} field. And
- *       {@code app/bms/COTRN01.bms} marks exactly one of its twenty-one named fields
- *       input-capable against twenty {@code ASKIP} output-only ones. One enterable field and a
- *       read-back companion is a lookup-then-display screen, not a data-entry form.</li>
- * </ol>
- * The governing ruling is <strong>R1 - the name comes from the prompt, the behaviour comes from the
- * source</strong>. So the class keeps the mandated name verbatim, its field set is taken from the
- * copybook unchanged, and the divergence is documented here rather than corrected: silently renaming
- * the type, adding a {@code CONFIRM} field, or importing {@code COTRN02}'s {@code ACTIDIN} and
- * {@code CARDNIN} fields would each be an unrequested behaviour change. Its sibling
- * {@code TransactionViewRequest} is the inverse case - named "View", carrying {@code COTRN02}'s add
- * screen - and the two are only intelligible together.
- *
- * <h2>What governs this file</h2>
- * No user-specified rules were provided for this project: {@code review_rules} returns the single
- * line "No user rules provided", and that line is the whole document. That absence is not permission
- * to lower the bar, so the Agent Action Plan's own binds are the rulings applied here - R1 (name from
- * the prompt, behaviour from the source), R2 and R4 (truncation not rounding; never {@code double} or
- * {@code float}), R5 (fixed width is the wire format), R6 (statelessness), and practices B3
- * (reference inputs immutable), B4 (no silent scope creep), B7 (deterministic and non-interactive),
- * B8 (explicit over implicit), B9 (no static mutable state) and B11 (hand-written, reviewable
- * codecs).
- *
- * <h2>Deliberate non-findings</h2>
- * {@code COTRN1AI} contains no {@code OCCURS} table: it shows one transaction, not a paginated list,
- * and the copybook declares twenty-one singular items with no repeating group. The one-based-to-
- * zero-based row indexing check that applies to the list screens therefore has no subject here. That
- * is recorded as a finding rather than left as an omission - see
- * {@link TypeDiscipline#noOccursTableExistsOnThisMap()}.
- *
- * <h2>Scope</h2>
- * This class is self-contained. It follows the structural shape of {@code TransactionListRequestTest}
- * in this package but does not depend on it, and there is no shared base class. It exercises the
- * payload type alone: no {@code MockMvc}, no Spring context, no repository, no {@code JobLauncher},
- * no datasource, and nothing from the parity harness. Controller behaviour - the keyed read, the
- * {@code EVALUATE EIBAID} branch set - belongs to {@code TransactionAddControllerTest} in the parent
- * package and is not duplicated here.
- *
- * <p>The expected values below are written out as literals on purpose rather than read back from the
- * class under test. A test that derives its expectations from the code it is testing proves only
- * self-consistency; these literals were transcribed from the copybook and the mapset, so they fail if
- * the class drifts from the source.
+ * Verifies {@link TransactionAddRequest} - the inbound payload of CSD transaction {@code CT01}, program
+ * {@code COTRN01C}, mapset {@code COTRN01}, map {@code COTRN1A} - against the legacy sources that define
+ * it.
  */
 @DisplayName("TransactionAddRequest - CT01 / COTRN01C / mapset COTRN01, map COTRN1A")
 class TransactionAddRequestTest {
-
-    /** Explicit code page, never the platform default. */
     private static final FixedWidthCodec CODEC = new FixedWidthCodec(StandardCharsets.US_ASCII);
 
-    /**
-     * The twenty-one {@code xxxI} items in copybook declaration order with their declared widths,
-     * transcribed from {@code app/cpy-bms/COTRN01.CPY} lines 24 to 144.
-     */
     private static final List<String> EXPECTED_FIELDS = List.of(
             "TRNNAMEI:4", "TITLE01I:40", "CURDATEI:8", "PGMNAMEI:8", "TITLE02I:40",
             "CURTIMEI:8", "TRNIDINI:16", "TRNIDI:16", "CARDNUMI:16", "TTYPCDI:2",
@@ -180,15 +93,6 @@ class TransactionAddRequestTest {
         return request;
     }
 
-    /**
-     * The per-field byte overlay of {@code 01 COTRN1AI.}, transcribed from
-     * {@code app/cpy-bms/COTRN01.CPY:17-144}.
-     *
-     * <p>Each row is {@code screen name}, {@code group offset k}, {@code value offset k+7} and
-     * {@code declared width n}. The group offset is where the field's {@code xxxL} halfword starts;
-     * the value offset is where its {@code xxxI} item starts. Both are written out rather than
-     * computed, because a computed expectation would agree with a wrong stride.
-     */
     private static final List<Object[]> OVERLAY = List.of(
             new Object[] {"TRNNAME", 12, 19, 4},
             new Object[] {"TITLE01", 23, 30, 40},
@@ -212,7 +116,6 @@ class TransactionAddRequestTest {
             new Object[] {"MZIP", 473, 480, 10},
             new Object[] {"ERRMSG", 490, 497, 78});
 
-    /** The published {@code <FIELD>_GROUP_OFFSET} constants, positionally aligned with {@link #OVERLAY}. */
     private static final List<Integer> PUBLISHED_GROUP_OFFSETS = List.of(
             TransactionAddRequest.TRNNAME_GROUP_OFFSET, TransactionAddRequest.TITLE01_GROUP_OFFSET,
             TransactionAddRequest.CURDATE_GROUP_OFFSET, TransactionAddRequest.PGMNAME_GROUP_OFFSET,
@@ -226,7 +129,6 @@ class TransactionAddRequestTest {
             TransactionAddRequest.MCITY_GROUP_OFFSET, TransactionAddRequest.MZIP_GROUP_OFFSET,
             TransactionAddRequest.ERRMSG_GROUP_OFFSET);
 
-    /** The published {@code <FIELD>_OFFSET} constants, positionally aligned with {@link #OVERLAY}. */
     private static final List<Integer> PUBLISHED_VALUE_OFFSETS = List.of(
             TransactionAddRequest.TRNNAME_OFFSET, TransactionAddRequest.TITLE01_OFFSET,
             TransactionAddRequest.CURDATE_OFFSET, TransactionAddRequest.PGMNAME_OFFSET,
@@ -240,22 +142,6 @@ class TransactionAddRequestTest {
             TransactionAddRequest.MCITY_OFFSET, TransactionAddRequest.MZIP_OFFSET,
             TransactionAddRequest.ERRMSG_OFFSET);
 
-    /**
-     * Every {@code @Size}-constrained property with the width it accepts and the width it must reject.
-     *
-     * <p>Each row supplies the JSON/bean property name, its declared width, that width plus one, a
-     * mutator that fills it to exactly the declared width, and a mutator that overfills it by one
-     * character. Twenty-one payload fields plus the {@code EIBAID} carrier, whose declared width is
-     * the {@code CCARD-AID} token width because it accepts either spelling.
-     *
-     * @return one argument row per constrained property
-     */
-    /**
-     * The {@link #OVERLAY} table as parameterised rows.
-     *
-     * @return one row per field: screen name, group offset {@code k}, value offset {@code k+7} and
-     *         declared width {@code n}
-     */
     static Stream<Arguments> overlayRows() {
         return OVERLAY.stream().map(Arguments::of);
     }
@@ -283,19 +169,9 @@ class TransactionAddRequestTest {
                 sized("mcity", 25, TransactionAddRequest::setMcity),
                 sized("mzip", 10, TransactionAddRequest::setMzip),
                 sized("errmsg", 78, TransactionAddRequest::setErrmsg),
-                // The aid member is declared at the CCARD-AID token width, not at the EIBAID byte
-                // width, because it accepts either spelling. Its declared maximum is therefore 5.
                 sized("aid", TransactionAddRequest.AID_TOKEN_LENGTH, TransactionAddRequest::setAid));
     }
 
-    /**
-     * Builds one {@link #sizedFields()} row.
-     *
-     * @param property      the bean property name as Bean Validation reports it
-     * @param declaredWidth the declared {@code PICTURE} width
-     * @param setter        the property's setter
-     * @return the argument row: property, width, width + 1, at-width mutator, over-width mutator
-     */
     private static Arguments sized(String property,
                                    int declaredWidth,
                                    BiConsumer<TransactionAddRequest, String> setter) {
@@ -306,12 +182,9 @@ class TransactionAddRequestTest {
         return Arguments.of(property, declaredWidth, declaredWidth + 1, atWidth, overWidth);
     }
 
-    // =================================================================================================
-
     @Nested
     @DisplayName("Screen provenance - CSD, mapset and program identity")
     class Provenance {
-
         @Test
         @DisplayName("names CT01 / COTRN01C / COTRN01 / COTRN1A exactly as the CSD and program do")
         void identityMatchesTheSources() {
@@ -332,7 +205,6 @@ class TransactionAddRequestTest {
     @Nested
     @DisplayName("Field set - exactly 21 fields, 1:1 with the xxxI items, nothing from COTRN02")
     class FieldSet {
-
         @Test
         @DisplayName("declares exactly 21 payload fields")
         void declaresTwentyOneFields() {
@@ -372,7 +244,6 @@ class TransactionAddRequestTest {
     @Nested
     @DisplayName("Byte geometry - 12 + 21x7 + 416 = 575, extension 58, commarea 218")
     class Geometry {
-
         @Test
         @DisplayName("the metadata stride is 2 + 1 + 4 = 7 bytes per field")
         void metadataStrideIsSeven() {
@@ -437,7 +308,6 @@ class TransactionAddRequestTest {
     @Nested
     @DisplayName("The geometry self-check actually fires - every guard is demonstrated")
     class GeometrySelfCheck {
-
         @Test
         @DisplayName("accepts the real geometry")
         void acceptsTheRealGeometry() {
@@ -497,7 +367,6 @@ class TransactionAddRequestTest {
     @Nested
     @DisplayName("Defaults - a COBOL work area holds spaces, not null")
     class Defaults {
-
         @Test
         @DisplayName("every payload field starts blank at its declared width")
         void everyFieldStartsBlankAtItsDeclaredWidth() {
@@ -526,18 +395,12 @@ class TransactionAddRequestTest {
         void conversationStateIsInitialised() {
             TransactionAddRequest request = new TransactionAddRequest();
 
-            // Absence is the honest default: nothing has been passed to a request nobody has filled
-            // in yet, and that is exactly the EIBCALEN = 0 state COTRN01C.cbl:94 tests for. Defaulting
-            // to an initialised area would make that state unreachable through the API, because every
-            // request would then carry one whether or not it was passed.
             assertThat(request.getNavigationContext()).isNull();
             assertThat(request.hasNavigationContext()).isFalse();
             assertThat(request.commareaLength()).isZero();
             assertThat(request.isEnter()).isFalse();
             assertThat(request.isReenter()).isFalse();
 
-            // The extension is a different case and keeps its fresh default - see
-            // aNullExtensionIsNormalised.
             assertThat(request.getCt01Info()).isNotNull();
         }
     }
@@ -545,7 +408,6 @@ class TransactionAddRequestTest {
     @Nested
     @DisplayName("Numeric ruling - TRNAMT is a 12-character edited image, never a number")
     class NumericRuling {
-
         @Test
         @DisplayName("carries the +99999999.99 mask from COTRN01C line 49 at exactly 12 characters")
         void trnamtCarriesTheEditMask() {
@@ -576,7 +438,6 @@ class TransactionAddRequestTest {
     @Nested
     @DisplayName("Security posture is inherited - CARDNUM and MID are never masked")
     class SecurityPosture {
-
         @Test
         @DisplayName("CARDNUM round-trips all 16 digits unaltered")
         void cardNumberIsNotMasked() {
@@ -607,7 +468,6 @@ class TransactionAddRequestTest {
     @Nested
     @DisplayName("JSON round trip is lossless - padding is content")
     class JsonRoundTrip {
-
         @Test
         @DisplayName("a fully populated request survives serialise then deserialise, and compares equal")
         void fullRoundTripIsLossless() throws Exception {
@@ -663,16 +523,11 @@ class TransactionAddRequestTest {
                     mapper.writeValueAsString(request),
                     new TypeReference<Map<String, Object>>() { });
 
-            // Every payload field is on the wire under its own base name, lower-cased. The name comes
-            // from the xxxI item and nowhere else - that is the binding field-mapping rule.
             for (String field : TransactionAddRequest.PAYLOAD_FIELD_NAMES) {
                 String property = field.substring(0, field.length() - 1).toLowerCase(Locale.ROOT);
                 assertThat(tree).as("payload key for %s", field).containsKey(property);
             }
 
-            // ...and not one of the three metadata items is, under any of its names. Sixty-three
-            // names checked, because "metadata lives on the type" is not the same claim as "metadata
-            // travels on the wire", and only the second one is being denied here.
             List<String> metadataNames = new ArrayList<>();
             for (String field : TransactionAddRequest.PAYLOAD_FIELD_NAMES) {
                 ScreenFieldMetadata carrier = request.getMetadata(field);
@@ -682,18 +537,12 @@ class TransactionAddRequestTest {
             }
             assertThat(metadataNames).hasSize(63).doesNotHaveDuplicates();
 
-            // Checked two ways. First the verbatim symbolic-map name, which is upper case and so can
-            // never be confused with a camel-case JSON property...
             String json = mapper.writeValueAsString(request);
             for (String metadataName : metadataNames) {
                 assertThat(json).as("%s is metadata, not payload", metadataName)
                         .doesNotContain(metadataName);
             }
 
-            // ...and then the property names themselves, compared case-insensitively against every
-            // key on the wire, top level and nested alike. Comparing keys rather than searching the
-            // raw text is what keeps this precise: a substring search for "trnidf" would one day
-            // collide with a lower-cased "trnidfirst" and fail for the wrong reason.
             Set<String> wireKeys = new LinkedHashSet<>(tree.keySet());
             Map<String, Object> extension = mapper.convertValue(
                     tree.get("ct01Info"), new TypeReference<Map<String, Object>>() { });
@@ -704,8 +553,6 @@ class TransactionAddRequestTest {
                         .noneMatch(key -> key.equalsIgnoreCase(metadataName));
             }
 
-            // The tree holds the 21 payload fields plus aid, navigationContext and ct01Info - and
-            // nothing else, so no metadata slipped in under a name this test failed to predict.
             assertThat(tree).hasSize(TransactionAddRequest.PAYLOAD_FIELD_COUNT + 3);
             assertThat(extension).hasSize(6);
         }
@@ -722,7 +569,6 @@ class TransactionAddRequestTest {
     @Nested
     @DisplayName("Rendering - every width goes through FixedWidthCodec")
     class Rendering {
-
         @Test
         @DisplayName("the payload image is exactly 416 characters")
         void payloadImageIs416() {
@@ -735,12 +581,10 @@ class TransactionAddRequestTest {
         void commareaImageIs218() {
             assertThat(populated().toCommareaImage(CODEC)).hasSize(218);
 
-            // A request that carries an area renders one whatever else is set on it...
             TransactionAddRequest fresh = new TransactionAddRequest();
             fresh.setNavigationContext(NavigationContext.empty());
             assertThat(fresh.toCommareaImage(CODEC)).hasSize(218);
 
-            // ...and a request that carries none renders nothing, rather than 218 invented bytes.
             assertThatExceptionOfType(IllegalStateException.class)
                     .isThrownBy(() -> new TransactionAddRequest().toCommareaImage(CODEC));
         }
@@ -776,7 +620,6 @@ class TransactionAddRequestTest {
     @Nested
     @DisplayName("Screen metadata - xxxL is signed, xxxA aliases xxxF")
     class Metadata {
-
         @Test
         @DisplayName("one carrier exists per field, keyed by the verbatim xxxI name")
         void oneCarrierPerField() {
@@ -892,24 +735,9 @@ class TransactionAddRequestTest {
         }
     }
 
-    /**
-     * {@code CDEMO-CT01-INFO}, declared at {@code app/cbl/COTRN01C.cbl:53-61} immediately after
-     * {@code COPY COCOM01Y.} - a 58-byte extension appended to the 160-byte commarea, never a
-     * widening of it.
-     *
-     * <p>It carries a <em>pagination</em> cursor - {@code TRNID-FIRST}, {@code TRNID-LAST},
-     * {@code PAGE-NUM} and {@code NEXT-PAGE-FLG} - even though the map displays exactly one
-     * transaction and has no {@code OCCURS} table. That is what the source declares, and preserving
-     * it is practice B4: the fields are how the list screen {@code COTRN00C} hands its browse window
-     * across, so {@code COTRN01C} can be re-entered from it and can hand the window back. Trimming
-     * the extension to the two fields this screen appears to need would shorten the passed commarea
-     * from 218 bytes and break that handoff, which is precisely the kind of tidy-up a like-for-like
-     * migration must not perform.
-     */
     @Nested
     @DisplayName("CDEMO-CT01-INFO - the 58-byte commarea extension")
     class Extension {
-
         @Test
         @DisplayName("the six items are 16, 16, 8, 1, 1 and 16 and sum to 58")
         void widthsSumTo58() {
@@ -958,9 +786,6 @@ class TransactionAddRequestTest {
             assertThat(info.isNextPageYes()).isFalse();
             assertThat(info.isNextPageNo()).isFalse();
 
-            // A third state, and it is not a hypothetical: the field is a plain PIC X(01), so the 88
-            // levels partition only two of its 256 possible values. Neither condition name holds for
-            // the rest, and COBOL would fall through both to WHEN OTHER rather than defaulting to N.
             info.setNextPageFlg("X");
             assertThat(info.getNextPageFlg()).isEqualTo("X");
             assertThat(info.isNextPageYes()).isFalse();
@@ -1079,7 +904,6 @@ class TransactionAddRequestTest {
     @Nested
     @DisplayName("Statelessness - the conversation travels in the payload")
     class Statelessness {
-
         @Test
         @DisplayName("the communication area is carried and is never widened past 160 bytes")
         void commareaIsCarriedAtItsDeclaredWidth() {
@@ -1108,9 +932,6 @@ class TransactionAddRequestTest {
             TransactionAddRequest request = populated();
             request.setNavigationContext(null);
 
-            // COTRN01C.cbl:94-96 acts on the absence itself - IF EIBCALEN = 0 transfers to COSGN00C
-            // without ever reading a context byte - so substituting an initialised area would send
-            // the request down the ELSE branch instead. The absence has to survive.
             assertThat(request.getNavigationContext()).isNull();
             assertThat(request.hasNavigationContext()).isFalse();
             assertThat(request.commareaLength()).isZero();
@@ -1124,8 +945,6 @@ class TransactionAddRequestTest {
             TransactionAddRequest request = populated();
             request.setCt01Info(null);
 
-            // Unlike the commarea, the extension has no absence semantics of its own: COTRN01C reads
-            // it only on the branch where a commarea was passed, so a fresh one is the honest default.
             assertThat(request.getCt01Info()).isEqualTo(new Ct01Info());
             assertThat(request.getCt01Info().getNextPageFlg()).isEqualTo("N");
         }
@@ -1176,8 +995,6 @@ class TransactionAddRequestTest {
             TransactionAddRequest cold = populated();
             cold.setNavigationContext(null);
 
-            // Three states, not two. Printing a cold start as pgmContext=0 would hide exactly the
-            // distinction this payload was corrected to preserve.
             assertThat(cold.toString()).contains("pgmContext=none (EIBCALEN=0)");
 
             TransactionAddRequest warm = populated();
@@ -1205,9 +1022,6 @@ class TransactionAddRequestTest {
         @DisplayName("the EIBAID attention identifier is carried in the payload, as the raw byte or as "
                 + "the five-character CCARD-AID token")
         void attentionIdentifierIsCarried() {
-            // AID_LENGTH is the width of EIBAID itself - one byte - and AID_TOKEN_LENGTH is the width
-            // of the member, because the member accepts the mnemonic token this module's responses
-            // publish as well as the byte the source's EVALUATE compares.
             assertThat(TransactionAddRequest.AID_LENGTH).isEqualTo(1);
             assertThat(TransactionAddRequest.AID_TOKEN_LENGTH).isEqualTo(5);
             TransactionAddRequest request = new TransactionAddRequest();
@@ -1221,7 +1035,6 @@ class TransactionAddRequestTest {
     @Nested
     @DisplayName("Bean Validation is never stricter than the COBOL")
     class BeanValidation {
-
         private Set<ConstraintViolation<TransactionAddRequest>> validate(
                 TransactionAddRequest request) {
             try (ValidatorFactory factory = Validation.buildDefaultValidatorFactory()) {
@@ -1273,15 +1086,6 @@ class TransactionAddRequestTest {
                     .isEqualTo("ct01Info.trnSelected");
         }
 
-        /**
-         * Both sides of every constrained field, one field at a time.
-         *
-         * <p>Twenty-one payload fields plus the {@code EIBAID} carrier, declared at the
-         * {@code CCARD-AID} token width: for each, a value at exactly the declared width must pass and
-         * a value one character wider must be the single
-         * reported violation. Driving only the happy side would leave every {@code @Size} boundary
-         * asserted in one direction, which is the direction a mistyped {@code max} survives.
-         */
         @ParameterizedTest(name = "{0} accepts {1} characters and rejects {2}")
         @MethodSource(
                 "com.vsergeychik.carddemo.transaction.dto.TransactionAddRequestTest#sizedFields")
@@ -1318,7 +1122,6 @@ class TransactionAddRequestTest {
                     new Item("trnSelFlg", 1, info -> info.setTrnSelFlg("XX")),
                     new Item("trnSelected", 16, info -> info.setTrnSelected("X".repeat(17))));
 
-            // The declared initial state is already valid, so the happy side needs no arrangement.
             assertThat(validate(new TransactionAddRequest())).isEmpty();
 
             for (Item item : items) {
@@ -1337,7 +1140,6 @@ class TransactionAddRequestTest {
         @Test
         @DisplayName("PAGE-NUM is bounded on both sides, by the setter and by @Min/@Max alike")
         void pageNumberIsBoundedBothWays() {
-            // The setter is the first gate: PIC 9(08) has no sign position and no ninth digit.
             Ct01Info info = new Ct01Info();
             assertThatExceptionOfType(IllegalArgumentException.class)
                     .isThrownBy(() -> info.setPageNum(-1))
@@ -1346,7 +1148,6 @@ class TransactionAddRequestTest {
                     .isThrownBy(() -> info.setPageNum(100_000_000))
                     .withMessageContaining("holds at most");
 
-            // ...and both extremes of the representable range are accepted, not merely the middle.
             TransactionAddRequest low = new TransactionAddRequest();
             low.getCt01Info().setPageNum(0);
             assertThat(validate(low)).isEmpty();
@@ -1360,15 +1161,10 @@ class TransactionAddRequestTest {
         @Test
         @DisplayName("nothing beyond @Size is asserted - COTRN01C edits the key itself, at line 151")
         void noValidationBeyondSizeIsImposed() {
-            // COTRN01C's own edit is "IF TRNIDINI = SPACES OR LOW-VALUES" followed by MOVE -1 TO
-            // TRNIDINL and an error message. A blank key is therefore a legitimate request that the
-            // program answers with a message, not a payload the framework may reject before arrival.
             TransactionAddRequest blankKey = new TransactionAddRequest();
             blankKey.setTrnidin(TransactionAddRequest.spaces(16));
             assertThat(validate(blankKey)).isEmpty();
 
-            // Nor is any format imposed: the program accepts what was typed and reports what it
-            // finds. A non-numeric key reaches the service exactly as the terminal sent it.
             TransactionAddRequest oddKey = new TransactionAddRequest();
             oddKey.setTrnidin("NOT-A-TRAN-ID");
             assertThat(validate(oddKey)).isEmpty();
@@ -1379,7 +1175,6 @@ class TransactionAddRequestTest {
     @Nested
     @DisplayName("Every one of the 21 accessors is wired to its own field")
     class Accessors {
-
         static Stream<Arguments> accessorPairs() {
             return Stream.of(
                     Arguments.of("TRNNAMEI", (Consumer<TransactionAddRequest>) r -> r.setTrnname("v"),
@@ -1479,7 +1274,6 @@ class TransactionAddRequestTest {
     @Nested
     @DisplayName("Value semantics")
     class ValueSemantics {
-
         @Test
         @DisplayName("two identically populated requests are equal and hash alike")
         void identicalRequestsAreEqual() {
@@ -1563,20 +1357,12 @@ class TransactionAddRequestTest {
         }
     }
 
-    // =================================================================================================
-
     @Nested
     @DisplayName("Risk R-B - named Add, shaped View, and the map itself is the proof")
     class RiskRB {
-
-        /**
-         * {@code app/cbl/COTRN01C.cbl:5}, verbatim. The first of the three proofs, and the one the
-         * class name contradicts.
-         */
         private static final String PROGRAM_FUNCTION_HEADER =
                 "Function    : View a Transaction from TRANSACT file";
 
-        /** {@code README.md:223} and {@code README.md:224}, the pair that inverts. */
         private static final String README_CT01_ROW =
                 "|             | CT01 | COTRN01 | COTRN01C | Transaction View    |";
         private static final String README_CT02_ROW =
@@ -1585,14 +1371,10 @@ class TransactionAddRequestTest {
         @Test
         @DisplayName("proof 1 and 2 - the program header and the README both say View, not Add")
         void theSourceAndTheReadmeBothSayView() {
-            // Transcribed, not read: app/cbl and README.md are read-only reference material and are
-            // never opened at run time (practice B3, gate G5).
             assertThat(PROGRAM_FUNCTION_HEADER).contains("View a Transaction").doesNotContain("Add");
             assertThat(README_CT01_ROW).contains("COTRN01C").contains("Transaction View");
             assertThat(README_CT02_ROW).contains("COTRN02C").contains("Transaction Add");
 
-            // And the type keeps the mandated name regardless, because R1 rules: the name comes from
-            // the prompt, the behaviour from the source. Documented, never corrected (practice B4).
             assertThat(TransactionAddRequest.class.getSimpleName())
                     .isEqualTo("TransactionAddRequest");
             assertThat(TransactionAddRequest.PROGRAM_NAME).isEqualTo("COTRN01C");
@@ -1601,8 +1383,6 @@ class TransactionAddRequestTest {
         @Test
         @DisplayName("proof 3a - it carries BOTH TRNIDIN and TRNID at 16, a pair COTRN02 lacks")
         void itCarriesTheTypedKeyAndTheDisplayedKey() {
-            // TRNIDIN is what the operator types; TRNID is the same identifier read back from the
-            // record for display. A form that creates a transaction has no reason to carry both.
             assertThat(TransactionAddRequest.TRNIDIN_FIELD).isEqualTo("TRNIDINI");
             assertThat(TransactionAddRequest.TRNID_FIELD).isEqualTo("TRNIDI");
             assertThat(TransactionAddRequest.TRNIDIN_LENGTH).isEqualTo(16);
@@ -1610,7 +1390,6 @@ class TransactionAddRequestTest {
             assertThat(TransactionAddRequest.PAYLOAD_FIELD_NAMES)
                     .containsSequence("TRNIDINI", "TRNIDI");
 
-            // They are genuinely two fields over two spans, not one field named twice.
             assertThat(TransactionAddRequest.TRNIDIN_OFFSET)
                     .isNotEqualTo(TransactionAddRequest.TRNID_OFFSET);
             TransactionAddRequest request = new TransactionAddRequest();
@@ -1627,7 +1406,6 @@ class TransactionAddRequestTest {
                     .doesNotContain("CONFIRMI", "ACTIDINI", "CARDNINI")
                     .doesNotContain("CONFIRM", "ACTIDIN", "CARDNIN");
 
-            // Nor is any of them reachable by any name a caller might try.
             for (String absent : List.of("CONFIRMI", "ACTIDINI", "CARDNINI")) {
                 assertThatExceptionOfType(IllegalArgumentException.class)
                         .as("%s is not a field of COTRN1AI", absent)
@@ -1641,9 +1419,6 @@ class TransactionAddRequestTest {
         @Test
         @DisplayName("the six MOVE -1 sites all target one field: TRNIDINL, the only enterable one")
         void everyCursorRequestTargetsTheOnlyEnterableField() {
-            // COTRN01C issues MOVE -1 TO TRNIDINL OF COTRN1AI at lines 102, 151, 154, 287, 294 and
-            // 311 - six sites, and every one of them names the same field. A screen with more than
-            // one enterable field would spread its cursor requests across several.
             List<Integer> cursorSites = List.of(102, 151, 154, 287, 294, 311);
             assertThat(cursorSites).hasSize(6).doesNotHaveDuplicates();
 
@@ -1661,12 +1436,9 @@ class TransactionAddRequestTest {
         }
     }
 
-    // =================================================================================================
-
     @Nested
     @DisplayName("Per-field byte overlay - xxxL at k, xxxF and xxxA at k+2, xxxI at k+7")
     class ByteOverlay {
-
         @ParameterizedTest(name = "{0} occupies k={1}, xxxI at {2}, width {3}")
         @MethodSource(
                 "com.vsergeychik.carddemo.transaction.dto.TransactionAddRequestTest#overlayRows")
@@ -1675,35 +1447,26 @@ class TransactionAddRequestTest {
                                              int groupOffset,
                                              int valueOffset,
                                              int width) {
-            // xxxL: two bytes at k and k+1.
             int lengthItemEnd = groupOffset + TransactionAddRequest.LENGTH_ITEM_LENGTH;
             assertThat(lengthItemEnd).isEqualTo(groupOffset + 2);
 
-            // xxxF: one byte at k+2. xxxA REDEFINES it and adds nothing, so the group is still 3
-            // bytes of metadata at this point, not 4.
             int flagItemOffset = lengthItemEnd;
             assertThat(flagItemOffset).isEqualTo(groupOffset + 2);
             assertThat(flagItemOffset + TransactionAddRequest.FLAG_ITEM_LENGTH)
                     .isEqualTo(groupOffset + 3);
 
-            // FILLER X(4): four bytes at k+3 through k+6.
             int fillerOffset = flagItemOffset + TransactionAddRequest.FLAG_ITEM_LENGTH;
             assertThat(fillerOffset).isEqualTo(groupOffset + 3);
             assertThat(fillerOffset + TransactionAddRequest.RESERVED_FILLER_LENGTH)
                     .isEqualTo(groupOffset + 7);
 
-            // xxxI: n bytes at k+7 through k+6+n, which is the published value offset.
             assertThat(valueOffset).isEqualTo(groupOffset + TransactionAddRequest.FIELD_METADATA_LENGTH)
                     .isEqualTo(groupOffset + 7);
             assertThat(valueOffset + width).isLessThanOrEqualTo(
                     TransactionAddRequest.SYMBOLIC_MAP_LENGTH);
 
-            // ...and the class publishes exactly that geometry under this field's own name.
             assertThat(TransactionAddRequest.declaredLengthOf(screenName + "I")).isEqualTo(width);
 
-            // The AO view redefines the same storage: FILLER X(3), then xxxC, xxxP, xxxH and xxxV,
-            // then xxxO. So xxxO begins at k+7 too - the identical span xxxI occupies - and the four
-            // attribute bytes land exactly on the AI view's FILLER X(4).
             int aoFillerEnd = groupOffset + 3;
             int aoOutputOffset = aoFillerEnd + 4;
             assertThat(aoOutputOffset).isEqualTo(valueOffset);
@@ -1750,14 +1513,11 @@ class TransactionAddRequestTest {
             assertThat(carrier.flagItemName()).isEqualTo("TRNIDINF");
             assertThat(carrier.attributeItemName()).isEqualTo("TRNIDINA");
 
-            // Write through xxxF, read through xxxA...
             carrier.setFlagItem("X");
             assertThat(carrier.getAttributeItem()).isEqualTo("X");
-            // ...and write through xxxA, read through xxxF. One byte, two names.
             carrier.setAttributeItem("Q");
             assertThat(carrier.getFlagItem()).isEqualTo("Q");
 
-            // The shared byte is one byte, so the overlay adds nothing to the group's 7-byte stride.
             assertThat(TransactionAddRequest.FLAG_ITEM_LENGTH).isEqualTo(1);
             assertThat(TransactionAddRequest.LENGTH_ITEM_LENGTH
                     + TransactionAddRequest.FLAG_ITEM_LENGTH
@@ -1768,21 +1528,17 @@ class TransactionAddRequestTest {
         @Test
         @DisplayName("both FILLER spans are real positioned bytes, and they stay spaces")
         void everyFillerSpanIsSpaceFilled() {
-            // A 575-byte terminal area, allocated space-filled against a named code page.
             FixedWidthRecord area = new FixedWidthRecord(
                     TransactionAddRequest.SYMBOLIC_MAP_LENGTH, StandardCharsets.US_ASCII);
             assertThat(area.recordLength()).isEqualTo(575);
 
-            // Fill every xxxI span with a non-space marker, exactly as a SEND MAP would.
             for (Object[] row : OVERLAY) {
                 area.writeString((Integer) row[2], (Integer) row[3], "#".repeat((Integer) row[3]));
             }
 
-            // The 12-byte TIOAPFX prefix is untouched and still blank.
             assertThat(area.readString(0, TransactionAddRequest.TIOA_PREFIX_LENGTH))
                     .isEqualTo(" ".repeat(12)).isBlank();
 
-            // ...and so is every per-field FILLER X(4) at k+3 through k+6.
             for (Object[] row : OVERLAY) {
                 int fillerOffset = (Integer) row[1] + 3;
                 assertThat(area.readString(fillerOffset, 4))
@@ -1790,7 +1546,6 @@ class TransactionAddRequestTest {
                         .isEqualTo("    ");
             }
 
-            // Every payload byte did land, so the markers above prove absence rather than a no-op.
             assertThat(area.readString(TransactionAddRequest.ERRMSG_OFFSET, 78))
                     .isEqualTo("#".repeat(78));
             assertThat(area.toByteArray()).hasSize(575);
@@ -1805,13 +1560,11 @@ class TransactionAddRequestTest {
             int payload = TransactionAddRequest.PAYLOAD_TOTAL_LENGTH;
             assertThat(prefix + metadata + payload).isEqualTo(575);
 
-            // Omit the 12-byte TIOAPFX FILLER: 563, and the self-check says so.
             assertThat(metadata + payload).isEqualTo(563);
             assertThatExceptionOfType(IllegalStateException.class)
                     .isThrownBy(() -> TransactionAddRequest.verifyGeometry(21, 21, 416, 575, 563))
                     .withMessageContaining("component sum is 563");
 
-            // Omit one per-field FILLER X(4): 571, and the self-check says so too.
             assertThat(prefix + (metadata - TransactionAddRequest.RESERVED_FILLER_LENGTH) + payload)
                     .isEqualTo(571);
             assertThatExceptionOfType(IllegalStateException.class)
@@ -1829,9 +1582,6 @@ class TransactionAddRequestTest {
                 assertThat(carrier.getLengthItem()).as("%sL", carrier.getScreenName())
                         .isEqualTo((short) -1);
 
-                // The point of the signed picture, stated as the thing that would otherwise go
-                // wrong: widening the halfword must yield -1, not the 65535 an unsigned
-                // reinterpretation of the same two bytes would produce.
                 assertThat((int) carrier.getLengthItem()).isEqualTo(-1).isNotEqualTo(65_535);
                 assertThat(Short.toUnsignedInt(carrier.getLengthItem())).isEqualTo(65_535);
                 assertThat(carrier.isCursorRequested()).isTrue();
@@ -1840,23 +1590,13 @@ class TransactionAddRequestTest {
         }
     }
 
-    // =================================================================================================
-
     @Nested
     @DisplayName("BMS attributes - one enterable field against twenty output-only ones")
     class BmsFieldAttributes {
-
-        /** Every {@code DFHMDF} in {@code app/bms/COTRN01.bms}, named and unnamed alike. */
         private static final int TOTAL_FIELD_DEFINITIONS = 56;
 
-        /** Those that carry a name label, and so appear in the symbolic map. */
         private static final int NAMED_FIELD_DEFINITIONS = 21;
 
-        /**
-         * The input-capable set: {@code TRNIDIN} at {@code app/bms/COTRN01.bms:85}, declared
-         * {@code ATTRB=(FSET,IC,NORM,UNPROT)}. It is the only field on the screen the operator can
-         * type into, which is the single strongest structural argument for risk R-B.
-         */
         private static final List<String> INPUT_CAPABLE = List.of("TRNIDIN");
 
         @Test
@@ -1869,8 +1609,6 @@ class TransactionAddRequestTest {
                     .as("unnamed literal and label fields have no symbolic-map entry")
                     .isEqualTo(35);
 
-            // Every payload field traces to a named DFHMDF, and there is nothing left over on either
-            // side: the projection is 1:1, which is what gate G9 asks for.
             assertThat(TransactionAddRequest.PAYLOAD_FIELD_NAMES)
                     .hasSize(NAMED_FIELD_DEFINITIONS);
         }
@@ -1894,8 +1632,6 @@ class TransactionAddRequestTest {
         @Test
         @DisplayName("TRNIDIN's declared attributes are carried as metadata, not as payload")
         void theEnterableFieldCarriesItsAttributesAsMetadata() {
-            // ATTRB=(FSET,IC,NORM,UNPROT), COLOR=GREEN, HILIGHT=UNDERLINE, LENGTH=16, POS=(6,21).
-            // The payload carries the value; the attribute byte and the length halfword are metadata.
             assertThat(TransactionAddRequest.TRNIDIN_LENGTH).isEqualTo(16);
 
             TransactionAddRequest request = new TransactionAddRequest();
@@ -1905,11 +1641,9 @@ class TransactionAddRequestTest {
                     .as("no attribute is asserted until a program sets one")
                     .isEqualTo(ScreenFieldMetadata.UNSET_BYTE);
 
-            // IC means the cursor starts here, which is exactly the MOVE -1 TO TRNIDINL convention.
             request.requestCursorAt("TRNIDINI");
             assertThat(request.cursorField()).isEqualTo("TRNIDINI");
 
-            // A terminal that sent 16 characters reports a positive length, not a cursor request.
             carrier.setLengthItem((short) 16);
             assertThat(carrier.hasInput()).isTrue();
             assertThat(carrier.isCursorRequested()).isFalse();
@@ -1918,13 +1652,10 @@ class TransactionAddRequestTest {
         @Test
         @DisplayName("ERRMSG is a 78-character bright red output field on line 23")
         void theErrorFieldIsOutputOnlyAndFullWidth() {
-            // ATTRB=(ASKIP,BRT,FSET), COLOR=RED, LENGTH=78, POS=(23,1). ASKIP: never typed into.
             assertThat(TransactionAddRequest.ERRMSG_LENGTH).isEqualTo(78);
             assertThat(TransactionAddRequest.ERRMSG_FIELD).isEqualTo("ERRMSGI");
             assertThat(INPUT_CAPABLE).doesNotContain("ERRMSG");
 
-            // It is nonetheless a member of the inbound payload, because CICS returns the whole map
-            // and the pseudo-conversational round trip carries every field back (rule R6).
             TransactionAddRequest request = new TransactionAddRequest();
             request.setErrmsg("Transaction ID NOT found...");
             assertThat(request.toFieldImages(CODEC).get("ERRMSGI")).hasSize(78)
@@ -1932,13 +1663,9 @@ class TransactionAddRequestTest {
         }
     }
 
-    // =================================================================================================
-
     @Nested
     @DisplayName("The edit mask is a positional string contract, never a parsed number")
     class EditMaskPositions {
-
-        /** {@code app/cbl/COTRN01C.cbl:49} - {@code 05 WS-TRAN-AMT PIC +99999999.99}. */
         private static final String MASK = "+99999999.99";
 
         @Test
@@ -1947,8 +1674,6 @@ class TransactionAddRequestTest {
             assertThat(MASK).hasSize(12);
             assertThat(TransactionAddRequest.TRNAMT_LENGTH).isEqualTo(12);
 
-            // Positions are 1-based here to match the COBOL reference-modification the sibling add
-            // screen uses - COTRN02C validates its amount at (1:1), (2:8), (10:1) and (11:2).
             assertThat(MASK.charAt(0)).as("sign at position 1").isEqualTo('+');
             assertThat(MASK.substring(1, 9)).as("digits at positions 2 to 9").isEqualTo("99999999");
             assertThat(MASK.charAt(9)).as("decimal point at position 10").isEqualTo('.');
@@ -1974,15 +1699,11 @@ class TransactionAddRequestTest {
         @Test
         @DisplayName("the DTO never parses it - a value that is not a number is stored verbatim")
         void theDtoNeverParsesTheAmount() {
-            // The screen field is PIC X(12). Whatever the terminal sent arrives unchanged, and the
-            // program - not the payload - decides whether it is acceptable. Parsing here would both
-            // reject input COTRN01C accepts and introduce a numeric type this payload must not have.
             TransactionAddRequest request = new TransactionAddRequest();
             request.setTrnamt("NOT A NUMBER");
             assertThat(request.getTrnamt()).isEqualTo("NOT A NUMBER").hasSize(12);
             assertThat(request.toFieldImages(CODEC).get("TRNAMTI")).isEqualTo("NOT A NUMBER");
 
-            // A blank amount is equally legitimate: the record may simply not have been read yet.
             TransactionAddRequest blank = new TransactionAddRequest();
             assertThat(blank.getTrnamt()).isEqualTo(TransactionAddRequest.spaces(12)).isBlank();
         }
@@ -1990,31 +1711,20 @@ class TransactionAddRequestTest {
         @Test
         @DisplayName("the 12-character screen width is not the record's 11-byte PIC S9(09)V99")
         void theScreenWidthIsNotTheRecordWidth() {
-            // CVTRA05Y's TRAN-AMT is PIC S9(09)V99: eleven bytes of zoned digits with the sign
-            // overpunched into the trailing one. The screen field is a twelve-character edited image
-            // with a visible sign and a visible decimal point. The two are different contracts, and
-            // conflating them is how a rendered amount ends up one byte out.
             assertThat(TransactionAddRequest.TRNAMT_LENGTH).isEqualTo(12).isNotEqualTo(9 + 2);
         }
     }
 
-    // =================================================================================================
-
     @Nested
     @DisplayName("Cross-width MOVE from CVTRA05Y - truncation is always on the right")
     class CrossWidthMoves {
-
-        /** {@code CVTRA05Y}'s {@code TRAN-DESC PIC X(100)}, filled to its declared width. */
         private static final String TRAN_DESC =
                 "PURCHASE AT ACME STORES SEATTLE WASHINGTON UNITED STATES OF AMERICA REFERENCE 0001";
 
-        /** {@code TRAN-MERCHANT-NAME PIC X(50)}. */
         private static final String TRAN_MERCHANT_NAME = "ACME STORES INCORPORATED OF GREATER SEATTLE";
 
-        /** {@code TRAN-MERCHANT-CITY PIC X(50)}. */
         private static final String TRAN_MERCHANT_CITY = "SEATTLE METROPOLITAN AREA WASHINGTON";
 
-        /** {@code TRAN-ORIG-TS PIC X(26)} and {@code TRAN-PROC-TS PIC X(26)}. */
         private static final String TRAN_ORIG_TS = "2022-07-18-13.45.02.123456";
         private static final String TRAN_PROC_TS = "2022-07-19-01.02.03.987654";
 
@@ -2060,8 +1770,6 @@ class TransactionAddRequestTest {
             assertThat(orig).hasSize(10).isEqualTo("2022-07-18");
             assertThat(proc).hasSize(10).isEqualTo("2022-07-19");
 
-            // Truncating on the right is what yields the date; a left-truncating move would yield the
-            // microseconds, which is the same length and completely wrong.
             assertThat(orig).isNotEqualTo(TRAN_ORIG_TS.substring(TRAN_ORIG_TS.length() - 10));
         }
 
@@ -2094,9 +1802,6 @@ class TransactionAddRequestTest {
         @Test
         @DisplayName("the numeric sources reach alphanumeric screen fields at their own widths")
         void numericSourcesBecomeAlphanumericScreenFields() {
-            // TRAN-CAT-CD is PIC 9(04) and TCATCD is PIC X(4); TRAN-MERCHANT-ID is PIC 9(09) and MID
-            // is PIC X(9). The digits move across unchanged, but the screen item is character data,
-            // so the payload member is a String - never an int, and certainly never a double.
             String categoryCode = CODEC.movePic9(1L, TransactionAddRequest.TCATCD_LENGTH);
             assertThat(categoryCode).hasSize(4).isEqualTo("0001");
 
@@ -2125,7 +1830,6 @@ class TransactionAddRequestTest {
             assertThat(images.get("MZIPI")).isEqualTo("98101     ").hasSize(10);
             assertThat(images.get("ERRMSGI")).hasSize(78).isBlank();
 
-            // Every field of the image is at its declared width, none null and none short.
             for (Object[] row : OVERLAY) {
                 String name = row[0] + "I";
                 assertThat(images.get(name)).as(name).isNotNull().hasSize((Integer) row[3]);
@@ -2135,11 +1839,6 @@ class TransactionAddRequestTest {
         @Test
         @DisplayName("TRAN-AMT is never moved into TRNAMT directly - only the mask renders it")
         void theAmountIsNeverMovedDirectly() {
-            // TRAN-AMT is PIC S9(09)V99: eleven zoned bytes with the sign overpunched into the
-            // trailing one, so +123.45 is stored as "0000001234E" - the final 'E' is the digit 5
-            // carrying a positive sign, not a letter. Moving those bytes into the twelve-character
-            // screen field would put the sign in the wrong place, leave a non-digit in the cents
-            // position and omit the decimal point entirely. This is what that would look like.
             assertThat(FixedWidthRecord.ZonedSign.overpunch(5, false)).isEqualTo('E');
             String zonedImage = "0000001234E";
             assertThat(zonedImage).hasSize(11).doesNotContain(".");
@@ -2147,7 +1846,6 @@ class TransactionAddRequestTest {
             String wrong = CODEC.movePicX(zonedImage, TransactionAddRequest.TRNAMT_LENGTH);
             assertThat(wrong).hasSize(12).doesNotContain(".").endsWith(" ");
 
-            // The mask renders it correctly instead: sign, eight digits, point, two digits.
             String edited = "+00000123.45";
             assertThat(edited).hasSize(12).isNotEqualTo(wrong);
 
@@ -2157,27 +1855,12 @@ class TransactionAddRequestTest {
         }
     }
 
-    // =================================================================================================
-
     @Nested
     @DisplayName("Type discipline - the negatives, asserted rather than assumed")
     class TypeDiscipline {
-
-        /** The type under test and both of its nested types, so nothing hides one level down. */
         private static final List<Class<?>> TYPES_UNDER_TEST = List.of(
                 TransactionAddRequest.class, ScreenFieldMetadata.class, Ct01Info.class);
 
-        /**
-         * Every field these types declare in source, nested types included.
-         *
-         * <p>Synthetic members are excluded on purpose. The coverage agent adds a
-         * {@code $jacocoData} field - {@code private static transient} and, critically, <em>not</em>
-         * final - to every class it instruments, so a reflection assertion that did not filter
-         * synthetics would pass under {@code mvn test} and fail under {@code mvn verify} for a reason
-         * that has nothing to do with the code being tested.
-         *
-         * @return the source-declared fields of {@link #TYPES_UNDER_TEST}
-         */
         private static List<Field> allDeclaredFields() {
             List<Field> fields = new ArrayList<>();
             for (Class<?> type : TYPES_UNDER_TEST) {
@@ -2190,16 +1873,6 @@ class TransactionAddRequestTest {
             return fields;
         }
 
-        /**
-         * Every method these types declare in source, nested types included.
-         *
-         * <p>Synthetic and bridge methods are excluded for the same reason
-         * {@link #allDeclaredFields()} excludes synthetic fields: the coverage agent injects a
-         * {@code $jacocoInit} method, and the compiler injects bridges, neither of which is part of
-         * the contract under test.
-         *
-         * @return the source-declared methods of {@link #TYPES_UNDER_TEST}
-         */
         private static List<Method> allDeclaredMethods() {
             List<Method> methods = new ArrayList<>();
             for (Class<?> type : TYPES_UNDER_TEST) {
@@ -2212,12 +1885,6 @@ class TransactionAddRequestTest {
             return methods;
         }
 
-        /**
-         * The source-declared instance fields of one type.
-         *
-         * @param type the type to inspect
-         * @return its non-static, non-synthetic declared fields
-         */
         private static List<Field> instanceFieldsOf(Class<?> type) {
             List<Field> fields = new ArrayList<>();
             for (Field field : type.getDeclaredFields()) {
@@ -2237,7 +1904,6 @@ class TransactionAddRequestTest {
                     stringFieldNames.add(field.getName());
                 }
             }
-            // The 21 payload fields plus the one-byte EIBAID carrier.
             assertThat(stringFieldNames).hasSize(22).contains("trnidin", "trnid", "trnamt", "errmsg");
 
             for (Method method : allDeclaredMethods()) {
@@ -2280,9 +1946,6 @@ class TransactionAddRequestTest {
         @Test
         @DisplayName("the only non-String member is the scale-free PIC 9(08) page number, an int")
         void theOnlyNumericMemberIsTheScaleFreePageNumber() {
-            // PIC 9(08) declares eight digits and no V, so it carries no scale and an int is the
-            // faithful Java type. Every field that does carry a scale in this system is monetary, and
-            // no monetary field appears on this screen except as the 12-character edited image.
             List<String> nonStringInstanceFields = new ArrayList<>();
             for (Class<?> type : TYPES_UNDER_TEST) {
                 for (Field field : instanceFieldsOf(type)) {
@@ -2307,10 +1970,6 @@ class TransactionAddRequestTest {
         @Test
         @DisplayName("no rounding mode is reachable - COBOL truncates, and ROUNDED never appears")
         void noRoundingModeIsReachable() {
-            // The keyword ROUNDED appears zero times in all 28 COBOL programs, so the only faithful
-            // rounding mode anywhere in this migration is DOWN, applied in CobolDecimal. A screen
-            // payload performs no arithmetic at all, so it must expose no rounding surface either:
-            // HALF_UP, HALF_EVEN, CEILING and FLOOR must all be unreachable from here.
             for (Field field : allDeclaredFields()) {
                 assertThat(field.getType().getName()).doesNotContain("RoundingMode");
             }
@@ -2333,7 +1992,6 @@ class TransactionAddRequestTest {
                             .isTrue();
                 }
             }
-            // The published name list is immutable in fact, not merely by convention.
             assertThatExceptionOfType(UnsupportedOperationException.class)
                     .isThrownBy(() -> TransactionAddRequest.PAYLOAD_FIELD_NAMES.add("X"));
         }
@@ -2380,13 +2038,6 @@ class TransactionAddRequestTest {
             }
         }
 
-        /**
-         * Asserts that none of {@code annotations} carries a forbidden simple name.
-         *
-         * @param annotations the annotations present on the element
-         * @param subject     what to name in a failure message
-         * @param forbidden   the annotation simple names that must not appear
-         */
         private static void assertAnnotationsAreClean(Annotation[] annotations,
                                                       String subject,
                                                       List<String> forbidden) {
@@ -2400,23 +2051,10 @@ class TransactionAddRequestTest {
         @Test
         @DisplayName("COTRN1AI declares no OCCURS table, so row indexing does not apply here")
         void noOccursTableExistsOnThisMap() {
-            // Recorded as a finding, not left as an omission. The one-based-to-zero-based conversion
-            // that the paginated screens must get right has no subject on this map, because
-            // COTRN01C displays exactly one transaction.
-            //
-            // Worth stating precisely, because BMS never emits an OCCURS clause: no symbolic map in
-            // app/cpy-bms declares one. A repeated row is flattened into distinctly named field
-            // families instead - app/cpy-bms/COTRN00.CPY carries SEL0001I through SEL0010I,
-            // TRNID01I through TRNID10I, TDATE01I..., TDESC01I... and TAMT001I..., ten rows of five
-            // items making up fifty of its fifty-nine fields. COTRN1AI has no such family: its
-            // twenty-one names are distinct singular items. TITLE01I and TITLE02I are the two header
-            // title lines from COTTL01Y, not two rows of one table.
             assertThat(TransactionAddRequest.PAYLOAD_FIELD_NAMES).doesNotHaveDuplicates();
             assertThat(TransactionAddRequest.PAYLOAD_FIELD_NAMES)
                     .doesNotContain("SEL0001I", "TRNID01I", "TDATE01I", "TDESC01I", "TAMT001I");
 
-            // Nothing here is indexable, so no off-by-one is even expressible: no member is an array
-            // or a List, and no instance method reads a value out by ordinal position.
             for (Method method : allDeclaredMethods()) {
                 boolean indexedRead = !Modifier.isStatic(method.getModifiers())
                         && method.getReturnType() == String.class
@@ -2444,10 +2082,6 @@ class TransactionAddRequestTest {
         @Test
         @DisplayName("this test declares no wildcard import and reaches no harness or datasource")
         void theTestItselfHoldsToItsOwnBoundaries() {
-            // The boundaries this class was written to. They are worth an assertion because each one
-            // is a thing a well-meaning future edit could add without noticing the cost: a MockMvc
-            // slice here would duplicate TransactionAddControllerTest, and a parity-harness import
-            // would couple a payload unit test to the 560-case fixture corpus.
             assertThat(TransactionAddRequestTest.class.getPackageName())
                     .isEqualTo("com.vsergeychik.carddemo.transaction.dto");
             assertThat(TransactionAddRequestTest.class.getAnnotations())
@@ -2457,17 +2091,9 @@ class TransactionAddRequestTest {
                                 || name.contains("DataJdbcTest") || name.contains("ExtendWith");
                     });
 
-            // The codec is constructed with a named code page, so no assertion here depends on the
-            // platform default (practice B7).
             assertThat(CODEC.charset()).isEqualTo(StandardCharsets.US_ASCII);
         }
 
-        /**
-         * Lower-cases a leading capital, turning a getter suffix into its field name.
-         *
-         * @param name the getter suffix, for example {@code "Trnidin"}
-         * @return the field name, for example {@code "trnidin"}
-         */
         private static String decapitalise(String name) {
             return name.isEmpty()
                     ? name
