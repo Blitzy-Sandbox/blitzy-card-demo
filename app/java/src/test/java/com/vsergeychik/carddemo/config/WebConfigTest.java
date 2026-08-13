@@ -73,6 +73,7 @@ import org.springframework.http.converter.json.Jackson2ObjectMapperBuilder;
 import org.springframework.http.converter.json.MappingJackson2HttpMessageConverter;
 import org.springframework.http.ResponseEntity;
 import org.springframework.mock.http.MockHttpOutputMessage;
+import org.springframework.mock.web.MockFilterChain;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
 import org.springframework.test.web.servlet.MockMvc;
@@ -1278,6 +1279,36 @@ class WebConfigTest {
                     .isTrue();
             assertThat(response.getHeader(HttpHeaders.CACHE_CONTROL))
                     .isEqualTo("no-store");
+        }
+
+        @ParameterizedTest(name = "{0} is delivered bare no-store, and keeps the filter''s other headers")
+        @ValueSource(strings = {"/api/signon", "/api/users", "/api/users/USER0001"})
+        @DisplayName("the filter and the interceptor stack in that order, so the credential routes end up "
+                + "with one directive and the other three headers")
+        void theTwoCachePoliciesStackRatherThanCompete(final String path) throws Exception {
+            MockHttpServletRequest request = routed("POST", path);
+            MockHttpServletResponse response = new MockHttpServletResponse();
+
+            // Production order: the servlet filter wraps the dispatch, so it writes first; the handler
+            // interceptor's preHandle runs inside that dispatch, so it writes second and wins on the one
+            // header they share.
+            new WebConfig.ScreenResponseHeaderFilter()
+                    .doFilter(request, response, new MockFilterChain());
+            new WebConfig().noStoreOnCredentialScreens().getInterceptor()
+                    .preHandle(request, response, new Object());
+
+            assertThat(response.getHeader(HttpHeaders.CACHE_CONTROL))
+                    .as("the interceptor REPLACES the filter's four directives with one; nothing is lost, "
+                            + "because no-store already forbids storing any part of the exchange")
+                    .isEqualTo(WebConfig.NoStoreOnCredentialScreens.NO_STORE);
+            assertThat(response.getHeader(HttpHeaders.PRAGMA))
+                    .as("the legacy companions are the filter's and survive, so an intermediary that "
+                            + "predates no-store is still told")
+                    .isEqualTo(WebConfig.PRAGMA_VALUE);
+            assertThat(response.getHeader(HttpHeaders.EXPIRES)).isEqualTo(WebConfig.EXPIRES_VALUE);
+            assertThat(response.getHeader(WebConfig.CONTENT_TYPE_OPTIONS_HEADER))
+                    .as("and so does nosniff, which has nothing to do with caching")
+                    .isEqualTo(WebConfig.CONTENT_TYPE_OPTIONS_VALUE);
         }
 
         @ParameterizedTest(name = "{0} is left alone")

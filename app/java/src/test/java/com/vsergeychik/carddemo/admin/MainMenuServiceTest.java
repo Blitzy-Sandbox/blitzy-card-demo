@@ -22,10 +22,12 @@ import com.vsergeychik.carddemo.common.PfKeyResolver;
 import com.vsergeychik.carddemo.common.PfKeyResolver.AidKey;
 import com.vsergeychik.carddemo.common.ScreenFieldImage;
 import com.vsergeychik.carddemo.common.SystemMessages;
+import com.vsergeychik.carddemo.config.CobolCharsetConfig;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBinding;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBindings;
 import com.vsergeychik.carddemo.user.model.SecUserRecord;
 
+import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
 import java.nio.charset.Charset;
@@ -45,6 +47,8 @@ import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 
 /**
  * Tests for {@link MainMenuService}, the decision core of {@code app/cbl/COMEN01C.cbl} - the CardDemo main
@@ -242,14 +246,53 @@ class MainMenuServiceTest {
         }
 
         @Test
-        @DisplayName("both constructor arguments are required")
+        @DisplayName("both constructor arguments are required, on both two-argument constructors")
         void bothConstructorArgumentsAreRequired() {
             assertThatNullPointerException()
                     .isThrownBy(() -> new MainMenuService(null))
                     .withMessageContaining("carddemo.datasets");
+            // Cast because the two two-argument constructors are distinguished only by their second
+            // parameter, so a bare null names neither: this call is the codec one, and the next is the
+            // charset one the container selects.
             assertThatNullPointerException()
-                    .isThrownBy(() -> new MainMenuService(bindings(), null))
+                    .isThrownBy(() -> new MainMenuService(bindings(), (FixedWidthCodec) null))
                     .withMessageContaining("fixed-width codec");
+            assertThatNullPointerException()
+                    .isThrownBy(() -> new MainMenuService(bindings(), (Charset) null))
+                    .withMessageContaining("message charset");
+        }
+
+        @Test
+        @DisplayName("the constructor the container selects asks for the published "
+                + "carddemo.charset.ascii bean, so the code page is configured in one place")
+        void theContainerSelectedConstructorAsksForTheConfiguredCodePage() throws Exception {
+            Constructor<MainMenuService> selected =
+                    MainMenuService.class.getDeclaredConstructor(DatasetBindings.class, Charset.class);
+
+            assertThat(selected.isAnnotationPresent(Autowired.class))
+                    .as("this is the constructor the container picks, so the code page every image of "
+                            + "this screen is composed in comes from configuration")
+                    .isTrue();
+            assertThat(MainMenuService.class.getDeclaredConstructor(DatasetBindings.class)
+                    .isAnnotationPresent(Autowired.class))
+                    .as("and never the catalogue-only convenience, whose code page is the local "
+                            + "DEFAULT_MESSAGE_CHARSET_NAME fallback")
+                    .isFalse();
+
+            Qualifier qualifier = selected.getParameters()[1].getAnnotation(Qualifier.class);
+            assertThat(qualifier)
+                    .as("unqualified, the injection would be ambiguous between three Charset beans")
+                    .isNotNull();
+            assertThat(qualifier.value())
+                    .as("the ASCII bean, deliberately not the active dataset bean: what this service "
+                            + "composes is COMEN01C's 80-byte screen message text, which is ASCII "
+                            + "whatever code page the datasets are presented in")
+                    .isEqualTo(CobolCharsetConfig.ASCII_CHARSET_BEAN_NAME);
+
+            Charset supplied = Charset.forName("ISO-8859-1");
+            assertThat(new MainMenuService(bindings(), supplied).codec().charset())
+                    .as("and whatever charset it is handed is the one the codec composes in")
+                    .isEqualTo(supplied);
         }
 
         @Test
@@ -1800,8 +1843,9 @@ class MainMenuServiceTest {
             }
 
             assertThat(MainMenuService.class.getDeclaredConstructors())
-                    .as("two constructors, and neither takes a Clock")
-                    .hasSize(2)
+                    .as("three constructors - the charset one the container selects, the explicit-codec "
+                            + "one, and the catalogue-only convenience - and none of them takes a Clock")
+                    .hasSize(3)
                     .allSatisfy(constructor -> assertThat(constructor.getParameterTypes())
                             .doesNotContain(Clock.class));
             assertThat(MainMenuService.class.getDeclaredMethods())

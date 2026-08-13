@@ -9,6 +9,7 @@ import com.vsergeychik.carddemo.common.NavigationContext;
 import com.vsergeychik.carddemo.common.PfKeyResolver;
 import com.vsergeychik.carddemo.common.ScreenFieldImage;
 import com.vsergeychik.carddemo.common.SystemMessages;
+import com.vsergeychik.carddemo.config.CobolCharsetConfig;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBinding;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBindings;
 import com.vsergeychik.carddemo.user.model.SecUserRecord;
@@ -22,6 +23,7 @@ import java.util.Optional;
 import java.util.OptionalInt;
 
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
 
 /**
@@ -183,6 +185,14 @@ public class MainMenuService {
      */
     public static final String USRSEC_DATASET_KEY = "USRSEC";
 
+    /**
+     * The code page used when this service is constructed directly, outside the container, and no charset
+     * is supplied - {@code US-ASCII}, the same code page {@code carddemo.charset.ascii} names.
+     *
+     * <p>It is a documented fallback for direct construction, not a second source of truth: the container
+     * selects {@link #MainMenuService(DatasetBindings, Charset)}, which is handed the published
+     * {@code carddemo.charset.ascii} bean, so a deployment that renamed that code page renames it here too.
+     */
     public static final String DEFAULT_MESSAGE_CHARSET_NAME = "US-ASCII";
 
     private static final Charset DEFAULT_MESSAGE_CHARSET =
@@ -203,12 +213,43 @@ public class MainMenuService {
     private final SecUserRecord secUserData;
 
     /**
-     * Creates the service over the module's dataset binding catalogue, and is the constructor the Spring
-     * container selects.
+     * Creates the service over the module's dataset binding catalogue and the configured ASCII code page,
+     * and is the constructor the Spring container selects.
      *
      * <p>The catalogue is required for one reason only: to resolve the dead {@code WS-USRSEC-FILE}
      * declaration from configuration instead of from a literal, so that no dataset name is written in Java
      * anywhere in this file.
+     *
+     * <p>The charset is the published {@code carddemo.charset.ascii} bean rather than a name repeated
+     * here, so that the code page every image of this screen is composed in is configured in exactly one
+     * place. It is the ASCII bean and not the active dataset bean on purpose: what this service composes
+     * is the 80-byte screen message text of {@code COMEN01C}, which is ASCII whatever code page the
+     * datasets are presented in.
+     *
+     * @param datasetBindings the {@code carddemo.datasets} catalogue; must declare
+     *     {@link #USRSEC_DATASET_KEY}
+     * @param messageCharset the configured ASCII code page,
+     *     {@code @Qualifier(CobolCharsetConfig.ASCII_CHARSET_BEAN_NAME)}
+     * @throws NullPointerException if either argument is {@code null}
+     * @throws IllegalStateException if {@link #USRSEC_DATASET_KEY} is not configured, or is configured with
+     *     a record width other than the eighty bytes {@code app/cpy/CSUSR01Y.cpy} declares
+     */
+    @Autowired
+    public MainMenuService(DatasetBindings datasetBindings,
+                          @Qualifier(CobolCharsetConfig.ASCII_CHARSET_BEAN_NAME)
+                          Charset messageCharset) {
+        this(datasetBindings, new FixedWidthCodec(Objects.requireNonNull(messageCharset,
+                "A message charset is required: this service composes fixed-width screen text, so the "
+                        + "code page is stated explicitly and never taken from the platform")));
+    }
+
+    /**
+     * Creates the service over the module's dataset binding catalogue alone, for direct construction
+     * outside the container.
+     *
+     * <p>The code page is then {@link #DEFAULT_MESSAGE_CHARSET_NAME}. The container never chooses this
+     * constructor - {@link #MainMenuService(DatasetBindings, Charset)} is annotated - so the configured
+     * {@code carddemo.charset.ascii} bean remains the single source of truth for a running application.
      *
      * @param datasetBindings the {@code carddemo.datasets} catalogue; must declare
      *     {@link #USRSEC_DATASET_KEY}
@@ -216,7 +257,6 @@ public class MainMenuService {
      * @throws IllegalStateException if {@link #USRSEC_DATASET_KEY} is not configured, or is configured with
      *     a record width other than the eighty bytes {@code app/cpy/CSUSR01Y.cpy} declares
      */
-    @Autowired
     public MainMenuService(DatasetBindings datasetBindings) {
         this(datasetBindings, new FixedWidthCodec(DEFAULT_MESSAGE_CHARSET));
     }

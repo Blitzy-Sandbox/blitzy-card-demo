@@ -187,6 +187,25 @@ public class WebConfig implements WebMvcConfigurer {
      * intermediary or a browser may store and later re-serve it to a different caller (CWE-525).
      * {@code no-store} is the strongest of the directives and the only one appropriate here, because no
      * response of this API is ever reusable: it is a screen painted for one request.
+     *
+     * <p><strong>Why this value carries three more directives than
+     * {@link NoStoreOnCredentialScreens#NO_STORE} does.</strong> The two are not competing policies and
+     * neither weakens the other. This one is set by a filter on <em>every</em> response including the
+     * container's {@code ERROR} dispatch, so it is the value an unknown intermediary sees on any path -
+     * and {@code no-cache}, {@code must-revalidate} and {@code max-age=0} are the HTTP/1.0-era
+     * belt-and-braces companions of {@link #PRAGMA_VALUE} and {@link #EXPIRES_VALUE} beside it, kept for
+     * an intermediary that predates {@code no-store}. The interceptor's bare {@code no-store} is scoped
+     * to the three credential-bearing routes, where the only reader that matters is a modern cache and
+     * one unambiguous directive is clearer than four.
+     *
+     * <p><strong>What the three credential routes actually receive.</strong> The filter runs first and
+     * sets all four headers; the interceptor's {@code preHandle} then runs and <em>replaces</em>
+     * {@code Cache-Control} with the bare {@code no-store}. So {@code POST /api/signon},
+     * {@code POST /api/users} and {@code PUT /api/users/&#123;userId&#125;} are delivered
+     * {@code Cache-Control: no-store} together with the {@code Pragma}, {@code Expires} and
+     * {@code X-Content-Type-Options} the filter set, and the other fourteen routes are delivered this
+     * value in full. Nothing is lost by the replacement: {@code no-store} already forbids storing any
+     * part of the exchange, which is strictly stronger than the three directives it displaces.
      */
     public static final String CACHE_CONTROL_VALUE = "no-store, no-cache, must-revalidate, max-age=0";
 
@@ -475,9 +494,16 @@ public class WebConfig implements WebMvcConfigurer {
      * asserted property rather than an accident. Scoping by path is the point: the other fourteen online
      * routes carry no credential and are left exactly as the framework leaves them.
      *
-     * <p>Nothing beyond {@code no-store} is set. {@code Pragma: no-cache} is obsolete under RFC 9111,
-     * and {@code no-store} alone already forbids any part of the exchange from being kept in any cache -
-     * adding more would be noise a reader has to evaluate.
+     * <p><strong>Nothing beyond {@code no-store} is set here, and this runs after the filter.</strong>
+     * {@code Pragma: no-cache} is obsolete under RFC 9111, and {@code no-store} alone already forbids any
+     * part of the exchange from being kept in any cache - adding more would be noise a reader has to
+     * evaluate. Because {@code preHandle} runs after {@link ScreenResponseHeaderFilter}, it does not add
+     * to {@link #CACHE_CONTROL_VALUE} but replaces it: on these three routes the delivered
+     * {@code Cache-Control} is the bare {@code no-store}, while the {@code Pragma}, {@code Expires} and
+     * {@code X-Content-Type-Options} headers the filter set remain. That is deliberate and loses nothing
+     * - {@code no-store} is strictly stronger than the directives it displaces - and it is why the two
+     * rationales differ without disagreeing: see {@link #CACHE_CONTROL_VALUE} for the same statement from
+     * the filter's side, and {@code WebConfigTest} for the assertion that pins the stacked outcome.
      *
      * @return the path-scoped interceptor, applied to the three credential screens and nowhere else
      */

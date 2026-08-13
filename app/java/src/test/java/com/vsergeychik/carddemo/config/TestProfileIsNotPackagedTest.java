@@ -7,12 +7,18 @@ import java.io.IOException;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.springframework.boot.env.YamlPropertySourceLoader;
+import org.springframework.core.env.EnumerablePropertySource;
+import org.springframework.core.env.PropertySource;
+import org.springframework.core.io.UrlResource;
 
 /**
  * Guards the boundary between what the build ships and what only the suite reads.
@@ -25,9 +31,33 @@ class TestProfileIsNotPackagedTest {
 
     private static final String FIXTURE_RESOURCE = "carddemo-test-fixtures.yml";
 
+    /**
+     * The prefix of the value the {@code test} profile pins its conversation-state seal to. It is a key,
+     * not a password, but a pinned key inside a distributable artifact is a hard-coded cryptographic key
+     * to every scanner that reads it (CWE-798), so no packaged document may carry it in any form.
+     */
+    private static final String PINNED_SEAL_KEY = "test-profile-conversation-state-seal-key";
+
     private static List<URL> rootsHolding(String resource) throws IOException {
         return Collections.list(
                 TestProfileIsNotPackagedTest.class.getClassLoader().getResources(resource));
+    }
+
+    /**
+     * Every property one configuration document defines, keyed by canonical name - so a claim about what a
+     * document does or does not configure is made against its bound properties rather than against its
+     * text, where a comment that names a key would read as a definition of it.
+     */
+    private static Map<String, Object> propertiesOf(String resource) throws IOException {
+        List<PropertySource<?>> sources = new YamlPropertySourceLoader()
+                .load(resource, new UrlResource(rootsHolding(resource).get(0)));
+        Map<String, Object> properties = new LinkedHashMap<>();
+        for (PropertySource<?> source : sources) {
+            for (String name : ((EnumerablePropertySource<?>) source).getPropertyNames()) {
+                properties.put(name, source.getProperty(name));
+            }
+        }
+        return properties;
     }
 
     @Nested
@@ -126,6 +156,12 @@ class TestProfileIsNotPackagedTest {
                     .doesNotContain("jdbc:h2:mem")
                     .doesNotContain("org.h2.Driver")
                     .doesNotContain("username: sa");
+            assertThat(packaged)
+                    .as("the pinned conversation-state seal key belongs to carddemo-test-fixtures.yml "
+                            + "alone: a key that ships inside the artifact is a hard-coded "
+                            + "cryptographic key (CWE-798) whatever the comment beside it says, and it "
+                            + "seals the state that travels in every online payload")
+                    .doesNotContain(PINNED_SEAL_KEY);
         }
 
         @Test
@@ -192,6 +228,53 @@ class TestProfileIsNotPackagedTest {
                     .contains("initialize-schema: never")
                     .doesNotContain("initialize-schema: always")
                     .doesNotContain("initialize-schema: embedded");
+        }
+    }
+
+    @Nested
+    @DisplayName("Each half of the test profile declares itself, and the guard needs both")
+    class ProfileHalves {
+        @Test
+        @DisplayName("the packaged half declares itself, and defines no seal key of its own")
+        void thePackagedHalfDeclaresItselfAndDefinesNoSealKey() throws IOException {
+            Map<String, Object> profile = propertiesOf(TEST_PROFILE_RESOURCE);
+
+            assertThat(profile)
+                    .as("DataSourceConfig guards on this document being in effect, not on the profile "
+                            + "NAME being active: a name alone redirects no dataset and disables no job, "
+                            + "whereas this document does both")
+                    .containsEntry(DataSourceConfig.PROFILE_DOCUMENT_PROPERTY, TEST_PROFILE_RESOURCE);
+            assertThat(profile)
+                    .as("the unpackaged half is the only thing that may declare the unpackaged half; a "
+                            + "copy of that declaration here would satisfy the guard from inside the jar "
+                            + "and defeat it")
+                    .doesNotContainKey(DataSourceConfig.FIXTURE_DOCUMENT_PROPERTY);
+            assertThat(profile)
+                    .as("the pinned key is configured by the document that never ships, so this one "
+                            + "defines %s nowhere - not even as a placeholder",
+                            ConversationStateSeal.SECRET_PROPERTY)
+                    .doesNotContainKey(ConversationStateSeal.SECRET_PROPERTY);
+        }
+
+        @Test
+        @DisplayName("the unpackaged half declares itself, and is where the pinned seal key lives")
+        void theUnpackagedHalfDeclaresItselfAndHoldsThePinnedSealKey() throws IOException {
+            Map<String, Object> fixtures = propertiesOf(FIXTURE_RESOURCE);
+
+            assertThat(fixtures)
+                    .as("without this declaration the guard refuses every run of the suite, so its "
+                            + "absence has to fail here rather than in every other suite at once")
+                    .containsEntry(DataSourceConfig.FIXTURE_DOCUMENT_PROPERTY, FIXTURE_RESOURCE);
+            assertThat(fixtures)
+                    .as("the shipped half declares itself; this one must not, or the guard could be "
+                            + "satisfied by the test tree alone")
+                    .doesNotContainKey(DataSourceConfig.PROFILE_DOCUMENT_PROPERTY);
+            assertThat(fixtures.get(ConversationStateSeal.SECRET_PROPERTY))
+                    .as("a test that asserts a seal - or that a tampered state image is refused - has to "
+                            + "know the key the seal was built from, so the value is pinned here rather "
+                            + "than random")
+                    .asString()
+                    .startsWith(PINNED_SEAL_KEY);
         }
     }
 }

@@ -10,26 +10,36 @@
 #  0.2.5, 0.3.1 and 0.4.2 place it and where gate G5 pins it. That document ships inside the
 #  distributable jar, because Maven packages everything under src/main/resources.
 #
-#  This document holds the two parts of the profile that must NEVER ship:
+#  This document holds the three parts of the profile that must NEVER ship:
 #
 #    * spring.datasource.* - the in-memory H2 database, its driver and its conventional "sa"
 #      account, together with the Spring Batch JobRepository schema initialisation that only
 #      makes sense against a throwaway database;
+#    * carddemo.conversation-state.secret - the pinned key this profile's conversation-state
+#      seal is built from. A pinned key that ships inside the jar is a hard-coded cryptographic
+#      key to every scanner and every reader of the artifact (CWE-798), whatever the comment
+#      beside it says, so it lives here and the jar carries no key material at all;
 #    * carddemo.test.fixtures.* - the fixture inventory, including the ten plaintext USRSEC seed
 #      rows transcribed from app/jcl/DUSRSECJ.jcl.
 #
-#  Neither value guards anything and neither leaves the test JVM, but a credential-shaped value
-#  packaged into an artifact is indistinguishable from a real one to a scanner and is the first
-#  thing an operator would try against a production endpoint (CWE-798). src/test/resources is
-#  copied to target/test-classes and is never packaged, so keeping them here removes that risk
-#  without moving the profile off the path the plan declares.
+#  None of these values guards anything real and none leaves the test JVM, but a credential-
+#  shaped value packaged into an artifact is indistinguishable from a real one to a scanner and
+#  is the first thing an operator would try against a production endpoint (CWE-798).
+#  src/test/resources is copied to target/test-classes and is never packaged, so keeping them
+#  here removes that risk without moving the profile off the path the plan declares.
 #
 #  HOW IT IS LOADED
 #  ----------------
 #  application-test.yml imports it with
 #      spring.config.import: optional:classpath:/carddemo-test-fixtures.yml
-#  The import is OPTIONAL, so the packaged artifact - where this file is absent - simply has no
-#  DataSource under the 'test' profile and refuses to start, which is the intended outcome.
+#  The import is OPTIONAL, so a packaged artifact - where this file is absent - carries on
+#  rather than failing on a missing import. What refuses that state is DataSourceConfig: while
+#  the 'test' profile is active it requires the marker key carddemo.test.fixtures-document
+#  below, which only this document defines, and aborts startup when it is missing. The absent
+#  DataSource alone would NOT have stopped a deployment: a site that supplies
+#  CARDDEMO_DATASOURCE_URL satisfies spring.datasource.url from application.yml, so the 'test'
+#  profile would have come up on test-shaped settings - dataset names redirected to the
+#  CARDDEMO.TEST.* relations, every batch job disabled - against the real backend (CWE-1188).
 #  On the test classpath the import resolves, and an imported document takes precedence over the
 #  document that imported it, so nothing here is shadowed.
 #
@@ -173,10 +183,44 @@ spring:
 
 
 # =============================================================================================
-#  carddemo.test.fixtures - the nine fixed-width fixtures, and the one dataset seeded inline
+#  carddemo.conversation-state.secret - the pinned seal key, and why it lives here
+# =============================================================================================
+#
+#  application.yml declares this key with no default, so every profile has to supply it: the
+#  seal it builds is what makes a conversation-state image unforgeable. Under this profile the
+#  value is PINNED rather than random, because a test that asserts a seal - or asserts that a
+#  tampered image is refused - has to know the key the seal was built from.
+#
+#  IT LIVES HERE RATHER THAN IN application-test.yml BECAUSE THAT DOCUMENT SHIPS. A pinned key
+#  inside the distributable jar is a hard-coded cryptographic key (CWE-798): a scanner cannot
+#  tell it from a live one, and an operator who found it would try it against a real endpoint.
+#  Nothing is lost by keeping it here - the suite and a local fixture-backed run both read this
+#  document from target/test-classes - and the packaged artifact now carries no key material.
 # =============================================================================================
 carddemo:
+
+  conversation-state:
+    secret: test-profile-conversation-state-seal-key-000001
+
   test:
+
+    # -----------------------------------------------------------------------------------------
+    # THE MARKER THAT PROVES THIS DOCUMENT RESOLVED.
+    #
+    # DataSourceConfig refuses an active 'test' profile when this key is absent, so the packaged
+    # artifact cannot come up on test-shaped settings with none of the test-only values behind
+    # them (CWE-1188). The value is this document's own file name, so a stack trace names the
+    # thing that is missing.
+    #
+    # It is deliberately a SIBLING of "fixtures" and not an entry inside it: FixtureInventory
+    # binds carddemo.test.fixtures with ignoreUnknownFields = false, so an extra key in there
+    # would fail that binding rather than serve as a marker.
+    # -----------------------------------------------------------------------------------------
+    fixtures-document: carddemo-test-fixtures.yml
+
+    # =========================================================================================
+    #  carddemo.test.fixtures - the nine fixed-width fixtures, and the one dataset seeded inline
+    # =========================================================================================
     # -----------------------------------------------------------------------------------------
     # THE NINE FIXTURES, WITH MEASURED GEOMETRY.
     #

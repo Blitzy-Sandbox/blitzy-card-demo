@@ -1,5 +1,7 @@
 package com.vsergeychik.carddemo;
 
+import com.vsergeychik.carddemo.admin.AdminMenuService;
+import com.vsergeychik.carddemo.admin.MainMenuService;
 import com.vsergeychik.carddemo.config.BatchConfig;
 import com.vsergeychik.carddemo.config.CobolCharsetConfig;
 import com.vsergeychik.carddemo.config.DataSourceConfig;
@@ -764,6 +766,22 @@ class CardDemoApplicationTest {
                             "carddemoEbcdicCharset",
                             "carddemoAsciiCharset",
                             "carddemoDatasetCharset");
+        }
+
+        @Test
+        @DisplayName("the two menu services are handed the configured ASCII code page, so no service "
+                + "composes its screen text in a code page of its own")
+        void theMenuServicesComposeInTheConfiguredAsciiCodePage() {
+            Charset ascii =
+                    context.getBean(CobolCharsetConfig.ASCII_CHARSET_BEAN_NAME, Charset.class);
+
+            assertThat(context.getBean(MainMenuService.class).codec().charset())
+                    .as("COMEN01C's 80-byte message text, composed in the configured code page rather "
+                            + "than in a name declared inside the service")
+                    .isEqualTo(ascii);
+            assertThat(context.getBean(AdminMenuService.class).codec().charset())
+                    .as("and COADM01C's, from the same one place")
+                    .isEqualTo(ascii);
         }
     }
 

@@ -5,12 +5,14 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBinding;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBindings;
+import com.vsergeychik.carddemo.config.DataSourceConfig.TestProfileFixtureDocument;
 import javax.sql.DataSource;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.jdbc.DataSourceProperties;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.mock.env.MockEnvironment;
 
 /**
  * Tests for {@link DataSourceConfig}: the pooled {@link DataSource}, the module-wide {@link JdbcTemplate}
@@ -84,6 +86,78 @@ class DataSourceConfigWiringTest {
             assertThat(template.getFetchSize()).isEqualTo(untouched.getFetchSize());
             assertThat(template.getMaxRows()).isEqualTo(untouched.getMaxRows());
             assertThat(template.getQueryTimeout()).isEqualTo(untouched.getQueryTimeout());
+        }
+    }
+
+    @Nested
+    @DisplayName("The test profile may not run on one of its two halves")
+    class TestProfileHalves {
+        private static final String PACKAGED_HALF = "application-test.yml";
+
+        private static final String UNPACKAGED_HALF = "carddemo-test-fixtures.yml";
+
+        private static TestProfileFixtureDocument resolve(MockEnvironment environment) {
+            return new DataSourceConfig().carddemoTestProfileFixtureDocument(environment);
+        }
+
+        @Test
+        @DisplayName("Neither half in effect expects nothing, so a deployment is unaffected")
+        void neitherHalfInEffectExpectsNothing() {
+            assertThat(resolve(new MockEnvironment()))
+                    .as("the shipped profile is what redirects datasets and disables jobs; with it "
+                            + "absent there is nothing to hold together")
+                    .isEqualTo(TestProfileFixtureDocument.NOT_REQUIRED);
+        }
+
+        @Test
+        @DisplayName("A blank packaged declaration counts as absent, not as present-and-empty")
+        void aBlankPackagedDeclarationCountsAsAbsent() {
+            MockEnvironment environment = new MockEnvironment()
+                    .withProperty(DataSourceConfig.PROFILE_DOCUMENT_PROPERTY, "   ");
+
+            assertThat(resolve(environment)).isEqualTo(TestProfileFixtureDocument.NOT_REQUIRED);
+        }
+
+        @Test
+        @DisplayName("Both halves in effect resolve to the unpackaged document, which is the normal run")
+        void bothHalvesInEffectResolve() {
+            MockEnvironment environment = new MockEnvironment()
+                    .withProperty(DataSourceConfig.PROFILE_DOCUMENT_PROPERTY, PACKAGED_HALF)
+                    .withProperty(DataSourceConfig.FIXTURE_DOCUMENT_PROPERTY, UNPACKAGED_HALF);
+
+            assertThat(resolve(environment).name())
+                    .as("naming what resolved lets a context test assert both halves were in effect "
+                            + "rather than infer it from the run having worked")
+                    .isEqualTo(UNPACKAGED_HALF);
+        }
+
+        @Test
+        @DisplayName("The packaged half alone refuses startup, and says how to reach either end state")
+        void thePackagedHalfAloneRefusesStartup() {
+            MockEnvironment environment = new MockEnvironment()
+                    .withProperty(DataSourceConfig.PROFILE_DOCUMENT_PROPERTY, PACKAGED_HALF);
+
+            assertThatExceptionOfType(IllegalStateException.class)
+                    .as("a site that supplies CARDDEMO_DATASOURCE_URL satisfies spring.datasource.url, "
+                            + "so the missing in-memory database would not have stopped it: what would "
+                            + "have run is test-shaped settings against the real backend")
+                    .isThrownBy(() -> resolve(environment))
+                    .withMessageContaining(UNPACKAGED_HALF)
+                    .withMessageContaining("target/test-classes")
+                    .withMessageContaining("SPRING_PROFILES_ACTIVE")
+                    .withMessageContaining("CARDDEMO.TEST.*");
+        }
+
+        @Test
+        @DisplayName("A blank unpackaged declaration is refused exactly like a missing one")
+        void aBlankUnpackagedDeclarationIsRefusedLikeAMissingOne() {
+            MockEnvironment environment = new MockEnvironment()
+                    .withProperty(DataSourceConfig.PROFILE_DOCUMENT_PROPERTY, PACKAGED_HALF)
+                    .withProperty(DataSourceConfig.FIXTURE_DOCUMENT_PROPERTY, "  ");
+
+            assertThatExceptionOfType(IllegalStateException.class)
+                    .isThrownBy(() -> resolve(environment))
+                    .withMessageContaining(UNPACKAGED_HALF);
         }
     }
 

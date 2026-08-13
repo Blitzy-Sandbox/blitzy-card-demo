@@ -32,11 +32,13 @@ carddemo:
     applid: CICSAWS1
     sysid: AWS1
 
-  # Pinned, and deliberately NOT a secret: application.yml requires this key with no default and
-  # explains what it seals. A test that asserts a seal has to know the key, and this profile is never
-  # active in a deployment.
-  conversation-state:
-    secret: test-profile-conversation-state-seal-key-000001
+  # carddemo.conversation-state.secret IS DELIBERATELY ABSENT FROM THIS DOCUMENT.
+  # application.yml requires that key with no default, and this profile does pin a value for it -
+  # a test that asserts a seal has to know the key the seal was built from - but the pinned value
+  # lives in carddemo-test-fixtures.yml, which is imported above and is never packaged. This
+  # document ships inside carddemo.jar, and a pinned AES key inside a distributable artifact is a
+  # hard-coded cryptographic key (CWE-798) whatever the comment beside it says: a scanner cannot
+  # tell it from a live one and an operator who found it would try it. Do not restore it here.
 
   record-image:
     form: CHARACTER
@@ -47,6 +49,17 @@ carddemo:
   # Each clone and each invocation owns its writable root: outputs beneath work-dir are opened in append
   # mode, so a shared root would let one run append to another's data.
   test:
+
+    # THIS DOCUMENT DECLARING ITSELF IN EFFECT, WHICH IS WHAT DataSourceConfig GUARDS ON.
+    # The profile's other half - carddemo-test-fixtures.yml, imported above and never packaged - declares
+    # itself with carddemo.test.fixtures-document. DataSourceConfig refuses startup when this key is
+    # present and that one is not, because the half-configured state is silently wrong rather than loudly
+    # broken: the missing H2 datasource stops nothing in a deployment that supplies
+    # CARDDEMO_DATASOURCE_URL, and what would then be live is every setting below - dataset names
+    # redirected to relations that do not exist on the real backend, and every batch job disabled
+    # (CWE-1188). The guard is on the document rather than the profile NAME because a name alone changes
+    # nothing; this document being read is what changes things.
+    profile-document: application-test.yml
 
     clone-id: ${CLONE_INDEX:local}
 
@@ -60,6 +73,17 @@ carddemo:
   # Only dsname is overridden per DD; every width, key length and copybook binding still comes from
   # application.yml. Several DD names deliberately share one dsname - a base KSDS and its AIX path are
   # two access paths over the same data, never two tables.
+  #
+  # A DSNAME IS A RELATION NAME HERE, NOT A FILE PATH - AND THAT IS THE FIXTURE BINDING.
+  # AAP 0.4.2 describes this profile as "pointing every dataset binding at a fixture file". It does,
+  # one indirection along: a dsname names the relation a repository reads through JdbcTemplate, and
+  # the rows of these CARDDEMO.TEST.* relations are seeded from the nine fixtures under
+  # app/java/src/test/resources/fixtures/ (byte-for-byte copies of app/data/ASCII) by the seeder that
+  # carddemo-test-fixtures.yml inventories. Binding a dsname straight at app/data/ASCII/*.txt would
+  # be the wrong reading of that sentence twice over: every repository reaches its dataset over JDBC
+  # and nothing in this module opens a dataset as a file (gates G3, G44, G45), and the reference tree
+  # is read-only (practice B3) so a dataset a job REWRITEs could never be bound there. The CARDDEMO.
+  # TEST.* prefix also keeps a test run from ever addressing the AWS.M2.CARDDEMO.* production names.
   datasets:
 
     ACCTDAT:

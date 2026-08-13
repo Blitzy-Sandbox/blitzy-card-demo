@@ -22,6 +22,8 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.boot.jdbc.DatabaseDriver;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.DependsOn;
+import org.springframework.core.env.Environment;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.util.ClassUtils;
 import org.springframework.util.StringUtils;
@@ -34,10 +36,51 @@ import org.springframework.util.StringUtils;
  * <p>The sign-on comparison that the legacy {@code COSGN00C} performs stays exactly as the COBOL performs
  * it, so no authentication, hashing or credential-management machinery is introduced anywhere in this
  * module - including here.
+ *
+ * <p>This class is also where the {@code test} profile's two halves are held together. The profile itself
+ * is {@code application-test.yml}, which ships inside the artifact; everything about it that must never
+ * ship - the in-memory database and its account, the fixture inventory and the pinned conversation-state
+ * seal key - lives in {@code carddemo-test-fixtures.yml} under {@code src/test/resources}, which the
+ * profile imports optionally. {@link #carddemoTestProfileFixtureDocument(Environment)} refuses startup
+ * when the shipped half is in effect and the unpackaged half is not, because that half-configured state is
+ * silently wrong rather than loudly broken: a deployment supplies {@code CARDDEMO_DATASOURCE_URL}, so the
+ * absent H2 datasource would not have stopped it, and the profile would have run test-shaped settings -
+ * dataset names redirected to the {@code CARDDEMO.TEST.*} relations, every batch job disabled - against
+ * the real backend.
  */
 @Configuration
 @EnableConfigurationProperties({ DataSourceProperties.class, DataSourceConfig.DatasetBindings.class })
 public class DataSourceConfig {
+    /**
+     * The self-declaration of the packaged half of the {@code test} profile, defined only by
+     * {@code application-test.yml}: {@value}.
+     */
+    public static final String PROFILE_DOCUMENT_PROPERTY = "carddemo.test.profile-document";
+
+    /**
+     * The self-declaration of the unpackaged half of the {@code test} profile, defined only by
+     * {@code carddemo-test-fixtures.yml}: {@value}.
+     */
+    public static final String FIXTURE_DOCUMENT_PROPERTY = "carddemo.test.fixtures-document";
+
+    private static final String HALF_CONFIGURED_TEST_PROFILE_MESSAGE = """
+            The 'test' profile is in effect but carddemo-test-fixtures.yml did not resolve, so \
+            startup is refused. That document is the other half of the profile: it lives in \
+            src/test/resources, is copied to target/test-classes and is deliberately NEVER \
+            packaged, and it supplies the in-memory H2 DataSource, the Spring Batch JobRepository \
+            schema initialisation, the fixture inventory and the pinned conversation-state seal \
+            key. application-test.yml imports it optionally, so its absence does not fail the \
+            import - and the missing DataSource would not have stopped a deployment either, \
+            because a site that supplies CARDDEMO_DATASOURCE_URL satisfies spring.datasource.url \
+            from application.yml. What is left is a set of test-shaped settings with nothing \
+            test-shaped behind them: every dataset name redirected to a CARDDEMO.TEST.* relation \
+            that does not exist on the real backend, every batch job disabled, and a seal key that \
+            must never guard a real conversation. TO RUN THE SUITE OR A LOCAL FIXTURE-BACKED RUN: \
+            put target/test-classes on the classpath ahead of target/classes ('mvn -f \
+            app/java/pom.xml verify' does this; a plain 'java -jar carddemo.jar' cannot). TO RUN A \
+            DEPLOYMENT: do not activate the 'test' profile at all - clear SPRING_PROFILES_ACTIVE \
+            (and any spring.profiles.active) and supply spring.datasource.* for the site backend.\
+            """;
     private static final String NO_DATASOURCE_URL_MESSAGE = """
             spring.datasource.url is not configured, so no DataSource can be built. This module \
             pins no JDBC driver coordinate on purpose: the CardDemo datasets are VSAM and \
@@ -83,6 +126,57 @@ public class DataSourceConfig {
             nothing.""" + " " + DRIVER_IS_A_DEPLOYMENT_INPUT;
 
     /**
+     * Holds the two halves of the {@code test} profile together. The {@link DataSource} declares
+     * {@code @DependsOn} this bean, so a half-configured profile is refused before any connection is
+     * pooled - and since the transaction manager, the {@code JobRepository} and all twelve repositories
+     * reach their data through that one {@code DataSource}, nothing that touches a dataset can run ahead
+     * of the check. Source order alone would not have achieved that: bean creation follows dependencies,
+     * not declaration.
+     *
+     * <p>The check is on the documents, not on the profile name: a profile that is merely named active
+     * changes nothing on its own, whereas {@code application-test.yml} being IN EFFECT is what redirects
+     * every dataset name, disables every job and pins the seal key. So the shipped half declares itself
+     * with {@value #PROFILE_DOCUMENT_PROPERTY} and the unpackaged half declares itself with
+     * {@value #FIXTURE_DOCUMENT_PROPERTY}; the first without the second is the state that cannot be
+     * allowed to start.
+     *
+     * @param environment the resolved configuration environment; never {@code null}
+     * @return the name of the unpackaged document backing the profile, or
+     *     {@link TestProfileFixtureDocument#NOT_REQUIRED} when the packaged half is not in effect and no
+     *     such document is expected
+     * @throws IllegalStateException if the packaged half of the {@code test} profile is in effect and the
+     *     unpackaged half did not resolve
+     */
+    @Bean(TestProfileFixtureDocument.BEAN_NAME)
+    public TestProfileFixtureDocument carddemoTestProfileFixtureDocument(Environment environment) {
+        if (!StringUtils.hasText(environment.getProperty(PROFILE_DOCUMENT_PROPERTY))) {
+            return TestProfileFixtureDocument.NOT_REQUIRED;
+        }
+        String fixtureDocument = environment.getProperty(FIXTURE_DOCUMENT_PROPERTY);
+        if (!StringUtils.hasText(fixtureDocument)) {
+            throw new IllegalStateException(HALF_CONFIGURED_TEST_PROFILE_MESSAGE);
+        }
+        return new TestProfileFixtureDocument(fixtureDocument);
+    }
+
+    /**
+     * What {@link #carddemoTestProfileFixtureDocument(Environment)} resolved: the unpackaged document
+     * backing the {@code test} profile, so a context test can assert the two halves were both in effect
+     * rather than infer it.
+     *
+     * @param name the resolved document name, or the empty string when the packaged half of the
+     *     {@code test} profile is not in effect
+     */
+    public record TestProfileFixtureDocument(String name) {
+        /** The bean name, which {@link DataSourceConfig#dataSource} orders itself behind: {@value}. */
+        public static final String BEAN_NAME = "carddemoTestProfileFixtureDocument";
+
+        /** The result when the packaged half of the {@code test} profile is not in effect. */
+        public static final TestProfileFixtureDocument NOT_REQUIRED =
+                new TestProfileFixtureDocument("");
+    }
+
+    /**
      * The one {@link DataSource} in the module: pooled by HikariCP and assembled entirely from
      * configuration.
      *
@@ -94,6 +188,7 @@ public class DataSourceConfig {
      *     classpath
      */
     @Bean
+    @DependsOn(TestProfileFixtureDocument.BEAN_NAME)
     @ConfigurationProperties("spring.datasource.hikari")
     public DataSource dataSource(DataSourceProperties properties) {
         if (!StringUtils.hasText(properties.getUrl())) {

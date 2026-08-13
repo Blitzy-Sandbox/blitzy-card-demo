@@ -431,7 +431,12 @@ public class AccountRepository {
         try {
             return resolveStatements();
         } catch (DataAccessException unreachable) {
-            logRefusal(unreachable, "describe the account master dataset '" + datasetName + "'");
+            // The subject names the operation that failed, exactly as the sibling repositories report it
+            // (CustomerRepository, TranCatBalRepository). Dropping it left one message - "Could not
+            // describe the account master dataset 'X'" - standing for every caller of this method, which
+            // is the one thing an operator reading the log needs it to distinguish.
+            logRefusal(unreachable, "describe the account master dataset '" + datasetName + "' for "
+                    + subject);
             return null;
         }
     }

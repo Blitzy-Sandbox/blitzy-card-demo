@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatIllegalStateException;
 
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBinding;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBindings;
+import com.vsergeychik.carddemo.config.DataSourceConfig.TestProfileFixtureDocument;
 import com.vsergeychik.carddemo.common.PhysicalSequence;
 import com.vsergeychik.carddemo.common.RecordImageForm;
 import com.zaxxer.hikari.HikariDataSource;
@@ -1008,18 +1009,18 @@ class DataSourceConfigTest {
     }
 
     @Nested
-    @DisplayName("The negative contract - seven beans, no transaction manager, and nothing "
+    @DisplayName("The negative contract - eight beans, no transaction manager, and nothing "
             + "schema-shaped")
     class NegativeContract {
         private static final List<Class<?>> PERMITTED_BEAN_TYPES = List.of(
                 DataSourceConfig.class, HikariDataSource.class, JdbcTemplate.class,
                 DataSourceProperties.class, DatasetBindings.class, RecordImageForm.class,
-                PhysicalSequence.class);
+                PhysicalSequence.class, TestProfileFixtureDocument.class);
 
         @Test
-        @DisplayName("the configuration contributes exactly seven beans, and each is one of the seven "
+        @DisplayName("the configuration contributes exactly eight beans, and each is one of the eight "
                 + "it is answerable for")
-        void theConfigurationContributesExactlySevenBeans() {
+        void theConfigurationContributesExactlyEightBeans() {
             shippedDefaultProfile().run(context -> {
                 List<String> contributed = new ArrayList<>();
                 for (String beanName : context.getBeanDefinitionNames()) {
@@ -1075,6 +1076,28 @@ class DataSourceConfigTest {
             shippedTestProfile().run(context ->
                     assertThat(context.getBean(RecordImageForm.class))
                             .isSameAs(RecordImageForm.CHARACTER));
+        }
+
+        @Test
+        @DisplayName("the shipped test profile resolves its unpackaged half, so both halves are provably "
+                + "in effect rather than assumed to be")
+        void theTestProfileResolvesItsUnpackagedHalf() {
+            shippedTestProfile().run(context -> {
+                assertThat(context).hasNotFailed();
+                assertThat(context.getBean(TestProfileFixtureDocument.class).name())
+                        .as("the document that carries the in-memory datasource, the fixture inventory "
+                                + "and the pinned seal key - and that is never packaged")
+                        .isEqualTo("carddemo-test-fixtures.yml");
+            });
+        }
+
+        @Test
+        @DisplayName("the default profile expects no unpackaged half, because none of the test-shaped "
+                + "settings is in effect there")
+        void theDefaultProfileExpectsNoUnpackagedHalf() {
+            shippedDefaultProfile().run(context ->
+                    assertThat(context.getBean(TestProfileFixtureDocument.class))
+                            .isEqualTo(TestProfileFixtureDocument.NOT_REQUIRED));
         }
 
         @Test
