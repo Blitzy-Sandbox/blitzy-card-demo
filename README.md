@@ -269,7 +269,26 @@ java -cp "target/test-classes:target/classes:$(cat target/cp.txt)" \
      com.vsergeychik.carddemo.testsupport.FixtureSeededApplication --spring.profiles.active=test
 ```
 
-Started that way the log states what it seeded -- ten relations, 636 records -- and the data-backed calls answer instead of failing: `POST /api/signon` as `ADMIN001` with password `PASSWORD` returns a blank `errmsg` and `COADM01C` as the next program, and `GET /api/cards?eibaid=125` returns real card numbers. Those relations belong to that one process's in-memory database and go away with it, which is the one thing the file-backed procedure below does differently.
+Started that way the log states what it seeded -- ten relations, 636 records -- and the data-backed calls answer instead of failing. The `test` profile binds an ephemeral port, which that same log states; set `CARDDEMO_SERVER_PORT` to pin one, and read the examples below with `$PORT` as whichever it is.
+
+Two calls show the data, and both name a key, because every one of these screens is a CICS pseudo-conversation: a request that names no key and carries no re-entry context is a *first entry*, and it gets the painted screen rather than a decision. `GET /api/cards?eibaid=125` -- `125` is `0x7D`, the `EIBAID` byte for ENTER -- returns real card numbers. Sign-on takes two calls, exactly as it does on a terminal:
+
+```shell
+curl -s -X POST "http://localhost:$PORT/api/signon" \
+     -H 'Content-Type: application/json' \
+     -d '{"userid":"ADMIN001","passwd":"PASSWORD"}'
+```
+
+That first reply is the painted sign-on screen -- a blank `errmsg` and no next program yet -- and it carries a `navigationContext`: the 160-byte `CARDDEMO-COMMAREA`, width-exact and whole, because the server keeps no session. Send it straight back with its `pgmContext` set to `1` (`REENTER`) on a request that names the ENTER key, and the credential is verified: the reply has a blank `errmsg`, `COADM01C` as the next program and role `A`.
+
+```shell
+curl -s -X POST "http://localhost:$PORT/api/signon?eibaid=125" \
+     -H 'Content-Type: application/json' \
+     -d '{"userid":"ADMIN001","passwd":"PASSWORD",
+          "navigationContext":{ ... that reply, with "pgmContext":1 ... }}'
+```
+
+Echo the whole communication area rather than one member of it: a partial `navigationContext` is refused with `400 Bad Request`, because a fixed-width copybook has no partial form. `USER0001` answers `COMEN01C` and role `U`; a wrong password answers `Wrong Password. Try again ...`, and an unknown user `User not found. Try again ...`. Those relations belong to that one process's in-memory database and go away with it, which is the one thing the file-backed procedure below does differently.
 
 To provision a database that **outlives** the run, so that a second process, a repeated start or an SQL client sees the same rows, do it by hand against a file-backed database instead. Each relation is one column wide: the record image in column 1, at the copybook width, one row per fixed-width record. The dataset names this profile uses are listed in `app/java/src/main/resources/application-test.yml` and the records come from `app/data/ASCII`. The account master is shown here; every other dataset follows the same two steps. From `app/java`
 

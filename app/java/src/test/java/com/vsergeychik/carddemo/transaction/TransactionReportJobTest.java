@@ -36,6 +36,7 @@ import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBinding;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBindings;
 import com.vsergeychik.carddemo.common.DatasetUnitOfWork;
 import com.vsergeychik.carddemo.statement.StatementGenerationJobA.DatasetUtilityPort;
+import com.vsergeychik.carddemo.testdataset.RecordImageDataSource;
 import com.vsergeychik.carddemo.transaction.TransactionReportJob.ExecutionSummary;
 import com.vsergeychik.carddemo.transaction.TransactionReportJob.SysoutSink;
 import com.vsergeychik.carddemo.transaction.model.TranCategoryRecord;
@@ -926,6 +927,31 @@ class TransactionReportJobTest {
             assertThat(job.datasetUtilityPort())
                     .isInstanceOf(com.vsergeychik.carddemo.statement.StatementGenerationJobA
                             .JdbcDatasetUtilityPort.class);
+        }
+
+        @Test
+        @DisplayName("STEP01R against a master the deployment never allocated states the obligation and "
+                + "the return code, rather than surfacing the driver's own refusal")
+        void anUnallocatedMasterIsADeploymentObligation() {
+            TransactionReportJob job = new TransactionReportJob(validBatchConfig(),
+                    mock(TransactionRepository.class), mock(CardXrefRepository.class),
+                    mock(TranTypeRepository.class), mock(TranCategoryRepository.class),
+                    mock(DateParmReader.class), writer(), ASCII, new SuppliedProvider<>(null),
+                    new JdbcTemplate(new RecordImageDataSource()), RecordImageForm.CHARACTER, ORDINAL,
+                    unitOfWork(), new SuppliedProvider<>(null));
+
+            assertThatExceptionOfType(AbendException.class)
+                    .isThrownBy(job::unloadTransactionMaster)
+                    .satisfies(abend -> assertThat(abend.getReturnCode())
+                            .as("STEP01R ends on the severe-error code, so STEP05R's COND gate reads a "
+                                    + "number JCL produces")
+                            .isEqualTo(AbendException.RETURN_CODE_IO_ERROR))
+                    .withMessageContaining("cannot read a dataset whole")
+                    .withMessageContaining(TEST_MASTER)
+                    .withMessageContaining("deployment obligation")
+                    .withMessageContaining("return code 12")
+                    .withMessageContaining("backend refusal: SQLSTATE 42S02")
+                    .withNoCause();
         }
 
         private StepContribution contribution() {

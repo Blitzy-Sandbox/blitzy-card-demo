@@ -103,6 +103,31 @@ public class CustomerRepository {
     private final RecordImageForm recordImageForm;
 
     /**
+     * The statement set this relation's record-image column composes, held from the describe that
+     * discovered it so that the describe is issued once per open rather than once per read.
+     *
+     * <p>A {@link Statements} is an immutable record of statement <em>text</em>, so publishing it through a
+     * {@code volatile} field is the whole of the thread-safety this needs: a reader either sees the fully
+     * composed set or sees nothing and composes it, and two readers racing at startup each issue one
+     * describe and store equal values. It is the pattern every other repository in the module already uses
+     * - {@code CardRepository}, {@code CardXrefRepository}, {@code TransactionRepository},
+     * {@code TranTypeRepository}, {@code TranCategoryRepository}, {@code SecUserRepository} and
+     * {@code StatementGenerationJobB} - and this class was the odd one out.
+     *
+     * <p>This holds no customer data and no result of a read. It is column metadata, so it is not the
+     * caching of business data that AAP 0.8.6 forbids: the keyed read, the browse and the rewrite still
+     * reach the backend every single time they are called, in the same order, with the same predicates.
+     * What no longer reaches the backend is a second {@code WHERE 1 = 0} probe asking a question already
+     * answered - free against a co-located database and one network round trip against the gateway a
+     * deployment actually binds.
+     *
+     * <p>Cleared by every {@link #openInput()}, which pairs with
+     * {@link DatasetRelation#forgetRecordImageColumn()}: a COBOL {@code OPEN} learns the file afresh, so an
+     * open re-describes and the shape it discovers becomes the shape later reads use.
+     */
+    private volatile Statements statements;
+
+    /**
      * Resolves the customer master's configured bindings, proves the record geometry, and captures the
      * collaborators - all before the context finishes starting, so nothing checkable is left to fail
      * mid-job.
@@ -190,6 +215,7 @@ public class CustomerRepository {
      *     which is a contract violation rather than an I/O outcome
      */
     public CustomerFile openInput() {
+        this.statements = null;
         this.relation.forgetRecordImageColumn();
 
         Statements resolved;
@@ -200,6 +226,7 @@ public class CustomerRepository {
                     + "' to OPEN INPUT it");
             return new CustomerFile(this, PERMANENT_ERROR_STATUS, null);
         }
+        this.statements = resolved;
         return new CustomerFile(this, FileStatus.OK, resolved);
     }
 
@@ -282,7 +309,7 @@ public class CustomerRepository {
         byte[] image = requireRecordImage(recordImage);
         Statements sql;
         try {
-            sql = resolveStatements();
+            sql = statements();
         } catch (DataAccessException unreachable) {
             return reportWrite(unreachable, "describe the customer master dataset '" + datasetName
                     + "' to rewrite a record");
@@ -370,7 +397,7 @@ public class CustomerRepository {
         byte[] held = requireHeldImage(heldStoredImage);
         Statements sql;
         try {
-            sql = resolveStatements();
+            sql = statements();
         } catch (DataAccessException unreachable) {
             return reportWrite(unreachable, "describe the customer master dataset '" + datasetName
                     + "' to rewrite the record it is holding");
@@ -631,7 +658,7 @@ public class CustomerRepository {
     private ReadResult readKeyed(String keyImage, String subject, boolean forUpdate) {
         Statements sql;
         try {
-            sql = resolveStatements();
+            sql = statements();
         } catch (DataAccessException unreachable) {
             return reportRead(unreachable, "describe the customer master dataset '" + datasetName
                     + "' to read " + subject);
@@ -700,6 +727,44 @@ public class CustomerRepository {
         return WriteResult.of(PERMANENT_ERROR_STATUS, logRefusal(refusal, attempt));
     }
 
+    /**
+     * The statement set every keyed read and rewrite issues, describing the relation only if this
+     * repository has not already learned its record-image column.
+     *
+     * <p>The first caller after startup or after an {@link #openInput()} pays the describe; every caller
+     * after that reuses what it discovered, because the column name of a relation does not change between
+     * two reads of it and asking again answers nothing. That is what makes an account screen's customer
+     * read one keyed read rather than a keyed read and a metadata probe.
+     *
+     * <p>Nothing is stored when the describe fails, so a backend that was unreachable for one read is
+     * described again by the next one rather than remembered as broken.
+     *
+     * @return the statement set for this relation's record-image column; never {@code null}
+     * @throws DataAccessException if the backend refuses the describe, exactly as
+     *     {@link #resolveStatements()} would - the callers translate it into a file status
+     * @throws IllegalStateException if the backend presents the dataset with no usable record-image column
+     */
+    private Statements statements() {
+        Statements resolved = this.statements;
+        if (resolved != null) {
+            return resolved;
+        }
+        Statements composed = resolveStatements();
+        this.statements = composed;
+        return composed;
+    }
+
+    /**
+     * Describes the relation and composes its statement set from the column that describe reported.
+     *
+     * <p>Always issues the describe: this is the primitive {@link #openInput()} uses to learn the file and
+     * {@link #statementsFor(String)} uses to prove, at {@code CLOSE}, that the dataset is still
+     * addressable. Reads and rewrites go through {@link #statements()} instead.
+     *
+     * @return the freshly composed statement set; never {@code null}
+     * @throws DataAccessException if the backend refuses the describe
+     * @throws IllegalStateException if the backend presents the dataset with no usable record-image column
+     */
     Statements resolveStatements() {
         ResultSetExtractor<String> columnNameExtractor =
                 CustomerRepository::extractRecordImageColumnName;
@@ -707,6 +772,18 @@ public class CustomerRepository {
         return Statements.over(relation, requireUsableColumnName(columnName));
     }
 
+    /**
+     * Describes the relation on behalf of an operation that exists to find out whether it can be described
+     * at all, reporting the failure rather than propagating it.
+     *
+     * <p>Deliberately {@link #resolveStatements()} and not {@link #statements()}: its one caller is
+     * {@code CLOSE}, whose whole question is whether the dataset is still addressable <em>now</em>. A
+     * remembered answer would report a dataset that has since gone away as closing cleanly.
+     *
+     * @param subject how to name the operation in the log line, so an operator can tell which one failed
+     * @return the freshly composed statement set, or {@code null} when the backend refused the describe -
+     *     in which case the refusal has already been logged
+     */
     private Statements statementsFor(String subject) {
         try {
             return resolveStatements();

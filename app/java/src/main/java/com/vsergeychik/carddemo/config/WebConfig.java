@@ -1493,6 +1493,30 @@ public class WebConfig implements WebMvcConfigurer {
         }
 
         private void requireQueueCharset() {
+            resolveQueueCharset();
+        }
+
+        /**
+         * Resolves {@code carddemo.job-submission.charset}, refusing an absent, unknown or variable-width
+         * value with a diagnostic that names the key.
+         *
+         * <p>This is the single seam every reader of the value goes through, and that is the whole point of
+         * it. {@link #validate()} runs from an {@code InitializingBean}, but the port that encodes the
+         * records reads the code page in its own constructor - and a bean's constructor runs whenever the
+         * container decides to create it, which is not necessarily after some other bean's
+         * {@code afterPropertiesSet}. Resolving through one guarded method rather than two unequal ones
+         * means the reader who gets there first is the one who reports it, and both report the same thing:
+         * the property key, the rejected value and what to name instead. A bare
+         * {@link Charset#forName(String)} here would surface as a raw
+         * {@link java.nio.charset.UnsupportedCharsetException} - or, for a blank value, an
+         * {@link java.nio.charset.IllegalCharsetNameException} carrying no message at all - naming neither
+         * the property nor a remedy.
+         *
+         * @return the code page the 80-byte records are encoded in; never {@code null}
+         * @throws IllegalStateException if the value is absent or blank, names nothing this platform
+         *     provides, or is not a total single-byte code page
+         */
+        private Charset resolveQueueCharset() {
             requirePresent(charset, "charset",
                     "It is the code page the 80-byte records are encoded in, and it cannot be inferred: "
                             + "a region whose internal reader consumes EBCDIC needs IBM037 where one "
@@ -1516,17 +1540,19 @@ public class WebConfig implements WebMvcConfigurer {
                         + TDQ_RECORD_LENGTH + " characters must encode to exactly " + TDQ_RECORD_LENGTH
                         + " bytes.", notSingleByte);
             }
+            return resolved;
         }
 
         /**
          * The code page the records are encoded in, resolved.
          *
-         * @return the charset
-         * @throws IllegalArgumentException if called on an instance that was never validated and whose
-         *     charset names nothing this platform provides
+         * @return the charset; never {@code null}
+         * @throws IllegalStateException if the configured value is absent or blank, names nothing this
+         *     platform provides, or is not a total single-byte code page - reported with the same
+         *     key-naming diagnostic {@link #validate()} reports, whichever of the two runs first
          */
         public Charset queueCharset() {
-            return Charset.forName(charset.trim());
+            return resolveQueueCharset();
         }
 
         private void requireByteContract() {

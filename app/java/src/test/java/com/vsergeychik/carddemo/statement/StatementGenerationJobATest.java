@@ -82,6 +82,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.ApplicationContext;
 import org.springframework.dao.DataAccessException;
+import org.springframework.jdbc.BadSqlGrammarException;
 import com.vsergeychik.carddemo.testdataset.RecordImageDataSource;
 import com.vsergeychik.carddemo.testdataset.RecordImageStore;
 import com.vsergeychik.carddemo.testdataset.RecordImageStore.ColumnForm;
@@ -2097,6 +2098,177 @@ class StatementGenerationJobATest {
         }
     }
 
+    @Nested
+    @DisplayName("A dataset the deployment never allocated is a deployment obligation, and the utility "
+            + "steps say so")
+    class TheDeploymentObligationDiagnostic {
+        private static final String ABSENT_DSNAME = "TEST.NOTALLOC.DSN";
+
+        /**
+         * A template over a store that declares nothing, so every dsname is absent - which is how the
+         * backend reports a relation the deployment has not created: SQLSTATE class 42.
+         */
+        private static JdbcTemplate emptyBackend() {
+            return new JdbcTemplate(new RecordImageDataSource());
+        }
+
+        private static JdbcDatasetUtilityPort portOver(JdbcTemplate template) {
+            return new JdbcDatasetUtilityPort(template, ASCII, RecordImageForm.CHARACTER, ORDINAL,
+                    unitOfWork());
+        }
+
+        @Test
+        @DisplayName("emptying an absent dataset - IDCAMS DELETE, IEFBR14 - names the obligation, the "
+                + "dataset, the JCL that allocates one and the return code the step will report")
+        void emptyingAnAbsentDataset() {
+            JdbcDatasetUtilityPort port = portOver(emptyBackend());
+            DatasetBinding binding = sequential(ABSENT_DSNAME, 350, 3500);
+
+            assertThatExceptionOfType(AbendException.class)
+                    .isThrownBy(() -> port.deleteAllRecords(binding))
+                    .satisfies(abend -> {
+                        assertThat(abend.getReturnCode())
+                                .as("a utility step the deployment left nothing to address ends on the "
+                                        + "same severe-error code a COBOL step of this job reports")
+                                .isEqualTo(AbendException.RETURN_CODE_IO_ERROR);
+                        assertThat(abend.getProgram())
+                                .isEqualTo(StatementGenerationJobA.UTILITY_PROGRAM);
+                    })
+                    .withMessageContaining("DELETE of every record")
+                    .withMessageContaining("cannot empty a dataset")
+                    .withMessageContaining("IDCAMS DELETE")
+                    .withMessageContaining(ABSENT_DSNAME)
+                    .withMessageContaining("350-byte records")
+                    .withMessageContaining("deployment obligation")
+                    .withMessageContaining("app/jcl/CREASTMT.JCL:L49")
+                    .withMessageContaining("app/proc/TRANREPT.prc")
+                    .withMessageContaining("DISP=(NEW,CATLG,DELETE)")
+                    .withMessageContaining("carddemo.datasets.<DD>.dsname")
+                    .withMessageContaining("carddemo.jobs.<job>.datasets.<DD>.dsname")
+                    .withMessageContaining("return code 12")
+                    .withMessageContaining("SQLSTATE 42S02")
+                    .withMessageContaining(BadSqlGrammarException.class.getName())
+                    .withNoCause();
+        }
+
+        @Test
+        @DisplayName("reading an absent dataset whole - a SORT step's SORTIN - says the same, and names "
+                + "the copybook the configuration declares")
+        void readingAnAbsentDataset() {
+            JdbcDatasetUtilityPort port = portOver(emptyBackend());
+            DatasetBinding binding = new DatasetBinding(ABSENT_DSNAME, "sequential", false, "FB", 3500,
+                    350, "CVTRA05Y", null, null, null, null);
+
+            assertThatExceptionOfType(AbendException.class)
+                    .isThrownBy(() -> port.readAllRecordImages(binding))
+                    .satisfies(abend -> assertThat(abend.getProgram())
+                            .isEqualTo(StatementGenerationJobA.SORT_PROGRAM))
+                    .withMessageContaining("cannot read a dataset whole")
+                    .withMessageContaining("SORTIN")
+                    .withMessageContaining("\"" + ABSENT_DSNAME
+                            + "\" (350-byte records, CVTRA05Y)")
+                    .withMessageContaining("deployment obligation")
+                    .withNoCause();
+        }
+
+        @Test
+        @DisplayName("writing an absent dataset whole - a SORT step's SORTOUT - says the same")
+        void writingAnAbsentDataset() {
+            JdbcDatasetUtilityPort port = portOver(emptyBackend());
+            DatasetBinding binding = sequential(ABSENT_DSNAME, 80, 8000);
+
+            assertThatExceptionOfType(AbendException.class)
+                    .isThrownBy(() -> port.writeRecordImages(binding, List.of(record80("A"))))
+                    .withMessageContaining("cannot write a dataset whole")
+                    .withMessageContaining("SORTOUT")
+                    .withMessageContaining(ABSENT_DSNAME)
+                    .withMessageContaining("return code 12")
+                    .withNoCause();
+        }
+
+        @Test
+        @DisplayName("a REPRO whose SOURCE is absent names it")
+        void copyingFromAnAbsentDataset() {
+            JdbcTemplate template = emptyBackend();
+            declareRelation(template, STMTFILE_DSNAME, 80);
+            JdbcDatasetUtilityPort port = portOver(template);
+
+            assertThatExceptionOfType(AbendException.class)
+                    .isThrownBy(() -> port.copyRecordImages(sequential(ABSENT_DSNAME, 80, 8000),
+                            sequential(STMTFILE_DSNAME, 80, 8000)))
+                    .withMessageContaining("cannot copy a dataset record for record")
+                    .withMessageContaining(ABSENT_DSNAME)
+                    .withNoCause();
+        }
+
+        @Test
+        @DisplayName("nothing the driver said reaches the diagnostic - a driver composes its message "
+                + "around the row it refused, so none of it is carried")
+        void nothingTheDriverSaidSurvives() {
+            JdbcDatasetUtilityPort port = portOver(emptyBackend());
+            DatasetBinding binding = sequential(ABSENT_DSNAME, 350, 3500);
+
+            assertThatExceptionOfType(AbendException.class)
+                    .isThrownBy(() -> port.deleteAllRecords(binding))
+                    .withNoCause()
+                    .withMessageNotContaining("it was never declared to this record-image store")
+                    .withMessageContaining("backend refusal: SQLSTATE 42S02, vendor code 42102");
+        }
+
+        @Test
+        @DisplayName("a REPRO whose TARGET is absent names both ends, source first, in the order REPRO "
+                + "reads them")
+        void copyingIntoAnAbsentDataset() {
+            JdbcTemplate template = seededRelation("repro-absent-target", TRXFL_SEQ_DSNAME, 350,
+                    List.of(tranImage(CARD_A, "TRAN000000000001")));
+            JdbcDatasetUtilityPort port = portOver(template);
+
+            assertThatExceptionOfType(AbendException.class)
+                    .isThrownBy(() -> port.copyRecordImages(sequential(TRXFL_SEQ_DSNAME, 350, 3500),
+                            sequential(ABSENT_DSNAME, 350, 3500)))
+                    .withNoCause()
+                    .withMessageContaining("\"" + TRXFL_SEQ_DSNAME
+                            + "\" (350-byte records), then \"" + ABSENT_DSNAME
+                            + "\" (350-byte records)")
+                    .withMessageContaining("deployment obligation");
+        }
+
+        @Test
+        @DisplayName("a refusal that is NOT an absent relation is never labelled a deployment obligation "
+                + "- a duplicate key on a REPRO load is a data condition - yet it still ends the step on "
+                + "a return code a COND test can read")
+        void aRefusalThatIsNotAnAbsentRelationIsNotADeploymentObligation() {
+            String source = "TEST.REPRO.SRC4";
+            String target = "TEST.REPRO.TGT4";
+            JdbcTemplate template = seededRelation("repro-duplicate-key", source, 80, List.of());
+            store(template).defineUnique(target, RecordImageDataSource.RECORD_IMAGE_COLUMN,
+                    ColumnForm.CHARACTER, 80);
+            JdbcDatasetUtilityPort port = portOver(template);
+            DatasetBinding from = sequential(source, 80, 8000);
+            DatasetBinding to = sequential(target, 80, 8000);
+            port.writeRecordImages(from, List.of(record80("A"), record80("A")));
+
+            assertThatExceptionOfType(AbendException.class)
+                    .isThrownBy(() -> port.copyRecordImages(from, to))
+                    .satisfies(abend -> assertThat(abend.getReturnCode())
+                            .as("a utility step has no arm to continue on, whatever refused it")
+                            .isEqualTo(AbendException.RETURN_CODE_IO_ERROR))
+                    .withMessageNotContaining("deployment obligation")
+                    .withMessageNotContaining("Allocate the dataset(s) above")
+                    .withMessageContaining("REPRO after 1 record(s)")
+                    .withMessageContaining("SQLSTATE " + RecordImageStore.DUPLICATE_IMAGE_STATE)
+                    .withNoCause();
+
+            assertThat(store(template).rows(target))
+                    .as("and what the interrupted REPRO had already loaded stays loaded")
+                    .containsExactly(record80("A"));
+        }
+
+        private static String record80(String lead) {
+            return lead + " ".repeat(80 - lead.length());
+        }
+    }
+
     private static JdbcTemplate seededRelation(String database, String dsname, int recordLength,
             List<String> rows) {
         Objects.requireNonNull(database, "A per-test store is labelled with the test that owns it");
@@ -2246,12 +2418,85 @@ class StatementGenerationJobATest {
             DatasetBinding to = sequential(target, 80, 8000);
             port.writeRecordImages(from, List.of(record80("A"), record80("B"), record80("A")));
 
-            assertThatExceptionOfType(DataAccessException.class)
-                    .isThrownBy(() -> port.copyRecordImages(from, to));
+            assertThatExceptionOfType(AbendException.class)
+                    .isThrownBy(() -> port.copyRecordImages(from, to))
+                    .satisfies(abend -> assertThat(abend.getReturnCode())
+                            .as("a refused REPRO ends its step with the severe-error code, so the COND "
+                                    + "gates after it read a number JCL produces")
+                            .isEqualTo(AbendException.RETURN_CODE_IO_ERROR))
+                    .withMessageContaining("REPRO after 2 record(s)")
+                    .withMessageContaining("SQLSTATE " + RecordImageStore.DUPLICATE_IMAGE_STATE)
+                    .withMessageContaining(DataAccessException.class.getPackageName())
+                    .as("the refusal is identified by SQLSTATE, vendor code and type, and carried no "
+                            + "further: a cause would put the driver's own message - composed around "
+                            + "the record it refused - into the step's rendered exit description")
+                    .withNoCause();
 
             assertThat(store(template).rows(target))
                     .as("the records already REPROed stay loaded, as an interrupted IDCAMS leaves them")
                     .containsExactlyInAnyOrder(record80("A"), record80("B"));
+        }
+
+        @Test
+        @DisplayName("a DELETE the backend refuses abends with RETURN-CODE 12 rather than escaping as a "
+                + "raw DataAccessException")
+        void aRefusedDeleteAbendsWithTwelve() {
+            JdbcTemplate template = seededRelation("delete-refused", TRXFL_SEQ_DSNAME, 350, List.of());
+            JdbcDatasetUtilityPort port = new JdbcDatasetUtilityPort(template, ASCII,
+                    RecordImageForm.CHARACTER, ORDINAL, unitOfWork());
+            DatasetBinding neverProvisioned = sequential("TEST.NEVER.DEFINED", 350, 3500);
+
+            assertThatExceptionOfType(AbendException.class)
+                    .isThrownBy(() -> port.deleteAllRecords(neverProvisioned))
+                    .satisfies(abend -> {
+                        assertThat(abend.getReturnCode())
+                                .isEqualTo(AbendException.RETURN_CODE_IO_ERROR);
+                        assertThat(abend.getProgram())
+                                .isEqualTo(StatementGenerationJobA.UTILITY_PROGRAM);
+                    })
+                    .withMessageContaining("DELETE of every record")
+                    .withMessageContaining("TEST.NEVER.DEFINED")
+                    .withMessageContaining(RecordImageStore.RELATION_NOT_FOUND_STATE)
+                    .withMessageContaining(BadSqlGrammarException.class.getName())
+                    .as("the refusal is named by SQLSTATE, vendor code and type, and not carried as a "
+                            + "cause the framework would render into the exit description")
+                    .withNoCause();
+        }
+
+        @Test
+        @DisplayName("a refused whole-dataset read abends with RETURN-CODE 12, naming the sort's input")
+        void aRefusedReadAbendsWithTwelve() {
+            JdbcTemplate template = seededRelation("read-refused", TRXFL_SEQ_DSNAME, 350, List.of());
+            JdbcDatasetUtilityPort port = new JdbcDatasetUtilityPort(template, ASCII,
+                    RecordImageForm.CHARACTER, ORDINAL, unitOfWork());
+            DatasetBinding neverProvisioned = sequential("TEST.NO.SORTIN", 350, 3500);
+
+            assertThatExceptionOfType(AbendException.class)
+                    .isThrownBy(() -> port.readAllRecordImages(neverProvisioned))
+                    .satisfies(abend -> {
+                        assertThat(abend.getReturnCode())
+                                .isEqualTo(AbendException.RETURN_CODE_IO_ERROR);
+                        assertThat(abend.getProgram()).isEqualTo(StatementGenerationJobA.SORT_PROGRAM);
+                    })
+                    .withMessageContaining("SORTIN")
+                    .withMessageContaining("TEST.NO.SORTIN");
+        }
+
+        @Test
+        @DisplayName("a refused whole-dataset write abends with RETURN-CODE 12 and says how far it got")
+        void aRefusedWriteAbendsWithTwelve() {
+            JdbcTemplate template = seededRelation("write-refused", TRXFL_SEQ_DSNAME, 350, List.of());
+            JdbcDatasetUtilityPort port = new JdbcDatasetUtilityPort(template, ASCII,
+                    RecordImageForm.CHARACTER, ORDINAL, unitOfWork());
+            DatasetBinding neverProvisioned = sequential("TEST.NO.SORTOUT", 350, 3500);
+
+            assertThatExceptionOfType(AbendException.class)
+                    .isThrownBy(() -> port.writeRecordImages(neverProvisioned,
+                            List.of(trnxImage(CARD_A, "TRAN000000000001", "WRITE", "1.00"))))
+                    .satisfies(abend -> assertThat(abend.getReturnCode())
+                            .isEqualTo(AbendException.RETURN_CODE_IO_ERROR))
+                    .withMessageContaining("SORTOUT after 0 record(s)")
+                    .withMessageContaining("TEST.NO.SORTOUT");
         }
 
         @Test

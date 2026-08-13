@@ -2305,8 +2305,10 @@ public class ReportRequestController {
          * @param properties the {@code carddemo.job-submission} binding; must not be {@code null}
          * @throws NullPointerException if {@code properties} is {@code null}
          * @throws IllegalStateException if the configured record length is not the CSD's
-         *     {@code RECORDSIZE(80)}
-         * @throws IllegalArgumentException if the configured code page names nothing this platform provides
+         *     {@code RECORDSIZE(80)}, or if {@code carddemo.job-submission.charset} is absent, names
+         *     nothing this platform provides or is not a total single-byte code page - the binding names
+         *     the property key itself, so a bad code page is reported the same way here as it is when the
+         *     startup validator reaches it first
          */
         @Autowired
         public InternalReaderJobSubmissionPort(JobSubmissionProperties properties) {
@@ -2400,8 +2402,9 @@ public class ReportRequestController {
             }
 
             if (refusal != null) {
-                PORT_LOG.error("The job-submission destination is not usable ("
-                        + refusal.getClass().getName() + "); reporting RESP NOTOPEN, which is what an "
+                PORT_LOG.error("The path named by carddemo.job-submission.destination is not usable ("
+                        + refusal.getClass().getName() + causeDetail(refusal)
+                        + "); reporting RESP NOTOPEN, which is what an "
                         + "extrapartition queue whose dataset cannot be opened reports");
                 return WriteQueueOutcome.notOpen();
             }
@@ -2410,10 +2413,13 @@ public class ReportRequestController {
                 try {
                     appendWithinApprovedRoot(image);
                 } catch (IOException cannotAppend) {
+                    // The message is carried, not just the class name: every refusal raised below names
+                    // the property key at fault, and a log line that drops the message would throw that
+                    // away and leave 'java.nio.file.NoSuchFileException' as the operator's whole clue.
                     PORT_LOG.error("Could not append a " + properties.recordLength()
                             + "-byte record to the " + properties.disposition()
                             + " job-submission destination (" + cannotAppend.getClass().getName()
-                            + "); reporting RESP NOTOPEN");
+                            + causeDetail(cannotAppend) + "); reporting RESP NOTOPEN");
                     return WriteQueueOutcome.notOpen();
                 }
             }
@@ -2421,7 +2427,21 @@ public class ReportRequestController {
             return WriteQueueOutcome.NORMAL;
         }
 
-        private void appendWithinApprovedRoot(byte[] image) throws IOException {
+        /**
+         * Appends one record image beneath the approved root, refusing anything that would write outside
+         * it - or into a path the configuration does not actually describe.
+         *
+         * <p>Package-private rather than private so a test can assert the refusal text itself, which is the
+         * part of this method a deployment reads: {@link #writeQueueTd(String)} turns every refusal here
+         * into {@code RESP NOTOPEN} and the message survives only in the log, exactly as
+         * {@link #requireParentStillWithinRoot(Path, Path)} is reached directly for the same reason.
+         *
+         * @param image the record image, already encoded and width-checked; must not be {@code null}
+         * @throws IOException if the approved root is absent, is a link, or is not a directory; if a
+         *     component of the destination below it is a link or occupies a name that is not a directory;
+         *     or if the append itself fails
+         */
+        void appendWithinApprovedRoot(byte[] image) throws IOException {
             Path approvedRoot = properties.approvedRootPath();
 
             // Per write rather than once at startup, because the root can be replaced between two writes
@@ -2434,11 +2454,26 @@ public class ReportRequestController {
                         + "do on its own");
             }
 
+            // Named rather than left to a bare NoSuchFileException from toRealPath() below: an absent root
+            // is the one job-submission fault a deployment can fix in a second, and a diagnostic that
+            // carries only a path leaves the reader to guess which of the two configured paths it was.
+            // This module never creates the root itself - nothing in src/main/java calls
+            // createDirectories - because the root IS the containment boundary and a boundary a program
+            // manufactures for itself bounds nothing.
+            if (!Files.exists(approvedRoot, LinkOption.NOFOLLOW_LINKS)) {
+                throw new IOException("The approved root named by carddemo.job-submission.approved-root, '"
+                        + approvedRoot + "', does not exist. This module does not create it: the root is "
+                        + "the boundary job-submission output may not leave, so the deployment owns it - "
+                        + "create the directory (owned outside the runtime account, mode 0755 or tighter) "
+                        + "or point carddemo.job-submission.approved-root at one that already exists");
+            }
+
             Path realRoot = approvedRoot.toRealPath();
             if (!Files.isDirectory(realRoot, LinkOption.NOFOLLOW_LINKS)) {
-                throw new IOException("The approved root '" + approvedRoot + "' resolves to '" + realRoot
-                        + "', which is not a directory. The root names the directory tree job-submission "
-                        + "output may go in, so it cannot resolve to a file or to a dangling link");
+                throw new IOException("The approved root named by carddemo.job-submission.approved-root, '"
+                        + approvedRoot + "', resolves to '" + realRoot + "', which is not a directory. The "
+                        + "root names the directory tree job-submission output may go in, so it cannot "
+                        + "resolve to a file or to a dangling link");
             }
 
             Path below = approvedRoot.relativize(destination);
@@ -2456,7 +2491,10 @@ public class ReportRequestController {
                     }
                     if (!last && !Files.isDirectory(next, LinkOption.NOFOLLOW_LINKS)) {
                         throw new IOException("Refusing to write: component " + (element + 1)
-                                + " of the job-submission destination exists but is not a directory");
+                                + " of the path named by carddemo.job-submission.destination, '" + next
+                                + "', exists but is not a directory, so the destination cannot be a file "
+                                + "beneath it. Correct carddemo.job-submission.destination, or remove "
+                                + "what occupies that name");
                     }
                 } else if (!last) {
                     if (posixPermissionsSupported) {
@@ -2493,6 +2531,22 @@ public class ReportRequestController {
                         + "RECORDFORMAT(FIXED) queue whose writers are not ordered yields torn records "
                         + "rather than a reported failure", alreadyHeldByThisJvm);
             }
+        }
+
+        /**
+         * The failure's own message, as a suffix for a log line that has already named its class.
+         *
+         * <p>A {@link java.nio.file.FileSystemException} raised by the platform carries only a path, while
+         * every refusal this port raises itself carries the property key at fault - so the suffix is what
+         * turns "something was wrong with a file" into "this configured value is wrong". Absent when the
+         * failure carries no message, rather than printing the word {@code null}.
+         *
+         * @param failure the failure being reported; must not be {@code null}
+         * @return {@code ": <message>"}, or the empty string when there is no message
+         */
+        private static String causeDetail(final Throwable failure) {
+            final String message = failure.getMessage();
+            return message == null || message.isBlank() ? "" : ": " + message;
         }
 
         private static void assertHeld(final FileLock exclusive) throws IOException {

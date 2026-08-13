@@ -20,6 +20,7 @@ import com.vsergeychik.carddemo.config.BatchConfig.StopSignal;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBindings;
 
 import java.lang.reflect.Method;
+import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -31,6 +32,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.batch.core.BatchStatus;
 import org.springframework.batch.core.ExitStatus;
@@ -85,6 +87,7 @@ import org.springframework.boot.test.context.ConfigDataApplicationContextInitial
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.jdbc.BadSqlGrammarException;
 import org.springframework.jdbc.support.JdbcTransactionManager;
 import org.springframework.scheduling.annotation.EnableScheduling;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -769,6 +772,162 @@ class BatchConfigTest {
 
             assertThat(mapper.getExitCode(new IllegalStateException("unrelated")))
                     .isEqualTo(BatchConfig.NO_MAPPED_EXIT_CODE);
+        }
+
+        @Test
+        @DisplayName("a FAILED execution carrying no abend still reports a number - 12, the value this "
+                + "estate moves for a dataset it cannot use - because no COND test has a meaning for "
+                + "'FAILED'")
+        void aFailureWithNoAbendReportsTheFatalReturnCode() {
+            ExitStatus asTheFrameworkLeftIt = new ExitStatus(ExitStatus.FAILED.getExitCode(),
+                    "Table \"CARDDEMO.TEST.TRXFL.SEQ\" not found");
+
+            ExitStatus reported = BatchConfig.withJclReturnCode(asTheFrameworkLeftIt,
+                    BatchStatus.FAILED,
+                    List.<Throwable>of(new IllegalStateException("the relation is not there")));
+
+            assertThat(reported.getExitCode()).isEqualTo("12");
+            assertThat(BatchConfig.returnCodeOf(reported))
+                    .isEqualTo(AbendException.RETURN_CODE_IO_ERROR)
+                    .isEqualTo(BatchConfig.UNMAPPED_FAILURE_RETURN_CODE);
+            assertThat(reported.getExitDescription())
+                    .as("the framework's own description survives, so the cause is still readable")
+                    .isEqualTo(asTheFrameworkLeftIt.getExitDescription());
+        }
+
+        @Test
+        @DisplayName("a FAILED execution with no failure exception at all reports it too - the framework "
+                + "can fail a step without handing one over")
+        void aFailureWithNoExceptionReportsTheFatalReturnCode() {
+            assertThat(BatchConfig.withJclReturnCode(ExitStatus.FAILED, BatchStatus.FAILED,
+                    List.<Throwable>of()).getExitCode()).isEqualTo("12");
+            assertThat(BatchConfig.withJclReturnCode(ExitStatus.FAILED, BatchStatus.FAILED, null)
+                    .getExitCode()).isEqualTo("12");
+            assertThat(BatchConfig.withJclReturnCode(null, BatchStatus.FAILED, List.<Throwable>of())
+                    .getExitCode())
+                    .as("no reported status reads as UNKNOWN, which is still not a number")
+                    .isEqualTo("12");
+        }
+
+        @Test
+        @DisplayName("an abend always outranks the fallback, so CBSTM03A's 8 never becomes 12")
+        void anAbendOutranksTheFallback() {
+            for (int returnCode : CARRIED_RETURN_CODES) {
+                ExitStatus reported = BatchConfig.withJclReturnCode(ExitStatus.FAILED,
+                        BatchStatus.FAILED, List.<Throwable>of(wrapped(
+                                AbendException.withoutAbendParameters("CBSTM03A", returnCode), 2)));
+
+                assertThat(reported.getExitCode()).isEqualTo(Integer.toString(returnCode));
+                assertThat(BatchConfig.returnCodeOf(reported)).isEqualTo(returnCode);
+            }
+        }
+
+        @ParameterizedTest(name = "a FAILED execution already reporting {0} keeps it")
+        @ValueSource(strings = { "0", "4", "8", "12", "16", "-4" })
+        @DisplayName("a code that already parses as a number is something's decision and is never "
+                + "overwritten")
+        void anAlreadyNumericCodeIsKept(String exitCode) {
+            assertThat(BatchConfig.withJclReturnCode(new ExitStatus(exitCode), BatchStatus.FAILED,
+                    List.<Throwable>of(new IllegalStateException("unrelated"))).getExitCode())
+                    .isEqualTo(exitCode);
+        }
+
+        @ParameterizedTest(name = "a {0} execution is left exactly as the framework left it")
+        @EnumSource(value = BatchStatus.class, names = { "COMPLETED", "STOPPED", "STARTING", "STARTED",
+                "STOPPING", "ABANDONED", "UNKNOWN" })
+        @DisplayName("only FAILED gets the fallback: a stop was a cancellation between records, which on "
+                + "the mainframe ends the job with an abend code and not a condition code")
+        void onlyAFailedExecutionGetsTheFallback(BatchStatus batchStatus) {
+            ExitStatus reported = BatchConfig.withJclReturnCode(ExitStatus.STOPPED, batchStatus,
+                    List.<Throwable>of(new IllegalStateException("not an abend")));
+
+            assertThat(reported).isSameAs(ExitStatus.STOPPED);
+            assertThat(BatchConfig.returnCodeOf(reported))
+                    .isEqualTo(BatchConfig.NO_JCL_RETURN_CODE);
+        }
+
+        @Test
+        @DisplayName("the step listener reports the fatal code for a step that failed with no abend - "
+                + "instance one and two of the utility-step condition")
+        void theStepListenerReportsTheFatalCodeForANonAbendFailure() {
+            StepExecutionListener listener = resourcelessConfig().abendExitStatusStepListener();
+            JobExecution jobExecution = new JobExecution(1L);
+            StepExecution stepExecution = jobExecution.createStepExecution("STEP01R");
+            stepExecution.setStatus(BatchStatus.FAILED);
+            stepExecution.setExitStatus(ExitStatus.FAILED);
+            stepExecution.addFailureException(
+                    new BadSqlGrammarException("StatementCallback",
+                            "DELETE FROM \"CARDDEMO.TEST.TRANSACT.BKUP\"",
+                            new SQLException("Table not found", "42S02", 42102)));
+
+            ExitStatus reported = listener.afterStep(stepExecution);
+
+            assertThat(reported.getExitCode()).isEqualTo("12");
+            assertThat(BatchConfig.precedingStepReturnedZero(reported))
+                    .as("the COND gate reads it as blocking, exactly as it reads an abend")
+                    .isFalse();
+        }
+
+        @Test
+        @DisplayName("the job listener reports the fatal code for a job that failed with no abend, so "
+                + "the launcher carries a number out to the process")
+        void theJobListenerReportsTheFatalCodeForANonAbendFailure() {
+            JobExecutionListener listener = resourcelessConfig().abendExitStatusJobListener();
+            JobExecution jobExecution = new JobExecution(1L);
+            jobExecution.setStatus(BatchStatus.FAILED);
+            jobExecution.setExitStatus(ExitStatus.FAILED);
+            jobExecution.addFailureException(new IllegalArgumentException(
+                    "Subscript 52 does not address WS-CARD-TBL"));
+
+            listener.afterJob(jobExecution);
+
+            assertThat(jobExecution.getExitStatus().getExitCode()).isEqualTo("12");
+            assertThat(BatchConfig.returnCodeOf(jobExecution.getExitStatus())).isEqualTo(12);
+        }
+
+        @Test
+        @DisplayName("a stopped job keeps STOPPED through the job listener, so a cancellation is still "
+                + "distinguishable from a failure")
+        void aStoppedJobKeepsItsStatusThroughTheListener() {
+            JobExecutionListener listener = resourcelessConfig().abendExitStatusJobListener();
+            JobExecution jobExecution = new JobExecution(1L);
+            jobExecution.setStatus(BatchStatus.STOPPED);
+            jobExecution.setExitStatus(ExitStatus.STOPPED);
+            jobExecution.addFailureException(new IllegalStateException("stopped between records"));
+
+            listener.afterJob(jobExecution);
+
+            assertThat(jobExecution.getExitStatus().getExitCode())
+                    .isEqualTo(ExitStatus.STOPPED.getExitCode());
+        }
+
+        @Test
+        @DisplayName("a real step whose tasklet throws something that is NOT an abend ends with exit "
+                + "code 12 - gate G35, by construction, for the conditions the COBOL never had")
+        void aRealStepFailingWithoutAnAbendEndsWithTheFatalCode() throws JobInterruptedException {
+            ResourcelessJobRepository repository = new ResourcelessJobRepository();
+            BatchConfig config = configOver(repository, new ResourcelessTransactionManager());
+            Tasklet refuses = (contribution, chunkContext) -> {
+                throw new IllegalStateException("The utility step cannot address a dataset the "
+                        + "deployment must allocate");
+            };
+            Step step = config.taskletStep("DELDEF01", refuses).build();
+
+            JobExecution jobExecution = repository.createJobExecution("statementGenerationJobA",
+                    new JobParameters());
+            StepExecution stepExecution = jobExecution.createStepExecution("DELDEF01");
+            step.execute(stepExecution);
+
+            assertThat(stepExecution.getStatus()).isEqualTo(BatchStatus.FAILED);
+            assertThat(stepExecution.getExitStatus().getExitCode()).isEqualTo("12");
+            assertThat(stepExecution.getExitStatus().getExitDescription())
+                    .as("the diagnostic the step raised is still the description")
+                    .contains("the deployment must allocate");
+            assertThat(BatchConfig.returnCodeOf(stepExecution.getExitStatus())).isEqualTo(12);
+            assertThat(BatchConfig.allPrecedingStepsReturnedZero(jobExecution)).isFalse();
+            assertThat(BatchConfig.highestStepReturnCode(jobExecution))
+                    .as("and a COND-bypassed job would report it as the highest code its steps set")
+                    .isEqualTo(12);
         }
 
         @Test
@@ -1465,6 +1624,43 @@ class BatchConfigTest {
                     .isThrownBy(() -> launcher.run(new DefaultApplicationArguments()))
                     .withMessageContaining("exit status 'FAILED'");
             assertThat(terminatedWith).isEmpty();
+        }
+
+        @ParameterizedTest(name = "an exit status of {0} is delivered as the severe-error code 12")
+        @ValueSource(strings = { "FAILED", "STOPPED", "UNKNOWN", "-1", "-4", "COND BYPASSED" })
+        @DisplayName("a failure carrying no return code a COND test could read is delivered as 12, never "
+                + "as a negative number the shell would report as 255 and never as success")
+        void anUnmappableFailureIsDeliveredAsTheSevereErrorCode(final String exitCode) {
+            BatchConfig.JclJobLauncher launcher = launcherReporting(new ExitStatus(exitCode));
+
+            assertThatExceptionOfType(BatchConfig.JclReturnCodeException.class)
+                    .isThrownBy(() -> launcher.run(new DefaultApplicationArguments()))
+                    .withMessageContaining("RETURN-CODE "
+                            + BatchConfig.UNMAPPED_FAILURE_RETURN_CODE)
+                    .withMessageContaining("exit status '" + exitCode + "'")
+                    .satisfies(raised -> assertThat(raised.getExitCode())
+                            .isEqualTo(BatchConfig.UNMAPPED_FAILURE_RETURN_CODE));
+            assertThat(launcher.getExitCode())
+                    .isEqualTo(BatchConfig.UNMAPPED_FAILURE_RETURN_CODE)
+                    .isPositive();
+            assertThat(terminatedWith).isEmpty();
+        }
+
+        @Test
+        @DisplayName("the substitution is confined to codes JCL could not have produced: every "
+                + "non-negative code is delivered exactly as the step set it")
+        void onlyUndeliverableCodesAreSubstituted() {
+            assertThat(BatchConfig.UNMAPPED_FAILURE_RETURN_CODE)
+                    .as("the substitute is the severe-error code these programs set, not an invented one")
+                    .isEqualTo(AbendException.RETURN_CODE_IO_ERROR);
+
+            for (int returnCode : new int[] { 0, 4, 8, 12, 16, 99 }) {
+                assertThat(BatchConfig.deliverableReturnCode(returnCode)).isEqualTo(returnCode);
+            }
+            assertThat(BatchConfig.deliverableReturnCode(BatchConfig.NO_JCL_RETURN_CODE))
+                    .isEqualTo(BatchConfig.UNMAPPED_FAILURE_RETURN_CODE);
+            assertThat(BatchConfig.deliverableReturnCode(-255))
+                    .isEqualTo(BatchConfig.UNMAPPED_FAILURE_RETURN_CODE);
         }
 
         @Test

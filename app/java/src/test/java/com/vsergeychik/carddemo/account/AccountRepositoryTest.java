@@ -26,6 +26,7 @@ import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.Mockito;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.ResultSetExtractor;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
@@ -458,6 +459,42 @@ class AccountRepositoryTest {
         }
     }
 
+    /**
+     * A template whose describe refuses its first {@code failuresBeforeSuccess} attempts and then answers,
+     * and whose reads find nothing - so a caller can prove what a repository does and does not remember
+     * about a describe that failed.
+     *
+     * @param describes counts every describe attempt, refused or answered
+     * @param failuresBeforeSuccess how many leading describe attempts raise {@link SQLException}
+     * @return the template
+     * @throws SQLException never in practice; declared because the mocked JDBC methods declare it
+     */
+    private static JdbcTemplate describingWithFailures(AtomicInteger describes,
+            int failuresBeforeSuccess) throws SQLException {
+        DataSource dataSource = Mockito.mock(DataSource.class);
+        Connection connection = Mockito.mock(Connection.class);
+        Statement statement = Mockito.mock(Statement.class);
+        ResultSet probeResultSet = Mockito.mock(ResultSet.class);
+        ResultSetMetaData metaData = Mockito.mock(ResultSetMetaData.class);
+        PreparedStatement preparedStatement = Mockito.mock(PreparedStatement.class);
+        ResultSet emptyResultSet = Mockito.mock(ResultSet.class);
+        Mockito.when(dataSource.getConnection()).thenReturn(connection);
+        Mockito.when(connection.createStatement()).thenReturn(statement);
+        Mockito.when(statement.executeQuery(Mockito.anyString())).thenAnswer(invocation -> {
+            if (describes.incrementAndGet() <= failuresBeforeSuccess) {
+                throw new SQLException("the account master could not be described");
+            }
+            return probeResultSet;
+        });
+        Mockito.when(probeResultSet.getMetaData()).thenReturn(metaData);
+        Mockito.when(metaData.getColumnCount()).thenReturn(1);
+        Mockito.when(metaData.getColumnName(1)).thenReturn(RECORD_IMAGE_COLUMN);
+        Mockito.when(connection.prepareStatement(Mockito.anyString())).thenReturn(preparedStatement);
+        Mockito.when(preparedStatement.executeQuery()).thenReturn(emptyResultSet);
+        Mockito.when(emptyResultSet.next()).thenReturn(false);
+        return new JdbcTemplate(dataSource);
+    }
+
     private static JdbcTemplate unreachable() {
         DataSource dataSource = Mockito.mock(DataSource.class);
         try {
@@ -761,14 +798,79 @@ class AccountRepositoryTest {
         }
 
         @Test
-        @DisplayName("the shape is resolved afresh per call and cached nowhere on the singleton")
-        void theShapeIsResolvedAfreshAndCachedNowhere() {
-            AccountRepository repository = repository(seeded(List.of()));
+        @DisplayName("resolving describes the relation every time, because that is what OPEN and CLOSE "
+                + "need")
+        void resolvingDescribesTheRelationEveryTime() {
+            JdbcTemplate counting = Mockito.spy(seeded(List.of()));
+            AccountRepository repository = repository(counting);
 
             Statements first = repository.resolveStatements();
             Statements second = repository.resolveStatements();
 
-            assertThat(second).isEqualTo(first).isNotSameAs(first);
+            assertThat(second).isEqualTo(first);
+            Mockito.verify(counting, Mockito.times(2))
+                    .query(Mockito.eq(repository.columnProbeSql()),
+                            Mockito.<ResultSetExtractor<String>>any());
+        }
+
+        @Test
+        @DisplayName("a read describes the relation once and every later read reuses what it found")
+        void aReadDescribesTheRelationOnceAndLaterReadsReuseIt() {
+            List<String> rows = fixtureRows();
+            JdbcTemplate counting = Mockito.spy(seeded(rows));
+            AccountRepository repository = repository(counting);
+            long acctId = Long.parseLong(keyImageOf(rows.get(0)));
+
+            assertThat(repository.readByKey(acctId).isFound()).isTrue();
+            assertThat(repository.readByKey(acctId).isFound()).isTrue();
+            assertThat(repository.readByKey(ABSENT_ACCT_ID).isNotFound()).isTrue();
+            transactionOver(counting).executeWithoutResult(status -> {
+                AccountRecord held = repository.readForUpdate(keyImageOf(rows.get(0)))
+                        .account()
+                        .orElseThrow();
+                assertThat(repository.rewrite(held).isWritten()).isTrue();
+            });
+
+            Mockito.verify(counting, Mockito.times(1))
+                    .query(Mockito.eq(repository.columnProbeSql()),
+                            Mockito.<ResultSetExtractor<String>>any());
+        }
+
+        @Test
+        @DisplayName("every OPEN learns the file afresh, and the reads after it reuse what that OPEN found")
+        void everyOpenLearnsTheFileAfresh() {
+            List<String> rows = fixtureRows();
+            JdbcTemplate counting = Mockito.spy(seeded(rows));
+            AccountRepository repository = repository(counting);
+            long acctId = Long.parseLong(keyImageOf(rows.get(0)));
+
+            assertThat(repository.readByKey(acctId).isFound()).isTrue();
+            try (AccountFile file = repository.open(OpenMode.INPUT)) {
+                assertThat(file.openStatus()).isEqualTo(FileStatus.OK);
+                assertThat(file.readNext().isFound()).isTrue();
+            }
+            assertThat(repository.readByKey(acctId).isFound()).isTrue();
+
+            Mockito.verify(counting, Mockito.times(3))
+                    .query(Mockito.eq(repository.columnProbeSql()),
+                            Mockito.<ResultSetExtractor<String>>any());
+        }
+
+        @Test
+        @DisplayName("a describe that fails is not remembered as an answer: the next read describes again")
+        void aFailedDescribeIsNotRemembered() throws SQLException {
+            AtomicInteger describes = new AtomicInteger();
+            JdbcTemplate refusingFirstDescribe = describingWithFailures(describes, 1);
+            AccountRepository repository = repository(refusingFirstDescribe);
+
+            ReadResult refused = repository.readByKey(1L);
+            ReadResult retried = repository.readByKey(1L);
+
+            assertThat(refused.status()).isEqualTo(AccountRepository.PERMANENT_ERROR_STATUS);
+            assertThat(retried.isNotFound()).isTrue();
+            assertThat(describes.get())
+                    .describedAs("the failed describe left nothing behind, so the second read asked again")
+                    .isEqualTo(2);
         }
     }
 
@@ -1695,17 +1797,24 @@ class AccountRepositoryTest {
     @DisplayName("Per-execution state isolation")
     class StateIsolationTests {
         @Test
-        @DisplayName("the repository declares no non-final instance field, so it holds nothing mutable")
+        @DisplayName("the only instance field that is not final is the volatile, immutable statement set")
         void theRepositoryHoldsNothingMutable() {
             for (Field field : AccountRepository.class.getDeclaredFields()) {
-                if (field.isSynthetic() || Modifier.isStatic(field.getModifiers())) {
+                if (field.isSynthetic() || Modifier.isStatic(field.getModifiers())
+                        || Modifier.isFinal(field.getModifiers())) {
                     continue;
                 }
-                assertThat(Modifier.isFinal(field.getModifiers()))
-                        .describedAs("AccountRepository.%s is an instance field of a Spring singleton "
-                                + "and must be final: a browse position or an open mode held here "
-                                + "would be shared by every concurrent execution", field.getName())
+                assertThat(Modifier.isVolatile(field.getModifiers()))
+                        .describedAs("AccountRepository.%s is a non-final instance field of a Spring "
+                                + "singleton and must at least be volatile, so what one execution "
+                                + "publishes another sees whole", field.getName())
                         .isTrue();
+                assertThat(field.getType())
+                        .describedAs("AccountRepository.%s is a non-final instance field of a Spring "
+                                + "singleton, so the value it publishes must be immutable: a browse "
+                                + "position or an open mode held here would be shared by every "
+                                + "concurrent execution", field.getName())
+                        .isEqualTo(Statements.class);
             }
         }
 

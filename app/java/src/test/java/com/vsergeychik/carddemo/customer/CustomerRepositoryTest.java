@@ -28,6 +28,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.Mockito;
 import org.springframework.jdbc.BadSqlGrammarException;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.ResultSetExtractor;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
@@ -56,6 +57,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -196,6 +198,42 @@ class CustomerRepositoryTest {
         } catch (SQLException impossible) {
             throw new IllegalStateException(impossible);
         }
+        return new JdbcTemplate(dataSource);
+    }
+
+    /**
+     * A template whose describe refuses its first {@code failuresBeforeSuccess} attempts and then answers,
+     * and whose reads find nothing - so a caller can prove what a repository does and does not remember
+     * about a describe that failed.
+     *
+     * @param describes counts every describe attempt, refused or answered
+     * @param failuresBeforeSuccess how many leading describe attempts raise {@link SQLException}
+     * @return the template
+     * @throws SQLException never in practice; declared because the mocked JDBC methods declare it
+     */
+    private static JdbcTemplate describingWithFailures(AtomicInteger describes,
+            int failuresBeforeSuccess) throws SQLException {
+        DataSource dataSource = Mockito.mock(DataSource.class);
+        Connection connection = Mockito.mock(Connection.class);
+        Statement statement = Mockito.mock(Statement.class);
+        ResultSet probeResultSet = Mockito.mock(ResultSet.class);
+        ResultSetMetaData metaData = Mockito.mock(ResultSetMetaData.class);
+        PreparedStatement preparedStatement = Mockito.mock(PreparedStatement.class);
+        ResultSet emptyResultSet = Mockito.mock(ResultSet.class);
+        Mockito.when(dataSource.getConnection()).thenReturn(connection);
+        Mockito.when(connection.createStatement()).thenReturn(statement);
+        Mockito.when(statement.executeQuery(Mockito.anyString())).thenAnswer(invocation -> {
+            if (describes.incrementAndGet() <= failuresBeforeSuccess) {
+                throw new SQLException("the customer master could not be described");
+            }
+            return probeResultSet;
+        });
+        Mockito.when(probeResultSet.getMetaData()).thenReturn(metaData);
+        Mockito.when(metaData.getColumnCount()).thenReturn(1);
+        Mockito.when(metaData.getColumnName(1)).thenReturn(RECORD_IMAGE_COLUMN);
+        Mockito.when(connection.prepareStatement(Mockito.anyString())).thenReturn(preparedStatement);
+        Mockito.when(preparedStatement.executeQuery()).thenReturn(emptyResultSet);
+        Mockito.when(emptyResultSet.next()).thenReturn(false);
         return new JdbcTemplate(dataSource);
     }
 
@@ -482,12 +520,21 @@ class CustomerRepositoryTest {
         }
 
         @Test
-        @DisplayName("holds no mutable state of its own: every field is final")
+        @DisplayName("holds no mutable state of its own: every field is final, bar the volatile, "
+                + "immutable statement set")
         void holdsNoMutableState() {
             for (Field field : CustomerRepository.class.getDeclaredFields()) {
-                assertThat(Modifier.isFinal(field.getModifiers()))
-                        .as("field %s of CustomerRepository must be final", field.getName())
+                if (Modifier.isFinal(field.getModifiers())) {
+                    continue;
+                }
+                assertThat(Modifier.isVolatile(field.getModifiers()))
+                        .as("field %s of CustomerRepository is not final, so it must at least be "
+                                + "volatile", field.getName())
                         .isTrue();
+                assertThat(field.getType())
+                        .as("field %s of CustomerRepository is not final, so the value it publishes must "
+                                + "be immutable", field.getName())
+                        .isEqualTo(CustomerRepository.Statements.class);
             }
         }
     }
@@ -776,6 +823,64 @@ class CustomerRepositoryTest {
                     .doesNotContainIgnoringCase("offset")
                     .doesNotContainIgnoringCase("rownum");
             assertThat(repository.columnProbeSql()).contains("1 = 0");
+        }
+
+        @Test
+        @DisplayName("a read describes the relation once and every later read reuses what it found")
+        void aReadDescribesTheRelationOnceAndLaterReadsReuseIt() {
+            List<String> rows = fixtureRows();
+            JdbcTemplate counting = Mockito.spy(seeded(rows));
+            CustomerRepository repository = repository(counting);
+            String key = keyImageOf(rows.get(0));
+
+            assertThat(repository.readByKey(key).isFound()).isTrue();
+            assertThat(repository.readByKey(Long.parseLong(key)).isFound()).isTrue();
+            assertThat(repository.readByKey(ABSENT_CUST_ID).isNotFound()).isTrue();
+            assertThat(withUnitOfWork(() -> repository.rewrite(rows.get(0).getBytes(ASCII)))
+                    .isWritten()).isTrue();
+            assertThat(withUnitOfWork(() ->
+                    repository.rewriteHeld(rows.get(0), rows.get(0).getBytes(ASCII))).isWritten())
+                    .isTrue();
+
+            Mockito.verify(counting, Mockito.times(1))
+                    .query(Mockito.eq(repository.columnProbeSql()),
+                            Mockito.<ResultSetExtractor<String>>any());
+        }
+
+        @Test
+        @DisplayName("every OPEN INPUT learns the file afresh, and the reads after it reuse what it found")
+        void everyOpenLearnsTheFileAfresh() {
+            List<String> rows = fixtureRows();
+            JdbcTemplate counting = Mockito.spy(seeded(rows));
+            CustomerRepository repository = repository(counting);
+            String key = keyImageOf(rows.get(0));
+
+            assertThat(repository.readByKey(key).isFound()).isTrue();
+            try (CustomerFile file = repository.openInput()) {
+                assertThat(file.openStatus()).isEqualTo(FileStatus.OK);
+                assertThat(file.readNext().isFound()).isTrue();
+            }
+            assertThat(repository.readByKey(key).isFound()).isTrue();
+
+            Mockito.verify(counting, Mockito.times(3))
+                    .query(Mockito.eq(repository.columnProbeSql()),
+                            Mockito.<ResultSetExtractor<String>>any());
+        }
+
+        @Test
+        @DisplayName("a describe that fails is not remembered as an answer: the next read describes again")
+        void aFailedDescribeIsNotRemembered() throws SQLException {
+            AtomicInteger describes = new AtomicInteger();
+            CustomerRepository repository = repository(describingWithFailures(describes, 1));
+
+            ReadResult refused = repository.readByKey("000000001");
+            ReadResult retried = repository.readByKey("000000001");
+
+            assertThat(refused.status()).isEqualTo(CustomerRepository.PERMANENT_ERROR_STATUS);
+            assertThat(retried.isNotFound()).isTrue();
+            assertThat(describes.get())
+                    .as("the failed describe left nothing behind, so the second read asked again")
+                    .isEqualTo(2);
         }
     }
 

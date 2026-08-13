@@ -1294,6 +1294,56 @@ class ReportRequestControllerTest {
         }
 
         @Test
+        @DisplayName("the refusal of an absent approved root names carddemo.job-submission.approved-root "
+                + "and says the deployment owns the directory")
+        void anAbsentApprovedRootNamesItsProperty(@TempDir Path root) {
+            Path missing = root.resolve("never-provisioned");
+            InternalReaderJobSubmissionPort submitter = new InternalReaderJobSubmissionPort(
+                    properties(missing, missing.resolve("inreader").resolve("JOBS")));
+
+            assertThatExceptionOfType(IOException.class)
+                    .isThrownBy(() -> submitter.appendWithinApprovedRoot(new byte[80]))
+                    .withMessageContaining("carddemo.job-submission.approved-root")
+                    .withMessageContaining(missing.toString())
+                    .withMessageContaining("does not exist")
+                    .withMessageContaining("does not create it");
+
+            assertThat(Files.exists(missing)).isFalse();
+        }
+
+        @Test
+        @DisplayName("an approved root that is a file, not a directory, is refused by name as well")
+        void anApprovedRootThatIsAFileNamesItsProperty(@TempDir Path root) throws IOException {
+            Path notADirectory = Files.createFile(root.resolve("root-is-a-file"));
+            InternalReaderJobSubmissionPort submitter = new InternalReaderJobSubmissionPort(
+                    properties(notADirectory, notADirectory.resolve("JOBS")));
+
+            assertThatExceptionOfType(IOException.class)
+                    .isThrownBy(() -> submitter.appendWithinApprovedRoot(new byte[80]))
+                    .withMessageContaining("carddemo.job-submission.approved-root")
+                    .withMessageContaining("which is not a directory");
+        }
+
+        @Test
+        @DisplayName("a destination whose parent is a regular file names "
+                + "carddemo.job-submission.destination, and nothing is written")
+        void aDestinationParentThatIsAFileNamesItsProperty(@TempDir Path root) throws IOException {
+            Path occupied = Files.createFile(root.resolve("inreader"));
+            Path destination = occupied.resolve("JOBS");
+            InternalReaderJobSubmissionPort submitter =
+                    new InternalReaderJobSubmissionPort(properties(root, destination));
+
+            assertThatExceptionOfType(IOException.class)
+                    .isThrownBy(() -> submitter.appendWithinApprovedRoot(new byte[80]))
+                    .withMessageContaining("carddemo.job-submission.destination")
+                    .withMessageContaining("exists but is not a directory");
+
+            assertThat(submitter.writeQueueTd(ReportRequestController.JOB_LINE_01).resp())
+                    .isEqualTo(FileStatus.NOTOPEN);
+            assertThat(Files.readAllBytes(occupied)).isEmpty();
+        }
+
+        @Test
         @DisplayName("directories below the root are created one inspected level at a time")
         void theDirectoriesBelowTheRootAreCreated(@TempDir Path root) throws IOException {
             Path destination = root.resolve("inreader").resolve("today").resolve("JOBS");

@@ -1,7 +1,17 @@
 ---
 
-# Every mainframe dataset name, record width and batch job contract in the module is written here and
-# nowhere else: a scan of src/main/java finds no AWS.M2.CARDDEMO.* literal, no LRECL and no DD name.
+# Every mainframe dataset name, record width and batch job contract the module ADDRESSES is configured
+# here and nowhere else: no dataset name and no record width is configured in Java, so a deployment
+# relocates a dataset or corrects a width by editing this document alone (gate G46).
+#
+# Java is not silent about widths and DD names, and deliberately so. A writer states the LRECL its JCL
+# declares - DalyRejectWriter 430, TranReportWriter 133 - and a job states the DD names its own JCL step
+# names, and each is checked against the binding at startup: a DALYREJS bound at 429 is refused with the
+# source line that fixes the number, rather than writing a record no mainframe step could read. Those
+# constants are cross-checks on this document, never a second place a value is chosen. One dataset name
+# does appear in Java, in ReportRequestController: AWS.M2.CARDDEMO.PROC is a card inside the 80-byte JCL
+# skeleton CORPT00C composes (app/cbl/CORPT00C.cbl:90), so it is submitted text this migration reproduces
+# byte for byte - not a dataset this module opens.
 spring:
   application:
     name: carddemo

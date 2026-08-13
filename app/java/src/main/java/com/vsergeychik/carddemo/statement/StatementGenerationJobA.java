@@ -47,6 +47,7 @@ import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.PreparedStatementCreator;
 
@@ -1194,7 +1195,54 @@ public class StatementGenerationJobA {
         private static final String REPRO_RECORD_VERB =
                 "app/jcl/CREASTMT.JCL:61 REPRO INFILE(INFILE) OUTFILE(OUTFILE) - one record";
 
+        /**
+         * What an {@code IDCAMS DELETE} or an {@code IEFBR14} step with
+         * {@code DISP=(MOD,DELETE,DELETE)} is doing when it addresses a dataset.
+         */
+        private static final String EMPTY_ATTEMPT = "empty a dataset (IDCAMS DELETE, or IEFBR14 with "
+                + "DISP=(MOD,DELETE,DELETE))";
+
+        /**
+         * What a {@code SORT} step's {@code SORTIN} read, or a {@code REPRO} step's input, is doing.
+         */
+        private static final String UNLOAD_ATTEMPT = "read a dataset whole (a SORT step's SORTIN, or an "
+                + "IDCAMS REPRO INFILE)";
+
+        /**
+         * What a {@code SORT} step's {@code SORTOUT} write, or a {@code REPRO} step's output, is doing.
+         */
+        private static final String LOAD_ATTEMPT = "write a dataset whole (a SORT step's SORTOUT, or an "
+                + "IDCAMS REPRO OUTFILE)";
+
+        /**
+         * What {@code REPRO INFILE(INFILE) OUTFILE(OUTFILE)} is doing.
+         */
+        private static final String COPY_ATTEMPT = "copy a dataset record for record (IDCAMS REPRO "
+                + "INFILE/OUTFILE)";
+
         private static final int COPY_FETCH_SIZE = 32;
+
+        private static final char PERMANENT_ERROR_FEEDBACK_CODE = 0;
+
+        /**
+         * The file status a refused whole-dataset statement is reported under: {@code 9} with a binary-zero
+         * feedback code, which every repository in this module already reports when the backend refuses to
+         * address a dataset. Named here so a utility step and a repository describe the same refusal with
+         * the same two bytes.
+         */
+        static final String PERMANENT_ERROR_STATUS = "9" + PERMANENT_ERROR_FEEDBACK_CODE;
+
+        /** {@code IDCAMS DELETE} of every record in a dataset, {@code app/jcl/CREASTMT.JCL:L25-L39}. */
+        private static final String DELETE_VERB = "DELETE of every record";
+
+        /** {@code IDCAMS REPRO INFILE/OUTFILE}, {@code app/jcl/CREASTMT.JCL:L61}, {@code REPROCT.ctl:L15}. */
+        private static final String REPRO_VERB = "REPRO";
+
+        /** {@code SORTIN} - the whole-dataset read a sort or an unload step performs. */
+        private static final String READ_VERB = "the whole-dataset read of SORTIN";
+
+        /** {@code SORTOUT} - the whole-dataset write a sort or a load step performs. */
+        private static final String WRITE_VERB = "the whole-dataset write of SORTOUT";
 
         private final JdbcTemplate jdbcTemplate;
 
@@ -1252,16 +1300,27 @@ public class StatementGenerationJobA {
 
         @Override
         public int deleteAllRecords(DatasetBinding binding) {
-            return jdbcTemplate.update(relationOf(binding).deleteAllStatement());
+            DatasetRelation relation = relationOf(binding);
+            try {
+                return jdbcTemplate.update(relation.deleteAllStatement());
+            } catch (DataAccessException refused) {
+                throw utilityAbend(UTILITY_PROGRAM, DELETE_VERB, EMPTY_ATTEMPT, refused,
+                        new Addressed(relation, binding));
+            }
         }
 
         @Override
         public List<String> readAllRecordImages(DatasetBinding binding) {
             DatasetRelation relation = relationOf(binding);
             int recordLength = binding.recordLength();
-            return jdbcTemplate.query(relation.selectAllInPhysicalSequence(physicalSequence),
-                    (row, rowNumber) -> requireRecordImage(readImage(row), relation.identifier(),
-                            rowNumber, recordLength));
+            try {
+                return jdbcTemplate.query(relation.selectAllInPhysicalSequence(physicalSequence),
+                        (row, rowNumber) -> requireRecordImage(readImage(row), relation.identifier(),
+                                rowNumber, recordLength));
+            } catch (DataAccessException refused) {
+                throw utilityAbend(SORT_PROGRAM, READ_VERB, UNLOAD_ATTEMPT, refused,
+                        new Addressed(relation, binding));
+            }
         }
 
         @Override
@@ -1286,12 +1345,18 @@ public class StatementGenerationJobA {
                     + "write nothing");
             Objects.requireNonNull(stopSignal, "A stop signal is required; pass StopSignal.RUNNING "
                     + "outside a step, which is what the two-argument overload does");
-            String statement = relationOf(binding).insertRecordImage();
+            DatasetRelation relation = relationOf(binding);
+            String statement = relation.insertRecordImage();
             int recordLength = binding.recordLength();
             int written = 0;
             for (String recordImage : recordImages) {
                 stopSignal.checkStopRequested();
-                written += insert(statement, recordImage, recordLength);
+                try {
+                    written += insert(statement, recordImage, recordLength);
+                } catch (DataAccessException refused) {
+                    throw utilityAbend(SORT_PROGRAM, WRITE_VERB + " after " + written
+                            + " record(s)", LOAD_ATTEMPT, refused, new Addressed(relation, binding));
+                }
             }
             return written;
         }
@@ -1308,23 +1373,95 @@ public class StatementGenerationJobA {
         @Override
         public int copyRecordImages(DatasetBinding source, DatasetBinding target) {
             DatasetRelation from = relationOf(source);
-            String insert = relationOf(target).insertRecordImage();
+            DatasetRelation to = relationOf(target);
+            String insert = to.insertRecordImage();
             int sourceLength = source.recordLength();
             int targetLength = target.recordLength();
             RowCounter copied = new RowCounter();
-            jdbcTemplate.query(streamed(from.selectAllInPhysicalSequence(physicalSequence)),
-                    (ResultSet row) -> {
-                while (row.next()) {
-                    String recordImage = requireRecordImage(readImage(row), from.identifier(),
-                            copied.count(), sourceLength);
-                    copied.add(unitOfWork == null
-                            ? insert(insert, recordImage, targetLength)
-                            : unitOfWork.persistVerb(REPRO_RECORD_VERB,
-                                    () -> insert(insert, recordImage, targetLength)));
-                }
-                return null;
-            });
+            try {
+                jdbcTemplate.query(streamed(from.selectAllInPhysicalSequence(physicalSequence)),
+                        (ResultSet row) -> {
+                    while (row.next()) {
+                        String recordImage = requireRecordImage(readImage(row), from.identifier(),
+                                copied.count(), sourceLength);
+                        copied.add(unitOfWork == null
+                                ? insert(insert, recordImage, targetLength)
+                                : unitOfWork.persistVerb(REPRO_RECORD_VERB,
+                                        () -> insert(insert, recordImage, targetLength)));
+                    }
+                    return null;
+                });
+            } catch (DataAccessException refused) {
+                // Either end can be the unaddressable one, and which it was is exactly what an operator
+                // needs: the diagnostic names the pair, source first, in the order REPRO reads them.
+                throw utilityAbend(UTILITY_PROGRAM, REPRO_VERB + " after " + copied.count()
+                        + " record(s)", COPY_ATTEMPT, refused, new Addressed(from, source),
+                        new Addressed(to, target));
+            }
             return copied.count();
+        }
+
+        /**
+         * Turns a backend refusal of a whole-dataset statement into the abend a failed JCL utility step is.
+         *
+         * <p>A JCL utility step has no {@code FILE STATUS} clause to test and no arm to continue on: IDCAMS
+         * or DFSORT ends the step with a non-zero code and the following steps' {@code COND} tests read it.
+         * Left untranslated, a {@code DataAccessException} escapes the step, the job, the launcher and
+         * {@code SpringApplication.run} itself, and the process exits on a number no JCL return code ever
+         * carries - so a downstream {@code COND=(0,NE)} gate would be reading a value it cannot interpret.
+         * Reporting {@link AbendException#RETURN_CODE_IO_ERROR} instead is the same answer every repository
+         * in this module gives to the same refusal, and the same one this job's own COBOL gives when a file
+         * it cannot read leaves it nothing to do.
+         *
+         * <p>Records already written stay written: an interrupted IDCAMS or DFSORT step leaves its output
+         * dataset exactly as far as it got, and each caller's {@code DISP} decides what becomes of it.
+         *
+         * <p>The {@code SQLSTATE} class decides how much the diagnostic can say. Class {@code 42} - syntax
+         * or access rule - is what a backend reports when the dataset a DD name binds does not exist or the
+         * credentials do not reach it, and that is a condition no COBOL program of this estate could ever
+         * report: on the mainframe a dataset a step needs is allocated by the JCL before the step's program
+         * is entered. So that refusal, and only that one, also carries
+         * {@link #deploymentObligation(String, Addressed[])} - what the step was attempting in JCL terms,
+         * every dataset end it was addressing, and the two configuration keys that fix it. A duplicate key
+         * on a {@code REPRO} load is class {@code 23} and a lost connection is class {@code 08}: both still
+         * end the step with the same return code, because a utility step has nowhere to continue, but
+         * neither is labelled a deployment obligation, which would misdirect the operator.
+         *
+         * <p>What the driver said is deliberately not carried forward, neither as a cause nor into the log:
+         * a driver composes its message around the row it refused, so it can hold a card number, a customer
+         * name or a password, and this module never lets one reach a log line or a rendered value - and a
+         * cause is rendered, because the framework writes a failed step's stack trace into its exit
+         * description. What stands in for it is {@link BackendDiagnostic}, which holds a {@code SQLSTATE}, a
+         * vendor code and an exception type and has nowhere to hold a message - enough to diagnose the
+         * condition, with nothing of the record in it.
+         *
+         * @param utilityProgram the JCL utility whose verb was refused - {@link #UTILITY_PROGRAM} for the
+         *     IDCAMS verbs, {@link #SORT_PROGRAM} for the sort's own whole-dataset read and write
+         * @param verb the statement that was refused, named as the JCL names it
+         * @param attempt what the utility step was doing, in JCL terms, for a refusal that reports the
+         *     dataset is not addressable at all
+         * @param refused the backend's refusal, read for its {@code SQLSTATE}, vendor code and type
+         * @param addressed the dataset ends the operation was addressing, source end first
+         * @return the abend to throw; never {@code null}
+         */
+        private static AbendException utilityAbend(String utilityProgram, String verb, String attempt,
+                DataAccessException refused, Addressed... addressed) {
+            BackendDiagnostic diagnostic = BackendDiagnostic.of(refused);
+            String diagnosis = utilityProgram + " could not perform " + verb + " on dataset "
+                    + addressed[0].relation().identifier() + " - " + diagnostic.describe()
+                    + "; reporting file status " + FileStatus.toStatusImage(PERMANENT_ERROR_STATUS)
+                    + ", which is what every repository in this module reports for the same refusal";
+            if (diagnostic.syntaxOrAccessViolation()) {
+                diagnosis = diagnosis + ". " + deploymentObligation(attempt, addressed);
+            }
+            LOG.error(diagnosis + (diagnosis.endsWith(".") ? " " : ". ")
+                    + "A utility step tests no file status and has no arm to continue on, "
+                    + "so the step ends with RETURN-CODE " + AbendException.RETURN_CODE_IO_ERROR
+                    + " and the COND=(0,NE) gates that follow it read that code. Records already written "
+                    + "stay written, exactly as an interrupted utility leaves them; the usual cause is a "
+                    + "dataset this deployment has not provisioned, because this module issues no DDL");
+            return AbendException.withoutAbendParameters(utilityProgram,
+                    AbendException.RETURN_CODE_IO_ERROR, diagnosis);
         }
 
         private byte[] readImage(ResultSet row) throws SQLException {
@@ -1373,6 +1510,58 @@ public class StatementGenerationJobA {
             }
             return codec.movePicX(FixedWidthRecord.decodeText(recordImage, codec.charset(),
                     "a stored record image of " + identifier), recordLength);
+        }
+
+        /**
+         * What an operator has to do about a dataset the backend says is not there at all: the attempt in
+         * JCL terms, every dataset end it addressed with its record width and copybook, the JCL that
+         * allocates one, the two configuration keys that rebind it, and the return code the step will
+         * report.
+         *
+         * <p>{@code app/jcl/CREASTMT.JCL:L49} allocates its work file with
+         * {@code DISP=(NEW,CATLG,DELETE)} and {@code app/proc/TRANREPT.prc} allocates the report backup the
+         * same way, so a dataset a step names is the job's own to allocate. This module allocates nothing -
+         * it holds no DDL at all, by design - so it says so and names what it needs rather than reporting
+         * an I/O outcome the COBOL could not have produced.
+         *
+         * @param attempt what the utility step was doing, in JCL terms
+         * @param addressed the dataset ends the operation was addressing, source end first
+         * @return the sentence to append to the refusal's diagnosis
+         */
+        private static String deploymentObligation(String attempt, Addressed... addressed) {
+            StringBuilder datasets = new StringBuilder();
+            for (Addressed end : addressed) {
+                datasets.append(datasets.isEmpty() ? "" : ", then ").append(end.describe());
+            }
+            return "A utility step of this job cannot " + attempt + ": " + datasets
+                    + ". A dataset a JCL step names is allocated by the "
+                    + "job's own DD statements before the step runs - app/jcl/CREASTMT.JCL:L49 and "
+                    + "app/proc/TRANREPT.prc allocate theirs with DISP=(NEW,CATLG,DELETE) - and this "
+                    + "module allocates none of its own, so a dataset it cannot address is a deployment "
+                    + "obligation rather than an I/O outcome the COBOL could report. Allocate the "
+                    + "dataset(s) above, or point the DD name at one that exists: carddemo.datasets."
+                    + "<DD>.dsname for the shared catalogue, carddemo.jobs.<job>.datasets.<DD>.dsname "
+                    + "for a job-scoped override. Until then the step ends with return code 12, the same "
+                    + "code a COBOL step of this job reports for a dataset it cannot use.";
+        }
+
+        /**
+         * One end of a utility operation: the relation it addresses and the binding that named it.
+         *
+         * @param relation the relation the dsname resolves to
+         * @param binding the configured binding, which carries the record width and the copybook
+         */
+        private record Addressed(DatasetRelation relation, DatasetBinding binding) {
+            /**
+             * The end as a diagnostic names it: the dataset, its record width, and its copybook where the
+             * configuration declares one.
+             *
+             * @return the rendered description
+             */
+            private String describe() {
+                return relation.identifier() + " (" + binding.recordLength() + "-byte records"
+                        + (binding.copybook() == null ? "" : ", " + binding.copybook()) + ")";
+            }
         }
 
         private static DatasetRelation relationOf(DatasetBinding binding) {

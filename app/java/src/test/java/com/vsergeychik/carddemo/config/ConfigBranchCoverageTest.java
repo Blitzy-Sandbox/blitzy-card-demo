@@ -1707,6 +1707,48 @@ class ConfigBranchCoverageTest {
             assertThat(port.queueCharset()).isEqualTo(Charset.forName(single.trim()));
         }
 
+        @ParameterizedTest(name = "reading the code page directly refuses [{0}] by name too")
+        @ValueSource(strings = { "IBM037X", "not a charset", "EBCDIC", "IBM-NOSUCH-9999" })
+        @DisplayName("the accessor refuses an unknown code page with the same key-naming diagnostic the "
+                + "validator gives, because the port reads it in its own constructor")
+        void theAccessorRefusesAnUnknownCodePageByName(String unknown) {
+            assertThatIllegalStateException().isThrownBy(charset(unknown)::queueCharset)
+                    .withMessageContaining("carddemo.job-submission.charset")
+                    .withMessageContaining("the JVM supports")
+                    .withMessageContaining("IBM037")
+                    .havingCause()
+                    .isInstanceOf(IllegalArgumentException.class);
+        }
+
+        @ParameterizedTest(name = "reading the code page directly refuses a blank value [{0}]")
+        @ValueSource(strings = { "", "   " })
+        @DisplayName("a blank code page read through the accessor names the key rather than raising an "
+                + "IllegalCharsetNameException with no message")
+        void theAccessorRefusesABlankCodePageByName(String blank) {
+            assertThatIllegalStateException().isThrownBy(charset(blank)::queueCharset)
+                    .withMessageContaining("carddemo.job-submission.charset")
+                    .withMessageContaining("it declares no value")
+                    .withMessageContaining("US-ASCII");
+        }
+
+        @Test
+        @DisplayName("an absent code page read through the accessor is refused, not defaulted")
+        void theAccessorRefusesAnAbsentCodePage() {
+            assertThatIllegalStateException().isThrownBy(charset(null)::queueCharset)
+                    .withMessageContaining("carddemo.job-submission.charset");
+        }
+
+        @ParameterizedTest(name = "reading the code page directly refuses the multi-byte [{0}]")
+        @ValueSource(strings = { "UTF-8", "UTF-16", "IBM930" })
+        @DisplayName("a variable-width code page is refused by the accessor as well, so an 80-character "
+                + "record can never be encoded into some other number of bytes")
+        void theAccessorRefusesAMultiByteCodePage(String multiByte) {
+            assertThatIllegalStateException().isThrownBy(charset(multiByte)::queueCharset)
+                    .withMessageContaining("carddemo.job-submission.charset")
+                    .withMessageContaining("RECORDSIZE("
+                            + JobSubmissionProperties.TDQ_RECORD_LENGTH + ")");
+        }
+
         @Test
         @DisplayName("the approved root is published as a normalised path for the writer to bound "
                 + "itself with")

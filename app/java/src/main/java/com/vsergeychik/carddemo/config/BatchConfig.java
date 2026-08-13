@@ -16,6 +16,7 @@ import com.vsergeychik.carddemo.common.AbendException;
 import com.vsergeychik.carddemo.common.DatasetRelation;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBinding;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBindings;
+import org.springframework.batch.core.BatchStatus;
 import org.springframework.batch.core.ExitStatus;
 import org.springframework.batch.core.Job;
 import org.springframework.batch.core.JobExecution;
@@ -118,6 +119,40 @@ public class BatchConfig {
     static final int NO_JCL_RETURN_CODE = -1;
 
     static final int NO_MAPPED_EXIT_CODE = 0;
+
+    /**
+     * The JCL return code reported for a step or a job that failed carrying no COBOL
+     * {@code RETURN-CODE} of its own: {@code 12}, {@link AbendException#RETURN_CODE_IO_ERROR}.
+     *
+     * <p>Every executed JCL step ends with a numeric condition code - {@code IEF142I ... COND CODE 0012}
+     * - and there is no such thing as a step that ended "FAILED". So a failure this module raises where the
+     * COBOL has no counterpart, because the condition cannot arise in the legacy program at all, still has
+     * to report a number: a dataset a utility step cannot address, or a subscript that does not address its
+     * table. {@code 12} is the value this estate itself moves for a dataset it cannot use - the eight
+     * standard abend paragraphs do {@code MOVE 12 TO APPL-RESULT} before {@code CALL 'CEE3ABD'} - so a
+     * fatal condition reports the same code whether a COBOL program detected it or this translation did,
+     * and the next step's {@code COND} test reads one vocabulary rather than two.
+     *
+     * <p>It is a fallback and never an override: a real abend's own return code always wins, which is what
+     * keeps {@code CBSTM03A}'s {@code 8} distinct from the {@code 12} of the seven programs around it.
+     *
+     * <p>It is applied at both ends of a submission, because a code that is never read is no contract: the
+     * step and job listeners put it on the exit status through
+     * {@link #withJclReturnCode(ExitStatus, BatchStatus, List)}, so the {@code COND} gates that follow read
+     * a number; and {@link #deliverableReturnCode(int)} applies it again where the launcher hands the code
+     * to the operating system, so nothing that slipped past a listener can reach the shell as a value JCL
+     * never produces.
+     *
+     * <p>The framework's own failure exit codes are words, not numbers: a step that failed on an exception
+     * the module did not translate leaves {@code FAILED}, and a job asked to stop leaves {@code STOPPED}.
+     * {@link #returnCodeOf(ExitStatus)} reports {@link #NO_JCL_RETURN_CODE} for those, which is the honest
+     * answer to "what return code did this carry" - but it is not deliverable. Handed to the operating
+     * system it becomes exit status 255, a value no JCL step ever produces and no {@code COND} test can
+     * interpret; and delivering {@code 0} instead would report a failed job as a successful one. So the
+     * launcher substitutes the severe-error code, which is both non-zero and one of the four this
+     * migration's programs actually set.
+     */
+    static final int UNMAPPED_FAILURE_RETURN_CODE = AbendException.RETURN_CODE_IO_ERROR;
 
     private static final int MAX_CAUSE_CHAIN_DEPTH = 16;
 
@@ -306,6 +341,23 @@ public class BatchConfig {
         return returnCodeOf(exitStatus) == JCL_RETURN_CODE_ZERO;
     }
 
+    /**
+     * The return code a submission hands to the operating system: the one the execution reported, unless
+     * that is not a code a JCL step could have produced.
+     *
+     * <p>Only negative values are substituted, and {@link #UNMAPPED_FAILURE_RETURN_CODE} explains why.
+     * {@code 0}, {@code 4}, {@code 8}, {@code 12} and any other non-negative code a step set are delivered
+     * exactly as they are - the point of the exercise is that the shell sees the number the COBOL set, and
+     * this method is deliberately incapable of changing one of those.
+     *
+     * @param derived the code {@link #returnCodeOf(ExitStatus)} read from the finished execution
+     * @return {@code derived} when it is a deliverable JCL return code, and
+     *     {@link #UNMAPPED_FAILURE_RETURN_CODE} when it is not
+     */
+    static int deliverableReturnCode(int derived) {
+        return derived < JCL_RETURN_CODE_ZERO ? UNMAPPED_FAILURE_RETURN_CODE : derived;
+    }
+
     static int returnCodeOf(ExitStatus exitStatus) {
         Assert.notNull(exitStatus, "An exit status is required to derive a JCL return code");
         String exitCode = Objects.requireNonNullElse(exitStatus.getExitCode(), "");
@@ -370,6 +422,13 @@ public class BatchConfig {
      *
      * <p>The exception is never swallowed and its message is never rewritten - the text the COBOL displays
      * before abending is observable behaviour, and the abend's own message reproduces it.
+     *
+     * <p>It claims an abend and nothing else, deliberately: this mapper sees every exception that escapes
+     * the application, including the ones a context that never finished starting throws, and a
+     * configuration this module refused at startup is not a job that ran and returned {@code 12}. A job
+     * that failed without an abend gets its return code where it belongs instead - on its own exit status,
+     * from {@link #withJclReturnCode(ExitStatus, BatchStatus, List)} - and {@link JclJobLauncher} carries
+     * that out to the process.
      *
      * @return the mapper
      */
@@ -474,6 +533,10 @@ public class BatchConfig {
         /**
          * Submits the job, once, and delivers its return code to the operating system.
          *
+         * <p>The code delivered is the execution's own, put through
+         * {@link BatchConfig#deliverableReturnCode(int)} so a failure the module did not translate cannot
+         * reach the shell as a number JCL never produces - see {@link #UNMAPPED_FAILURE_RETURN_CODE}.
+         *
          * @param arguments the process arguments, which are deliberately not read: a job's parameters are
          *     its contract in {@code carddemo.jobs}, not free text from a command line
          * @throws JclReturnCodeException if the job's return code is not zero
@@ -485,7 +548,7 @@ public class BatchConfig {
             Job job = resolveJob();
             JobExecution execution =
                     jobLauncherProvider.getObject().run(job, submissionParameters(job.getName()));
-            this.returnCode = returnCodeOf(execution.getExitStatus());
+            this.returnCode = deliverableReturnCode(returnCodeOf(execution.getExitStatus()));
             if (returnCode != JCL_RETURN_CODE_ZERO) {
                 throw new JclReturnCodeException(job.getName(), returnCode,
                         execution.getExitStatus().getExitCode());
@@ -535,8 +598,9 @@ public class BatchConfig {
         /**
          * The return code the finished execution reported.
          *
-         * @return {@code 0}, {@code 4}, {@code 8}, {@code 12} or whatever numeric code a step set;
-         *     {@link #NO_MAPPED_EXIT_CODE} before the job has run
+         * @return {@code 0}, {@code 4}, {@code 8}, {@code 12} or whatever non-negative code a step set;
+         *     {@link #UNMAPPED_FAILURE_RETURN_CODE} when the execution failed carrying no code a
+         *     {@code COND} test could read; {@link #NO_MAPPED_EXIT_CODE} before the job has run
          */
         @Override
         public int getExitCode() {
@@ -754,6 +818,45 @@ public class BatchConfig {
                 .orElse(reported);
     }
 
+    /**
+     * The exit status a finished step or job reports, with a JCL return code on it in every case where the
+     * execution ended abnormally.
+     *
+     * <p>Two sources, in this order of authority:
+     *
+     * <ol>
+     *   <li>an {@link AbendException} anywhere in the failures - its {@code RETURN-CODE} is what the COBOL
+     *       itself moved into {@code APPL-RESULT}, so it is transcribed unchanged;</li>
+     *   <li>otherwise, for a {@link BatchStatus#FAILED} execution whose reported code is not a number,
+     *       {@link #UNMAPPED_FAILURE_RETURN_CODE}. The framework leaves the literal {@code "FAILED"} there,
+     *       which {@link #returnCodeOf(ExitStatus)} can only read as {@link #NO_JCL_RETURN_CODE} - and that
+     *       reached the operating system as exit {@code 255}, a value no {@code COND} test in this estate
+     *       has a meaning for.</li>
+     * </ol>
+     *
+     * <p>Everything else is returned exactly as the framework left it, and the two exclusions are
+     * deliberate. A code that already parses as a number is a code something chose - {@code 0}, {@code 4},
+     * {@code 8}, {@code 12}, or the {@code COND BYPASSED} terminal's own rewrite - and must not be
+     * overwritten. And a status other than {@code FAILED} is not a failure: a {@link BatchStatus#STOPPED}
+     * step was cancelled between records rather than failing, which on the mainframe ends the job with an
+     * abend code rather than a condition code, so this module deliberately reports no return code for it.
+     *
+     * @param current the status as the framework left it, or {@code null} which reads as
+     *     {@link ExitStatus#UNKNOWN}
+     * @param batchStatus the execution's own status, which is what says whether it failed; {@code null}
+     *     reads as "not failed"
+     * @param failures the execution's failure exceptions, searched for an abend; {@code null} reads as none
+     * @return the status to report; never {@code null}
+     */
+    static ExitStatus withJclReturnCode(ExitStatus current, BatchStatus batchStatus,
+            List<Throwable> failures) {
+        ExitStatus reported = withAbendExitCode(current, failures);
+        if (BatchStatus.FAILED != batchStatus || returnCodeOf(reported) != NO_JCL_RETURN_CODE) {
+            return reported;
+        }
+        return reported.replaceExitCode(Integer.toString(UNMAPPED_FAILURE_RETURN_CODE));
+    }
+
     static Optional<AbendException> findAbend(List<Throwable> failures) {
         return Objects.requireNonNullElse(failures, List.<Throwable>of()).stream()
                 .map(BatchConfig::findAbend)
@@ -873,36 +976,41 @@ public class BatchConfig {
     }
 
     /**
-     * Carries an abend's {@code RETURN-CODE} onto a step's exit status.
+     * Carries a {@code RETURN-CODE} onto a step's exit status: the abend's own, or
+     * {@link #UNMAPPED_FAILURE_RETURN_CODE} for a step that failed carrying none.
      */
     static final class AbendExitStatusStepListener implements StepExecutionListener {
         /**
-         * Reports the step's exit status, with the code replaced by the abend's return code when the step
-         * failed with one.
+         * Reports the step's exit status, with the code replaced by a JCL return code whenever the step
+         * failed - the abend's code when it carried one, {@link #UNMAPPED_FAILURE_RETURN_CODE} when it did
+         * not.
          *
          * @param stepExecution the finished step; never {@code null} when called by the framework
          * @return the exit status to report
          */
         @Override
         public ExitStatus afterStep(StepExecution stepExecution) {
-            return withAbendExitCode(stepExecution.getExitStatus(),
+            return withJclReturnCode(stepExecution.getExitStatus(), stepExecution.getStatus(),
                     stepExecution.getFailureExceptions());
         }
     }
 
     /**
-     * Carries an abend's {@code RETURN-CODE} onto a job's exit status.
+     * Carries a {@code RETURN-CODE} onto a job's exit status: the abend's own, or
+     * {@link #UNMAPPED_FAILURE_RETURN_CODE} for a job that failed carrying none.
      */
     static final class AbendExitStatusJobListener implements JobExecutionListener {
         /**
-         * Sets the job's exit status from the abend, when one is present anywhere in the job's failures.
+         * Sets the job's exit status from the abend when one is present anywhere in the job's failures, and
+         * from {@link #UNMAPPED_FAILURE_RETURN_CODE} when the job failed with none - so that a
+         * {@code RETURN-CODE} always reaches {@link JclJobLauncher} and, through it, the process.
          *
          * @param jobExecution the finished job; never {@code null} when called by the framework
          */
         @Override
         public void afterJob(JobExecution jobExecution) {
-            jobExecution.setExitStatus(withAbendExitCode(jobExecution.getExitStatus(),
-                    jobExecution.getAllFailureExceptions()));
+            jobExecution.setExitStatus(withJclReturnCode(jobExecution.getExitStatus(),
+                    jobExecution.getStatus(), jobExecution.getAllFailureExceptions()));
         }
     }
 
